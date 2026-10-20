@@ -7,6 +7,7 @@ import socket
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -60,7 +61,7 @@ def outcomes(cfg, generation, route, commit, *, failed=False):
             "executable_path_matches_running": True,
             "capture_path": str(generation / "tools/consumer_gate_capture.py"),
             "capture_sha256": gate.digest(generation / "tools/consumer_gate_capture.py"),
-            "python_version": route["python_version"] + ".0", "machine": "x86_64" if route["id"] == "x86" else "aarch64",
+            "python_version": route["python_version"] + ".0", "machine": "x86_64" if "x86" in route["tags"] else "aarch64",
             "host": socket.gethostname(), "args": command[3:], "collected": nodes,
             "collection_errors": [], "deselected": [], "exitstatus": int(failed),
             "reports": [{"nodeid": node, "when": phase, "outcome": "failed" if failed and node == nodes[0] and phase == "call" else "passed", "wasxfail": False}
@@ -105,7 +106,15 @@ def evidence(cfg, generation, route, commit, *, failed=False, alter=None):
     queue.records.ensure_layout()
     queue.publish(action_key=key, cas_root=root / "cas", checkout_root=repo,
                   worker_script=root / "worker.py", tags=route["tags"], resources={"cpu": 1, "mem_gb": 2}, max_attempts=1)
-    claimed = queue.claim(tags=route["tags"], capacity={"cpu": 1, "mem_gb": 2})
+    # Both private route publishers can run concurrently on this test host.
+    # Model room for both, and retry a busy claim lock as a worker loop would.
+    deadline = time.monotonic() + 10
+    claimed = None
+    while claimed is None and time.monotonic() < deadline:
+        claimed = queue.claim(tags=route["tags"], capacity={"cpu": 2, "mem_gb": 4})
+        if claimed is None:
+            time.sleep(0.01)
+    assert claimed is not None and claimed["action_key"] == key
     queue.finish(key, status="failed" if failed else "executed",
                  detail={"returncode": int(failed), "status": "failed" if failed else "executed", "stdout": log, "stderr": ""})
     fx.settle_publishers()
@@ -273,3 +282,103 @@ def test_external_checkout_capture_preserves_original_population(case, prune):
     else:
         assert gate.judge(result.stdout, cfg=cfg, generation=generation, route=route,
                           commit=commit, returncode=result.returncode, host=socket.gethostname()) == []
+
+
+def write_gate_submitter(cfg, *, failed=False):
+    entry = Path(cfg["pbrun"])
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    # Run the real pbrun CLI and event writer in child processes. Replace only
+    # submission to avoid recursively dispatching work from an admitted test;
+    # the fixture publishes real private queue/CAS evidence for each route.
+    entry.write_text(f"""
+import json
+import os
+from pathlib import Path
+import sys
+sys.path[:0] = {[str(ROOT / "tests"), str(ROOT / "tools/fleet"), str(ROOT / "src")]!r}
+import pbrun
+import test_consumer_gate as fixture
+from prismabuild import action_client as client
+
+cfg = json.loads(Path(os.environ["PRISMABUILD_CONSUMER_GATE_CONFIG"]).read_text())
+tools = next(word.split("=", 1)[1] for word in sys.argv if word.startswith("PB_TOOLS_ROOT="))
+generation = Path(tools).parent
+
+def submit(request, *, report, **kwargs):
+    # This callback is unreachable if ClientEventWriter rejects the fd.
+    runtime = next(word.split("=", 1)[1] for word in sys.argv if word.startswith("PB_CONSUMER_RUNTIME="))
+    route = next(route for route in cfg["runtimes"] if route["id"] == runtime)
+    Path(cfg["fleet_root"], runtime + "-submitted").write_text("submitted")
+    ref = fixture.evidence(cfg, generation, route, fixture.gate.clean_pin(cfg), failed={failed!r})
+    identity = client.PoolClientIdentity(ref["action_key"], ref["published_unix"],
+        Path(cfg["fleet_root"]) / "pb-queue", Path(cfg["fleet_root"]) / "cas",
+        None, client.ClientArrival.SUBMITTED)
+    report.publish_identity(identity)
+    rc = int({failed!r})
+    report.finish(client.ClientExecution(ref["action_key"], ref["published_unix"],
+        "failed" if rc else "executed", rc, rc, None, False, rc))
+
+pbrun.submission.submit_request = submit
+raise SystemExit(pbrun.main())
+""")
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_execute_uses_real_pbrun_event_writer_and_verifiable_sidecar(case, failed):
+    cfg, generation, git, save = case
+    write_gate_submitter(cfg, failed=failed)
+    save()
+    (generation / "RUNTIME_VERSION.json").write_text(json.dumps({"generation": "G", **gate.requirement()}))
+    commit = git("rev-parse", "HEAD")
+    gate.execute(generation)
+    record = json.loads(gate.record_path(generation).read_text())
+    assert record["consumer_commit"] == commit
+    assert {action["runtime"] for action in record["actions"]} == {route["id"] for route in cfg["runtimes"]}
+    for action in record["actions"]:
+        assert action["channel_problem"] is None, action["stderr"]
+        assert action["action_key"] and action["published_unix"], action
+        assert action["submitter_returncode"] == int(failed), action
+        assert Path(cfg["fleet_root"], action["runtime"] + "-submitted").is_file()
+    if failed:
+        with pytest.raises(SystemExit, match="no exact, proven accepted-break"):
+            gate.verify(generation)
+    else:
+        # No manufactured execution record: activation consumes execute()'s
+        # own durable references and independently verifies both test results.
+        gate.verify(generation)
+
+
+def test_fresh_publication_activates_with_real_client_events_and_verified_results(tmp_path, monkeypatch):
+    import test_publish_runtime as publication
+
+    real_run = subprocess.run
+    release = publication._consumer_release_case(tmp_path, monkeypatch)
+    publish = publication.publish_runtime
+    # Publish the instrumentation member too; no live configuration/runtime is
+    # touched. Only the source checkout's Git/probe and submission backend are
+    # fixture seams; execute(), pbrun's CLI/writer and verification are real.
+    shutil.copy2(ROOT / "tools/fleet/consumer_gate_capture.py",
+                 publish.CHECKOUT / "tools/fleet/consumer_gate_capture.py")
+    monkeypatch.setattr(publish, "FLEET_SCRIPTS", ("consumer_gate_capture.py",))
+    fixture_run = subprocess.run
+
+    def run(argv, **kwargs):
+        words = [str(word) for word in argv]
+        if ((words and words[0] == "git" and str(publish.CHECKOUT) not in words)
+                or any(Path(word).name == "pbrun.py" for word in words)):
+            return real_run(argv, **kwargs)
+        return fixture_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    write_gate_submitter(release.config)
+    code, detail = publication._consumer_publish(monkeypatch)
+    if code:
+        records = list((tmp_path / "runtime-generations").glob("*.consumer-gate.json"))
+        pytest.fail(detail + "\n" + "\n".join(path.read_text() for path in records))
+    generation = release.mirror.resolve()
+    assert generation != release.old
+    assert generation.parent == tmp_path / "runtime-generations"
+    record = json.loads(gate.record_path(generation).read_text())
+    assert len(record["actions"]) == 2
+    assert all(action["channel_problem"] is None for action in record["actions"])
+    gate.verify(generation)

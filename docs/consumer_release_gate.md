@@ -67,10 +67,14 @@ still leaves missing reports and refuses. Skips, xfails, collection errors,
 deselection, early termination and empty files are not passing evidence and are
 not accepted test failures for a break record.
 
-Both submissions are attempted even when one reports failure. Private client
-events retain the action key and exact queue `published_unix`; stdout labels,
-submitter success and arbitrary stdout JSON are never receipts. The immutable
-sidecar `<fleet_root>/runtime-generations/<G>.consumer-gate.json` holds the pin,
+Both submissions are attempted even when one reports failure. Each client's
+private event descriptor is the write-only end of a pipe, drained concurrently
+and independently of stdout/stderr, including buffered events at client exit.
+Private events retain the action key and exact queue `published_unix`; stdout
+labels, submitter success and arbitrary stdout JSON are never receipts. Missing
+or malformed endings remain refusing diagnostics, not usable action references.
+The immutable sidecar
+`<fleet_root>/runtime-generations/<G>.consumer-gate.json` holds the pin,
 policy, receipt digest and both action references plus diagnostic client logs.
 It is outside G; G is never unsealed or rewritten. The sidecar is exclusive
 first-writer, fsynced, and made read-only. An interrupted/missing/invalid record

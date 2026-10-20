@@ -4,15 +4,18 @@ The operator-selected config is trusted policy, never a test receipt. Queue/CAS
 records are the evidence authority. Nothing in this module mutates a generation.
 """
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import select
 import subprocess
 import sys
 import tempfile
+import threading
 
 from prismabuild import core as pb, pool, action_result, client_channel, immutable_files, action_client as client
 
@@ -141,6 +144,51 @@ def write_record(path, value):
         os.close(descriptor)
 
 
+@contextmanager
+def client_events(root):
+    """Own a write-only event pipe and drain it independently of client logs."""
+    decoder = client_channel.ClientEventDecoder(queue_root=root / "pb-queue", cas_root=root / "cas")
+    read_fd, write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+    stopped = threading.Event()
+
+    def drain():
+        try:
+            while decoder.problem is None:
+                # At client exit, drain buffered bytes even if an earlier
+                # select timed out just before the final events arrived.
+                finishing = stopped.is_set()
+                if not finishing and not select.select([read_fd], [], [], 0.05)[0]:
+                    continue
+                allowance = client_channel.MAX_CLIENT_EVENTS * client_channel.MAX_EVENT_BYTES + 1 - decoder.bytes_seen
+                try:
+                    raw = os.read(read_fd, allowance)
+                except BlockingIOError:
+                    if finishing:
+                        break
+                    continue
+                if not raw:
+                    break
+                decoder.feed(raw)
+        except OSError as exc:
+            decoder.problem = f"client event pipe could not be read: {exc}"
+        finally:
+            os.close(read_fd)
+
+    reader = threading.Thread(target=drain, name="consumer-gate-client-events", daemon=True)
+    try:
+        reader.start()
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    try:
+        yield write_fd, decoder
+    finally:
+        os.close(write_fd)
+        stopped.set()
+        reader.join()
+
+
 def execute(generation):
     """Run both actions while admission is open; do not interpret submitter success."""
     cfg = selected(generation)
@@ -167,15 +215,12 @@ def execute(generation):
                 argv += ["--env", key + "=" + value]
             # Private events identify the exact publication, never test stdout.
             root = Path(cfg["fleet_root"])
-            with tempfile.TemporaryFile() as events:
-                result = subprocess.run([*argv, "--client-events-fd", str(events.fileno()), "--", *command],
+            with client_events(root) as (event_fd, decoder):
+                result = subprocess.run([*argv, "--client-events-fd", str(event_fd), "--", *command],
                                         text=True, capture_output=True, check=False,
-                                        pass_fds=(events.fileno(),),
+                                        pass_fds=(event_fd,),
                                         env={**os.environ, "PRISMABUILD_SUBMISSION_FLEET_ROOT": cfg["fleet_root"]})
-                events.seek(0)
-                decoder = client_channel.ClientEventDecoder(queue_root=root / "pb-queue", cas_root=root / "cas")
-                decoder.feed(events.read(client_channel.MAX_CLIENT_EVENTS * client_channel.MAX_EVENT_BYTES + 1))
-                channel = decoder.finish(result.returncode)
+            channel = decoder.finish(result.returncode)
             identity = channel.identity
             valid = channel.problem is None and isinstance(identity, client.PoolClientIdentity)
             return {"runtime": route["id"],
