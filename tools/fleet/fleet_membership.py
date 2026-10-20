@@ -1702,7 +1702,7 @@ def reconcile_membership(queue: pool_module.PoolQueue, host: str,
     """Settle membership handoff intents through the existing retry path.
 
     The deterministic settlement both the resign CLI and the worker loops
-    drive (loops call this every poll, including under a closed drain —
+    drive (loops call it once per box sweep turn, also under a closed drain —
     see worker_loop's drain branch): for every owed withdrawn row with an
     exact withdrawn-type terminal and no ready occupant, publish the
     budget-preserving successor with the exact revival linkage; adopt
