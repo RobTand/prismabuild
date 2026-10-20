@@ -1,5 +1,12 @@
 # PrismaBuild — distributed campaign execution
 
+Configured runtime publication additionally enforces the generation-bound
+[TrustLadder consumer release criterion](consumer_release_gate.md): execute
+both pinned consumer actions after sealing and before admission closure; verify
+immutable execution evidence separately at activation. The sealed policy cannot
+be disabled by omitting configuration on later activation. This is source
+support, not deployment or barrier qualification.
+
 **Status (corrected 2026-09-23): DETERMINISTIC CORE + SHARED CAS + PULL QUEUE
 LIVE; SLURM LANE BUILT BUT PAUSED AND INSTALLED ON NO BOX; DAGSTER AND
 OBSERVABILITY LAYERS NOT DEPLOYED.** The dependency-free action-key,

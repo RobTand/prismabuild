@@ -23,7 +23,10 @@ from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MO
 
 
 def configured_store() -> FleetStore:
-    return FleetStore(Path("/mnt/shared/prismabuild-fleet"), RUNTIME_ROOT, fleet_roster.Roster.beside(__file__))
+    root = Path(os.environ.get("PRISMABUILD_SUBMISSION_FLEET_ROOT", "/mnt/shared/prismabuild-fleet"))
+    if not root.is_absolute():
+        raise SystemExit("PRISMABUILD_SUBMISSION_FLEET_ROOT must be absolute")
+    return FleetStore(root, RUNTIME_ROOT, fleet_roster.Roster.beside(__file__))
 
 
 def request_from_args(args: argparse.Namespace) -> SubmissionRequest:

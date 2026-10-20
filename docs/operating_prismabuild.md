@@ -5,6 +5,11 @@
 > activation, resume and rollback disabled pending reviewed PB qualification
 > and live-host lifecycle evidence. `--stage-only` remains non-mutating.
 
+For the opt-in, mandatory-when-selected TrustLadder consumer release criterion,
+see [configuration, evidence retention and accepted breaks](consumer_release_gate.md).
+It runs against sealed candidates before activation, independently of shape
+waivers and canary settings. No live release configuration is shipped here.
+
 This guide is for the operator or agent who puts work on the fleet. It covers
 submitting a command, waiting for it, running a campaign, watching what the
 fleet is doing, stopping work, and reading a failure.

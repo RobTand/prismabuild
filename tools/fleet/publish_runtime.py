@@ -64,6 +64,7 @@ _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
 sys.path.insert(0, str(CHECKOUT / "src"))
 from prismabuild import fleet_roster  # noqa: E402
+import consumer_gate  # noqa: E402
 from prismabuild.compatibility_window import (  # noqa: E402
     RECEIPT_MEMBERS, WindowError, client_protocol, require_client_transition,
     require_receipt_participants,
@@ -78,7 +79,7 @@ _PUBLISH_LOCK_PID: int | None = None
 FLEET_SCRIPTS = (
     "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
-    "publish_runtime.py", "pool_reset.py", "supervise.py",
+    "publish_runtime.py", "consumer_gate.py", "consumer_gate_capture.py", "pool_reset.py", "supervise.py",
     "migrate_role_logs.py",
     # The supervisor spawns prewarm_loop.py on a box declaring the storage
     # role, by published path like every other child. A generation without it
@@ -1523,6 +1524,8 @@ def _reserve_installed_bootstrap(assessment_path):
         _require_no_epoch()
         source, _ = _sealed_generation(plan["source"]["generation"])
         target, _ = _sealed_generation(plan["target"]["generation"])
+        if plan.get("direction") != "restore":
+            consumer_gate.verify(target)
         expected_pointer = target if plan.get("direction") == "restore" else source
         if MIRROR.resolve(strict=True) != expected_pointer or _bootstrap_roster(source, target) != plan["roster"]:
             raise SystemExit("bootstrap reservation source or roster changed")
@@ -1562,6 +1565,8 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
             raise SystemExit("active rollout epoch excludes installed bootstrap")
         source, _ = _sealed_generation(plan["source"]["generation"])
         target, receipt = _sealed_generation(plan["target"]["generation"])
+        if direction == "forward" and not dry_run:
+            consumer_gate.verify(target)
         if receipt["files"].get("tools/publish_runtime.py") != _coordinator_sha256():
             raise WindowError("bootstrap coordinator differs from the sealed target")
         roster = _bootstrap_roster(source, target)
@@ -1964,6 +1969,8 @@ def _barrier_step(epoch, *, rollback_reason=None):
         if live not in (source, target):
             raise SystemExit("unexpected third generation during rollout; all hosts remain held")
         root, _ = _barrier_generation(expected)
+        if not rollback:
+            consumer_gate.verify(root)
         _assert_coordinator_identity(_rollout_view(epoch))
         # The caller owns the publication lock. Re-read after potentially slow
         # member hashing so an external symlink change cannot become our swap.
@@ -2022,6 +2029,7 @@ def _arm_barrier(name, *, wait_s=300):
         raise SystemExit("barrier requires an existing sealed runtime symlink")
     source = _barrier_generation(MIRROR.resolve(strict=True).name)
     target = _barrier_generation(name)
+    consumer_gate.verify(target[0])
     if source[0] == target[0]:
         print(f"runtime already activates {name}; no rollout required")
         return 0
@@ -2155,6 +2163,7 @@ def _activate_existing_locked(
         print(f"rollout rolling: {rollout_reason}")
     if dry_run:
         return 0
+    consumer_gate.verify(generation)
     _activate(generation, migrate_directory=False)
     print(f"activated {MIRROR} -> {generation}")
     return 0
@@ -2648,6 +2657,7 @@ def _run_publication(args) -> int:
             # How this commit passed the pre-publish shape gate (#987): the
             # verified gate run, or the waiver and its reason.
             "shape_gate": shape_gate,
+            **consumer_gate.requirement(),
             # Present only when the roster drops a live -- option name on
             # purpose (#1664): who removed it, why, and which names per box.
             **({"roster_option_override": roster_override}
@@ -2664,6 +2674,10 @@ def _run_publication(args) -> int:
         os.replace(stage, generation)
         _fsync_directory(store)
         _sign_movement_approval(generation, receipt_sha256=receipt_sha256)
+        # Consumer execution happens only after sealing, with admission open.
+        # Stage-only retains even a failed candidate; activation independently
+        # re-reads the fleet evidence rather than trusting submission status.
+        consumer_gate.execute(generation)
         if args.stage_only:
             print(json.dumps({"state": "staged", "generation": generation_name,
                               "path": str(generation), "activated": False,
@@ -2678,6 +2692,7 @@ def _run_publication(args) -> int:
             return _run_rollout_canary(store=store, generation_name=generation_name,
                                        commit=commit, enabled=canary_enabled,
                                        shape_gate=shape_gate)
+        consumer_gate.verify(generation)
         legacy = _activate(
             generation, migrate_directory=args.migrate_directory
         )
