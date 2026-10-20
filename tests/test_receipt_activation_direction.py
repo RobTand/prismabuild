@@ -83,13 +83,20 @@ def test_rolling_activation_needs_current_installed_receipt_authority(private_st
         publisher._seal_generation(root)
     publisher.MIRROR.symlink_to(previous)
     agent = publisher._agent_definitions()
+    import time
+    offers = private_store.parent / "pb-queue/workers"
+    offers.mkdir(parents=True)
     for host in ("one", "two"):
+        (offers / f"{host}.json").write_text(json.dumps({
+            "schema": "prismaquant.prismabuild.pool_offer.v1", "host": host,
+            "announced_unix": time.time()}))
         for raw in (source(installed_source), source("final")):
             digest = hashlib.sha256(raw).hexdigest()
             agent.post_marker(private_store.parent / "rollout", "agents/" + agent.attestation_name(host, digest),
                               agent.canonical_json(agent.attestation_body(host, digest)))
     before = set(private_store.iterdir())
-    with pytest.raises(SystemExit, match="receipt-member|current installed updater"):
+    # Historical attestations are not current proof: every participant is named.
+    with pytest.raises(SystemExit, match=r"receipt-member|current installed updater proof.*\['one', 'two'\]"):
         publisher._activate_existing(target.name, dry_run=dry_run, rollout="rolling",
                                      rollout_reason="private direction control")
     assert publisher.MIRROR.resolve() == previous
