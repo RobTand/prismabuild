@@ -75,136 +75,17 @@ _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
-FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
-    "seal_and_publish.py",
-    "publish_runtime.py", "pool_reset.py", "supervise.py",
-    "migrate_role_logs.py",
-    # The supervisor spawns prewarm_loop.py on a box declaring the storage
-    # role, by published path like every other child. A generation without it
-    # makes that role a log line saying the script is not there (#487).
-    "prewarm_loop.py",
-    # ...and tier_loop.py on a box declaring the tiers role (#583): it
-    # mints and announces the box's discovered storage tiers, and a role
-    # script that does not travel cannot be spawned.
-    "tier_loop.py", "pbresident.py", "local_tier_loop.py", "local_resident.py",
-    # ...and stage_move.py, which is not a role script at all: it is the
-    # movement node itself, exec'd by an admitted action on the storage box
-    # (#583).  A generation without it publishes movers nothing can run.
-    "stage_move.py",
-    # Source-host PRECOMMIT local-spool exports are ordinary admitted actions.
-    # Their payload must travel with the package that seals their command.
-    "produced_export.py",
-    # ...and stage_release.py beside it, the egress node that deletes a staged
-    # range and returns its tier tokens.  The tier loop also imports it for the
-    # orphan sweep, so a generation without it leaves a withdrawn consumer's
-    # movers holding the stage with nothing able to take it back.
-    "stage_release.py",
-    # ...and stage_reclaim.py, the operator command that moves digest-proven
-    # source-mark-only stage copies into quarantine and restores them (#1636).
-    # The stage lives on dl380g10, which has no checkout, so a generation
-    # without it leaves that command with no place to run.
-    "stage_reclaim.py",
-    # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
-    # landed stage range into the tmpfs and files the fragment that carries
-    # the epoch.  A generation without it leaves the ram window publishing
-    # promotions nothing can run.
-    "ram_promote.py",
-    # Root operator provisioning is separate from publication and discovery.
-    "install_ram_mount_unit.py",
-    # Qualified scratch profiles bind this producer's bytes in the generation.
-    "local_scratch_profile.py",
-    # The retained SLURM lane job entry. Submission is a package owner.
-    "slurm_job.py",
-    # The commands an operator runs on a box that has no checkout.  The
-    # published pool_reset.py:582 tells them to run ``pbwait.py <key>``, and
-    # neither dl380g10 nor sparklina has a checkout to run it from.
-    # runtime_process_census.py is here for the same reason and is only
-    # useful there: it reads /proc on the box it runs on.
-    "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
-    # pbsnapshot.py runs inside an action: a client that hashes its own
-    # source asks it which files in the pbrun checkout PrismaBuild generated.
-    # It has to be the executing generation's copy, found by published path.
-    "pbsnapshot.py",
-    # pbmergeq.py is a client a repository's merge flow runs from a box with
-    # no PB checkout; it imports pbtest.py and pbtest_outcomes.py from its own
-    # directory, so it must be the same generation's copy (#1417).
-    "pbmergeq.py",
-    # pbmcp.py is the same case as pbstatus.py and then some: an agent
-    # registers it by absolute published path so that every session starts on
-    # the current generation, and the boxes it is registered from are exactly
-    # the ones with no checkout.
-    "pbmcp.py",
-    # retire_worker.py belongs to the same set for a sharper reason: the name
-    # it retires is a name whose box stopped answering, and the operator who
-    # notices is on whichever box is holding the mount.
-    "retire_worker.py",
-    # The residency-plan backfill (#1041, published by #1381) is the same
-    # operator's second cleanup: it reaps plans whose consumer concluded
-    # before PoolQueue.finish started retiring them at the terminal write,
-    # and the queue it names lives on the shared mount rather than in any
-    # checkout.  It lists without --apply and archives only when no child of
-    # the plan is still ready, claimed or live.
-    "retire_residency_plans.py",
-    # The exporter's installer travels with it for the same reason: the box
-    # best placed to run it is a box with no checkout.
-    "install_pbmetrics.sh",
-    # mount_latency.py measures the medium from the box it runs on, so it has
-    # to be present on a box with no checkout -- and most of all on the box
-    # whose mount is the one in question, which is the box least able to fetch
-    # it at the time somebody wants it.
-    "mount_latency.py",
-    # pb_gc.py is the same case: it sweeps a store from whichever box is
-    # holding the mount, and it reads /proc on the box it runs on to find out
-    # what is still live there.
-    "pb_gc.py",
-    # pbgang.py submits a gang (#1517) from a box that has no checkout; a tool
-    # missing from this list is a tool no box can run, so the gang canary could
-    # not start from a published generation.
-    "pbgang.py",
-    # pbrun imports pbevidence unconditionally (#1598).  A published script that
-    # imports a tools module the publication lacks makes the publisher refuse
-    # every generation, so the tool ships even for commands that never use
-    # --target-evidence.  It also runs as a normal action on a worker of the
-    # class, where it prints the evidence packet.
-    "pbevidence.py",
-    # Explicit plan-first banked-checkout recovery runs on the owning host.
-    "pbrecover_checkout.py",
-    # The reconcile, for the same reason: the endings it files are the ones
-    # no waiter asked for, and the operator who notices they are missing is
-    # on whichever box has the shared mount rather than the checkout.
-    "pbsweep.py",
-    # Local JOIN/RESIGN and the worker-loop reconciliation hook must work
-    # on registered hosts with only the published generation available.
-    "fleet_membership.py",
-    # Per-job containment clients and root-installed authority sources travel
-    # with the generation; installation copies privileged code to root-owned
-    # storage rather than executing it from this shared runtime.
-    "resource_exec.py", "resource_broker.py", "resource_payload.py",
-    "qualify_resource_scope.py", "install_resource_broker.sh",
-    # The host-local check an operator runs after provisioning the broker: it
-    # reads the installed needrestart main configuration alone to prove the
-    # exact-service deferral survived installation (#1378), and the box that
-    # needs that proof is the box whose running broker cannot be disturbed by
-    # materializing a checkout.
-    "qualify_needrestart_broker_deferral.py",
-    "upgrade_client.py", "bootstrap_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
-    # The one-time root enrollment of a host in automatic movement publication
-    # (#1659).  An administrator copies it out of the live generation, as the
-    # client upgrader's installer; a generation without it leaves no host able
-    # to enroll.  ``runtime_publication.py`` it installs is a package module.
-    "install_movement_publisher.sh",
+from prismabuild.publication_contract import (
+    FLEET_SCRIPTS, STANDALONE_PACKAGE_SOURCES, TOP_LEVEL_SCRIPTS,
+    OBSERVABILITY_FILES, STORAGE_FILES, FLEET_DATA, publication_source, publication_manifest,
 )
-# The retained proxy verifies the same stdlib layout helper beside itself.
-STANDALONE_PACKAGE_SOURCES = {
-    "runtime_paths.py": "src/prismabuild/runtime_paths.py",
-}
 
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("prepare_release.py", "release coordinator submits independent collection from a checkout; never a worker payload"),
     ("gate_1730_probe.py",
      "the #1730 fixed-arm storage probe runs from a submitted checkout through "
      "pbrun; it records one measurement and is not an operator command"),
@@ -353,29 +234,10 @@ CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 #: reads ``50-prismabuild-resource-broker.conf`` beside itself and provisions
 #: it as needrestart's exact-service restart exclusion (#1378), so a
 #: generation published without it would install an unprotected broker.
-FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json", "local_tier_policy.json",
-              "50-prismabuild-resource-broker.conf")
+
 
 # These originate at tools/, without a second tools/fleet/ spelling. The
 # torch helper is copied by consumers following the published profile guide.
-TOP_LEVEL_SCRIPTS = ("prismabuild_worker.py", "profile_torch.py")
-
-# The dashboard deploy tests travel with the runtime, so their implementation
-# and maintained dashboard must travel too. This does not start monitoring or
-# modify an existing Grafana deployment during worker publication.
-OBSERVABILITY_FILES = (
-    "README.md", "build_dashboard.py", "deploy_dashboard.py", "prismabuild.json",
-    "prismabuild-metrics.service", "prometheus.scrape.yml", "qualify_dashboard.py",
-)
-
-# ``pbstatus`` reads the /mnt/shared NFS readahead window through this helper
-# and reports it; without the helper in the generation the reading is
-# unavailable on every box that has no checkout, which is every worker. The
-# helper is stdlib-only and read-only unless given ``--apply``, and publishing
-# it installs nothing: the host unit beside it is still installed by an
-# operator, as docs/fleet_storage.md says.
-STORAGE_FILES = ("nfs_readahead.py",)
-
 #: The modes a published generation's members carry, chosen rather than
 #: inherited.  Until #316 the mode came from ``shutil.copy2`` preserving
 #: whatever the *publishing checkout* happened to have, which is a box-local
@@ -544,23 +406,7 @@ def _published_mode(source: Path, index_modes: dict[str, int]) -> int:
 
 
 def _source_for(name: str) -> Path:
-    parts = name.split("/")
-    if (parts[:-1] in (["tools"], ["tools", "fleet"])
-            and parts[-1] in STANDALONE_PACKAGE_SOURCES):
-        return CHECKOUT / STANDALONE_PACKAGE_SOURCES[parts[-1]]
-    if name.startswith("tools/fleet/"):
-        base = name.rsplit("/", 1)[1]
-        source = CHECKOUT / "tools" / "fleet" / base
-        return source if source.is_file() else CHECKOUT / "tools" / base
-    if name in {f"tools/{script}" for script in TOP_LEVEL_SCRIPTS}:
-        return CHECKOUT / name
-    if name in ("tools/generation_receipt.py", "tools/digest_primitives.py"):
-        return CHECKOUT / "src/prismabuild" / name.rsplit("/", 1)[1]
-    if name.startswith("tools/"):
-        base = name.rsplit("/", 1)[1]
-        source = CHECKOUT / "tools" / "fleet" / base
-        return source if source.is_file() else CHECKOUT / "tools" / base
-    return CHECKOUT / name
+    return publication_source(CHECKOUT, name)
 
 
 def _imported_modules(source: Path) -> set[str]:
@@ -613,61 +459,7 @@ def _unshipped_imports(published: dict[str, str]) -> list[str]:
 
 
 def _publication_manifest() -> dict[str, str]:
-    published: dict[str, str] = {}
-    for source in sorted((CHECKOUT / "src" / "prismabuild").glob("*.py")):
-        published[f"src/prismabuild/{source.name}"] = _sha256(source)
-    for name in ("generation_receipt.py", "digest_primitives.py"):
-        published[f"tools/{name}"] = published[f"src/prismabuild/{name}"]
-    for name, owner in STANDALONE_PACKAGE_SOURCES.items():
-        if owner not in published:
-            continue
-        published[f"tools/{name}"] = published[owner]
-        published[f"tools/fleet/{name}"] = published[owner]
-    for name in FLEET_SCRIPTS:
-        source = CHECKOUT / "tools" / "fleet" / name
-        if not source.is_file():
-            source = CHECKOUT / "tools" / name
-        if not source.is_file():
-            continue
-        published[f"tools/{name}"] = _sha256(source)
-        published[f"tools/fleet/{name}"] = published[f"tools/{name}"]
-    for name in FLEET_DATA:
-        source = CHECKOUT / "tools" / "fleet" / name
-        if source.is_file():
-            published[f"tools/{name}"] = _sha256(source)
-            published[f"tools/fleet/{name}"] = published[f"tools/{name}"]
-    skill = CHECKOUT / "skills" / "prismabuild" / "SKILL.md"
-    if skill.is_file():
-        published["skills/prismabuild/SKILL.md"] = _sha256(skill)
-    # The installed skill requires the policy and operating guide. Keep the
-    # small documentation tree and root guides together so their relative
-    # references resolve within this same sealed generation, without a checkout.
-    guides = [CHECKOUT / "README.md", CHECKOUT / "AGENTS.md",
-              CHECKOUT / "worker-expansion-design.md",
-              *sorted((CHECKOUT / "docs").rglob("*.md")),
-              *sorted((CHECKOUT / "docs").rglob("*.json"))]
-    for source in guides:
-        if source.is_file():
-            published[source.relative_to(CHECKOUT).as_posix()] = _sha256(source)
-    # The published push-guard test depends on its repository-owned hook.
-    hook = CHECKOUT / ".githooks" / "pre-push"
-    if hook.is_file():
-        published[".githooks/pre-push"] = _sha256(hook)
-    for name in TOP_LEVEL_SCRIPTS:
-        source = CHECKOUT / "tools" / name
-        if source.is_file():
-            published[f"tools/{name}"] = _sha256(source)
-    for source in sorted((CHECKOUT / "tests").glob("*.py")):
-        published[f"tests/{source.name}"] = _sha256(source)
-    for name in OBSERVABILITY_FILES:
-        source = CHECKOUT / "fleet" / "observability" / name
-        if source.is_file():
-            published[f"fleet/observability/{name}"] = _sha256(source)
-    for name in STORAGE_FILES:
-        source = CHECKOUT / "fleet" / "storage" / name
-        if source.is_file():
-            published[f"fleet/storage/{name}"] = _sha256(source)
-    return published
+    return publication_manifest(CHECKOUT, fleet_scripts=FLEET_SCRIPTS, fleet_data=FLEET_DATA)
 
 
 def _fsync_file(path: Path) -> None:
