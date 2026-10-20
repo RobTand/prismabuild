@@ -322,6 +322,102 @@ def test_reboot_invalidates_cpu_learning_without_blocking_exact_cleanup(scoped, 
     assert 'stop' in calls and 'release' in calls
 
 
+def test_reboot_cleanup_retries_until_owner_returns_without_stale_terminal_pending(
+    scoped, monkeypatch,
+):
+    """#1838: an off-host refusal must not survive successful owner cleanup."""
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    queue.execute(item, containment=True)
+    key = item['action_key']
+    owner = item['claimed_host']
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    record = json.loads(path.read_text())
+    record['max_attempts'] = 1
+    # The persistent claim and scope authority survive, but their accounting
+    # clock belongs to the boot that died before it could finish cleanup.
+    record['resource_scope']['boot_id'] = 'previous-boot'
+    record['resource_scope']['started_monotonic'] = 10**20
+    pool.immutable_files.write_json_atomic(path, record)
+    calls.clear()
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'other-host')
+    for attempt in (1, 2):
+        assert queue.reap_stale(timeout_s=-1) == []
+        pending = json.loads(path.read_text())
+        assert pending['container_cleanup_pending']['complete'] is False
+        assert 'claiming host' in pending['container_cleanup_pending']['error']
+        assert pending['container_cleanup_attempts'] == attempt
+        assert queue.ledger(owner).held() == {'cpu': 1, 'mem_gb': 2}
+    assert 'stop' not in calls and 'release' not in calls
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: owner)
+    # A restarted worker has no access to the old process's in-memory item.
+    restarted = pool.PoolQueue(queue.root)
+    assert restarted.reap_stale(timeout_s=-1) == [key]
+    terminal = json.loads(
+        restarted.records.item_path(pool.record_store.FAILED, key).read_text(),
+    )
+    assert terminal['status'] == 'lease_lost_max_attempts'
+    assert terminal['attempts'] == 1
+    assert terminal['resource_scope_cleanup']['complete'] is True
+    assert terminal['resource_scope_cleanup']['nonce'] == record['resource_scope']['nonce']
+    assert 'stop' in calls and 'release' in calls
+    assert restarted.ledger(owner).held() == {}
+    assert not path.exists()
+    assert not restarted.records.lease_path(key).exists()
+    assert not terminal.get('container_cleanup_pending'), (
+        'successful claiming-host cleanup left a terminal quiescence blocker')
+
+
+def test_owner_poll_reconciles_already_terminal_scope_cleanup_pending(scoped, monkeypatch):
+    """#1838: records written before the fix must not stay pending forever."""
+    queue, item, calls = scoped
+    _process(monkeypatch, queue, item, calls)
+    queue.execute(item, containment=True)
+    key = item['action_key']
+    owner = item['claimed_host']
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
+    record = json.loads(claimed.read_text())
+    record['max_attempts'] = 1
+    pool.immutable_files.write_json_atomic(claimed, record)
+    assert queue.reap_stale(timeout_s=-1) == [key]
+    terminal_path = queue.records.item_path(pool.record_store.FAILED, key)
+    terminal = json.loads(terminal_path.read_text())
+    assert terminal['resource_scope_cleanup']['complete'] is True
+    # Reproduce the durable contradictory record from the incident: the scope
+    # proof is positive, the old off-host failure has no remaining containers,
+    # and there is no claim/lease left to drive an ordinary cleanup retry.
+    terminal['container_cleanup_pending'] = {
+        'complete': False, 'used': True, 'removed': [], 'remaining': [],
+        'error': 'resource scope cleanup incomplete: PoolContractError: '
+                 'resource scope cleanup must run on its claiming host',
+    }
+    terminal['container_cleanup_attempts'] = 1
+    terminal['container_cleanup_checked_unix'] = 1.0
+    terminal['container_cleanup_first_failed_unix'] = 1.0
+    pool.immutable_files.write_json_atomic(terminal_path, terminal)
+    calls.clear()
+    restarted = pool.PoolQueue(queue.root)
+    monkeypatch.setattr(restarted, '_sweep_due', lambda **kwargs: True)
+
+    # Ordinary worker polling, not a new operator-only repair command, must
+    # eventually make this existing terminal record quiescent.
+    assert restarted.serve_once(capacity={'cpu': 1, 'mem_gb': 2}) is None
+    reconciled = json.loads(terminal_path.read_text())
+    assert not reconciled.get('container_cleanup_pending'), (
+        'normal owner polling never re-evaluated the stale terminal marker')
+    for field in ('action_key', 'published_unix', 'claimed_host', 'resource_scope',
+                  'resource_scope_cleanup', 'status', 'detail', 'attempts',
+                  'attempt_history', 'finished_unix', 'finished_host'):
+        assert reconciled.get(field) == terminal.get(field)
+    assert not claimed.exists()
+    assert not restarted.records.lease_path(key).exists()
+    assert not restarted.records.item_path(pool.record_store.READY, key).exists()
+    assert restarted.ledger(owner).held() == {}
+    assert 'create' not in calls
+
+
 def test_broker_guard_first_cause_reaches_terminal_outcome(scoped, monkeypatch):
     queue, item, calls = scoped
     _process(monkeypatch, queue, item, calls)
