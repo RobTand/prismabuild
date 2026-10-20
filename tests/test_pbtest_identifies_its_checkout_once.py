@@ -94,7 +94,7 @@ def _checkout(path: Path, files: int) -> Path:
     return path
 
 
-def _counted_run(tmp_path: Path, monkeypatch, *, shards: int = 3,
+def _counted_run(tmp_path: Path, monkeypatch, *, shards: int = 3, wait_s: float = 2,
                  extra: tuple[str, ...] = ()) -> tuple[int, dict[str, int], Path]:
     """Run pbtest over ``shards`` files against a scratch store; count both kinds."""
 
@@ -130,7 +130,7 @@ def _counted_run(tmp_path: Path, monkeypatch, *, shards: int = 3,
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(work), "--python", sys.executable,
         "--shards", str(shards), "--threads-per-shard", "1", "--timeout-s", "120",
-        "--wait-s", "2", "--tag", host, "--json", str(report), *extra, "tests"])
+        "--wait-s", f"{wait_s:g}", "--tag", host, "--json", str(report), *extra, "tests"])
     code = pbtest.main()
     lines = counts.read_text().split()
     return code, {kind: lines.count(kind) for kind in ("identity", "bundle")}, root
