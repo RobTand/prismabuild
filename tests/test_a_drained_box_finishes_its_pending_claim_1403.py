@@ -293,7 +293,7 @@ def test_a_failed_saved_finish_retry_does_not_stop_the_drain(
     queue, broker = drained_box
     _forbid_execute(monkeypatch)
 
-    def explode(self):
+    def explode(self, **_kwargs):
         raise OSError("mount unavailable")
 
     monkeypatch.setattr(pool.PoolQueue, "retry_own_pending_finishes", explode)
