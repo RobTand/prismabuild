@@ -1426,12 +1426,12 @@ def retire_predecessor_cancellations(
         for mover in sorted(set(mover_keys(plan))):
             held.enter_context(queue.action_transition_lock(mover))
         try:
-            cancelled = queue.withdrawn_keys()
+            cancelled = queue.records.filed_names(_pool.record_store.WITHDRAWN)
+            hits = sorted(child for child in set(child_keys(plan))
+                          if child in cancelled)
         except OSError as exc:
             raise ResidencyPlanError(
-                f"the live withdrawal markers could not be listed: {exc}") from None
-        hits = sorted(child for child in set(child_keys(plan))
-                      if child in cancelled)
+                f"the live withdrawal markers could not be read: {exc}") from None
         if not hits:
             return {"consumer_action_key": key, "retired": []}
         safe, why = handoff_safe(queue, key, plan)

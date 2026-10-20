@@ -7,7 +7,7 @@ and impose no deadline.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import errno
 import re
@@ -220,8 +220,8 @@ def _read_json(
     return _document_from_bytes(path, raw)
 
 
-def _revalidate_parent(path: Path) -> None:
-    """Open and close ``path``'s directory so this NFS client revalidates it.
+def _revalidate_directory(directory: Path) -> None:
+    """Open and close ``directory`` so this NFS client revalidates it.
 
     Close-to-open consistency makes the open fetch the directory's attributes,
     and a changed directory drops the negative entries this client cached in
@@ -231,7 +231,47 @@ def _revalidate_parent(path: Path) -> None:
     names on 2026-10-20.  An ``OSError`` is the caller's to interpret.
     """
 
-    os.close(os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC))
+    os.close(os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC))
+
+
+def _revalidate_parent(path: Path) -> None:
+    _revalidate_directory(path.parent)
+
+
+class FiledNames(Container[str]):
+    """Which keys have a ``<key>.json`` slot in some state directories.
+
+    The membership a listing of those directories gave, read by name: one
+    lookup per directory for each key asked, instead of a read of every name
+    they hold, and ``withdrawn``, ``done`` and ``failed`` grow with the
+    queue's whole history.  Each directory is revalidated once, when the
+    view is made (``_revalidate_directory``), so a slot another box filed
+    before then is not hidden by this client's negative cache.
+
+    Loud on anything but absence, as the listings were: a missing directory
+    holds nothing, and every other error propagates, when the view is made
+    or when a key is asked.  A key that could not name one slot, such as one
+    with a ``/``, is in no listing and so in no view.
+    """
+
+    def __init__(self, directories: Iterable[Path]) -> None:
+        self.directories = tuple(directories)
+        for directory in self.directories:
+            try:
+                _revalidate_directory(directory)
+            except FileNotFoundError:
+                pass
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str) or not key or "/" in key or "\0" in key:
+            return False
+        for directory in self.directories:
+            try:
+                (directory / f"{key}.json").lstat()
+            except FileNotFoundError:
+                continue
+            return True
+        return False
 
 
 def _read_json_fresh(path: Path) -> dict[str, object] | None:
@@ -2528,6 +2568,10 @@ class RecordStore:
             return frozenset(os.listdir(directory))
         return self._records.names(directory, select=_all_entries)
 
+
+    def filed_names(self, *states: str) -> FiledNames:
+        """``key in`` these states' listings, read by name (``FiledNames``)."""
+        return FiledNames(self.dir(state) for state in states)
 
     def withdrawn_keys(self) -> frozenset[str]:
         directory = self.dir(WITHDRAWN)
