@@ -59,6 +59,7 @@ a stopped role keeps its lock until an operator continues or terminates it.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass
 import fcntl
 import json
@@ -201,6 +202,10 @@ INHERITED_CLAIM_FD_ENV = "PRISMABUILD_SUPERVISOR_CLAIM_FD"
 RUNTIME_VERSION_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
 # A large inherited zombie backlog must not starve the census or re-exec.
 MAX_REAPS_PER_TICK = 256
+from prismabuild import worker_log_retention
+from prismabuild.worker_log_retention import (
+    WORKER_LOG_RETENTION_S, WORKER_LOG_PRUNES_PER_TICK,
+)
 
 
 @dataclass(frozen=True)
@@ -1144,23 +1149,14 @@ def housekeeping_ceiling(floor: int) -> int:
     return max(floor, min(by_cpu, max(1, by_memory)))
 
 
-def _next_log_index() -> int:
-    """Choose a log slot no running or earlier loop can already be appending."""
+def _worker_log_census() -> list[int]:
+    return worker_log_retention.worker_log_census(LOG_DIR)
 
-    highest = -1
-    try:
-        entries = list(LOG_DIR.iterdir())
-    except OSError:
-        return 0
-    for path in entries:
-        name = path.name
-        if not (name.startswith("pb-worker-") and name.endswith(".log")):
-            continue
-        try:
-            highest = max(highest, int(name[10:-4]))
-        except ValueError:
-            continue
-    return highest + 1
+
+def _prune_worker_logs(backlog, pids, newest):
+    return worker_log_retention.prune_worker_logs(
+        backlog, pids, newest, log_dir=LOG_DIR, proc=PROC,
+        limit=WORKER_LOG_PRUNES_PER_TICK)
 
 
 def cycle_stale(published: str) -> list[int]:
@@ -2098,7 +2094,8 @@ def _run_supervisor(stop_requested) -> int:
     print(f"[{host}] supervising {target} loops: {' '.join(loop_args)}",
           flush=True)
     fixed_target = args.loops > 0
-    next_log_index = _next_log_index()
+    log_backlog = deque(_worker_log_census())
+    next_log_index = log_backlog[-1] + 1 if log_backlog else 0
     draining_announced = False
     # The busiest claim census of the last two ticks (#1571): a claim
     # count that alternates between ticks -- a loop finishes one action
@@ -2178,6 +2175,8 @@ def _run_supervisor(stop_requested) -> int:
             draining_announced = False
 
         live = _live_loops()
+        # Loops this cycle may stop are still alive while it prunes logs.
+        census_loops = list(live)
         # One authoritative claim census per cycle.  Computed before the role
         # pass so role freshness shares it, and reused for stale cycling, load
         # feedback and scale-down below -- still one NFS rescan per pid, not
@@ -2297,10 +2296,17 @@ def _run_supervisor(stop_requested) -> int:
             index = next_log_index
             next_log_index += 1
             pid = _spawn(loop_args, index)
+            log_backlog.append(index)
             print(f"[{host}] spawned loop {index} pid {pid} "
                   f"({len(live) + offset + 1} of {desired})", flush=True)
         if stop_requested():
             continue
+        if not args.once:
+            pruned = _prune_worker_logs(log_backlog, census_loops,
+                                        next_log_index - 1)
+            if pruned:
+                print(f"[{host}] pruned {pruned} worker log(s) older than "
+                      f"{WORKER_LOG_RETENTION_S // 86400} days", flush=True)
         if missing:
             # One bounded delay lets a large batch spread its first polls
             # without charging half a second for every housekeeping process.

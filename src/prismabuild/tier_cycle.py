@@ -10572,7 +10572,7 @@ def main(argv: list[str] | None = None, *, entrypoint: str | Path | None = None)
     explicit unlock).
 
     Safety never depends on naming the holder: the holder pid is a
-    /proc/locks diagnostic the ``RoleLockHeld`` message may carry, read only
+    verified holder-record diagnostic the ``RoleLockHeld`` message may carry, read only
     when the flock is refused, and an unreadable holder is still a refusal.
     """
 

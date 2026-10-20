@@ -370,7 +370,7 @@ class AdmissionBusy(RuntimeError):
     true about the box -- admission is occupied -- and its correct response is
     to come back on its own schedule, not to sit in the kernel until the
     holder is done.  ``holder`` is the pid still in there when that could be
-    read from ``/proc/locks``, and ``None`` when it could not; a missing
+    verified from the holder record, and ``None`` when it could not; a missing
     holder is "unknown", never "nobody".
     """
 
@@ -668,6 +668,7 @@ class AdmissionGate:
                 raise
             except (OSError, RuntimeError) as exc:
                 raise AdmissionUnavailable(str(exc)) from exc
+            flock_owner.record_holder(descriptor)
             yield
         finally:
             if descriptor is not None:

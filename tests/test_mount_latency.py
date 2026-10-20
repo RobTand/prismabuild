@@ -117,13 +117,16 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     assert "BEGIN prismabuild.mount_probe_state" in lines
     assert "SET ok = 1" in lines
     assert "END" in lines
-    assert "BEGIN prismabuild.admission_gate" in lines
-    assert "SET holders = 0" in lines
+    assert any(line.startswith("CHART prismabuild.admission_gate ") for line in lines)
+    assert any(line.startswith("CHART prismabuild.admission_hold ") for line in lines)
+    assert "BEGIN prismabuild.admission_gate" not in lines
+    assert "BEGIN prismabuild.admission_hold" not in lines
     records = list((tmp_path / "records").glob("*.jsonl"))
     assert len(records) == 1
     record = json.loads(records[0].read_text().splitlines()[0])
     assert record["probe"]["status"] == "ok"
     assert record["locks"]["present"] is True
+    assert record["locks"]["identity_complete"] is False
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
@@ -555,224 +558,63 @@ def test_a_closed_stdout_is_a_stop_signal_not_a_crash(tmp_path, monkeypatch):
 # on 2026-09-06: 15 of 16 loops blocked on a local flock, nothing served, load
 # average 1.13.
 
-LOCKS = """\
-1: POSIX  ADVISORY  READ 469141 103:02:924002 128 128
-7: FLOCK  ADVISORY  WRITE 4242 103:02:1441858 0 EOF
-7: -> FLOCK  ADVISORY  WRITE 4301 103:02:1441858 0 EOF
-7: -> FLOCK  ADVISORY  WRITE 4302 103:02:1441858 0 EOF
-8: FLOCK  ADVISORY  WRITE 1583 103:02:791821 0 EOF
-"""
-
-
 def _gate(tmp_path):
     lock = tmp_path / "a9de.lock"
     lock.touch()
     return lock, mount_latency.lock_key(lock)
 
 
-def test_a_waiting_flock_is_told_apart_from_a_held_one(tmp_path, monkeypatch):
-    """One arrow is the whole diagnosis.
-
-    A gate with one holder and fifteen waiters is a total stall; a gate with
-    one holder and none is the system working.  The two lines differ by ``->``
-    and by nothing else, so the parser has to read it exactly.
-    """
-
-    lock, key = _gate(tmp_path)
-    text = LOCKS.replace("103:02:1441858", key)
-    monkeypatch.setattr(mount_latency, "process_status",
-                        lambda pid, want_wchan=True: ("S", "locks_lock_inode_wait"))
-
-    result = mount_latency.lock_contention(tmp_path, locks_text=text)
-
-    assert result["present"] is True
-    assert result["holders"] == 1
-    assert result["waiters"] == 2
-    assert result["holder_detail"][0]["pid"] == 4242
-    # The other file's FLOCK must not be counted: this box holds many locks and
-    # only one of them gates admission.
-    assert 1583 not in [h["pid"] for h in result["holder_detail"]]
-
-
-def test_blocked_waiters_are_reported_as_invisible_to_load_average(
-        tmp_path, monkeypatch):
-    """The finding, as a test.
-
-    ``flock`` sleeps interruptibly, and load average counts only running and
-    uninterruptible tasks, so a fleet-wide admission stall moves load by
-    nothing.  Measured on sparky through PrismaBuild (action key 463aacd60ceb):
-    15 fully blocked processes took load1 from 0.24 to 0.30, with zero waiters
-    in D state.  If this count ever silently becomes zero, every load-based
-    health check on the fleet is blind again and nothing else would say so.
-    """
-
-    lock, key = _gate(tmp_path)
-    text = LOCKS.replace("103:02:1441858", key)
-    monkeypatch.setattr(mount_latency, "process_status",
-                        lambda pid, want_wchan=True: ("S", "locks_lock_inode_wait"))
-
-    result = mount_latency.lock_contention(tmp_path, locks_text=text)
-
-    assert result["waiters"] == 2
-    assert result["waiters_invisible_to_load"] == 2
-    assert result["waiter_wchans"] == {"locks_lock_inode_wait": 2}
-
-
-def test_a_running_waiter_is_not_counted_as_invisible(tmp_path, monkeypatch):
-    """The claim is about interruptible sleepers, not about waiters generally.
-
-    A waiter in R or D *is* in the load average, so counting it here would
-    overstate the blind spot and make the number an alarm rather than a fact.
-    """
-
-    lock, key = _gate(tmp_path)
-    text = LOCKS.replace("103:02:1441858", key)
-    monkeypatch.setattr(mount_latency, "process_status",
-                        lambda pid, want_wchan=True: ("D", "__break_lease"))
-
-    result = mount_latency.lock_contention(tmp_path, locks_text=text)
-
-    assert result["waiters"] == 2
-    assert result["waiters_invisible_to_load"] == 0
-
-
 def test_hold_age_grows_across_samples_and_resets_when_the_pid_lets_go(
         tmp_path, monkeypatch):
-    """A hold age is the number that separates a busy gate from a stuck one.
-
-    ``/proc/locks`` has no timestamp, so the age is carried across samples and
-    is a lower bound quantised by the interval.  It must also not leak: a pid
-    that released the lock cannot keep ageing, or the next process to take the
-    gate inherits a stranger's stall.
-    """
-
     lock, key = _gate(tmp_path)
-    held = f"7: FLOCK  ADVISORY  WRITE 4242 {key} 0 EOF\n"
+    observed = [4242]
+    monkeypatch.setattr(mount_latency, "read_lock_holders",
+                        lambda keys: {k: {"holders": list(observed), "waiters": [],
+                                          "identity_unverified": True} for k in keys})
     monkeypatch.setattr(mount_latency, "process_status",
                         lambda pid, want_wchan=True: ("D", "__break_lease"))
-    memory: dict[str, float] = {}
-
-    first = mount_latency.lock_contention(
-        tmp_path, locks_text=held, held_since=memory, now=1000.0)
-    later = mount_latency.lock_contention(
-        tmp_path, locks_text=held, held_since=memory, now=1240.0)
+    memory = {}
+    first = mount_latency.lock_contention(tmp_path, held_since=memory, now=1000.0)
+    later = mount_latency.lock_contention(tmp_path, held_since=memory, now=1240.0)
     assert first["max_hold_s"] == 0.0
     assert later["max_hold_s"] == 240.0
-
-    mount_latency.lock_contention(
-        tmp_path, locks_text="", held_since=memory, now=1300.0)
+    observed.clear()
+    mount_latency.lock_contention(tmp_path, held_since=memory, now=1300.0)
     assert memory == {}
-    again = mount_latency.lock_contention(
-        tmp_path, locks_text=held, held_since=memory, now=1400.0)
+    observed.append(4242)
+    again = mount_latency.lock_contention(tmp_path, held_since=memory, now=1400.0)
     assert again["max_hold_s"] == 0.0
 
 
 def test_a_box_with_no_admission_lock_reports_absence_not_health(tmp_path):
-    """A box that has never run a loop has no gate, which is not zero waiters.
-
-    Reporting ``waiters: 0, present: false`` keeps a missing measurement from
-    reading as a good one -- the same mistake the exporter's absent RPC
-    statistics would make if they were reported as zeros.
-    """
-
-    result = mount_latency.lock_contention(tmp_path / "absent")
-
-    assert result["present"] is False
-
-
-def test_waiter_attribution_is_bounded_by_the_incident_not_its_size(
-        tmp_path, monkeypatch):
-    """Cost must not scale with how bad the stall is.
-
-    Reading a wchan per waiter would make the instrument most expensive exactly
-    when the box has least to spare.  The exact count is always reported; only
-    the per-process attribution is capped.
-    """
-
-    lock, key = _gate(tmp_path)
-    waiters = "".join(
-        f"7: -> FLOCK  ADVISORY  WRITE {5000 + n} {key} 0 EOF\n"
-        for n in range(200))
-    seen = []
-
-    def counting(pid, want_wchan=True):
-        seen.append(want_wchan)
-        return "S", ("locks_lock_inode_wait" if want_wchan else None)
-
-    monkeypatch.setattr(mount_latency, "process_status", counting)
-    result = mount_latency.lock_contention(tmp_path, locks_text=waiters)
-
-    assert result["waiters"] == 200
-    assert result["attributed_waiters"] == mount_latency.MAX_ATTRIBUTED_WAITERS
-    # State for all of them -- it is the headline and it is one cheap read.
-    assert len(seen) == 200
-    # wchan for a bounded few, because that is the expensive half.
-    assert sum(seen) == mount_latency.MAX_ATTRIBUTED_WAITERS
-    # And the headline stays exact rather than saturating at the cap, or a
-    # chart of 200 waiters and 32 invisible ones reads as "168 were visible".
-    assert result["waiters_invisible_to_load"] == 200
+    assert mount_latency.lock_contention(tmp_path / "absent")["present"] is False
 
 
 def test_the_gate_is_measured_on_the_box_that_exports_the_filesystem(
         tmp_path, monkeypatch):
-    """dl380g10 takes the early return, and it is where this matters most.
-
-    It reaches the shared filesystem as local ZFS, so it has no RPC statistics
-    at all -- and it is the box that actually stalled.  A lock reading that
-    only appeared on NFS clients would miss the incident it was built for.
-    """
-
-    lock, key = _gate(tmp_path)
-    # Parse before patching: a lambda that calls read_mountstats *is*
-    # read_mountstats once the patch lands, and the recursion is silent.
-    server = mount_latency.read_mountstats(
-        mount_latency.DEFAULT_MOUNT, text=SERVER)
-    monkeypatch.setattr(mount_latency, "read_mountstats",
-                        lambda target, text=None: server)
+    _gate(tmp_path)
+    server = mount_latency.read_mountstats(mount_latency.DEFAULT_MOUNT, text=SERVER)
+    monkeypatch.setattr(mount_latency, "read_mountstats", lambda target, text=None: server)
     monkeypatch.setattr(mount_latency, "process_status",
                         lambda pid, want_wchan=True: ("S", "locks_lock_inode_wait"))
-    monkeypatch.setattr(mount_latency, "read_proc_locks",
-                        lambda keys, text=None, paths=None: {
-                            k: {"holders": [4242], "waiters": [1, 2, 3]}
-                            for k in keys})
-
+    monkeypatch.setattr(mount_latency, "read_lock_holders",
+                        lambda keys: {k: {"holders": [4242], "waiters": [],
+                                          "identity_unverified": True} for k in keys})
     sampler = mount_latency.MountSampler(
         mount_latency.DEFAULT_MOUNT, lock_dir=tmp_path,
         probe=lambda *a, **k: {"status": "ok"})
     record = sampler.sample()
+    assert record["rpc"] is None
+    assert record["locks"]["holders"] == 1
+    assert record["locks"]["identity_complete"] is False
 
-    assert record["rpc"] is None                  # no RPC leg on the exporter
-    assert record["locks"]["waiters"] == 3        # but the gate is still seen
-    assert record["locks"]["waiters_invisible_to_load"] == 3
 
-
-def test_a_lock_key_is_zero_padded_the_way_the_kernel_writes_it(monkeypatch):
-    """The bug this test exists for reads as *healthy* on the stalled box.
-
-    ``/proc/locks`` prints ``%02x:%02x:%ld``, so a tmpfs ``/tmp`` -- major 0 --
-    is written ``00``.  An unpadded ``{:x}`` produces ``0``, the key matches no
-    line, and the gate reports no holders and no waiters, which is exactly what
-    a healthy gate reports.  A silent false negative on the measurement built
-    to catch a stall.
-
-    The line below is a real one, copied from a live ``/proc/locks`` on a
-    major-0 device, and the key is asserted against it rather than generated by
-    the function under test -- which is why the rest of this file could not
-    have caught it: those tests build both sides with ``lock_key``.
-    """
-
-    kernel_line = "17: FLOCK  ADVISORY  WRITE 546133 00:1e:104 0 EOF"
+def test_a_lock_key_retains_its_zero_padded_report_format(monkeypatch):
     monkeypatch.setattr(
         mount_latency.os, "stat",
         lambda _path: os.stat_result(
             (0o100600, 104, os.makedev(0, 30), 1, 0, 0, 0, 0, 0, 0)))
-
-    key = mount_latency.lock_key(Path("/dev/shm/anything"))
-
-    assert key == "00:1e:104"
-    assert key == kernel_line.split()[5]
-    found = mount_latency.read_proc_locks({key}, text=kernel_line + "\n")
-    assert found[key]["holders"] == [546133]
+    assert mount_latency.lock_key(Path("/dev/shm/anything")) == "00:1e:104"
 
 
 def test_a_high_major_number_is_not_truncated_by_the_padding(monkeypatch):

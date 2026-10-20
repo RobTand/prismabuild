@@ -127,7 +127,9 @@ def test_an_explicit_basetemp_keeps_its_meaning_and_the_compiler_tmpdir(tmp_path
     assert len(calls) == 1
     program = calls[0][calls[0].index("-c") + 1]
     assert "/qualified/scratch" in program
-    assert "_pb_run_and_clean_attempt_base" not in program
+    # The sealed root's own attempt program runs; the TMPDIR default does not.
+    assert "cannot use requested --basetemp" in program
+    assert 'mkdtemp(prefix="pb-"' not in program
     assert shard_environment(calls[0])["TMPDIR"] == "/worker/scratch"
 
 

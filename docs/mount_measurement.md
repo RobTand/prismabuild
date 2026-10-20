@@ -50,63 +50,32 @@ create/rename/unlink, timed against the mount in a box-private directory. The
 rename is there because `RENAME` is the claim path and a read-only probe would
 time everything except the operation the queue depends on.
 
-**Who is queued behind the admission gate** — `/proc/locks`, filtered to the
-`flock` files under `/tmp/prismabuild-admission-<uid>/`, split into holders and
-waiters, with each process's state and `wchan`.
+**Known admission holders** come from identity records in the existing dedicated
+lock files under `/tmp/prismabuild-admission-<uid>/`. After taking the lock,
+the holder records its boot ID, PID namespace, PID, process start time,
+descriptor number, device and inode. The collector uses `flock_owner` to check
+that the named process is alive and still has that exact file open. It reads
+only that process's descriptor target and identity, without taking a lock.
+A missing, stale, unreadable or changing record leaves the holder unknown.
 
-This leg is not about the mount at all, and that is why it is here. PrismaBuild's
-admission gate is a *local* `flock` (`adaptive_cpu.py` `locked()`). It used to
-wrap the whole of `pool.py` `_claim` — the `ready/` scan, the record rename,
-the lease write, the token renames, every one of them on NFS (#266) — and it
-*was* the conversion point: a mount that was merely slow became a local queue,
-and one process waiting on one remote peer starved every other loop on the box.
-Two narrowings since changed what the lock covers, so read an old trace
-against the current shape, not this paragraph's first sentence:
+The collector never reads `/proc/locks` or per-process `fdinfo` lock lines.
+On 2026-10-19 at 23:13Z a global lock-table read panicked dl380g10 after the
+kernel visited a stale lock. A diagnostic must not exercise that path.
 
-- #351 moved discovery (the `ready/` scan and `passes/` sidecars) and the
-  record rename outside the lock. What stays inside is the capacity prelude
-  and, per candidate, the decision through `begin_acquire` — the token move
-  that must be exclusive between the loops of one box.
-- #16 moved the discovery that remained into an abandonable child: the worker
-  loop scans in a disposable process and skips publication and admission when
-  the scan does not finish, so a wedged queue read parks the child rather
-  than the loop.
+Waiter enumeration is unavailable. The JSON report keeps its existing fields,
+but waiter counts are zero, waiter histograms are empty and
+`identity_complete` is false whenever admission lock files are present.
+Those values do not establish that the gate has no waiters. Human output says
+`gate=(identity unverified)`, and Netdata emits no gate or hold samples.
+Mount, RPC and probe reporting continue. Unrecorded older holders remain unknown
+until a cooperating process acquires the lock and records its identity.
 
-The critical section is smaller and still on the mount, so this leg still
-matters — but it has swapped which number carries the signal. A long-held lock
-is the mount doing something to this box; a *waiter* is a regression, because
-nothing should be queueing here any more.
-
-#267 closed that conversion. The acquisition is now `LOCK_NB`: a loop that
-finds admission busy raises `AdmissionBusy`, returns to the top of its poll and
-announces, and tries again on the next tick. The critical section is unchanged
-and still on the mount, so this leg still matters — but it has swapped which
-number carries the signal. A long-held lock is the mount doing something to
-this box; a *waiter* is a regression, because nothing should be queueing here
-any more.
-
-That is what happened to dl380g10 on 2026-09-06, and it is the incident #267
-fixed: 15 of 16 worker loops in `locks_lock_inode_wait`, one holder in
-`__break_lease` waiting for a remote client to return an NFS delegation,
-nothing served at all. The box announced nothing while it waited, so a box that
-was merely blocked looked exactly like a box that had died. **Its load average
-read 1.13.**
-
-Not bad luck — structural. A blocking `flock` sleeps *interruptibly*, and load
-average counts only running and uninterruptible tasks, so a total admission
-stall moves load by approximately nothing. Measured on sparky through
-PrismaBuild, action key `463aacd60ceb`: 15 fully blocked processes took `load1`
-from 0.24 to 0.30, with **zero** waiters in D state. Every load-based health
-check on this fleet is blind to this failure by construction, which is why
-`waiters_invisible_to_load` is reported as a first-class number and why `load1`
-is recorded beside it — the pair is the finding, and either number alone is
-misleading.
-
-Read together the three answer "was the mount the constraint?" from data: a slow
-probe with fast RPCs locates the fault on this client, a slow probe with slow
-RPCs locates it at the server, a fast probe says the box was busy rather than
-blocked whatever its load average claimed — and a fast probe *with a queue at
-the gate* says the box was neither, it was starved, and the mount is innocent.
+This leg originated with the 2026-09-06 admission stall. Fifteen worker loops
+slept behind one holder, while load average read 1.13. Blocking `flock` sleeps
+interruptibly, so load average cannot establish whether admission is stalled.
+Admission now uses `LOCK_NB` and refuses instead of waiting. Known holder state,
+wait channel and observed age remain useful diagnostics of a long critical
+section, but cannot prove a complete census.
 
 ## Reading the output
 
@@ -125,47 +94,14 @@ probe reading and no RPC statistics at all; a zero there would read as a
 perfectly healthy network mount. It still gets the gate reading, deliberately:
 it has no RPC leg and it is the box that actually stalled.
 
-One implementation note with teeth: `/proc/locks` prints the device as
-`%02x:%02x`, zero-padded. `/tmp` is tmpfs on dl380g10 — **major 0, written
-`00`** — so an unpadded key would have matched nothing and reported a gate with
-no holders and no waiters, which is indistinguishable from a healthy one. On
-sparky, where `/tmp` is major 259 (`103`), the bug is invisible. It would have
-blinded this leg on exactly the box it was built for, and on no other.
+The report retains its zero-padded hex device and decimal inode keys.
+Identity verification compares `stat` values from the watched descriptor and
+the holder's descriptor, so it does not need kernel lock-table device aliases.
 
-The collector now compares the device numbers numerically. On btrfs,
-`stat` can name a subvolume's device while `/proc/locks` names the superblock's,
-so even correctly padded device numbers can differ. An inode number alone
-cannot resolve this in a passive census: the watched file may be unlocked
-while another filesystem holds a lock on that number.
-
-For an alias, the collector reads the holder's procfs `fdinfo`, mount namespace,
-mount table and descriptor **link text**. The descriptor must carry that lock
-and inode, name the watched absolute path in the collector's mount namespace,
-and belong to the visible mount at that path. The path check distinguishes
-nested subvolumes even when their mount table entry and inode numbers coincide.
-Descriptor and namespace evidence are rechecked for changes. No descriptor
-target is opened or followed, and no lock is acquired. Waiters attach to the
-proved holder's kernel lock-record group, rather than every matching inode.
-
-Missing permissions, ambiguous evidence, changed descriptors, hidden/deleted
-paths, and scan limits leave an alias unverified. Hardlink or symlink spellings
-that do not match the holder's descriptor path are also unverified. The JSON
-gate record then sets `identity_complete: false`; its counts describe only the
-identified rows, the human output says `gate=(identity unverified)`, and no
-gate/hold Netdata sample is emitted for that reading. Mount/probe/RPC samples
-continue. Do not read an incomplete census as a healthy zero.
-
-The extra work applies only to device aliases and is bounded to 32 holder
-processes, 256 descriptors per holder and 1 MiB per procfs record. It is not
-included in the historical collector-cost measurements below. The ordinary
-exact-device path retains its single `/proc/locks` read.
-
-`max_hold_s` is a **lower** bound. `/proc/locks` carries no timestamp, so the
-age is accumulated across samples and quantised by the interval; a hold that
-begins and ends between two samples is not seen. That is enough for the failure
-it is for — the gate is meant to be held for the length of a few renames, so
-any reading in seconds is already a defect, and the incident this catches
-lasted hours.
+`max_hold_s` is a lower bound accumulated across samples and quantised by the
+interval. A hold that begins and ends between samples is not seen. Unknown
+holders reset the remembered age. JSON retains known holder details even though
+incomplete identity suppresses gate and hold chart samples.
 
 ## Running it
 
@@ -315,17 +251,13 @@ the admission-gate measurement is therefore unavailable: the JSON record says
 and the local JSONL record still work. Retained gate samples need a separately
 approved collector identity or reader arrangement; this installation does not
 provide one. Run `--once --lock-dir <worker-directory>` as the worker user for
-an accessible one-shot gate reading, and verify `locks.present` before claiming
-that the gate charts have been adopted.
+an accessible one-shot gate reading. Verify `locks.present` before using holder
+details; incomplete identity still prevents gate chart samples.
 
-Even with an accessible lock directory, `/proc/<pid>/wchan` is gated by
-`ptrace_may_access`, so running as `netdata` yields `"0"` for every process it
-does not own and `waiter_wchans` reads `{"0": N}`. The **counts and states are
-unaffected by that wchan restriction** — `/proc/<pid>/stat` is world-readable —
-so the headline
-(`waiters`, `waiters_invisible_to_load`, `max_hold_s`) is intact and only the
-"waiting on *what*" attribution is lost. Run `--once` as the loops' own user
-when you need to tell `__break_lease` from slow work.
+Even with an accessible lock directory, procfs descriptor checks require
+permission to inspect the holder. A failed check leaves its identity unknown.
+The collector cannot enumerate waiters under any identity. Run `--once` as the
+loops' own user for the best available holder state and wait-channel diagnostics.
 Check the first sample rather than assuming: a plugin that cannot reach the
 mount still emits charts, and its `probe_status` will read `error` on every
 one of them. That is the tool working correctly and the install being wrong,
@@ -335,8 +267,9 @@ The plugin takes its interval as netdata's first positional argument and
 publishes seven charts: five in the `latency`/`rpc` families — metadata latency
 per operation, RPC rate, time per RPC split into queue and rtt, queue share, and
 the probe's own outcome — and two in a separate `gate` family for the admission
-lock's holders/waiters and hold age. The families are separate because the gate
-is not the mount, and the whole point is that one can be sick while the other is
+lock's holders/waiters and hold age. Gate and hold samples are currently
+suppressed because identity is incomplete. The families are separate because
+the gate is not the mount, and the whole point is that one can be sick while the other is
 fine. The probe-outcome chart matters — a wedged mount must appear in
 the series as an incident, not as a gap where the incident was.
 
@@ -373,7 +306,8 @@ No performance or mount-recovery claim follows from successful diagnostics.
 
 ## Cost
 
-Measured on sparky at a 2 s interval, which is eight times more often than the
+Historical measurements before holder records replaced lock-table reads,
+on sparky at a 2 s interval, which is eight times more often than the
 intended scrape:
 
 | | per sample |
@@ -382,7 +316,7 @@ intended scrape:
 | NFS RPCs | ≤ 31 median |
 | RPC time | ≤ 22 ms median |
 | files left on the mount | one `anchor`, reused |
-| gate leg | one `/proc/locks` read + ≤ 32 `wchan` reads, no mount I/O |
+| historical gate leg | one global lock-table read and bounded wait-channel attribution; removed |
 
 At a 15 s scrape that is under 0.2% of one core and about 2 RPC/s, against a
 baseline of 20–300 RPC/s idle and 65,000 RPC/s under load. Cheap enough to

@@ -263,6 +263,6 @@ def test_preemption_handoff_is_not_reported_as_host_admission(rig):
     with rig._preemption_locked(rig.ledger()) as acquired:
         assert acquired
         census = mount_latency.lock_contention(lock_dir=adaptive_cpu.BOX_STATE_ROOT)
-        assert census["present"] and census["identity_complete"]
+        assert census["present"] and not census["identity_complete"]
         assert census["files"] == 1, "handoff inode entered the admission census"
         assert census["holders"] == 0

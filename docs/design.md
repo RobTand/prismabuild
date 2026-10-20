@@ -2275,8 +2275,15 @@ with `tempfile.mkdtemp(prefix="pb-", dir=TMPDIR)` (#1709).
 pytest receives its `pytest` child as the base temp.
 The short name leaves room for xdist worker directories and AF_UNIX sockets.
 No action key or attempt identity is truncated to create this namespace.
-Exit 0 removes only this attempt directory; a nonzero exit retains it.
-The sealed `TMPDIR` and explicit `--basetemp` contracts stay unchanged.
+The attempt directory is an owned tree (see "Owned trees" below). It holds
+the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
+`pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
+directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
+directories included. Any other ending keeps it for diagnosis and starts its
+24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
+under its root, and exit 0 also removes the key directory it empties. The
+sealed root and `TMPDIR` themselves are never removed or changed.
 
 `--pytest-args '["--pbtest-trace"]'` opts into interrupted-shard diagnostics
 (#1455, Refs #1421). The existing outcome controller flushes one
@@ -2454,6 +2461,68 @@ entry carry `attempts`. The first attempt of every shard is still launched in
 order before any shard is waited on. A retried shard's last `pbrun` gets the
 full `--wait-s`, so the shard's wait can exceed `--wait-s` by the time its
 refused attempts took.
+
+### Owned trees: owner locks, retention and removal
+
+PrismaBuild makes three kinds of directory for a single owner, and takes each
+back even when the owner is killed: a pbtest attempt's base temp
+(`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`), a
+worker's private checkout (`<checkout root>/<key12>.<mkdtemp suffix>`) and a
+pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
+`src/prismabuild/owned_tree.py` owns locking, retention and removal for all three.
+`submission.owned_snapshot_directory` wraps the snapshot workspace,
+`pbtest_owned_temp` owns the carried worker programs, and
+`worker_log_retention` owns the supervisor's bounded log pruning.
+
+- **Liveness is an owner lock, never age.** The owner creates a regular file
+  and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
+  or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
+  The kernel drops the lock with the owner's last descriptor, under SIGKILL
+  and OOM too, so a reaper that takes the lock without waiting knows the owner
+  is gone. A long shard's top directory does not change while it runs, so age
+  alone would reap live work.
+- **Retention is a clock in the lock.** The owner writes
+  `prismabuild owner lock v1 host=<hostname>` and a `running` line. An owner
+  that ends but keeps its tree (a failed shard), or the first reaper to find
+  the lock free, truncates `running` away, and that write's mtime starts the
+  clock. The tree goes `owned_tree.RETENTION_S` (24 hours) later, so a failed
+  or killed attempt stays a full day after it ended, however long it ran. A
+  removal that cannot finish keeps the lock and restarts the clock, so it is
+  retried a window later.
+- **Trees are reaped where they are made, and the work is bounded.** Each new
+  pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
+  sealed root), each new checkout reaps its checkout root, and each pbrun
+  snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
+  removes at most 4, in random order, so a crowded directory never holds up an
+  attempt or a claim, and nothing starves. Reaping never fails the work that
+  triggered it. Each call lists the parent through a fresh open of it: btrfs
+  lists, through one open directory, only the entries that existed when it was
+  opened or last rewound (seen on dl380g10, Linux 7.0).
+- **Only PrismaBuild's own trees.** A candidate must match its creator's exact
+  name shape, be a directory this user owns on the parent's device and mount,
+  and carry a lock that is a single-link regular file this user owns, whose
+  header names this host. A name alone selects nothing: an agent folder such
+  as `pb-cachetop` matches the shape and is never touched. Trees made before
+  the lock existed carry none and are left to the operator. The parent
+  (`TMPDIR`, the sealed root, the checkout root) is never removed or changed.
+- **Removal never follows a link and never leaves the filesystem.** The
+  remover walks held directory descriptors and unlinks symlinks without
+  entering them. A directory on another device or mount stays, with its
+  ancestors. A directory this user owns gets owner rwx back before it is
+  emptied, as pytest's `rm_rf` does, so a test's 0555 directory no longer
+  stops the removal. A lock inside its tree is removed last.
+
+pbtest ships `owned_tree.py` to the shard's interpreter zlib-compressed and
+base85-encoded inside the `python -c` program (`OWNED_TREE_PROGRAM`), and
+carries the outcome recorder and the 44 KB trace helper `resource_scope.py`
+the same way (`PACKED`). S7's larger outcome recorder must also be packed
+so the expiry port preserves argument headroom. The program is one exec
+argument, which Linux caps at `MAX_ARG_STRLEN` (131,072 bytes with 4 KiB
+pages). `tests/test_pbtest_program_fits_one_argument.py` exercises the largest
+configuration and keeps 16 KiB of headroom.
+The bytes are unchanged once unpacked, so the action key still names them. A
+submitter whose zlib compresses differently seals a different key for the
+same source, which costs a cache hit and nothing else.
 
 ## Problem
 
@@ -2998,8 +3067,20 @@ without the member or the ordinary package import boundary.
   plan-first source command, `pbrecover_checkout.py`, backed by
   `checkout_recovery.prepare_checkout_recovery` and `apply_checkout_recovery`.
   Its 1–32 explicitly selected generated roots remain owned for deletion by
-  `materialize._cleanup_execution_checkout`; no second recursive remover,
-  chmod/chown path, automatic reaper or deployment-default change is added.
+  `materialize._cleanup_execution_checkout`; #1465 itself added no second
+  recursive remover, chmod/chown path, automatic reaper or deployment-default
+  change. Since then every private tree carries a sibling owner lock
+  (`<tree>.lock`, see "Owned trees"), `_cleanup_execution_checkout` removes
+  with `owned_tree.remove_tree`, and a later checkout on the same box reaps a
+  tree whose owner died, 24 hours after its lock was first found free. A tree
+  made before the lock carries none and still needs this recovery, as does a
+  tree whose automatic removal keeps failing, or one an operator wants banked.
+  This explicitly reverses #1465's "no automatic reaper" rule for private
+  checkouts carrying the sibling owner lock. Rob selected automatic removal
+  without banking for #1811: the checkout comes from a sealed CAS snapshot
+  and holds no sole copy of anyone's work. The 24-hour clock begins when
+  the owner lock is first found free. Unmarked trees still require the
+  plan-first recovery and its verified full-tree bank.
   The `prismabuild.checkout_recovery_plan.v1` plan binds original selection,
   directory/member identities, terminal generation/attempt/snapshot, validated
   sealed Core request and verified CAS snapshot input, original full-tree bank
@@ -6518,8 +6599,12 @@ unreadable claim census freezes the count in both directions. Only excess loops
 proven idle by one batched claim census plus local process state receive
 `SIGTERM`; active work is never selected. Busy or backlogged cycles use a short
 bounded tick, spawning is amortized, and monotonically allocated log slots
-preserve append evidence across shrink and growth. `--loops` explicitly selects
-fixed mode, while `--once` tops up only to the configured floor.
+preserve append evidence across shrink and growth. A regular owning cycle
+prunes at most 256 worker logs that nothing has written for 7 days, that lie
+below the highest index and that no live loop holds as stdout or stderr; the
+highest index survives, so a restarted supervisor still never reuses a slot.
+`--loops` explicitly selects fixed mode, while `--once` tops up only to the
+configured floor.
 
 Ownership requires an interpreter/script in a proven runtime, the supervisor's
 host ownership environment, **and kernel session/process-group leadership**
@@ -19899,3 +19984,36 @@ non-root test credit. Staging's existing reader-direction exemption authorizes
 sealing only; shape input, PB admission and later installed assessment remain
 required. The bootstrap canary overrides the ordinary existing-generation
 no-canary/new-publication retry advice without issuing a replacement grant.
+
+
+## Flock holder diagnostics without kernel lock-table reads
+
+PrismaBuild runtime code never reads `/proc/locks`. A read of that global
+list panicked dl380g10 on 2026-10-19 at 23:13Z when the kernel visited a stale
+lock. Per-process `fdinfo` lock lines use the same kernel formatter and are
+not a holder-identity source.
+
+`flock_owner.holder_pid(descriptor)` remains best effort and never raises.
+`None` means unknown, never free. After successful exclusive acquisition,
+role singletons and `AdmissionGate` record identity inside their existing
+dedicated local lock files. No application data file or additional shared
+file carries this metadata. The record binds boot ID, PID namespace, PID,
+process start time, descriptor number, device and inode. Publication failure
+does not fail acquisition.
+
+The reader bounds the record to 1024 bytes and checks the named live process
+and its exact `/proc/<pid>/fd/<fd>` target against the descriptor's device
+and inode. It rechecks process identity, file identity and record contents.
+Missing permissions, a stale or recycled PID, malformed data and observed
+races answer unknown. Other lock mechanisms retain their existing diagnostics;
+locks without a cooperating record remain unnamed. These names grant no
+admission, freedom or authority to signal a process.
+
+The mount-latency collector reads the same local records without taking locks.
+It preserves the report schema and available holder details. Waiters cannot
+be enumerated safely, so their existing fields contain zero or empty values
+and `identity_complete` is always false when lock files are present. Those
+values are unavailable measurements, never evidence of no contention. Gate
+and hold chart samples remain suppressed for incomplete identity; mount, RPC
+and probe reporting continue. Deployment and executed qualification remain
+the release master's responsibility.

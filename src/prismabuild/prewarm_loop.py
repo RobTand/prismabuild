@@ -2800,7 +2800,7 @@ def main(argv: list[str] | None = None) -> int:
     the block's final close (never an unlink or an explicit unlock).
 
     Safety never depends on naming the holder: the holder pid is a
-    /proc/locks diagnostic the ``RoleLockHeld`` message may carry, read only
+    verified holder-record diagnostic the ``RoleLockHeld`` message may carry, read only
     when the flock is refused, and an unreadable holder is still a refusal.
     """
 
