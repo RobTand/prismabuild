@@ -12,6 +12,7 @@ from pbtest_shard_output import admitted_child
 import pytest
 
 import pbtest
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 def _run(tmp_path: Path, tests: str, arguments: list[str], *, trace=True,
@@ -182,6 +183,7 @@ def test_submission_seals_trace_and_the_existing_accounting_owner(tmp_path, monk
         return real_popen(argv, cwd=tmp_path, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(tmp_path), "--python", sys.executable,
         "--shards", "1", "--threads-per-shard", "1", "--json",

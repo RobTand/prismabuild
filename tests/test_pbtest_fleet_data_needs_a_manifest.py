@@ -18,6 +18,7 @@ import pytest
 from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
     _FinishedProcess, pbtest,
 )
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 MARKED = (
     "import pytest\n\n"
@@ -46,6 +47,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra, *, marked=True)
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

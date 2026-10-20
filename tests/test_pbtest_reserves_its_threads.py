@@ -37,6 +37,7 @@ pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
 from prismabuild.slurm_lane import LaneResources  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 class _FinishedProcess(ShardProcess):
@@ -65,6 +66,7 @@ def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra):
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

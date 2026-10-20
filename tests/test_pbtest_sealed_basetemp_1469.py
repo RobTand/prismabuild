@@ -26,6 +26,7 @@ import pytest
 from pbtest_shard_output import (  # noqa: E402
     ONE_PASS, ShardProcess, admitted_child, shard_environment)
 from test_pbtest import PUBLISHED_RUNTIME, pbtest  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 MARKER_TEST = ("from pathlib import Path\n"
@@ -90,6 +91,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
 
     with monkeypatch.context() as scoped:
         scoped.setattr(pbtest.subprocess, "Popen", popen)
+        scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
         scoped.setattr(
             sys, "argv",
@@ -115,6 +117,7 @@ def _real_dispatch(monkeypatch, checkout: Path, extra: list[str],
 
     with monkeypatch.context() as scoped:
         scoped.setattr(pbtest.subprocess, "Popen", execute_admitted_child)
+        scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
         scoped.setattr(sys, "argv", [
             "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,
@@ -149,6 +152,7 @@ def test_basetemp_refuses_missing_empty_nul_and_traversal(
             pbtest.subprocess, "Popen",
             lambda *args, **kwargs: calls.append(args),
         )
+        monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         monkeypatch.setattr(sys, "argv", [
             "pbtest.py", "--checkout", str(tmp_path),
             "--python", "/target/python", "--basetemp", invalid,
@@ -339,6 +343,7 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
         assigned.clear()
         with monkeypatch.context() as scoped:
             scoped.setattr(pbtest.subprocess, "Popen", with_identity)
+            scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
             scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
             scoped.setattr(sys, "argv", [
                 "pbtest.py", "--checkout", str(checkout),

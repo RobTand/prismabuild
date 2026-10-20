@@ -19,6 +19,7 @@ from pathlib import Path
 import subprocess
 import sys
 from pbtest_shard_output import admitted_child
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -74,6 +75,7 @@ def _dispatch(checkout: Path, monkeypatch, extra: list[str]):
         return REAL_POPEN(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = checkout.parent / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,

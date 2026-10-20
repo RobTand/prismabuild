@@ -22,6 +22,7 @@ import sys
 import pytest
 
 from pbtest_shard_output import ShardProcess, admitted_child  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +126,7 @@ def _dispatch(checkout: Path, monkeypatch, extra: list[str]):
         return REAL_POPEN(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = checkout.parent / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,
@@ -193,6 +195,7 @@ def _mocked_shard(tmp_path: Path, monkeypatch, output: str):
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = tmp_path / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

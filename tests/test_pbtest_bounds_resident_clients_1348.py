@@ -16,6 +16,7 @@ import threading
 import time
 
 from pbtest_shard_output import ShardProcess, shard_output_for  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,7 @@ def run_suite(tmp_path: Path, monkeypatch, tracker: Tracker, shards: int,
 
     monkeypatch.setattr(
         pbtest.subprocess, "Popen", lambda command, **_kw: Client(command))
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         sys, "argv",

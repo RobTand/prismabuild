@@ -15,6 +15,7 @@ from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import core as pb, pool
 from pbtest_shard_output import ShardProcess, shard_output_for, submission_command
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 PUBLISHED = Path('/mnt/shared/prismabuild-fleet/repo')
 
@@ -39,6 +40,7 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
     with monkeypatch.context() as scoped:
         scoped.setattr(pbtest, 'RUNTIME_ROOT', PUBLISHED)
         scoped.setattr(pbtest.subprocess, 'Popen', capture)
+        scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         scoped.setattr(pbtest, 'interpreter_refusal', lambda *a, **k: (None, None))
         scoped.setattr(sys, 'argv', ['pbtest.py', '--checkout', str(work),
                                    '--python', python, '--shards', '1',
@@ -220,4 +222,5 @@ def test_unsupported_interpreter_spellings_refuse_before_fanout(tmp_path, monkey
     monkeypatch.setattr(sys, 'argv', ['pbtest.py', '--checkout', str(work), '--python', python])
     calls = []
     monkeypatch.setattr(pbtest.subprocess, 'Popen', lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     assert pbtest.main() == 2 and calls == []

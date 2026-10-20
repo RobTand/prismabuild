@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from pbtest_shard_output import admitted_child, shard_environment
+from pbtest_shard_output import admitted_child, pbrun_client, shard_environment
 from test_pbtest_reconciles_outcomes import pbtest
 from test_pbmergeq import config, mq
 
@@ -131,6 +131,7 @@ def dispatch(checkout: Path, monkeypatch, *, mode: str = 'normal', shards: int =
 
     with monkeypatch.context() as patch:
         patch.setattr(pbtest.subprocess, 'Popen', payload)
+        patch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         patch.setattr(sys, 'argv', ['pbtest.py', '--checkout', str(checkout),
             '--python', sys.executable, '--threads-per-shard', '1',
             '--workers-per-shard', '1', '--tmpdir', str(scratch), '--shards', str(shards),
