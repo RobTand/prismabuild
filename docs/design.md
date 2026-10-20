@@ -11661,11 +11661,20 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   misses republished each egress three times with `recompute`, so each ran
   four times (three no-op re-runs) and each retirement took more than 20 s.
   Opening
-  is used rather than the listing `RecordStore.polled_object_at` and
-  `RecordStore.wait_terminal_at` use, because these reads are polled several times a
+  is used rather than a listing because these reads are polled several times a
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
+* **A waiting client reads only its own ending's names (2026-10-20).**
+  `RecordStore.wait_terminal_at`, which every `pbrun`, `pbtest`, `pbwait` and
+  `pbcampaign` wait reads `done/`, `failed/` and `withdrawn/` through on each
+  poll, and `RecordStore.polled_object_at` and `RecordStore.filed_slot` on top
+  of it, open the parent and then read the one name; they never list a
+  terminal directory. They used to list it to get past the same negative
+  cache. On 2026-10-20 about 100 waiting clients each listed about 116,000
+  names (87,440 in `done/`) every 5 s, and dl380g10's disk sat at 65 % full
+  IO pressure. A poll now costs the same whatever the queue holds. A parent
+  that cannot be opened still reads as absent.
 * **A landed ending's attempt records are read past a stale "absent"
   (#1100).** A waiter on one box polls for an ending another box files, and
   its poll walks `attempts/<key>/<generation>` before that exists
@@ -11678,9 +11687,9 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   more than 180 s, so the #808 open is not enough here.
   `PoolQueue.attempt_outcomes` therefore reads each linked attempt file
   through `_read_attempt_file`: a miss lists every directory from
-  `attempts/` down, as `pbrun.terminal_record` lists `done/`, and reads
-  again only when every name is listed. A name that no listing shows keeps
-  its `FileNotFoundError`, so a missing record is never read as a pass. A
+  `attempts/` down, and reads again only when every name is listed. A name
+  that no listing shows keeps its `FileNotFoundError`, so a missing record
+  is never read as a pass. A
   name that is listed and still cannot be opened raises
   `pool.StaleAbsenceError`; `pbrun` reports it as `OutcomeNotYetVisible`,
   a kind of reaped timeout, so `report_pool_outcome` and `pbwait` go back to

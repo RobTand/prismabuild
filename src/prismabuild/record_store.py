@@ -220,6 +220,20 @@ def _read_json(
     return _document_from_bytes(path, raw)
 
 
+def _revalidate_parent(path: Path) -> None:
+    """Open and close ``path``'s directory so this NFS client revalidates it.
+
+    Close-to-open consistency makes the open fetch the directory's attributes,
+    and a changed directory drops the negative entries this client cached in
+    it, so a by-name read that follows sees a name another box filed since
+    this one last looked (#808).  It is one round trip.  A listing would
+    revalidate too, but costs what the directory holds: ``done`` held 87,440
+    names on 2026-10-20.  An ``OSError`` is the caller's to interpret.
+    """
+
+    os.close(os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC))
+
+
 def _read_json_fresh(path: Path) -> dict[str, object] | None:
     """``_read_json`` for a record another box files under a key this one polls.
 
@@ -233,12 +247,10 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
     owner waited that out on every staged group, after a copy that took 4 s.
 
-    ``RecordStore.wait_terminal_at`` follows the
-    same rule by listing the parent.  Opening it is used here because these
-    reads are polled several times a second and a listing costs what the
-    directory holds (``done`` held 17,117 names when this was written): an
-    open is one round trip, and close-to-open consistency makes it the
-    revalidation.
+    ``RecordStore.wait_terminal_at`` follows the same rule with the same
+    open.  A listing is not used because these reads are polled several times
+    a second and a listing costs what the directory holds
+    (``_revalidate_parent``).
 
     A stale "absent" is not only slow.  ``produced_output`` republishes a
     mover row it reads as absent, and an egress whose row it does not read as
@@ -259,11 +271,9 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     if record is not None:
         return record
     try:
-        descriptor = os.open(
-            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        _revalidate_parent(path)
     except OSError:
         return None
-    os.close(descriptor)
     return _read_json(path)
 
 
@@ -887,13 +897,13 @@ class RecordStore:
         relies on (#808) is not enough here.
 
         A miss is revalidated by listing each directory on the canonical
-        path, the rule ``pbrun.terminal_record`` follows for ``done/``, and
-        the file is read again only when every name is listed.  Only a miss
-        pays for the listings, and ``attempts/`` holds one name per action
-        key, about as many as the ``done/`` a waiter already lists on every
-        poll.  A name that no listing shows raises the original
-        ``FileNotFoundError``: a missing record is never read around.  A name
-        that is listed but still cannot be opened raises
+        path, and the file is read again only when every name is listed.
+        The parent open ``wait_terminal_at`` uses for ``done/`` did not clear
+        this miss (above).  Only a miss pays for the listings, but
+        ``attempts/`` holds one name per action key, so each miss reads a
+        directory as large as ``done/``.  A name that no listing shows raises
+        the original ``FileNotFoundError``: a missing record is never read
+        around.  A name that is listed but still cannot be opened raises
         ``StaleAbsenceError``, which a waiter repeats inside its own patience.
         """
 
@@ -1934,9 +1944,19 @@ class RecordStore:
 
     @staticmethod
     def wait_terminal_at(path: Path) -> ReadResult[JsonRecord]:
+        """One waiter's ending at its exact address, read past a cached miss.
+
+        Every waiting client reads its own three addresses on every poll, so
+        this must cost the same whatever the terminal directories hold.  It
+        opens the parent rather than listing it (``_revalidate_parent``): on
+        2026-10-20 about 100 waiting clients each listed ``done``, ``failed``
+        and ``withdrawn`` -- 116,000 names -- every 5 s, and held dl380g10's
+        disk at 65 % full IO pressure.  A parent that cannot be opened reads
+        as absent, as the listing did.
+        """
+
         try:
-            if path.name not in os.listdir(path.parent):
-                return Absent()
+            _revalidate_parent(path)
         except OSError:
             return Absent()
         try:
@@ -2001,14 +2021,25 @@ class RecordStore:
         return observation.value if isinstance(observation, Present) else None
 
     @staticmethod
-    def listed_slot(path: Path) -> bool:
-        return path.name in os.listdir(path.parent)
+    def filed_slot(path: Path) -> bool:
+        """Whether a name stands at ``path``, read past a cached miss.
+
+        The parent is opened, not listed (``_revalidate_parent``). An error
+        opening it propagates, ``FileNotFoundError`` included.
+        """
+
+        _revalidate_parent(path)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
 
     def sibling_ending_records(self, path: Path) -> Iterator[JsonRecord]:
         for state in (DONE, FAILED, WITHDRAWN):
             sibling = self.dir(state) / path.name
             try:
-                present = self.listed_slot(sibling)
+                present = self.filed_slot(sibling)
             except FileNotFoundError:
                 present = False
             if not present or sibling == path:

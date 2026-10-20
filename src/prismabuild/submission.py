@@ -3705,7 +3705,7 @@ def _file_slurm_withdrawal(
     what they wanted rather than them mistyping, and is what
     ``PoolQueue.withdraw`` reports as ``already_finished``.
 
-    Each directory is listed before the name in it is read.  These are the same
+    Each directory is revalidated before the name in it is read.  These are the same
     NFS directories ``read_withdrawal_marker`` was written for: a lookup of a
     name that did not exist yet is negatively cached, so ``exists()`` keeps
     answering False after the ending has landed.  On a stale answer this verb

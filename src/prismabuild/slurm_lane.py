@@ -2546,7 +2546,7 @@ def _land_summary_locked(
                 # against it rather than replacing it unseen. If the name
                 # contains unreadable JSON, repeating this loop cannot make
                 # progress. Preserve its bytes before filing the known ending.
-                if (record_store.RecordStore.listed_slot(path)
+                if (record_store.RecordStore.filed_slot(path)
                         and record_store.RecordStore.polled_object_at(path) is None):
                     archive = record_store.RecordStore.lane_unreadable_dir(path)
                     archive.mkdir(parents=True, exist_ok=True)
@@ -2767,14 +2767,13 @@ def read_withdrawal_marker(
     fleet already measured what that does to a lookup of a name that did not
     exist yet: the client caches the negative entry, so ``exists()`` keeps
     answering False and ``open()`` keeps raising ``ENOENT`` after the marker
-    has landed.  ``action_wait.terminal_record`` polls the terminal directories by
-    ``os.listdir`` for exactly that reason, and this is the same rule for the
-    same directory.
+    has landed.  ``action_wait.terminal_record`` reads the terminal directories
+    through the same ``RecordStore.wait_terminal_at`` for exactly that reason.
 
-    Listing the parent is what revalidates the entry, so the listing happens
-    first and the read happens only for a name the directory actually holds.
-    What that costs is one ``READDIRPLUS`` per call; what it buys is that the
-    three readers below cannot be told a decision was never made.
+    Opening the parent is what revalidates the entry, so the open happens
+    first and the read follows it.  What that costs is one round trip per
+    call, not a listing of the directory; what it buys is that the three
+    readers below cannot be told a decision was never made.
 
     An operator on another box withdraws a key inside the cache window: the
     marker is written, the terminal record is written, then ``scancel`` runs.
