@@ -19083,8 +19083,17 @@ read. Retained record inspection qualifies each captured generation's own
 closure; it grants no candidate installation or rollback direction.
 
 Automatic fresh publication and ordinary existing-generation activation apply
-the source direction policy before writes. A receipt-pair rolling transition refuses because
-historical attestations cannot prove the current installed updater. Stage-only
+the source direction policy before writes. Historical attestations cannot
+prove the current installed updater. A receipt-pair rolling transition therefore
+proceeds only with current proof from every enrolled participant (#1850). The
+proof is `tools/fleet/updater_proof.py` run as an ordinary PB action on that
+host. It hashes the root-owned, world-readable installed updater and copies
+the timer's last status. The publisher reads it from the verified CAS result
+and binds it to the host the queue records as claiming the attempt. It
+requires the proof to be fresh, the custody root-only, and the timer current
+on those bytes. `require_receipt_participants` then requires a capable digest
+for every barrier-roster participant. A refusal names the participants that
+are missing, outside the roster or incapable. Stage-only
 preparation activates nothing and remains available. Existing epoch activation,
 reversion and resume require exact enrolled identities and the current drained
 quorum. The participant checks its executing and installed updater against the

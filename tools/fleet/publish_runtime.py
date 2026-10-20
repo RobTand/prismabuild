@@ -70,6 +70,7 @@ from prismabuild.compatibility_window import (  # noqa: E402
 )
 from prismabuild.digest_primitives import raw_sha256  # noqa: E402
 from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
+import updater_proof  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
@@ -194,6 +195,10 @@ FLEET_SCRIPTS = (
     # client upgrader's installer; a generation without it leaves no host able
     # to enroll.  ``runtime_publication.py`` it installs is a package module.
     "install_movement_publisher.sh",
+    # A rolling receipt activation reads each enrolled host's installed
+    # updater proof (#1850) through this module, and the proof itself is this
+    # tool run as an ordinary action on that host.
+    "updater_proof.py",
 )
 # The retained proxy verifies the same stdlib layout helper beside itself.
 STANDALONE_PACKAGE_SOURCES = {
@@ -1738,8 +1743,47 @@ def _barrier_generation(name):
         raise SystemExit(f"cannot qualify barrier generation {name}: {exc}") from exc
 
 
-def _require_reader_direction(target, *, rollout, receipt=None, files=None):
-    """Source transport is necessary; rolling has no current installed quorum."""
+def _installed_updater_proofs(keys):
+    """Each proving host's installed updater digest, read from its proof action (#1850).
+
+    A proof is ``tools/fleet/updater_proof.py`` run as an ordinary PB action on
+    the host.  The host is the one the queue records as claiming the attempt
+    whose verified CAS result carries the proof, never the proof's own word;
+    :func:`updater_proof.judge` requires the two to agree and the proof to be
+    current.  One proof per host.
+    """
+    from prismabuild import client, record_store
+
+    queue = client.PoolQueue(MIRROR.parent / "pb-queue")
+    tool = updater_proof.tool_sha256()
+    now = time.time()
+    installed = {}
+    for key in keys:
+        if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+            raise WindowError(f"installed updater proof {key!r} is not a full action key")
+        try:
+            record = record_store.read_bounded_document(
+                queue.records.item_path(record_store.DONE, key), max_bytes=1 << 20)
+            if not isinstance(record, dict):
+                raise ValueError("no done ending")
+            result = client.read_verified_action_result(
+                queue, key, published_unix=record.get("published_unix"),
+                attempt=record.get("attempts"), max_result_bytes=1 << 20)
+        except (client.ActionResultError, OSError, ValueError, TypeError) as exc:
+            raise WindowError(f"installed updater proof {key[:12]} has no verified result: {exc}") from exc
+        host = result["host"]
+        if not isinstance(host, str) or not host:
+            raise WindowError(f"installed updater proof {key[:12]} names no claiming host")
+        digest = updater_proof.judge(updater_proof.last_proof(result["payload"]),
+                                     host=host, now=now, tool=tool)
+        if host in installed:
+            raise WindowError(f"more than one installed updater proof for {host}")
+        installed[host] = digest
+    return installed
+
+
+def _require_reader_direction(target, *, rollout, receipt=None, files=None, proofs=()):
+    """Source transport is necessary; rolling needs every participant's current installed proof."""
     try:
         roots = (target, MIRROR.resolve(strict=True) if MIRROR.exists() else None)
         observations = []
@@ -1762,8 +1806,13 @@ def _require_reader_direction(target, *, rollout, receipt=None, files=None):
                                   "a separately authorized installed-reader bootstrap is required")
             return
         direction = require_client_transition(*observations)
-        if rollout == "rolling":
-            require_receipt_participants(direction, None, ())
+        if rollout == "rolling" and any(set(row["present"]) & RECEIPT_MEMBERS for row in observations):
+            if files is None:
+                files = (receipt if receipt is not None else GenerationReceipt.capture(
+                    (target / "RUNTIME_VERSION.json").read_bytes())).files
+            live = GenerationReceipt.capture((roots[1] / "RUNTIME_VERSION.json").read_bytes())
+            roster = _barrier_roster(((roots[1], {"files": live.files}), (target, {"files": files})))
+            require_receipt_participants(direction, _installed_updater_proofs(proofs), roster)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"refusing reader-first activation: {exc}") from exc
 
@@ -2065,19 +2114,21 @@ def _arm_barrier(name, *, wait_s=300):
 
 def _activate_existing(
     name: str, *, dry_run: bool, rollout: str = "barrier",
-    rollout_reason: str | None = None, wait_s: float = 300,
+    rollout_reason: str | None = None, wait_s: float = 300, proofs=(),
 ) -> int:
     if dry_run:
         return _activate_existing_locked(name, dry_run=True, rollout=rollout,
-                                         rollout_reason=rollout_reason, wait_s=wait_s)
+                                         rollout_reason=rollout_reason, wait_s=wait_s,
+                                         proofs=proofs)
     with _publication_lock():
         return _activate_existing_locked(name, dry_run=False, rollout=rollout,
-                                         rollout_reason=rollout_reason, wait_s=wait_s)
+                                         rollout_reason=rollout_reason, wait_s=wait_s,
+                                         proofs=proofs)
 
 
 def _activate_existing_locked(
     name: str, *, dry_run: bool, rollout: str = "barrier",
-    rollout_reason: str | None = None, wait_s: float = 300,
+    rollout_reason: str | None = None, wait_s: float = 300, proofs=(),
 ) -> int:
     """Point the live runtime at a generation that already exists.
 
@@ -2130,7 +2181,8 @@ def _activate_existing_locked(
             "is not a generation to point the live runtime at."
         )
     if rollout == "rolling" or not dry_run:
-        _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout)
+        _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout,
+                                  proofs=proofs)
     if rollout == "barrier":
         # A rollback publishes no manifest, so the value to prove the fleet
         # against is the one already recorded in the generation being restored.
@@ -2372,6 +2424,12 @@ def main() -> int:
                     help="reserve publication before the first root bootstrap preparation")
     ap.add_argument("--installed-bootstrap", type=Path, metavar="ASSESSMENT",
                     help="activate an already sealed generation after authenticated installed bootstrap assessment")
+    ap.add_argument(
+        "--installed-updater-proof", action="append", metavar="KEY", default=None,
+        help="the full action key of tools/fleet/updater_proof.py run on one enrolled host; "
+             "repeat once per host. A rolling activation between receipt-carrying generations "
+             "needs current proof from every enrolled participant (#1850)",
+    )
     ap.add_argument("--stage-only", action="store_true",
                     help="seal and import-probe a generation without arming or activating it; "
                          "use inside PB, then activate with the external control-plane coordinator")
@@ -2446,6 +2504,10 @@ def main() -> int:
     if args.installed_bootstrap and (not args.activate_generation or args.rollout != "rolling"
                                     or recovery or args.stage_only or args.no_canary or args.canary):
         ap.error("--installed-bootstrap requires rolling --activate-generation and its mandatory canary")
+    if args.installed_updater_proof and (args.rollout != "rolling" or args.stage_only or recovery
+                                         or args.installed_bootstrap or args.reserve_installed_bootstrap):
+        ap.error("--installed-updater-proof judges a rolling activation; it excludes barrier, "
+                 "--stage-only, recovery and the installed bootstrap")
     if args.resume_barrier and args.rollback_barrier:
         ap.error("choose one of --resume-barrier and --rollback-barrier")
     if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
@@ -2520,6 +2582,7 @@ def _run_publication(args) -> int:
         return _activate_existing(
             args.activate_generation, dry_run=args.dry_run, rollout=args.rollout,
             rollout_reason=rollout_reason, wait_s=args.barrier_wait_s,
+            proofs=getattr(args, "installed_updater_proof", None) or (),
         )
 
     # Identity is established before MIRROR is even enumerated, much less
@@ -2551,7 +2614,8 @@ def _run_publication(args) -> int:
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
     if not args.stage_only and (args.rollout == "rolling" or not args.dry_run):
-        _require_reader_direction(CHECKOUT, rollout=args.rollout, files=published)
+        _require_reader_direction(CHECKOUT, rollout=args.rollout, files=published,
+                                  proofs=getattr(args, "installed_updater_proof", None) or ())
     if args.rollout == "barrier" and not args.stage_only:
         member = _agent_definitions().MEMBERS["upgrade_client.py"]
         agent_sha = published.get(member)
