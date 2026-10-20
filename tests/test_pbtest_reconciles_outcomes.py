@@ -244,7 +244,8 @@ def _stand_in(tmp_path: Path, monkeypatch, outputs: list[str], *, returncode=0,
 
     def popen(command, **kwargs):
         if str(pbtest.PBRUN) in [str(part) for part in command]:
-            return Finished(queue.pop(0))
+            from pbtest_shard_output import bind_output
+            return Finished(bind_output(queue.pop(0), command))
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)

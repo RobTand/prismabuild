@@ -224,7 +224,26 @@ def skip_location(report, start: Path | None = None) -> str | None:
 REPORT_FIELDS = ("nodeid", "when", "category", "reason", "location")
 
 
-def parse(output: str) -> dict | None:
+def binding_from_argv(argv: list[str]) -> str | None:
+    """Read the association from a verified sealed shard command, not its log.
+
+    Collection-enabled shard entries pass their harness-owned spec immediately
+    after the Python ``-c`` program. Historical/direct recorder commands do not.
+    Callers must validate the action/receipt before trusting this metadata.
+    """
+    try:
+        spec = json.loads(argv[argv.index("-c") + 2])
+    except (ValueError, IndexError):
+        return None
+    if not isinstance(spec, dict) or "record_binding" not in spec:
+        return None
+    binding = spec["record_binding"]
+    if not isinstance(binding, str) or not binding:
+        raise ValueError("invalid sealed pbtest record binding")
+    return binding
+
+
+def parse(output: str, record_binding: str | None = None) -> dict | None:
     """The last outcome record in a shard's output, or ``None``.
 
     ``None`` means the shard printed no final outcomes. Exit hooks can block
@@ -232,26 +251,39 @@ def parse(output: str) -> dict | None:
     separate record and cannot replace final outcomes.
     """
 
-    return _parse_record(output, PREFIX, SCHEMA)
+    return _parse_record(output, PREFIX, SCHEMA, record_binding)
 
 
-def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
+def _parse_record(output: str, prefix: str, schema: str,
+                  record_binding: str | None = None) -> dict | None:
+    # The expected binding comes from the submitting harness, never stdout.
+    # v1 remains readable only for historical, unbound observations. New
+    # executions use v2 and cannot fall back to a test's unbound v1 markers.
+    expected_schema = schema if record_binding is None else schema.removesuffix("v1") + "v2"
     for line in reversed((output or "").splitlines()):
         if not line.startswith(prefix):
             continue
         try:
             record = json.loads(line[len(prefix):])
         except ValueError:
-            return None
-        if isinstance(record, dict) and record.get("schema") == schema:
+            if record_binding is None:
+                return None
+            continue
+        if record_binding is not None:
+            if (not isinstance(record_binding, str) or not record_binding
+                    or not isinstance(record, dict)
+                    or record.get("record_binding") != record_binding):
+                continue
+        if isinstance(record, dict) and record.get("schema") == expected_schema:
             return record
-        return None
+        if record_binding is None:
+            return None
     return None
 
 
-def completion(output: str) -> dict:
+def completion(output: str, record_binding: str | None = None) -> dict:
     """Verify selected-test completion, not final outcomes or process exit."""
-    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA)
+    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA, record_binding)
     if record is None:
         return {"status": "unknown", "problems": ["no valid test completion record"]}
     lists = ("collected", "teardown_finished", "outcome_nodeids")
@@ -553,11 +585,13 @@ def _judge_row(row, index):
     verdict["shard"] = row.get("shard", index)
     output = row["output"]
     summary = pytest_summary(output.splitlines())
-    verdict.update(summary=summary, ran=bool(summary), completion=completion(output))
+    record_binding = row.get("record_binding")
+    verdict.update(summary=summary, ran=bool(summary),
+                   completion=completion(output, record_binding))
     decision, preflight_problem = _preflight(output)
     if preflight_problem:
         problem("preflight_invalid", preflight_problem)
-    record = parse(output)
+    record = parse(output, record_binding)
     if record is None:
         problem("outcomes_missing", "no outcome record: the shard's tests cannot be matched against its collection")
         if summary:
@@ -602,7 +636,9 @@ def _judge_row(row, index):
         verdict["coverage"] = ("collection_only" if record.get("collect_only") else
                                "executed" if verdict["collected"] else "excluded")
     complete = verdict["completion"]
-    if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
+    if (_parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA, record_binding) is not None
+            or (record_binding is None and any(
+                line.startswith(COMPLETION_PREFIX) for line in output.splitlines()))):
         for message in complete["problems"]:
             if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
                 continue
@@ -687,7 +723,7 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
     if required_nodes is not None:
         expected = sorted(required_nodes)
         selected = sorted(n for s in shards for n in s["collected"])
-        records = [parse(row["output"]) for row in rows
+        records = [parse(row["output"], row.get("record_binding")) for row in rows
                    if isinstance(row, dict) and isinstance(row.get("output"), str)]
         records = [r for r in records if _valid_record(r)]
         reports = [r for record in records if record for r in record.get("reports", [])]
@@ -709,7 +745,7 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
 def main(argv: list[str] | None = None, *, preflight=None,
          resource_source: str | None = None, collection_spec=None,
          collection_source: str | None = None,
-         roster_parent: str | None = None) -> int:
+         roster_parent: str | None = None, record_binding: str | None = None) -> int:
     """Run pytest on ``argv`` with the recorder, then return its exit code.
 
     ``preflight`` runs first and ends the shard, before pytest, on a
@@ -802,7 +838,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     and all(ids == collected
                             for ids in self.worker_collections.values()))
             record = {
-                "schema": COMPLETION_SCHEMA,
+                "schema": COMPLETION_SCHEMA if record_binding is None else "prismabuild.pbtest_completion.v2",
+                **({"record_binding": record_binding} if record_binding is not None else {}),
                 "collection_complete": collection_complete,
                 "collect_only": bool(self.config.getoption("collectonly", False)),
                 "collection_errors": any(row[1:3] == ["collect", "error"]
@@ -815,7 +852,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     | {row[0] for row in self.uncounted}),
             }
             line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
-            if session_finished or completion(line)["status"] == "complete":
+            if session_finished or completion(line, record_binding)["status"] == "complete":
                 self.emit(line)
                 self.completion_written = True
 
@@ -940,7 +977,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
         def record(self) -> str:
             config = self.config
             record = {
-                "schema": SCHEMA,
+                "schema": SCHEMA if record_binding is None else "prismabuild.pbtest_outcomes.v2",
+                **({"record_binding": record_binding} if record_binding is not None else {}),
                 "rootdir_relative": (os.path.relpath(config.rootpath,
                     config.invocation_params.dir) if config is not None else "."),
                 "collect_only": bool(config is not None

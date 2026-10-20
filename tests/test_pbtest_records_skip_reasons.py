@@ -188,7 +188,10 @@ def _mocked_shard(tmp_path: Path, monkeypatch, output: str):
             return output, None
 
     def popen(command, **kwargs):
+        nonlocal output
         if str(pbtest.PBRUN) in [str(part) for part in command]:
+            from pbtest_shard_output import bind_output
+            output = bind_output(output, command)
             return Finished()
         return REAL_POPEN(command, **kwargs)
 

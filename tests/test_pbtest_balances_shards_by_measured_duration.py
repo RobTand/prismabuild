@@ -121,7 +121,7 @@ def test_the_outcome_record_carries_per_file_wall_time(tmp_path, monkeypatch):
 
     code, results = _dispatch(_checkout(tmp_path), monkeypatch, ["--shards", "1"])
     assert code == 0
-    record = outcomes.parse(results[0]["output"])
+    record = outcomes.parse(results[0]["output"], results[0]["record_binding"])
     assert record is not None
     durations = record.get("file_durations")
     assert durations is not None, "the record names no per-file durations"

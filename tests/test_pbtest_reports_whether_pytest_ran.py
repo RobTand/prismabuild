@@ -24,7 +24,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ShardProcess, ONE_PASS, shard_output  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS, shard_output, bind_output  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +43,8 @@ REAL_POPEN = subprocess.Popen
 
 
 def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
-               *, run: str = "run", with_exit: bool = False, client_reply=None):
+               *, run: str = "run", with_exit: bool = False, client_reply=None,
+               on_command=None):
     """Run one shard whose pbrun produced ``output``, and read its record.
 
     The shard is mocked at ``Popen`` because the endings under test are
@@ -67,8 +68,12 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
             return output, None
 
     def popen(command, **kwargs):
+        nonlocal output
         if str(pbtest.PBRUN) in [str(part) for part in command]:
-            from pbtest_shard_output import ClientReply, emit_client_events
+            from pbtest_shard_output import ClientReply, emit_client_events, bind_output
+            output = bind_output(output, command)
+            if on_command is not None:
+                on_command(command)
             reply = (client_reply if client_reply is not None else
                      ClientReply(output, pbtest.action_client.ClientCommand(returncode)))
             return emit_client_events(FinishedProcess(), kwargs, reply)
@@ -246,7 +251,9 @@ def test_a_cache_hit_is_read_through_to_the_shards_own_output(
         tmp_path, monkeypatch, "pbrun: executed on dl380g10 in 0s\n" + receipt,
         0, with_exit=True,
         client_reply=ClientReply('pbrun: executed on dl380g10 in 0s\n' + receipt,
-            client.ClientSubmitted(identity), identity))
+            client.ClientSubmitted(identity), identity),
+        on_command=lambda command: payload.write_text(
+            bind_output(payload.read_text(), command)))
 
     assert record["ran"] is True, record["summary"]
     assert record["summary"] == "561 passed, 1 skipped in 28.51s"

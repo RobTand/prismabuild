@@ -2363,8 +2363,43 @@ has `skipped: null`, which means its skip reasons are unknown, not that nothing
 was skipped. The recorder changes every shard's command, so receipts from
 before it are not cache hits for shards after it.
 
+Record provenance (#1842): newly generated collection-enabled shard commands
+use `prismabuild.pbtest_outcomes.v2` and `prismabuild.pbtest_completion.v2`.
+Both retain the v1 population/outcome fields and add `record_binding`. The
+submitting harness computes this deterministic SHA-256 from the sealed helper
+entry, environment and complete selection/pytest arguments (before adding the
+binding), then seals it into the selection argument. The recorder removes it
+before passing the selection to collection plugins and emits it from the
+controller, including with xdist and before exit hooks. No expected binding is
+learned from stdout. Unbound, malformed and differently bound marker lines
+cannot select records or trigger completion validation for a bound observation.
+
+The JSON report remains a list of shard observations with an additive
+`record_binding` field, preserved independently of raw `output`. All rejudging
+(including mergeq and required-node checks) and duration-history parsing must
+pass this field to the shared readers. Receipt-only consumers recover it from
+the verified sealed action argv via `binding_from_argv`, not from the log.
+Verified CAS replay retains the submitting harness's expected binding; identical
+commands reuse it rather than defeating caching with a per-submission nonce.
+The sealed helper bytes and binding change command identity, so pre-binding
+receipts cannot satisfy new commands. CAS verification still establishes the
+checkout/action association; the binding is not a replacement for that check.
+
+Historical observations without the field and standalone recorder invocations
+retain the v1 reader/emitter contract, including historical missing completion
+records and collection-only evidence. v2 readers require an explicit expected
+binding and do not fall back to v1 for bound observations. Old readers reject
+the versioned v2 records instead of silently judging them as historical v1.
+Reports are trusted harness artifacts: dropping/replacing their metadata is not
+a supported migration. This is a record-provenance boundary against arbitrary
+test output, not process isolation or cryptographic authentication against test
+code deliberately introspecting/mutating the in-process recorder, its sealed
+arguments or the harness report. That stronger threat model requires a separate
+execution isolation boundary.
+
 Each shard also emits `pbtest-completion: {json}` before exit hooks can block
-the final outcomes (#1530). Its schema is `prismabuild.pbtest_completion.v1`.
+the final outcomes (#1530). Its historical schema is
+`prismabuild.pbtest_completion.v1`; bound shards use v2 as described above.
 The recorder flushes this separate record after the last selected test reports
 teardown. For an incomplete session, it emits the available evidence at entry
 to `pytest_sessionfinish`. An xdist controller checks every worker's collection

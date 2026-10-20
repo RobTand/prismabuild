@@ -674,7 +674,7 @@ def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[
             if not isinstance(result, dict):
                 skipped += 1
                 continue
-            record = pbtest_outcomes.parse(result.get("output") or "")
+            record = pbtest_outcomes.parse(result.get("output") or "", result.get("record_binding"))
             if record is None:
                 skipped += 1
                 continue
@@ -777,9 +777,11 @@ pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
 shipped_collection = load("pbtest_collection")
 selection = None
+record_binding = None
 if @COLLECTION@:
     import json
     selection = json.loads(sys.argv.pop(1))
+    record_binding = selection.pop("record_binding", None)
 
 
 def preflight():
@@ -798,6 +800,7 @@ def preflight():
 
 raise SystemExit(load("pbtest_outcomes").main(
     preflight=preflight,
+    record_binding=record_binding,
     resource_source=SOURCES.get("pbtest_resource_scope"),
     collection_spec=selection,
     roster_parent=globals().get("_pb_attempt_directory"),
@@ -1716,6 +1719,7 @@ def main() -> int:
         sys.stderr.write(f"pbtest: cannot initialize shard progress: {exc}\n")
         return 2
     procs = []
+    record_bindings = {}
     def run_client(index, command, proc, **kwargs):
         try:
             run_shard(index, command, proc, progress=progress, **kwargs)
@@ -1756,6 +1760,15 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
+        # Deterministic, harness-owned association sealed into the command.
+        # No random per-submission nonce: identical commands must reuse their
+        # verified CAS output. Include the executable helpers and full pytest
+        # population/options, not any value recovered from the output stream.
+        record_bindings[index] = core.digest_primitives.raw_sha256(
+            json.dumps([python_entry, environment, arguments],
+                       separators=(",", ":")).encode("utf-8"))
+        spec["record_binding"] = record_bindings[index]
+        arguments[0] = json.dumps(spec)
         command = shard_command(request, environment=environment,
                                 python_entry=python_entry, arguments=arguments)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
@@ -1803,6 +1816,7 @@ def main() -> int:
                      and ending.verdict.execution_timeout)
         observations.append({"shard": index, "files": bucket, "returncode": returncode,
             "output": out, "timed_out": timed_out, "attempts": attempts,
+            "record_binding": record_bindings[index],
             "action_key": shard_result.get("action_key")})
     verdict = pbtest_outcomes.judge_shards(observations, requested_files=files)
     results = []
@@ -1869,6 +1883,7 @@ def main() -> int:
                        if predicted else None)
         actual_s = summary_seconds(summary) if ran else None
         results.append({"shard": index, "files": bucket,
+                        "record_binding": observation["record_binding"],
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,
