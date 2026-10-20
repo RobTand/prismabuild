@@ -1427,6 +1427,17 @@ a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
 
+Successful expiry cleanup removes any earlier `container_cleanup_pending`
+refusal before archiving and publishing the ending. Incomplete cleanup keeps
+its claim, lease and reservation with durable retry diagnostics; an empty
+`remaining` inventory is not completion proof. Normal owner-host reaper polling
+also repairs older `lease_lost_max_attempts` failed summaries whose pending
+scope-cleanup refusal contradicts persisted complete cleanup for the validated
+exact scope nonce. This locked summary-only repair preserves the ending and
+attempt history and never touches a successor's containers, lease or capacity.
+A changed boot identity invalidates accounting, not the saved scope authority.
+This is scoped lifecycle behavior, not live reboot or staged-read qualification.
+
 Ownership mutations hold a per-key POSIX record lock under
 `transition-locks/<sha256(action_key)>.lock`. Publication, scope startup and
 recovery, heartbeat writes, finish, withdrawal and recovery sweeps use the same

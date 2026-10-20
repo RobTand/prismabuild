@@ -18,7 +18,7 @@ import stat
 import sys
 import uuid
 
-from . import claim_identity, core as pb, endings, immutable_files, local_scratch, record_store, scratch_lifetime, tier_holdings
+from . import claim_identity, core as pb, endings, immutable_files, local_scratch, record_store, resource_scope, scratch_lifetime, tier_holdings
 from .record_store import (
     Absent, AmbiguousClaimHolder, CLAIMED, DONE, FAILED, LATE_FINISH_SUFFIX,
     PoolContractError, Present, READY, TOMBSTONE_SUFFIX, Unknown, WITHDRAWN,
@@ -711,7 +711,8 @@ def _worker_finish(
 
 def conclude(
     queue, policy: WorkerFinish | ExpiredClaim | FinishRecovery | OrphanQuarantine
-    | ReadyRecovery | WidowedLeaseRecovery | DeferredLaunch | TerminalReclaim,
+    | ReadyRecovery | WidowedLeaseRecovery | DeferredLaunch | TerminalReclaim
+    | TerminalCleanupRecovery,
 ) -> Path | list[str] | dict[str, object] | None:
     """Run the complete conclusion selected by a named policy over this queue."""
     if isinstance(policy, WorkerFinish):
@@ -731,6 +732,8 @@ def conclude(
         return _defer_launch(queue, policy.item)
     if isinstance(policy, TerminalReclaim):
         return _reclaim_terminal(queue, policy.action_key, unpin=policy.unpin)
+    if isinstance(policy, TerminalCleanupRecovery):
+        return _reconcile_terminal_cleanup(queue, policy.action_key)
     raise TypeError(f"unsupported conclusion policy: {type(policy).__name__}")
 
 
@@ -921,6 +924,9 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         queue._note_cleanup_attempt(pending, record, container_cleanup)
         queue.records.replace_record_at(path, pending)
         return None
+    # Only the explicit completion verdict retires an earlier refusal. Both
+    # wrong-host and broker failures can report an empty remaining list.
+    record.pop("container_cleanup_pending", None)
     terminal = queue.terminal_outcome_covers(
         record, action_key=key, terminal=terminal_keys
     )
@@ -1838,6 +1844,42 @@ class DeferredLaunch:
 class TerminalReclaim:
     action_key: str
     unpin: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalCleanupRecovery:
+    action_key: str
+
+
+def _reconcile_terminal_cleanup(queue, key: str) -> Path | None:
+    """Retire only the stale scope refusal left by older expiry writers.
+
+    The caller holds transition exclusion. Persisted exact-scope completion is
+    the authority, not an empty Docker inventory. No cleanup RPC, accounting,
+    claim mutation or attempt publication is needed (or safe for a successor).
+    """
+    path = queue.records.item_path(FAILED, key)
+    record = record_store.read_document(path)
+    if (record is None or record.get("action_key") != key
+            or record.get("status") != "lease_lost_max_attempts"
+            or record.get("claimed_host") != socket.gethostname()):
+        return None
+    pending = record.get("container_cleanup_pending")
+    cleanup = record.get("resource_scope_cleanup")
+    if (not isinstance(pending, dict) or pending.get("complete") is not False
+            or pending.get("remaining") != []
+            or not str(pending.get("error", "")).startswith("resource scope cleanup incomplete:")
+            or not isinstance(cleanup, dict) or cleanup.get("complete") is not True):
+        return None
+    try:
+        nonce, _ = resource_scope._checked_control_identity(key, record.get("resource_scope"))
+    except ValueError:
+        return None
+    if cleanup.get("nonce") != nonce:
+        return None
+    record.pop("container_cleanup_pending")
+    queue.records.replace_record_at(path, record)
+    return path
 
 
 def _complete_cancellation(queue, action_key, record, read_claim, holder,
