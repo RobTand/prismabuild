@@ -20,6 +20,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import time
@@ -51,22 +52,8 @@ def _probe(path: Path) -> bool:
     return result.stdout.strip() == "True"
 
 
-def _blocked_on(pid: int, path: Path) -> bool:
-    """Whether ``pid`` is queued behind a POSIX lock on ``path``'s inode."""
-
-    inode = os.stat(path).st_ino
-    for line in Path("/proc/locks").read_text().splitlines():
-        fields = line.split()
-        if "->" in fields and "POSIX" in fields:
-            rest = fields[fields.index("->") + 1:]
-            # ``POSIX ADVISORY WRITE <pid> <maj:min:inode> <start> <end>``
-            if len(rest) >= 5 and rest[3] == str(pid) and rest[4].endswith(f":{inode}"):
-                return True
-    return False
-
-
 def test_a_waiter_on_a_retired_inode_does_not_share_the_lock(tmp_path):
-    """The retirer holds the lock, a waiter queues, the name is retired.
+    """The retirer holds the lock, a waiter opens it, the name is retired.
 
     The waiter is granted the old inode when the retirer lets go.  A second
     process then takes the name.  Only one of them may hold the lock.
@@ -77,17 +64,31 @@ def test_a_waiter_on_a_retired_inode_does_not_share_the_lock(tmp_path):
     retirer = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     import fcntl
     fcntl.lockf(retirer, fcntl.LOCK_EX)
+    source = """
+from pathlib import Path
+import sys
+from prismabuild import posix_lock
+
+original = posix_lock._lockf
+def wait_on_open_inode(descriptor, blocking):
+    try:
+        original(descriptor, False)
+    except BlockingIOError:
+        print("blocked", flush=True)
+        original(descriptor, blocking)
+posix_lock._lockf = wait_on_open_inode
+with posix_lock.held(Path(sys.argv[1])):
+    print("in", flush=True)
+    sys.stdin.readline()
+"""
     waiter = subprocess.Popen(
-        [sys.executable, "-c", "from pathlib import Path; import sys; "
-         "from prismabuild.posix_lock import held; "
-         "exec('with held(Path(sys.argv[1])):\\n print(\"in\", flush=True)\\n "
-         "sys.stdin.readline()')", str(path)],
+        [sys.executable, "-c", source, str(path)],
         env=ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
-        deadline = time.monotonic() + 30
-        while not _blocked_on(waiter.pid, path):
-            assert time.monotonic() < deadline, "the waiter never queued on the lock"
-            time.sleep(0.02)
+        assert select.select([waiter.stdout], [], [], 30)[0], "the waiter never reached the lock"
+        assert waiter.stdout.readline().strip() == "blocked"
+        # The real nonblocking lock failed on the open old inode. Whether
+        # the following blocking call has entered the kernel yet is immaterial.
         # The retirement, under the lock: the protocol's tombstone, then the
         # unlink, then the release.
         os.pwrite(retirer, getattr(posix_lock, "TOMBSTONE", b"retired\n"), 0)
@@ -95,15 +96,22 @@ def test_a_waiter_on_a_retired_inode_does_not_share_the_lock(tmp_path):
         os.unlink(path)
         fcntl.lockf(retirer, fcntl.LOCK_UN)
         os.close(retirer)
+        retirer = None
+        assert select.select([waiter.stdout], [], [], 30)[0], "the waiter never acquired the lock"
         assert waiter.stdout.readline().strip() == "in"
         # The waiter believes it holds the lock.  A newcomer must not get in.
         assert _probe(path) is False, (
             "a newcomer took the lock while the waiter held it: the waiter "
             "was holding a retired inode")
     finally:
-        waiter.stdin.write("\n")
-        waiter.stdin.flush()
-        waiter.wait(timeout=30)
+        if retirer is not None:
+            os.close(retirer)
+        try:
+            waiter.communicate("\n", timeout=30)
+        finally:
+            if waiter.poll() is None:
+                waiter.kill()
+                waiter.wait(timeout=10)
 
 
 def test_a_retirement_between_open_and_lock_is_noticed(tmp_path, monkeypatch):

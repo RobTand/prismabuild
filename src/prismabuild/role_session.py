@@ -217,10 +217,6 @@ def take_role_singleton(script: str | Path) -> int:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            # The holder pid is a diagnostic, and the admission lock's own
-            # holder rule is the one place that parse lives (#264, #276),
-            # including the btrfs inode/device ambiguity; a helper that
-            # cannot answer still leaves this a refusal.
             raise RoleLockHeld(role, flock_owner.holder_pid(descriptor)) \
                 from None
         except OSError as exc:
@@ -230,6 +226,7 @@ def take_role_singleton(script: str | Path) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+    flock_owner.record_holder(descriptor)
     return descriptor
 
 
@@ -260,7 +257,7 @@ def role_singleton_holder(script: str | Path) -> tuple[bool, int | None]:
     The lock is tried, not assumed: a free lock is taken and released here --
     the caller's own start still races nothing, because its child takes the
     lock for real -- and a held one is discovered by ``flock``'s refusal and
-    named from /proc/locks, never from a pid file.  ``(True, None)`` is a held
+    named from a verified holder record.  ``(True, None)`` is a held
     lock whose holder could not be read: "held, holder unknown", never free.
     """
 

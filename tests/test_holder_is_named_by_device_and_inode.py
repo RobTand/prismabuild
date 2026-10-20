@@ -1,192 +1,203 @@
-"""The pid named as holding admission must be holding *this* lock.
-
-``flock_owner.holder_pid`` reads ``/proc/locks`` to answer "who is in there",
-the one question a refusal has to answer for an operator.  It matched on the inode
-number alone, and an inode number is only unique within a filesystem: any other
-mount with a lock on the same inode number could be reported as the holder of
-this one.
-
-So the inode names the lock and the device breaks a tie -- in that order, which
-#276 had the other way round.  Requiring both to match is blind on btrfs, where
-a subvolume has its own anonymous device: measured on dl380g10 on 2026-09-06,
-one lock under ``/home/rob/tmp`` was ``00:1f:14164446`` to ``fstat`` and
-``00:1e:14164446`` in ``/proc/locks``.  Same inode, minor off by one, no holder
-reported for a lock the process was itself holding.  That box is where the test
-suite's ``tmp_path`` lives, so it was the suite that found it.
-
-The device is parsed rather than formatted for a related reason.  The kernel
-prints ``%02x:%02x``, so a key built by formatting must reproduce that padding
-exactly, and #264 did not: it matched nothing on dl380g10, whose ``/tmp`` is
-tmpfs with major 0, while looking correct on sparky, whose major 259 prints the
-same either way.  Both bugs are false negatives that read as good news, so
-these tests pin the properties (the right lock is found, a look-alike is not)
-rather than any particular spelling of a key.
-
-The synthetic ``/proc/locks`` lines below are the kernel's real format, taken
-from a capture on dl380g10 during the 2026-09-06 admission incident:
-
-    1: FLOCK  ADVISORY  WRITE 1036396 00:33:6884 0 EOF
-"""
+"""Holder records name only a live process with this exact file open."""
 from __future__ import annotations
 
 import fcntl
-import io
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from prismabuild import flock_owner
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import adaptive_cpu, flock_owner, role_session
 
 
 @pytest.fixture
 def held(tmp_path):
-    """A real flock this process holds, with its real device and inode."""
-
-    descriptor = os.open(tmp_path / 'admission.lock',
-                         os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    descriptor = os.open(tmp_path / "admission.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         yield descriptor
     finally:
         os.close(descriptor)
 
 
-def _proc_locks(monkeypatch, text):
-    """Answer ``/proc/locks`` with *text*, leaving every other open alone."""
-
-    real_open = open
-
-    def fake_open(path, *args, **kwargs):
-        if str(path) == '/proc/locks':
-            return io.StringIO(text)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(flock_owner, 'open', fake_open, raising=False)
+def _record(descriptor):
+    return json.loads(os.pread(descriptor, 1024, 0))
 
 
-def test_the_real_holder_is_named(held):
-    """Against the kernel's own ``/proc/locks``, not a fixture."""
+def _replace(descriptor, record):
+    payload = json.dumps(record).encode()
+    os.ftruncate(descriptor, 0)
+    os.pwrite(descriptor, payload, 0)
 
+
+def test_the_real_holder_is_named_without_moving_the_file_offset(held):
+    flock_owner.record_holder(held)
+    os.lseek(held, 3, os.SEEK_SET)
+    assert flock_owner.holder_pid(held) == os.getpid()
+    assert os.lseek(held, 0, os.SEEK_CUR) == 3
+
+
+def test_holder_wire_identity_and_fields_are_pinned(held):
+    flock_owner.record_holder(held)
+    record = _record(held)
+    assert record["schema"] == "prismabuild.flock_holder.v1"
+    assert set(record) == {
+        "schema", "pid", "starttime", "boot_id", "pid_namespace",
+        "device", "inode", "fd",
+    }
+    record["future_diagnostic_field"] = True
+    _replace(held, record)
     assert flock_owner.holder_pid(held) == os.getpid()
 
 
-def test_a_lock_on_another_device_is_not_our_holder(held, monkeypatch):
-    """Same inode number, different filesystem: not this lock.
-
-    Reporting it would name a process that has nothing to do with admission,
-    and an operator would go and look at it.
-
-    Both rows are present, which is the reachable shape: this is only asked
-    after an acquisition failed, so our own lock is held and the kernel is
-    listing it.  The look-alike is the extra one, and the device is what tells
-    them apart.
-    """
-
-    info = os.fstat(held)
-    ours = (f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}'
-            f':{info.st_ino}')
-    elsewhere = (f'{os.major(info.st_dev) + 1:02x}:'
-                 f'{os.minor(info.st_dev):02x}:{info.st_ino}')
-    _proc_locks(monkeypatch,
-                f'1: FLOCK  ADVISORY  WRITE 4242 {elsewhere} 0 EOF\n'
-                f'2: FLOCK  ADVISORY  WRITE 4243 {ours} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) == 4243, (
-        'a lock on another filesystem was named as holding this one')
-
-
-def test_a_subvolumes_own_device_does_not_hide_the_holder(held, monkeypatch):
-    """The btrfs shape, taken from the dl380g10 measurement.
-
-    One row, our inode, a device that is not the one ``fstat`` reports.  There
-    is nothing else it could be: the acquisition failed, so this lock is held,
-    and the kernel listed exactly one lock on this inode.  #276 answered
-    ``None`` here and the refusal could not name anyone.
-    """
-
-    info = os.fstat(held)
-    superblock = (f'{os.major(info.st_dev):02x}:'
-                  f'{max(os.minor(info.st_dev) - 1, 0):02x}:{info.st_ino}')
-    _proc_locks(monkeypatch,
-                f'1: FLOCK  ADVISORY  WRITE 4242 {superblock} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) == 4242, (
-        'the holder of a lock on a btrfs subvolume was not named')
+def test_a_live_child_holder_is_named_and_its_exit_invalidates_the_record(tmp_path):
+    path = tmp_path / "child.lock"
+    source = """
+import fcntl, os, sys
+from prismabuild import flock_owner
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+flock_owner.record_holder(fd)
+print('ready', flush=True)
+sys.stdin.readline()
+"""
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    with subprocess.Popen([sys.executable, "-c", source, str(path)], env=env,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          text=True) as child:
+        try:
+            import select
+            assert select.select([child.stdout], [], [], 10)[0], "holder did not start"
+            assert child.stdout.readline().strip() == "ready"
+            with path.open("rb") as contender:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                assert flock_owner.holder_pid(contender.fileno()) == child.pid
+                child.communicate("exit\n", timeout=10)
+                assert child.returncode == 0
+                assert flock_owner.holder_pid(contender.fileno()) is None
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
 
 
-def test_an_inode_two_mounts_disagree_about_names_nobody(held, monkeypatch):
-    """Two candidates, neither carrying our device: we do not know which.
-
-    Naming either would be a guess, and the operator would go and look at a
-    process picked by file order.
-    """
-
-    info = os.fstat(held)
-    minor = os.minor(info.st_dev)
-    first = f'{os.major(info.st_dev):02x}:{minor + 1:02x}:{info.st_ino}'
-    second = f'{os.major(info.st_dev) + 1:02x}:{minor:02x}:{info.st_ino}'
-    _proc_locks(monkeypatch,
-                f'1: FLOCK  ADVISORY  WRITE 4242 {first} 0 EOF\n'
-                f'2: FLOCK  ADVISORY  WRITE 4243 {second} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) is None, (
-        'one of two look-alikes was named as the holder')
-
-
-def test_the_device_is_matched_by_value_not_by_padding(held, monkeypatch):
-    """The #264 regression, pinned as a property.
-
-    The same device written without the kernel's zero padding must still be
-    recognised.  A comparison that formats a key of its own passes this only if
-    it happens to pick the same padding; reading the numbers back cannot fail.
-    """
-
-    info = os.fstat(held)
-    unpadded = f'{os.major(info.st_dev):x}:{os.minor(info.st_dev):x}'
-    _proc_locks(monkeypatch, f'1: FLOCK  ADVISORY  WRITE 4242 '
-                             f'{unpadded}:{info.st_ino} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) == 4242, (
-        'the holder was missed because the device was spelled differently')
-
-
-def test_a_waiter_is_never_named_as_the_holder(held, monkeypatch):
-    """Both rows carry the same device and inode; only one is holding it."""
-
-    info = os.fstat(held)
-    where = (f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}'
-             f':{info.st_ino}')
-    _proc_locks(monkeypatch,
-                f'1: FLOCK  ADVISORY  WRITE 4242 {where} 0 EOF\n'
-                f'1: -> FLOCK  ADVISORY  WRITE 9999 {where} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) == 4242, (
-        'the process queued behind the lock was reported as holding it')
-
-
-def test_an_ofd_lock_does_not_hide_the_flock_holder(held, monkeypatch):
-    """An OFD row on the same inode is not a second flock candidate."""
-
-    info = os.fstat(held)
-    where = (f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}'
-             f':{info.st_ino}')
-    _proc_locks(monkeypatch,
-                f'1: OFDLCK  ADVISORY  WRITE -1 {where} 0 EOF\n'
-                f'2: FLOCK  ADVISORY  WRITE 4242 {where} 0 EOF\n')
-
-    assert flock_owner.holder_pid(held) == 4242, (
-        'an OFD row hid the positive flock holder on the same inode')
-
-
-@pytest.mark.parametrize('field', ['', 'garbage', '00:33', 'zz:33:6884',
-                                   '00:33:6884:7'])
-def test_an_unparsable_device_field_is_skipped_not_raised(held, monkeypatch,
-                                                          field):
-    """A diagnostic may not turn a refusal into a crash."""
-
-    _proc_locks(monkeypatch, f'1: FLOCK  ADVISORY  WRITE 4242 {field} 0 EOF\n')
-
+@pytest.mark.parametrize("field", ["pid", "starttime", "boot_id", "device", "inode", "fd", "schema", "pid_namespace"])
+def test_planted_stale_or_wrong_identity_names_nobody(held, field):
+    flock_owner.record_holder(held)
+    record = _record(held)
+    record[field] = record[field] + 1 if isinstance(record[field], int) else "wrong"
+    _replace(held, record)
     assert flock_owner.holder_pid(held) is None
+
+
+def test_a_recycled_pid_with_the_same_file_open_names_nobody(held):
+    flock_owner.record_holder(held)
+    record = _record(held)
+    record["starttime"] += 1
+    _replace(held, record)
+    assert flock_owner.holder_pid(held) is None
+
+
+def test_a_descriptor_on_another_file_is_not_this_holder(held, tmp_path):
+    flock_owner.record_holder(held)
+    with (tmp_path / "other.lock").open("w+b") as other:
+        record = _record(held)
+        record["fd"] = other.fileno()
+        _replace(held, record)
+        assert flock_owner.holder_pid(held) is None
+
+
+@pytest.mark.parametrize("payload", [b"", b"data belongs to caller", b"{}", b"null", b"[]", b"{", b"x" * 2048])
+def test_unknown_or_malformed_records_never_raise_or_change_data(held, payload):
+    os.pwrite(held, payload, 0)
+    assert flock_owner.holder_pid(held) is None
+    assert os.pread(held, 4096, 0) == payload
+
+
+@pytest.mark.parametrize("descriptor", [-1, None, "closed"])
+def test_bad_descriptors_are_unknown_without_raising(descriptor):
+    assert flock_owner.holder_pid(descriptor) is None
+
+
+@pytest.mark.parametrize("operation", ["pread", "stat", "readlink"])
+def test_unreadable_identity_is_unknown(held, monkeypatch, operation):
+    flock_owner.record_holder(held)
+    original = getattr(flock_owner.os, operation)
+    def denied(*args, **kwargs):
+        target = args[0]
+        identity_read = (target == held if operation == "pread" else
+                         str(target).startswith(f"/proc/{os.getpid()}/")
+                         or str(target) == "/proc/self/ns/pid")
+        if identity_read:
+            raise PermissionError("identity unavailable")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(flock_owner.os, operation, denied)
+    assert flock_owner.holder_pid(held) is None
+
+
+def test_record_change_during_verification_is_unknown(held, monkeypatch):
+    flock_owner.record_holder(held)
+    pread = os.pread
+    calls = []
+    def changed(*args):
+        calls.append(True)
+        return pread(*args) if len(calls) == 1 else b"{}"
+    monkeypatch.setattr(flock_owner.os, "pread", changed)
+    assert flock_owner.holder_pid(held) is None
+
+
+def test_process_identity_change_during_verification_is_unknown(held, monkeypatch):
+    flock_owner.record_holder(held)
+    original = flock_owner._process_starttime
+    calls = []
+    def changed(pid):
+        calls.append(True)
+        return original(pid) + (len(calls) > 1)
+    monkeypatch.setattr(flock_owner, "_process_starttime", changed)
+    assert flock_owner.holder_pid(held) is None
+
+
+def test_diagnostic_write_failure_does_not_break_acquisition(held, monkeypatch):
+    def denied(*args):
+        raise OSError("read-only filesystem")
+    monkeypatch.setattr(flock_owner.os, "pwrite", denied)
+    flock_owner.record_holder(held)
+    assert flock_owner.holder_pid(held) is None
+
+
+def test_role_acquisition_publishes_the_holder_only_after_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    with role_session.role_singleton("test-role.py") as descriptor:
+        before = os.pread(descriptor, 1024, 0)
+        assert before
+        assert role_session.role_singleton_holder("test-role.py") == (True, os.getpid())
+        assert os.pread(descriptor, 1024, 0) == before
+
+
+def test_admission_acquisition_publishes_the_holder_only_after_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmp_path / "admission")
+    class Ledger:
+        base = tmp_path / "ledger"
+    gate = adaptive_cpu.AdmissionGate(Ledger())
+    with gate.locked():
+        directory, digest = adaptive_cpu.box_state(Ledger.base)
+        path = directory / (digest + ".lock")
+        before = path.read_bytes()
+        assert before
+        with pytest.raises(adaptive_cpu.AdmissionBusy) as refused:
+            with gate.locked():
+                pytest.fail("contended admission granted")
+        assert refused.value.holder == os.getpid()
+        assert path.read_bytes() == before
+
+
+def test_an_unrecorded_holder_still_refuses_as_unknown(held, tmp_path, monkeypatch):
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path)
+    with pytest.raises(role_session.RoleLockHeld) as refused:
+        role_session.take_role_singleton("admission.py")
+    assert refused.value.holder is None

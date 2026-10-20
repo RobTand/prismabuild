@@ -81,6 +81,7 @@ def peer(rig):
 
     descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(descriptor, fcntl.LOCK_EX)
+    flock_owner.record_holder(descriptor)
     try:
         yield descriptor
     finally:
@@ -278,9 +279,8 @@ def test_admission_is_free_again_once_the_holder_leaves(rig):
 def test_the_refusal_names_the_holder(rig, peer):
     """Who is in there, so an operator is not left guessing.
 
-    ``/proc/locks`` is the only place that answers this, and reading it costs
-    nothing on the shared mount -- which is the point, since the reason the
-    question is being asked is that the shared mount is slow.
+    The dedicated local lock file carries identity that can be checked
+    against the named process without inspecting other locks or shared data.
     """
 
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS, sampler=_idle_sample)
@@ -291,7 +291,7 @@ def test_the_refusal_names_the_holder(rig, peer):
     assert str(os.getpid()) in str(refusal.value)
 
 
-def test_an_unreadable_proc_locks_still_refuses(rig, peer, monkeypatch):
+def test_an_unreadable_holder_identity_still_refuses(rig, peer, monkeypatch):
     """A diagnostic may not turn a refusal into a crash.
 
     ``holder`` is then ``None``, which reads as "unknown" and must not be
@@ -300,12 +300,12 @@ def test_an_unreadable_proc_locks_still_refuses(rig, peer, monkeypatch):
 
     real_open = open
 
-    def no_proc_locks(path, *args, **kwargs):
-        if str(path) == '/proc/locks':
-            raise OSError('no /proc/locks on this kernel')
+    def no_process_identity(path, *args, **kwargs):
+        if str(path) == f'/proc/{os.getpid()}/stat':
+            raise OSError('process identity unavailable')
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(flock_owner, 'open', no_proc_locks, raising=False)
+    monkeypatch.setattr(flock_owner, 'open', no_process_identity, raising=False)
     controller = adaptive_cpu.Controller(rig.ledger(), TIERS, sampler=_idle_sample)
     with pytest.raises(adaptive_cpu.AdmissionBusy) as refusal:
         _bounded(lambda: _attempt(controller), 'locked()')
@@ -481,6 +481,7 @@ def test_a_refusal_past_the_probe_does_not_claim_evaluation_never_started(
         result = ready_items()
         descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        flock_owner.record_holder(descriptor)
         held.append(descriptor)
         return result
 
