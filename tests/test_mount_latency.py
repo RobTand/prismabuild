@@ -117,13 +117,16 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     assert "BEGIN prismabuild.mount_probe_state" in lines
     assert "SET ok = 1" in lines
     assert "END" in lines
-    assert "BEGIN prismabuild.admission_gate" in lines
-    assert "SET holders = 0" in lines
+    assert any(line.startswith("CHART prismabuild.admission_gate ") for line in lines)
+    assert any(line.startswith("CHART prismabuild.admission_hold ") for line in lines)
+    assert "BEGIN prismabuild.admission_gate" not in lines
+    assert "BEGIN prismabuild.admission_hold" not in lines
     records = list((tmp_path / "records").glob("*.jsonl"))
     assert len(records) == 1
     record = json.loads(records[0].read_text().splitlines()[0])
     assert record["probe"]["status"] == "ok"
     assert record["locks"]["present"] is True
+    assert record["locks"]["identity_complete"] is False
 
 
 @pytest.mark.parametrize("json_mode", [False, True])

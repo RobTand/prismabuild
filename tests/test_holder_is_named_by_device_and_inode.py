@@ -41,6 +41,19 @@ def test_the_real_holder_is_named_without_moving_the_file_offset(held):
     assert os.lseek(held, 0, os.SEEK_CUR) == 3
 
 
+def test_holder_wire_identity_and_fields_are_pinned(held):
+    flock_owner.record_holder(held)
+    record = _record(held)
+    assert record["schema"] == "prismabuild.flock_holder.v1"
+    assert set(record) == {
+        "schema", "pid", "starttime", "boot_id", "pid_namespace",
+        "device", "inode", "fd",
+    }
+    record["future_diagnostic_field"] = True
+    _replace(held, record)
+    assert flock_owner.holder_pid(held) == os.getpid()
+
+
 def test_a_live_child_holder_is_named_and_its_exit_invalidates_the_record(tmp_path):
     path = tmp_path / "child.lock"
     source = """
