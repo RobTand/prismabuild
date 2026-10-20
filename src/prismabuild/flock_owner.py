@@ -24,7 +24,7 @@ def _process_starttime(pid: int) -> int:
     return int(fields[19])
 
 
-def _boot_id() -> str:
+def _holder_boot_id() -> str:
     with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as stream:
         value = stream.read(65).strip()
     if len(value) != 36:
@@ -47,7 +47,7 @@ def record_holder(descriptor: int) -> None:
             "schema": _SCHEMA,
             "pid": pid,
             "starttime": _process_starttime(pid),
-            "boot_id": _boot_id(),
+            "boot_id": _holder_boot_id(),
             "pid_namespace": os.readlink("/proc/self/ns/pid"),
             "device": info.st_dev,
             "inode": info.st_ino,
@@ -90,7 +90,7 @@ def holder_pid(descriptor: int) -> int | None:
         wanted = (info.st_dev, info.st_ino)
         if (record["device"], record["inode"]) != wanted:
             return None
-        if record["boot_id"] != _boot_id():
+        if record["boot_id"] != _holder_boot_id():
             return None
         namespace = os.readlink("/proc/self/ns/pid")
         if (record["pid_namespace"] != namespace
