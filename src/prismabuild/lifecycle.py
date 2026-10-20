@@ -5,7 +5,7 @@ are the recovery protocol. No lifecycle journal or on-disk schema is added.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
@@ -172,7 +172,7 @@ class ExpiredClaim:
     original: Mapping[str, object]
     holder: str | None
     lease_age: float | None
-    terminal_keys: frozenset[str]
+    terminal_keys: Container[str]
 
 
 @dataclass(frozen=True)
