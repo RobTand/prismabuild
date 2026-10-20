@@ -98,7 +98,7 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
             self.root = root
             self.records = UnavailableRecords()
 
-        def retry_own_pending_finishes(self):
+        def retry_own_pending_finishes(self, on_sweep=None):
             # The drain branch's second bounded queue access (#1403): it
             # retries this box's saved finishes and claims nothing. The
             # fixture substitutes an empty verdict for the same reason it
