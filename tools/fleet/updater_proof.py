@@ -22,14 +22,13 @@ Then pass each action key to the activation, once per host:
 The tool prints one JSON proof line.  It reads the enrollment file the root
 timer reads, hashes the installed ``upgrade_client.py`` and copies the fields
 of the timer's last ``status.json`` that the publisher judges.  It writes
-nothing and needs only the standard library.  :func:`judge` is the
+nothing and needs only the standard library and the stdlib-only digest leaf.  :func:`judge` is the
 publisher's side of the same contract; ``publish_runtime.py`` reads the proof
 from the action's verified CAS result and names the host it ran on.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -38,6 +37,10 @@ import socket
 import stat
 import sys
 import time
+
+_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_ENTRYPOINT.parents[2 if _ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.digest_primitives import raw_sha256  # noqa: E402
 
 SCHEMA = "prismabuild.installed_updater_proof.v1"
 ENROLLMENT = Path("/etc/prismabuild/client-upgrade.json")
@@ -57,11 +60,7 @@ class ProofRefused(ValueError):
     pass
 
 
-def _sha256(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
-
-
-def _read(path: Path) -> tuple[bytes, os.stat_result]:
+def _proof_read(path: Path) -> tuple[bytes, os.stat_result]:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
@@ -77,21 +76,21 @@ def _read(path: Path) -> tuple[bytes, os.stat_result]:
 
 
 def tool_sha256() -> str:
-    return _sha256(Path(__file__).read_bytes())
+    return raw_sha256(Path(__file__).read_bytes())
 
 
-def observe(*, nonce: str, enrollment: Path = ENROLLMENT) -> dict[str, object]:
+def observe_installed_updater(*, nonce: str, enrollment: Path = ENROLLMENT) -> dict[str, object]:
     """The proof this host gives, read as whoever runs it."""
 
-    config = json.loads(_read(enrollment)[0])
+    config = json.loads(_proof_read(enrollment)[0])
     updater = Path(config["install_dir"]) / "upgrade_client.py"
-    raw, info = _read(updater)
-    status = json.loads(_read(Path(config["state_dir"]) / "status.json")[0])
+    raw, info = _proof_read(updater)
+    status = json.loads(_proof_read(Path(config["state_dir"]) / "status.json")[0])
     installed = status.get("installed")
     return {
         "schema": SCHEMA, "host": socket.gethostname(), "nonce": nonce,
         "observed_unix": time.time(), "tool_sha256": tool_sha256(),
-        "updater": {"path": str(updater), "sha256": _sha256(raw),
+        "updater": {"path": str(updater), "sha256": raw_sha256(raw),
                     "uid": info.st_uid, "mode": stat.S_IMODE(info.st_mode)},
         "status": {"state": status.get("state"), "host": status.get("host"),
                    "checked_unix": status.get("checked_unix"),
@@ -100,7 +99,7 @@ def observe(*, nonce: str, enrollment: Path = ENROLLMENT) -> dict[str, object]:
     }
 
 
-def _number(value: object) -> bool:
+def _proof_number(value: object) -> bool:
     return type(value) in (int, float) and math.isfinite(value)
 
 
@@ -122,7 +121,7 @@ def judge(proof: object, *, host: str, now: float, tool: str) -> str:
     if proof.get("tool_sha256") != tool:
         raise refuse("was produced by another version of updater_proof.py")
     observed = proof.get("observed_unix")
-    if not _number(observed) or not -PROOF_MAX_SKEW_S <= now - observed <= PROOF_MAX_AGE_S:
+    if not _proof_number(observed) or not -PROOF_MAX_SKEW_S <= now - observed <= PROOF_MAX_AGE_S:
         raise refuse(f"is not current: observed {observed!r}, now {now:.0f}, "
                      f"limit {PROOF_MAX_AGE_S:.0f} s")
     updater = proof.get("updater")
@@ -136,7 +135,7 @@ def judge(proof: object, *, host: str, now: float, tool: str) -> str:
     if not isinstance(status, dict) or status.get("state") != "current":
         raise refuse(f"shows updater state {(status or {}).get('state')!r}, not 'current'")
     checked = status.get("checked_unix")
-    if (status.get("host") != host or not _number(checked)
+    if (status.get("host") != host or not _proof_number(checked)
             or not 0 <= observed - checked <= STATUS_MAX_AGE_S):
         raise refuse(f"shows no timer tick on {host} in the {STATUS_MAX_AGE_S:.0f} s "
                      "before it was observed")
@@ -165,11 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enrollment", type=Path, default=ENROLLMENT, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     try:
-        proof = observe(nonce=args.nonce, enrollment=args.enrollment)
+        proof = observe_installed_updater(nonce=args.nonce, enrollment=args.enrollment)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"updater_proof: no proof on {socket.gethostname()}: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(proof, sort_keys=True))
+    print(json.dumps(proof))
     return 0
 
 

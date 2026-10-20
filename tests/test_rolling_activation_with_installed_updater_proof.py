@@ -92,7 +92,7 @@ def enrolled_host(base, host, monkeypatch, *, updater=None, state="current", tic
     enrollment = base / host / "client-upgrade.json"
     enrollment.write_text(json.dumps({"install_dir": str(install), "state_dir": str(status_dir)}))
     monkeypatch.setattr(socket, "gethostname", lambda: host)
-    return proof_tool().observe(nonce=host, enrollment=enrollment)
+    return proof_tool().observe_installed_updater(nonce=host, enrollment=enrollment)
 
 
 def proof_action(fleet, host, proof, monkeypatch):

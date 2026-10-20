@@ -81,11 +81,12 @@ def require_receipt_participants(direction, installed, roster):
     if not any(set(row["present"]) & RECEIPT_MEMBERS for row in sources):
         return
     installed = dict(installed or {})
-    outside = sorted(set(installed) - set(roster))
+    enrolled = frozenset(roster)
+    outside = sorted(host for host in installed if host not in enrolled)
     if outside:
         raise WindowError(f"installed updater proof names hosts outside the enrolled roster: {outside}")
-    missing = sorted(set(roster) - set(installed))
-    if not roster or missing:
+    missing = sorted(host for host in enrolled if host not in installed)
+    if not enrolled or missing:
         raise WindowError("receipt activation requires current installed updater proof for every enrolled participant; "
                           f"missing for {missing or 'an empty roster'}; present each participant's proof "
                           "or use a separately authorized installed-reader bootstrap")
