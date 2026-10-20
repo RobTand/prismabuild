@@ -150,6 +150,129 @@ def test_foreign_reaper_never_controls_local_scope(scoped, monkeypatch):
     assert queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).exists()
 
 
+def test_reboot_cleanup_retries_until_owner_returns_without_stale_terminal_pending(
+    scoped, monkeypatch,
+):
+    """A crash after launch leaves exact scope authority, not a cleanup verdict."""
+    queue, item, calls = scoped
+    key = item['action_key']
+    owner = socket.gethostname()
+    ledger = queue.ledger()
+    _process(monkeypatch, queue, item, calls)
+    queue.execute(item, containment=True)
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    failed_path = queue.records.item_path(pool.record_store.FAILED, key)
+    record = json.loads(claim_path.read_text())
+    record['max_attempts'] = 1
+    # Simulate a worker disappearing before finish and returning on a new boot.
+    # Accounting is invalid after reboot; the exact scope nonce remains usable.
+    record['resource_scope']['boot_id'] = 'previous-boot'
+    pool.immutable_files.write_json_atomic(claim_path, record)
+    calls.clear()
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'other-host')
+    for attempt in (1, 2):
+        assert queue.reap_stale(timeout_s=-1) == []
+        pending = json.loads(claim_path.read_text())
+        assert pending['container_cleanup_attempts'] == attempt
+        assert pending['container_cleanup_pending']['complete'] is False
+        assert pending['container_cleanup_pending']['remaining'] == []
+        assert 'claiming host' in pending['container_cleanup_pending']['error']
+        assert ledger.held() == {'cpu': 1, 'mem_gb': 2}
+        assert not failed_path.exists()
+    assert 'stop' not in calls and 'release' not in calls
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: owner)
+    broker_request = resource_scope.ResourceScope._request
+
+    def unavailable_release(scope, op, **extra):
+        if op == 'release':
+            raise OSError('broker recovering after reboot')
+        return broker_request(scope, op, **extra)
+
+    monkeypatch.setattr(resource_scope.ResourceScope, '_request', unavailable_release)
+    assert queue.reap_stale(timeout_s=-1) == []
+    pending = json.loads(claim_path.read_text())
+    assert pending['container_cleanup_attempts'] == 3
+    assert pending['container_cleanup_pending']['complete'] is False
+    assert pending['container_cleanup_pending']['remaining'] == []
+    assert ledger.held() == {'cpu': 1, 'mem_gb': 2}
+    assert queue.records.lease_path(key).exists()
+    assert not failed_path.exists()
+
+    monkeypatch.setattr(resource_scope.ResourceScope, '_request', broker_request)
+    # A new queue object stands in for the restarted worker, with no in-memory
+    # retry state. Only the durable claim and scope authority survive.
+    restarted = pool.PoolQueue(queue.root)
+    assert restarted.reap_stale(timeout_s=-1) == [key]
+    terminal = json.loads(failed_path.read_text())
+    assert terminal['status'] == 'lease_lost_max_attempts'
+    assert terminal['attempts'] == 1
+    assert terminal['resource_scope_cleanup']['complete'] is True
+    assert terminal['resource_scope_cleanup']['released']['ok'] is True
+    assert terminal['resource_scope_cleanup']['nonce'] == record['resource_scope']['nonce']
+    assert not claim_path.exists()
+    assert not queue.records.lease_path(key).exists()
+    assert ledger.held() == {}
+    assert 'container_cleanup_pending' not in terminal, (
+        'successful owner cleanup must not publish the earlier refusal as pending')
+
+
+def test_owner_poll_reconciles_already_terminal_scope_cleanup_pending(scoped, monkeypatch):
+    """Records written before the fix must also become observably quiescent."""
+    queue, item, calls = scoped
+    key = item['action_key']
+    owner = socket.gethostname()
+    _process(monkeypatch, queue, item, calls)
+    queue.execute(item, containment=True)
+    claim_path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    record = json.loads(claim_path.read_text())
+    record['max_attempts'] = 1
+    pool.immutable_files.write_json_atomic(claim_path, record)
+    assert queue.reap_stale(timeout_s=-1) == [key]
+    failed_path = queue.records.item_path(pool.record_store.FAILED, key)
+    terminal = json.loads(failed_path.read_text())
+    assert terminal['resource_scope_cleanup']['complete'] is True
+    # This is the contradictory terminal shape left by the old expiry path:
+    # the scope finished on its owner, but a prior remote refusal survived.
+    terminal.update({
+        'container_cleanup_pending': {
+            'complete': False, 'used': True, 'removed': [], 'remaining': [],
+            'error': 'resource scope cleanup incomplete: PoolContractError: '
+                     'resource scope cleanup must run on its claiming host'},
+        'container_cleanup_attempts': 1,
+        'container_cleanup_checked_unix': pool._now() - 60,
+        'container_cleanup_first_failed_unix': pool._now() - 60,
+    })
+    pool.immutable_files.write_json_atomic(failed_path, terminal)
+    ending = {field: terminal[field] for field in (
+        'status', 'attempts', 'finished_unix', 'finished_host',
+        'published_unix', 'attempt_history', 'detail')}
+    assert not claim_path.exists()
+    calls.clear()
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'other-host')
+    queue.reap_stale(timeout_s=-1)
+    assert json.loads(failed_path.read_text()) == terminal
+    assert 'stop' not in calls and 'release' not in calls
+
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: owner)
+    restarted = pool.PoolQueue(queue.root)
+    restarted.reap_stale(timeout_s=-1)
+    reconciled = json.loads(failed_path.read_text())
+    assert 'container_cleanup_pending' not in reconciled, (
+        'owner polling must reconcile stale pending flags even without a live claim')
+    assert {field: reconciled[field] for field in ending} == ending
+    assert reconciled['resource_scope_cleanup']['complete'] is True
+    assert reconciled['resource_scope_cleanup']['nonce'] == record['resource_scope']['nonce']
+    assert queue.ledger().held() == {}
+    assert not claim_path.exists()
+    assert not queue.records.lease_path(key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
+    restarted.reap_stale(timeout_s=-1)
+    assert json.loads(failed_path.read_text()) == reconciled
+
+
 def test_kernel_oom_is_failure_even_if_launcher_reports_zero(scoped, monkeypatch):
     queue, item, calls = scoped
     _process(monkeypatch, queue, item, calls)
