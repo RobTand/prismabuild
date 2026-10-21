@@ -260,6 +260,41 @@ large tree has been read. It cannot raise it: a value above the fleet ceiling is
 refused by name. The ceiling covers local disk on the box that materializes the
 checkout, so it is not part of the action's identity.
 
+### Seal once and publish later (#1893)
+
+Use `pbrun --seal-only <usual options> -- CMD...` to prepare the checkout and
+retain its sealed request in the CAS without publishing runnable work. Stdout
+is one `prismabuild.sealed.v1` JSON object with `action_key`, `request_sha256`
+and `transport`. Save that key before publishing:
+
+    tools/fleet/pbrun.py --publish-sealed KEY --detach
+
+Publication verifies the retained request and every declared CAS input, including
+the checkout bundle. It uses the ordinary cache, attachment, admission and offer
+checks without reading the original checkout. Omit `--detach` to wait, or set
+`--wait-s S` to bound that wait. Publication accepts no replacement command or
+execution options. `--after` work cannot be sealed before dependency release.
+
+Seal-only retains the transport, queue hints, D38 evidence references and
+residency choices outside action identity. Re-sealing the same key with different
+publication choices refuses with `sealed_publication_conflict`. A CAS request
+created before this context existed uses current transport and publication
+defaults. Input bytes and execution policy always come from the verified seal.
+
+`--detach` and detached `--publish-sealed` print `prismabuild.submission.v1`.
+The record retains the previous fields and adds `request_sha256` and
+`publication: {published_unix, generation}`. The status keeps its detach
+vocabulary, `submitted`, `attached` or `cache_hit`; a cache hit has null
+publication fields because this call publishes no generation. Consumers of the
+previous `prismaquant.prismabuild.pbrun_detach.v1` schema must accept the new
+schema name; the status values are unchanged.
+
+Both new verbs return 0 on success and 1 on refusal, with
+`{schema, refusal: {code, reason}}` on stdout. Missing requests are named
+`missing_sealed_request`; unavailable inputs are named `sealed_input_unavailable`
+with their input ID and digest. Invalid usage exits 2. Attached publication
+returns the action's ending or the ordinary wait failure code.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.
@@ -1971,6 +2006,49 @@ automatically collect arbitrary plugin reports into the CAS; verify their
 payloads separately. Use a new directory per invocation when retaining
 different runs. File discovery and partitioning remain PB's responsibility.
 
+Use `--plan-only --json PATH` to inspect file membership and capability
+classification without preparing or submitting actions (#1900):
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+    --checkout /home/rob/prismabuild --plan-only --json plan.json --tag x86 tests
+```
+
+The object has schema `prismabuild.pbtest_plan.v1` and fields `files`,
+`capabilities`, `tags`, `left_out`, and `refusals`. `files` preserves discovery
+order and deduplicates requested files. `capabilities` maps each discovered
+file to its declared capability names, including empty lists for portable files.
+`tags` maps each file to the sorted union of invocation and capability tags.
+Tags constrain placement; they do not remove files. `left_out` is empty because
+pbtest has no file-exclusion option. Consumers apply their own exclusions to
+the inventory. `refusals` contains `{code, reason}` objects. Codes are
+`discovery_failed`, `population_empty`, `capabilities_invalid`, and
+`capability_unclassifiable`; reasons name the invalid path or declaration.
+Exit 0 means classification succeeded. Exit 2 means refusal, usage error, or
+failure to write the plan. A refused plan is incomplete; do not treat missing
+or empty classification entries as proof that a file is portable.
+
+Plan mode uses the same discovery and classification functions as execution.
+It honors `--checkout`, positional paths, `--capabilities`, repeated `--tag`,
+and the `--gpu` default placement tag. `--python` is optional in plan mode.
+It ignores execution options: `--python`, `--tmpdir`, `--basetemp`, `--env`,
+`--shards`, `--max-clients`, `--workers-per-shard`, `--threads-per-shard`,
+`--cpus-per-shard`, `--mem-gb`, `--disk-metadata`, `--gpu-memory-gb`,
+`--pytest-args`, `--timeout-s`, `--test-timeout-s`, `--wait-s`, `--priority`,
+`--profile`, `--history`, `--data-manifest`, `--residency`, and `--transport`.
+The CLI still checks argument types and choices. Plan mode does not collect
+pytest items, evaluate hooks or `-k`/`-m`, require a fleet-data manifest, check
+fleet availability, identify the checkout, snapshot it, or write progress.
+A successful plan does not establish that execution can be admitted.
+
+The execution report remains a bare JSON list so existing consumers can iterate
+it. Each row adds `schema: "prismabuild.pbtest_report.v1"` (#1900), retaining
+`shard`, `files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`,
+`output`, `verdict`, and `receipt_path`. The nested verdict keeps schema
+`prismabuild.pbtest_shard_verdict.v1`. Execution exits 0 for a green run,
+1 for a non-green result or report-publication failure, and 2 for a preflight
+or usage refusal.
+
 With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
 It counts completed submission clients, not passing tests or verified receipts.
 The final list report remains authoritative. Mergeq binds the companion to each
@@ -1982,6 +2060,45 @@ leaves the independently requested file population unobserved.
 progress contracts, so upgrade these co-published tools together. Older running
 `pbmergeq` instances continue using newer `pbtest` generations because the
 outcome records and human output remain compatible.
+
+`pbmergeq gate` runs the configured suite in an existing checkout without queueing
+PRs or posting GitHub statuses (#1896):
+
+```bash
+	python3 /mnt/shared/prismabuild-fleet/repo/tools/pbmergeq.py gate \
+	    --config /path/to/project-gate.json --checkout /path/to/clean-checkout \
+	    --json /path/to/verdict.json --tmpdir /home/rob/pbt17 \
+	    --env TL_GATE_TOKEN=run-identifier
+```
+
+The config uses the queue's existing fields, including `test_paths`, `exclude`,
+`skip_fleet_data_files`, runtime pins, resource demand and retry limits. The gate
+uses the queue's discovery, runtime selection, history-balanced shards and retry
+merging. It blocks on its pbtest child processes. The merge-queue tick is unchanged.
+`--tmpdir` forwards to pbtest's worker scratch option. Repeatable `--env KEY=VALUE`
+seals literal values into every shard, including retries. Keys owned by pbtest or
+the runtime are refused by name: TMPDIR, PYTHONPATH, PYTEST_ADDOPTS, native thread
+variables and PRISMABUILD_ names. Each pair is passed to pbtest's own `--env`
+(#1891), so the published pbtest must carry it. Duplicate keys are refused
+before submission.
+
+The output is `prismabuild.mergeq_gate.v1`, with `verdict`, `failed`, `reason`,
+`files`, `left_out`, `runtime` and `evidence`. `failed` contains sorted failing
+node IDs. `left_out` contains `{file, reason}` entries for `config.exclude` and
+`fleet data`. Runtime evidence is the queue's selected interpreter, pins, source
+and published pbtest path. Evidence names the retained directory, report, log,
+action keys, receipt paths, problems, inconclusive files and elapsed seconds.
+Exit 0 means `pass`, 1 means `fail` with named failures, and 125 means
+`no_verdict`. Runtime refusal messages and inconclusive problem messages are
+preserved. Any collect-only or deselected shard produces `no_verdict`, even if
+the selected population passed. An empty inventory also has no verdict.
+
+Use a dedicated `state_dir` for each gate configuration. The gate takes the same
+single-writer lock as the queue. Reports and logs live under `state_dir/gates/`.
+A conclusive run updates `state.json`'s `history_report`, `history_runtime` and
+`history_source`; a refusal preserves the previous history. Forwarded environment
+values enter the history identity. Gate output alone does not certify deployment
+of this verb in an older published generation.
 
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
@@ -2694,9 +2811,12 @@ need it are the ones with no venv and no checkout. `--queue-root`,
 
 The tools:
 
-*   **`pb_status`** — the `pbstatus` census: worker offers and their ages,
+*   **`pb_status(detail=false)`** — the `pbstatus` census: worker offers and their ages,
     ready and claimed actions with why each is waiting, per-host reservation
-    token counts, and how the most recent actions ended.
+    token counts, and how the most recent actions ended. Admission freshness
+    and age remain in the default response; `detail=true` includes the persisted
+    CPU/GPU sample records and their `control_threads`, plus raw samples in
+    job admission decisions and denial evidence (#1897).
 *   **`pb_denials(hours)`** — claim denials per host, grouped by reason,
     inside the last `hours` (default 24, 0 for every recorded denial): how
     many per reason, and the most recently denied action for each. This is
@@ -2738,7 +2858,13 @@ The tools:
     already holds. Snapshot filters compare full Git identities exactly;
     a parent can match several agents' work. All filters intersect inside
     the newest-record scan window, and explicit keys bypass that window.
-    The answer says so in its `identity` field.
+    The answer says so in its `identity` field. Full 64-hex keys use direct
+    state-file reads with no namespace listing; missing exact keys are absent.
+    Shorter prefixes retain bounded discovery. `states` restricts directories
+    before enumeration and restricts keyed reads. Other filters are record
+    fields with no index, so cannot bound enumeration beyond the existing
+    window. `max_age_s` uses publication time, not file mtime; the directories
+    have no cheap time ordering. No new scan or index is added (#1897).
 *   **`pb_receipts(keys)`** — one ending-and-receipt verdict per action
     key (at most 50 per call): the state, the return codes, and whether the
     CAS holds a receipt, with a count of each verdict. This is the set form
