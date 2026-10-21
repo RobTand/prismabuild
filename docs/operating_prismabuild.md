@@ -2034,6 +2034,45 @@ progress contracts, so upgrade these co-published tools together. Older running
 `pbmergeq` instances continue using newer `pbtest` generations because the
 outcome records and human output remain compatible.
 
+`pbmergeq gate` runs the configured suite in an existing checkout without queueing
+PRs or posting GitHub statuses (#1896):
+
+```bash
+	python3 /mnt/shared/prismabuild-fleet/repo/tools/pbmergeq.py gate \
+	    --config /path/to/project-gate.json --checkout /path/to/clean-checkout \
+	    --json /path/to/verdict.json --tmpdir /home/rob/pbt17 \
+	    --env TL_GATE_TOKEN=run-identifier
+```
+
+The config uses the queue's existing fields, including `test_paths`, `exclude`,
+`skip_fleet_data_files`, runtime pins, resource demand and retry limits. The gate
+uses the queue's discovery, runtime selection, history-balanced shards and retry
+merging. It blocks on its pbtest child processes. The merge-queue tick is unchanged.
+`--tmpdir` forwards to pbtest's worker scratch option. Repeatable `--env KEY=VALUE`
+seals literal values into every shard, including retries. Keys owned by pbtest or
+the runtime are refused by name: TMPDIR, PYTHONPATH, PYTEST_ADDOPTS, native thread
+variables and PRISMABUILD_ names. Each pair is passed to pbtest's own `--env`
+(#1891), so the published pbtest must carry it. Duplicate keys are refused
+before submission.
+
+The output is `prismabuild.mergeq_gate.v1`, with `verdict`, `failed`, `reason`,
+`files`, `left_out`, `runtime` and `evidence`. `failed` contains sorted failing
+node IDs. `left_out` contains `{file, reason}` entries for `config.exclude` and
+`fleet data`. Runtime evidence is the queue's selected interpreter, pins, source
+and published pbtest path. Evidence names the retained directory, report, log,
+action keys, receipt paths, problems, inconclusive files and elapsed seconds.
+Exit 0 means `pass`, 1 means `fail` with named failures, and 125 means
+`no_verdict`. Runtime refusal messages and inconclusive problem messages are
+preserved. Any collect-only or deselected shard produces `no_verdict`, even if
+the selected population passed. An empty inventory also has no verdict.
+
+Use a dedicated `state_dir` for each gate configuration. The gate takes the same
+single-writer lock as the queue. Reports and logs live under `state_dir/gates/`.
+A conclusive run updates `state.json`'s `history_report`, `history_runtime` and
+`history_source`; a refusal preserves the previous history. Forwarded environment
+values enter the history identity. Gate output alone does not certify deployment
+of this verb in an older published generation.
+
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
 — the `1 failed, 531 passed, 1 skipped in 17.82s` line — and false otherwise.
