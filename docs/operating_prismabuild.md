@@ -1028,6 +1028,29 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+Pool waits use the queue-host bell when available (#1894), without CLI changes.
+The waiter reads a cursor, checks the record, then long-polls for that key's
+terminal-directory changes. Every reply causes a record recheck; bell messages
+are only hints. Restarts and lost history cause a reset and rescan. If the bell
+is unavailable, rechecks back off from 0.25 seconds to a five-second cap inside
+the original wait deadline. SLURM discovery still uses this backoff because its
+service cannot call back. Zero-patience probes contact no bell.
+
+The roster declares one `bell` role on dl380g10, supervised by
+`tools/fleet/supervise.py --ensure --systemd`. Publication and activation are
+operator steps; source inclusion alone does not establish a running service.
+It listens on TCP 9470 at loopback and the two queue private links,
+10.100.98.3 and 10.100.99.3. Sparks discover the address from their queue mount
+source. Inspect `pb-role-bell.log` alongside other supervised role logs.
+`GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
+300 seconds; a restart changes epoch. An occupied port exits 3 and uses the
+supervisor's existing refusal backoff. A lost state-directory watch exits
+nonzero for restart. Stop joins requests after waking their long-polls.
+Host firewall rules must permit the Sparks to reach TCP 9470 on their private
+queue links before activation. PB does not install firewall configuration.
+This slice changes pbwait/pbrun pool waits only; worker, prewarm and tier-loop
+waits migrate in later PRs.
+
 By default `pbrun` waits. `--wait-s` bounds how long it waits and defaults to
 86400 seconds. It bounds only your patience: nothing is cancelled when it
 expires, and the job keeps running.
@@ -1037,7 +1060,7 @@ an isolated child with a five-second budget. The observation includes terminal
 rows, withdrawal/preemption lineage, and archived successor evidence; once an
 ending lands, immutable attempt and log verification gets one separate
 five-second budget before any result is printed. The parent retains the
-original `--wait-s` deadline across observations and does the polling sleep,
+original `--wait-s` deadline across observations and waits for queue hints,
 so a repeated preemption follows its exact generation without granting a fresh
 wait. `--wait-s 0` still makes one immediate bounded observation, and a
 timed-out read exits 74. A positive `--wait-s` never gives a read more time

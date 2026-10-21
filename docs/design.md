@@ -171,6 +171,12 @@ The synchronous and detached frontends, campaign window and canary import that
 owner directly. `pbrun` no longer exports those internal wait helpers. The
 generic reader mechanism and persistent scope-owned protocol are unchanged.
 The synchronous and detached wait loops share `action_wait.await_action`.
+For pool endings, that loop reads the queue bell cursor before each record
+observation and long-polls from that cursor after an inconclusive observation
+(#1894). Every hint, reset and empty timeout leads to another authoritative
+record read with the original deadline. Zero-patience probes do no bell I/O.
+SLURM discovery and an unavailable bell retain capped recheck backoff because
+those services cannot call back. Existing reader-error recovery is unchanged.
 The synchronous and detached profiles preserve deadline clipping, the final
 synchronous reread and immediate detached preemption handoff at expiry.
 Attachment reads remain strict outside an active synchronous await. Immutable
@@ -9463,10 +9469,50 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Queue change hints on the queue host (#1894)
+
+`pbbell.py` is the supervised `bell` observer role on dl380g10 only. It watches
+the existing ready, claimed, done, failed, withdrawn, deferred and intent
+directories with libc inotify through ctypes. The queue is local ZFS there;
+NFS-client writes also generate local notifications. Completed `.json` names
+on IN_MOVED_TO and IN_CLOSE_WRITE become hints. It neither reads record bytes
+nor claims or mutates queue work. Workers, prewarm and tier-loop waits are
+outside this first slice.
+
+The role takes the standard host-local singleton lock. The supervisor owns
+generation retirement as it does for metrics. It binds HTTP/1.1 on TCP 9470
+at 127.0.0.1, 10.100.98.3 and 10.100.99.3, with one shared event stream.
+`queue_bell.Client` uses the longest covering mount's NFS source address from
+local `/proc/self/mountinfo`, or loopback on a local filesystem. No queue
+lookup or hostname guess is required to discover the endpoint.
+
+`GET /v1/now` returns `{epoch, seq}`. The epoch is a random UUID per start;
+sequence numbers increase for the life of that epoch. `GET /v1/wait` takes
+`since=EPOCH:SEQ`, comma-separated `dirs` and `keys`, and `timeout` in seconds.
+Empty filters match everything. It returns matching `{seq, dir, key}` events,
+`events: []` at the deadline, or `reset: true` for an epoch mismatch, future
+cursor, kernel overflow or lost ring history. All responses carry the current
+epoch and sequence. The ring retains 4096 events; `MAX_WAIT_S` caps each
+long-poll at 300 seconds. Callers with longer patience renew the long-poll.
+Cursor acquisition before the record observation closes the read/wait race.
+Neither a notification nor its absence establishes any queue state.
+
+A selector blocks on inotify, listener sockets and a shutdown socket; request
+threads block on the ring condition. Overflow invalidates earlier cursors.
+Loss of a watched directory stops the service, allowing supervision to rebuild
+all watches rather than silently watching a detached inode. SIGTERM/INT wake
+the selector and all long-polls, close listeners and join request threads.
+Incomplete HTTP requests have a five-second socket timeout. The role posts no
+park marker while serving and owns no admitted work. Binding an occupied port
+refuses with the standard singleton exit so supervisor backoff applies.
+
+This describes source behavior, not fleet activation. The lead publishes and
+activates the new role after review. No firewall change is performed by PB.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 The continuous exporter keeps serving under a closed or missing maintenance
-gate and posts no marker while serving. Metrics is the sole observer role.
+gate and posts no marker while serving. Metrics and bell are observer roles.
 It does not read runtime receipts or retire itself on generation drift. The
 supervisor owns its generation retirement and drift record, then respawns an
 exporter from the active generation. A direct exporter whose loaded receipt is
@@ -18861,7 +18907,7 @@ profile preserves zero-patience final rereads, remaining-budget observations,
 separate verification budgets and delivered-snapshot acceptance. The detached
 profile always makes its first bounded read and follows exact preemption
 handoffs at expiry. Both use the owner clock at call time. Its `await_ending`
-adapter now clamps a positive wait's last sleep to the deadline; the only
+adapter bounds each positive wait by its original deadline; the only
 production caller requests zero patience. Own-child waitpid remains the reap
 authority. Persistent scoped readers retain their separate durable protocol.
 

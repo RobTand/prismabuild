@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Generic, Protocol, TypeVar
 
-from . import _bounded_reader as _reader, core as pb, endings, pool, record_store
+from . import _bounded_reader as _reader, core as pb, endings, pool, queue_bell, record_store
 from .digest_primitives import sorted_json
 
 POLL_S = 5.0
@@ -441,6 +441,8 @@ def await_action(
     *, generation: float | None, patience: WaitUntil | ProbeOnce,
     profile: AwaitProfile, tool: str, subject: str,
     notice: Callable[[RetryNotice[T] | FinalReadNotice[T]], None],
+    bell: queue_bell.Client | None = None, bell_key: str = "",
+    use_bell: Callable[[], bool] = lambda: True,
 ) -> Ready[T] | Unavailable[T] | Unreadable | PatienceExpired:
     """Await one identity with its original patience and one reader lifetime.
 
@@ -472,6 +474,7 @@ def await_action(
     deadline = patience.deadline
     had_patience = deadline > clock.monotonic()
     diagnostic = None
+    fallback_s = min(0.25, POLL_S)
 
     def fail(fault, count, ending, retained=(), waited_s=0.0):
         return Unavailable(fault, count, ending, retained, waited_s, had_patience)
@@ -517,6 +520,22 @@ def await_action(
                 budget_s = min(OUTCOME_READ_TIMEOUT_S, remaining)
             else:
                 budget_s = OUTCOME_READ_TIMEOUT_S
+            # Capture before observing, so a rename between the read and the
+            # long-poll remains in the ring. A bell reply never decides an ending.
+            cursor = None
+            if bell is not None and not isinstance(patience, ProbeOnce):
+                remaining = remaining_s()
+                if remaining > 0:
+                    try:
+                        cursor = bell.now(budget_s=remaining)
+                    except queue_bell.Unavailable:
+                        pass
+            if profile is AwaitProfile.SYNCHRONOUS and not isinstance(patience, ProbeOnce):
+                # Bell connection time belongs to the same original patience.
+                budget_s = min(budget_s, remaining_s())
+                if budget_s <= 0:
+                    return (fail(unavailable, count, WaitEnd.DEADLINE)
+                            if unavailable is not None else PatienceExpired(state.generation, diagnostic))
             result = poll(budget_s)
             first = False
             if isinstance(result, (Ready, Unreadable)):
@@ -557,7 +576,17 @@ def await_action(
                 return PatienceExpired(state.generation, diagnostic)
             if result.handoff:
                 continue
-            clock.sleep(max(0.0, min(POLL_S, deadline - clock.monotonic())))
+            if cursor is not None and use_bell():
+                try:
+                    bell.wait(cursor, queue_bell.TERMINAL_DIRS, (bell_key,), remaining_s())
+                    fallback_s = min(0.25, POLL_S)
+                    continue
+                except queue_bell.Unavailable:
+                    pass
+            # An unavailable bell, or SLURM submission discovery, is a service
+            # that cannot call back. Recheck with bounded backoff up to POLL_S.
+            clock.sleep(max(0.0, min(fallback_s, remaining_s())))
+            fallback_s = min(fallback_s * 2, POLL_S)
 
 
 def terminal_record(
@@ -721,7 +750,7 @@ def await_ending(
     result = await_action(
         observe, generation=generation, patience=WaitUntil(deadline),
         profile=AwaitProfile.DETACHED, tool='pbrun', subject=key[:12],
-        notice=lambda _event: None)
+        notice=lambda _event: None, bell=queue_bell.Client(q.records.root), bell_key=key)
     if isinstance(result, Ready):
         return result.value
     if isinstance(result, Unreadable):
