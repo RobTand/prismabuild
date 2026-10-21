@@ -367,6 +367,7 @@ def test_refused_restart_probe_recovers_once_on_offer_transition(runtime_authori
 @pytest.mark.parametrize('error', [
     'OCI runtime create failed: nvidia-container-cli: initialization error: invalid configuration',
     'OCI runtime create failed: nvidia-container-cli: device error: bad-uuid: unknown device',
+    'OCI runtime create failed: nvidia-container-cli: device error: nvml error: driver not loaded: unknown device',
     'OCI runtime create failed: nvidia-container-cli: requirement error: unsatisfied condition: cuda>=99',
 ])
 def test_unproven_nvidia_configuration_errors_do_not_fence(error):

@@ -545,14 +545,15 @@ def container_launch_outcome(container, *, cdi_sources, source_exists=os.path.ex
             for request in requests))
         if missing and nvidia and missing[1] in cdi_sources and not source_exists(missing[1]):
             return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096])
-        nvidia_error = any(prefix in lower for prefix in (
-            'nvidia-container-cli: initialization error:',
-            'nvidia-container-runtime: initialization error:',
-            'nvidia-container-cli: device error:'))
-        host_cause = any(cause in lower for cause in (
+        nvidia_error = re.search(
+            r'nvidia-container-(?:cli|runtime): (?:initialization|device) error: ([^\n]+)', lower)
+        # The first NVIDIA cause must itself name a host failure. A requested
+        # identifier echoed by "unknown device" is application configuration,
+        # even when that identifier imitates an NVML diagnostic.
+        host_cause = nvidia_error and nvidia_error[1].startswith((
             'nvml error: driver not loaded', 'nvml error: driver/library version mismatch',
             'failed to initialize nvml', 'nvml error: gpu is lost'))
-        if nvidia_error and host_cause:
+        if host_cause and 'unknown device' not in nvidia_error[1]:
             return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096])
     return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
 
