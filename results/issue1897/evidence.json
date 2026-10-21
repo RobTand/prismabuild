@@ -1,0 +1,505 @@
+{
+  "issue": 1897,
+  "base_commit": "38eed1488e6e1a622da295dd69ae041f63da6c08",
+  "implementation_commit": "3d6c406a29",
+  "deployment": "Source only; not deployed",
+  "test_runs": [
+    {
+      "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c8d95e99 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --cpus-per-shard 2 --mem-gb 4 --threads-per-shard 1 --shards 2 --json /home/rob/tmp/pb1897-evidence/tests.json tests/test_pbmcp_arguments.py tests/test_pbmcp_bounded.py tests/test_pbmcp_claim_identity.py tests/test_pbmcp_cursors.py tests/test_pbmcp_denials.py tests/test_pbmcp_direct_keys.py tests/test_pbmcp_generation.py tests/test_pbmcp_movers.py tests/test_pbmcp_preemption.py tests/test_pbmcp_protocol.py tests/test_pbmcp_read_only.py tests/test_pbmcp_reader_lifecycle.py tests/test_pbmcp_receipts.py tests/test_pbmcp_retained_history_root_review.py tests/test_pbmcp_snapshot_filters.py tests/test_pbmcp_startup.py tests/test_pbmcp_starvation.py tests/test_pbmcp_tier.py tests/test_pbmcp_tools.py tests/test_pbmcp_withdrawn_attempt_history.py tests/test_record_store_reader_controls.py tests/test_census_sections.py tests/test_verified_action_result.py tests/test_superseded_origin_consumers.py tests/test_pool_withdrawn_retention_1533.py tests/test_canary_leg3_staged_read.py tests/test_a_busy_transition_lock_never_stops_the_tier_loop.py tests/test_a_resubmitted_key_answers_by_generation.py tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py tests/test_rollout_status.py tests/test_residency_publication_protocol.py tests/test_live_defaults_bind_at_call_time.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+      "aggregate_cpu": 4,
+      "aggregate_mem_gb": 8,
+      "native_threads_per_worker": 1,
+      "shards": [
+        {
+          "shard": 0,
+          "files": [
+            "tests/test_pbmcp_arguments.py",
+            "tests/test_pbmcp_claim_identity.py",
+            "tests/test_pbmcp_denials.py",
+            "tests/test_pbmcp_generation.py",
+            "tests/test_pbmcp_preemption.py",
+            "tests/test_pbmcp_read_only.py",
+            "tests/test_pbmcp_receipts.py",
+            "tests/test_pbmcp_snapshot_filters.py",
+            "tests/test_pbmcp_starvation.py",
+            "tests/test_pbmcp_tools.py",
+            "tests/test_record_store_reader_controls.py",
+            "tests/test_verified_action_result.py",
+            "tests/test_pool_withdrawn_retention_1533.py",
+            "tests/test_a_busy_transition_lock_never_stops_the_tier_loop.py",
+            "tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py",
+            "tests/test_residency_publication_protocol.py",
+            "tests/test_duplication_baseline.py"
+          ],
+          "action_key": "92cf73003bbf1b30be33f0786bb12d10df686241bfbb607edd2e4cd4795fdd68",
+          "summary": "245 passed, 2 warnings in 313.72s (0:05:13)",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/92/92cf73003bbf1b30be33f0786bb12d10df686241bfbb607edd2e4cd4795fdd68.json"
+        },
+        {
+          "shard": 1,
+          "files": [
+            "tests/test_pbmcp_bounded.py",
+            "tests/test_pbmcp_cursors.py",
+            "tests/test_pbmcp_direct_keys.py",
+            "tests/test_pbmcp_movers.py",
+            "tests/test_pbmcp_protocol.py",
+            "tests/test_pbmcp_reader_lifecycle.py",
+            "tests/test_pbmcp_retained_history_root_review.py",
+            "tests/test_pbmcp_startup.py",
+            "tests/test_pbmcp_tier.py",
+            "tests/test_pbmcp_withdrawn_attempt_history.py",
+            "tests/test_census_sections.py",
+            "tests/test_superseded_origin_consumers.py",
+            "tests/test_canary_leg3_staged_read.py",
+            "tests/test_a_resubmitted_key_answers_by_generation.py",
+            "tests/test_rollout_status.py",
+            "tests/test_live_defaults_bind_at_call_time.py",
+            "tests/test_design_doc_line_references.py"
+          ],
+          "action_key": "ef80f55871c8b6eed4dedfa0f40d85d8c6665230629996f3a3378178a414bbae",
+          "summary": "158 passed, 2 warnings, 2 errors in 459.04s (0:07:39)",
+          "returncode": 1,
+          "receipt_path": null
+        }
+      ],
+      "note": "403 passed calls, 2 new-fixture teardown errors; corrected in final run"
+    },
+    {
+      "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c8d95e99 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --cpus-per-shard 2 --mem-gb 4 --threads-per-shard 1 --json /home/rob/tmp/pb1897-evidence/tests-final.json tests/test_pbmcp_direct_keys.py tests/test_pbmcp_tools.py tests/test_pbmcp_read_only.py tests/test_pbmcp_arguments.py tests/test_pbmcp_generation.py tests/test_census_sections.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+      "aggregate_cpu": 16,
+      "aggregate_mem_gb": 32,
+      "native_threads_per_worker": 1,
+      "shards": [
+        {
+          "shard": 0,
+          "files": [
+            "tests/test_pbmcp_direct_keys.py"
+          ],
+          "action_key": "7d89f85f8b01f76467fe1e545d5871cfdf12b7d8578b84c75efaf668716050dd",
+          "summary": "5 passed in 1.67s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/7d/7d89f85f8b01f76467fe1e545d5871cfdf12b7d8578b84c75efaf668716050dd.json"
+        },
+        {
+          "shard": 1,
+          "files": [
+            "tests/test_pbmcp_tools.py"
+          ],
+          "action_key": "ba0b0b5413b28dae85a5715803b6fd3e5c1f996de878c9270eb791977fcdaa02",
+          "summary": "21 passed in 10.78s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ba/ba0b0b5413b28dae85a5715803b6fd3e5c1f996de878c9270eb791977fcdaa02.json"
+        },
+        {
+          "shard": 2,
+          "files": [
+            "tests/test_pbmcp_read_only.py"
+          ],
+          "action_key": "501150ec5fc3fe1e74a6e2c15a6f49d8d768f691c31c93e0733cdab423e58b74",
+          "summary": "9 passed in 6.31s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/50/501150ec5fc3fe1e74a6e2c15a6f49d8d768f691c31c93e0733cdab423e58b74.json"
+        },
+        {
+          "shard": 3,
+          "files": [
+            "tests/test_pbmcp_arguments.py"
+          ],
+          "action_key": "ccd7441b65cf1ffd53e890b5bce25240c27b35b45f49b2433e1f02ae4d8ac2e8",
+          "summary": "21 passed in 5.22s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cc/ccd7441b65cf1ffd53e890b5bce25240c27b35b45f49b2433e1f02ae4d8ac2e8.json"
+        },
+        {
+          "shard": 4,
+          "files": [
+            "tests/test_pbmcp_generation.py"
+          ],
+          "action_key": "5889be2943cf540d5d4941fc6797136875c18489bf12af1f6ddd33cb2e1bdfa9",
+          "summary": "5 passed in 2.50s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/58/5889be2943cf540d5d4941fc6797136875c18489bf12af1f6ddd33cb2e1bdfa9.json"
+        },
+        {
+          "shard": 5,
+          "files": [
+            "tests/test_census_sections.py"
+          ],
+          "action_key": "ab40a952c2b51106366aefbb958428bc768a367acbc7e37e25cc323edff6c800",
+          "summary": "18 passed, 2 warnings in 198.33s (0:03:18)",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ab/ab40a952c2b51106366aefbb958428bc768a367acbc7e37e25cc323edff6c800.json"
+        },
+        {
+          "shard": 6,
+          "files": [
+            "tests/test_duplication_baseline.py"
+          ],
+          "action_key": "75b2885e9b74e992903c0c2c4af254cfb4d9c5975eb6220a792e3c64b3cd41d0",
+          "summary": "8 passed in 44.59s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/75/75b2885e9b74e992903c0c2c4af254cfb4d9c5975eb6220a792e3c64b3cd41d0.json"
+        },
+        {
+          "shard": 7,
+          "files": [
+            "tests/test_design_doc_line_references.py"
+          ],
+          "action_key": "35dce2d840ebc992195edc79ff0daed4abec0db15837476ee382cf3d39e9520a",
+          "summary": "1 passed in 5.02s",
+          "returncode": 0,
+          "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/35/35dce2d840ebc992195edc79ff0daed4abec0db15837476ee382cf3d39e9520a.json"
+        }
+      ],
+      "note": "88 passed; zero errors; all eight terminal cleanups complete"
+    }
+  ],
+  "functional_runs": [
+    {
+      "source": "before",
+      "action_key": "68aaa5524eba2d9c320f3e8224182f6e7d4cfd303b1a3efe3f78768c436c4d3c",
+      "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd /home/rob/.t3/worktrees/prismabuild/t3-c8d95e99 --tag dl380g10 --cpus 1 --demand mem_gb=2 --timeout-s 180 --wait-s 1200 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- /home/rob/venvs/pb-cpu/bin/python3.14 results/issue1897/check_live.py --baseline",
+      "results": [
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "473655276a87335e1b1f82fcfec15c5b2beef4f5852b1d133e52b676bb3ec364"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 3.679338766989531,
+          "bytes": 16013,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "2bc51e6144d2e23bb6deaf3f389728eaf42962aaec82fa95fb495ea972f09c93"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 0.9365505389869213,
+          "bytes": 15473,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "cebc1c306559ba9ee67706fe60aee0f618e73236181c12f02c5af39c3fb57781"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 2.802321974973893,
+          "bytes": 34125,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_actions",
+          "arguments": {
+            "keys": [
+              "473655276a87335e1b1f82fcfec15c5b2beef4f5852b1d133e52b676bb3ec364",
+              "2bc51e6144d2e23bb6deaf3f389728eaf42962aaec82fa95fb495ea972f09c93",
+              "cebc1c306559ba9ee67706fe60aee0f618e73236181c12f02c5af39c3fb57781"
+            ]
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 1.9466082729923073,
+          "bytes": 3773,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "returned": 3
+        },
+        {
+          "tool": "pb_status",
+          "arguments": {},
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 5.025291286001448,
+          "bytes": 681823,
+          "complete": false,
+          "timed_out": [
+            "endings",
+            "reservations",
+            "rollout",
+            "repo-link"
+          ],
+          "unavailable": []
+        }
+      ],
+      "receipt": {
+        "action_key": "68aaa5524eba2d9c320f3e8224182f6e7d4cfd303b1a3efe3f78768c436c4d3c",
+        "receipt_sha256": "9ad2d6027a237dc840d2be10143b6abb547b5633a66f244cae5d3799f825a951",
+        "result": {
+          "sha256": "9dcc4722bb44c4a3e7466d08b61b7e6fc4d9cb55ca71c6dc1f9192537910715a",
+          "bytes": 1666
+        }
+      }
+    },
+    {
+      "source": "after",
+      "action_key": "0dc4115e2e608e511c988469510038db00d4cf0f2626f0dc2980bdb8de2ce5da",
+      "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd /home/rob/.t3/worktrees/prismabuild/t3-c8d95e99 --tag dl380g10 --cpus 1 --demand mem_gb=2 --timeout-s 180 --wait-s 1200 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- /home/rob/venvs/pb-cpu/bin/python3.14 results/issue1897/check_live.py",
+      "results": [
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "473655276a87335e1b1f82fcfec15c5b2beef4f5852b1d133e52b676bb3ec364"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 0.5252498449990526,
+          "bytes": 16013,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "2bc51e6144d2e23bb6deaf3f389728eaf42962aaec82fa95fb495ea972f09c93"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 1.3215104280097876,
+          "bytes": 15473,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_action",
+          "arguments": {
+            "key_prefix": "cebc1c306559ba9ee67706fe60aee0f618e73236181c12f02c5af39c3fb57781"
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 0.498280943982536,
+          "bytes": 34125,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "found": true,
+          "state": "done"
+        },
+        {
+          "tool": "pb_actions",
+          "arguments": {
+            "keys": [
+              "473655276a87335e1b1f82fcfec15c5b2beef4f5852b1d133e52b676bb3ec364",
+              "2bc51e6144d2e23bb6deaf3f389728eaf42962aaec82fa95fb495ea972f09c93",
+              "cebc1c306559ba9ee67706fe60aee0f618e73236181c12f02c5af39c3fb57781"
+            ]
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 0.02978835700196214,
+          "bytes": 3772,
+          "complete": true,
+          "timed_out": [],
+          "unavailable": [],
+          "returned": 3
+        },
+        {
+          "tool": "pb_status",
+          "arguments": {},
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 5.017509733996121,
+          "bytes": 177902,
+          "complete": false,
+          "timed_out": [
+            "endings",
+            "reservations",
+            "rollout",
+            "repo-link"
+          ],
+          "unavailable": []
+        },
+        {
+          "tool": "pb_status",
+          "arguments": {
+            "detail": true
+          },
+          "evidence_kind": "functional_read_only",
+          "elapsed_s_unqualified_not_measurement": 5.0251602419884875,
+          "bytes": 678412,
+          "complete": false,
+          "timed_out": [
+            "endings",
+            "reservations",
+            "rollout",
+            "repo-link"
+          ],
+          "unavailable": []
+        }
+      ],
+      "receipt": {
+        "action_key": "0dc4115e2e608e511c988469510038db00d4cf0f2626f0dc2980bdb8de2ce5da",
+        "receipt_sha256": "bd1422e6e96898d09bd9359aad49880125f67430ab65aa09fc05fc6a57abab56",
+        "result": {
+          "sha256": "d652e8e66f0b531342bf972377477fb0281891e0e8006ff1165a79c34836b6ab",
+          "bytes": 1944
+        }
+      }
+    }
+  ],
+  "discarded_runs": [
+    {
+      "keys": [
+        "d57f0ab9ffe1ddfd54d34fa1f4163b3d0df1348614a911cf2d2e6dcd258fb524",
+        "c0e91f7b1b0e9db95260d4cee1fc6532ae08c0986651c85ba943ecb31500bccc",
+        "abc94ce736b4b5b37129fd75566ec864342f4eec118e820e16f94771980c53da"
+      ],
+      "status": "withdrawn",
+      "reason": "Initial snapshots omitted unstaged files; redirected logs changed the checkout seal. No passing validation claimed."
+    },
+    {
+      "keys": [
+        "5f810fa3dc901c71d9c2d0b46a48c2e2805097050db3fb88ce266b12ca94139c"
+      ],
+      "status": "withdrawn",
+      "reason": "Intermediate node-only projection replaced after nested admission samples were found."
+    },
+    {
+      "keys": [
+        "4c76b04787cc6ae83630aecd1aa643f080f52ef0467926b5f6905762c1f73a6d",
+        "5dd044717fb5bbc22a57c9a3bcf548bcc52392a327691985368f49085bec0ebe"
+      ],
+      "status": "withdrawn",
+      "reason": "Lead explicitly dropped wall-time claims and requested ordinary PB functional checks. No measurement result."
+    }
+  ],
+  "verified_receipts": [
+    {
+      "action_key": "92cf73003bbf1b30be33f0786bb12d10df686241bfbb607edd2e4cd4795fdd68",
+      "receipt_sha256": "677de3afaa433efa46c52976f1f388f7eedeb4748acd50d866846aaaaf3bfcb6",
+      "result": {
+        "sha256": "fb07b666eb517da6ce3f5cf36a50e4beb58e8425e82290a4c934bc5730bce622",
+        "bytes": 143505
+      }
+    },
+    {
+      "action_key": "7d89f85f8b01f76467fe1e545d5871cfdf12b7d8578b84c75efaf668716050dd",
+      "receipt_sha256": "d8a1d8669d7f1710baf97b8fd80e8c9a988e73bacf48737f3a5f5dca1f3f3454",
+      "result": {
+        "sha256": "20bdc8807ecbaf51845d3c9cff8b7614b7688f3f2b81987ccdca2459dca5a471",
+        "bytes": 3985
+      }
+    },
+    {
+      "action_key": "ba0b0b5413b28dae85a5715803b6fd3e5c1f996de878c9270eb791977fcdaa02",
+      "receipt_sha256": "8537d26676bae7557d2385a25b3f7540bd513da74082021690e96ea90237d4fa",
+      "result": {
+        "sha256": "9f97bc6d6e5ad3e540baac27f45f58574878bc851ef478f333c86718c34a2ca0",
+        "bytes": 11258
+      }
+    },
+    {
+      "action_key": "501150ec5fc3fe1e74a6e2c15a6f49d8d768f691c31c93e0733cdab423e58b74",
+      "receipt_sha256": "b34004bb8e60e9b777633e82517965cfdee7666b3e731470264e51d0e74a90cc",
+      "result": {
+        "sha256": "9abcff1b3d682a2b890b638cc4f31f4e972d402518ad77239589bf867a2b6bd1",
+        "bytes": 5767
+      }
+    },
+    {
+      "action_key": "ccd7441b65cf1ffd53e890b5bce25240c27b35b45f49b2433e1f02ae4d8ac2e8",
+      "receipt_sha256": "41b2021785a79d6e8a73b8504a84f08b100bf96eb29f46f7e9ec48f332625f74",
+      "result": {
+        "sha256": "4bf5d0a50f8005321a8571c87a09c2e5c56147debf2563224a42fb293031ab86",
+        "bytes": 14114
+      }
+    },
+    {
+      "action_key": "5889be2943cf540d5d4941fc6797136875c18489bf12af1f6ddd33cb2e1bdfa9",
+      "receipt_sha256": "adefe3db0672624d6f4a32d3aa09abe37b596043193b019db8a62c7ffad59754",
+      "result": {
+        "sha256": "59ab8bf17be31751e26df8a315e6f14d80a0db6fb5aa9ea85ce629728820b4c9",
+        "bytes": 4201
+      }
+    },
+    {
+      "action_key": "ab40a952c2b51106366aefbb958428bc768a367acbc7e37e25cc323edff6c800",
+      "receipt_sha256": "cd670c38b446326e46dcb41a874c96b8f54e828c23fcc1d4f49e0d78e3b0b8ca",
+      "result": {
+        "sha256": "306508499e71d5fc87cd6e570b9df3da7a48dd2b45c33a8076d972e0aafa1d0a",
+        "bytes": 11440
+      }
+    },
+    {
+      "action_key": "75b2885e9b74e992903c0c2c4af254cfb4d9c5975eb6220a792e3c64b3cd41d0",
+      "receipt_sha256": "12862a58ced25f624994c416fab242de5e4668204e7d54ae7429a35706e03d0a",
+      "result": {
+        "sha256": "acdcdf021cd89dcd4ae9e59de04607f65b36b7ff618f7c627d40fd52393ecde9",
+        "bytes": 5640
+      }
+    },
+    {
+      "action_key": "35dce2d840ebc992195edc79ff0daed4abec0db15837476ee382cf3d39e9520a",
+      "receipt_sha256": "7526276de5439e6534ece4b7d525c08f3790419944e062264864e8d09bc378ba",
+      "result": {
+        "sha256": "bf769fbbe2fb6913989911a52bde3ce8ce57f14beaee2fcadc63a42c93bbfa4b",
+        "bytes": 2395
+      }
+    },
+    {
+      "action_key": "0eb30e6521007d541c701b211d0f64435679392a1627436afb6207f5ed05e50e",
+      "receipt_sha256": "f876777ccfc8fc77a478f124606fd327a029ed5b3ad580c56d44a4aad6dd4a53",
+      "result": {
+        "sha256": "e1dc5600ced5b91e25630d7d912ef14c49c6b0e77cc2438718638f90cd765373",
+        "bytes": 973
+      }
+    },
+    {
+      "action_key": "c4122e22540797e9e6751c4a0b787ba2314cb504d362f8f11ae8a82d71070684",
+      "receipt_sha256": "f0d88f753edf9e00dd8ad2fc5ea0f3433eea9083ec652fcbc084a2f145820b23",
+      "result": {
+        "sha256": "b30c09d77bd45622eb17b46c0b73bdcd447b7d5733147415c0e73ffbc8e87b24",
+        "bytes": 973
+      }
+    },
+    {
+      "action_key": "317788140330952207007f3ba6cd2000e971277617ff592f4d871ff1061f5e2d",
+      "receipt_sha256": "5f50e038e20ff7b8ba6f83442ba7452c6334b9d758b1e746da62e2370d167b64",
+      "result": {
+        "sha256": "7c93aeb8980e07a4d1bd8c2a88658f52d834af5764d517883cb6b6211908aa8b",
+        "bytes": 863
+      }
+    },
+    {
+      "action_key": "68aaa5524eba2d9c320f3e8224182f6e7d4cfd303b1a3efe3f78768c436c4d3c",
+      "receipt_sha256": "9ad2d6027a237dc840d2be10143b6abb547b5633a66f244cae5d3799f825a951",
+      "result": {
+        "sha256": "9dcc4722bb44c4a3e7466d08b61b7e6fc4d9cb55ca71c6dc1f9192537910715a",
+        "bytes": 1666
+      }
+    },
+    {
+      "action_key": "0dc4115e2e608e511c988469510038db00d4cf0f2626f0dc2980bdb8de2ce5da",
+      "receipt_sha256": "bd1422e6e96898d09bd9359aad49880125f67430ab65aa09fc05fc6a57abab56",
+      "result": {
+        "sha256": "d652e8e66f0b531342bf972377477fb0281891e0e8006ff1165a79c34836b6ab",
+        "bytes": 1944
+      }
+    }
+  ],
+  "verification": "Published PrismaBuildCAS.lookup verified receipts and result blobs. Published pbwait checked final terminal status and cleanup. Test logs were inspected through pbtest reports and immutable result payloads.",
+  "baseline_failures_on_main": [],
+  "limits": [
+    "Elapsed seconds in functional results are unqualified observations, explicitly not measurements.",
+    "All three old-source exact-key calls and old-source pb_actions also completed on this live check. No reproduced baseline timeout or timing improvement is claimed.",
+    "Default pb_status is 177902 bytes versus 681823 before. It exceeds the approximate 50 KB goal with this active population.",
+    "Both old and new pb_status remain partial: endings exhausts the shared deadline and later sections are unread. No unrestricted terminal-enumeration fix is claimed.",
+    "Checkout, snapshot, publisher and publication-age filters have no index. They filter the existing window; no new scan or index was added.",
+    "No full repository suite, deployment, ARM qualification or cold-cache benchmark was performed."
+  ]
+}

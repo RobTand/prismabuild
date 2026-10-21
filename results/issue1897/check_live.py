@@ -1,4 +1,8 @@
-"""Read-only issue #1897 measurement. Run through pbrun --measurement."""
+"""Issue #1897 functional live reads through an ordinary admitted PB action.
+
+Elapsed seconds are unqualified observations, explicitly not measurements.
+--baseline loads the pinned pre-change MCP source for the size comparison.
+"""
 import json
 from pathlib import Path
 import sys
@@ -25,8 +29,11 @@ KEYS = [
 session = pbmcp.Session(queue_root=pbmcp.fleet_census.DEFAULT_QUEUE_ROOT,
                         cas_root=Path('/mnt/shared/prismabuild-fleet/cas'),
                         repo_link=Path('/mnt/shared/prismabuild-fleet/repo'))
-for name, args in [('pb_action', {'key_prefix': KEYS[0]}),
-                   ('pb_actions', {'keys': KEYS}), ('pb_status', {})]:
+queries = [('pb_action', {'key_prefix': key}) for key in KEYS]
+queries += [('pb_actions', {'keys': KEYS}), ('pb_status', {})]
+if '--baseline' not in sys.argv:
+    queries.append(('pb_status', {'detail': True}))
+for name, args in queries:
     start = time.perf_counter()
     try:
         body = session.call(name, args)
@@ -40,4 +47,5 @@ for name, args in [('pb_action', {'key_prefix': KEYS[0]}),
     except Exception as exc:
         result = {'error': str(exc)}
     print(json.dumps({'tool': name, 'arguments': args,
-                      'elapsed_s': time.perf_counter() - start, **result}), flush=True)
+                      'evidence_kind': 'functional_read_only',
+                      'elapsed_s_unqualified_not_measurement': time.perf_counter() - start, **result}), flush=True)
