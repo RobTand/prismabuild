@@ -51,3 +51,36 @@ including stale reviews for Core, PoolQueue, pbmcp, and tier_cycle. Its retained
 The exact namespace rerun command and supplemental x86 command, shard results,
 and final primary audit are retained with the capture evidence. This refresh
 qualifies corpus bytes only. It grants no deployment or whole-campaign approval.
+
+## Additional controller pin found by the namespace lane
+
+The namespace run at `05be46294a472cb15e67f90cf596021394f45777` also exposed
+one current-writer mismatch in `upgrade-intent/armed`; the controller file
+reported 236 other passes. Its coordinator source digest was stale even though
+its agent digest and wire shape remained correct. This additional refresh is
+required for the requested complete namespace qualification.
+
+The coordinator digest changes from
+`0a1a14ad90650fbf0e32192dfccfbbcea97f8c3ba5b0528067b54efe48ec32e6`
+to `576e2df0196dcd257f35b117219b7058b6311cc7e264cc15223857d583c8c1c1`.
+The strict `upgrade-intent` profile accepts only actual source-identity changes.
+Its report confirms that `/coordinator_sha256` is the sole changed wire member.
+
+Evidence is in the `home-pbt17/upgrade-intent/` subdirectory:
+
+- Capture `fe9e234ab7f5df5eaf869483abeb648ac09c757a703f0669fa1dea65aa9e98d2`.
+- Adopter `676b265258b7990ec9f7c8e5954005eefd49fe3a2423d730743e236e1cb98960`.
+- Both source-bound primary audits verify the clean `05be46294a` producer.
+- The adopter preserves the two historical rows exactly and archives the
+  complete prior current files under
+  `tests/compat/history-controls/superseded-upgrade-intent-e771165fc15f3598/`.
+
+The first namespace run also reported two 180-second per-test timeouts in
+outputs field-boundary controls. These are separate from writer-byte
+comparisons. Their verified failure evidence and the pristine-main outputs
+baseline remain under `home-pbt17/`. No timeout, assertion, product source, or
+supported-consumer boundary is relaxed by either corpus refresh.
+
+The final native qualification must use the commit containing both refreshes.
+Its source pin, commands, results, and audits belong under `home-pbt17/final/`.
+Earlier source cohorts do not establish acceptance of that final commit.
