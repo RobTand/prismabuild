@@ -1554,10 +1554,13 @@ def main(argv: list[str] | None = None) -> int:
     gate = sub.add_parser("gate", help="test a checkout and write a complete-suite verdict")
     gate.add_argument("--config", default=argparse.SUPPRESS,
                       help="the repository's queue config (JSON)")
-    gate.add_argument("--checkout", type=Path, required=True)
-    gate.add_argument("--json", type=Path, required=True, dest="output")
+    gate.add_argument("--checkout", type=Path, required=True,
+                      help="the clean checkout whose complete suite is judged")
+    gate.add_argument("--json", type=Path, required=True, dest="output",
+                      help="where to write the prismabuild.mergeq_gate.v1 verdict")
     gate.add_argument("--tmpdir", help="absolute worker-local scratch parent")
-    gate.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+    gate.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                      help="sealed into every shard's request (repeatable)")
     args = parser.parse_args(argv)
     if not args.config:
         parser.error("--config is required")
