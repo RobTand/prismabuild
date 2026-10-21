@@ -322,9 +322,34 @@ def _label_values(argv: list[str]):
         index += 1
 
 
+def _gpu_runtime_policy():
+    # The standalone installed shim can run without PYTHONPATH. Its policy is
+    # the broker's root-installed stdlib module; source tests use the package.
+    try:
+        from prismabuild import gpu_capacity
+        return gpu_capacity
+    except ImportError:
+        import importlib.util
+        path = Path('/opt/prismabuild-resource-broker/gpu_capacity.py')
+        if not path.is_file():
+            return None
+        spec = importlib.util.spec_from_file_location('_pb_shim_gpu_policy', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+def _shim_runtime_enabled():
+    policy = _gpu_runtime_policy()
+    return policy is not None and getattr(policy, 'runtime_fence_enabled', lambda: False)()
+
+
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL, "prismabuild.runtime-readiness"}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL}:
+            return True
+        if (value.split("=", 1)[0] == "prismabuild.runtime-readiness"
+                and _shim_runtime_enabled()):
             return True
     return False
 
@@ -356,7 +381,7 @@ CONTAINER_FLAGS = frozenset("""
 """.split())
 
 
-def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
+def _container_options(argv: list[str], *, memory_limit: int | None = None, runtime_intent=None) -> tuple[list[str], list[str], str | None]:
     """Retain argv verbatim except cpuset options before IMAGE.
 
     Return retained argv, normalized label options for ownership checks, and the
@@ -406,6 +431,9 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                     break  # Explicit short boolean value, left for Docker to validate.
         if name in {"--label", "-l"}:
             options.extend(["--label", value])
+        if runtime_intent is not None:
+            if name == "--device": runtime_intent.setdefault("devices", []).append(value)
+            if name == "--runtime": runtime_intent["runtime"] = value
         if name == "--cidfile":
             options.extend(["--cidfile", value])
         if memory_limit is not None and name == "--oom-score-adj":
@@ -1052,8 +1080,9 @@ def main() -> int:
         os.execv(real, [real, *argv])
     insertion = command + relative
     try:
+        runtime_intent = {}
         creation, options, requested = _container_options(
-            argv[insertion:], memory_limit=scope[1] if scope else None)
+            argv[insertion:], memory_limit=scope[1] if scope else None, runtime_intent=runtime_intent)
         cpuset = _reserved_cpuset(requested)
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
@@ -1114,7 +1143,8 @@ def main() -> int:
             registration = _container_intent(scope[0]) if scope else {}
             ticket = registration.get("ticket")
             typed_launch = (registration.get("launch_outcome_protocol") == 2
-                            and sub[relative - 1] == "run")
+                            and sub[relative - 1] == "run"
+                            and _shim_runtime_enabled())
             if typed_launch:
                 labels = [f"{SHIM_LABEL}={ticket}" if value == f"{SHIM_LABEL}={nonce}"
                           else value for value in labels]
@@ -1122,13 +1152,15 @@ def main() -> int:
                 # A per-launch ticket is also the daemon label. A stale caller
                 # cidfile can never authorize observation or removal of an older run.
                 try:
-                    _container_broker(scope[0], "container_watch", ticket=ticket)
+                    nvidia = (runtime_intent.get("runtime") == "nvidia" or any(
+                        value.startswith("nvidia.com/gpu=") for value in runtime_intent.get("devices", [])))
+                    _container_broker(scope[0], "container_watch", ticket=ticket, nvidia_injection=nvidia)
                 except Refused as exc:
                     sys.stderr.write(f"docker shim: daemon launch events unavailable: {exc}\n")
-                from prismabuild.gpu_capacity import RUNTIME_PROBE_ENV, RUNTIME_PROBE_LABEL
-                probe = os.environ.get(RUNTIME_PROBE_ENV)
+                policy = _gpu_runtime_policy()
+                probe = os.environ.get(policy.RUNTIME_PROBE_ENV)
                 if probe:
-                    labels += ["--label", f"{RUNTIME_PROBE_LABEL}={probe}"]
+                    labels += ["--label", f"{policy.RUNTIME_PROBE_LABEL}={probe}"]
             labelled = [*global_options, *sub[:relative], *labels, *containment,
                         "--cpuset-cpus", cpuset, *cid_option, *creation]
             receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")

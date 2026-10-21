@@ -97,6 +97,7 @@ def test_readiness_exception_binds_the_sealed_recipe(tmp_path, change):
 
 def test_broker_host_fault_survives_failed_ending_and_charges_attempt(scoped, monkeypatch):
     from prismabuild import resource_scope
+    monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     queue, item, calls = scoped
     _process(monkeypatch, queue, item, calls, returncode=1)
     monkeypatch.setattr(resource_scope.ResourceScope, 'container_host_fault', lambda self: {
@@ -117,6 +118,7 @@ def test_broker_host_fault_survives_failed_ending_and_charges_attempt(scoped, mo
 
 @pytest.mark.parametrize('status', [0, 127])
 def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     shim_path = Path(__file__).resolve().parents[1] / 'tools/fleet/docker'
     loader = importlib.machinery.SourceFileLoader('runtime_shim_test', str(shim_path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -148,6 +150,7 @@ def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monk
 
 def test_host_fault_evidence_preserves_an_explicit_deadline(scoped, monkeypatch):
     from prismabuild import resource_scope
+    monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     queue, item, calls = scoped
     _process(monkeypatch, queue, item, calls, ticks=1)
     monkeypatch.setattr(resource_scope.ResourceScope, 'container_host_fault', lambda self: {

@@ -5665,7 +5665,7 @@ changing the plan's runtime list is not a qualification route.
 
 ## A GPU host cannot start containers (#1895)
 
-With the #1895 source slice installed and converged, a proven CDI missing mount
+With the #1895 source slice installed, converged and explicitly enabled, a proven CDI missing mount
 or NVIDIA container initialization failure latches
 `gpu_container_runtime_unready`. `pbstatus` shows the named reason on the host
 and its GPU claim denials. The host keeps taking CPU work. A failed action still
@@ -5720,3 +5720,280 @@ cannot elevate because `NoNewPrivileges` is set. Its daemon reports only
 scratch spec also needs root. Do not change those production directories or
 relax admission to work around the refusal. The lead must provide an authorized
 root-owned isolated harness path before live launch/recovery qualification.
+
+
+### Host opt-in and publication boundary
+
+The default is off, including after installing the candidate. All new readers use
+`/etc/prismabuild/gpu-container-runtime.enabled`, through the same
+`gpu_capacity.runtime_fence_enabled` implementation. The broker's module and
+standalone shim's module are root-installed; workers ship that implementation in
+their generation. The file must be root-owned, regular, not group/other writable,
+and contain exactly `enabled\n`; its ancestors must be root-owned and not
+writable by others. Missing, malformed, unreadable or symlinked means off.
+Environment overrides are unsupported. This persistent file belongs to the host
+operator, outside the published runtime and outside the retained fence record.
+
+With off, fence records are not read for offers or claims and cannot deny GPU or
+CPU work. The broker advertises the legacy intent protocol, the shim preserves
+main's Docker argv, nonce, stderr and cleanup, and no readiness watcher starts.
+The mixed-version fixtures pin that behavior against extracted main functions.
+With on, the behavior above applies. Old shims report no typed outcome and old
+workers ignore the fence in either state. Mixed-version execution is compatible;
+it does not establish host protection. Require installed broker/shim and every
+sibling worker to converge before relying on the fence.
+
+Change the switch only behind an owned maintenance drain with all attempts
+settled. After enabling or disabling, restart the broker and converge/restart
+workers while that drain stays closed, then read back installed and loaded
+hashes, fresh offers and broker health before the owner releases admission.
+Do not delete the durable fence or its mirror to disable the feature.
+
+```bash
+# ROOT, only after the owned drain reports idle and settled:
+install -d -o root -g root -m 0755 /etc/prismabuild
+printf 'enabled\n' > /etc/prismabuild/.gpu-container-runtime.enabled.new
+chown root:root /etc/prismabuild/.gpu-container-runtime.enabled.new
+chmod 0644 /etc/prismabuild/.gpu-container-runtime.enabled.new
+mv /etc/prismabuild/.gpu-container-runtime.enabled.new /etc/prismabuild/gpu-container-runtime.enabled
+systemctl restart prismabuild-resource-broker.service
+# Disable behind the same drain, preserving all fence evidence:
+# rm -f /etc/prismabuild/gpu-container-runtime.enabled
+# systemctl restart prismabuild-resource-broker.service
+```
+
+### Live qualification before enabling a fleet host
+
+This procedure is owed operator work, not evidence from fixture tests. Its five
+steps require a separately enrolled **disposable GPU host with an isolated PB
+fleet store** at `/mnt/shared/prismabuild-fleet`. That path must not be the
+production NFS mount. Use an isolated GPU allocation with no production jobs or
+vLLM process. Keep its prior sealed generation and installed-client journals.
+A private mount namespace is an alternative only if the operator provides the
+same isolation for dockerd/CDI, the PB sockets/state and every worker/broker
+process. An admitted action cannot create that root namespace through sudo.
+Do not run the commands below on sparky/sparklina's production services.
+
+1. Root prepares services before admission. On the disposable host, the operator
+   enrolls the isolated fleet using the normal broker/client-upgrader/supervisor
+   installation procedure, then installs and activates the reviewed candidate
+   there through the supported publisher and installed-client updater. Record
+   the prior generation as `OLD` and candidate as `G`; both are immutable sealed
+   generation paths. Keep the opt-in absent during installation. This is a
+   qualification-only activation in the isolated store, never production
+   publication. Copy privileged source into root-owned local disk before any
+   root Python execution. Keep NoNewPrivileges on PB payloads and the broker.
+   Prepare a private dockerd data root and scratch CDI spec as root:
+
+   ```bash
+   # ROOT on the disposable host. D must be local disk, never tmpfs.
+   D=/var/lib/prismabuild-1895
+   install -d -o root -g root -m 0755 "$D" "$D/cdi" /run/cdi
+   systemctl stop docker.service docker.socket
+   nvidia-ctk cdi generate --output="$D/nvidia.good.yaml"
+   install -o root -g root -m 0644 "$D/nvidia.good.yaml" "$D/cdi/nvidia.yaml"
+   mount --bind "$D/cdi" /run/cdi
+   cat > "$D/daemon.json" <<EOF
+   {"hosts":["unix:///run/docker.sock"],"data-root":"$D/docker",
+    "exec-root":"/run/pb1895-docker","pidfile":"/run/pb1895-docker.pid",
+    "bridge":"none","iptables":false,"ip6tables":false,
+    "features":{"cdi":true},"cdi-spec-dirs":["$D/cdi"]}
+   EOF
+   systemd-run --unit=pb1895-dockerd --property=Type=notify \
+       /usr/bin/dockerd --config-file="$D/daemon.json"
+   systemctl is-active pb1895-dockerd.service
+   /usr/bin/docker info --format '{{json .CDISpecDirs}}'
+   ```
+
+   The operator must preload the pinned readiness image into this daemon using
+   the normal image-import path, retain its digest, and verify the isolated
+   worker inventory advertises it. Start/converge candidate broker, shim and all
+   sibling workers. Enable using the closed-drain commands above. Confirm
+   healthy broker and nonzero observed GPU capacity before releasing that
+   drain. Root owns daemon setup, the opt-in, fault injection and repair;
+   the worker UID owns every test and readiness submission. No payload sudo.
+
+2. Run the healthy matrix through the isolated store's **published** PB client
+   as rob. Set `C` to a clean candidate checkout, `E` to a retained local-disk
+   evidence directory, `G` to the candidate generation path, and `OLD` to the
+   retained prior generation path. Run on the disposable host so `--here` names
+   that host. Each GPU row declares one CPU, 16 GiB RAM, one GiB GPU memory,
+   exclusive GPU admission, native threads one and a 30-second payload bound.
+
+   ```bash
+   PB=/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py
+   IMAGE=localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a
+   mkdir -p "$E"
+   gpu_row() {
+       python3 "$PB" --cwd "$C" --here --gpu --exclusive --cpus 1 \
+           --demand mem_gb=16 --gpu-memory-gb 1 --timeout-s 30 \
+           --container-image "$IMAGE" --env OMP_NUM_THREADS=1 \
+           --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- "$@"
+   }
+   for rc in 0 1 125 126 127; do
+       gpu_row docker run --rm --pull=never --network=none \
+           --device=nvidia.com/gpu=all --entrypoint=/bin/sh "$IMAGE" \
+           -c "exit $rc" > "$E/healthy-$rc.log" 2>&1 || test "$rc" != 0
+   done
+   gpu_row /bin/sh -c 'for i in 1 2; do docker run --rm --name pb1895-reuse --pull=never --network=none --device=nvidia.com/gpu=all --entrypoint=/bin/true "$1" || exit; done' sh "$IMAGE" > "$E/name-reuse.log" 2>&1
+   gpu_row docker run --rm --pull=never --network=none \
+       --device=nvidia.com/gpu=all --entrypoint=/bin/sh "$IMAGE" -c \
+       'echo "docker: Error response from daemon: OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded" >&2; exit 127' \
+       > "$E/spoof.log" 2>&1 || test "$?" = 1
+   python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+       --checkout "$C" --python /home/rob/venvs/pb-cpu/bin/python3.12 \
+       --threads-per-shard 1 --cpus-per-shard 1 --mem-gb 4 --shards 1 \
+       --json "$E/mixed.json" tests/test_gpu_runtime_enablement.py \
+       tests/test_duplication_baseline.py tests/test_design_doc_line_references.py
+   ```
+
+   For live mixed directions, repeat these GPU rows after the isolated operator
+   selects old shim/new broker and new shim/old broker behind the same closed
+   drain, and repeat with the opt-in absent and present. Restore converged
+   candidate clients before fault injection. Select retained members only in
+   the isolated root-owned installation, record their hashes, and retain the
+   updater's desired/installed/loaded readback for each combination. Never allow
+   the production updater to overwrite these qualification-only combinations.
+   CPU and healthy GPU claims must continue. No healthy or spoof row may latch.
+   Return codes in PB endings must agree with daemon start/die events. A wrapper
+   exit or a log file alone is insufficient.
+
+3. Root injects a missing mount **only in the scratch CDI file**. The normal
+   atomic replacement is an event; do not edit any system package or production
+   NVIDIA library. Add a missing NVIDIA mount to global edits so every GPU
+   injection requests it:
+
+   ```bash
+   # ROOT; requires PyYAML in the operator interpreter, not the payload venv.
+   python3 - "$D" <<'PYCODE'
+   import pathlib, sys, yaml
+   d = pathlib.Path(sys.argv[1])
+   value = yaml.safe_load((d / 'nvidia.good.yaml').read_text())
+   value.setdefault('containerEdits', {}).setdefault('mounts', []).append({
+       'hostPath': str(d / 'pb1895-deliberately-missing'),
+       'containerPath': '/pb1895-deliberately-missing', 'options': ['ro', 'bind']})
+   target = d / 'cdi/nvidia.yaml.new'
+   target.write_text(yaml.safe_dump(value))
+   target.chmod(0o644)
+   target.replace(d / 'cdi/nvidia.yaml')
+   PYCODE
+   # ROB: a nonzero ending is expected. Retain the full action/attempt key.
+   gpu_row docker run --rm --pull=never --network=none \
+       --device=nvidia.com/gpu=all --entrypoint=/bin/true "$IMAGE" \
+       > "$E/fault-auto-remove.log" 2>&1
+   ```
+
+   Capture daemon events before the fault submission, as rob:
+
+   ```bash
+   /usr/bin/docker events --filter type=container --format '{{json .}}' > "$E/daemon-events.jsonl" &
+   EVENT_PID=$!
+   # After repair/probe evidence has been retained:
+   # kill "$EVENT_PID"; wait "$EVENT_PID" || test "$?" = 143
+   ```
+
+   Keep that process running through repair; terminate it explicitly and `wait`
+   when the evidence is complete. Require this launch's ticket-bound create/destroy
+   without start/die and prove inspect already returns absent. Repeat fast
+   AutoRemove until a retained sample has `launch_evidence.inspect_snapshot`
+   equal to null and still latches `cdi_mount_missing`. A run with a snapshot
+   does not qualify the fast-race case. Bound the exercise to ten independent
+   submissions; inability to obtain the no-snapshot sample is unqualified,
+   never a pass. Use the deterministic daemon-stream fixture for repeatable
+   source coverage. Verify every sibling's observed GPU is zero and a queued
+   GPU claim denies `gpu_container_runtime_unready`, then submit a CPU row:
+
+   ```bash
+   python3 "$PB" --cwd "$C" --cpus 1 --demand mem_gb=1 --timeout-s 30 \
+       --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+       -- /bin/true > "$E/cpu-while-fenced.log" 2>&1
+   cat /run/prismabuild/gpu-container-runtime.json > "$E/fenced.json"
+   python3 /mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py > "$E/status-fenced.log"
+   ```
+
+   Copy the root durable fence into the evidence directory as root, preserving
+   its original bytes and custody. Verify its action, attempt, boot ID, subtype
+   and CLI error against the daemon stream. Reboot/restart retention is a
+   separate recorded sample; do not delete the fence to obtain another row.
+
+4. Root atomically repairs the scratch CDI spec. The inotify event must trigger
+   the broker's admitted pinned readiness row, with NoNewPrivileges unchanged.
+
+   ```bash
+   # ROOT, while workers and their event consumer are running:
+   install -o root -g root -m 0644 "$D/nvidia.good.yaml" "$D/cdi/nvidia.yaml.new"
+   mv "$D/cdi/nvidia.yaml.new" "$D/cdi/nvidia.yaml"
+   ```
+
+   Read `probe_submission` for its full action key, then use published
+   `pbwait.py KEY`, not a sleep/poll loop, for that row. Verify its terminal
+   record, immutable logs and CAS receipt, actual image/entrypoint/CDI request
+   and current event token. Read back `cleared` and every sibling's restored GPU
+   offer. Repeat the healthy zero-exit and CPU rows. A failed/refused probe must
+   keep the fence until a later relevant event; stale probes must not clear it.
+   No manual regeneration by PB, bypassed admission or relaxed NoNewPrivileges.
+
+5. Retain evidence before teardown. Record candidate/prior commits and runtime
+   generation IDs; root-installed and loaded member hashes; both switch states;
+   exact commands, full action/attempt/probe keys, terminal records, immutable
+   log hashes, CAS receipts/results, daemon events and optional inspect snapshots;
+   fence-before/fence-after bytes and boot ID; worker offers, named denials and
+   CPU success. Keep prelaunch and deployment acceptance records separate. This
+   qualification changes no staged-read ledger axis or campaign-complete claim.
+
+### Qualification rollback
+
+Close admission first through the existing root broker maintenance RPC. Run this
+as root using the already root-installed updater's RPC implementation:
+
+```bash
+/usr/bin/python3 -I - <<'PYCODE'
+import sys
+sys.path.insert(0, '/opt/prismabuild-resource-broker')
+import upgrade_client
+s = '/run/prismabuild/resources.sock'
+print(upgrade_client.request(s, 'maintenance_begin', owner='operator-1895', reason='1895 qualification rollback'))
+print(upgrade_client.request(s, 'maintenance_status'))
+PYCODE
+```
+
+Require idle/settled attempts and no remaining job groups before any service
+rotation. Save durable/public fence evidence first. Remove only the opt-in under
+that drain. Restore the retained prior generation using the supported publisher
+on the isolated coordinator, never by replacing the live symlink by hand:
+
+```bash
+# ROOT: at an empty isolated queue, hand off this owned drain to the publisher.
+# Producers stay stopped. Refuse if health/settlement or ownership changed.
+/usr/bin/python3 -I - <<'PYCODE'
+import sys
+sys.path.insert(0, '/opt/prismabuild-resource-broker')
+import upgrade_client
+s = '/run/prismabuild/resources.sock'
+r = upgrade_client.request(s, 'maintenance_status')
+assert r['health'] and r['active_scopes'] == 0 and r['maintenance_owner'] == 'operator-1895'
+print(upgrade_client.request(s, 'maintenance_end', owner='operator-1895'))
+PYCODE
+# ROB on the isolated coordinator; normal updater/bootstrap gates still apply.
+python3 "$G/tools/publish_runtime.py" --activate-generation "${OLD##*/}" \
+    --rollout barrier
+# If an existing barrier needs rollback, use its actual retained epoch:
+# python3 "$G/tools/publish_runtime.py" --rollback-barrier "$EPOCH" \
+#     --rollback-reason '1895 qualification failed'
+# ROOT, converge through the installed supported updater:
+/usr/bin/python3 -I /opt/prismabuild-resource-broker/upgrade_client.py \
+    --config /etc/prismabuild/client-upgrade.json
+/usr/bin/python3 -I /opt/prismabuild-resource-broker/upgrade_client.py --status
+```
+
+Only the owner hands off its settled drain at the empty-queue boundary above;
+never force-end another holder. Keep producers stopped and follow the publisher's
+retained refusal/recovery record. If bootstrap reversal is required, use the
+installed-bootstrap reverse procedure above with its assessment; no manual
+copying of prior privileged bytes is a production rollback path. Verify selected,
+installed and loaded hashes, broker health, supervisor/worker role convergence,
+fresh offers and admitted CPU/GPU canary receipts before releasing the final
+owned drain. Preserve the failed fence evidence outside live state, even if the
+prior generation ignores it. Stop the private daemon and unmount its scratch CDI
+only after attempts and workers have settled. Never run these isolation teardown
+commands on the production fleet.

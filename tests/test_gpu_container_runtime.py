@@ -68,6 +68,7 @@ def runtime_authority(tmp_path, monkeypatch):
     from functools import partial
     from test_resource_broker import module, Backend
     broker = module()
+    monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     backend = Backend()
     authority = broker.Authority(tmp_path / 'run/jobs', os.getuid(), backend, max_memory_bytes=1024**3)
     cdi = tmp_path / 'cdi'
@@ -78,6 +79,8 @@ def runtime_authority(tmp_path, monkeypatch):
     authority.runtime = runtime
     monkeypatch.setattr(gpu_capacity, 'container_launch_outcome',
                         partial(gpu_capacity.container_launch_outcome, source_exists=lambda _: False))
+    monkeypatch.setattr(gpu_capacity, 'never_started_runtime_error',
+                        partial(gpu_capacity.never_started_runtime_error, source_exists=lambda _: False))
     yield broker, authority, backend, runtime
     runtime.close()
 

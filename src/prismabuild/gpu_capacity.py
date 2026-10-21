@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -468,10 +469,31 @@ def collect(snapshot, records, *, timeout_s=1.0, proc_root=Path('/proc'), device
 RUNTIME_REASON = 'gpu_container_runtime_unready'
 RUNTIME_SCHEMA = 'prismabuild.gpu-container-runtime.v1'
 RUNTIME_GATE = Path('/run/prismabuild/gpu-container-runtime.json')
+RUNTIME_ENABLE = Path('/etc/prismabuild/gpu-container-runtime.enabled')
 RUNTIME_PROBE_ENV = 'PRISMABUILD_GPU_RUNTIME_PROBE'
 RUNTIME_PROBE_LABEL = 'prismabuild.runtime-readiness'
 RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
                        '5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a')
+
+
+def runtime_fence_enabled():
+    """One root-owned host opt-in, shared by installed clients and workers.
+
+    Absence, an invalid file or unreadability preserves pre-#1895 behavior.
+    No environment variable may enable host admission policy.
+    """
+    try:
+        for parent in RUNTIME_ENABLE.parents:
+            info = parent.stat()
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                return False
+        fd = os.open(RUNTIME_ENABLE, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            return (stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                    and not info.st_mode & 0o022 and stream.read(16) == b'enabled\n')
+    except OSError:
+        return False
 
 
 def runtime_probe_command():
@@ -533,16 +555,25 @@ def container_launch_outcome(container, *, cdi_sources, source_exists=os.path.ex
     if (started != '0001-01-01T00:00:00Z' or state.get('Running') is not False
             or not isinstance(state.get('Error'), str) or not state['Error']):
         return ContainerLaunchOutcome('unknown', None)
-    error = state['Error']
+    return never_started_runtime_error(state['Error'], nvidia=container_requests_nvidia(container),
+                                       cdi_sources=cdi_sources, source_exists=source_exists)
+
+
+def container_requests_nvidia(container):
+    """The same injection proof for inspect and removed-launch evidence."""
+    host = container.get('HostConfig', {})
+    requests = host.get('DeviceRequests', []) or []
+    return (host.get('Runtime') == 'nvidia' or any(
+        request.get('Driver') == 'cdi' and any(
+            str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []))
+        for request in requests))
+
+
+def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=os.path.exists):
+    """Classify only after the broker proves this launch never ran a payload."""
     lower = error.lower()
     if 'oci runtime create failed' in lower:
         missing = re.search(r'failed to fulfil mount request: open (/[\S]+): no such file or directory', error)
-        host = container.get('HostConfig', {})
-        requests = host.get('DeviceRequests', []) or []
-        nvidia = (host.get('Runtime') == 'nvidia' or any(
-            request.get('Driver') == 'cdi' and any(
-                str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []))
-            for request in requests))
         if missing and nvidia and missing[1] in cdi_sources and not source_exists(missing[1]):
             return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096])
         nvidia_error = re.search(

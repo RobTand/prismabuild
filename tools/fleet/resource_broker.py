@@ -264,13 +264,14 @@ class DockerLaunchWatch:
     """Subscribe before the launch, keeping native Docker AutoRemove intact.
 
     Retained containers use inspect. For an auto-removed launch, classification
-    requires the daemon's create snapshot and its destroy event, with no start
+    requires the daemon's create and destroy events, with no start
     or die event in this launch's live stream. A lost/oversized stream is unknown.
     Require create itself: the initial replay only bridges the HTTP header /
     subscription boundary. If Docker's bounded history drops create, stay unknown.
     """
-    def __init__(self, backend, ticket, *, socket_path='/run/docker.sock'):
-        self.backend=backend;self.ticket=ticket
+    def __init__(self, backend, ticket, *, scope=None, nvidia_injection=False, socket_path='/run/docker.sock'):
+        self.backend=backend;self.ticket=ticket;self.scope=scope;self.nvidia_injection=nvidia_injection
+        self.created=False
         self.condition=threading.Condition();self.row=None;self.cid=None
         self.started=False;self.destroyed=False;self.failed=False;self.exit_code=None
         self.socket=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
@@ -313,7 +314,10 @@ class DockerLaunchWatch:
                     self.cid=cid
                     action=event.get('Action')
                     if action=='create':
-                        if self.row is not None:raise ValueError('duplicate create event')
+                        if self.created:raise ValueError('duplicate create event')
+                        if self.scope is not None and actor['Attributes'].get('prismabuild.scope')!=self.scope:
+                            raise ValueError('daemon event scope mismatch')
+                        self.created=True
                         try:self.row=self.backend.inspect_container(cid)
                         except (ValueError,OSError,subprocess.SubprocessError):pass
                     elif action in {'start','die'}:
@@ -338,17 +342,15 @@ class DockerLaunchWatch:
         # bounded condition wait is for destroy/stream failure, not a retry timer.
         with self.condition:
             self.condition.wait_for(lambda:self.destroyed or self.failed,timeout=5)
-            if (not self.destroyed or self.failed or self.started or self.cid!=cid or self.row is None):
+            if (not self.destroyed or self.failed or self.started or self.cid!=cid or not self.created):
                 return None
-            row=dict(self.row)
-            state=row.get('State',{})
-            if state.get('StartedAt')!='0001-01-01T00:00:00Z':return None
-            # Only here can stderr belong solely to the CLI/daemon, since no
-            # process ran in this container. It is never read on a payload exit.
             if not error.startswith('docker: Error response from daemon:'):
                 return None
-            row['State']={**state,'Running':False,'Error':error[:4096]}
-            return row
+            if self.row is not None:
+                if self.row.get('State',{}).get('StartedAt')!='0001-01-01T00:00:00Z':return None
+            return {'daemon_error':error[:4096], 'container_id':cid, 'ticket':self.ticket,
+                    'nvidia_injection':self.nvidia_injection, 'inspect_snapshot':self.row,
+                    'basis':'daemon_create_destroy_without_start_or_die'}
 
     def payload_outcome(self, module, cid):
         with self.condition:
@@ -580,10 +582,25 @@ class GPUContainerRuntime:
             self._publish()
             return self.state['probe_token']
 
+    def _mount_sources(self):
+        try:return self.module.cdi_mount_sources(self.cdi_dir)
+        except (OSError,ValueError,KeyError,TypeError):return set()
+
     def observe(self, container, record):
-        try:sources=self.module.cdi_mount_sources(self.cdi_dir)
-        except (OSError,ValueError,KeyError,TypeError):sources=set()
-        outcome=self.module.container_launch_outcome(container,cdi_sources=sources)
+        outcome=self.module.container_launch_outcome(container,cdi_sources=self._mount_sources())
+        return self._apply_launch_outcome(outcome,container,record)
+
+    def observe_removed(self, evidence, record):
+        snapshot=evidence.get('inspect_snapshot')
+        nvidia=(self.module.container_requests_nvidia(snapshot) if snapshot is not None
+                else evidence['nvidia_injection'])
+        outcome=self.module.never_started_runtime_error(evidence['daemon_error'],nvidia=nvidia,
+                                                        cdi_sources=self._mount_sources())
+        return self._apply_launch_outcome(outcome,{},record,evidence=evidence)
+
+    def _apply_launch_outcome(self, outcome, container, record, *, evidence=None):
+        if not self.module.runtime_fence_enabled():
+            return self.module.ContainerLaunchOutcome('unknown',None)
         labels=container.get('Config',{}).get('Labels',{}) or {}
         probe=labels.get(self.module.RUNTIME_PROBE_LABEL)
         with self.lock:
@@ -611,18 +628,21 @@ class GPUContainerRuntime:
                 self._publish()
             elif outcome.kind=='host_fault':
                 self.latch(outcome,record)
+                if evidence is not None:
+                    self.state['launch_evidence']=evidence
+                    self._publish()
         return outcome
 
     def _watch(self, submit):
         try:
             with_watch=self.module.CDIChangeWatch(self.cdi_dir)
             try:
-                if self.state['latched']:
+                if self.module.runtime_fence_enabled() and self.state['latched']:
                     submit(self.event('watch_restart'))
                 while True:
                     reason=with_watch.next_change(self.stop_read)
                     if reason is None:return
-                    if self.state['latched'] or reason == 'watch_overflow':
+                    if self.module.runtime_fence_enabled() and (self.state['latched'] or reason == 'watch_overflow'):
                         submit(self.event(reason))
             finally:with_watch.close()
         except Exception as exc:
@@ -638,7 +658,7 @@ class GPUContainerRuntime:
             token=self.pending.get()
             if token is None:return
             with self.lock:
-                current=token==self.state.get('probe_token')
+                current=self.module.runtime_fence_enabled() and token==self.state.get('probe_token')
             if current:submit(token)
 
     def start(self, submit):
@@ -688,6 +708,7 @@ class GPUContainerRuntime:
                     self.pending.put(self.event('worker_offer_changed'))
 
     def offer_changed(self, identity):
+        if not self.module.runtime_fence_enabled():return
         with self.lock:
             if self.state.get('offer_identity') == identity:return
             self.state['offer_identity']=identity
@@ -1484,8 +1505,10 @@ class Authority:
 
     def container(self,uid,pid,request):
         op=request['op'];scope=request.get('scope_id')
+        runtime=self.runtime if self.runtime is not None and self.runtime.module.runtime_fence_enabled() else None
         fields=({'op','scope_id'} if op=='container_begin' else
-                {'op','scope_id','ticket','container_id','daemon_stderr'} if op=='container_outcome' else {'op','scope_id','ticket'})
+                {'op','scope_id','ticket','container_id','daemon_stderr'} if op=='container_outcome' else
+                {'op','scope_id','ticket','nvidia_injection'} if op=='container_watch' else {'op','scope_id','ticket'})
         if set(request)-fields or not isinstance(scope,str) or not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):
             raise ValueError('invalid container intent fields')
         with self.lock:
@@ -1503,14 +1526,16 @@ class Authority:
                 ticket=secrets.token_hex(32)
                 record.setdefault('container_tickets',[]).append(ticket)
                 _atomic(self.state_dir/(scope+'.json'),record)
-                return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':2} if self.runtime is not None else {})}
+                return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':2} if runtime is not None else {})}
             ticket=request.get('ticket')
             if not isinstance(ticket,str) or HEX64.fullmatch(ticket) is None or ticket not in record.get('container_tickets',[]):
                 raise PermissionError('container intent authority does not match')
             if op=='container_watch':
-                if self.runtime is None:raise ValueError('launch outcome protocol unavailable')
+                if runtime is None:raise ValueError('launch outcome protocol unavailable')
                 if ticket in self.launch_watches:raise ValueError('launch already watched')
-                self.launch_watches[ticket]=DockerLaunchWatch(self.backend,ticket)
+                nvidia=request.get('nvidia_injection',False)
+                if type(nvidia) is not bool:raise ValueError('invalid NVIDIA launch intent')
+                self.launch_watches[ticket]=DockerLaunchWatch(self.backend,ticket,scope=scope,nvidia_injection=nvidia)
                 return {'ok':True}
             if op=='container_outcome':
                 cid=request.get('container_id')
@@ -1520,26 +1545,30 @@ class Authority:
                     raise ValueError('invalid launch observation')
                 watch=self.launch_watches.pop(ticket,None)
                 try:
+                    if runtime is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
+                    evidence=None
                     if cid is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
                     try:container=self.backend.inspect_container(cid)
                     except ValueError:
-                        container=watch.never_started(cid,error) if watch is not None else None
-                    if container is None:
-                        outcome=(watch.payload_outcome(self.runtime.module,cid)
-                                 if watch is not None and self.runtime is not None else None)
+                        container=None
+                        evidence=watch.never_started(cid,error) if watch is not None else None
+                    if container is None and evidence is None:
+                        outcome=(watch.payload_outcome(runtime.module,cid)
+                                 if watch is not None and runtime is not None else None)
                         return {'ok':True,'launch_outcome':outcome.as_record() if outcome is not None else {'kind':'unknown'}}
-                    labels=container.get('Config',{}).get('Labels',{}) or {}
-                    if (container.get('Id')!=cid or labels.get('prismabuild.scope')!=scope
+                    snapshot=container if container is not None else evidence.get('inspect_snapshot')
+                    labels=(snapshot.get('Config',{}).get('Labels',{}) or {}) if snapshot is not None else {}
+                    if snapshot is not None and (snapshot.get('Id')!=cid or labels.get('prismabuild.scope')!=scope
                             or labels.get('prismabuild.shim')!=ticket
-                            or container.get('HostConfig',{}).get('CgroupParent')!=scope):
+                            or snapshot.get('HostConfig',{}).get('CgroupParent')!=scope):
                         raise PermissionError('daemon container does not belong to this launch')
-                    if self.runtime is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
-                    outcome=self.runtime.observe(container,record)
+                    outcome=(runtime.observe(container,record) if container is not None
+                             else runtime.observe_removed(evidence,record))
                     if outcome.kind=='host_fault':
-                        record['host_fault']={'reason':self.runtime.module.RUNTIME_REASON,
+                        record['host_fault']={'reason':runtime.module.RUNTIME_REASON,
                             'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
                             'action_key':record['action_key'],'attempt':record['nonce'],
-                            'unix_time':time.time(),'boot_id':self.runtime.boot_id}
+                            'unix_time':time.time(),'boot_id':runtime.boot_id}
                         _atomic(self.state_dir/(scope+'.json'),record)
                     return {'ok':True,'launch_outcome':outcome.as_record()}
                 finally:
@@ -1791,9 +1820,10 @@ def main():
         authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
                             maintenance_state=args.maintenance_state)
         capacity_module=_load_gpu_module('gpu_capacity.py')
-        authority.runtime=GPUContainerRuntime(capacity_module,
-            Path(args.maintenance_state).with_name('gpu-container-runtime.json'),
-            authority.state_dir.parent/'gpu-container-runtime.json',authority.lock)
+        if capacity_module.runtime_fence_enabled():
+            authority.runtime=GPUContainerRuntime(capacity_module,
+                Path(args.maintenance_state).with_name('gpu-container-runtime.json'),
+                authority.state_dir.parent/'gpu-container-runtime.json',authority.lock)
         with Server(str(endpoint),Handler) as server:
             server.authority=authority
             os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
@@ -1804,11 +1834,12 @@ def main():
                 authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()
             authority.health_check=monitor.healthy
             monitor.start()
-            authority.runtime.start(lambda token:authority.runtime.submit_probe(args.uid,token))
+            if authority.runtime is not None:
+                authority.runtime.start(lambda token:authority.runtime.submit_probe(args.uid,token))
             print('PrismaBuild resource broker ready',flush=True)
             try:server.serve_forever(poll_interval=0.5)
             finally:
-                authority.runtime.close()
+                if authority.runtime is not None:authority.runtime.close()
                 monitor.close()
 
 

@@ -20148,6 +20148,27 @@ ends failed and consumes its attempt. An authenticated broker observation adds
 `host_fault: gpu_container_runtime_unready/<subtype>` to the ending. Requeue
 without charging an attempt remains proposed work for #1895.
 
+The fence is **default off**. Every new worker and the root-installed broker and
+shim read the same host-local `/etc/prismabuild/gpu-container-runtime.enabled`
+file through `gpu_capacity.runtime_fence_enabled`. Only the exact bytes
+`enabled\n` in a root-owned regular file with no group/other write access enable
+it. All ancestors must also be root-owned and not group/other writable. Symlinks,
+absence, invalid bytes and read errors mean off. Environment variables cannot
+enable it. This persistent host policy sits outside both the runtime generation
+and the fence evidence, so an ordinary runtime publish cannot enable it.
+
+Off means no fence reads at claim/offer time, no readiness exception, no broker
+runtime object or CDI watcher on startup, no typed-protocol advertisement and no
+extra status RPC at action ending. The shim keeps main's label nonce, Docker
+argv, inherited stderr, native AutoRemove and cleanup path. A stale fence record
+cannot deny work while off and is retained as evidence. The shim checks the same
+switch before typed negotiation, including against a broker started while on.
+Operators change the file only with host admission closed and attempts settled,
+then restart the broker and converge all sibling workers before reopening.
+Turning off immediately bypasses new readers; turning on needs that restart to
+initialize the broker authority. A partial rollout preserves execution but does
+not provide host protection. Live qualification remains required before opt-in.
+
 The Docker shim and broker negotiate `launch_outcome_protocol: 2`. The
 container intent ticket is also this launch's reserved `prismabuild.shim` label.
 The broker verifies the immutable ID, that label, scope label and cgroup parent.
@@ -20159,14 +20180,20 @@ cleanup uses `docker rm -f -v` to reclaim anonymous volumes as well.
 
 Retained containers use daemon inspect state. A nonzero `StartedAt` proves that
 the payload started. For native AutoRemove, the broker opens a launch-filtered
-live daemon event stream before the shim launches Docker. A create-event inspect
-snapshot must bind the actual container configuration. The destroy event must
-arrive with no start or die event. Only that daemon proof permits classifying
-this CLI invocation's daemon error on stderr. Payload stdout and stderr are
-never classification evidence. Missing create snapshots, interrupted streams,
-invalid identities or an excessive event count return unknown. The initial
-`since` replay bridges Docker's HTTP-header/subscription boundary. Its bounded
-history cannot establish no start without the create snapshot.
+live daemon event stream before the shim launches Docker. This launch's unique
+ticket and scope label bind the create event to the broker intent. The destroy
+event must arrive with no start or die event. That complete daemon stream proves
+this CLI's stderr cannot be payload output even when AutoRemove beats every
+inspect attempt. The existing narrow host-fault classifier consumes that error;
+CDI mount failures additionally require NVIDIA injection in the shim's parsed
+launch intent and a missing source named by the local CDI spec. An inspect
+snapshot, when available, also verifies the actual labels, parent and injection.
+The fence retains the stream basis, ID, ticket and optional snapshot as evidence.
+Payload stdout and stderr after a start are never classification evidence.
+Missing create, interrupted streams, mismatched scope or IDs, duplicate create
+or an excessive event count return unknown. The initial `since` replay bridges
+Docker's HTTP-header/subscription boundary; its bounded history cannot establish
+no start if create itself was lost.
 
 Only a proven never-started OCI create failure can identify either:
 

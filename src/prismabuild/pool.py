@@ -21813,7 +21813,7 @@ class PoolQueue:
                                 else None)))
                     except Exception as exc:          # noqa: BLE001
                         outcome["dependents_error"] = repr(exc)
-                if scope is not None:
+                if scope is not None and gpu_runtime_gate.gpu_capacity.runtime_fence_enabled():
                     try:
                         fault = scope.container_host_fault()
                         if fault is not None:

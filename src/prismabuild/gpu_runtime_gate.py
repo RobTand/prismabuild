@@ -7,6 +7,8 @@ from . import gpu_capacity
 
 
 def runtime_gate_state():
+    if not gpu_capacity.runtime_fence_enabled():
+        return None
     from .adaptive_gpu import trusted_sample
     value = trusted_sample(gpu_capacity.RUNTIME_GATE)
     # Absence supports old brokers during an expand/converge rollout. A present
