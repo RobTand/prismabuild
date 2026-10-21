@@ -2123,6 +2123,9 @@ def main() -> int:
                             if kind not in {"cpu", "gpu"}),
             cpus=shard_resources["cpu"], gpu=args.gpu, gpu_memory_gb=args.gpu_memory_gb,
             timeout_s=plan["sealed_s"], wait_s=args.wait_s, priority=args.priority,
+            # CPU shards can restart after at most two guest interruptions.
+            # GPU shards retain their existing retry policy.
+            retry_safe=not args.gpu, max_attempts=1 if args.gpu else 3,
             profile=args.profile,
             data_manifest=str(Path(args.data_manifest).resolve()) if args.data_manifest else None,
             requires_files=json.dumps(pins) if pins else None, residency=args.residency)

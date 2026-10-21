@@ -5434,6 +5434,7 @@ class _HostClaimRequest:
     contract: object
     scratch_evidence: dict[str, object] | None
     scratch_boundary: tuple[float, float, object, object] | None
+    cpu_guest: bool = False
 
 
 class _ClaimHandled(Enum):
@@ -7176,7 +7177,7 @@ class PoolQueue:
     #: is claimed by nobody and holds no tokens, so none of it may survive a
     #: requeue.  ``passes`` belongs to the aging sidecar, not to the item.
     _CLAIM_SCOPED_FIELDS = (
-        "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
+        "cpu_guest", "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
         "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
@@ -16133,6 +16134,22 @@ class PoolQueue:
             # failure. No shared record is written as a fallback.
             pass
 
+    @staticmethod
+    def _portable_cpu_work(record: Mapping[str, object]) -> bool:
+        """Automatic capability tags do not pin work to a host or architecture."""
+        return (not record.get("needs_gpu")
+                and not (record.get("resources") or {}).get("gpu")
+                and set(record.get("tags") or ()).issubset(
+                    contract.tag for contract in contracts.CONTRACTS))
+
+    def _guest_restartable(self, record: Mapping[str, object]) -> bool:
+        # Keep the existing immutable interruption prefix and launch budget.
+        # Two consumed launches end guest eligibility even with a larger budget.
+        return (self._portable_cpu_work(record)
+                and type(record.get("attempts", 0)) is int
+                and 0 <= record.get("attempts", 0) < 2
+                and self._preemption_eligible(record))
+
     def _preemption_eligible(self, record: Mapping[str, object]) -> bool:
         """Restart permission and remaining budget, with known generation work.
 
@@ -16354,6 +16371,8 @@ class PoolQueue:
         priority: int,
         controller: cpu_admission.Controller | None = None,
         exclude_gang_election: Mapping[str, object] | None = None,
+        guest_drain: str | None = None,
+        held_cpus: Sequence[int] | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -16402,7 +16421,7 @@ class PoolQueue:
         cancellation is visible. Neither phase returns the victim's tokens.
         """
 
-        if priority < 0:
+        if (priority < 0 and guest_drain is None) or guest_drain == "gpu":
             return None
         wanted = {kind: int(need) for kind, need in demand.items() if int(need) > 0}
         if not wanted:
@@ -16417,11 +16436,12 @@ class PoolQueue:
             # claim and current withdrawal state under admission, and uses a
             # proof only for the exact claim it described.
             proofs = self._preemption_eligibility_proofs(
-                ledger, action_key=action_key)
+                ledger, action_key=action_key, guests=guest_drain is not None)
             with self._admission_lock(controller):
                 selected = self._select_background_holder(
                     ledger, action_key=action_key, wanted=wanted, proofs=proofs,
-                    exclude_gang_election=exclude_gang_election)
+                    exclude_gang_election=exclude_gang_election,
+                    guest_drain=guest_drain, held_cpus=held_cpus)
             if selected is None:
                 return None
             holder, record = selected
@@ -16429,7 +16449,7 @@ class PoolQueue:
                 holder, record, action_key=action_key)
 
     def _preemption_eligibility_proofs(
-        self, ledger: ResourceLedger, *, action_key: str,
+        self, ledger: ResourceLedger, *, action_key: str, guests: bool = False,
     ) -> dict[str, tuple[dict[str, object], bytes, bool]]:
         """Read immutable restartability proofs before host admission.
 
@@ -16454,7 +16474,8 @@ class PoolQueue:
             # read. Skip the expensive immutable proof; live selection still
             # accounts for their tokens as a pending release when applicable.
             try:
-                protected = (int(record.get("priority", 0)) >= 0
+                protected = ((record.get("cpu_guest") is not True if guests
+                              else int(record.get("priority", 0)) >= 0)
                              or record.get("finish_pending") is not None
                              or record.get("container_cleanup_pending") is not None)
             except (TypeError, ValueError):
@@ -16463,7 +16484,8 @@ class PoolQueue:
                 binding = self._preemption_proof_binding(record)
                 if binding is not None:
                     proofs[holder] = (
-                        record, binding, self._preemption_eligible(record))
+                        record, binding, (self._guest_restartable(record) if guests
+                                          else self._preemption_eligible(record)))
         return proofs
 
     @staticmethod
@@ -16488,6 +16510,7 @@ class PoolQueue:
                     "action_key", "cas_root", "resources", "retry_safe",
                     "attempts", "attempt_history_missing_before", "max_attempts",
                     "attempt_history", "supersedes_withdrawal",
+                    "cpu_guest", "tags", "needs_gpu",
                 )
                 if field in record
             })
@@ -16529,6 +16552,8 @@ class PoolQueue:
         wanted: Mapping[str, int],
         proofs: Mapping[str, tuple[Mapping[str, object], bytes, bool]] | None = None,
         exclude_gang_election: Mapping[str, object] | None = None,
+        guest_drain: str | None = None,
+        held_cpus: Sequence[int] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """Read the current gap and pending releases under host admission.
 
@@ -16580,12 +16605,20 @@ class PoolQueue:
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
             except (TypeError, ValueError):
                 continue
+            if (guest_drain is None and wanted.get("gpu")
+                    and not (record.get("resources") or {}).get("gpu")):
+                continue
             proof = None if proofs is None else proofs.get(holder)
-            if (holder_priority >= 0 or proof is None
+            if ((record.get("cpu_guest") is not True if guest_drain is not None
+                 else holder_priority >= 0) or proof is None
                     or not claim_identity.same_claim(record, proof[0])
                     or self._preemption_proof_binding(record) != proof[1]
                     or not proof[2]):
                 continue
+            if guest_drain == DRAIN_HELD_CPUS:
+                allocation = record.get("cpu_allocation") or {}
+                if not set((allocation.get("preferred") or []) + (allocation.get("fallback") or [])).intersection(held_cpus or ()):
+                    continue
             candidates.append(
                 (holder_priority, claimed_unix, holder, record, tokens))
 
@@ -16596,10 +16629,24 @@ class PoolQueue:
                 for kind, need in wanted.items()
             )
 
-        if fits({}):
+        if guest_drain is not None:
+            # One withdrawal at a time. Reevaluate pressure and tokens after
+            # normal cleanup, without promising another guest's release early.
+            if pending:
+                return None
+            if guest_drain != "tokens":
+                usable = [entry for entry in candidates if entry[4].get("cpu", 0)]
+            else:
+                released = {}
+                for entry in candidates:
+                    for kind, count in entry[4].items():
+                        released[kind] = released.get(kind, 0) + count
+                usable = candidates if not fits({}) and fits(released) else []
+        elif fits({}):
             # Enough is already coming back.  Nothing left to stop.
             return None
-        usable = [entry for entry in candidates if fits(entry[4])]
+        else:
+            usable = [entry for entry in candidates if fits(entry[4])]
         if not usable:
             return None
         # Lowest priority first, then the youngest claim: of two holders that
@@ -16626,7 +16673,7 @@ class PoolQueue:
                 filed = self.withdraw(
                     holder,
                     reason=(
-                        f"preempted on {socket.gethostname()} so foreground action "
+                        f"preempted on {socket.gethostname()} so action "
                         f"{action_key[:12]} could be admitted; requeued at priority "
                         f"{requeue['priority']}"
                     ),
@@ -16971,6 +17018,17 @@ class PoolQueue:
                 "capacity_total": total, "demand": demand,
                 "reservation_demand": reservation_demand,
             }, scan)
+        # Peer registry and sealed restartability reads stay outside admission.
+        portable = has_gpu and self._portable_cpu_work(item) and any(
+            capability_eligibility.HostPresence.from_offer(offer).gpu
+            is capability_eligibility.Presence.ABSENT
+            for offer in self._matching_offers(item, live=placement.offers()))
+        cpu_guest = portable and self._guest_restartable(item)
+        if portable and item.get("attempts", 0) > 0 and not cpu_guest:
+            return candidate_policy.CandidateDenial("deferred_for_cpu_only_host", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "cpu_host": {"reason": "guest_retry_budget_exhausted"},
+            }, scan)
         # Peer registry and ledger I/O must not hold host admission (#351).
         cpu_host = self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu,
@@ -17027,7 +17085,8 @@ class PoolQueue:
         return _HostClaimRequest(
             candidate=candidate, identity=identity, allowance=allowance,
             dependent_owner=dependent_owner, contract=contract,
-            scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary)
+            scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary,
+            cpu_guest=cpu_guest)
 
     def _prepare_claim_gang(
         self, request: _HostClaimRequest, *, ledger: ResourceLedger, host_gate,
@@ -17519,6 +17578,13 @@ class PoolQueue:
                     prefix, key=key, order=scan, demand=demand,
                     reservation_demand=reservation_demand, mode=mode,
                     foreign=foreign, free_at_refusal=free_at_refusal)
+            if (not preempted and demand.get("gpu")
+                    and denial.evidence.get("drain_resolves") is True):
+                preempted = self._preempt_background_holder(
+                    ledger, action_key=key, demand=reservation_demand,
+                    priority=int(item.get("priority", 0)), controller=controller,
+                    guest_drain=mode,
+                    held_cpus=decision.get("held_cpus")) is not None
             scan = denial.order_before
             self.record_denial(item, denial.reason, denial.evidence)
             if denial.withhold_after is not None:
@@ -17545,6 +17611,11 @@ class PoolQueue:
                     gpu_sample=_gpu_sample_for(gpu_controller, demand),
                     authority=copy_authority, tags=tagset, has_gpu=has_gpu)
             denials = self.record_pass(key, drain_notes=self._drain_accounting.for_key(key))
+            if not preempted and demand.get("gpu"):
+                preempted = self._preempt_background_holder(
+                    ledger, action_key=key, demand=asked,
+                    priority=int(item.get("priority", 0)), controller=controller,
+                    guest_drain="tokens") is not None
             if not preempted:
                 # Selection reacquires admission, while the separate
                 # handoff lock spans withdrawal/requeue as well. A
@@ -18092,6 +18163,9 @@ class PoolQueue:
         # reason; the record this method returns is the last place that
         # still did not.
         claimed = dict(moved)
+        claimed.pop("cpu_guest", None)
+        if host.request is not None and host.request.cpu_guest:
+            claimed["cpu_guest"] = True
         claimed.pop("gang_backfill", None)
         if gang_backfill:
             claimed["gang_backfill"] = gang_backfill
