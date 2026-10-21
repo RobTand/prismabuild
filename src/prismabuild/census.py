@@ -1797,14 +1797,15 @@ def plans(queue_root, *, view="cursors", now=None, reader=None, ready=None, clai
                     errors=unreadable, complete=active_complete)
 
 
-def recent_ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
+def recent_ending_paths(queue_root: str | Path, limit: int, *,
+                        states: Sequence[str] | None = None) -> list[os.DirEntry]:
     """Read-only terminal-entry selection shared by structured status readers.
 
     Returns the newest entries, including durable withdrawal decisions, without
     expanding record payloads. Filesystem errors propagate; callers must bound
     the shared-mount read.
     """
-    return pool.record_store.RecordStore(queue_root).recent_ending_paths(limit)
+    return pool.record_store.RecordStore(queue_root).recent_ending_paths(limit, states=states)
 
 def _transport(record: Mapping[str, object]) -> str:
     """Which transport filed one ending, read from the schema it was filed under.
