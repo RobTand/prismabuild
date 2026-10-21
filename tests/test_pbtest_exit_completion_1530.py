@@ -66,8 +66,12 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
     (checkout / "test_one.py").write_text(
         "def test_one():\n    assert " + ("False" if stop_early else "True") +
         "\n\ndef test_two():\n    assert True\n")
+    # The shard is SIGKILLed below, so nothing it made in TMPDIR is removed:
+    # its scratch is this test's.
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
     read_fd, write_fd = os.pipe()
-    environment = dict(os.environ, PBTEST_BLOCK_FD=str(write_fd),
+    environment = dict(os.environ, TMPDIR=str(scratch), PBTEST_BLOCK_FD=str(write_fd),
                        PBTEST_INCOMPLETE=str(int(incomplete)),
                        PBTEST_WORKER_EXIT=str(int(worker_exit)),
                        PBTEST_STACK_ROOT=str(checkout / "worker-stack-"),

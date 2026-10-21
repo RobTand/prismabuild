@@ -28,6 +28,10 @@ from compat_references import module_paths, generation_reference, absence_module
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
+#: Where the old drivers unpack, once per process; None is TMPDIR.  The suite
+#: points it under its own basetemp (``tests/conftest.py``), because a killed
+#: shard never reaches the atexit removal.
+DRIVERS_PARENT = None
 _PRIOR_DRIVERS = None
 
 
@@ -146,7 +150,7 @@ def pre_c13_drivers():
     global _PRIOR_DRIVERS
     if _PRIOR_DRIVERS is None:
         import atexit
-        _PRIOR_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c13-")
+        _PRIOR_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c13-", dir=DRIVERS_PARENT)
         atexit.register(_PRIOR_DRIVERS.cleanup)
         with tarfile.open(ROOT / "tests/compat/drivers-before-c13.tar.gz") as archive:
             archive.extractall(_PRIOR_DRIVERS.name, filter="data")
@@ -168,7 +172,7 @@ def pre_c12_drivers():
     global _C12_DRIVERS
     if _C12_DRIVERS is None:
         import atexit
-        _C12_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c12-")
+        _C12_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c12-", dir=DRIVERS_PARENT)
         atexit.register(_C12_DRIVERS.cleanup)
         with tarfile.open(ROOT / "tests/compat/drivers-before-c12.tar.gz") as archive:
             archive.extractall(_C12_DRIVERS.name, filter="data")

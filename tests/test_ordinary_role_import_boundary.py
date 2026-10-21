@@ -30,7 +30,10 @@ def _run(command, *, cwd, label, timeout=90):
         "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "VIRTUAL_ENV",
         "_PIP_RUNNING_IN_SUBPROCESS"}}
     environment = {name: value for name, value in os.environ.items() if name not in removed}
-    environment.update(PIP_CONFIG_FILE=os.devnull, PYTHONNOUSERSITE="1", PIP_NO_INPUT="1")
+    scratch = cwd / f"{label}.tmp"
+    scratch.mkdir()
+    environment.update(PIP_CONFIG_FILE=os.devnull, PYTHONNOUSERSITE="1", PIP_NO_INPUT="1",
+                       TMPDIR=str(scratch))
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
                             timeout=timeout, env=environment)
     (cwd / f"{label}.stdout.txt").write_text(result.stdout)

@@ -100,23 +100,21 @@ def test_an_empty_range_and_a_non_positive_chunk_refuse() -> None:
                 start, end, chunk, entry_bytes=[GIB] * 40)
 
 
-def _policy(extra: dict) -> Path:
-    import tempfile
-
+def _policy(tmp_path: Path, extra: dict) -> Path:
     base = {"schema": storage_tiers.RAM_TIER_POLICY_SCHEMA_V1,
             "mountpoint": "/ram/prewarm", "ceiling_gib_max": 256,
             "window_gib_default": 160, "arc_floor_gib": 20,
             "system_reserve_gib": 16, "prefill_depth": None}
-    path = Path(tempfile.mkdtemp()) / "policy.json"
+    path = tmp_path / "policy.json"
     path.write_text(json.dumps({**base, **extra}))
     return path
 
 
-def test_the_policy_pins_the_chunk_or_defaults_to_the_derivation() -> None:
+def test_the_policy_pins_the_chunk_or_defaults_to_the_derivation(tmp_path) -> None:
     assert (storage_tiers.read_ram_policy(
-        _policy({"promotion_chunk_gib": 32}))["promotion_chunk_gib"] == 32)
+        _policy(tmp_path, {"promotion_chunk_gib": 32}))["promotion_chunk_gib"] == 32)
     assert (storage_tiers.read_ram_policy(
-        _policy({"promotion_chunk_gib": None}))["promotion_chunk_gib"] is None)
+        _policy(tmp_path, {"promotion_chunk_gib": None}))["promotion_chunk_gib"] is None)
 
 
 def test_a_policy_predating_the_pin_still_validates_as_unpinned(tmp_path) -> None:
@@ -134,10 +132,10 @@ def test_a_policy_predating_the_pin_still_validates_as_unpinned(tmp_path) -> Non
     assert policy is not None and policy.get("promotion_chunk_gib") is None
 
 
-def test_a_bad_pin_refuses_the_policy() -> None:
+def test_a_bad_pin_refuses_the_policy(tmp_path) -> None:
     for bad in (0, -32, True, "32"):
         assert storage_tiers.read_ram_policy(
-            _policy({"promotion_chunk_gib": bad})) is None, bad
+            _policy(tmp_path, {"promotion_chunk_gib": bad})) is None, bad
 
 
 def test_the_committed_policy_carries_an_unpinned_chunk() -> None:

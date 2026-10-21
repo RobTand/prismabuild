@@ -33,7 +33,7 @@ def test_observed_nonzero_report_echoing_refusal_never_becomes_runtime_blocker(t
     report["receipt_path"] = None
     launches = []
     # The failed client's log echoes the same prefix as its valid report.
-    refused_process(monkeypatch, launches, message=report["output"], report=[report])
+    refused_process(tmp_path, monkeypatch, launches, message=report["output"], report=[report])
     runner = mq.Runner(cfg, mq.Store(cfg.state_dir))
     got = runner.run_many("b1", tmp_path / "out", [
         ("candidate", tmp_path, ["tests/test_a.py"])])["candidate"]

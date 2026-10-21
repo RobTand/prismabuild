@@ -70,7 +70,7 @@ def test_missing_malformed_or_ambiguous_pins_are_named_before_launch(tmp_path, m
     if source is not None:
         (tmp_path / "pins.py").write_text(source)
     launches = []
-    refused_process(monkeypatch, launches)
+    refused_process(tmp_path, monkeypatch, launches)
     runner = mq.Runner(cfg, mq.Store(cfg.state_dir))
     result = runner.run_many("b1", tmp_path / "out", [("candidate", tmp_path, ["t.py"])])["candidate"]
     assert not launches
@@ -111,7 +111,7 @@ def test_runtime_refusal_retains_report_action_and_never_retries(tmp_path, monke
     report = [shard(["t.py"], ran=False)] if reported else None
     if report:
         report[0]["output"] = PIN_REFUSAL
-    refused_process(monkeypatch, launches, report=report)
+    refused_process(tmp_path, monkeypatch, launches, report=report)
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
         "b1", tmp_path / "out", [("base", tmp_path, ["t.py"])])["base"]
     assert len(launches) == (1 if reported else cfg.inconclusive_retries + 1)
@@ -125,12 +125,12 @@ def test_explicit_missing_worker_interpreter_is_blocked_not_generic_client_error
     launches = []
     message = ("pbtest: every recorded worker that could take these shards names the interpreter "
                "absent: /py. Install it on an eligible box.")
-    refused_process(monkeypatch, launches, message)
+    refused_process(tmp_path, monkeypatch, launches, message)
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
         "b1", tmp_path / "out", [("candidate", tmp_path, ["t.py"])])["candidate"]
     assert "names the interpreter absent:" in result.runtime_refusal and len(launches) == 1
     launches.clear()
-    refused_process(monkeypatch, launches, "pbtest.py: error: unrecognized arguments: -k")
+    refused_process(tmp_path, monkeypatch, launches, "pbtest.py: error: unrecognized arguments: -k")
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
         "b2", tmp_path / "out2", [("candidate", tmp_path, ["t.py"])])["candidate"]
     assert not result.runtime_refusal and result.inconclusive == ["t.py"]
@@ -228,7 +228,7 @@ def test_block_persists_across_restart_skips_only_affected_prs_and_resume_rechec
     queue.runner = mq.Runner(queue.cfg, queue.store)
     monkeypatch.setattr(queue.runner, "discover", good_runner.discover)
     launches = []
-    refused_process(monkeypatch, launches)
+    refused_process(tmp_path, monkeypatch, launches)
     batch = queue.run_batch([{**entries(1)[0], "attempts": 2}])
     assert batch["verdict"] == "runtime-blocked" and not github.calls
     assert queue.store.state["queue"][0]["attempts"] == 2
@@ -295,7 +295,7 @@ def test_once_runtime_blocked_is_exit_two_and_carries_verdict_without_enqueuing(
     monkeypatch.setattr(queue.runner, "discover", fake.discover)
     monkeypatch.setattr(mq, "open_queue", lambda *args, **kwargs: queue)
     launches = []
-    refused_process(monkeypatch, launches)
+    refused_process(tmp_path, monkeypatch, launches)
     result = mq.main(["--config", str(tmp_path / "config.json"), "once", "--mode", "status", "1"])
     assert result == 2 and len(launches) == 1
     assert '"verdict": "runtime-blocked"' in capsys.readouterr().out

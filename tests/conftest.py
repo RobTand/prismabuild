@@ -540,6 +540,22 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _compat_drivers_under_basetemp(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Unpack the old record-compatibility drivers under this session's basetemp.
+
+    ``record_compat`` unpacks them once per process and removes them at exit,
+    which a killed shard never reaches: 29 such directories were left in
+    dl380g10's ``~/tmp``.  pytest owns its basetemp, and a shard's attempt
+    base temp is reaped after a kill (#1542).  Every user imports the module
+    at collection, before this runs.
+    """
+
+    module = sys.modules.get("record_compat")
+    if module is not None:
+        module.DRIVERS_PARENT = tmp_path_factory.mktemp("compat-drivers")
+
+
 #: The launch context the pool publishes to an admitted attempt: the action
 #: key, the residency map and the queue root (#961), plus the broker-owned
 #: reader tuple ``resource_exec`` injects. Taken from the module that defines

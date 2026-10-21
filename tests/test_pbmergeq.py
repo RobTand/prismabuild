@@ -503,10 +503,10 @@ raise SystemExit(pbtest.main())
 """
 
 
-def refused_process(monkeypatch, launches, message=PIN_REFUSAL, report=...):
+def refused_process(tmp_path, monkeypatch, launches, message=PIN_REFUSAL, report=...):
     original = mq.subprocess.Popen
     native = None
-    temporary = Path(tempfile.mkdtemp(prefix='mergeq-refusal-'))
+    temporary = Path(tempfile.mkdtemp(prefix='mergeq-refusal-', dir=tmp_path))
     if message == PIN_REFUSAL:
         from test_pbtest_dependency_pins import fixture_checkout, pbtest
         checkout, _ = fixture_checkout(temporary)
@@ -558,7 +558,7 @@ def test_pin_runtime_refusal_is_not_retried_as_an_unobserved_test(tmp_path, monk
     store = mq.Store(cfg.state_dir)
     runner = mq.Runner(cfg, store)
     launches = []
-    refused_process(monkeypatch, launches)
+    refused_process(tmp_path, monkeypatch, launches)
     result = runner.run_many("b00001", tmp_path / "reports",
                              [("candidate", tmp_path, ["tests/test_a.py"])])["candidate"]
     assert len(launches) == 1, "an unchanged bad runtime cannot observe another retry"
@@ -570,7 +570,7 @@ def test_pin_runtime_refusal_is_named_and_does_not_charge_or_blame_pr(tmp_path, 
     queue, _, github, _ = make_queue(tmp_path)
     runner = mq.Runner(queue.cfg, queue.store)
     launches = []
-    refused_process(monkeypatch, launches)
+    refused_process(tmp_path, monkeypatch, launches)
 
     def drive(batch, outdir):
         batch["included"] = [{"pr": 1, "sha": SHA}]

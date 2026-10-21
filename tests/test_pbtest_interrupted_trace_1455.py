@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import json
 import inspect
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -36,8 +37,12 @@ def _run(tmp_path: Path, tests: str, arguments: list[str], *, trace=True,
     command = [*entry, *([] if "no:terminal" in arguments else ["-q"]),
                "-p", "no:cacheprovider", *arguments,
                *(["--pbtest-trace"] if trace else []), "test_fixture.py"]
-    return subprocess.run(command, cwd=tmp_path, text=True, capture_output=True,
-                          timeout=120)
+    # A shard that exits abruptly removes nothing it made in TMPDIR, so its
+    # scratch is this test's.
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    return subprocess.run(command, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)},
+                          text=True, capture_output=True, timeout=120)
 
 
 def _events(output: str) -> list[dict]:
