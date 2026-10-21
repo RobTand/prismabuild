@@ -69,6 +69,7 @@ def test_proc_mount_probe_refuses_before_any_compatibility_test(compat_namespace
     child = run(code=1, stderr=PROC_ERROR, name=name)
     output = child.stdout + child.stderr
     assert child.returncode == PROC_NAMESPACE_REFUSAL_EXIT, output
+    assert child.returncode not in (0, 1, 2), output
     assert PROC_NAMESPACE_REFUSAL in output
     assert output.count(PROC_NAMESPACE_REFUSAL) == 1, output
     assert socket.gethostname() in output and PROC_ERROR in output
