@@ -315,7 +315,7 @@ def test_absent_key_in_fresh_generations_publishes_and_audits(
         cwd=work, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     line = json.loads(completed.stdout)
-    assert line["status"] == "published"
+    assert line["status"] == "submitted"
     key = line["action_key"]
     _assert_publication(tmp_path, {"action_key": key}, transport, fleet)
     event, = h._audit(tmp_path, key)
