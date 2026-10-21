@@ -260,6 +260,41 @@ large tree has been read. It cannot raise it: a value above the fleet ceiling is
 refused by name. The ceiling covers local disk on the box that materializes the
 checkout, so it is not part of the action's identity.
 
+### Seal once and publish later (#1893)
+
+Use `pbrun --seal-only <usual options> -- CMD...` to prepare the checkout and
+retain its sealed request in the CAS without publishing runnable work. Stdout
+is one `prismabuild.sealed.v1` JSON object with `action_key`, `request_sha256`
+and `transport`. Save that key before publishing:
+
+    tools/fleet/pbrun.py --publish-sealed KEY --detach
+
+Publication verifies the retained request and every declared CAS input, including
+the checkout bundle. It uses the ordinary cache, attachment, admission and offer
+checks without reading the original checkout. Omit `--detach` to wait, or set
+`--wait-s S` to bound that wait. Publication accepts no replacement command or
+execution options. `--after` work cannot be sealed before dependency release.
+
+Seal-only retains the transport, queue hints, D38 evidence references and
+residency choices outside action identity. Re-sealing the same key with different
+publication choices refuses with `sealed_publication_conflict`. A CAS request
+created before this context existed uses current transport and publication
+defaults. Input bytes and execution policy always come from the verified seal.
+
+`--detach` and detached `--publish-sealed` print `prismabuild.submission.v1`.
+The record retains the previous fields and adds `request_sha256` and
+`publication: {published_unix, generation}`. The status keeps its detach
+vocabulary, `submitted`, `attached` or `cache_hit`; a cache hit has null
+publication fields because this call publishes no generation. Consumers of the
+previous `prismaquant.prismabuild.pbrun_detach.v1` schema must accept the new
+schema name; the status values are unchanged.
+
+Both new verbs return 0 on success and 1 on refusal, with
+`{schema, refusal: {code, reason}}` on stdout. Missing requests are named
+`missing_sealed_request`; unavailable inputs are named `sealed_input_unavailable`
+with their input ID and digest. Invalid usage exits 2. Attached publication
+returns the action's ending or the ordinary wait failure code.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.

@@ -134,8 +134,13 @@ def test_main_cached_identity_replays_only_its_configured_verified_result(tmp_pa
     assert actual == 0 and events.problem is None
     assert isinstance(events.identity, client.CachedClientIdentity)
     assert events.identity.result_sha256 == receipt['result']['sha256']
-    assert json.loads(output.splitlines()[-1]) == client.reported_submission(
+    record = json.loads(output.splitlines()[-1])
+    internal = client.reported_submission(
         client.ClientReport(identity=events.identity, ending=events.ending))
+    assert record["schema"] == "prismabuild.submission.v1"
+    assert {key: record[key] for key in internal if key != "schema"} == {
+        key: value for key, value in internal.items() if key != "schema"}
+    assert record["request_sha256"]
     assert client.read_cached_output(events.identity, events.ending) == client.CachedOutput(
         cas.result_path(receipt, action).read_text())
 

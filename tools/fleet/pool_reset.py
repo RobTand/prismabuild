@@ -90,7 +90,7 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 from prismabuild import fleet_submit  # noqa: E402
 from prismabuild import submission
-from prismabuild.submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission, SUBMISSION_SCHEMA_V1
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
 
@@ -646,11 +646,11 @@ def announced_submission(said: str) -> dict | None:
         except ValueError:
             continue
         if (isinstance(value, dict)
-                and value.get("schema") == submission.action_client.DETACH_SCHEMA_V1
+                and value.get("schema") in (submission.action_client.DETACH_SCHEMA_V1, SUBMISSION_SCHEMA_V1)
                 and isinstance(value.get("action_key"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
                 and value.get("transport") in ("pool", "slurm")
-                and value.get("status") in ("submitted", "attached", "cache_hit")):
+                and value.get("status") in ("submitted", "published", "attached", "cache_hit")):
             return value
     return None
 
