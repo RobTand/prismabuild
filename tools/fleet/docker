@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 
 OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
@@ -355,7 +356,7 @@ CONTAINER_FLAGS = frozenset("""
 """.split())
 
 
-def _container_options(argv: list[str], *, memory_limit: int | None = None, defer_remove: bool = False) -> tuple[list[str], list[str], str | None]:
+def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
     """Retain argv verbatim except cpuset options before IMAGE.
 
     Return retained argv, normalized label options for ownership checks, and the
@@ -427,11 +428,6 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None, defe
                                                 if requested_bytes else memory_limit)])
             if name == "-m" and offset > 2:
                 kept.append(token[:offset - 1])
-            index = end
-            continue
-        if (defer_remove and name == "--rm"
-                and (not equals or value.lower() in {"true", "false", "1", "0", "t", "f"})):
-            options.extend(["--rm", value if equals else "true"])
             index = end
             continue
         if name == "--cpuset-cpus":
@@ -791,13 +787,13 @@ class _Stop:
         the client already sent can still complete at the daemon, and a removed
         container cannot start.
         """
-        code, _, _ = self.call(["rm", "-f", cid])
+        code, _, _ = self.call(["rm", "-f", "-v", cid])
         return code == 0
 
 
 def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
                  scope, global_options: list[str], nonce: str, cidfile: Path,
-                 receipt_path: Path) -> int:
+                 receipt_path: Path, daemon_stderr: bytearray | None = None) -> int:
     """Run the real client; on TERM, INT or HUP stop the workload it started (#1599).
 
     The handlers are installed BEFORE the client starts and stay armed until
@@ -826,7 +822,25 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
                       "kill_rejected": 0, "container_removed": False,
                       "remove_rejected": 0}
         started = time.time()
-        child = subprocess.Popen([real, *args], env=environment)
+        child = subprocess.Popen([real, *args], env=environment,
+                                 stderr=subprocess.PIPE if daemon_stderr is not None else None)
+        reader = None
+        if daemon_stderr is not None:
+            def relay_stderr():
+                while True:
+                    data = os.read(child.stderr.fileno(), 8192)
+                    if not data: break
+                    daemon_stderr.extend(data)
+                    del daemon_stderr[:-8192]
+                    offset = 0
+                    while offset < len(data):
+                        try: written = os.write(2, data[offset:])
+                        except OSError: break
+                        if not written: break
+                        offset += written
+                child.stderr.close()
+            reader = threading.Thread(target=relay_stderr, name="docker-stderr", daemon=True)
+            reader.start()
         stop = None
         forwarded = 0
         first_unix = None
@@ -850,6 +864,7 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
                 break
             time.sleep(0.02)
         if not received:
+            if reader is not None: reader.join()
             return child.returncode if child.returncode is not None else 1
         if stop is None:           # the client ended just as the signal landed
             first_unix = received[0][1]
@@ -1098,15 +1113,18 @@ def main() -> int:
         try:
             registration = _container_intent(scope[0]) if scope else {}
             ticket = registration.get("ticket")
-            typed_launch = (registration.get("launch_outcome_protocol") == 1
+            typed_launch = (registration.get("launch_outcome_protocol") == 2
                             and sub[relative - 1] == "run")
-            remove = False
             if typed_launch:
-                creation, launch_options, _ = _container_options(
-                    argv[insertion:], memory_limit=scope[1], defer_remove=True)
-                removals = [launch_options[i + 1] for i, value in enumerate(launch_options)
-                            if value == "--rm"]
-                remove = bool(removals and removals[-1].lower() in {"true", "1", "t"})
+                labels = [f"{SHIM_LABEL}={ticket}" if value == f"{SHIM_LABEL}={nonce}"
+                          else value for value in labels]
+                nonce = ticket
+                # A per-launch ticket is also the daemon label. A stale caller
+                # cidfile can never authorize observation or removal of an older run.
+                try:
+                    _container_broker(scope[0], "container_watch", ticket=ticket)
+                except Refused as exc:
+                    sys.stderr.write(f"docker shim: daemon launch events unavailable: {exc}\n")
                 from prismabuild.gpu_capacity import RUNTIME_PROBE_ENV, RUNTIME_PROBE_LABEL
                 probe = os.environ.get(RUNTIME_PROBE_ENV)
                 if probe:
@@ -1114,17 +1132,20 @@ def main() -> int:
             labelled = [*global_options, *sub[:relative], *labels, *containment,
                         "--cpuset-cpus", cpuset, *cid_option, *creation]
             receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")
+            daemon_stderr = bytearray()
             result = subprocess.CompletedProcess(
                 [real, *labelled], _run_relayed(
                     real, labelled, environment, owner=owner, scope=scope,
                     global_options=global_options, nonce=nonce, cidfile=cidfile,
-                    receipt_path=receipt_path))
+                    receipt_path=receipt_path,
+                    **({"daemon_stderr": daemon_stderr} if typed_launch else {})))
             if typed_launch:
                 try:
-                    cid = cidfile.read_text().strip()
-                    if re.fullmatch(r"[a-f0-9]{64}", cid):
-                        _container_broker(scope[0], "container_outcome", ticket=ticket,
-                                          container_id=cid, remove=remove)
+                    try: cid = cidfile.read_text().strip()
+                    except OSError: cid = None
+                    if cid is not None and not re.fullmatch(r"[a-f0-9]{64}", cid): cid = None
+                    _container_broker(scope[0], "container_outcome", ticket=ticket,
+                                      container_id=cid, daemon_stderr=daemon_stderr.decode(errors="replace")[-8192:])
                 except (OSError, Refused) as exc:
                     sys.stderr.write(f"docker shim: daemon launch state unavailable: {exc}\n")
             # Only CLI success proves the daemon operation settled. A nonzero

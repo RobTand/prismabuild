@@ -3109,7 +3109,7 @@ def _docker_remove_containers(container_ids: list[str]) -> list[str]:
     if not container_ids:
         return []
     result = subprocess.run(
-        [DOCKER, "rm", "-f", *container_ids],
+        [DOCKER, "rm", "-f", "-v", *container_ids],
         capture_output=True,
         text=True,
         timeout=30,
@@ -5982,6 +5982,7 @@ class PoolQueue:
         directory = self.records.worker_directory()
         directory.mkdir(parents=True, exist_ok=True)
         self.records.replace_record_at(self.records.worker_offer_path(host), record)
+        gpu_runtime_gate.runtime_offer_published(record)
 
     def _offer_records(self) -> list[dict[str, object]]:
         directory = self.records.worker_directory()

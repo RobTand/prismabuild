@@ -476,8 +476,34 @@ RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
 
 def runtime_probe_command():
     """No CUDA workload: exercise CDI injection, then exit immediately."""
-    return ['docker', 'run', '--pull=never', '--rm', '--network=none',
+    return ['docker', 'run', '--pull=never', '--network=none',
             '--device=nvidia.com/gpu=all', '--entrypoint=/bin/true', RUNTIME_PROBE_IMAGE]
+
+
+def runtime_probe_request(token):
+    """One recipe for client sealing and the claim-time fence exception.
+
+    Exclusive pbrun submissions have a 16 GiB host-memory floor. Declare it
+    explicitly rather than asking for a request the client cannot seal.
+    """
+    return {'command': runtime_probe_command(), 'demand': {'cpu': 1, 'mem_gb': 16, 'gpu': 1},
+            'container_images': [RUNTIME_PROBE_IMAGE], 'execution_timeout_s': 30.0,
+            'gpu_exclusive': True, 'gpu_memory_gb': 1.0,
+            'environment': {RUNTIME_PROBE_ENV: token, 'OMP_NUM_THREADS': '1',
+                            'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1'}}
+
+
+def runtime_probe_options(checkout, token):
+    recipe = runtime_probe_request(token)
+    demand = recipe['demand']
+    return ['--cwd', str(checkout), '--transport', 'pool', '--here', '--gpu', '--exclusive',
+            '--gpu-capacity', str(demand['gpu']), '--cpus', str(demand['cpu']),
+            '--demand', 'mem_gb=' + str(demand['mem_gb']),
+            '--gpu-memory-gb', str(recipe['gpu_memory_gb']),
+            '--container-image', recipe['container_images'][0],
+            '--timeout-s', str(recipe['execution_timeout_s']),
+            *[arg for key, value in recipe['environment'].items() for arg in ('--env', key + '=' + value)],
+            '--detach', '--', *recipe['command']]
 
 
 class ContainerLaunchOutcome(NamedTuple):
@@ -519,9 +545,14 @@ def container_launch_outcome(container, *, cdi_sources, source_exists=os.path.ex
             for request in requests))
         if missing and nvidia and missing[1] in cdi_sources and not source_exists(missing[1]):
             return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096])
-        if ('nvidia-container-cli: initialization error:' in lower
-                or 'nvidia-container-runtime: initialization error:' in lower
-                or 'nvidia-container-cli: device error:' in lower):
+        nvidia_error = any(prefix in lower for prefix in (
+            'nvidia-container-cli: initialization error:',
+            'nvidia-container-runtime: initialization error:',
+            'nvidia-container-cli: device error:'))
+        host_cause = any(cause in lower for cause in (
+            'nvml error: driver not loaded', 'nvml error: driver/library version mismatch',
+            'failed to initialize nvml', 'nvml error: gpu is lost'))
+        if nvidia_error and host_cause:
             return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096])
     return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
 

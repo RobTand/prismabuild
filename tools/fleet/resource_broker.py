@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import array
 import errno
+import fcntl
+import http.client
 import hashlib
 import hmac
 import importlib.util
@@ -27,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 HEX64=re.compile(r'[0-9a-f]{64}\Z');HEX32=re.compile(r'[0-9a-f]{32}\Z')
 MAINTENANCE_SCHEMA='prismabuild.resource-maintenance.v1'
@@ -257,6 +260,108 @@ def _load_gpu_module(filename='gpu_memory.py'):
     spec.loader.exec_module(module)
     return module
 
+class DockerLaunchWatch:
+    """Subscribe before the launch, keeping native Docker AutoRemove intact.
+
+    Retained containers use inspect. For an auto-removed launch, classification
+    requires the daemon's create snapshot and its destroy event, with no start
+    or die event in this launch's live stream. A lost/oversized stream is unknown.
+    Require create itself: the initial replay only bridges the HTTP header /
+    subscription boundary. If Docker's bounded history drops create, stay unknown.
+    """
+    def __init__(self, backend, ticket, *, socket_path='/run/docker.sock'):
+        self.backend=backend;self.ticket=ticket
+        self.condition=threading.Condition();self.row=None;self.cid=None
+        self.started=False;self.destroyed=False;self.failed=False;self.exit_code=None
+        self.socket=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        self.socket.settimeout(5)
+        try:
+            self.socket.connect(str(socket_path))
+            filters=json.dumps({'type':['container'],'label':['prismabuild.shim='+ticket]})
+            path='/events?since='+str(time.time())+'&filters='+urllib.parse.quote(filters)
+            self.socket.sendall(('GET '+path+' HTTP/1.1\r\nHost: localhost\r\n\r\n').encode())
+            self.response=http.client.HTTPResponse(self.socket)
+            self.response.begin()
+            if self.response.status!=200:raise ValueError('daemon event subscription refused')
+            self.socket.settimeout(None)
+            self.thread=threading.Thread(target=self._read_events,name='docker-launch-events',daemon=True)
+            self.thread.start()
+        except BaseException:
+            self.socket.close()
+            raise
+
+    def _read_events(self):
+        try:
+            count=0
+            while True:
+                raw=self.response.readline(65537)
+                if not raw or len(raw)>65536:raise ValueError('daemon event stream incomplete')
+                event=json.loads(raw)
+                if not isinstance(event,dict):raise ValueError('invalid daemon event')
+                actor=event.get('Actor',{})
+                if not isinstance(actor,dict) or not isinstance(actor.get('Attributes'),dict):
+                    raise ValueError('invalid daemon event actor')
+                if (event.get('Type')!='container'
+                        or actor.get('Attributes',{}).get('prismabuild.shim')!=self.ticket):
+                    raise ValueError('daemon event identity mismatch')
+                cid=actor.get('ID')
+                if not isinstance(cid,str) or not HEX64.fullmatch(cid):raise ValueError('invalid daemon event id')
+                count+=1
+                if count>64:raise ValueError('daemon launch event limit exceeded')
+                with self.condition:
+                    if self.cid not in (None,cid):raise ValueError('launch nonce was reused')
+                    self.cid=cid
+                    action=event.get('Action')
+                    if action=='create':
+                        if self.row is not None:raise ValueError('duplicate create event')
+                        try:self.row=self.backend.inspect_container(cid)
+                        except (ValueError,OSError,subprocess.SubprocessError):pass
+                    elif action in {'start','die'}:
+                        self.started=True
+                        code=actor['Attributes'].get('exitCode')
+                        if action=='die' and isinstance(code,str) and code.isascii() and code.isdigit() and len(code)<=3:
+                            self.exit_code=int(code)
+                    elif action=='destroy':
+                        self.destroyed=True
+                        self.condition.notify_all()
+                        return
+        except (OSError,ValueError,http.client.HTTPException):
+            with self.condition:
+                self.failed=True
+                self.condition.notify_all()
+        finally:
+            self.response.close()
+            self.socket.close()
+
+    def never_started(self, cid, error):
+        # The daemon cannot callback to this RPC when its stream is lost. This
+        # bounded condition wait is for destroy/stream failure, not a retry timer.
+        with self.condition:
+            self.condition.wait_for(lambda:self.destroyed or self.failed,timeout=5)
+            if (not self.destroyed or self.failed or self.started or self.cid!=cid or self.row is None):
+                return None
+            row=dict(self.row)
+            state=row.get('State',{})
+            if state.get('StartedAt')!='0001-01-01T00:00:00Z':return None
+            # Only here can stderr belong solely to the CLI/daemon, since no
+            # process ran in this container. It is never read on a payload exit.
+            if not error.startswith('docker: Error response from daemon:'):
+                return None
+            row['State']={**state,'Running':False,'Error':error[:4096]}
+            return row
+
+    def payload_outcome(self, module, cid):
+        with self.condition:
+            if self.destroyed and not self.failed and self.started and self.cid==cid:
+                return module.ContainerLaunchOutcome('payload_exit',True,payload_returncode=self.exit_code)
+        return None
+
+    def close(self):
+        try:self.socket.shutdown(socket.SHUT_RDWR)
+        except OSError:pass
+        self.thread.join()
+
+
 class SystemdBackend:
     def __init__(self, root=Path('/sys/fs/cgroup')):self.root=Path(root)
     def inspect_container(self, cid):
@@ -267,23 +372,6 @@ class SystemdBackend:
         if not isinstance(rows,list) or len(rows)!=1 or not isinstance(rows[0],dict):
             raise ValueError('daemon returned invalid container state')
         return rows[0]
-
-    def remove_after_exit(self, cid, scope, *, running):
-        def remove_terminal():
-            # A detached --rm retains its normal lifetime. Wait for the daemon's
-            # exit event, then verify the immutable id before removal. This
-            # helper never holds admission or the authority lock while waiting.
-            command=['/usr/bin/docker','--host','unix:///run/docker.sock']
-            if running:
-                subprocess.run([*command,'wait',cid],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            try:
-                row=self.inspect_container(cid)
-                if (row.get('State',{}).get('Running') is False
-                        and row.get('HostConfig',{}).get('CgroupParent')==scope):
-                    subprocess.run([*command,'rm','-v',cid],capture_output=True,timeout=5)
-            except (OSError,ValueError,subprocess.TimeoutExpired):pass
-        thread=threading.Thread(target=remove_terminal,name='docker-auto-remove',daemon=True)
-        thread.start()
 
     def path(self, scope):
         if not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):raise ValueError('invalid scope')
@@ -459,6 +547,7 @@ class GPUContainerRuntime:
                         'reason':module.RUNTIME_REASON,'subtype':'state_unknown','error':str(exc)[:1000]}
         # Never inherit an old process's probe authorization.
         self.state.pop('probe_token',None)
+        self.state.pop('offer_identity',None)
         self._publish()
         self.stop_read,self.stop_write=os.pipe2(os.O_CLOEXEC)
         self.thread=None
@@ -482,6 +571,8 @@ class GPUContainerRuntime:
     def event(self, reason):
         """Mint one probe for this event, never a cooldown or periodic retry."""
         with self.lock:
+            previous=self.state.pop('probe_submission',None)
+            if previous is not None:self.state['last_probe_submission']=previous
             self.state.update(latched=True,reason=self.module.RUNTIME_REASON,
                               subtype=self.state.get('subtype','readiness_unknown'),
                               probe_token=secrets.token_hex(32),
@@ -526,11 +617,13 @@ class GPUContainerRuntime:
         try:
             with_watch=self.module.CDIChangeWatch(self.cdi_dir)
             try:
-                submit(self.event('watch_restart'))
+                if self.state['latched']:
+                    submit(self.event('watch_restart'))
                 while True:
                     reason=with_watch.next_change(self.stop_read)
                     if reason is None:return
-                    submit(self.event(reason))
+                    if self.state['latched'] or reason == 'watch_overflow':
+                        submit(self.event(reason))
             finally:with_watch.close()
         except Exception as exc:
             with self.lock:
@@ -561,15 +654,11 @@ class GPUContainerRuntime:
 
     def submit_probe(self, uid, token):
         """Submit through the published client after dropping root privileges."""
+        with self.lock:offer_at_submit=self.state.get('offer_identity')
         account=pwd.getpwuid(uid)
         checkout=str(Path(account.pw_dir)/'tmp/prismabuild-runtime-readiness')
         command=['/usr/bin/python3','/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py',
-                 '--cwd',checkout,'--transport','pool','--here','--gpu','--exclusive',
-                 '--cpus','1','--demand','mem_gb=1','--gpu-memory-gb','1',
-                 '--container-image',self.module.RUNTIME_PROBE_IMAGE,'--timeout-s','30',
-                 '--env',self.module.RUNTIME_PROBE_ENV+'='+token,
-                 '--env','OMP_NUM_THREADS=1','--env','MKL_NUM_THREADS=1','--env','OPENBLAS_NUM_THREADS=1',
-                 '--detach','--',*self.module.runtime_probe_command()]
+                 *self.module.runtime_probe_options(checkout,token)]
         # A tiny dedicated checkout keeps unrelated source and credentials out
         # of the snapshot. Preparation and submission run as the worker UID.
         prepare = ("import os, pathlib, subprocess, sys; p=pathlib.Path(sys.argv[1]); "
@@ -594,6 +683,18 @@ class GPUContainerRuntime:
             if self.state.get('probe_token')==token:
                 self.state['probe_submission']=detail
                 self._publish()
+                if (detail.get('returncode') not in (None,0)
+                        and self.state.get('offer_identity') not in (None,offer_at_submit)):
+                    self.pending.put(self.event('worker_offer_changed'))
+
+    def offer_changed(self, identity):
+        with self.lock:
+            if self.state.get('offer_identity') == identity:return
+            self.state['offer_identity']=identity
+            failed=self.state.get('probe_submission',{}).get('returncode') not in (None,0)
+            if self.state['latched'] and failed:
+                self.pending.put(self.event('worker_offer_changed'))
+            else:self._publish()
 
     def close(self):
         os.write(self.stop_write,b'x')
@@ -606,7 +707,7 @@ class GPUContainerRuntime:
 class Authority:
     def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None,runtime=None):
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend;self.runtime=runtime
-        self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
+        self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={};self.launch_watches={}
         # The worker reads this volatile v1 mirror.  The canonical authority is
         # separate so clearing /run at boot cannot turn a named hold into an
         # admission grant.
@@ -788,7 +889,12 @@ class Authority:
         if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end','maintenance_takeover'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
-        if op in {'container_begin','container_end','container_outcome'}:return self.container(uid,pid,request)
+        if op=='runtime_offer':
+            if set(request)!={'op','identity'} or not HEX64.fullmatch(str(request['identity'])):
+                raise ValueError('invalid runtime offer identity')
+            if self.runtime is not None:self.runtime.offer_changed(request['identity'])
+            return {'ok':True}
+        if op in {'container_begin','container_end','container_watch','container_outcome'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
                  else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
@@ -870,6 +976,10 @@ class Authority:
                 return {'ok':True,'scope_id':scope,'released':True}
             if record is None or not hmac.compare_digest(token,record['token']):
                 raise PermissionError('attempt authority does not match')
+            if op in {'stop','release','settle'}:
+                for ticket in record.get('container_tickets',[]):
+                    watch=self.launch_watches.pop(ticket,None)
+                    if watch is not None:watch.close()
             if op=='export_stopped':
                 # Read-only verdict for containment export, BEFORE the
                 # released-record shortcut below: a repeated export after
@@ -1375,7 +1485,7 @@ class Authority:
     def container(self,uid,pid,request):
         op=request['op'];scope=request.get('scope_id')
         fields=({'op','scope_id'} if op=='container_begin' else
-                {'op','scope_id','ticket','container_id','remove'} if op=='container_outcome' else {'op','scope_id','ticket'})
+                {'op','scope_id','ticket','container_id','daemon_stderr'} if op=='container_outcome' else {'op','scope_id','ticket'})
         if set(request)-fields or not isinstance(scope,str) or not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):
             raise ValueError('invalid container intent fields')
         with self.lock:
@@ -1393,30 +1503,49 @@ class Authority:
                 ticket=secrets.token_hex(32)
                 record.setdefault('container_tickets',[]).append(ticket)
                 _atomic(self.state_dir/(scope+'.json'),record)
-                return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':1} if self.runtime is not None else {})}
+                return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':2} if self.runtime is not None else {})}
             ticket=request.get('ticket')
             if not isinstance(ticket,str) or HEX64.fullmatch(ticket) is None or ticket not in record.get('container_tickets',[]):
                 raise PermissionError('container intent authority does not match')
+            if op=='container_watch':
+                if self.runtime is None:raise ValueError('launch outcome protocol unavailable')
+                if ticket in self.launch_watches:raise ValueError('launch already watched')
+                self.launch_watches[ticket]=DockerLaunchWatch(self.backend,ticket)
+                return {'ok':True}
             if op=='container_outcome':
                 cid=request.get('container_id')
-                if not isinstance(cid,str) or not HEX64.fullmatch(cid):raise ValueError('invalid container id')
-                container=self.backend.inspect_container(cid)
-                labels=container.get('Config',{}).get('Labels',{}) or {}
-                if (container.get('Id')!=cid or labels.get('prismabuild.scope')!=scope
-                        or container.get('HostConfig',{}).get('CgroupParent')!=scope):
-                    raise PermissionError('daemon container does not belong to this attempt')
-                if self.runtime is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
-                outcome=self.runtime.observe(container,record)
-                if type(request.get('remove')) is not bool:raise ValueError('invalid removal declaration')
-                if request['remove']:self.backend.remove_after_exit(cid,scope,running=container.get('State',{}).get('Running') is True)
-
-                if outcome.kind=='host_fault':
-                    record['host_fault']={'reason':self.runtime.module.RUNTIME_REASON,
-                        'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
-                        'action_key':record['action_key'],'attempt':record['nonce'],
-                        'unix_time':time.time(),'boot_id':self.runtime.boot_id}
-                    _atomic(self.state_dir/(scope+'.json'),record)
-                return {'ok':True,'launch_outcome':outcome.as_record()}
+                error=request.get('daemon_stderr','')
+                if (cid is not None and (not isinstance(cid,str) or not HEX64.fullmatch(cid))
+                        or not isinstance(error,str) or len(error)>8192):
+                    raise ValueError('invalid launch observation')
+                watch=self.launch_watches.pop(ticket,None)
+                try:
+                    if cid is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
+                    try:container=self.backend.inspect_container(cid)
+                    except ValueError:
+                        container=watch.never_started(cid,error) if watch is not None else None
+                    if container is None:
+                        outcome=(watch.payload_outcome(self.runtime.module,cid)
+                                 if watch is not None and self.runtime is not None else None)
+                        return {'ok':True,'launch_outcome':outcome.as_record() if outcome is not None else {'kind':'unknown'}}
+                    labels=container.get('Config',{}).get('Labels',{}) or {}
+                    if (container.get('Id')!=cid or labels.get('prismabuild.scope')!=scope
+                            or labels.get('prismabuild.shim')!=ticket
+                            or container.get('HostConfig',{}).get('CgroupParent')!=scope):
+                        raise PermissionError('daemon container does not belong to this launch')
+                    if self.runtime is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
+                    outcome=self.runtime.observe(container,record)
+                    if outcome.kind=='host_fault':
+                        record['host_fault']={'reason':self.runtime.module.RUNTIME_REASON,
+                            'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
+                            'action_key':record['action_key'],'attempt':record['nonce'],
+                            'unix_time':time.time(),'boot_id':self.runtime.boot_id}
+                        _atomic(self.state_dir/(scope+'.json'),record)
+                    return {'ok':True,'launch_outcome':outcome.as_record()}
+                finally:
+                    if watch is not None:watch.close()
+            watch=self.launch_watches.pop(ticket,None)
+            if watch is not None:watch.close()
             record['container_tickets'].remove(ticket)
             _atomic(self.state_dir/(scope+'.json'),record)
             return {'ok':True}
@@ -1647,36 +1776,55 @@ def main():
         _atomic(state,{'schema':MAINTENANCE_SCHEMA,'draining':False,'changed_unix':time.time(),
                        'reason':'explicit initial installation'},mode=0o600)
         return
-    total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))
-    authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
-                        maintenance_state=args.maintenance_state)
-    capacity_module=_load_gpu_module('gpu_capacity.py')
-    authority.runtime=GPUContainerRuntime(capacity_module,
-        Path(args.maintenance_state).with_name('gpu-container-runtime.json'),
-        authority.state_dir.parent/'gpu-container-runtime.json',authority.lock)
-    endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
-    if endpoint.exists():
-        # systemd owns one broker; refuse an active endpoint rather than take it.
-        probe=socket.socket(socket.AF_UNIX)
-        try:
-            probe.connect(str(endpoint));raise SystemExit('resource broker socket already active')
-        except ConnectionRefusedError:endpoint.unlink()
-        finally:probe.close()
-    with Server(str(endpoint),Handler) as server:
-        server.authority=authority
-        os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
-        monitor=ResourceMonitor(authority,_load_gpu_module(),capacity_module=capacity_module)
-        for name in ('resource_broker.py','resource_payload.py','gpu_memory.py','gpu_capacity.py'):
-            path=_trusted_file(Path(__file__).resolve().with_name(name))
-            authority.installation_paths[name]=path
-            authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()
-        authority.health_check=monitor.healthy
-        monitor.start()
-        authority.runtime.start(lambda token:authority.runtime.submit_probe(args.uid,token))
-        print('PrismaBuild resource broker ready',flush=True)
-        try:server.serve_forever(poll_interval=0.5)
-        finally:
-            authority.runtime.close()
-            monitor.close()
+    # The inode is never unlinked. A rejected second broker must not read or
+    # republish live authority, including invalidating its probe token.
+    with broker_lifetime_lock(Path(args.maintenance_state).with_name('broker.lock')):
+        endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
+        if endpoint.exists():
+            # systemd owns one broker; refuse an active endpoint rather than take it.
+            probe=socket.socket(socket.AF_UNIX)
+            try:
+                probe.connect(str(endpoint));raise SystemExit('resource broker socket already active')
+            except ConnectionRefusedError:endpoint.unlink()
+            finally:probe.close()
+        total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))
+        authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
+                            maintenance_state=args.maintenance_state)
+        capacity_module=_load_gpu_module('gpu_capacity.py')
+        authority.runtime=GPUContainerRuntime(capacity_module,
+            Path(args.maintenance_state).with_name('gpu-container-runtime.json'),
+            authority.state_dir.parent/'gpu-container-runtime.json',authority.lock)
+        with Server(str(endpoint),Handler) as server:
+            server.authority=authority
+            os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
+            monitor=ResourceMonitor(authority,_load_gpu_module(),capacity_module=capacity_module)
+            for name in ('resource_broker.py','resource_payload.py','gpu_memory.py','gpu_capacity.py'):
+                path=_trusted_file(Path(__file__).resolve().with_name(name))
+                authority.installation_paths[name]=path
+                authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+            authority.health_check=monitor.healthy
+            monitor.start()
+            authority.runtime.start(lambda token:authority.runtime.submit_probe(args.uid,token))
+            print('PrismaBuild resource broker ready',flush=True)
+            try:server.serve_forever(poll_interval=0.5)
+            finally:
+                authority.runtime.close()
+                monitor.close()
+
+
+def broker_lifetime_lock(path):
+    path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o077:
+            raise ValueError('unsafe broker lifetime lock')
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise SystemExit('resource broker already owns host authority')
+        return os.fdopen(fd,'r+')
+    except BaseException:
+        os.close(fd)
+        raise
+
 
 if __name__=='__main__':main()

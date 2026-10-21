@@ -5635,17 +5635,20 @@ checks this same mirror rather than keeping its own cooldown.
 
 PB blocks on inotify of local `/run/cdi`, which `/var/run/cdi` resolves to.
 Replacing `nvidia.yaml` atomically, recreating the directory, watch overflow or
-watcher restart requests one bounded readiness launch. NVIDIA's package hook
-owns CDI regeneration. PB never regenerates or edits it. After an event, PB
+watcher restart requests one bounded readiness launch when a fence is already
+latched or unknown. Healthy startup leaves GPU admission open. NVIDIA's package
+hook owns CDI regeneration. PB never regenerates or edits it. After an event, PB
 submits the exact pinned `/bin/true` CDI-injection probe described in
 [the design contract](design.md#host-gpu-container-runtime-fence-1895), through
 ordinary host-pinned PB admission as the worker UID. The tiny checkout is
-`~/tmp/prismabuild-runtime-readiness`. The probe declares 1 CPU, 1 GiB host RAM,
+`~/tmp/prismabuild-runtime-readiness`. The probe declares 1 CPU, 16 GiB host RAM,
 1 GiB GPU memory, exclusive GPU admission and a 30-second payload deadline.
 It uses the digest already declared by the failed actions, with `--pull=never`.
 An absent local image, occupied device, refusal or failed launch cannot clear
 the fence. There is no periodic retry; the next CDI event authorizes another
-probe. `probe_submission`, `last_probe` and `cleared` retain available evidence.
+probe. A changed worker offer can retry a refused submission, including a
+startup refusal with no offers. Unchanged offer heartbeats do not retry.
+`probe_submission`, `last_probe` and `cleared` retain available evidence.
 Only success for the latest event clears; a stale probe cannot reopen a newer
 fence.
 
@@ -5653,3 +5656,18 @@ The fixture tests exercise fake Docker state and temporary local inotify
 watches. They establish no live runtime repair, real GPU container launch,
 power-loss durability or installed-generation convergence. Deployment and its
 live acceptance remain the lead's work.
+
+
+The shim preserves native Docker `--rm`. Launch classification binds the
+per-launch ticket label as well as the scope, so a rejected reused `--cidfile`
+cannot borrow another container's error or remove it. The readiness probe omits
+`--rm` so the broker can inspect its successful terminal state. Ordinary scope
+cleanup removes that container and its anonymous volumes. A second broker must
+acquire the local lifetime lock before loading or publishing GPU fence state.
+
+The round-2 live proof stops at the root prerequisite. An admitted sparky payload
+cannot elevate because `NoNewPrivileges` is set. Its daemon reports only
+`/etc/cdi` and `/run/cdi` as CDI search directories; a private daemon using a
+scratch spec also needs root. Do not change those production directories or
+relax admission to work around the refusal. The lead must provide an authorized
+root-owned isolated harness path before live launch/recovery qualification.

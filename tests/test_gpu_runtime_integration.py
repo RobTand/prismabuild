@@ -62,7 +62,7 @@ def test_each_offer_masks_gpu_immediately_and_preserves_cpu_and_configured_bound
 def test_readiness_exception_binds_the_sealed_recipe(tmp_path, change):
     (tmp_path / 'source.py').write_text('')
     command = gpu_capacity.runtime_probe_command()
-    params = {'command': command, 'demand': {'cpu': 1, 'mem_gb': 1, 'gpu': 1},
+    params = {'command': command, 'demand': {'cpu': 1, 'mem_gb': 16, 'gpu': 1},
               'placement': {'required_tags': [socket.gethostname()]},
               'container_images': [gpu_capacity.RUNTIME_PROBE_IMAGE], 'execution_timeout_s': 30.0,
               'gpu_memory_gb': 1.0, 'gpu_exclusive': True}
@@ -116,7 +116,7 @@ def test_broker_host_fault_survives_failed_ending_and_charges_attempt(scoped, mo
 
 
 @pytest.mark.parametrize('status', [0, 127])
-def test_shim_reports_typed_launch_before_auto_removal_without_reading_payload_output(tmp_path, monkeypatch, status):
+def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monkeypatch, status):
     shim_path = Path(__file__).resolve().parents[1] / 'tools/fleet/docker'
     loader = importlib.machinery.SourceFileLoader('runtime_shim_test', str(shim_path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -130,10 +130,11 @@ def test_shim_reports_typed_launch_before_auto_removal_without_reading_payload_o
     calls = []
     def broker(scope, op, **fields):
         calls.append((op, fields))
-        return {'ticket': 'b'*64, 'launch_outcome_protocol': 1}
+        return {'ticket': 'b'*64, 'launch_outcome_protocol': 2}
     monkeypatch.setattr(shim, '_container_broker', broker)
     def launched(real, argv, *args, **kwargs):
-        assert '--rm' not in argv
+        assert '--rm' in argv
+        assert 'prismabuild.shim=' + 'b'*64 in argv
         # A spoofed daemon error on inherited stdout cannot be classified.
         return status
     monkeypatch.setattr(shim, '_run_relayed', launched)
@@ -141,8 +142,8 @@ def test_shim_reports_typed_launch_before_auto_removal_without_reading_payload_o
     monkeypatch.setenv(shim.MARKER_ENV, str(tmp_path / 'marker'))
     monkeypatch.setattr(sys, 'argv', ['docker', 'run', '--rm', '--cidfile', str(cidfile), 'image'])
     assert shim.main() == status
-    assert calls[1] == ('container_outcome', {'ticket': 'b'*64, 'container_id': 'd'*64, 'remove': True})
-    assert [op for op, _ in calls] == ['container_begin', 'container_outcome', *(['container_end'] if status == 0 else [])]
+    assert calls[2] == ('container_outcome', {'ticket': 'b'*64, 'container_id': 'd'*64, 'daemon_stderr': ''})
+    assert [op for op, _ in calls] == ['container_begin', 'container_watch', 'container_outcome', *(['container_end'] if status == 0 else [])]
 
 
 def test_host_fault_evidence_preserves_an_explicit_deadline(scoped, monkeypatch):
@@ -155,3 +156,53 @@ def test_host_fault_evidence_preserves_an_explicit_deadline(scoped, monkeypatch)
     assert outcome['status'] == 'timeout'
     assert outcome['termination_reason'] == 'execution_deadline'
     assert outcome['host_fault']['subtype'] == 'cdi_mount_missing'
+
+
+def test_broker_recipe_survives_real_client_sealing_and_gpu_claim(tmp_path, monkeypatch, capsys):
+    import pbrun
+    from submission_support import patch_store
+    from test_pbrun_detach import _checkout, _queue, _one_json_line
+    from test_resource_broker import module
+    from prismabuild import submission
+    work = _checkout(tmp_path)
+    from test_pbrun_declares_container_images import _offer_images
+    q = _queue(tmp_path)
+    _offer_images(q, gpu_capacity.RUNTIME_PROBE_IMAGE)
+    (tmp_path / 'run').mkdir()
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'sparky')
+    store = patch_store(monkeypatch, root=tmp_path, runtime_root=Path(__file__).resolve().parents[1])
+    captured = []
+    broker = module()
+    runtime = broker.GPUContainerRuntime(gpu_capacity, tmp_path / 'durable/gpu.json',
+        tmp_path / 'run/gpu.json', __import__('threading').RLock(), cdi_dir=tmp_path / 'cdi')
+    try:
+        def capture(argv, **kwargs):
+            from types import SimpleNamespace
+            captured.append(argv)
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        with monkeypatch.context() as patch:
+            patch.setattr(broker.subprocess, 'run', capture)
+            runtime.submit_probe(os.getuid(), 'e'*64)
+        command = captured[0]
+        command = command[command.index('/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py')+1:]
+        command[command.index('--cwd')+1] = str(work)
+        command.remove('--detach')
+        command.insert(0, '--seal-only')
+        assert pbrun.main(command) == 0
+        sealed = _one_json_line(capsys.readouterr())
+        item = {'action_key': sealed['action_key'], 'cas_root': str(store.cas_root)}
+        assert gpu_runtime_gate.runtime_probe_identity(item) == 'e'*64
+        assert pbrun.main(['--publish-sealed', sealed['action_key'], '--detach']) == 0
+        capsys.readouterr()
+        monkeypatch.setattr(gpu_runtime_gate, 'runtime_gate_state', lambda: {
+            'latched': True, 'reason': gpu_capacity.RUNTIME_REASON})
+        claim_args = dict(tags=['sparky', 'gb10', 'container-image-v1'], has_gpu=True,
+                          observed_images=[gpu_capacity.RUNTIME_PROBE_IMAGE])
+        assert q.claim(capacity={'cpu': 1, 'mem_gb': 8, 'gpu': 1}, **claim_args) is None
+        claimed = q.claim(capacity={'cpu': 1, 'mem_gb': 32, 'gpu': 1}, **claim_args)
+        assert claimed is not None, adaptive_cpu.read_json(
+            adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS)
+        assert claimed['action_key'] == sealed['action_key']
+        assert claimed['resources'] == {'cpu': 1, 'mem_gb': 16, 'gpu': 1}
+    finally:
+        runtime.close()

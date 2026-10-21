@@ -28,7 +28,6 @@ def test_recorded_missing_cdi_source_is_a_never_started_host_fault(evidence):
 @pytest.mark.parametrize('error', [
     'OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded: unknown',
     'OCI runtime create failed: nvidia-container-runtime: initialization error: failed to initialize NVML',
-    'OCI runtime create failed: nvidia-container-cli: device error: GPU-123: unknown device',
 ])
 def test_nvidia_runtime_initialization_is_a_host_fault(error):
     outcome = gpu_capacity.container_launch_outcome(launch_row(error), cdi_sources=set())
@@ -102,9 +101,10 @@ def test_broker_latches_durable_evidence_from_exact_daemon_container(runtime_aut
     request, record = create(authority)
     ticket = container_ticket(authority, record, monkeypatch)
     row = daemon_row(record, ERRORS[0]['daemon_error'])
+    row['Config']['Labels']['prismabuild.shim'] = ticket
     backend.inspect_container = lambda cid: row
     reply = authority.handle(os.getuid(), os.getpid(), {'op': 'container_outcome',
-        'scope_id': record['scope_id'], 'ticket': ticket, 'container_id': row['Id'], 'remove': False})
+        'scope_id': record['scope_id'], 'ticket': ticket, 'container_id': row['Id']})
     assert reply['launch_outcome']['kind'] == 'host_fault'
     for path in (runtime.durable, runtime.mirror):
         state = json.loads(path.read_text())
@@ -124,7 +124,7 @@ def test_broker_latches_durable_evidence_from_exact_daemon_container(runtime_aut
         restored.close()
 
 
-@pytest.mark.parametrize('alter', ['id', 'scope', 'parent', 'ticket'])
+@pytest.mark.parametrize('alter', ['id', 'scope', 'parent', 'ticket', 'launch'])
 def test_broker_rejects_unbound_daemon_state(runtime_authority, monkeypatch, alter):
     import os
     from test_resource_broker import create, container_ticket
@@ -132,6 +132,8 @@ def test_broker_rejects_unbound_daemon_state(runtime_authority, monkeypatch, alt
     _, record = create(authority)
     ticket = container_ticket(authority, record, monkeypatch)
     row = daemon_row(record, ERRORS[0]['daemon_error'])
+    row['Config']['Labels']['prismabuild.shim'] = ticket
+    if alter == 'launch': row['Config']['Labels']['prismabuild.shim'] = '0'*64
     if alter == 'id': row['Id'] = 'e'*64
     if alter == 'scope': row['Config']['Labels']['prismabuild.scope'] = 'other'
     if alter == 'parent': row['HostConfig']['CgroupParent'] = 'other'
@@ -139,7 +141,7 @@ def test_broker_rejects_unbound_daemon_state(runtime_authority, monkeypatch, alt
     backend.inspect_container = lambda cid: row
     with pytest.raises(PermissionError):
         authority.handle(os.getuid(), os.getpid(), {'op': 'container_outcome',
-            'scope_id': record['scope_id'], 'ticket': ticket, 'container_id': 'd'*64, 'remove': False})
+            'scope_id': record['scope_id'], 'ticket': ticket, 'container_id': 'd'*64})
     assert runtime.state['latched'] is False
 
 
@@ -188,6 +190,7 @@ def test_watch_restart_revalidates_once_then_waits_for_event(runtime_authority):
     def submit(token):
         calls.append(token)
         os.write(runtime.stop_write, b'x')
+    runtime.event('prior_fault')
     runtime._watch(submit)
     assert len(calls) == 1
     assert runtime.state['probe_event']['reason'] == 'watch_restart'
@@ -254,9 +257,9 @@ def test_probe_submission_declares_normal_resources_and_drops_root(runtime_autho
     index = argv.index('/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py')
     command = argv[index:]
     assert command[command.index('--cpus') + 1] == '1'
-    assert command[command.index('--demand') + 1] == 'mem_gb=1'
-    assert command[command.index('--gpu-memory-gb') + 1] == '1'
-    assert command[command.index('--timeout-s') + 1] == '30'
+    assert command[command.index('--demand') + 1] == 'mem_gb=16'
+    assert command[command.index('--gpu-memory-gb') + 1] == '1.0'
+    assert command[command.index('--timeout-s') + 1] == '30.0'
     assert '--here' in command and '--gpu' in command and '--exclusive' in command
     assert command[command.index('--container-image') + 1] == gpu_capacity.RUNTIME_PROBE_IMAGE
     assert command[command.index('--') + 1:] == gpu_capacity.runtime_probe_command()
@@ -303,24 +306,83 @@ def test_typed_outcome_separates_payload_exit_from_a_running_payload():
     outcome = gpu_capacity.container_launch_outcome(row, cdi_sources=set())
     assert outcome.kind == 'payload_started' and outcome.payload_returncode is None
 
+def test_invalid_requested_nvidia_uuid_is_a_configuration_error():
+    row = launch_row('OCI runtime create failed: nvidia-container-cli: device error: GPU-123: unknown device')
+    assert gpu_capacity.container_launch_outcome(row, cdi_sources=set()).kind == 'launch_error'
 
-@pytest.mark.parametrize('running,owner_matches', [(False, True), (True, True), (True, False)])
-def test_deferred_auto_removal_waits_for_exit_and_rechecks_scope(runtime_authority, monkeypatch, running, owner_matches):
+
+def test_healthy_watcher_start_does_not_latch_or_submit(runtime_authority, monkeypatch):
+    _, _, _, runtime = runtime_authority
+    class QuietWatch:
+        def __init__(self, directory): pass
+        def next_change(self, stop_fd): return None
+        def close(self): pass
+    monkeypatch.setattr(gpu_capacity, 'CDIChangeWatch', QuietWatch)
+    submitted = []
+    runtime._watch(submitted.append)
+    assert not runtime.state['latched']
+    assert submitted == []
+
+
+def test_broker_lifetime_lock_prevents_reading_or_republishing_live_fence(runtime_authority, monkeypatch):
+    broker, _, _, runtime = runtime_authority
+    token = runtime.event('fault')
+    before = runtime.durable.read_bytes(), runtime.mirror.read_bytes()
+    path = runtime.durable.with_name('broker.lock')
+    with broker.broker_lifetime_lock(path):
+        with pytest.raises(SystemExit, match='already owns host authority'):
+            with broker.broker_lifetime_lock(path):
+                raise AssertionError('second broker entered authority initialization')
+        import os
+        import sys
+        identities = iter([0, os.geteuid()])
+        with monkeypatch.context() as patch:
+            # Only main's root prerequisite is simulated. Lock ownership and
+            # refusal use real kernel locks and the actual file owner.
+            patch.setattr(broker.os, 'geteuid', lambda: next(identities))
+            patch.setattr(sys, 'argv', ['resource_broker.py', '--state-dir', str(runtime.mirror.parent/'jobs'),
+                '--maintenance-state', str(runtime.durable.with_name('maintenance.json'))])
+            def forbidden(*args, **kwargs): pytest.fail('second broker read authority')
+            patch.setattr(broker, 'Authority', forbidden)
+            with pytest.raises(SystemExit, match='already owns host authority'):
+                broker.main()
+    assert before == (runtime.durable.read_bytes(), runtime.mirror.read_bytes())
+    assert runtime.state['probe_token'] == token
+    with broker.broker_lifetime_lock(path): pass
+
+
+def test_refused_restart_probe_recovers_once_on_offer_transition(runtime_authority):
+    _, _, _, runtime = runtime_authority
+    runtime.event('watch_restart')
+    runtime.state['probe_submission'] = {'returncode': 1, 'stderr': 'no worker offers on record'}
+    runtime.offer_changed('a'*64)
+    token = runtime.pending.get_nowait()
+    assert token == runtime.state['probe_token']
+    assert runtime.state['probe_event']['reason'] == 'worker_offer_changed'
+    runtime.offer_changed('a'*64)
+    import queue
+    with pytest.raises(queue.Empty): runtime.pending.get_nowait()
+
+
+@pytest.mark.parametrize('error', [
+    'OCI runtime create failed: nvidia-container-cli: initialization error: invalid configuration',
+    'OCI runtime create failed: nvidia-container-cli: device error: bad-uuid: unknown device',
+    'OCI runtime create failed: nvidia-container-cli: requirement error: unsatisfied condition: cuda>=99',
+])
+def test_unproven_nvidia_configuration_errors_do_not_fence(error):
+    assert gpu_capacity.container_launch_outcome(launch_row(error), cdi_sources=set()).kind == 'launch_error'
+
+
+def test_offer_arriving_during_refused_submission_is_not_lost(runtime_authority, monkeypatch):
+    import os
     from types import SimpleNamespace
-    broker, _, _, _ = runtime_authority
-    backend = broker.SystemdBackend()
-    calls = []
-    row = {'State': {'Running': False}, 'HostConfig': {'CgroupParent': 'owned' if owner_matches else 'other'}}
-    monkeypatch.setattr(backend, 'inspect_container', lambda cid: row)
-    def daemon(argv, **kwargs):
-        calls.append(argv[-2:])
-        return SimpleNamespace(returncode=0)
-    class InlineThread:
-        def __init__(self, *, target, **kwargs): self.target = target
-        def start(self): self.target()
-    with monkeypatch.context() as patch:
-        patch.setattr(broker.subprocess, 'run', daemon)
-        patch.setattr(broker.threading, 'Thread', InlineThread)
-        backend.remove_after_exit('d'*64, 'owned', running=running)
-    assert any(call[0] == 'wait' for call in calls) is running
-    assert any(call == ['-v', 'd'*64] for call in calls) is owner_matches
+    broker, _, _, runtime = runtime_authority
+    token = runtime.event('watch_restart')
+    def refused(*args, **kwargs):
+        runtime.offer_changed('b'*64)
+        return SimpleNamespace(returncode=1, stdout='', stderr='no worker offers on record')
+    monkeypatch.setattr(broker.subprocess, 'run', refused)
+    runtime.submit_probe(os.getuid(), token)
+    assert runtime.pending.get_nowait() == runtime.state['probe_token']
+    assert runtime.state['probe_event']['reason'] == 'worker_offer_changed'
+    assert runtime.state['last_probe_submission']['returncode'] == 1

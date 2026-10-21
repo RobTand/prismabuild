@@ -37,13 +37,13 @@ def runtime_probe_identity(item):
                        'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
                        'PRISMABUILD_CONTAINER_OWNER', 'PRISMABUILD_CONTAINER_MARKER',
                        gpu_capacity.RUNTIME_PROBE_ENV}
-        if (action['action_key'] == key and params['command'] == gpu_capacity.runtime_probe_command()
-                and params['demand'] == {'cpu': 1, 'mem_gb': 1, 'gpu': 1}
+        expected = gpu_capacity.runtime_probe_request(token)
+        expected_env = expected.pop('environment')
+        if (action['action_key'] == key
+                and all(params.get(name) == value for name, value in expected.items())
+                and params.get('gpu_exclusive') is expected['gpu_exclusive']
                 and socket.gethostname() in params['placement']['required_tags']
-                and params.get('container_images') == [gpu_capacity.RUNTIME_PROBE_IMAGE]
-                and params.get('execution_timeout_s') == 30.0
-                and params.get('gpu_exclusive') is True and params.get('gpu_memory_gb') == 1.0
-                and all(env.get(name) == '1' for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'))
+                and all(env.get(name) == value for name, value in expected_env.items())
                 and path in expected_paths and set(env) <= allowed_env
                 and isinstance(token, str) and re.fullmatch('[a-f0-9]{64}', token)):
             return token
@@ -68,3 +68,18 @@ def runtime_fenced_offer(capacity, detail):
         return capacity, detail
     return {**capacity, 'gpu': 0}, {**detail, gpu_capacity.RUNTIME_REASON: gate,
                                   'gpu_capacity_error': gpu_capacity.RUNTIME_REASON}
+
+
+def runtime_offer_published(offer):
+    """An offer-content transition can recover a no-offers startup refusal."""
+    gate = runtime_gate_state()
+    if gate is None or not offer.get('has_gpu') or offer.get('host') != socket.gethostname():
+        return
+    from . import core, resource_scope
+    # Exclude timestamps and utilization: repeating a heartbeat is no event.
+    identity = core.canonical_sha256({key: offer.get(key) for key in (
+        'host', 'runtime_commit', 'capacity', 'capabilities', 'container_images', 'tags', 'state')})
+    try:
+        resource_scope.broker_request({'op': 'runtime_offer', 'identity': identity})
+    except (OSError, ValueError):
+        pass  # Old brokers do not implement this additive recovery event.
