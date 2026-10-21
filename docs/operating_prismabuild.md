@@ -1979,6 +1979,49 @@ automatically collect arbitrary plugin reports into the CAS; verify their
 payloads separately. Use a new directory per invocation when retaining
 different runs. File discovery and partitioning remain PB's responsibility.
 
+Use `--plan-only --json PATH` to inspect file membership and capability
+classification without preparing or submitting actions (#1900):
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+    --checkout /home/rob/prismabuild --plan-only --json plan.json --tag x86 tests
+```
+
+The object has schema `prismabuild.pbtest_plan.v1` and fields `files`,
+`capabilities`, `tags`, `left_out`, and `refusals`. `files` preserves discovery
+order and deduplicates requested files. `capabilities` maps each discovered
+file to its declared capability names, including empty lists for portable files.
+`tags` maps each file to the sorted union of invocation and capability tags.
+Tags constrain placement; they do not remove files. `left_out` is empty because
+pbtest has no file-exclusion option. Consumers apply their own exclusions to
+the inventory. `refusals` contains `{code, reason}` objects. Codes are
+`discovery_failed`, `population_empty`, `capabilities_invalid`, and
+`capability_unclassifiable`; reasons name the invalid path or declaration.
+Exit 0 means classification succeeded. Exit 2 means refusal, usage error, or
+failure to write the plan. A refused plan is incomplete; do not treat missing
+or empty classification entries as proof that a file is portable.
+
+Plan mode uses the same discovery and classification functions as execution.
+It honors `--checkout`, positional paths, `--capabilities`, repeated `--tag`,
+and the `--gpu` default placement tag. `--python` is optional in plan mode.
+It ignores execution options: `--python`, `--tmpdir`, `--basetemp`, `--env`,
+`--shards`, `--max-clients`, `--workers-per-shard`, `--threads-per-shard`,
+`--cpus-per-shard`, `--mem-gb`, `--disk-metadata`, `--gpu-memory-gb`,
+`--pytest-args`, `--timeout-s`, `--test-timeout-s`, `--wait-s`, `--priority`,
+`--profile`, `--history`, `--data-manifest`, `--residency`, and `--transport`.
+The CLI still checks argument types and choices. Plan mode does not collect
+pytest items, evaluate hooks or `-k`/`-m`, require a fleet-data manifest, check
+fleet availability, identify the checkout, snapshot it, or write progress.
+A successful plan does not establish that execution can be admitted.
+
+The execution report remains a bare JSON list so existing consumers can iterate
+it. Each row adds `schema: "prismabuild.pbtest_report.v1"` (#1900), retaining
+`shard`, `files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`,
+`output`, `verdict`, and `receipt_path`. The nested verdict keeps schema
+`prismabuild.pbtest_shard_verdict.v1`. Execution exits 0 for a green run,
+1 for a non-green result or report-publication failure, and 2 for a preflight
+or usage refusal.
+
 With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
 It counts completed submission clients, not passing tests or verified receipts.
 The final list report remains authoritative. Mergeq binds the companion to each
