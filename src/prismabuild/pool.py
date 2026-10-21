@@ -15938,9 +15938,30 @@ class PoolQueue:
         overflow must not keep refilling a host while eligible GPU work waits.
         Ordinary GPU admission still decides whether the row can claim now.
         """
+        def local_capabilities():
+            host = socket.gethostname()
+            local = capability_eligibility.OfferCapabilities.from_offer(
+                next((offer for offer in offers() if offer.get("host") == host), {}))
+            return replace(local, images=capability_eligibility.ImageAnswers(
+                capability_eligibility.ImageAnswers.from_observed(
+                    observed_images, None).references, local.images.class_report))
+
+        return self._ready_gpu_for_placement(
+            ready, host=socket.gethostname(), tags=tags, has_gpu=has_gpu,
+            total=total, gpu_controller=gpu_controller,
+            capabilities=local_capabilities, verdicts=reads.verdicts)
+
+    def _ready_gpu_for_placement(
+        self, ready: Sequence[Mapping[str, object]], *, host: str,
+        tags: frozenset[str], has_gpu: bool, total: Mapping[str, int],
+        gpu_controller: object | None,
+        capabilities: Callable[[], capability_eligibility.OfferCapabilities],
+        verdicts: Callable[[], Mapping[str, object]],
+    ) -> Mapping[str, object] | None:
+        """One READY-GPU eligibility rule, with observations supplied by its caller."""
         if not has_gpu or total.get("gpu", 0) < 1:
             return None
-        local: capability_eligibility.OfferCapabilities | None = None
+        local = None
         for item in ready:
             try:
                 if not self._placement_matches(item, tags=tags, has_gpu=has_gpu):
@@ -15953,20 +15974,11 @@ class PoolQueue:
                 if not candidate_policy.room_fits(total, reservation):
                     continue
                 if local is None:
-                    host = socket.gethostname()
-                    local = capability_eligibility.OfferCapabilities.from_offer(
-                        next((offer for offer in offers() if offer.get("host") == host), {}))
-                    local = replace(local, images=capability_eligibility.ImageAnswers(
-                        capability_eligibility.ImageAnswers.from_observed(
-                            observed_images, None).references,
-                        local.images.class_report))
-                # Reuse the placement owner's interpreter, image and dependency
-                # capability checks; a GPU row this host cannot run is no veto.
+                    local = capabilities()
                 if (isinstance(local.check(
                             capability_eligibility.CapabilityRequirements.from_item(item),
                             clock=_now), capability_eligibility.ImageAccepted)
-                        and not self._ready_gpu_refused_here(
-                            item, reads.verdicts(), host=socket.gethostname())):
+                        and not self._ready_gpu_refused_here(item, verdicts(), host=host)):
                     return item
             except (TypeError, ValueError):
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
