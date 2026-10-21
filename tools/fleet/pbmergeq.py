@@ -67,26 +67,6 @@ DESCRIPTION_LIMIT = 140
 HEARTBEAT_S = 60.0
 MODES = ("dry-run", "status", "merge")
 
-# Coordinator-only bridge while published pbtest lacks #1891's --env. Start
-# with stdlib only: importing this checkout's PB modules in that client would
-# contaminate the selected published generation's imports.
-_PBMERGEQ_ENV_CLIENT = """\
-import json, runpy, sys
-path, encoded, *arguments = sys.argv[1:]
-forwarded = json.loads(encoded)
-sys.argv = [path, *arguments]
-main = runpy.run_path(path)['main']
-if callable(main.__globals__.get('validate_shard_env')):
-    sys.argv[1:1] = [argument for value in forwarded for argument in ('--env', value)]
-else:
-    build = main.__globals__['shard_request']
-    def with_environment(request, *, environment, **kwargs):
-        return build(request, environment=[*environment, *forwarded], **kwargs)
-    main.__globals__['shard_request'] = with_environment
-raise SystemExit(main())
-"""
-
-
 # --------------------------------------------------------------------------
 # Configuration
 
@@ -665,11 +645,9 @@ def candidate_failure_identity(cfg: Config, tree: str, base_tree: str,
 def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
                  history: list[str], *, python: str) -> list[str]:
     """Build the submitted argv independently of interpreter selection policy."""
-    client = [cfg.client_python, str(cfg.pbtest)]
-    if cfg.env:
-        client = [cfg.client_python, "-c", _PBMERGEQ_ENV_CLIENT,
-                  str(cfg.pbtest), json.dumps(cfg.env)]
-    return [*client,
+    # pbtest seals each --env pair into every shard (#1891).
+    forwarded = [word for value in cfg.env for word in ("--env", value)]
+    return [cfg.client_python, str(cfg.pbtest), *forwarded,
             "--checkout", str(checkout), "--python", python,
             "--json", str(report), *cfg.pbtest_args, *history, *files]
 

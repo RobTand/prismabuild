@@ -89,8 +89,7 @@ def test_gate_verdict_and_history_are_owned_by_config_state_dir(gate_fixture, fa
     assert history["history_runtime"] == mq.baseline_key(effective, RUNTIME["source"][1], result["runtime"])
     assert f.waits == [4242]
     command = f.launches[0]
-    assert command[1:3] == ["-c", mq._PBMERGEQ_ENV_CLIENT]
-    assert json.loads(command[4]) == ["TL_GATE_TOKEN=a=b"]
+    assert command[2:4] == ["--env", "TL_GATE_TOKEN=a=b"]
     assert command[command.index("--tmpdir") + 1] == "/scratch"
     f.reports.append([shard([FILE])])
     assert f.invoke(["--tmpdir", "/scratch", "--env", "TL_GATE_TOKEN=a=b"])[0] == 0
@@ -170,44 +169,12 @@ def test_gate_inventory_reuses_discovery_and_explains_exclusions(tmp_path):
     assert runner.discover(tmp_path) == ([FILE], ["tests/test_data.py"])
 
 
-@pytest.mark.parametrize("native", [False, True])
-def test_gate_env_bridge_forwards_literal_values_to_every_shard(tmp_path, native):
-    # Execute the actual client bridge with a fake pbtest request builder.
-    client = tmp_path / "pbtest.py"
-    output = tmp_path / "env.json"
-    client.write_text('''import json
-import sys
-from pathlib import Path
-def shard_request(request, *, environment, **kwargs):
-    return environment
-def main():
-    assert 'prismabuild' not in sys.modules
-    rows = [shard_request(None, environment=["TMPDIR=/scratch", "OMP_NUM_THREADS=1"])
-            for _ in range(2)]
-    Path(sys.argv[1]).write_text(json.dumps(rows))
-    return 0
-''')
-    if native:
-        client.write_text(client.read_text() + '''
-def validate_shard_env(entries):
-    pass
-original_main = main
-def main():
-    assert sys.argv[1:5] == ['--env', 'TL_GATE_TOKEN=a=b c', '--env', 'EMPTY=']
-    del sys.argv[1:5]
-    # The native client itself owns environment assembly.
-    original_build = shard_request
-    globals()['shard_request'] = lambda request, *, environment, **kw: original_build(
-        request, environment=[*environment, 'TL_GATE_TOKEN=a=b c', 'EMPTY='], **kw)
-    return original_main()
-''')
-    values = ["TL_GATE_TOKEN=a=b c", "EMPTY="]
-    command = mq.test_command(dataclasses.replace(config(tmp_path), client_python=sys.executable,
-        pbtest=client, env=tuple(values)), tmp_path, [], output, [], python="/py")
-    # The fake client uses its first argument for output, rather than pbtest's CLI.
-    done = subprocess.run([*command[:5], str(output)], capture_output=True, text=True, timeout=30)
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert json.loads(output.read_text()) == [["TMPDIR=/scratch", "OMP_NUM_THREADS=1", *values]] * 2
+def test_gate_env_forwards_each_pair_to_pbtest(tmp_path):
+    values = ("TL_GATE_TOKEN=a=b c", "EMPTY=")
+    command = mq.test_command(dataclasses.replace(config(tmp_path), env=values),
+                              tmp_path, [], tmp_path / "out.json", [], python="/py")
+    assert command[2:6] == ["--env", "TL_GATE_TOKEN=a=b c", "--env", "EMPTY="]
+    assert command[6:8] == ["--checkout", str(tmp_path)]
 
 
 def test_unchanged_queue_config_keeps_its_existing_baseline_identity(tmp_path):

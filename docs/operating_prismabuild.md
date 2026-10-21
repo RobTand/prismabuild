@@ -1973,9 +1973,8 @@ merging. It blocks on its pbtest child processes. The merge-queue tick is unchan
 `--tmpdir` forwards to pbtest's worker scratch option. Repeatable `--env KEY=VALUE`
 seals literal values into every shard, including retries. Keys owned by pbtest or
 the runtime are refused by name: TMPDIR, PYTHONPATH, PYTEST_ADDOPTS, native thread
-variables and PRISMABUILD_ names. Until pbtest #1891 provides its flag, pbmergeq's
-own client bridge forwards at the selected published pbtest's shard-request boundary.
-Generations with #1891 use its native `--env` flag. Duplicate keys are refused
+variables and PRISMABUILD_ names. Each pair is passed to pbtest's own `--env`
+(#1891), so the published pbtest must carry it. Duplicate keys are refused
 before submission.
 
 The output is `prismabuild.mergeq_gate.v1`, with `verdict`, `failed`, `reason`,

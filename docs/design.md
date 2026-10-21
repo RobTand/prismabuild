@@ -18045,10 +18045,8 @@ sorted failing node IDs, verbatim refusal or inconclusive reasons, file inventor
 runtime evidence and retained action/report/log/receipt references. Only a
 conclusive execution updates history. Forwarded `--env` values bind history
 compatibility and every shard request. Without forwarding, existing queue history
-identities stay unchanged. While pbtest #1891 is absent, a coordinator-only
-pbmergeq bridge adds these values at the selected published pbtest's existing
-shard-request builder, preserving its owned environment and submission path.
-Generations exposing #1891's validator receive the native `--env` flag instead.
+identities stay unchanged. Each value reaches every shard through pbtest's own
+`--env` (#1891), which keeps pbtest's owned environment and submission path.
 This is source support, not a runtime publication or staged-read acceptance claim.
 
 `tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
