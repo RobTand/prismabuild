@@ -755,7 +755,7 @@ def pbrun_argv(row) -> list[str]:
 OFFER_DISCOVERY_TIMED_OUT = "offer_discovery_timed_out"
 
 
-def submit_row(row, *, transport: str = "") -> dict:
+def submit_row(row, *, transport: str = "", deadline: float | None = None) -> dict:
     """Seal and submit one row through ``pbrun``, and return what it printed.
 
     A row that ``pbrun`` refuses is recorded and the campaign goes on.  Forty
@@ -785,7 +785,7 @@ def submit_row(row, *, transport: str = "") -> dict:
             transport=transport or fleet_submit.default_transport())
         result = submission.submit_request(request, store=store_for(__file__),
             display=lambda event: render_submission(event) if event.channel == "stderr" else None,
-            report=report)
+            report=report, deadline=deadline)
         if isinstance(result, SubmissionRefused):
             code, refusal = result.returncode, result.reason
         else:
@@ -803,11 +803,11 @@ def submit_row(row, *, transport: str = "") -> dict:
     return published
 
 
-def _submit_record(row, *, index: int, transport: str) -> dict:
+def _submit_record(row, *, index: int, transport: str, deadline: float | None = None) -> dict:
     """Keep earlier keys when one submission fails, and print each full key."""
 
     try:
-        published = submit_row(row, transport=transport)
+        published = submit_row(row, transport=transport, deadline=deadline)
     except Exception as exc:                                     # noqa: BLE001
         published = {"status": "refused", "flags": [],
                      "error": f"row {index}: {type(exc).__name__}: {exc}"}
@@ -877,7 +877,10 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
             index = len(submissions)
             # Keep the existing per-row exception boundary and print the full
             # digest immediately: a killed controller must leave its keys.
-            published = _submit_record(rows[index], index=index, transport=transport)
+            # The caller's campaign --wait-s deadline bounds replacement
+            # preparation too. The initial window still has no deadline.
+            published = _submit_record(rows[index], index=index, transport=transport,
+                                       deadline=deadline)
             if published.get("retryable") == OFFER_DISCOVERY_TIMED_OUT:
                 # pbrun refused before it published a runnable item, so no
                 # outcome is uncertain and no slot is held.  The offer scan

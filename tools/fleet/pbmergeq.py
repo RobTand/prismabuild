@@ -39,6 +39,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,7 +66,6 @@ DESCRIPTION_LIMIT = 140
 #: The most often a phase may go without a log line (Rob, closed-loop rule).
 HEARTBEAT_S = 60.0
 MODES = ("dry-run", "status", "merge")
-
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -96,6 +96,7 @@ class Config:
     merge_enabled_file: str = ""
     tmpdir: str = ""
     runtime_pins: dict = dataclasses.field(default_factory=dict)
+    env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # Freeze the operator's published link once, before any discovery/import
@@ -158,6 +159,7 @@ class RunResult:
     runtime_refusal: str = ""
     log: str = ""
     problems: list[dict] = dataclasses.field(default_factory=list)
+    suite_refusal: str = ""
 
 
 def load_published_module(path: Path):
@@ -624,7 +626,10 @@ def checkout_runtime(cfg: Config, checkout: Path) -> dict:
 def baseline_key(cfg: Config, tree: str, runtime: dict) -> str:
     # Runtime evidence names the actually launched entrypoint; the config's
     # publisher link was frozen before discovery and is never resolved here.
-    return baseline_identity(tree, runtime, dataclasses.asdict(cfg))
+    config = dataclasses.asdict(cfg)
+    if not cfg.env:
+        config.pop("env")  # Preserve existing queue history identities without forwarding.
+    return baseline_identity(tree, runtime, config)
 
 
 def candidate_failure_identity(cfg: Config, tree: str, base_tree: str,
@@ -640,7 +645,9 @@ def candidate_failure_identity(cfg: Config, tree: str, base_tree: str,
 def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
                  history: list[str], *, python: str) -> list[str]:
     """Build the submitted argv independently of interpreter selection policy."""
-    return [cfg.client_python, str(cfg.pbtest),
+    # pbtest seals each --env pair into every shard (#1891).
+    forwarded = [word for value in cfg.env for word in ("--env", value)]
+    return [cfg.client_python, str(cfg.pbtest), *forwarded,
             "--checkout", str(checkout), "--python", python,
             "--json", str(report), *cfg.pbtest_args, *history, *files]
 
@@ -648,8 +655,9 @@ def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
 class Runner:
     """Submits ``pbtest.py`` runs and waits for them with a heartbeat."""
 
-    def __init__(self, cfg: Config, store: Store):
+    def __init__(self, cfg: Config, store: Store, *, full_suite: bool = False):
         self.cfg, self.store = cfg, store
+        self.full_suite = full_suite
         self.outcomes = load_outcomes(cfg.pbtest)
         if (getattr(self.outcomes, "VERDICT_SCHEMA", None) != "prismabuild.pbtest_shard_verdict.v1"
                 or getattr(self.outcomes, "PROGRESS_SCHEMA", None) != "prismabuild.pbtest_progress.v1"
@@ -659,15 +667,22 @@ class Runner:
 
     def discover(self, checkout: Path) -> tuple[list[str], list[str]]:
         """Every test file the suite holds, and the fleet-data files left out."""
+        files, left_out = self.inventory(checkout)
+        return files, [row["file"] for row in left_out if row["reason"] == "fleet data"]
+
+    def inventory(self, checkout: Path) -> tuple[list[str], list[dict]]:
+        """Discover once and retain a reason for every configured exclusion."""
 
         if self._pbtest is None:
             self._pbtest = load_published_module(self.cfg.pbtest)
-        files = [f for f in self._pbtest.discover(checkout, list(self.cfg.test_paths))
-                 if f not in self.cfg.exclude]
-        left_out: list[str] = []
+        discovered = self._pbtest.discover(checkout, list(self.cfg.test_paths))
+        files = [f for f in discovered if f not in self.cfg.exclude]
+        left_out = [{"file": f, "reason": "config.exclude"}
+                    for f in discovered if f in self.cfg.exclude]
         if self.cfg.skip_fleet_data_files:
-            left_out = self._pbtest.fleet_data_files(checkout, files)
-            files = [f for f in files if f not in left_out]
+            fleet = self._pbtest.fleet_data_files(checkout, files)
+            left_out.extend({"file": f, "reason": "fleet data"} for f in fleet)
+            files = [f for f in files if f not in fleet]
         return files, left_out
 
     def _history_source(self, latest: Path) -> list[str]:
@@ -766,7 +781,7 @@ class Runner:
         for attempt in range(1, self.cfg.inconclusive_retries + 1):
             retry = [(f"{name}.retry{attempt}", checkout, results[name].inconclusive)
                      for name, checkout, _ in jobs if results[name].inconclusive
-                     and not results[name].runtime_refusal]
+                     and not results[name].runtime_refusal and not results[name].suite_refusal]
             if not retry:
                 break
             for name, _, files in retry:
@@ -785,6 +800,7 @@ class Runner:
                     merged.actions += again[key].actions
                     merged.wall_s += again[key].wall_s
                     merged.runtime_refusal = again[key].runtime_refusal
+                    merged.suite_refusal = again[key].suite_refusal or merged.suite_refusal
                     merged.log = again[key].log
         return results
 
@@ -826,7 +842,11 @@ class Runner:
             self.store.event(batch, f"run {name} started: {len(files)} file(s) on "
                                     f"{checkout.name}, pid {process.pid}, log {log}")
         last = time.monotonic()
-        while any(p.poll() is None for p, *_ in live.values()):
+        if self.full_suite:
+            # The one-shot gate needs process exit, not periodic queue status.
+            for process, *_ in live.values():
+                process.wait()
+        while not self.full_suite and any(p.poll() is None for p, *_ in live.values()):
             time.sleep(2)
             if time.monotonic() - last >= HEARTBEAT_S:
                 last = time.monotonic()
@@ -861,6 +881,13 @@ class Runner:
             rows = None
         result = reduce_report(rows, self.outcomes, requested_files=files,
                                client_returncode=returncode)
+        if self.full_suite and isinstance(rows, list):
+            for row in rows:
+                record = (self.outcomes.parse(row["output"])
+                          if isinstance(row, dict) and isinstance(row.get("output"), str) else None)
+                if record and (record.get("collect_only") or record.get("deselected")):
+                    result.suite_refusal = "filtered or collect-only execution is not the queue's suite"
+                    break
         if rows is None and returncode and invocation is not None:
             snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
             if (snapshot is not None and snapshot["state"] == "refused"
@@ -1417,6 +1444,78 @@ class Queue:
 # Command line
 
 
+def _pbmergeq_gate_environment(value: str) -> str:
+    key, separator, _ = value.partition("=")
+    if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise ValueError(f"pbmergeq: --env requires KEY=VALUE: {value!r}")
+    if (key in {"TMPDIR", "PYTHONPATH", "PYTEST_ADDOPTS", "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TORCH_NUM_THREADS"}
+            or key.startswith("PRISMABUILD_")):
+        raise ValueError(f"pbmergeq: --env {key} is owned by pbtest or the runtime")
+    if "\0" in value:
+        raise ValueError(f"pbmergeq: --env {key} contains NUL")
+    return value
+
+
+def _pbmergeq_gate(config: str, checkout: Path, output: Path, *,
+                   tmpdir: str | None = None, env: Iterable[str] = ()) -> int:
+    """Compose discovery, queue retries and the complete-suite verdict (#1896)."""
+    payload = {"schema": "prismabuild.mergeq_gate.v1", "verdict": "no_verdict",
+               "failed": [], "reason": "", "files": [], "left_out": [],
+               "runtime": {}, "evidence": {}}
+    try:
+        cfg = _pbmergeq_load_config(config)
+        environment = tuple(_pbmergeq_gate_environment(value) for value in (*cfg.env, *env))
+        keys = [value.split("=", 1)[0] for value in environment]
+        if len(set(keys)) != len(keys):
+            repeated = next(key for index, key in enumerate(keys) if key in keys[:index])
+            raise ValueError(f"pbmergeq: --env repeats key {repeated}")
+        extra = ()
+        if tmpdir is not None:
+            if not Path(tmpdir).is_absolute():
+                raise ValueError("pbmergeq: --tmpdir must be an absolute worker-visible path")
+            extra = ("--tmpdir", tmpdir)
+        cfg = dataclasses.replace(cfg, pbtest_args=(*cfg.pbtest_args, *extra), env=environment)
+        with single_instance(cfg.state_dir):
+            store = Store(cfg.state_dir)
+            directory = cfg.state_dir / "gates" / uuid.uuid4().hex
+            directory.mkdir(parents=True)
+            payload["evidence"] = {"directory": str(directory)}
+            runner = Runner(cfg, store, full_suite=True)
+            files, left_out = runner.inventory(checkout)
+            payload.update(files=files, left_out=left_out)
+            if not files:
+                raise ValueError("queue inventory has no test files")
+            result = runner.run_many("gate", directory, [("suite", checkout, files)])["suite"]
+            payload.update(failed=sorted(result.failed), runtime=result.runtime)
+            payload["evidence"].update({
+                "report": result.report, "log": result.log, "actions": result.actions,
+                "receipts": result.receipts, "problems": result.problems,
+                "inconclusive": result.inconclusive, "wall_s": result.wall_s})
+            reason = result.runtime_refusal or result.suite_refusal
+            if not reason and result.inconclusive:
+                reason = "\n".join(dict.fromkeys(p["message"] for p in result.problems))
+                reason = reason or f"inconclusive: {result.inconclusive}"
+            if reason:
+                payload["reason"] = reason
+            else:
+                source = result.runtime["source"]
+                store.state.update(history_report=result.report,
+                    history_runtime=baseline_key(cfg, source[1], result.runtime),
+                    history_source=source)
+                store.save()
+                payload["verdict"] = "fail" if result.failed else "pass"
+    except (OSError, ValueError, KeyError, TypeError, IndexError, ImportError,
+            RuntimeError, SystemExit) as exc:
+        payload["reason"] = str(exc)
+    try:
+        write_atomic(output, json.dumps(payload, indent=2) + "\n")
+    except OSError as exc:
+        print(f"pbmergeq: cannot write gate verdict: {exc}", file=sys.stderr)
+        return 125
+    return {"pass": 0, "fail": 1, "no_verdict": 125}[payload["verdict"]]
+
+
 def open_queue(cfg: Config, mode: str, *, once: bool = False) -> Queue:
     store = Store(cfg.state_dir)
     store.state["mode"] = mode
@@ -1435,7 +1534,7 @@ def check_mode(cfg: Config, mode: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    parser.add_argument("--config", required=True,
+    parser.add_argument("--config",
                         help="the repository's queue config (JSON)")
     sub = parser.add_subparsers(dest="command", required=True)
     enqueue = sub.add_parser("enqueue", help="queue a pull request (any process)")
@@ -1452,7 +1551,22 @@ def main(argv: list[str] | None = None) -> int:
     resume = sub.add_parser("resume-runtime", help="request fresh validation of a repaired runtime")
     resume.add_argument("batch", help="runtime-blocked batch ID from STATUS.txt")
     sub.add_parser("status", help="print the status file")
+    gate = sub.add_parser("gate", help="test a checkout and write a complete-suite verdict")
+    gate.add_argument("--config", default=argparse.SUPPRESS,
+                      help="the repository's queue config (JSON)")
+    gate.add_argument("--checkout", type=Path, required=True,
+                      help="the clean checkout whose complete suite is judged")
+    gate.add_argument("--json", type=Path, required=True, dest="output",
+                      help="where to write the prismabuild.mergeq_gate.v1 verdict")
+    gate.add_argument("--tmpdir", help="absolute worker-local scratch parent")
+    gate.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                      help="sealed into every shard's request (repeatable)")
     args = parser.parse_args(argv)
+    if not args.config:
+        parser.error("--config is required")
+    if args.command == "gate":
+        return _pbmergeq_gate(args.config, args.checkout.resolve(), args.output.resolve(),
+                             tmpdir=args.tmpdir, env=args.env)
     cfg = _pbmergeq_load_config(args.config)
 
     if args.command == "enqueue":

@@ -103,14 +103,14 @@ def test_d38_cli_renders_its_domain_reason_once_without_argument_usage(tmp_path,
     with pytest.raises(SystemExit) as error:
         pbrun.main(["--cwd", str(work), "--gpu", "--here", "--detach",
                     "--no-default-env", "--", "/bin/true"])
-    assert error.value.code == 2
-    diagnostic = capsys.readouterr().err
-    assert diagnostic.count("D38 refuses GPU publication:") == 1
-    assert "namespace descriptor" in diagnostic
-    assert "pbrun: error: \n" not in diagnostic
-    assert "usage:" not in diagnostic
     request, = store.cas_root.glob("requests/*/*.json")
-    assert diagnostic == D38_DIAGNOSTIC.format(key=request.stem) + "\n"
+    # --detach exits 1 with the reason as its message (#1893, #1909): the
+    # interpreter prints it once; the JSON refusal on stdout carries it too.
+    assert error.value.code == D38_DIAGNOSTIC.format(key=request.stem)
+    captured = capsys.readouterr()
+    assert "D38 refuses GPU publication:" not in captured.err
+    assert "usage:" not in captured.err
+    assert json.loads(captured.out)["refusal"]["reason"] == error.value.code
     assert not list((store.queue_root / pool.READY).glob("*.json"))
 
 
