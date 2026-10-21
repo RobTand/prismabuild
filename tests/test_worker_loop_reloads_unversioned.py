@@ -2,12 +2,13 @@
 import json
 import os
 from pathlib import Path
-import selectors
 import signal
 import subprocess
 import sys
 
 import pytest
+
+from role_wait_support import read_until_output, stop_role_child
 
 from prismabuild import pool
 
@@ -128,23 +129,9 @@ raise SystemExit(code)
     return queue, child
 
 
-def _finish(child):
-    if child.poll() is None:
-        child.kill()
-    child.communicate(timeout=5)
-
-
 def _unknown_boundary(child, boundary="poll top"):
-    output = bytearray()
     marker = f"runtime receipt unknown at {boundary}".encode()
-    with selectors.DefaultSelector() as selector:
-        selector.register(child.stdout, selectors.EVENT_READ)
-        while marker not in output:
-            assert selector.select(5), bytes(output).decode(errors="replace")
-            chunk = os.read(child.stdout.fileno(), 65536)
-            assert chunk, bytes(output).decode(errors="replace")
-            output.extend(chunk)
-    return bytes(output)
+    return read_until_output(child, marker)
 
 
 def _lines(path):
@@ -183,7 +170,7 @@ def test_known_match_offer_carries_the_loaded_commit(tmp_path):
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
@@ -202,7 +189,7 @@ def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
         assert len(records) == 1
         assert json.loads(records[0].read_text())["loaded_commit"] == KNOWN["commit"]
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
@@ -219,7 +206,7 @@ def test_atomic_receipt_repair_resumes_one_authorized_unit(tmp_path, unknown_sid
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
@@ -235,7 +222,7 @@ def test_sigterm_interrupts_unknown_retry_wait(tmp_path, unknown_side):
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_paused(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("continuous", [False, True])
@@ -255,7 +242,7 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
         else:
             _assert_paused(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("value", [7, True])
@@ -280,4 +267,4 @@ def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_
         assert not queue.records.lease_path(KEYS[0]).exists()
         assert queue.ledger().held_keys() == []
     finally:
-        _finish(child)
+        stop_role_child(child)

@@ -2,12 +2,13 @@
 import json
 import os
 from pathlib import Path
-import selectors
 import signal
 import subprocess
 import sys
 
 import pytest
+
+from role_wait_support import read_until_output, stop_role_child
 
 from prismabuild import resident_sets
 from test_local_tier_requires_known_receipts import KNOWN, REPOSITORY
@@ -88,22 +89,8 @@ raise SystemExit(code)
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
 
 
-def _finish(child):
-    if child.poll() is None:
-        child.kill()
-    child.communicate(timeout=5)
-
-
 def _unknown_boundary(child):
-    output = bytearray()
-    with selectors.DefaultSelector() as selector:
-        selector.register(child.stdout, selectors.EVENT_READ)
-        while b'"event": "localtier-runtime-unknown"' not in output:
-            assert selector.select(5), bytes(output).decode(errors="replace")
-            chunk = os.read(child.stdout.fileno(), 65536)
-            assert chunk, bytes(output).decode(errors="replace")
-            output.extend(chunk)
-    return bytes(output)
+    return read_until_output(child, b'"event": "localtier-runtime-unknown"')
 
 
 def _assert_state(root, *, passes, queue_created, parked):
@@ -130,7 +117,7 @@ def test_atomic_repair_resumes_one_pass_with_the_first_known_loaded_identity(tmp
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=1, queue_created=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
@@ -146,7 +133,7 @@ def test_unknown_retry_wait_is_interruptible(tmp_path, unknown_side, stop_signal
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=0, queue_created=False, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("after_pass", [False, True])
@@ -163,7 +150,7 @@ def test_unknown_publication_still_allows_an_idle_park_proof(tmp_path, after_pas
         assert child.returncode == (0 if after_pass else 75), output.decode(errors="replace")
         _assert_state(tmp_path, passes=int(after_pass), queue_created=after_pass, parked=1)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
@@ -174,4 +161,4 @@ def test_completed_pass_stays_complete_when_publication_is_lost_before_stop(tmp_
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=1, queue_created=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
