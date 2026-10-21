@@ -2124,6 +2124,38 @@ a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;
 directory discovery and deduplication retain their existing semantics.
 
+`--plan-only --json PATH` exposes the shared discovery and capability
+classification owner as `prismabuild.pbtest_plan.v1` (#1900). It returns before
+progress initialization, worker-program preparation, fleet inspection,
+checkout identity, snapshotting, or action publication. No Git checkout or
+target interpreter is required for planning. Execution still requires
+`--python`. Paths, capability config and placement tags have the same meaning
+in both modes; tags do not filter file membership. The GPU default tag follows
+the same runtime-location rule as execution. All execution-only options are
+ignored after ordinary CLI type/choice parsing, including pytest arguments,
+resource bounds, environment, history and data-residency inputs. The operating
+guide lists them explicitly. Pytest collection and case selection remain
+worker responsibilities.
+
+The plan object contains ordered deduplicated `files`, per-file `capabilities`
+and `tags` maps, `left_out`, and `refusals`. Portable files have empty capability
+lists; tags include invocation constraints and capability tags. `left_out` is
+empty because this CLI does not exclude files. Refusals contain `{code, reason}`
+with codes `discovery_failed`, `population_empty`, `capabilities_invalid`, or
+`capability_unclassifiable`. Exit 0 establishes complete classification; exit 2
+names refusals or reports usage/output failure. Classification in a refused
+plan is incomplete and cannot certify portability.
+
+The report retains its bare list layout and adds per-row
+`schema: "prismabuild.pbtest_report.v1"` (#1900). A wrapper would break existing
+TrustLadder readers that iterate the decoded list. Consumer tests pin `shard`,
+`files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`, `output`,
+`verdict`, and `receipt_path`, and the nested
+`prismabuild.pbtest_shard_verdict.v1` schema. Existing execution exit codes
+remain 0 for green, 1 for non-green/report-output failure, and 2 for
+preflight/usage refusal. These source contracts require runtime publication
+before consumers can use them through the published CLI.
+
 The original directory/file request roots remain pytest's collection targets
 inside each shard (#1458). `tools/fleet/pbtest_collection.py` limits traversal
 to the shard's immutable assigned files and their ancestor directories;
@@ -2155,6 +2187,18 @@ Unsupported relative, bare or non-`python*` entries refuse before fanout;
 there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
+
+`pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
+`SubmissionRequest.env` and template preparation used by `pbrun --env`
+(#1891). Every shard sealed from a plan retains those values in
+`environment.variables`, so they participate in action identity. No option
+means no change to request bytes or existing action keys. Before preparation
+or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
+and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
+OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
+PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+reserved when the run's options leave one unset; a caller cannot bypass
+pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
@@ -3241,18 +3285,28 @@ without the member or the ordinary package import boundary.
   Checked snapshot Git text operations share `core._git` with pbrun's
   fail factory: nonzero and transport refusals retain `SystemExit` and
   `pbrun: cannot snapshot checkout:` while naming the full Git operation
-  (#1430). Identity reads keep their 30-second bound; snapshot text reads
-  keep 120 seconds, accepted codes, surrogate decoding and optional stripping.
+  (#1430). Submission Git waits for process exit without a fixed per-call
+  wall-clock cap (#1888), including checkout identity, repository probes,
+  snapshot add/commit and bundle packing. A caller may pass its existing
+  monotonic deadline explicitly through preparation; every Git call spends
+  the remaining budget rather than renewing it. `pbtest` passes its shard
+  `--wait-s` deadline, and a windowed campaign passes its existing deadline
+  when preparing replacement rows. Initial campaign preparation and plain
+  `pbrun` preparation have no caller deadline. Their `--wait-s` budgets start
+  after publication; `--timeout-s` bounds payload execution. Accepted codes,
+  surrogate decoding and optional stripping stay unchanged.
   Their caller adapter preserves explicit OSError/TimeoutExpired causes;
   a nonzero exit does not turn an unrelated active caller exception into a
   direct cause. Delegation retains the canonical runner's broader
   SubprocessError catch, a compatibility qualification with no demonstrated
-  ordinary-production trigger; the canonical runner is unchanged.
+  ordinary-production trigger; return-code and error mapping are unchanged.
   Deterministic bundle packing remains a separate binary-streaming subprocess
-  (`stdout=file`, UTF-8 tip bytes on stdin, 1800-second pack bound); its
+  (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
-  This is diagnostic consolidation, not storage-stall recovery or a speed claim.
+  The [#1888 wait inventory](submission_git_waits_1888.md) records removed
+  caps and retained non-Git waits. This establishes no storage-stall recovery,
+  deployed support, staged-read requirement satisfaction or release-gate verdict.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,

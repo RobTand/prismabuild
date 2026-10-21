@@ -243,6 +243,15 @@ result in the materialized checkout. A read-only source checkout works when
 its Git excludes are already configured; first-time exclude setup still needs
 write access to Git's common `info/exclude` file.
 
+Local Git preparation waits for each process to exit (#1888). There is no
+30-second identity/probe cap, 120-second snapshot cap, or 1,800-second pack cap.
+`pbtest` shares its shard's existing `--wait-s` deadline with preparation Git;
+a windowed campaign shares its deadline with replacement-row preparation.
+Plain `pbrun` and the first campaign window start their wait budgets after
+publication, so their preparation has no added deadline. `--timeout-s` is
+the payload execution budget. Git nonzero exits still refuse submission.
+See the [submission wait inventory](submission_git_waits_1888.md).
+
 The checkout has a size ceiling. `pbrun` refuses a working tree whose sealed
 paths exceed 512 MiB, before it hashes anything, and refuses the bundle at the
 same bound. `--checkout-snapshot-max-bytes N` lowers that ceiling for one
@@ -1690,6 +1699,22 @@ interpreter requirement reaches the queue row. Bare, relative and non-Python
 entries refuse before fanout rather than claiming an unproved path fence.
 These commands get new action keys; existing sealed rows keep their identities.
 
+`--env KEY=VALUE` adds a literal environment pair to every shard (#1891).
+Repeat the option for several keys, for example `--env TL_GATE_TOKEN=release-42`.
+The pairs enter the plan's template and every shard's sealed request through
+the same contract as `pbrun --env`, including action identity. Empty values
+and additional `=` characters in values are preserved. Without `--env`, the
+requests and action keys are unchanged.
+
+Malformed pairs (no `=`, an empty key or NUL), repeated keys, and pbtest-owned
+keys refuse the entire run with exit 2 before preparation or submission.
+The refusal names the offending key or malformed item. Reserved keys are
+`TMPDIR`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+`TORCH_NUM_THREADS`, `PRISMABUILD_TEST_TIMEOUT_S`, `PRISMABUILD_SHARD_BUDGET_S`,
+`PYTHONPATH` and `PYTEST_ADDOPTS`, even when the corresponding pbtest option
+does not set that key for this run. Use pbtest's scratch, thread, deadline and
+pytest options to configure those settings.
+
 `--tmpdir /absolute/worker/scratch` selects the shards' temporary parent instead
 of the unchanged `/home/rob/tmp` default. Supply an existing writable directory
 on every eligible target worker; the coordinator validates only that the path
@@ -1758,9 +1783,8 @@ it, and simultaneous shards, separate actions and separate attempts each own
 a namespace the others cannot reach. Before pytest, the worker refuses a root
 that is missing, not a directory, a symlink, or not owned by the action's
 user -- no fallback. `TMPDIR` and `--tmpdir` keep their existing meaning, no
-`PYTEST_DEBUG_TEMPROOT` is injected, and no arbitrary `--env` forwarding is
-added; xdist worker children inherit the derived basetemp and stay under the
-action root. The root stays unsupported through `--pytest-args`: the closed
+`PYTEST_DEBUG_TEMPROOT` is injected; xdist worker children inherit the derived
+basetemp and stay under the action root. The root stays unsupported through `--pytest-args`: the closed
 vocabulary does not grow.
 
 The worker removes the derived `root/<action-key>/<attempt>` namespace of a
@@ -1919,6 +1943,49 @@ when reports must remain accessible after checkout cleanup. PB does not
 automatically collect arbitrary plugin reports into the CAS; verify their
 payloads separately. Use a new directory per invocation when retaining
 different runs. File discovery and partitioning remain PB's responsibility.
+
+Use `--plan-only --json PATH` to inspect file membership and capability
+classification without preparing or submitting actions (#1900):
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
+    --checkout /home/rob/prismabuild --plan-only --json plan.json --tag x86 tests
+```
+
+The object has schema `prismabuild.pbtest_plan.v1` and fields `files`,
+`capabilities`, `tags`, `left_out`, and `refusals`. `files` preserves discovery
+order and deduplicates requested files. `capabilities` maps each discovered
+file to its declared capability names, including empty lists for portable files.
+`tags` maps each file to the sorted union of invocation and capability tags.
+Tags constrain placement; they do not remove files. `left_out` is empty because
+pbtest has no file-exclusion option. Consumers apply their own exclusions to
+the inventory. `refusals` contains `{code, reason}` objects. Codes are
+`discovery_failed`, `population_empty`, `capabilities_invalid`, and
+`capability_unclassifiable`; reasons name the invalid path or declaration.
+Exit 0 means classification succeeded. Exit 2 means refusal, usage error, or
+failure to write the plan. A refused plan is incomplete; do not treat missing
+or empty classification entries as proof that a file is portable.
+
+Plan mode uses the same discovery and classification functions as execution.
+It honors `--checkout`, positional paths, `--capabilities`, repeated `--tag`,
+and the `--gpu` default placement tag. `--python` is optional in plan mode.
+It ignores execution options: `--python`, `--tmpdir`, `--basetemp`, `--env`,
+`--shards`, `--max-clients`, `--workers-per-shard`, `--threads-per-shard`,
+`--cpus-per-shard`, `--mem-gb`, `--disk-metadata`, `--gpu-memory-gb`,
+`--pytest-args`, `--timeout-s`, `--test-timeout-s`, `--wait-s`, `--priority`,
+`--profile`, `--history`, `--data-manifest`, `--residency`, and `--transport`.
+The CLI still checks argument types and choices. Plan mode does not collect
+pytest items, evaluate hooks or `-k`/`-m`, require a fleet-data manifest, check
+fleet availability, identify the checkout, snapshot it, or write progress.
+A successful plan does not establish that execution can be admitted.
+
+The execution report remains a bare JSON list so existing consumers can iterate
+it. Each row adds `schema: "prismabuild.pbtest_report.v1"` (#1900), retaining
+`shard`, `files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`,
+`output`, `verdict`, and `receipt_path`. The nested verdict keeps schema
+`prismabuild.pbtest_shard_verdict.v1`. Execution exits 0 for a green run,
+1 for a non-green result or report-publication failure, and 2 for a preflight
+or usage refusal.
 
 With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
 It counts completed submission clients, not passing tests or verified receipts.
