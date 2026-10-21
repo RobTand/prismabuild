@@ -30,6 +30,8 @@ import socket
 import subprocess
 import sys
 
+import pytest
+
 from submission_support import patch_store
 from test_pbtest import pbtest
 from prismabuild import capability_eligibility, contracts, core, pool, submission
@@ -167,3 +169,74 @@ def test_every_shard_of_one_plan_runs_its_own_command_off_one_snapshot(
     assert files == ["tests/test_0.py", "tests/test_1.py", "tests/test_2.py"]
     assert all(sum(word.startswith("tests/test_") for word in command) == 1
                for command in commands)
+
+
+def test_caller_environment_is_sealed_into_every_shard_of_one_template(
+        tmp_path, monkeypatch):
+    _, counts, root = _counted_run(tmp_path, monkeypatch, extra=(
+        "--env", "TL_GATE_TOKEN=literal = token\n$HOME",
+        "--env", "EMPTY="))
+    assert counts == {"identity": 4, "bundle": 1}
+    actions = _sealed(root)
+    assert len(actions) == 3
+    for action in actions:
+        variables = action["environment"]["variables"]
+        assert variables["TL_GATE_TOKEN"] == "literal = token\n$HOME"
+        assert variables["EMPTY"] == ""
+        changed = {**action, "environment": {
+            **action["environment"], "variables": {**variables, "TL_GATE_TOKEN": "other"}}}
+        changed.pop("action_key")
+        assert core.seal_action(changed)["action_key"] != action["action_key"]
+
+
+def test_without_env_shard_requests_keep_their_legacy_bytes(tmp_path, monkeypatch):
+    from dataclasses import asdict, replace
+
+    build = pbtest.shard_request
+    requests = []
+
+    def legacy_bytes(request, *, environment, python_entry, arguments):
+        actual = build(request, environment=environment,
+                       python_entry=python_entry, arguments=arguments)
+        legacy = replace(request, env=(
+            "TMPDIR=/home/rob/tmp", "OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1",
+            "OPENBLAS_NUM_THREADS=1", "TORCH_NUM_THREADS=1",
+            f"PRISMABUILD_TEST_TIMEOUT_S={120 - pool.HEARTBEAT_S:g}",
+            "PRISMABUILD_SHARD_BUDGET_S=120", "PYTHONPATH=src:experiments"),
+            command=(*python_entry, *arguments))
+        assert core._canonical_bytes(asdict(actual)) == core._canonical_bytes(asdict(legacy))
+        requests.append(actual)
+        return actual
+
+    monkeypatch.setattr(pbtest, "shard_request", legacy_bytes)
+    _, counts, root = _counted_run(tmp_path, monkeypatch)
+    assert len(requests) == len(_sealed(root)) == 3
+    assert counts == {"identity": 4, "bundle": 1}
+
+
+@pytest.mark.parametrize("items, diagnostic", [
+    (("missing",), "KEY=VALUE"),
+    (("=empty",), "empty key"),
+    (("KEY=bad\x00value",), "NUL"),
+    (("bad\x00key=value",), "NUL"),
+    (("KEY=one", "KEY=two"), "KEY"),
+    *[((f"{key}=override",), key) for key in (
+        "TMPDIR", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+        "TORCH_NUM_THREADS", "PRISMABUILD_TEST_TIMEOUT_S",
+        "PRISMABUILD_SHARD_BUDGET_S", "PYTHONPATH", "PYTEST_ADDOPTS")],
+])
+def test_invalid_caller_env_refuses_before_preparation_or_submission(
+        tmp_path, monkeypatch, capsys, items, diagnostic):
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid --env reached preparation or submission")
+
+    monkeypatch.setattr(submission, "preparation", unexpected)
+    monkeypatch.setattr(submission, "submit_action", unexpected)
+    monkeypatch.setattr(pbtest.subprocess, "Popen", unexpected)
+    monkeypatch.setattr(sys, "argv", [
+        "pbtest.py", "--checkout", str(tmp_path), "--python", sys.executable,
+        *[word for item in items for word in ("--env", item)]])
+    assert pbtest.main() == 2
+    error = capsys.readouterr().err
+    assert "pbtest: --env" in error
+    assert diagnostic in error
