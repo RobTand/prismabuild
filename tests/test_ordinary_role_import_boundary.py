@@ -43,6 +43,19 @@ def _run(command, *, cwd, label, timeout=90):
     return result.stdout
 
 
+def test_a_child_command_keeps_its_scratch_in_its_own_directory(tmp_path):
+    """A pip the timeout kills skips its own cleanup, so its scratch must be ours.
+
+    Twenty-four ``pip-modern-metadata-*`` and ``pip-wheel-*`` directories
+    holding ``prismabuild-0.1.0.dist-info`` were left in dl380g10's ``~/tmp``
+    by wheel builds this module's timeout ended.
+    """
+
+    scratch = _run([sys.executable, "-I", "-c", "import tempfile; print(tempfile.gettempdir())"],
+                   cwd=tmp_path, label="scratch")
+    assert Path(scratch.strip()).is_relative_to(tmp_path), scratch
+
+
 @pytest.fixture(scope="module")
 def installed(tmp_path_factory):
     root = tmp_path_factory.mktemp("ordinary-wheel")
