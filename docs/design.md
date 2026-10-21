@@ -9528,15 +9528,31 @@ loop there.
 ### Queue change hints on the queue host (#1894)
 
 `pbbell.py` is the supervised `bell` observer role on dl380g10 only. It watches
-the existing ready, claimed, done, failed, withdrawn, deferred and intent
-directories with libc inotify through ctypes. The queue is local ZFS there;
-NFS-client writes also generate local notifications. Completed `.json` names
-on IN_MOVED_TO and IN_CLOSE_WRITE become hints. It neither reads record bytes
-nor claims or mutates queue work. Workers, prewarm and tier-loop waits are
-outside this first slice.
+ready, claimed, done, failed, withdrawn, deferred, intent, attempts and
+publication-endings with libc inotify through ctypes. The queue is local ZFS
+there; NFS-client writes also generate local notifications. Creation, close-write,
+hard-link publication, removal and both rename directions become hints. Nested
+`withdrawn/decisions/<key>`, `withdrawn/superseded`, `attempts/<key>/<generation>`
+and `publication-endings/<key>` paths map back to the action key. Scope cleanup
+updates `claimed/<key>.json`; final scope/container cleanup appears in terminal,
+withdrawal and attempt records. Waiters subscribe to all these outcome inputs.
+Lease/progress/log writes do not wake them. The bell reads names, never record
+bytes, and neither claims nor mutates work. Workers, prewarm and tier-loop
+waits are outside this first slice.
+
+Watches precede each directory scan, including directories created or moved in
+with existing contents. The root watch discovers lazy namespaces. Startup still
+refuses missing original state directories. Traversal is confined to these
+namespaces, at most three directories deep, without following symlinks. Kernel
+overflow invalidates cursors and rebuilds namespace coverage before serving
+further events. Directory-watch loss resets history or stops service when
+coverage cannot be maintained.
 
 The role takes the standard host-local singleton lock. The supervisor owns
-generation retirement as it does for metrics. It binds HTTP/1.1 on TCP 9470
+ordinary generation retirement as it does for metrics. The bell also watches
+the fleet directory containing the active `repo` link and exits when its loaded
+generation is retired. This covers rollback to a supervisor that predates the
+bell role, with no retirement timer. It binds HTTP/1.1 on TCP 9470
 at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and 192.168.1.107, with one
 shared event stream. The roster declares the addresses submitting hosts use
 as their `/mnt/shared` mount sources, including Celestia's private LAN route.
@@ -9559,14 +9575,33 @@ long-poll at 300 seconds. Callers with longer patience renew the long-poll.
 Cursor acquisition before the record observation closes the read/wait race.
 Neither a notification nor its absence establishes any queue state.
 
-A selector blocks on inotify, listener sockets and a shutdown socket; request
-threads block on the ring condition. Overflow invalidates earlier cursors.
-Loss of a watched directory stops the service, allowing supervision to rebuild
-all watches rather than silently watching a detached inode. SIGTERM/INT wake
-the selector and all long-polls, close listeners and join request threads.
-Incomplete HTTP requests have a five-second socket timeout. The role posts no
-park marker while serving and owns no admitted work. Binding an occupied port
-refuses with the standard singleton exit so supervisor backoff applies.
+A selector blocks on inotify, listener sockets and a shutdown socket. Each
+request selects its filtered notification socket and client connection, so a
+disconnect releases the subscription immediately. Matching events and lost
+cursors wake subscribers. Each event compares at most 128 active filters;
+only those woken scan the bounded ring. A shared 128-connection cap covers all
+listeners, including incomplete requests; overload receives HTTP 503, typed
+Unavailable by the client. Request headers have one absolute five-second
+read budget, re-armed before every recv. Each connection serves one request.
+SIGTERM/INT wake long-polls, close listeners and explicitly join every tracked
+non-daemon request thread. Header and response I/O remain bounded at shutdown.
+The role posts no park marker while serving and owns no admitted work. Binding
+an occupied port refuses with the standard singleton exit so supervisor
+backoff applies.
+
+Client connect, headers and body consume one monotonic deadline. Buffered
+HTTP reads re-arm the remaining timeout before every recv, preventing a
+trickling peer from extending patience. Long-poll delivery allowance comes
+from that same budget. Repeated immediate resets or empty replies enter the
+named unavailable-callback backoff, 0.25 seconds doubling to five seconds,
+clipped to the original deadline.
+
+The private listeners are unauthenticated. A reachable peer can observe action
+keys, state-directory names, event timing and cursor/reset metadata. It cannot
+read record bodies, logs or CAS bytes, submit, cancel or mutate work through
+this service. Connection caps bound its concurrent request cost; this is not
+a confidentiality boundary. This source change adds no deployment evidence or
+new satisfaction claim to the staged-read ledger, including ID-08.
 
 This describes source behavior, not fleet activation. The lead publishes and
 activates the new role after review. No firewall change is performed by PB.

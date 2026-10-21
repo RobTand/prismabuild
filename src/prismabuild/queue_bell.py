@@ -7,14 +7,19 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 from urllib.parse import urlencode
+
+from .queue_bell_http import DeadlineResponseSocket
 
 DEFAULT_PORT = 9470
 MAX_WAIT_S = 300.0
 CONNECT_TIMEOUT_S = 1.0
-REPLY_GRACE_S = 1.0
 STATE_DIRS = ("ready", "claimed", "done", "failed", "withdrawn", "deferred", "intent")
-TERMINAL_DIRS = ("done", "failed", "withdrawn")
+REQUIRED_STATE_DIRS = STATE_DIRS
+STATE_DIRS += ("attempts", "publication-endings")
+# All captured outcome inputs, including handoff and cleanup updates.
+TERMINAL_DIRS = STATE_DIRS
 
 
 class Unavailable(Exception):
@@ -65,20 +70,29 @@ class Client:
                  port: int = DEFAULT_PORT):
         self.queue_root, self.host, self.port = queue_root, host, port
 
-    def _request(self, path: str, *, timeout: float, budget_s: float) -> dict:
+    def _request(self, path: str, *, budget_s: float) -> dict:
         connection = None
+        deadline = time.monotonic() + budget_s
         try:
             host = self.host if self.host is not None else bell_host(self.queue_root)
             connection = http.client.HTTPConnection(
-                host, self.port, timeout=min(CONNECT_TIMEOUT_S, budget_s))
+                host, self.port, timeout=min(CONNECT_TIMEOUT_S, deadline - time.monotonic()))
             connection.connect()
-            connection.sock.settimeout(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bell HTTP deadline exhausted")
+            connection.sock.settimeout(remaining)
             connection.request("GET", path, headers={
                 "X-PrismaBuild-Queue": str(self.queue_root.absolute())})
-            response = connection.getresponse()
+            response = http.client.HTTPResponse(DeadlineResponseSocket(connection.sock, deadline))
+            response.begin()
             if response.status != 200:
                 raise Unavailable(f"bell HTTP {response.status}")
-            body = json.loads(response.read(1024 * 1024))
+            with response:
+                raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024 or time.monotonic() >= deadline:
+                raise ValueError("bell reply exceeds its byte or time budget")
+            body = json.loads(raw)
             if not isinstance(body, dict):
                 raise ValueError("invalid bell reply")
             # Both endpoints carry a cursor, including empty and reset replies.
@@ -91,19 +105,20 @@ class Client:
                 connection.close()
 
     def now(self, *, budget_s: float = CONNECT_TIMEOUT_S) -> Cursor:
-        body = self._request("/v1/now", timeout=min(CONNECT_TIMEOUT_S, budget_s),
-                             budget_s=budget_s)
-        return Cursor(body["epoch"], body["seq"])
+        body = self._request("/v1/now", budget_s=min(CONNECT_TIMEOUT_S, budget_s))
+        return Cursor.parse(f"{body['epoch']}:{body['seq']}")
 
     def wait(self, since: Cursor, dirs: tuple[str, ...], keys: tuple[str, ...],
              timeout: float) -> dict:
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("bell timeout must be finite and nonnegative")
         timeout = min(timeout, MAX_WAIT_S)
+        # Reserve reply delivery inside the same caller budget, never after it.
+        server_wait = max(0.0, timeout - min(0.05, timeout / 10))
         query = urlencode({"since": str(since), "dirs": ",".join(dirs),
-                           "keys": ",".join(keys), "timeout": timeout})
-        body = self._request("/v1/wait?" + query, timeout=timeout + REPLY_GRACE_S,
-                             budget_s=max(0.001, timeout))
+                           "keys": ",".join(keys), "timeout": server_wait})
+        body = self._request("/v1/wait?" + query,
+                             budget_s=timeout if timeout > 0 else CONNECT_TIMEOUT_S)
         if (body.get("reset") is not True
                 and not isinstance(body.get("events"), list)):
             raise Unavailable("invalid bell wait reply")

@@ -286,3 +286,369 @@ def test_entrypoint_refuses_a_second_role_without_touching_queue(tmp_path, monke
     monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "locks")
     with role_session.role_singleton(Path(pbbell.__file__)):
         assert pbbell.main(["--queue-root", str(tmp_path / "absent")]) == 3
+
+
+@pytest.mark.parametrize("relative", [
+    f"publication-endings/{KEY}/generation.json",
+    f"withdrawn/decisions/{KEY}/generation.json",
+    f"attempts/{KEY}/generation/00000001.json",
+    f"withdrawn/superseded/{KEY}.123.withdrawal.json",
+    f"claimed/{KEY}.json",  # resource-scope/container cleanup is persisted here
+    f"withdrawn/{KEY}.json",  # the completed cleanup summary
+])
+def test_every_authoritative_namespace_wakes_its_action(bell, relative):
+    cursor = bell.client.now()
+    path = bell.root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"resource_scope_cleanup":{"complete":true}}')
+    reply = bell.client.wait(cursor, (), (KEY,), 0.3)
+    assert reply.get("events"), relative
+    assert all(event["key"] == KEY for event in reply["events"])
+
+
+@pytest.mark.parametrize("mutation", ["hardlink", "unlink", "rename-out"])
+def test_namespace_entry_changes_wake_waiters(bell, mutation):
+    path = bell.root / "done" / f"{KEY}.json"
+    source = bell.root / "source"
+    source.write_text("{}")
+    if mutation != "hardlink":
+        path.write_text("{}")
+        # Consume the preceding close-write before taking the mutation cursor.
+        bell.client.wait(bell.client.now(), (), (), 0.05)
+    cursor = bell.client.now()
+    if mutation == "hardlink":
+        os.link(source, path)
+    elif mutation == "unlink":
+        path.unlink()
+    else:
+        path.rename(bell.root / "removed")
+    assert bell.client.wait(cursor, (), (KEY,), 0.3).get("events")
+
+
+@pytest.mark.parametrize("endpoint,part", [("now", "headers"), ("now", "body"),
+                                           ("wait", "headers"), ("wait", "body")])
+def test_hostile_response_dribble_cannot_extend_deadline(tmp_path, endpoint, part):
+    stopped = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        client = queue_bell.Client(tmp_path, host="127.0.0.1", port=listener.getsockname()[1])
+
+        def dribble_bell_response():
+            with listener.accept()[0] as connection:
+                connection.recv(65536)
+                payload = b'{"epoch":"' + b"a" * 32 + b'","seq":0,"events":[]}'
+                header = f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode()
+                if part == "body":
+                    connection.sendall(header)
+                    wire = payload
+                else:
+                    wire = header + payload
+                for byte in wire:
+                    try:
+                        connection.sendall(bytes([byte]))
+                    except OSError:
+                        break
+                    # The interval creates the hostile peer's byte schedule.
+                    if stopped.wait(0.025):
+                        break
+
+        peer = threading.Thread(target=dribble_bell_response)
+        peer.start()
+        start = time.monotonic()
+        try:
+            with pytest.raises(queue_bell.Unavailable):
+                if endpoint == "now":
+                    client.now(budget_s=0.15)
+                else:
+                    client.wait(queue_bell.Cursor("a" * 32, 0), (), (), 0.15)
+            assert time.monotonic() - start < 0.6
+        finally:
+            stopped.set()
+            peer.join(3)
+            assert not peer.is_alive()
+
+
+@pytest.mark.parametrize("reply", [{"reset": True}, {"events": []}])
+def test_repeated_unusable_bell_replies_enter_capped_backoff(monkeypatch, reply):
+    clock, sleeps = [0.0], []
+
+    def unusable_reply_sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    class BrokenBell:
+        calls = 0
+
+        def now(self, **kwargs):
+            return queue_bell.Cursor("a" * 32, 0)
+
+        def wait(self, *args):
+            self.calls += 1
+            assert self.calls < 30, "immediate replies caused a busy reread loop"
+            return {"epoch": "a" * 32, "seq": 0, **reply}
+
+    monkeypatch.setattr(action_wait, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=unusable_reply_sleep))
+    result = action_wait.await_action(
+        lambda **kwargs: action_wait.Pending(None), generation=None,
+        patience=action_wait.WaitUntil(20), profile=action_wait.AwaitProfile.SYNCHRONOUS,
+        tool="test", subject=KEY, notice=lambda event: None, bell=BrokenBell(), bell_key=KEY)
+    assert isinstance(result, action_wait.PatienceExpired)
+    assert sleeps[:6] == [0.25, 0.5, 1, 2, 4, 5]
+    assert sum(sleeps) == 20
+
+
+def test_overload_is_503_and_client_unavailable_across_listeners(tmp_path):
+    for directory in queue_bell.STATE_DIRS:
+        (tmp_path / directory).mkdir()
+    with queue_notifier.BellService(tmp_path, [("127.0.0.1", 0), ("127.0.0.1", 0)],
+                                    max_connections=1) as service:
+        port = service.servers[0].server_address[1]
+        second = service.servers[1].server_address[1]
+        with socket.create_connection(("127.0.0.1", port)) as slow:
+            slow.sendall(b"GET /v1/now HTTP/1.1\r\n")
+            with service.workers.lock:
+                assert service.workers.lock.wait_for(lambda: len(service.workers.active) == 1, 2)
+            client = queue_bell.Client(tmp_path, host="127.0.0.1", port=second)
+            with pytest.raises(queue_bell.Unavailable, match="503"):
+                client.now()
+    assert not service.workers.active
+    assert all(not thread.is_alive() for thread in service.workers.threads)
+
+
+def test_slowloris_headers_have_absolute_deadline(bell, monkeypatch):
+    monkeypatch.setattr(queue_notifier, "REQUEST_TIMEOUT_S", 0.2)
+    stopped = threading.Event()
+    with socket.create_connection(("127.0.0.1", bell.client.port)) as connection:
+        connection.settimeout(2)
+        connection.sendall(b"GET /v1/now HTTP/1.1\r\nX-Slow: ")
+
+        def drip_bell_headers():
+            while not stopped.wait(0.025):
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    break
+
+        peer = threading.Thread(target=drip_bell_headers)
+        peer.start()
+        try:
+            start = time.monotonic()
+            assert connection.recv(1) == b""
+            assert time.monotonic() - start < 0.8
+        finally:
+            stopped.set()
+            peer.join(2)
+
+
+def test_disconnected_long_poll_releases_thread_without_timer(bell, monkeypatch):
+    entered = threading.Event()
+    real_wait = bell.service.ring.wait
+
+    def enter_disconnected_bell_wait(*args):
+        entered.set()
+        return real_wait(*args)
+
+    monkeypatch.setattr(bell.service.ring, "wait", enter_disconnected_bell_wait)
+    cursor = bell.client.now()
+    with socket.create_connection(("127.0.0.1", bell.client.port)) as connection:
+        connection.sendall(f"GET /v1/wait?since={cursor}&timeout=300 HTTP/1.1\r\nHost: local\r\n\r\n".encode())
+        assert entered.wait(2)
+        with bell.service.workers.lock:
+            threads = list(bell.service.workers.active)
+    for thread in threads:
+        thread.join(1)
+        assert not thread.is_alive()
+    assert not bell.service.ring.waiters
+
+
+def test_only_matching_waiter_is_notified(bell, monkeypatch):
+    entered = threading.Event()
+    # Observe ring scans through the actual wait function's select boundary.
+    from prismabuild import queue_bell_events
+    actual_select = queue_bell_events.select.select
+    subscriptions, wakeups = [], []
+
+    def select_bell_subscription(readers, *args):
+        if len(readers) == 2:
+            subscriptions.append(readers[0])
+            if len(subscriptions) == 2:
+                entered.set()
+        ready = actual_select(readers, *args)
+        if readers[0] in subscriptions and readers[0] in ready[0]:
+            wakeups.append(readers[0])
+        return ready
+
+    monkeypatch.setattr(queue_bell_events.select, "select", select_bell_subscription)
+    with ThreadPoolExecutor() as executor:
+        cursor = bell.client.now()
+        pending = executor.submit(bell.client.wait, cursor, ("done",), (KEY,), 2)
+        other = executor.submit(bell.client.wait, cursor, ("done",), ("b" * 64,), 2)
+        assert entered.wait(2)
+        bell.service.ring.append("done", KEY)
+        assert pending.result(2)["events"]
+        assert len(wakeups) == 1
+        bell.service.ring.close()
+        assert other.result(2)["reset"]
+
+
+def test_optional_namespace_creation_and_populated_directory_rename(bell):
+    (bell.root / "publication-endings").rmdir()
+    # Recreate lazily as on an old queue where this namespace never existed.
+    cursor = bell.client.now()
+    source = bell.root / "populated"
+    (source / KEY).mkdir(parents=True)
+    (source / KEY / "generation.json").write_text("{}")
+    source.rename(bell.root / "publication-endings")
+    reply = bell.client.wait(cursor, (), (KEY,), 2)
+    assert reply.get("reset") or reply.get("events")
+    cursor = bell.client.now()
+    (bell.root / "publication-endings" / KEY / "next.json").write_text("{}")
+    assert bell.client.wait(cursor, (), (KEY,), 2)["events"]
+
+
+def test_generation_rollback_retires_real_role(tmp_path):
+    import select
+    import shutil
+    import subprocess
+
+    fleet = tmp_path / "fleet"
+    generation = fleet / "runtime-generations" / "new"
+    previous = fleet / "runtime-generations" / "previous"
+    previous.mkdir(parents=True)
+    (generation / "tools" / "fleet").mkdir(parents=True)
+    checkout = Path(__file__).resolve().parents[1]
+    (generation / "src").symlink_to(checkout / "src", target_is_directory=True)
+    entrypoint = generation / "tools" / "fleet" / "pbbell.py"
+    shutil.copyfile(checkout / "tools" / "fleet" / "pbbell.py", entrypoint)
+    (fleet / "repo").symlink_to(generation, target_is_directory=True)
+    root = tmp_path / "queue"
+    for directory in queue_bell.STATE_DIRS:
+        (root / directory).mkdir(parents=True)
+    ready_read, ready_write = os.pipe()
+    program = '''
+import os, runpy, sys
+sys.path.insert(0, sys.argv[1])
+from prismabuild import queue_notifier, role_session
+from pathlib import Path
+role_session.ROLE_LOCK_ROOT = Path(sys.argv[2])
+original = queue_notifier.BellService.__enter__
+ready_fd = int(sys.argv[3])
+def announce_bell(self):
+    result = original(self)
+    os.write(ready_fd, b"R")
+    os.close(ready_fd)
+    return result
+queue_notifier.BellService.__enter__ = announce_bell
+entrypoint, root, port = sys.argv[4:]
+sys.argv = [entrypoint, "--queue-root", root, "--port", port]
+runpy.run_path(entrypoint, run_name="__main__")
+'''
+    with socket.socket() as bound:
+        bound.bind(("127.0.0.1", 0))
+        port = bound.getsockname()[1]
+    process = subprocess.Popen([sys.executable, "-c", program, str(checkout / "src"),
+        str(tmp_path / "locks"), str(ready_write), str(entrypoint), str(root), str(port)],
+        pass_fds=(ready_write,), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    os.close(ready_write)
+    try:
+        if not select.select([ready_read], [], [], 5)[0]:
+            process.terminate()
+            output, errors = process.communicate(timeout=5)
+            pytest.fail("role startup blocked: " + errors.decode())
+        assert os.read(ready_read, 1) == b"R"
+        client = queue_bell.Client(root, host="127.0.0.1", port=port)
+        assert client.now().epoch
+        replacement = fleet / "replacement"
+        replacement.symlink_to(previous, target_is_directory=True)
+        replacement.replace(fleet / "repo")
+        process.communicate(timeout=3)
+        assert process.returncode == 0
+        with pytest.raises(queue_bell.Unavailable):
+            client.now()
+    finally:
+        os.close(ready_read)
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=5)
+
+
+def test_new_directory_is_watched_before_rescan(bell, monkeypatch):
+    watch = bell.service.watch
+    installed = threading.Event()
+    original_add = watch._add
+
+    def add_then_publish_bell_record(path, relative):
+        original_add(path, relative)
+        if relative == Path("publication-endings") / KEY:
+            # Land a complete record after watch installation, before scanning.
+            (path / "generation.json").write_text("{}")
+            installed.set()
+
+    monkeypatch.setattr(watch, "_add", add_then_publish_bell_record)
+    cursor = bell.client.now()
+    (bell.root / "publication-endings" / KEY).mkdir()
+    assert installed.wait(2)
+    assert bell.client.wait(cursor, queue_bell.TERMINAL_DIRS, (KEY,), 2)["events"]
+    cursor = bell.client.now()
+    (bell.root / "publication-endings" / KEY / "next.json").write_text("{}")
+    assert bell.client.wait(cursor, queue_bell.TERMINAL_DIRS, (KEY,), 2)["events"]
+
+
+@pytest.mark.parametrize("relative", [
+    f"publication-endings/{KEY}/generation.json",
+    f"withdrawn/decisions/{KEY}/generation.json",
+    f"attempts/{KEY}/generation/00000001.json",
+    f"claimed/{KEY}.json", f"withdrawn/{KEY}.json",
+])
+def test_action_wait_observes_nested_endings_and_cleanup(bell, monkeypatch, relative):
+    observed = threading.Event()
+    path = bell.root / relative
+
+    def read_bell_authoritative_input(**kwargs):
+        if path.exists():
+            return action_wait.Ready(json.loads(path.read_text()), None)
+        observed.set()
+        return action_wait.Pending(None)
+
+    def forbid_nested_wait_sleep(delay):
+        pytest.fail(f"healthy bell slept {delay}s for {relative}")
+
+    monkeypatch.setattr(action_wait, "time", SimpleNamespace(
+        monotonic=time.monotonic, sleep=forbid_nested_wait_sleep))
+    with ThreadPoolExecutor() as executor:
+        pending = executor.submit(action_wait.await_action, read_bell_authoritative_input,
+            generation=None, patience=action_wait.WaitUntil(time.monotonic() + 3),
+            profile=action_wait.AwaitProfile.SYNCHRONOUS, tool="test", subject=KEY,
+            notice=lambda event: None, bell=bell.client, bell_key=KEY)
+        assert observed.wait(2)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.parent / ".staged-ending"
+        temporary.write_text('{"cleanup":{"complete":true}}')
+        temporary.replace(path)
+        assert pending.result(3).value == {"cleanup": {"complete": True}}
+
+
+def test_real_requeue_supersession_wakes_exact_publication_waiter(bell):
+    from prismabuild import endings, pool
+    from test_pool_requeue_preserves_newer_generation import _publish, DEMAND, KEY as collision_key
+
+    queue = pool.PoolQueue(bell.root)
+    queue.announce(host=socket.gethostname(), tags=(), has_gpu=False,
+        capacity=DEMAND, cpu_tiers={"preferred": sorted(os.sched_getaffinity(0))[:1], "fallback": []})
+    _publish(queue)
+    original = queue.claim(owner="bell-requeue-test", capacity=DEMAND)
+    assert original is not None
+    _publish(queue)
+    cursor = bell.client.now()
+    with ThreadPoolExecutor() as executor:
+        pending = executor.submit(bell.client.wait, cursor, ("publication-endings",),
+                                  (collision_key,), 3)
+        queue.finish(collision_key, status="failed", detail={"returncode": 17},
+                     claim_snapshot=original)
+        assert pending.result(3)["events"]
+    decision, generation = action_wait.outcome_poll(queue, collision_key, original["published_unix"])
+    assert isinstance(decision, endings.PublicationSupersession)
+    assert generation == original["published_unix"]
+    assert not queue.ledger().held()

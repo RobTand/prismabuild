@@ -475,6 +475,7 @@ def await_action(
     had_patience = deadline > clock.monotonic()
     diagnostic = None
     fallback_s = min(0.25, POLL_S)
+    unusable_replies = 0
 
     def fail(fault, count, ending, retained=(), waited_s=0.0):
         return Unavailable(fault, count, ending, retained, waited_s, had_patience)
@@ -578,12 +579,20 @@ def await_action(
                 continue
             if cursor is not None and use_bell():
                 try:
-                    bell.wait(cursor, queue_bell.TERMINAL_DIRS, (bell_key,), remaining_s())
-                    fallback_s = min(0.25, POLL_S)
+                    started_wait = clock.monotonic()
+                    reply = bell.wait(cursor, queue_bell.TERMINAL_DIRS, (bell_key,), remaining_s())
+                    if not reply.get("events") and clock.monotonic() - started_wait < 0.25:
+                        unusable_replies += 1
+                        if unusable_replies > 1:
+                            raise queue_bell.Unavailable("repeated immediate empty/reset replies")
+                    else:
+                        unusable_replies = 0
+                        fallback_s = min(0.25, POLL_S)
                     continue
                 except queue_bell.Unavailable:
                     pass
-            # An unavailable bell, or SLURM submission discovery, is a service
+            # Unavailable-callback backoff: an unreachable or repeatedly unusable
+            # bell, or SLURM submission discovery, is a service
             # that cannot call back. Recheck with bounded backoff up to POLL_S.
             clock.sleep(max(0.0, min(fallback_s, remaining_s())))
             fallback_s = min(fallback_s * 2, POLL_S)

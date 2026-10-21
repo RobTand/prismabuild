@@ -12,6 +12,7 @@ _ENTRYPOINT = Path(__file__).resolve(strict=True)
 sys.path.insert(0, str(_ENTRYPOINT.parents[
     2 if _ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
 from prismabuild import queue_bell, queue_notifier, role_session
+from prismabuild.runtime_paths import generation_root
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,7 +29,10 @@ def main(argv: list[str] | None = None) -> int:
         with role_session.role_singleton(_ENTRYPOINT):
             with role_session.stop_requests(signal.SIGTERM, signal.SIGINT) as stop:
                 addresses = [(host, args.port) for host in (args.listen or ["127.0.0.1"])]
-                with queue_notifier.BellService(args.queue_root, addresses, on_exit=stop.set):
+                loaded = generation_root(_ENTRYPOINT)
+                generation = loaded if loaded.parent.name == "runtime-generations" else None
+                with queue_notifier.BellService(args.queue_root, addresses,
+                        on_exit=stop.set, generation=generation):
                     stop.wait()
         return 0
     except (role_session.RoleLockHeld, role_session.RoleLockUnavailable) as exc:

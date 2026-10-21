@@ -1065,7 +1065,9 @@ native threads per process; admission cannot infer those needs from argv.
 
 Pool waits use the queue-host bell when available (#1894), without CLI changes.
 The waiter reads a cursor, checks the record, then long-polls for that key's
-terminal-directory changes. Every reply causes a record recheck; bell messages
+outcome-input changes, including nested publication endings, withdrawals,
+attempts and cleanup updates in claimed/terminal records. Every reply causes
+a record recheck; bell messages
 are only hints. Restarts and lost history cause a reset and rescan. If the bell
 is unavailable, rechecks back off from 0.25 seconds to a five-second cap inside
 the original wait deadline. SLURM discovery still uses this backoff because its
@@ -1083,7 +1085,17 @@ unavailable, so scratch queues retain bounded fallback.
 `GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
 300 seconds; a restart changes epoch. An occupied port exits 3 and uses the
 supervisor's existing refusal backoff. A lost state-directory watch exits
-nonzero for restart. Stop joins requests after waking their long-polls.
+nonzero for restart. A published bell watches the active `repo` link and exits
+on retirement, including rollback to a generation without a bell role. Stop
+joins tracked request threads after waking their long-polls. Incomplete headers
+have an absolute five-second budget. At most 128 connections across all listeners
+are served; overload returns 503 and clients use unavailable-callback backoff.
+Client connect, headers and body share the original patience. Repeated immediate
+empty/reset replies also use the capped backoff.
+
+The service is unauthenticated on the listed private addresses. Peers can see
+action keys, state-directory names, timing and cursors; they cannot read record
+bodies or logs, submit, withdraw or change work through the bell.
 Host firewall rules must permit the submitting hosts to reach TCP 9470 at
 their queue mount sources before activation. PB does not install firewall
 configuration.
