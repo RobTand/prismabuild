@@ -2643,9 +2643,12 @@ need it are the ones with no venv and no checkout. `--queue-root`,
 
 The tools:
 
-*   **`pb_status`** — the `pbstatus` census: worker offers and their ages,
+*   **`pb_status(detail=false)`** — the `pbstatus` census: worker offers and their ages,
     ready and claimed actions with why each is waiting, per-host reservation
-    token counts, and how the most recent actions ended.
+    token counts, and how the most recent actions ended. Admission freshness
+    and age remain in the default response; `detail=true` includes the persisted
+    CPU/GPU sample records and their `control_threads`, plus raw samples in
+    job admission decisions and denial evidence (#1897).
 *   **`pb_denials(hours)`** — claim denials per host, grouped by reason,
     inside the last `hours` (default 24, 0 for every recorded denial): how
     many per reason, and the most recently denied action for each. This is
@@ -2687,7 +2690,13 @@ The tools:
     already holds. Snapshot filters compare full Git identities exactly;
     a parent can match several agents' work. All filters intersect inside
     the newest-record scan window, and explicit keys bypass that window.
-    The answer says so in its `identity` field.
+    The answer says so in its `identity` field. Full 64-hex keys use direct
+    state-file reads with no namespace listing; missing exact keys are absent.
+    Shorter prefixes retain bounded discovery. `states` restricts directories
+    before enumeration and restricts keyed reads. Other filters are record
+    fields with no index, so cannot bound enumeration beyond the existing
+    window. `max_age_s` uses publication time, not file mtime; the directories
+    have no cheap time ordering. No new scan or index is added (#1897).
 *   **`pb_receipts(keys)`** — one ending-and-receipt verdict per action
     key (at most 50 per call): the state, the return codes, and whether the
     CAS holds a receipt, with a count of each verdict. This is the set form

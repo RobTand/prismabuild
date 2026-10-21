@@ -16601,6 +16601,25 @@ action keys bypass that window. Git identity is not submitter identity: several
 agents can submit from the same parent, and a snapshot commit includes sealed
 changes. A missing or malformed snapshot never matches a requested Git field.
 
+For #1897, a full 64-hex key is an address, not a prefix query. MCP reads
+its state slots directly without enumerating state, attempt or withdrawal
+namespaces. A missing exact key returns `found: false`; shorter prefixes
+retain bounded discovery and ambiguity reporting. `pb_actions` restricts both
+keyed reads and terminal directory enumeration to requested states. Terminal
+selection still enumerates and stats entries in those states to find the newest
+window. Checkout, snapshot, publisher and publication-age fields have no index,
+so they filter that window after reading records. Directory mtimes are neither
+ordered nor publication times; `max_age_s` cannot safely bound enumeration.
+No index or additional scan is introduced.
+
+`pb_status(detail=false)` omits the admission sample `record` bodies from each
+node's CPU/GPU admission view before returning from its bounded read. Freshness,
+age and unavailable diagnostics remain. Raw `sample` bodies in job admission
+decisions and denial evidence are also omitted, preserving their reasons and
+metadata. `detail=true` includes these samples and the persisted node records,
+including `control_threads`. The shared census and other consumers
+retain their detailed defaults (#1897).
+
 `pb_action` reports a withdrawn action as withdrawn and reads the attempts its
 withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
 reads a record's own links: `attempts_history` names the source,
