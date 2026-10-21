@@ -102,9 +102,9 @@ def test_a_detached_pool_submission_queues_and_returns_without_waiting(
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
 
     line = _one_json_line(capsys.readouterr())
-    assert line["schema"] == submit_core.action_client.DETACH_SCHEMA_V1
+    assert line["schema"] == "prismabuild.submission.v1"
     assert line["transport"] == "pool"
-    assert line["status"] == "submitted"
+    assert line["status"] == "published"
     assert line["job_id"] is None
     key = line["action_key"]
     assert len(key) == 64
@@ -137,7 +137,7 @@ def test_a_detached_slurm_submission_prints_the_job_id_and_files_no_ending(
 
     line = _one_json_line(capsys.readouterr())
     assert line["transport"] == "slurm"
-    assert line["status"] == "submitted"
+    assert line["status"] == "published"
     key = line["action_key"]
 
     submissions = _submissions(fleet)
@@ -195,7 +195,7 @@ def test_a_re_run_attaches_to_the_job_that_is_still_running(
         tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
     ) == 0
     first = _one_json_line(capsys.readouterr())
-    assert first["status"] == "submitted"
+    assert first["status"] == "published"
 
     assert _run_pbrun(
         tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
@@ -218,7 +218,7 @@ def test_a_re_run_attaches_to_the_job_that_is_still_running(
         tmp_path, monkeypatch, work, "--detach", "--transport", "slurm"
     ) == 0
     third = _one_json_line(capsys.readouterr())
-    assert third["status"] == "submitted"
+    assert third["status"] == "published"
     assert third["job_id"] != first["job_id"]
     assert len(_submissions(fleet)) == 2
 

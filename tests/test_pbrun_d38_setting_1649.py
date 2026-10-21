@@ -166,7 +166,7 @@ def test_mixed_grant_images_follow_publication_policy(
     decision["grant"]["d38_exception"]["image_digest"] = ["x", 0]
     path.write_text(json.dumps(decision))
     assert h._run(tmp_path, monkeypatch, work, *options,
-                  "--d38-exception", "dec-mixed") == (2 if enforce else 0)
+                  "--d38-exception", "dec-mixed") == (1 if enforce else 0)
     _assert_publication(tmp_path, target, transport, fleet, published=not enforce)
     events = h._audit(tmp_path, target["action_key"])
     if enforce:
@@ -224,7 +224,7 @@ def test_audit_oserror_obeys_the_setting(
         raise OSError("private audit is read-only")
 
     monkeypatch.setattr(d38_gate, "write_audit", broken)
-    assert h._run(tmp_path, monkeypatch, work, *options) == (2 if enforce else 0)
+    assert h._run(tmp_path, monkeypatch, work, *options) == (1 if enforce else 0)
     assert "audit event cannot be written" in capsys.readouterr().err
     assert len(attempted) == 1
     _assert_publication(tmp_path, target, transport, fleet, published=not enforce)
@@ -315,7 +315,7 @@ def test_absent_key_in_fresh_generations_publishes_and_audits(
         cwd=work, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     line = json.loads(completed.stdout)
-    assert line["status"] == "submitted"
+    assert line["status"] == "published"
     key = line["action_key"]
     _assert_publication(tmp_path, {"action_key": key}, transport, fleet)
     event, = h._audit(tmp_path, key)

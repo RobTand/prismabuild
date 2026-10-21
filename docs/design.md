@@ -1853,6 +1853,30 @@ and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
 
 ## Client SDK
 
+The consumer seal/publication boundary (#1893) is exposed by `pbrun --seal-only`
+and `pbrun --publish-sealed KEY`. Seal-only uses ordinary preparation and sealing,
+retains the canonical request in the CAS, and publishes no queue row or residency
+window. Its `prismabuild.sealed.v1` response names the action key, the SHA-256 of
+the canonical request file including its final newline, and the transport.
+
+`sealed_submission` owns CAS-only recovery. It verifies the immutable request,
+its key, and every declared input before calling `submission.submit_action`.
+That entrypoint shares ordinary cache/attachment handling, D38, worker-offer and
+interpreter checks, residency filing and publication. It never re-identifies,
+snapshots or bundles the source checkout. Nonidentity publication options are
+retained in an immutable, request-digest-bound CAS context; conflicting contexts
+for one key refuse. Older requests without a context retain their sealed
+execution policy and use current publication defaults. Deferred `--after` work
+has no seal until dependency release and is explicitly unsupported by seal-only.
+
+The CLI adapter in `submission_frontend` renders `prismabuild.submission.v1`
+for detached submissions, preserving previous fields, renaming `submitted` to
+`published`, and adding `request_sha256` and the publication identity. Internal
+typed reports and producer diagnostics retain their existing contract. A cache
+hit reports null publication identity because the caller published no generation.
+Named refusals distinguish missing requests, invalid seals and unavailable CAS
+inputs. Source support for these verbs does not establish fleet deployment.
+
 PrismaBuild stands alone: it imports no client, and a client reaches it only
 through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 `pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,

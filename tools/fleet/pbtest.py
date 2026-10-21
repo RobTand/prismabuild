@@ -68,7 +68,7 @@ from prismabuild.runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
-from prismabuild.submission_frontend import store_for, render_submission, request_arguments
+from prismabuild.submission_frontend import store_for, render_submission, request_arguments, SUBMISSION_SCHEMA_V1
 from prismabuild.submission_types import (
     OfferDiscoveryTimedOut, SubmissionRequest, SubmissionRefused,
 )
@@ -230,7 +230,7 @@ def _detach_record(text: str) -> bool:
     except ValueError:
         return False
     return (isinstance(value, dict)
-            and value.get("schema") == action_client.DETACH_SCHEMA_V1)
+            and value.get("schema") in (action_client.DETACH_SCHEMA_V1, SUBMISSION_SCHEMA_V1))
 
 
 class _ShardLines:

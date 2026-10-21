@@ -5,6 +5,8 @@ from prismabuild.runtime_paths import generation_root
 from prismabuild import fleet_roster
 from prismabuild.submission_types import Display, FleetStore, SubmissionRequest
 
+SUBMISSION_SCHEMA_V1 = "prismabuild.submission.v1"
+
 
 def store_for(entrypoint, *, root=Path("/mnt/shared/prismabuild-fleet")) -> FleetStore:
     return FleetStore(Path(root), generation_root(entrypoint), fleet_roster.Roster.beside(entrypoint))
@@ -13,6 +15,35 @@ def store_for(entrypoint, *, root=Path("/mnt/shared/prismabuild-fleet")) -> Flee
 def render_submission(event: Display) -> None:
     print(event.text, file=sys.stderr if event.channel == "stderr" else sys.stdout,
           end=event.end, flush=event.flush)
+
+
+def consumer_submission_display(store: FleetStore, *, render=render_submission):
+    """Adapt internal submission diagnostics to the versioned consumer JSON."""
+    from dataclasses import replace
+    import json
+    from . import action_client, core as pb
+    from .digest_primitives import raw_sha256
+
+    def display(event: Display) -> None:
+        if event.channel == "stdout":
+            try:
+                value = json.loads(event.text)
+            except ValueError:
+                value = None
+            if (isinstance(value, dict) and value.get("schema") == action_client.DETACH_SCHEMA_V1
+                    and value.get("action_key") is not None):
+                action = pb.PrismaBuildCAS(store.cas_root).read_action_request(value["action_key"])
+                if action is None:
+                    raise ValueError("submission acknowledgement has no verified sealed request")
+                generation = value.get("published_unix")
+                value.update(schema=SUBMISSION_SCHEMA_V1,
+                    status="published" if value["status"] == "submitted" else value["status"],
+                    request_sha256=raw_sha256(pb._canonical_file_bytes(action)),
+                    publication=dict(published_unix=generation, generation=generation))
+                event = replace(event, text=json.dumps(value))
+        render(event)
+
+    return display
 
 
 def request_arguments(request, *, order=(), include_defaults=("cwd", "transport", "cpus"), omit=(), scalar_text=None):

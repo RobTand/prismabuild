@@ -52,7 +52,7 @@ def test_publication_alone_moves_the_action_key(original, tmp_path, monkeypatch,
     assert (old / "docker").read_bytes() == (new / "docker").read_bytes()
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
     second = _one_json_line(capsys.readouterr())
-    assert second["status"] == "submitted"
+    assert second["status"] == "published"
     assert second["action_key"] != action["action_key"]
     assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
