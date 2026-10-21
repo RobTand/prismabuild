@@ -1885,7 +1885,9 @@ class RecordStore:
                 raise
         return sorted(found)
 
-    def recent_ending_paths(self, limit: int) -> list[os.DirEntry | HistoryEntry]:
+    def recent_ending_paths(self, limit: int, *,
+                            states: Sequence[str] | None = None
+                            ) -> list[os.DirEntry | HistoryEntry]:
         """The ``limit`` newest terminal records by modification time.
 
         Only the directory entries are stat'ed here.  Reading every record on the
@@ -1894,11 +1896,13 @@ class RecordStore:
         rather than an error.
         """
 
+        selected = tuple(state for state in (DONE, FAILED, WITHDRAWN)
+                         if states is None or state in states)
         if self._history is not None:
-            return self._kept_recent_ending_paths(limit)
+            return self._kept_recent_ending_paths(limit, states=selected)
         entries: list[tuple[float, os.DirEntry]] = []
         withdrawal_mtimes: dict[str, float] = {}
-        for state in (DONE, FAILED, WITHDRAWN):
+        for state in selected:
             directory = self.root / state
             try:
                 with os.scandir(directory) as scan:
@@ -1920,8 +1924,10 @@ class RecordStore:
         # that ending visible if the operator crashed between the two writes.
         decisions = self.root / WITHDRAWN / "decisions"
         try:
-            with os.scandir(decisions) as scan:
-                directories = [entry for entry in scan if entry.is_dir()]
+            directories = []
+            if WITHDRAWN in selected:
+                with os.scandir(decisions) as scan:
+                    directories = [entry for entry in scan if entry.is_dir()]
         except FileNotFoundError:
             directories = []
         for directory in directories:
@@ -2710,16 +2716,17 @@ class RecordStore:
             return None
         return kept_reads.EvidenceSet((*taken, *subdirectories))
 
-    def _kept_recent_ending_paths(self, limit: int) -> list[HistoryEntry]:
+    def _kept_recent_ending_paths(self, limit: int, *,
+                                  states: Sequence[str]) -> list[HistoryEntry]:
         entries: list[HistoryEntry] = []
         withdrawal_mtimes: dict[str, float] = {}
-        for state in (DONE, FAILED, WITHDRAWN):
+        for state in states:
             listed = self.ending_entries(state)
             entries.extend(listed)
             if state == WITHDRAWN:
                 for entry in listed:
                     withdrawal_mtimes[entry.name[:-5]] = entry.mtime
-        for directory in list(self.withdrawal_directories()):
+        for directory in (list(self.withdrawal_directories()) if WITHDRAWN in states else ()):
             candidates = list(self.withdrawal_entries(directory))
             if candidates:
                 newest = max(candidates, key=_mtime)
