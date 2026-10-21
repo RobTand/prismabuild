@@ -19187,6 +19187,19 @@ class PoolQueue:
         this loop is about to act on rather than the bytes that sent it here.
         """
 
+        # Older expiry writers could publish a successful exact-scope cleanup
+        # alongside a previous refusal. These terminals have no claim to scan;
+        # let their owner reconcile the summary without revisiting the ending.
+        for path in self.records.json_slot_paths(FAILED):
+            key = path.stem
+            try:
+                with self.action_transition_lock(key, blocking=False) as acquired:
+                    if acquired:
+                        lifecycle.conclude(self, lifecycle.TerminalCleanupRecovery(key))
+            except (OSError, PoolContractError) as exc:
+                print(f"pool terminal cleanup retry skipped {key}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+
         grace_s = HEARTBEAT_S
         requeued: list[str] = []
         claimed = self.records.dir(CLAIMED)
