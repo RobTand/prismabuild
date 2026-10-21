@@ -2180,6 +2180,18 @@ there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
 
+`pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
+`SubmissionRequest.env` and template preparation used by `pbrun --env`
+(#1891). Every shard sealed from a plan retains those values in
+`environment.variables`, so they participate in action identity. No option
+means no change to request bytes or existing action keys. Before preparation
+or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
+and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
+OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
+PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+reserved when the run's options leave one unset; a caller cannot bypass
+pbtest's resource, deadline or pytest configuration through the environment.
+
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
 sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
@@ -3265,18 +3277,28 @@ without the member or the ordinary package import boundary.
   Checked snapshot Git text operations share `core._git` with pbrun's
   fail factory: nonzero and transport refusals retain `SystemExit` and
   `pbrun: cannot snapshot checkout:` while naming the full Git operation
-  (#1430). Identity reads keep their 30-second bound; snapshot text reads
-  keep 120 seconds, accepted codes, surrogate decoding and optional stripping.
+  (#1430). Submission Git waits for process exit without a fixed per-call
+  wall-clock cap (#1888), including checkout identity, repository probes,
+  snapshot add/commit and bundle packing. A caller may pass its existing
+  monotonic deadline explicitly through preparation; every Git call spends
+  the remaining budget rather than renewing it. `pbtest` passes its shard
+  `--wait-s` deadline, and a windowed campaign passes its existing deadline
+  when preparing replacement rows. Initial campaign preparation and plain
+  `pbrun` preparation have no caller deadline. Their `--wait-s` budgets start
+  after publication; `--timeout-s` bounds payload execution. Accepted codes,
+  surrogate decoding and optional stripping stay unchanged.
   Their caller adapter preserves explicit OSError/TimeoutExpired causes;
   a nonzero exit does not turn an unrelated active caller exception into a
   direct cause. Delegation retains the canonical runner's broader
   SubprocessError catch, a compatibility qualification with no demonstrated
-  ordinary-production trigger; the canonical runner is unchanged.
+  ordinary-production trigger; return-code and error mapping are unchanged.
   Deterministic bundle packing remains a separate binary-streaming subprocess
-  (`stdout=file`, UTF-8 tip bytes on stdin, 1800-second pack bound); its
+  (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
-  This is diagnostic consolidation, not storage-stall recovery or a speed claim.
+  The [#1888 wait inventory](submission_git_waits_1888.md) records removed
+  caps and retained non-Git waits. This establishes no storage-stall recovery,
+  deployed support, staged-read requirement satisfaction or release-gate verdict.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,

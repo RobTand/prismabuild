@@ -893,11 +893,11 @@ def seal_movement_action(
         raise SubmissionRefused(f"refusing to seal a movement action: {exc}") from None
 
 
-def checkout_identity(cwd: Path) -> dict[str, str]:
+def checkout_identity(cwd: Path, *, deadline: float | None = None) -> dict[str, str]:
     """Commit plus a digest of the working-tree delta, or a named refusal."""
 
     try:
-        return pb.git_checkout_identity(cwd)
+        return pb.git_checkout_identity(cwd, deadline=deadline)
     except pb.ActionContractError as exc:
         raise SubmissionRefused(f"pbrun: cannot identify checkout: {exc}") from None
 
