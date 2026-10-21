@@ -2125,7 +2125,8 @@ def main() -> int:
             timeout_s=plan["sealed_s"], wait_s=args.wait_s, priority=args.priority,
             # CPU shards can restart after at most two guest interruptions.
             # GPU shards retain their existing retry policy.
-            retry_safe=not args.gpu, max_attempts=1 if args.gpu else 3,
+            retry_safe=args.transport == "pool" and not args.gpu,
+            max_attempts=3 if args.transport == "pool" and not args.gpu else 1,
             profile=args.profile,
             data_manifest=str(Path(args.data_manifest).resolve()) if args.data_manifest else None,
             requires_files=json.dumps(pins) if pins else None, residency=args.residency)

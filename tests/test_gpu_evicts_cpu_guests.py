@@ -85,7 +85,7 @@ def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet):
     fleet.finish(guest, "withdrawn")
     taken = fleet.claim()
     assert taken["action_key"] == gpu
-    fleet.finish(taken)
+    gpu_claim = taken
     fleet.queue.ledger("cpuhost").release("f" * 64)
     taken = fleet.claim("cpuhost")
     assert taken["action_key"] == key and not taken.get("cpu_guest")
@@ -93,6 +93,7 @@ def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet):
     ending = await_ending(fleet.queue, key, wait_s=0, generation=guest["published_unix"])
     assert ending[1]["status"] == "executed"
     assert ending[1]["published_unix"] == taken["published_unix"]
+    fleet.finish(gpu_claim)
 
 
 def test_victims_are_lowest_priority_then_youngest_and_converge(guest_fleet):
@@ -143,7 +144,7 @@ def test_two_evictions_end_guest_eligibility_even_with_larger_budget(guest_fleet
     for digit in "bc":
         gpu = fleet.publish(digit, gpu=True, cpu=8)
         assert fleet.claim() is None
-        assert fleet.stopped(key)[-1]["preempted_by"] == gpu
+        assert any(row["preempted_by"] == gpu for row in fleet.stopped(key))
         fleet.finish(guest, "withdrawn")
         row = fleet.claim()
         assert row["action_key"] == gpu
@@ -151,6 +152,11 @@ def test_two_evictions_end_guest_eligibility_even_with_larger_budget(guest_fleet
         guest = fleet.claim()
     assert guest is None
     assert len(fleet.stopped(key)) == 2
+    (fleet.queue.root / pool.WORKERS / "cpuhost.json").unlink()
+    assert fleet.claim() is None  # a vanished CPU offer cannot bypass the cap
+    fleet.queue.announce(host="cpuhost", tags=["cpuhost", "x86"], has_gpu=False,
+        capacity={"cpu": 8, "mem_gb": 16}, observed_capacity={"cpu": 8, "mem_gb": 16},
+        cpu_tiers=fleet.tiers)
     fleet.queue.ledger("cpuhost").release("f" * 64)
     retry = fleet.claim("cpuhost")
     assert retry["attempts"] == 2 and not retry.get("cpu_guest")
@@ -190,3 +196,33 @@ def test_adaptive_host_pressure_only_evicts_when_pool_drain_resolves_it(guest_fl
     assert denial["evidence"]["decision"]["reason"] == "host_pressure"
     assert denial["evidence"]["drain_resolves"] is (not foreign)
     assert bool(fleet.stopped(key)) is (not foreign)
+
+
+def test_a_token_verdict_reserved_elsewhere_does_not_evict_guests(guest_fleet, monkeypatch):
+    from types import SimpleNamespace
+
+    fleet = guest_fleet
+    key = fleet.publish("a", cpu=8)
+    assert fleet.claim()["cpu_guest"]
+    fleet.publish("b", gpu=True, cpu=8)
+    monkeypatch.setattr(fleet.queue, "_observe_drain", lambda *args, **kwargs:
+        SimpleNamespace(notes=None, verdict={"eligible": False, "withhold": False,
+            "drain_resolves": False, "why": "measurement_reserved_on_other_host"}))
+    assert fleet.claim() is None
+    assert not fleet.stopped(key)
+
+
+def test_a_failed_retry_that_was_never_a_guest_keeps_legacy_overflow(guest_fleet):
+    fleet = guest_fleet
+    path = fleet.queue.root / pool.WORKERS / "cpuhost.json"
+    offer = pool.record_store.read_document(path)
+    path.unlink()
+    key = fleet.publish("a", cpu=8)
+    first = fleet.claim()
+    assert not first.get("cpu_guest")
+    fleet.queue.finish(key, status="failed", detail={"returncode": 1}, claim_snapshot=first)
+    pool.immutable_files.write_json_atomic(path, offer)
+    retry = fleet.claim()
+    assert retry and retry["action_key"] == key
+    assert retry["attempts"] == 1 and retry["attempt_history"]
+    assert not retry.get("cpu_guest") and not retry.get("cpu_guest_retry")
