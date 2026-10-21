@@ -1499,12 +1499,56 @@ class _Progress:
             self._write()
 
 
+def _pbtest_population(checkout: Path, paths: list[str], capabilities: str | None):
+    """Discover and classify once for execution and the read-only plan (#1900)."""
+    plan = {"schema": "prismabuild.pbtest_plan.v1", "files": [],
+            "capabilities": {}, "tags": {}, "left_out": {}, "refusals": []}
+    config: dict = {}
+    declared: dict = {}
+    try:
+        plan["files"] = discover(checkout, paths)
+    except (OSError, ValueError) as exc:
+        plan["refusals"].append({"code": "discovery_failed", "reason": str(exc)})
+        return plan, config, declared
+    if not plan["files"]:
+        plan["refusals"].append({"code": "population_empty",
+                                 "reason": f"no test files under {paths} in {checkout}"})
+        return plan, config, declared
+    capabilities_path = (checkout / capabilities if capabilities is not None
+                         else checkout / "tests/pbtest_capabilities.json")
+    try:
+        if capabilities is not None and not capabilities_path.is_file():
+            raise ValueError(f"--capabilities {capabilities!r} is not a file under {checkout}")
+        if capabilities_path.is_file():
+            resolved = capabilities_path.resolve()
+            if not resolved.is_relative_to(checkout):
+                raise ValueError(
+                    f"--capabilities {capabilities!r} must name a file inside --checkout: "
+                    "the sealed snapshot carries the declaration, so an outside file "
+                    "is mutable state the run would only claim to declare")
+            config = pbtest_capabilities.load_config(resolved)
+    except (OSError, ValueError) as exc:
+        plan["refusals"].append({"code": "capabilities_invalid",
+                                 "reason": f"--capabilities {capabilities_path}: {exc}"})
+        return plan, config, declared
+    declared, problems = pbtest_capabilities.classify_files(checkout, plan["files"], config)
+    plan["refusals"] = [{"code": "capability_unclassifiable", "reason": problem}
+                        for problem in problems]
+    plan["capabilities"] = {file: declared.get(file, []) for file in plan["files"]}
+    return plan, config, declared
+
+
+def _pbtest_tags(args) -> list[str]:
+    return args.tag or (["gb10"] if args.gpu and
+                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
                     help="Git tree to snapshot and test on the pool")
-    ap.add_argument("--python", required=True,
-                    help="absolute python* executable on eligible TARGET workers")
+    ap.add_argument("--python", default=None,
+                    help="absolute python* executable on eligible TARGET workers; required except with --plan-only")
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
                          "default /home/rob/tmp (not checked on the coordinator)")
@@ -1601,7 +1645,12 @@ def main() -> int:
                          "shard's action identity, so a profiled suite run is "
                          "a different set of actions from an unprofiled one "
                          "and never a cache hit for it")
-    ap.add_argument("--json", default="", help="write the per-shard result here")
+    ap.add_argument("--json", default="", help="write the report or --plan-only object here")
+    ap.add_argument("--plan-only", action="store_true",
+                    help="discover and classify files without preparation or submission; "
+                         "requires --json PATH. Uses --checkout, paths, --capabilities, "
+                         "--tag and the --gpu default tag; ignores execution options, "
+                         "including --pytest-args (no pytest collection)")
     ap.add_argument("--history", action="append", default=[],
                     help="prior --json run reports whose file_durations "
                          "pack this run's shards by measured duration "
@@ -1646,6 +1695,25 @@ def main() -> int:
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
     args = ap.parse_args()
+    if args.plan_only:
+        if not args.json:
+            ap.error("--plan-only requires --json PATH")
+        plan, config, declared = _pbtest_population(
+            Path(args.checkout).resolve(), args.paths or ["tests"], args.capabilities)
+        tags = _pbtest_tags(args)
+        plan["tags"] = {
+            file: sorted(set(tags) | {tag for name in names for tag in config[name]["tags"]})
+            for file, names in plan["capabilities"].items()}
+        try:
+            _write_report_bytes(Path(args.json), json.dumps(plan, indent=2).encode(), durable=True)
+        except OSError as exc:
+            sys.stderr.write(f"pbtest: cannot publish requested plan: {exc}\n")
+            return 2
+        for refusal in plan["refusals"]:
+            sys.stderr.write(f"pbtest: {refusal['code']}: {refusal['reason']}\n")
+        return 2 if plan["refusals"] else 0
+    if args.python is None:
+        ap.error("--python is required for execution")
     try:
         progress = _Progress(args.json)
     except OSError as exc:
@@ -1746,11 +1814,13 @@ def main() -> int:
         return 2
 
     checkout = Path(args.checkout).resolve()
-    try:
-        files = discover(checkout, args.paths or ["tests"])
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f"cannot discover tests: {exc}\n")
+    population, config, declared = _pbtest_population(
+        checkout, args.paths or ["tests"], args.capabilities)
+    for refusal in population["refusals"]:
+        sys.stderr.write(f"pbtest: {refusal['reason']}\n")
+    if population["refusals"]:
         return 2
+    files = population["files"]
     history, history_problems = load_history(args.history)
     for problem in history_problems:
         sys.stderr.write(f"pbtest: --history {problem}\n")
@@ -1759,9 +1829,6 @@ def main() -> int:
     # The packing model (#1246): prior ``--json`` reports are the receipts'
     # content in one file, so loading them reads no live state -- and a
     # submission never fails because one old report rotted.
-    if not files:
-        sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
-        return 2
     # Tests that read the shared mount undeclared cost the fleet a scan it
     # cannot see or stage (#915), so they run only with a manifest.
     if args.residency == "stage" and not args.data_manifest:
@@ -1778,41 +1845,6 @@ def main() -> int:
             f"@pytest.mark.{FLEET_DATA_MARKER}, so they read fleet data, and "
             "no --data-manifest declares it (#915); pass one, or leave them "
             "out of the run: " + ", ".join(reading) + "\n")
-        return 2
-    # Per-file capability declarations (#1495).  The config is the
-    # population's versioned statement; a marker the config does not
-    # define, or one that cannot be classified statically, refuses the run
-    # by name -- never an unfenced file.  A population with no
-    # declarations loads nothing and runs exactly as before.
-    capabilities_path = (
-        checkout / args.capabilities if args.capabilities is not None
-        else checkout / "tests" / "pbtest_capabilities.json")
-    if args.capabilities is not None and not capabilities_path.is_file():
-        sys.stderr.write(
-            f"pbtest: --capabilities {args.capabilities!r} is not a file "
-            f"under {checkout}\n")
-        return 2
-    config: dict = {}
-    if capabilities_path.is_file():
-        resolved = capabilities_path.resolve()
-        if not resolved.is_relative_to(checkout):
-            sys.stderr.write(
-                f"pbtest: --capabilities {args.capabilities!r} must name a "
-                "file inside --checkout: the sealed snapshot carries the "
-                "declaration, so an outside file is mutable state the run "
-                "would only claim to declare\n")
-            return 2
-        try:
-            config = pbtest_capabilities.load_config(resolved)
-        except (OSError, ValueError) as exc:
-            sys.stderr.write(
-                f"pbtest: --capabilities {resolved}: {exc}\n")
-            return 2
-    declared, capability_problems = pbtest_capabilities.classify_files(
-        checkout, files, config)
-    for problem in capability_problems:
-        sys.stderr.write(f"pbtest: {problem}\n")
-    if capability_problems:
         return 2
     # The ceiling the model judges against is sealed later, beside the
     # deadline; the samples load and the predictions resolve above.  The
@@ -1840,8 +1872,7 @@ def main() -> int:
     # only correct placement", and the four shards died on dl380g10 with
     # ``can't open file '<worktree>/tools/prismabuild_worker.py'`` (#292).
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
-    tags = args.tag or (["gb10"] if args.gpu and
-                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+    tags = _pbtest_tags(args)
     shard_resources = {"cpu": cpus_per_shard, "mem_gb": args.mem_gb}
     if args.disk_metadata:
         shard_resources["disk_metadata"] = 1
@@ -2247,7 +2278,8 @@ def main() -> int:
                                  for name in bucket), 1)
                        if predicted else None)
         actual_s = summary_seconds(summary) if ran else None
-        results.append({"shard": index, "files": bucket,
+        results.append({"schema": "prismabuild.pbtest_report.v1",
+                        "shard": index, "files": bucket,
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,
