@@ -436,7 +436,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
             ap.error(exc.reason)
         if args.seal_only or args.publish_sealed is not None or args.detach:
             print_consumer_refusal(exc, sealed=args.seal_only)
-            raise SystemExit(1) from None
+            raise SystemExit((exc.reason or 1) if plain_detach(args) else 1) from None
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
 
@@ -481,7 +481,7 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                 parser.error(refusal.reason)
             if args.detach or args.publish_sealed is not None:
                 print_consumer_refusal(refusal, sealed=False)
-                if args.publish_sealed is None:
+                if plain_detach(args):
                     raise SystemExit(refusal.reason or 1)
                 return 1
             if refusal.returncode == 2:
@@ -507,7 +507,7 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             if isinstance(exc, ArgumentRefused):
                 parser.error(exc.reason)
             print_consumer_refusal(exc, sealed=args.seal_only)
-            if args.detach and not args.seal_only and args.publish_sealed is None:
+            if plain_detach(args):
                 raise SystemExit(exc.reason or 1) from None
             return 1
         raise SystemExit(exc.reason or exc.returncode) from None
@@ -522,6 +522,11 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
         report.on_event = previous_observer
         if writer is not None:
             writer.close()
+
+
+def plain_detach(args) -> bool:
+    """Plain --detach exits 1 with the refusal's reason after its JSON line; the #1893 verbs exit 1 silently."""
+    return args.detach and not args.seal_only and args.publish_sealed is None
 
 
 def print_consumer_refusal(exc, *, sealed: bool) -> None:
