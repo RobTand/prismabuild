@@ -67,7 +67,7 @@ def consumer_action(world, name, status="executed", action_exit=None, *, with_re
 def test_json_endings_are_ordered_and_verify_success_and_failure(consumer_world, capsys):
     success, receipt = consumer_action(consumer_world, "success")
     failed, _ = consumer_action(consumer_world, "failed", "failed", 7)
-    assert pbwait.main(["--json", "--wait-s", "0", failed, success, failed]) == 1
+    assert pbwait.main(["--endings", "--wait-s", "0", failed, success, failed]) == 1
     body = json.loads(capsys.readouterr().out)
     assert set(body) == {"schema", "complete", "endings"}
     assert body["schema"] == "prismabuild.endings.v1"
@@ -100,7 +100,7 @@ def test_json_endings_are_ordered_and_verify_success_and_failure(consumer_world,
                                                ("failed", 1), ("refused", 1), ("waiting", 75)])
 def test_json_exit_codes_from_real_records(consumer_world, capsys, status, exit_code):
     key, _ = consumer_action(consumer_world, status, status)
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == exit_code
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == exit_code
     body = json.loads(capsys.readouterr().out)
     assert body["complete"] == (status != "waiting")
     assert body["endings"][0]["status"] == status
@@ -116,7 +116,7 @@ def test_withdraw_json_and_human_output_match(consumer_world, capsys):
     assert set(body) == {"schema", "action_key", "state_before", "withdrawn", "reason"}
     assert body == {"schema": "prismabuild.withdrawal.v1", "action_key": key,
                     "state_before": "ready", "withdrawn": True, "reason": "stop this fixture"}
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 1
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 1
     row = json.loads(capsys.readouterr().out)["endings"][0]
     assert row["status"] == "withdrawn"
     assert row["result"] is None
@@ -138,7 +138,7 @@ def test_tampered_failed_log_is_unreadable(consumer_world, capsys, stream):
     path.chmod(0o644)
     path.write_bytes(b"forged\n")
     path.chmod(0o444)
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 74
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 74
     body = json.loads(capsys.readouterr().out)
     assert body["complete"] is False
     row = body["endings"][0]
@@ -170,9 +170,9 @@ def test_consumer_exit_constants(status, expected):
     assert action_client.WITHDRAWN_EXIT == 143
 
 
-@pytest.mark.parametrize("arguments", [["--json", "--wait-s", "0", "a" * 64],
-                                      ["--json", "--wait-s", "-1", "a" * 64],
-                                      ["--json", "--wait-s", "nan", "a" * 64]])
+@pytest.mark.parametrize("arguments", [["--endings", "--wait-s", "0", "a" * 64],
+                                      ["--endings", "--wait-s", "-1", "a" * 64],
+                                      ["--endings", "--wait-s", "nan", "a" * 64]])
 def test_usage_and_unknown_keys_are_exit_two(consumer_world, arguments):
     with pytest.raises(SystemExit) as exc:
         pbwait.main(arguments)
@@ -200,7 +200,7 @@ def test_a_running_withdrawal_stays_withdrawn_until_cleanup(consumer_world, caps
     consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
     assert pbrun.main(["--withdraw", key, "--reason", "stop", "--json"]) == 0
     capsys.readouterr()
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 1
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 1
     row = json.loads(capsys.readouterr().out)["endings"][0]
     assert row["status"] == "withdrawn"
     assert row["result"] is None
@@ -229,7 +229,7 @@ def test_failed_result_refuses_foreign_generation_and_replacement(consumer_world
 def test_failed_ending_can_carry_its_exact_published_receipt(consumer_world, capsys):
     key, receipt = consumer_action(consumer_world, "failed-after-publish", "failed", 0,
                                    with_receipt=True)
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 1
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 1
     row = json.loads(capsys.readouterr().out)["endings"][0]
     assert row["status"] == "failed" and row["succeeded"] is False
     assert row["exit_code"] == 0
@@ -244,7 +244,7 @@ def test_concluded_withdrawal_verifies_its_attempt_logs(consumer_world, capsys):
     consumer_world.queue.finish(key, status="withdrawn", detail={
         "returncode": 143, "stdout": "partial output\n", "stderr": "stopped\n"})
     settle_publishers()
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 1
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 1
     row = json.loads(capsys.readouterr().out)["endings"][0]
     assert row["status"] == "withdrawn"
     assert row["result"]["verified"] is True
@@ -264,7 +264,116 @@ def test_slurm_withdraw_json_reports_the_filed_decision_when_scancel_refuses(
 
 def test_json_publication_identity_for_a_waiting_action(consumer_world, capsys):
     key, _ = consumer_action(consumer_world, "publication", "waiting")
-    assert pbwait.main(["--json", "--wait-s", "0", key]) == 75
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 75
     row = json.loads(capsys.readouterr().out)["endings"][0]
     assert row["publication"]["generation"] == consumer_world.queue.records.attempt_generation({
         "action_key": key, "published_unix": row["publication"]["published_unix"]})
+
+
+@pytest.mark.parametrize("status,expected", [("executed", 0), ("failed", 1), ("waiting", 75)])
+def test_legacy_json_supports_trustladder_parse(consumer_world, capsys, status, expected):
+    key, _ = consumer_action(consumer_world, "legacy-" + status, status)
+    assert pbwait.main(["--json", "--wait-s", "0", key]) == expected
+    out = capsys.readouterr().out
+    (row,) = json.loads(out)
+    assert row["status"] == status
+    expected = {"action_key", "status", "transport", "job", "host", "elapsed_s",
+                "returncode", "action_returncode", "action_signal", "receipt_published",
+                "note", "succeeded"}
+    if status != "waiting":
+        expected |= {"withdrawn_attempt", "resource_scope_cleanup", "container_cleanup"}
+    assert set(row) == expected
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--json", "--endings"], ["--until", "cleaned"],
+    ["--json", "--until", "cleaned"], ["--until", "ended"],
+    ["--endings", "--until", "unknown"],
+    ["--endings", "--reconcile-pool", "--generation", "b" * 64, "--attempt", "1"],
+])
+def test_endings_option_combinations_are_usage_errors(consumer_world, arguments):
+    with pytest.raises(SystemExit) as exc:
+        pbwait.main([*arguments, "a" * 64])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("status", ["cache_hit", "withdrawn", "superseded", "refused", "failed"])
+def test_no_attempt_has_no_cleanup_debt(consumer_world, status):
+    row = pbwait.consumer_ending_row(consumer_world.queue, pbwait._row("a" * 64, status),
+        cas=pb.PrismaBuildCAS(consumer_world.root / "cas"),
+        context={"attempt": 0, "claimed": False})
+    assert row["diagnostics"]["cleanup"]["complete"] is True
+
+
+@pytest.mark.parametrize("scope,containers,expected", [
+    (None, None, False), (False, True, False), (True, False, False),
+    (False, False, False), (True, True, True), (True, None, True),
+])
+def test_claimed_attempt_requires_scope_and_container_cleanup(
+        consumer_world, scope, containers, expected):
+    row = pbwait.consumer_ending_row(consumer_world.queue,
+        pbwait._row("a" * 64, "withdrawn"),
+        cas=pb.PrismaBuildCAS(consumer_world.root / "cas"),
+        context={"claimed": True, "result_ended": True,
+                 "resource_scope_cleanup": None if scope is None else {"complete": scope},
+                 "container_cleanup": None if containers is None else {"complete": containers}})
+    assert row["diagnostics"]["cleanup"]["complete"] is expected
+
+
+def test_until_cleaned_keeps_the_ending_at_the_deadline(consumer_world, capsys):
+    key, _ = consumer_action(consumer_world, "cleanup-pending", "waiting")
+    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
+    assert pbwait.main(["--endings", "--until", "cleaned", "--wait-s", "0", key]) == 75
+    body = json.loads(capsys.readouterr().out)
+    assert body["complete"] is False
+    row, = body["endings"]
+    assert row["status"] == "withdrawn"
+    assert row["diagnostics"]["cleanup"]["complete"] is False
+    assert pbwait.main(["--endings", "--until", "ended", "--wait-s", "0", key]) == 1
+    assert json.loads(capsys.readouterr().out)["complete"] is True
+
+
+def test_until_cleaned_returns_for_a_ready_withdrawal(consumer_world, capsys):
+    key, _ = consumer_action(consumer_world, "never-started", "waiting")
+    consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
+    assert pbwait.main(["--endings", "--until", "cleaned", "--wait-s", "0", key]) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["complete"] is True
+    assert body["endings"][0]["diagnostics"]["cleanup"]["complete"] is True
+
+
+def test_until_cleaned_rechecks_through_the_existing_waiter(consumer_world, monkeypatch, capsys):
+    key, _ = consumer_action(consumer_world, "cleanup-arrives", "waiting")
+    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
+    original = pbwait._look_once_checked
+    observed = []
+    def finish_after_observation(*args, **kwargs):
+        row = original(*args, **kwargs)
+        observed.append(row)
+        if len(observed) == 1:
+            consumer_world.queue.finish(key, status="withdrawn", detail={
+                "returncode": 143, "stdout": "stopped\n", "stderr": ""})
+            settle_publishers()
+        return row
+    monkeypatch.setattr(pbwait, "_look_once_checked", finish_after_observation)
+    assert pbwait.main(["--endings", "--until", "cleaned", "--wait-s", "30", key]) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["complete"] is True
+    row, = body["endings"]
+    assert row["status"] == "withdrawn"
+    assert row["diagnostics"]["cleanup"]["complete"] is True
+    assert row["result"]["verified"] is True
+    assert len(observed) >= 2
+    assert observed[0]["withdrawn_attempt"] is None
+    assert observed[-1]["withdrawn_attempt"] is not None
+
+
+
+def test_no_scope_or_container_owner_has_no_cleanup_debt(consumer_world):
+    row = pbwait.consumer_ending_row(consumer_world.queue,
+        pbwait._row("a" * 64, "withdrawn"), cas=None,
+        context={"claimed": True, "result_ended": True,
+                 "scope_required": False, "containers_required": False})
+    assert row["diagnostics"]["cleanup"]["complete"] is True

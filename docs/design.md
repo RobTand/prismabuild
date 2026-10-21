@@ -2115,14 +2115,29 @@ to do with the list.
 
 ### Versioned CLI endings (#1892)
 
-`pbwait --json` returns `prismabuild.endings.v1`, an object with `schema`,
-`complete` and argument-ordered `endings`. It replaces the unversioned JSON
-list. The consumer contract separates execution identity, action exit/signal,
+`pbwait --endings` returns `prismabuild.endings.v1`, an object with `schema`,
+`complete` and argument-ordered `endings`. The mutually exclusive `--json`
+retains its bare list, row fields and exits unchanged. Consumer context is
+captured separately from the shared rows used by campaigns and legacy JSON. The consumer contract separates execution identity, action exit/signal,
 publication identity and timestamps from `diagnostics`, which retains the
 existing telemetry, transport and cleanup fields. A zero wait reads once.
-JSON exit precedence is unreadable/integrity 74, failed/withdrawn/refused 1,
+`--endings` exit precedence is unreadable/integrity 74, failed/withdrawn/refused 1,
 superseded 76, waiting 75, success 0; usage and unknown keys exit 2. Human
 rendering and its existing exit codes are unchanged.
+
+`--until ended` is the default. `--until cleaned` requires `--endings` and
+rechecks through the same `wait_one` / `action_wait.await_action` observation
+path until every ending's `diagnostics.cleanup.complete` is true. An ending
+with no claimed attempt has nothing to clean. A claimed attempt requires
+completed resource-scope and container cleanup evidence. A scope or container
+owner that was never created has no cleanup debt. Ordinary finish persists
+completed scope cleanup after container cleanup succeeds, so that record also
+proves container cleanup when no separate container record is filed. An explicit
+incomplete container record still blocks completion. A running withdrawal
+is an ending before it is quiescent. At the deadline, pending cleanup returns
+75 and `complete: false`, retaining the ending and current cleanup diagnostics.
+Unreadable evidence still returns 74. This adds no separate polling loop and
+does not change `action_wait`'s polling, owned by #1894.
 
 `action_result.read_verified_ending_result` is an internal sibling of the
 success-only SDK result reader. It authenticates failed attempts too, using
