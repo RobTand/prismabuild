@@ -11,7 +11,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -55,6 +57,26 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 #: inherited from wherever the suite happens to be checked out.
 PUBLISHED_RUNTIME = Path(
     "/mnt/shared/prismabuild-fleet/runtime-generations/test-generation")
+
+
+@pytest.fixture(autouse=True)
+def placement_environment(monkeypatch, tmp_path, _explicit_submission_store):
+    """Declare placement facts independently of the worker and scratch mount."""
+    roster = tmp_path / "placement-roster.json"
+    roster.write_text(json.dumps({"boxes": {
+        "sparky": {"args": ["--class", "gb10"]},
+        "gx10-6b77": {"_alias": "sparklina", "args": ["--class", "gb10"]},
+        "dl380g10": {"args": ["--class", "x86"]},
+    }}))
+    store = patch_store(monkeypatch, client=pbrun, roster_path=roster)
+    # Offers start empty; each census/capability case announces its own answers.
+    monkeypatch.setattr(socket, "gethostname", lambda: HOST)
+    monkeypatch.setenv(submit_core.DEFAULT_TRANSPORT_ENV, "pool")
+    # Gate scratch may itself be under /mnt/shared. Only this private subtree
+    # models shared dependencies; its siblings must remain box-local inputs.
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
+    return store
+
 
 def _git_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "checkout"
@@ -584,7 +606,7 @@ def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
 ) -> None:
     checkout = _git_checkout(tmp_path)
 
-    def refuse(_root):
+    def refuse(_root, *, deadline=None):
         raise core_module.ActionContractError("unsupported file type: 'socket'")
 
     monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
@@ -1678,7 +1700,7 @@ def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
 
 @pytest.mark.parametrize("exclusive", [False, True])
 def test_blocked_worker_offer_read_does_not_publish_a_runnable_submission(
-    tmp_path, exclusive,
+    tmp_path, exclusive, placement_environment,
 ):
     """A submission-facing offer scan must not strand its caller on the mount.
 
@@ -1693,34 +1715,54 @@ def test_blocked_worker_offer_read_does_not_publish_a_runnable_submission(
     workers.mkdir(parents=True)
     os.mkfifo(workers / "wedged.json", 0o600)
     program = r"""
-import socket, sys
+import os, socket, sys, time
 from pathlib import Path
 from unittest import mock
 sys.path.insert(0, 'tools/fleet')
 import pbrun
 from prismabuild import submission as submit_core
-pbrun_store = submit_core.FleetStore(Path(sys.argv[1]), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun_store = submit_core.FleetStore(
+    Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[5]),
+    runtime_version=Path(sys.argv[1]) / 'RUNTIME_VERSION.json')
 pbrun.configured_store = lambda: pbrun_store
-pbrun.RUNTIME_ROOT = Path(sys.argv[2])
 submit_core.SUBMISSION_OFFER_READ_TIMEOUT_S = 0.1
+read_offers = submit_core.bounded_offer_snapshot
+ready_fd = int(sys.argv[6])
+def observed_offers(queue):
+    os.write(ready_fd, str(time.monotonic()).encode())
+    os.close(ready_fd)
+    return read_offers(queue)
+submit_core.bounded_offer_snapshot = observed_offers
 options = ['--exclusive'] if sys.argv[4] == 'exclusive' else []
 with mock.patch.object(socket, 'gethostname', return_value='sparky'), \
      mock.patch.object(sys, 'argv', ['pbrun.py', '--cwd', sys.argv[3], '--wait-s', '0.01', *options, '--', 'echo', 'hi']):
     raise SystemExit(pbrun.main())
 """
+    ready_read, ready_write = os.pipe()
     process = subprocess.Popen(
         [sys.executable, "-c", program, str(root), str(PUBLISHED_RUNTIME), str(checkout),
-         "exclusive" if exclusive else "ordinary"],
+         "exclusive" if exclusive else "ordinary", str(placement_environment.roster_path),
+         str(ready_write)],
         cwd=Path(__file__).resolve().parents[1], text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+        pass_fds=(ready_write,),
     )
-    started = time.monotonic()
+    os.close(ready_write)
     try:
+        # Imports and Git inspection precede discovery, especially on shared
+        # scratch. Wait for the real call, then retain the offer-read bound.
+        assert select.select([ready_read], [], [], 30)[0], "submitter did not reach offer discovery"
+        ready = os.read(ready_read, 64)
+        assert ready, "submitter exited before offer discovery"
+        started = float(ready)
         _out, err = process.communicate(timeout=3)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.communicate(timeout=3)
         pytest.fail("pbrun wedged while reading worker offers")
+    finally:
+        os.close(ready_read)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=3)
     elapsed = time.monotonic() - started
     assert elapsed < 2, f"offer discovery took {elapsed:.2f}s"
     assert process.returncode != 0
@@ -1792,7 +1834,7 @@ def test_the_default_environment_bounds_the_thread_pools(tmp_path):
 
 
 def _fleet(tmp_path: Path):
-    """The live fleet's shape, from ``tools/fleet/fleet_boxes.json``."""
+    """A declared three-host census, independent of the installed fleet."""
 
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
@@ -1828,7 +1870,7 @@ def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
     assert "PINNED to sparky" in notice
     assert "/home/rob/tmp/ts101 is box-local" in notice
     assert "2 other live boxes fit this demand: dl380g10, gx10-6b77" in notice
-    assert "/mnt/shared" in notice                     # and what to do about it
+    assert str(submit_core.SHARED_ROOT) in notice      # and what to do about it
 
 
 def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path) -> None:

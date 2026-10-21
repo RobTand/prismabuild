@@ -243,6 +243,15 @@ result in the materialized checkout. A read-only source checkout works when
 its Git excludes are already configured; first-time exclude setup still needs
 write access to Git's common `info/exclude` file.
 
+Local Git preparation waits for each process to exit (#1888). There is no
+30-second identity/probe cap, 120-second snapshot cap, or 1,800-second pack cap.
+`pbtest` shares its shard's existing `--wait-s` deadline with preparation Git;
+a windowed campaign shares its deadline with replacement-row preparation.
+Plain `pbrun` and the first campaign window start their wait budgets after
+publication, so their preparation has no added deadline. `--timeout-s` is
+the payload execution budget. Git nonzero exits still refuse submission.
+See the [submission wait inventory](submission_git_waits_1888.md).
+
 The checkout has a size ceiling. `pbrun` refuses a working tree whose sealed
 paths exceed 512 MiB, before it hashes anything, and refuses the bundle at the
 same bound. `--checkout-snapshot-max-bytes N` lowers that ceiling for one

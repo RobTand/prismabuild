@@ -315,7 +315,7 @@ class _Templates:
         self._prepared: dict[object, _Prepared] = {}
         self._published: dict[int, _Prepared] = {}
 
-    def prepare(self, key, request: SubmissionRequest) -> _Prepared:
+    def prepare(self, key, request: SubmissionRequest, *, deadline=None) -> _Prepared:
         with self._lock:
             known = self._prepared.get(key)
             if known is not None:
@@ -324,7 +324,7 @@ class _Templates:
             shown = _ShardLines(None, lines)
             try:
                 with submission.preparation(request, store=self.store,
-                                            display=shown) as prepared:
+                                            display=shown, deadline=deadline) as prepared:
                     template, cwd = prepared["template"], Path(prepared["cwd"])
                 refusal = None
             except OfferDiscoveryTimedOut as exc:
@@ -337,7 +337,7 @@ class _Templates:
             return record
 
     def sealing(self, plan, owner: SubmissionRequest, index: int,
-                request: SubmissionRequest, *, shared: bool):
+                request: SubmissionRequest, *, shared: bool, deadline=None):
         """The preparation a shard seals off, and the command it seals.
 
         Preparation may rewrite argv: it can relativize the interpreter and
@@ -348,7 +348,7 @@ class _Templates:
         each of its shards is prepared on its own, as before.
         """
 
-        record = self.prepare(plan, owner)
+        record = self.prepare(plan, owner, deadline=deadline)
         if record.template is None:
             return record, None
         sealed = list(record.template["params"]["command"])
@@ -356,7 +356,7 @@ class _Templates:
             return record, sealed
         if shared and sealed[1:] == list(owner.command)[1:]:
             return record, [sealed[0], *list(request.command)[1:]]
-        record = self.prepare((plan, index), request)
+        record = self.prepare((plan, index), request, deadline=deadline)
         return record, (list(record.template["params"]["command"])
                         if record.template is not None else None)
 
@@ -450,7 +450,9 @@ def publish_shard(templates: _Templates, index: int, request: SubmissionRequest,
     shown = _ShardLines(index, lines)
     report = action_client.ClientReport()
     try:
-        record, command = templates.sealing(plan, owner, index, request, shared=shared)
+        # The caller's shard --wait-s deadline also bounds preparation Git.
+        record, command = templates.sealing(plan, owner, index, request,
+                                            shared=shared, deadline=deadline)
         for line in record.lines:
             shown.line(line)
         refusal = record.refusal
