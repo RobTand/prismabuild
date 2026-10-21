@@ -1853,6 +1853,30 @@ and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
 
 ## Client SDK
 
+The consumer seal/publication boundary (#1893) is exposed by `pbrun --seal-only`
+and `pbrun --publish-sealed KEY`. Seal-only uses ordinary preparation and sealing,
+retains the canonical request in the CAS, and publishes no queue row or residency
+window. Its `prismabuild.sealed.v1` response names the action key, the SHA-256 of
+the canonical request file including its final newline, and the transport.
+
+`sealed_submission` owns CAS-only recovery. It verifies the immutable request,
+its key, and every declared input before calling `submission.submit_action`.
+That entrypoint shares ordinary cache/attachment handling, D38, worker-offer and
+interpreter checks, residency filing and publication. It never re-identifies,
+snapshots or bundles the source checkout. Nonidentity publication options are
+retained in an immutable, request-digest-bound CAS context; conflicting contexts
+for one key refuse. Older requests without a context retain their sealed
+execution policy and use current publication defaults. Deferred `--after` work
+has no seal until dependency release and is explicitly unsupported by seal-only.
+
+The CLI adapter in `submission_frontend` renders `prismabuild.submission.v1`
+for detached submissions, preserving previous fields and status values, and
+adding `request_sha256` and the publication identity. Internal
+typed reports and producer diagnostics retain their existing contract. A cache
+hit reports null publication identity because the caller published no generation.
+Named refusals distinguish missing requests, invalid seals and unavailable CAS
+inputs. Source support for these verbs does not establish fleet deployment.
+
 PrismaBuild stands alone: it imports no client, and a client reaches it only
 through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 `pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,
@@ -2123,6 +2147,38 @@ authority and public campaign refusal messages remain unchanged.
 a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;
 directory discovery and deduplication retain their existing semantics.
+
+`--plan-only --json PATH` exposes the shared discovery and capability
+classification owner as `prismabuild.pbtest_plan.v1` (#1900). It returns before
+progress initialization, worker-program preparation, fleet inspection,
+checkout identity, snapshotting, or action publication. No Git checkout or
+target interpreter is required for planning. Execution still requires
+`--python`. Paths, capability config and placement tags have the same meaning
+in both modes; tags do not filter file membership. The GPU default tag follows
+the same runtime-location rule as execution. All execution-only options are
+ignored after ordinary CLI type/choice parsing, including pytest arguments,
+resource bounds, environment, history and data-residency inputs. The operating
+guide lists them explicitly. Pytest collection and case selection remain
+worker responsibilities.
+
+The plan object contains ordered deduplicated `files`, per-file `capabilities`
+and `tags` maps, `left_out`, and `refusals`. Portable files have empty capability
+lists; tags include invocation constraints and capability tags. `left_out` is
+empty because this CLI does not exclude files. Refusals contain `{code, reason}`
+with codes `discovery_failed`, `population_empty`, `capabilities_invalid`, or
+`capability_unclassifiable`. Exit 0 establishes complete classification; exit 2
+names refusals or reports usage/output failure. Classification in a refused
+plan is incomplete and cannot certify portability.
+
+The report retains its bare list layout and adds per-row
+`schema: "prismabuild.pbtest_report.v1"` (#1900). A wrapper would break existing
+TrustLadder readers that iterate the decoded list. Consumer tests pin `shard`,
+`files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`, `output`,
+`verdict`, and `receipt_path`, and the nested
+`prismabuild.pbtest_shard_verdict.v1` schema. Existing execution exit codes
+remain 0 for green, 1 for non-green/report-output failure, and 2 for
+preflight/usage refusal. These source contracts require runtime publication
+before consumers can use them through the published CLI.
 
 The original directory/file request roots remain pytest's collection targets
 inside each shard (#1458). `tools/fleet/pbtest_collection.py` limits traversal

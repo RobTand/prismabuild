@@ -318,7 +318,7 @@ def test_a_gpu_publication_without_a_receipt_is_refused(
     code = _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns))
     err = capsys.readouterr().err
-    assert code == 2, err
+    assert code == 1, err
     assert "pbrun: D38 refuses GPU publication:" in err
     assert f"job={target['action_key']}" in err
     assert f"namespace={_digest(NAMESPACE)}" in err
@@ -349,7 +349,7 @@ def test_every_gpu_intent_needs_evidence(
     _queue(tmp_path)
     code = _run(tmp_path, monkeypatch, work, "--detach", *options)
     err = capsys.readouterr().err
-    assert code == 2, err
+    assert code == 1, err
     assert "D38 refuses GPU publication" in err
     assert _ready(tmp_path) == []
 
@@ -361,7 +361,7 @@ def test_a_gpu_job_with_no_namespace_descriptor_is_refused_even_with_a_receipt(
     target, cas = _seal(tmp_path, monkeypatch, work, "--gpu")
     key = _publish_receipt(tmp_path, cas, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-receipt", key) == 2
+                "--d38-receipt", key) == 1
     assert "namespace" in capsys.readouterr().err
     assert _ready(tmp_path) == []
 
@@ -626,7 +626,7 @@ def test_a_receipt_that_does_not_bind_this_job_publishes_nothing(
                         "--d38-namespace", str(ns))
     key = case(tmp_path, cas, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns), "--d38-receipt", key) == 2
+                "--d38-namespace", str(ns), "--d38-receipt", key) == 1
     assert "pbrun: D38 refuses GPU publication:" in capsys.readouterr().err
     assert _ready(tmp_path) == []
     assert _audit(tmp_path, target["action_key"]) == []
@@ -642,7 +642,7 @@ def test_a_changed_job_invalidates_the_old_receipt(
     key = _publish_receipt(tmp_path, cas, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns), "--d38-receipt", key,
-                command=("/bin/cat", "seed.txt", "--device", "cpu")) == 2
+                command=("/bin/cat", "seed.txt", "--device", "cpu")) == 1
     assert _ready(tmp_path) == []
 
 
@@ -656,7 +656,7 @@ def test_a_receipt_filed_after_a_refusal_does_not_authorize_the_refused_one(
     target, cas = _seal(tmp_path, monkeypatch, work, "--gpu",
                         "--d38-namespace", str(ns))
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns)) == 2
+                "--d38-namespace", str(ns)) == 1
     assert _ready(tmp_path) == []
     key = _publish_receipt(tmp_path, cas, target)
     capsys.readouterr()
@@ -706,7 +706,7 @@ def test_a_receipt_and_an_exception_together_are_refused(
     key = _publish_receipt(tmp_path, cas, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns), "--d38-receipt", key,
-                "--d38-exception", "dec-1008-000000-bbbb") == 2
+                "--d38-exception", "dec-1008-000000-bbbb") == 1
     assert _ready(tmp_path) == []
 
 
@@ -727,7 +727,7 @@ def test_an_exception_that_does_not_bind_this_job_publishes_nothing(
     work, ns, target, _cas = _gpu_target(tmp_path, monkeypatch)
     make(_isolated, target)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns), "--d38-exception", "dec-x") == 2
+                "--d38-namespace", str(ns), "--d38-exception", "dec-x") == 1
     assert "D38 refuses GPU publication" in capsys.readouterr().err
     assert _ready(tmp_path) == []
     assert _audit(tmp_path, target["action_key"]) == []
@@ -744,7 +744,7 @@ def test_an_audit_that_cannot_be_written_publishes_nothing(
     monkeypatch.setattr(d38_gate, "write_audit", broken)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns),
-                "--d38-exception", "dec-1008-000000-cccc") == 2
+                "--d38-exception", "dec-1008-000000-cccc") == 1
     err = capsys.readouterr().err
     assert "audit" in err
     assert "authorizes job" not in err
@@ -782,7 +782,7 @@ def test_a_cache_hit_needs_no_new_receipt(
 
     work, ns, target, cas = _gpu_target(tmp_path, monkeypatch)
     options = ("--gpu", "--detach", "--d38-namespace", str(ns))
-    assert _run(tmp_path, monkeypatch, work, *options) == 2
+    assert _run(tmp_path, monkeypatch, work, *options) == 1
     capsys.readouterr()
 
     real = type(cas).lookup
@@ -812,7 +812,7 @@ def test_the_slurm_lane_keeps_the_gate(
     _queue(tmp_path)
     ns = _namespace_file(tmp_path)
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--transport", "slurm", "--d38-namespace", str(ns)) == 2
+                "--transport", "slurm", "--d38-namespace", str(ns)) == 1
     assert "D38 refuses GPU publication" in capsys.readouterr().err
     assert _submissions(fleet) == []
 
@@ -887,7 +887,7 @@ def test_a_deferred_gpu_submission_is_refused_at_registration(
     code = _submit_deferred(work, monkeypatch, de, producer, template,
                             "--d38-namespace", str(ns))
     err = capsys.readouterr().err
-    assert code == 2, err
+    assert code == 1, err
     assert "D38 refuses GPU publication" in err
     assert "deferred" in err
     deferred = tmp_path / "pb-queue" / "deferred"
@@ -1056,7 +1056,7 @@ def test_a_changed_module_is_refused(tmp_path, monkeypatch, capsys) -> None:
         target, cpu_command=other))
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
                 "--d38-namespace", str(ns), "--d38-receipt", key,
-                command=MODULE) == 2
+                command=MODULE) == 1
     assert _ready(tmp_path) == []
 
 
@@ -1069,7 +1069,7 @@ def test_a_receipt_for_an_entry_point_with_no_reviewed_descriptor_is_refused(
     key = _publish_receipt(tmp_path, cas, target)
     monkeypatch.setattr(d38_gate, "INVOCATIONS", {})
     assert _run(tmp_path, monkeypatch, work, "--gpu", "--detach",
-                "--d38-namespace", str(ns), "--d38-receipt", key) == 2
+                "--d38-namespace", str(ns), "--d38-receipt", key) == 1
     assert "reviewed invocation descriptor" in capsys.readouterr().err
     assert _ready(tmp_path) == []
 
