@@ -2156,6 +2156,18 @@ there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
 
+`pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
+`SubmissionRequest.env` and template preparation used by `pbrun --env`
+(#1891). Every shard sealed from a plan retains those values in
+`environment.variables`, so they participate in action identity. No option
+means no change to request bytes or existing action keys. Before preparation
+or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
+and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
+OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
+PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+reserved when the run's options leave one unset; a caller cannot bypass
+pbtest's resource, deadline or pytest configuration through the environment.
+
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
 sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
