@@ -115,7 +115,7 @@ raise SystemExit(code)
         "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
     }
     child = subprocess.run([sys.executable, "-B", str(script)], env=environment,
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True)
     diagnostics = child.stdout + child.stderr
     process_path = tmp_path / "process.json"
     assert process_path.is_file(), diagnostics

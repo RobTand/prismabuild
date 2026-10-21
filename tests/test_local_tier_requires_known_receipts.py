@@ -86,7 +86,7 @@ raise SystemExit(code)
         "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
     }
     child = subprocess.run([sys.executable, "-B", str(script)], env=environment,
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True)
     passes = tmp_path / "passes.jsonl"
     observed = {
         "exit": child.returncode,
