@@ -97,6 +97,8 @@ CLIENT_RSS_MB = 80
 #: box whose watchdog reads box-wide RAM.  ``--max-clients 0`` restores one per
 #: shard.
 DEFAULT_MAX_CLIENTS = 8
+SHARD_THREAD_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                    "OPENBLAS_NUM_THREADS", "TORCH_NUM_THREADS")
 
 #: The prefixes of the lines a shard's submitter prints about its own wait.
 #: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
@@ -1386,6 +1388,26 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
+def validate_shard_env(entries: list[str]) -> None:
+    """Check caller additions before preparing or publishing any shard (#1891)."""
+    owned = {"TMPDIR", *SHARD_THREAD_ENV, test_bound_contract.TIMEOUT_ENV,
+             test_bound_contract.SHARD_BUDGET_ENV, "PYTHONPATH", "PYTEST_ADDOPTS"}
+    seen: set[str] = set()
+    for entry in entries:
+        if "\x00" in entry:
+            raise ValueError(f"--env contains NUL: {entry!r}")
+        if "=" not in entry:
+            raise ValueError(f"--env expects KEY=VALUE, got {entry!r}")
+        key = entry.split("=", 1)[0]
+        if not key:
+            raise ValueError(f"--env has an empty key: {entry!r}")
+        if key in owned:
+            raise ValueError(f"--env {key} is set by pbtest; callers may not override it")
+        if key in seen:
+            raise ValueError(f"--env repeats key {key}")
+        seen.add(key)
+
+
 def shard_request(request: SubmissionRequest, *, environment, python_entry,
                   arguments) -> SubmissionRequest:
     """One shard's whole request: the plan's, with its environment and command."""
@@ -1486,6 +1508,9 @@ def main() -> int:
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
                          "default /home/rob/tmp (not checked on the coordinator)")
+    ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                    help="literal addition to every shard's sealed environment "
+                         "(repeatable); duplicate and pbtest-owned keys are refused")
     ap.add_argument("--basetemp", default=None,
                     help="sealed scratch root for pytest's own temporary files "
                          "(#1469), separate from --tmpdir: the worker derives "
@@ -1628,6 +1653,7 @@ def main() -> int:
         return 2
 
     try:
+        validate_shard_env(args.env)
         if submission.interpreter_of([args.python]) != args.python:
             raise ValueError("--python must name an absolute python* executable "
                              "so its path can be sealed into claim-time eligibility")
@@ -1938,8 +1964,7 @@ def main() -> int:
     threads = []
     if args.threads_per_shard > 0:
         n = str(args.threads_per_shard)
-        threads = [f"OMP_NUM_THREADS={n}", f"MKL_NUM_THREADS={n}",
-                   f"OPENBLAS_NUM_THREADS={n}", f"TORCH_NUM_THREADS={n}"]
+        threads = [f"{key}={n}" for key in SHARD_THREAD_ENV]
 
     pytest_workers = (["-n", str(args.workers_per_shard)]
                       if args.workers_per_shard > 1 else [])
@@ -2075,7 +2100,7 @@ def main() -> int:
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
                        *threads, *plan["bound_env"], *explicit_env,
-                       "PYTHONPATH=src:experiments"]
+                       "PYTHONPATH=src:experiments", *args.env]
         spec: dict = {"files": bucket, "roots": requested_roots}
         if plan["selection"] is not None:
             spec["capabilities"] = plan["selection"]
