@@ -19044,7 +19044,9 @@ class PoolQueue:
         return self.finish(key, status=str(pending["status"]),
                            detail=pending["detail"], claim_snapshot=record)
 
-    def retry_own_pending_finishes(self) -> list[str]:
+    def retry_own_pending_finishes(
+        self, *, on_sweep: Callable[[], object] | None = None,
+    ) -> list[str]:
         """Retry this box's saved finishes; claim nothing, sweep nothing else.
 
         ``reap_stale`` is the only retry path for ``finish_pending``, and its
@@ -19069,10 +19071,15 @@ class PoolQueue:
         redundant pass and no strict at-most-one pass is promised.  Returns
         the keys a saved outcome requeued to ``ready``; an ordinary terminal
         conclusion returns an empty list.
+
+        ``on_sweep`` runs first when this box's turn is due, as in
+        :meth:`serve_once`.
         """
 
         if not self._sweep_due():
             return []
+        if on_sweep is not None:
+            on_sweep()
         retried: list[str] = []
         claimed = self.records.dir(CLAIMED)
         if not self.records.state_directory_present(CLAIMED):
@@ -22106,6 +22113,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        on_sweep: Callable[[], object] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
 
@@ -22124,9 +22132,15 @@ class PoolQueue:
 
         ``admission_open`` is an optional caller-owned fence re-checked under
         the per-key transition lock just before the claim rename.
+
+        ``on_sweep`` runs first in this box's sweep turn (:meth:`_sweep_due`),
+        before the reaper: caller work that is due once per box per
+        heartbeat, not on every poll of every loop.  It must not raise.
         """
 
         if self._sweep_due():
+            if on_sweep is not None:
+                on_sweep()
             self.reap_stale()
             self.sweep_orphan_passes()
             self.sweep_gangs()
