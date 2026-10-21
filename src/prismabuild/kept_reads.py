@@ -144,14 +144,25 @@ def _mount_table_changed() -> bool:
 
 
 def _namespace_identity() -> tuple[int, int, int, str] | None:
-    """This process's mount namespace, not a pathname-based mount guess."""
+    """This process's mount namespace, not a pathname-based mount guess.
+
+    The ``stat`` is taken on every call: it is the observation that follows
+    the caller's own.  The link is read only when the namespace inode is not
+    the one :func:`_mount_state` last accepted, whose link already named that
+    inode; reading it again for the same inode proves nothing new.  Called
+    under :data:`_mount_lock`.
+    """
 
     try:
         info = os.stat("/proc/self/ns/mnt")
+        pid = os.getpid()
+        known = _mount_namespace
+        if known is not None and known[:3] == (pid, info.st_dev, info.st_ino):
+            return known
         link = os.readlink("/proc/self/ns/mnt")
         if link != f"mnt:[{info.st_ino}]":
             return None
-        return os.getpid(), info.st_dev, info.st_ino, link
+        return pid, info.st_dev, info.st_ino, link
     except OSError:
         return None
 
@@ -282,13 +293,22 @@ def _filesystem_type(device: int) -> str | None:
     The fast path remains a device memo plus namespace/watch checks. A missing
     device is not an alias: only :func:`_object_filesystem_type` can resolve it
     from an exact descriptor. Unreadable/ambiguous tables never grant trust.
+
+    The fence runs once per lookup, after the caller's ``stat``: a namespace
+    change or a mount event since the table was read is seen here, before
+    the answer is given.  Only a table read in this call is fenced again,
+    because the read is IO a mount event can race; a remembered table's
+    lookup is a dictionary read under the lock (pb-tierscan: the second
+    fence was half the tier loop's 6,600 namespace reads a second).
     """
 
     with _mount_lock:
         before = _mount_state()
         if before is None:
             return None
-        if _MOUNT_TABLE_KEY not in _filesystem_types and not _load_mount_types():
+        if _MOUNT_TABLE_KEY in _filesystem_types:
+            return _filesystem_types.get(device)
+        if not _load_mount_types():
             return None
         found = _filesystem_types.get(device)
         return found if _mount_state() == before else None
