@@ -59,7 +59,7 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
     pack = b"PACK\x00\xff\x80\x00binary\n"
     transport_error = (
         OSError(detail) if failure == "transport" else
-        subprocess.TimeoutExpired(argv, submit_core.BUNDLE_PACK_TIMEOUT_S)
+        subprocess.TimeoutExpired(argv, 1800)
         if failure == "timeout" else None
     )
 
@@ -75,7 +75,7 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
         assert kwargs["env"] == environment
         assert kwargs["input"] == b"a" * 40 + b"\n" + b"b" * 40 + b"\n"
         assert kwargs["stderr"] == subprocess.PIPE
-        assert kwargs["timeout"] == submit_core.BUNDLE_PACK_TIMEOUT_S == 1800
+        assert kwargs["timeout"] is None
         assert bundle.read_bytes() == header.encode("utf-8")  # header flushed first
         kwargs["stdout"].write(pack)  # never text-capture the binary pack
         if transport_error is not None:

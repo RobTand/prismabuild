@@ -50,7 +50,7 @@ def _campaign(tmp_path, monkeypatch, clock, successor_state):
             queue.finish(KEY, status="executed", claim_snapshot=successor)
     submitted = []
 
-    def attached(row, *, transport):
+    def attached(row, *, transport, deadline=None):
         submitted.append(row["argv"][-1])
         return {"status": "attached", "transport": "pool", "action_key": KEY,
                 "published_unix": original["published_unix"]}

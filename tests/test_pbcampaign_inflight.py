@@ -253,6 +253,23 @@ def test_refill_does_not_renew_the_campaign_deadline(monkeypatch):
     assert submissions[1]['status'] == 'not_submitted'
 
 
+def test_replacement_preparation_receives_the_campaign_deadline(monkeypatch):
+    _window_fakes(monkeypatch, [{0: "executed"}, {1: "executed"}])
+    monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: 100.0)
+    submit_row = pbcampaign.submit_row
+    deadlines = []
+
+    def record(row, **kwargs):
+        deadlines.append(kwargs["deadline"])
+        return submit_row(row, **kwargs)
+
+    monkeypatch.setattr(pbcampaign, "submit_row", record)
+    pbcampaign.run_windowed(
+        [{"index": 0}, {"index": 1}], transport="pool", max_inflight=1, wait_s=50,
+    )
+    assert deadlines == [None, 150.0]
+
+
 def test_cache_hit_can_continue_past_an_old_failed_attempt(monkeypatch):
     # pbrun has verified the reusable receipt. pbwait can also see an older
     # failed attempt for that key (e.g. a broker EOF after receipt publication).
