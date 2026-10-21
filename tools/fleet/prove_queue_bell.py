@@ -6,6 +6,7 @@ scratch write or a read-only HTTP query. Reserve 2 CPUs, 1 GiB, no GPU; bound
 native threads to one. The lead can rerun this before activating #1894.
 """
 from concurrent.futures import ThreadPoolExecutor
+import argparse
 import json
 from pathlib import Path
 import socket
@@ -19,6 +20,10 @@ from prismabuild import queue_bell, queue_notifier
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--celestia-host", default="celestia",
+                        help="SSH name or address of the LAN submitting host")
+    args = parser.parse_args()
     if socket.gethostname() != "dl380g10":
         raise SystemExit("this proof requires the queue's local filesystem on dl380g10")
     with tempfile.TemporaryDirectory(prefix="pbbell-1894-",
@@ -43,12 +48,13 @@ def main() -> int:
             assert any(event["key"] == key for event in reply["events"]), reply
             print(json.dumps({"proof": "sparky-nfs-rename", "since": str(cursor),
                               "reply": reply, "writer": result.stdout.strip()}), flush=True)
-        # Check the actual proposed port and both mount links without changing
+        # Check the actual proposed port and all remote mount links without changing
         # host configuration. These listeners live only for this admitted action.
         addresses = [("10.100.98.3", queue_bell.DEFAULT_PORT),
-                     ("10.100.99.3", queue_bell.DEFAULT_PORT)]
+                     ("10.100.99.3", queue_bell.DEFAULT_PORT),
+                     ("192.168.1.107", queue_bell.DEFAULT_PORT)]
         with queue_notifier.BellService(root, addresses):
-            for host, address in zip(("sparky", "sparklina"), addresses):
+            for host, address in zip(("sparky", "sparklina", args.celestia_host), addresses):
                 program = ("import http.client; c=http.client.HTTPConnection("
                            + repr(address[0]) + ",9470,timeout=5); "
                            + "c.request('GET','/v1/now'); r=c.getresponse(); "

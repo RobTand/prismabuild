@@ -1039,15 +1039,17 @@ service cannot call back. Zero-patience probes contact no bell.
 The roster declares one `bell` role on dl380g10, supervised by
 `tools/fleet/supervise.py --ensure --systemd`. Publication and activation are
 operator steps; source inclusion alone does not establish a running service.
-It listens on TCP 9470 at loopback and the two queue private links,
-10.100.98.3 and 10.100.99.3. Sparks discover the address from their queue mount
-source. Inspect `pb-role-bell.log` alongside other supervised role logs.
+It listens on TCP 9470 at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and
+192.168.1.107, declared in the roster. The Sparks and Celestia discover their
+address from their own `/mnt/shared` mount source. Inspect `pb-role-bell.log`
+alongside other supervised role logs.
 `GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
 300 seconds; a restart changes epoch. An occupied port exits 3 and uses the
 supervisor's existing refusal backoff. A lost state-directory watch exits
 nonzero for restart. Stop joins requests after waking their long-polls.
-Host firewall rules must permit the Sparks to reach TCP 9470 on their private
-queue links before activation. PB does not install firewall configuration.
+Host firewall rules must permit the submitting hosts to reach TCP 9470 at
+their queue mount sources before activation. PB does not install firewall
+configuration.
 This slice changes pbwait/pbrun pool waits only; worker, prewarm and tier-loop
 waits migrate in later PRs.
 

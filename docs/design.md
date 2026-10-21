@@ -9481,7 +9481,9 @@ outside this first slice.
 
 The role takes the standard host-local singleton lock. The supervisor owns
 generation retirement as it does for metrics. It binds HTTP/1.1 on TCP 9470
-at 127.0.0.1, 10.100.98.3 and 10.100.99.3, with one shared event stream.
+at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and 192.168.1.107, with one
+shared event stream. The roster declares the addresses submitting hosts use
+as their `/mnt/shared` mount sources, including Celestia's private LAN route.
 `queue_bell.Client` uses the longest covering mount's NFS source address from
 local `/proc/self/mountinfo`, or loopback on a local filesystem. No queue
 lookup or hostname guess is required to discover the endpoint.

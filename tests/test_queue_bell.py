@@ -128,6 +128,7 @@ def test_server_caps_wait_and_rejects_bad_queries(bell, monkeypatch):
 @pytest.mark.parametrize("source,filesystem,expected", [
     ("10.100.98.3:/storage_pool/shared", "nfs4", "10.100.98.3"),
     ("10.100.99.3:/storage_pool/shared", "nfs", "10.100.99.3"),
+    ("192.168.1.107:/storage_pool/shared", "nfs4", "192.168.1.107"),
     ("[::1]:/shared", "nfs4", "::1"),
     ("prismabuild-stage/pbqueue", "zfs", "127.0.0.1"),
 ])
@@ -193,7 +194,9 @@ def test_bell_is_declared_only_on_queue_host():
     import supervise
     assert supervise.ROLE_SCRIPTS["bell"] == "pbbell.py"
     roles = dict(supervise.declared_roles("dl380g10"))
-    assert roles["bell"].count("--listen") == 3
+    assert [roles["bell"][i + 1] for i, argument in enumerate(roles["bell"])
+            if argument == "--listen"] == [
+                "127.0.0.1", "10.100.98.3", "10.100.99.3", "192.168.1.107"]
     for host in ("sparky", "sparklina"):
         assert "bell" not in dict(supervise.declared_roles(host))
 
