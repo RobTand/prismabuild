@@ -2089,6 +2089,40 @@ with `pbrun.result_and_stamp_names`.
 The tool knows nothing about the client that runs it. The client decides what
 to do with the list.
 
+### Versioned CLI endings (#1892)
+
+`pbwait --json` returns `prismabuild.endings.v1`, an object with `schema`,
+`complete` and argument-ordered `endings`. It replaces the unversioned JSON
+list. The consumer contract separates execution identity, action exit/signal,
+publication identity and timestamps from `diagnostics`, which retains the
+existing telemetry, transport and cleanup fields. A zero wait reads once.
+JSON exit precedence is unreadable/integrity 74, failed/withdrawn/refused 1,
+superseded 76, waiting 75, success 0; usage and unknown keys exit 2. Human
+rendering and its existing exit codes are unchanged.
+
+`action_result.read_verified_ending_result` is an internal sibling of the
+success-only SDK result reader. It authenticates failed attempts too, using
+shared canonical log verification and exact immutable attempt binding. It
+reads only the selected attempt, checks stdout and filed stderr against their
+addresses, verifies the announced execution receipt and payload when present,
+and rechecks the ending before returning. Default caps are 16 MiB per log,
+4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
+wraps that read in its isolated five-second observation budget. A mismatch,
+missing evidence or exceeded bound yields `unreadable`, never verified bytes.
+No bounded verified produced-output discovery exists, so `outputs` is empty.
+The existing SDK exports, version and success-only guarantees are unchanged.
+
+`pbrun --withdraw KEY --reason TEXT --json` returns
+`prismabuild.withdrawal.v1` with action key, prior state, withdrawal decision
+and reason. An optional result callback carries the actual withdrawal owner's
+answer to the CLI; the CLI does not infer success from a printed message or a
+later queue scan. Cleanup remains a separate ending diagnostic. This changes
+reporting only, with no admission, lifecycle, residency or polling change.
+`tests/test_consumer_surface.py` pins both schemas and JSON exit codes with
+private queues. Source implementation does not establish runtime deployment.
+
+
+
 ## Work decomposition boundary
 
 Rob's 2026-09-11 design decision is to partition logical requests into small,

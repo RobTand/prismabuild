@@ -88,10 +88,12 @@ def test_conflict_does_not_abort_other_keys_and_json_is_supported(tmp_path, monk
     patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(pbwait.pool, "PoolQueue", lambda _root: queue)
     assert pbwait.main(["--json", "--wait-s", "0", KEY, OTHER]) == 74
-    rows = json.loads(capsys.readouterr().out)
+    body = json.loads(capsys.readouterr().out)
+    assert body["schema"] == "prismabuild.endings.v1"
+    rows = body["endings"]
     assert [r["action_key"] for r in rows] == [KEY, OTHER]
-    assert [r["status"] for r in rows] == ["record_error", "executed"]
-    assert rows[0]["integrity_error"]["immutable_attempt"]["returncode"] == 37
+    assert [r["status"] for r in rows] == ["unreadable", "unreadable"]
+    assert rows[0]["diagnostics"]["integrity_error"]["immutable_attempt"]["returncode"] == 37
 
 
 @pytest.mark.parametrize("stdout", ["", "historical output\n", "x" * (70 * 1024)],

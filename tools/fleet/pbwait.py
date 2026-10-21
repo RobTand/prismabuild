@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -45,7 +46,7 @@ from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import action_client  # noqa: E402
+from prismabuild import action_result, action_client  # noqa: E402
 from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
@@ -399,6 +400,18 @@ def _from_ending(q, ending: endings.ObservedEnding) -> dict:
         withdrawn_attempt=summary["withdrawn_attempt"],
         resource_scope_cleanup=summary["resource_scope_cleanup"],
         container_cleanup=summary["container_cleanup"],
+        _consumer_context={
+            "published_unix": outcome.get("published_unix"),
+            "attempt": (outcome.get("withdrawn_attempt") or outcome).get("attempts"),
+            "started_unix": outcome.get("claimed_unix"),
+            "ended_unix": outcome.get("finished_unix"),
+            "reason": summary.get("reason") or summary["detail"].get("error")
+                      or summary["detail"].get("message"),
+            "result_ended": summary["status"] != "withdrawn" or summary["withdrawn_attempt"] is not None,
+            "withdrawn_from": outcome.get("withdrawn_from"),
+            "resource_profile": summary.get("resource_profile"),
+            "profile": summary.get("profile"),
+        },
     )
 
 
@@ -744,6 +757,94 @@ def verdict(rows) -> int:
     return 0
 
 
+def consumer_ending_row(q, row, *, cas):
+    """Project one observed row onto the versioned consumer contract (#1892)."""
+    context = row.get("_consumer_context", {})
+    status = row["status"]
+    if status in {"record_error", "unreadable"}:
+        status = "unreadable"
+    elif status not in {"executed", "cache_hit", "failed", "withdrawn",
+                        "superseded", "waiting", "refused"}:
+        status = "failed"
+    diagnostics = {key: value for key, value in row.items()
+                   if key not in {"action_key", "status", "succeeded", "_consumer_context"}}
+    diagnostics.update({key: context.get(key) for key in ("resource_profile", "profile")})
+    cleanup = row.get("resource_scope_cleanup")
+    containers = row.get("container_cleanup")
+    diagnostics["cleanup"] = {
+        "complete": bool((cleanup and cleanup.get("complete") is True
+                          and (not containers or containers.get("complete") is True))
+                         or (status == "withdrawn" and context.get("withdrawn_from") == "ready")),
+        "resource_scope": cleanup, "containers": containers,
+    }
+    result = None
+    reason = context.get("reason") or row.get("note")
+    number = context.get("attempt")
+    published = context.get("published_unix", row.get("published_unix"))
+    if status in {"executed", "cache_hit", "failed", "withdrawn", "refused"}:
+        if type(number) is int and number > 0 and context.get("result_ended", True):
+            try:
+                result = action_wait.read_observation(
+                    "pbwait verified ending result",
+                    lambda: action_result.read_verified_ending_result(
+                        q, row["action_key"], published_unix=published, attempt=number),
+                    budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+            except (action_result.ActionResultError, action_wait.OutcomeReadUnavailable,
+                    OSError, pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
+                status, reason = "unreadable", str(exc)
+        elif status == "executed" or (status == "failed" and number != 0):
+            status, reason = "unreadable", "execution ending has no immutable attempt evidence"
+    if status == "waiting":
+        # A zero-patience result still distinguishes an unknown full key from
+        # recorded work. Keep these filesystem reads inside the bounded child.
+        def recorded_wait():
+            found = outstanding(q, row["action_key"])
+            return {"known": found is not None or recorded_action(cas, row["action_key"]) is not None,
+                    "published_unix": found[1] if found else None}
+        try:
+            recorded = action_wait.read_observation(
+                "pbwait recorded key", recorded_wait,
+                budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+            published = recorded["published_unix"]
+            if not recorded["known"]:
+                raise _misnamed(f"pbwait: nothing recorded matches {row['action_key']!r}")
+        except (action_wait.OutcomeReadUnavailable, OSError) as exc:
+            status, reason = "unreadable", str(exc)
+    generation = None
+    if published is not None:
+        try:
+            generation = q.records.attempt_generation({
+                "action_key": row["action_key"], "published_unix": published})
+        except pool.PoolError as exc:
+            status, reason = "unreadable", str(exc)
+    action_exit = row.get("action_returncode")
+    if type(action_exit) is not int:
+        action_exit = 0 if status in {"executed", "cache_hit"} else None
+    signal = row.get("action_signal")
+    if type(signal) is not int:
+        signal = None
+    if status in {"failed", "withdrawn", "refused", "unreadable"} and not reason:
+        reason = f"action ended {status}"
+    return {
+        "action_key": row["action_key"], "status": status,
+        "succeeded": status in {"executed", "cache_hit"},
+        "exit_code": action_exit, "signal": signal,
+        "host": None if row.get("host") == "-" else row.get("host"),
+        "attempt": number,
+        "publication": {"published_unix": published, "generation": generation},
+        "started_unix": context.get("started_unix"), "ended_unix": context.get("ended_unix"),
+        "reason": str(reason) if reason is not None else None,
+        "result": result, "diagnostics": diagnostics,
+    }
+
+
+def consumer_endings_verdict(rows):
+    """Stable JSON exits, independent of historical human CLI exits."""
+    if any(row["status"] == "unreadable" for row in rows):
+        return action_client.RECORD_WRITE_FAILED_EXIT
+    return verdict(rows)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Wait for submitted PrismaBuild actions and report them."
@@ -761,6 +862,9 @@ def main(argv=None) -> int:
     ap.add_argument("--attempt", type=int,
                     help="final attempt number; required with --reconcile-pool")
     args = ap.parse_args(argv)
+
+    if not math.isfinite(args.wait_s) or args.wait_s < 0:
+        ap.error("--wait-s must be finite and non-negative")
 
     if args.reconcile_pool:
         if len(args.keys) != 1 or args.generation is None or args.attempt is None:
@@ -782,7 +886,14 @@ def main(argv=None) -> int:
         print(json.dumps(result, sort_keys=True))
         return 0
     rows = wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s)
-    print(json.dumps(rows, sort_keys=True) if args.json else render(rows))
+    if args.json:
+        by_key = {row["action_key"]: consumer_ending_row(queue, row, cas=cas) for row in rows}
+        ordered = [by_key[key] for key in keys]
+        print(json.dumps({"schema": "prismabuild.endings.v1",
+                          "complete": all(row["status"] not in {"waiting", "unreadable"} for row in ordered),
+                          "endings": ordered}, sort_keys=True))
+        return consumer_endings_verdict(ordered)
+    print(render(rows))
     return verdict(rows)
 
 

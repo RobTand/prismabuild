@@ -385,8 +385,10 @@ def test_public_views_expose_a_stopped_withdrawn_attempt(scoped, monkeypatch, ca
         queue.root.rename(root)
         queue.root = root
         assert pbwait.main(["--json", "--wait-s", "0", key]) != 0
-        body = json.loads(capsys.readouterr().out)[0]
+        body = json.loads(capsys.readouterr().out)["endings"][0]
         assert body["status"] == "withdrawn" and body["succeeded"] is False, body
+        assert body["result"]["verified"] is True
+        body = body["diagnostics"]
     elif view == "pb_action":
         body = session.call("pb_action", {"key_prefix": key})
         assert body["adopted_attempt"] is None

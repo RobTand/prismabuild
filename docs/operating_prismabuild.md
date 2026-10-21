@@ -1085,6 +1085,41 @@ recorded has since been superseded by a newer submission of the same key, it
 waits out `--wait-s` and exits 75 rather than file an ending for the wrong
 generation; run `pbwait` again and it reads the newer one.
 
+For consumers, `pbwait --json --wait-s 0 KEY...` reads current state without
+waiting. Its stdout is one `prismabuild.endings.v1` object with `schema`,
+`complete` and `endings`, in argument order including repeated keys (#1892).
+This replaces the unversioned bare JSON list; consumers must read `endings`.
+Each row contains `action_key`, `status`, `succeeded`, `exit_code`, `signal`,
+`host`, `attempt`, `publication` with `published_unix` and `generation`,
+`started_unix`, `ended_unix`, `reason`, `result` and `diagnostics`.
+The action's own exit code is separate from the CLI's exit. Unknown facts are
+null. Existing transport, telemetry, integrity and cleanup fields are under
+`diagnostics`; `diagnostics.cleanup.complete` reports verified scope cleanup.
+
+`result` authenticates the selected attempt's stdout and filed stderr, for
+failed attempts too. Each log has an absolute `path`, `bytes` and `sha256`;
+`verified: true` means the bounded stable read matched the immutable attempt's
+filed size and digest. `receipt_sha256` identifies its exact verified execution
+receipt when announced. It never falls back to another attempt's CAS winner.
+No bounded verified produced-output discovery exists yet, so `outputs` is `[]`.
+An ending without a run has a null result. Legacy execution records lacking
+immutable evidence refuse verification. Paths describe bytes checked during
+this read and grant no lease over later file changes.
+
+JSON exits are 0 for all successes, 1 for any failed, withdrawn or refused row,
+75 with work still waiting, 76 for supersession, 74 for unreadable or integrity
+failures, and 2 for usage or unknown keys. Precedence is 74, 1, 76, 75, 0.
+`complete` is false when a row is waiting or unreadable; it does not mean success.
+Human output and its historical exit mapping remain unchanged.
+
+`pbrun --withdraw KEY --reason TEXT --json` prints one
+`prismabuild.withdrawal.v1` object with `schema`, `action_key`, `state_before`,
+`withdrawn` and `reason`. This JSON form takes exactly one key; without JSON,
+repeatable withdrawal is unchanged. `withdrawn` records the cancellation
+decision, even if `scancel` refuses, not process quiescence. Read cleanup with `pbwait --json`.
+A transport without a recorded prior queue state reports null `state_before`.
+These schemas describe this source change, not a claim of fleet deployment.
+
 A full 64-hex key begins waiting without a recorded-key scan. A prefix first
 uses one isolated, five-second read of the recorded SLURM rows, pull-queue
 state directories, and withdrawal decisions. A scan that times out, fails, or
