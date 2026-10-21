@@ -606,7 +606,7 @@ def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
 ) -> None:
     checkout = _git_checkout(tmp_path)
 
-    def refuse(_root):
+    def refuse(_root, *, deadline=None):
         raise core_module.ActionContractError("unsupported file type: 'socket'")
 
     monkeypatch.setattr(core_module, "git_checkout_identity", refuse)

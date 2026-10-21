@@ -3,8 +3,8 @@
 ``core._git`` (mapped, fail factory) and ``core._git_run`` (raw result) own
 every ``git -C`` invocation except ``pbsnapshot._git``, which stays a
 ``check_output`` bytes reader (bytes + DEVNULL + CalledProcessError is a
-different primitive shape). Each site keeps its current timeout;
-``seal_and_publish._git`` gains the 30 s core default (it had none).
+different primitive shape). Local Git defaults to waiting for process exit (#1888). Explicit caller
+timeouts and caller deadlines still refuse on expiry.
 
 Tests use read-only repository probes, controlled runner faults and private
 Git fixtures. Execute through PrismaBuild, not on the coordinator.
@@ -17,6 +17,7 @@ from prismabuild import submission as submit_core
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import NoReturn
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -123,7 +124,7 @@ def test_owner_maps_timeout(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _hang)
     with pytest.raises(_Refused, match=r"timed out after 30"):
-        pb._git(REPOSITORY, "rev-parse", "HEAD", fail=_refuse)
+        pb._git(REPOSITORY, "rev-parse", "HEAD", timeout=30, fail=_refuse)
 
 
 def test_owner_accepts_configured_returncode(monkeypatch):
@@ -138,7 +139,7 @@ def test_owner_accepts_configured_returncode(monkeypatch):
     assert out == "x"
 
 
-def test_seal_git_uses_core_default_timeout(monkeypatch):
+def test_seal_git_keeps_its_explicit_timeout(monkeypatch):
     import seal_and_publish as seal
 
     captured = {}
@@ -210,20 +211,21 @@ def test_identity_git_falls_back_on_plain_directory(monkeypatch, tmp_path):
     assert identity["head"] == "no-git"
 
 
-def test_snapshot_timeout_keeps_120s_bound_and_refuses(monkeypatch, tmp_path):
-    """#1409: a stalled source seal must not become a partial snapshot."""
+def test_snapshot_caller_timeout_refuses(monkeypatch, tmp_path):
+    """A caller-deadline refusal must not become a partial snapshot (#1888)."""
     import pbrun
 
     captured = {}
 
     def _hang(cwd, *args, **kwargs):
         captured.update(cwd=cwd, argv=args, **kwargs)
-        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=kwargs["timeout"])
+        raise subprocess.TimeoutExpired(cmd=["git", *args], timeout=120)
 
     monkeypatch.setattr(pb, "_git_run", _hang)
+    monkeypatch.setattr(pb, "time", SimpleNamespace(monotonic=lambda: 0.0))
     argv = ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
     with pytest.raises(submit_core.SubmissionRefused, match=r"^pbrun: cannot snapshot checkout: .*120"):
-        submit_core._snapshot_git(tmp_path, argv, input_text="tracked.txt\0")
+        submit_core._snapshot_git(tmp_path, argv, input_text="tracked.txt\0", deadline=120)
     assert captured["timeout"] == 120
     assert captured["argv"] == tuple(argv)
     assert captured["input_text"] == "tracked.txt\0"
@@ -246,16 +248,17 @@ def test_tracked_diff_timeout_is_not_no_git(monkeypatch, tmp_path):
         if "diff-index" in args:
             captured.update(cwd=cwd, argv=args, **kwargs)
             raise subprocess.TimeoutExpired(
-                cmd=["git", *args], timeout=kwargs["timeout"],
+                cmd=["git", *args], timeout=30,
             )
         return run_git(cwd, *args, **kwargs)
 
     monkeypatch.setattr(pb, "_git_run", _hang_on_diff)
+    monkeypatch.setattr(pb, "time", SimpleNamespace(monotonic=lambda: 0.0))
     with pytest.raises(
         pb.ActionContractError,
         match=r"^cannot compute pbrun checkout identity: .*timed out after 30",
     ):
-        pb.git_checkout_identity(root)
+        pb.git_checkout_identity(root, deadline=30)
     assert captured["timeout"] == 30
     assert captured["argv"][-6:] == (
         "-p", "--binary", "-M", "--no-ext-diff", "--no-textconv", "HEAD",
@@ -338,5 +341,5 @@ def test_snapshot_positive_output_and_options_stay_equivalent(
     assert actual == (output.strip() if strip else output)
     assert captured == {
         "cwd": tmp_path, "argv": tuple(argv), "env": environment,
-        "input_text": "tracked\0", "errors": "surrogateescape", "timeout": 120,
+        "input_text": "tracked\0", "errors": "surrogateescape", "timeout": None,
     }
