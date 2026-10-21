@@ -25,6 +25,7 @@ import sys
 import pytest
 
 from pbtest_shard_output import ShardProcess, ONE_PASS, shard_output  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +76,7 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = tmp_path / run / "shards.json"
     monkeypatch.setattr(
         sys, "argv",

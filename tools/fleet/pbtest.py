@@ -38,8 +38,12 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+from dataclasses import replace
+import functools
 import importlib.util
+import io
 import json
+import math
 import os
 import re
 import statistics
@@ -48,6 +52,7 @@ import sys
 import threading
 import time
 import tempfile
+import traceback
 import uuid
 import zlib
 from pathlib import Path, PurePath
@@ -64,12 +69,14 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
 from prismabuild.submission_frontend import store_for, render_submission, request_arguments
-from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from prismabuild.submission_types import (
+    OfferDiscoveryTimedOut, SubmissionRequest, SubmissionRefused,
+)
 
 
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
-from prismabuild import adaptive_gpu, core, owned_tree, pool  # noqa: E402
+from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pool  # noqa: E402
 from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
@@ -115,25 +122,36 @@ def drain_shard(index: int, stream, lines: list[str]) -> None:
             _say(f"shard {index:>3} {line.rstrip()}")
 
 
-def start_shard(index: int, command: list[str], *, result: dict,
-                files=(), progress=None, expected_identity=None) -> client_channel.ClientProcess:
+def _shard_result(result: dict) -> list[str]:
     result.setdefault('lines', [])
     result.setdefault('attempts', 1)
     result.setdefault('returncode', None)
     result.setdefault('action_key', None)
+    return result['lines']
+
+
+def _announce_submission(index: int, identity, *, result: dict, files=(),
+                         progress=None) -> None:
+    """Record and print the action a shard's first submission names."""
+    if result['action_key'] is not None:
+        return
+    result['action_key'] = identity.action_key
+    if progress is not None:
+        progress.observe(index, result)
+    if isinstance(identity, action_client.CachedClientIdentity):
+        verb = 'cached'
+    else:
+        verb = ('queued' if identity.arrival is action_client.ClientArrival.SUBMITTED
+                else 'attached')
+    _say(f"shard {index:>3} action {identity.action_key} ({verb}): " + " ".join(files))
+
+
+def start_shard(index: int, command: list[str], *, result: dict,
+                files=(), progress=None, expected_identity=None) -> client_channel.ClientProcess:
+    _shard_result(result)
 
     def submitted(identity):
-        if result['action_key'] is not None:
-            return
-        result['action_key'] = identity.action_key
-        if progress is not None:
-            progress.observe(index, result)
-        if isinstance(identity, action_client.CachedClientIdentity):
-            verb = 'cached'
-        else:
-            verb = ('queued' if identity.arrival is action_client.ClientArrival.SUBMITTED
-                    else 'attached')
-        _say(f"shard {index:>3} action {identity.action_key} ({verb}): " + " ".join(files))
+        _announce_submission(index, identity, result=result, files=files, progress=progress)
 
     environment = _client_environment()
     if expected_identity is not None:
@@ -145,9 +163,13 @@ def start_shard(index: int, command: list[str], *, result: dict,
         on_identity=submitted)
 
 
-def run_shard(index: int, command: list[str], first, *, wait_s: float,
+def run_shard(index: int, first, *, again, wait_s: float,
               deadline: float, result: dict, files: list[str] = (), progress=None) -> None:
-    """Retry only a typed unpublished offer timeout or recover one exact pool run."""
+    """Retry only a typed unpublished offer timeout or recover one exact pool run.
+
+    ``first`` is the shard's first attempt, already started; ``again`` starts
+    another one -- a new publication, never a second copy of a published one.
+    """
     lines = result['lines']
     running = first
     while True:
@@ -186,12 +208,302 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
              f"{action_wait.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
         time.sleep(action_wait.POLL_S)
         try:
-            running = start_shard(index, command, result=result, files=files, progress=progress)
+            running = again()
         except OSError as exc:
             _say(f"shard {index:>3} pbtest: could not start attempt "
                  f"{result['attempts']}: {exc}")
             result['attempts'] -= 1
             return
+
+
+
+def _detach_record(text: str) -> bool:
+    """Whether a display line is ``pbrun``'s JSON record for a detached caller.
+
+    A shard is published detached and observed separately, so that record is
+    this process's bookkeeping, never a line the shard's attached ``pbrun``
+    printed; its stdout carried nothing else (``detached_submission_record``).
+    """
+
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return False
+    return (isinstance(value, dict)
+            and value.get("schema") == action_client.DETACH_SCHEMA_V1)
+
+
+class _ShardLines:
+    """Submission display events, as the lines a shard's ``pbrun`` printed.
+
+    ``pbrun`` wrote stdout and stderr to one text pipe that ``drain_shard``
+    read line by line, with universal newlines, streaming its ``pbrun:``
+    lines as they came (#1048).  This is that pipe without the process.
+    """
+
+    def __init__(self, index: int | None, lines: list[str]) -> None:
+        self.index = index
+        self.lines = lines
+        self.pending = ""
+
+    def __call__(self, event) -> None:
+        if event.channel == "stdout" and _detach_record(event.text):
+            return
+        self.write(event.text + event.end)
+
+    def write(self, text: str) -> None:
+        text = (self.pending + text).replace("\r\n", "\n").replace("\r", "\n")
+        *complete, self.pending = text.split("\n")
+        for line in complete:
+            self.line(line + "\n")
+
+    def line(self, line: str) -> None:
+        self.lines.append(line)
+        if self.index is not None and line.startswith(STREAMED_PREFIXES):
+            _say(f"shard {self.index:>3} {line.rstrip()}")
+
+    def close(self) -> None:
+        if self.pending:
+            self.line(self.pending)
+            self.pending = ""
+
+
+class _Prepared:
+    """One plan's preparation: its template and what preparing it printed.
+
+    A plain class: this tool is loaded from a file under private module
+    names, and ``dataclass`` resolves its annotations through
+    ``sys.modules``, where such a module is not.
+    """
+
+    __slots__ = ("template", "cwd", "lines", "refusal")
+
+    def __init__(self, template: dict | None, cwd: Path | None,
+                 lines: tuple[str, ...], refusal: Exception | None) -> None:
+        self.template = template
+        self.cwd = cwd
+        self.lines = lines
+        self.refusal = refusal
+
+
+class _Templates:
+    """Each plan's checkout frozen once, and every shard sealed off it.
+
+    ``submission.preparation`` identifies the checkout, identifies it again on
+    both sides of its snapshot and writes one full-history bundle of it:
+    three ``git diff-index -p --binary`` reads and one bundle.  One ``pbrun``
+    per shard did all four per shard, so a 60-shard lane was 180 identity
+    reads and 60 bundles of one commit, and on 2026-10-20 the reads outlived
+    their 30 s on an HDD-backed checkout and TrustLadder's release gate
+    answered 125.  So a plan -- the shards that share placement, deadline,
+    pins and environment -- is prepared once, with its first shard's
+    request, and each shard is sealed off that template with its own command,
+    the way ``pbcampaign`` seals a plan's children.  The identity is the same
+    function over the same tree, so it is exactly as strict; the action is
+    still an ordinary ``pbrun`` action.
+
+    A preparation that refuses is kept, so each shard of the plan reports
+    that refusal instead of repeating it.  An offer-discovery timeout is not
+    kept: the shard's retry asks again (#1102).
+    """
+
+    def __init__(self, store) -> None:
+        self.store = store
+        self._lock = threading.Lock()
+        self._prepared: dict[object, _Prepared] = {}
+        self._published: dict[int, _Prepared] = {}
+
+    def prepare(self, key, request: SubmissionRequest) -> _Prepared:
+        with self._lock:
+            known = self._prepared.get(key)
+            if known is not None:
+                return known
+            lines: list[str] = []
+            shown = _ShardLines(None, lines)
+            try:
+                with submission.preparation(request, store=self.store,
+                                            display=shown) as prepared:
+                    template, cwd = prepared["template"], Path(prepared["cwd"])
+                refusal = None
+            except OfferDiscoveryTimedOut as exc:
+                shown.close()
+                return _Prepared(None, None, tuple(lines), exc)
+            except Exception as exc:
+                template, cwd, refusal = None, None, exc
+            shown.close()
+            record = self._prepared[key] = _Prepared(template, cwd, tuple(lines), refusal)
+            return record
+
+    def sealing(self, plan, owner: SubmissionRequest, index: int,
+                request: SubmissionRequest, *, shared: bool):
+        """The preparation a shard seals off, and the command it seals.
+
+        Preparation may rewrite argv: it can relativize the interpreter and
+        bind an argument naming a path outside the checkout.  The first is
+        the same for every shard of a plan.  A plan whose first shard had an
+        argument rebound, or whose shards each name their own path outside
+        the checkout (``shared`` false), has nothing a sibling could reuse:
+        each of its shards is prepared on its own, as before.
+        """
+
+        record = self.prepare(plan, owner)
+        if record.template is None:
+            return record, None
+        sealed = list(record.template["params"]["command"])
+        if request is owner:
+            return record, sealed
+        if shared and sealed[1:] == list(owner.command)[1:]:
+            return record, [sealed[0], *list(request.command)[1:]]
+        record = self.prepare((plan, index), request)
+        return record, (list(record.template["params"]["command"])
+                        if record.template is not None else None)
+
+    def published(self, record: _Prepared) -> None:
+        with self._lock:
+            self._published[id(record)] = record
+
+    def changed(self) -> str | None:
+        """What moved in the checkout since its published shards were sealed.
+
+        One identity read, after the last shard is published.  Each shard ran
+        a snapshot taken before it was published, so a tree that still
+        matches every published template here is the tree they all ran; one
+        that does not is named, and fails the run.  ``None`` when nothing
+        moved, or nothing was published from here.
+        """
+
+        with self._lock:
+            records = list(self._published.values())
+        if not records:
+            return None
+        cwd = records[0].cwd
+        try:
+            now = movement_actions.checkout_identity(cwd)
+        except SubmissionRefused as exc:
+            return (f"pbtest: the checkout {cwd} could not be identified again after "
+                    f"its last shard was published ({exc.reason or exc}), so nothing "
+                    "shows its shards ran the tree on disk; this run fails")
+        moved: list[str] = []
+        for record in records:
+            for change in _identity_changes(record.template["checkout_identity"], now):
+                if change not in moved:
+                    moved.append(change)
+        if not moved:
+            return None
+        return (f"pbtest: the checkout {cwd} changed after its shards were sealed: "
+                + "; ".join(moved) + ". Every shard ran the snapshot sealed before it "
+                "was published, not the tree on disk now, so this run fails; rerun "
+                "pbtest on the tree you mean to test")
+
+
+def _identity_changes(then, now) -> list[str]:
+    """Each way two checkout identities differ, in words."""
+
+    changes = []
+    if then.get("head") != now.get("head"):
+        changes.append(f"HEAD moved from {then.get('head')} to {now.get('head')}")
+    if then.get("dirty_sha256") != now.get("dirty_sha256"):
+        changes.append(
+            "its uncommitted changes are not the sealed ones (working-tree digest "
+            f"{str(then.get('dirty_sha256'))[:12]} is now "
+            f"{str(now.get('dirty_sha256'))[:12]})")
+    for key in sorted((set(then) | set(now)) - {"head", "dirty_sha256"}):
+        if then.get(key) != now.get(key):
+            changes.append(f"{key} {then.get(key)!r} is now {now.get(key)!r}")
+    return changes
+
+
+class _Settled:
+    """A shard attempt that ended in this process, with no client to wait on.
+
+    A refusal, a cache hit or an offer-discovery timeout ends at publication.
+    It reads like a ``pbrun`` that printed its lines and exited.
+    """
+
+    def __init__(self, returncode: int, events: client_channel.ClientEventResult) -> None:
+        self.process = self
+        self.stdout = io.StringIO()
+        self.returncode = returncode
+        self._events = events
+
+    def wait(self) -> client_channel.ClientEventResult:
+        return self._events
+
+
+def publish_shard(templates: _Templates, index: int, request: SubmissionRequest, *,
+                  plan, owner: SubmissionRequest, shared: bool, result: dict,
+                  files=(), progress=None, deadline: float):
+    """Seal one shard off its plan's template, publish it, and start its observer.
+
+    The shard's lines are what its ``pbrun`` printed: the preparation's
+    notices, the publication's (``pbrun: queued ...``), then the observer's.
+    The observer is ``client_recovery``, the program that already reads a
+    shard's unobserved ending back: ``pbrun``'s own attached wait -- the same
+    reader, notices and rendering -- on this one generation until
+    ``deadline``.  Publication is detached only so this process does not wait
+    in it; the detached record is not printed.
+    """
+
+    lines = _shard_result(result)
+    shown = _ShardLines(index, lines)
+    report = action_client.ClientReport()
+    try:
+        record, command = templates.sealing(plan, owner, index, request, shared=shared)
+        for line in record.lines:
+            shown.line(line)
+        refusal = record.refusal
+        if refusal is None:
+            action = submission.seal(record.template, command=command)
+            outcome = submission.submit_action(
+                action, template=record.template, request=replace(request, detach=True),
+                store=templates.store, display=shown, report=report)
+            shown.close()
+            if isinstance(outcome, SubmissionRefused):
+                refusal = outcome
+            else:
+                templates.published(record)
+    except SubmissionRefused as exc:
+        shown.close()
+        refusal = exc
+    except Exception as exc:
+        shown.close()
+        refusal = exc
+    if refusal is not None and not isinstance(refusal, SubmissionRefused):
+        # What a pbrun that crashed printed, and how pbtest read it: a
+        # traceback and no ending (#1033).
+        shown.write("".join(traceback.format_exception(refusal)))
+        shown.close()
+        result["published"] = True
+        return _Settled(1, client_channel.ClientEventResult(None, None, "missing client ending"))
+    if refusal is not None:
+        # ``pbrun`` printed the reason and exited 2 for a usage refusal, 1
+        # for any other with a reason; an offer-discovery timeout published
+        # nothing and is the one refusal ``run_shard`` retries (#1102).
+        if refusal.reason:
+            shown.write(refusal.reason + "\n")
+            shown.close()
+        if isinstance(refusal, OfferDiscoveryTimedOut):
+            return _Settled(1, client_channel.ClientEventResult(
+                None, action_client.ClientEnding(action_client.ClientOfferTimeout()), None))
+        result["published"] = True
+        code = 2 if refusal.returncode == 2 else 1 if refusal.reason else refusal.returncode
+        ending = (report.ending if report.ending is not None else
+                  action_client.ClientEnding(action_client.ClientRefused(refusal.returncode)))
+        problem = (None if ending.exit_code & 255 == code
+                   else "client ending contradicts the process exit status")
+        return _Settled(code, client_channel.ClientEventResult(report.identity, ending, problem))
+    result["published"] = True
+    identity = report.identity
+    _announce_submission(index, identity, result=result, files=files, progress=progress)
+    if (isinstance(identity, action_client.PoolClientIdentity)
+            and identity.published_unix is not None
+            and math.isfinite(identity.published_unix)):
+        return start_shard(index, client_recovery.observe_command(identity, deadline=deadline),
+                           result=result, files=files, progress=progress,
+                           expected_identity=identity)
+    # A cache hit: the receipt is the outcome, and nothing runs to wait on.
+    return _Settled(report.ending.exit_code,
+                    client_channel.ClientEventResult(identity, report.ending, None))
 
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
@@ -1074,10 +1386,18 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
-def shard_command(request: SubmissionRequest, *, environment, python_entry, arguments):
-    """Send a typed request across the existing C06 client process boundary."""
-    from dataclasses import replace
-    request = replace(request, env=tuple(environment), command=(*python_entry, *arguments))
+def shard_request(request: SubmissionRequest, *, environment, python_entry,
+                  arguments) -> SubmissionRequest:
+    """One shard's whole request: the plan's, with its environment and command."""
+    return replace(request, env=tuple(environment), command=(*python_entry, *arguments))
+
+
+def shard_command(request: SubmissionRequest) -> list[str]:
+    """Send a shard's typed request across the C06 client process boundary.
+
+    The SLURM lane's shards still go this way: it has no detached observer
+    to hand a publication to (``client_recovery`` reads the pull queue).
+    """
     return ["/usr/bin/python3", str(PBRUN), *request_arguments(request)]
 
 
@@ -1716,11 +2036,20 @@ def main() -> int:
         sys.stderr.write(f"pbtest: cannot initialize shard progress: {exc}\n")
         return 2
     procs = []
-    def run_client(index, command, proc, **kwargs):
+    def run_client(index, proc, **kwargs):
         try:
-            run_shard(index, command, proc, progress=progress, **kwargs)
+            run_shard(index, proc, progress=progress, **kwargs)
         finally:
             progress.observe(index, kwargs["result"], completed=True)
+    # Pool shards are published from here, each plan's checkout frozen once
+    # (``_Templates``); the SLURM lane keeps one ``pbrun`` client per shard.
+    templates = _Templates(store_for(__file__)) if args.transport == "pool" else None
+    owners: dict[int, SubmissionRequest] = {}
+    # A shard that writes its own --surface-json outside the checkout names a
+    # path only it has; its placement answer is its own, so it seals alone.
+    surfaces = [pytest_args[position + 1] for position, option in enumerate(pytest_args[:-1])
+                if option == "--surface-json"]
+    shared = not any(os.path.isabs(path) for path in surfaces)
     requested_roots = [
         [os.path.normpath(os.path.relpath(checkout / raw, checkout)),
          "directory" if (checkout / raw).is_dir() else "file"]
@@ -1756,8 +2085,9 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
-        command = shard_command(request, environment=environment,
+        request = shard_request(request, environment=environment,
                                 python_entry=python_entry, arguments=arguments)
+        owner = owners.setdefault(id(plan), request)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
         # starts when one exits.  Its wait budget starts here, at its own
         # submission, not while it queued behind the others.
@@ -1769,14 +2099,38 @@ def main() -> int:
         # ``errors="replace"``: a stray byte must not end the drain thread,
         # which would leave the pipe to fill and the shard's wait blocked.
         shard_result: dict = {}
-        proc = start_shard(index, command, result=shard_result, files=bucket, progress=progress)
+        if templates is None:
+            attempt = functools.partial(start_shard, index, shard_command(request),
+                                        result=shard_result, files=bucket, progress=progress)
+        else:
+            attempt = functools.partial(publish_shard, templates, index, request,
+                                        plan=id(plan), owner=owner, shared=shared,
+                                        result=shard_result, files=bucket,
+                                        progress=progress, deadline=deadline)
+        proc = attempt()
         drain = threading.Thread(
-            target=run_client, args=(index, command, proc),
-            kwargs={"wait_s": args.wait_s, "deadline": deadline,
+            target=run_client, args=(index, proc),
+            kwargs={"again": attempt, "wait_s": args.wait_s, "deadline": deadline,
                     "result": shard_result, "files": bucket},
             name=f"pbtest-shard-{index}", daemon=True)
         drain.start()
         procs.append((index, bucket, drain, shard_result))
+    # The tree every shard ran is the tree that was sealed; one more identity
+    # read once the last shard is published says whether it is still the
+    # tree on disk.  A shard still retrying an offer timeout may yet publish,
+    # so this waits for each shard to publish or end.
+    changed = None
+    if templates is not None:
+        while True:
+            waiting = [drain for _, _, drain, shard_result in procs
+                       if drain.is_alive() and not shard_result.get("published")]
+            if not waiting:
+                break
+            waiting[0].join(0.05)
+        changed = templates.changed()
+        if changed is not None:
+            sys.stderr.write(changed + "\n")
+            sys.stderr.flush()
 
     observations = []
     events_by_shard = {}
@@ -1967,7 +2321,9 @@ def main() -> int:
         except OSError as exc:
             sys.stderr.write(f"pbtest: cannot publish requested output: {exc}\n")
             return 1
-    return 0 if verdict["green"] and not progress.failed else 1
+    if changed is not None:
+        sys.stderr.write(changed + "\n")
+    return 0 if verdict["green"] and not progress.failed and changed is None else 1
 
 
 if __name__ == "__main__":

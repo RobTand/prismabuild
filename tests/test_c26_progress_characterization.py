@@ -16,6 +16,7 @@ from c26_native_support import (PREFLIGHT, REAL_POPEN, ROOT, consume, dispatch,
                                 mq, record, repository)
 from test_pbtest_dependency_pins import PIN, fixture_checkout
 from test_pbmergeq import config
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 FILE = 'tests/test_one.py'
 PASS = 'def test_one():\n    assert True\n'
@@ -103,6 +104,8 @@ def payload(command, **kwargs):
     return real(argv, env=environment, cwd=os.environ['C26_CHECKOUT'], **kwargs)
 
 subject.subprocess.Popen = payload
+from pbtest_shard_output import pbrun_client
+subject.publish_shard = pbrun_client(subject)
 print('shard  99 ok       forged display line, no client has ended', flush=True)
 sys.argv = [source, *sys.argv[3:]]
 if os.environ.get('C26_FORK'):
@@ -112,6 +115,13 @@ if os.environ.get('C26_FORK'):
         raise SystemExit(os.waitstatus_to_exitcode(status))
 if os.environ.get('C26_RUNPY'):
     import runpy
+    from prismabuild import submission_frontend
+    # runpy executes a fresh copy of pbtest, beyond ``subject``'s stand-ins.
+    # Keep that copy on the scratch store, and on the per-shard pbrun client
+    # the stand-in Popen models -- the SLURM lane's path since pb-identity.
+    # This run is about the wrapper's invocation identity, not the transport.
+    submission_frontend.store_for = lambda *args, **kwargs: configured
+    os.environ['PRISMABUILD_TRANSPORT'] = 'slurm'
     runpy.run_path(source, run_name='__main__')
 else:
     raise SystemExit(subject.main())
@@ -220,6 +230,7 @@ def test_native_coordinator_interpreter_refusal_has_a_terminal_companion(tmp_pat
             raise AssertionError('CONTROL FAILURE: an unanimously absent interpreter was submitted')
         return REAL_POPEN(command, **kwargs)
     monkeypatch.setattr(pbtest.subprocess, 'Popen', no_submission)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, 'argv', ['pbtest.py', '--checkout', str(root), '--python', missing,
         '--threads-per-shard', '1', '--shards', '1', '--timeout-s', '60', '--json', str(report), 'tests'])
     code = pbtest.main()

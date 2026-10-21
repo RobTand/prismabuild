@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -118,6 +119,7 @@ def test_an_explicit_basetemp_keeps_its_meaning_and_the_compiler_tmpdir(tmp_path
     with monkeypatch.context() as scoped:
         from test_pbtest import PUBLISHED_RUNTIME
         scoped.setattr(pbtest.subprocess, "Popen", popen)
+        scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
         scoped.setattr(sys, "argv", [
             "pbtest.py", "--checkout", str(checkout), "--python",

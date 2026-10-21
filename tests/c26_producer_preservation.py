@@ -19,6 +19,7 @@ import pytest
 from c26_native_support import ROOT, dispatch, mq, repository
 from test_c26_progress_characterization import (
     BLOCK, FILE, PASS, test_mergeq_heartbeat_does_not_count_a_forged_display_line as heartbeat_control)
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 def test_terminal_companion_binds_report_without_copying_populations(tmp_path, monkeypatch):
@@ -160,6 +161,7 @@ def test_unwritable_initial_companion_refuses_before_any_submission(tmp_path, mo
         return REAL_POPEN(command, **kwargs)
     monkeypatch.setattr(os, 'replace', fail_initial)
     monkeypatch.setattr(pbtest.subprocess, 'Popen', no_submission)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, 'argv', ['pbtest.py', '--checkout', str(root), '--python', sys.executable,
         '--threads-per-shard', '1', '--shards', '1', '--json', str(report), 'tests'])
     assert pbtest.main() == 2
