@@ -323,7 +323,7 @@ def _label_values(argv: list[str]):
 
 def _has_reserved_label(argv: list[str]) -> bool:
     for value in _label_values(argv):
-        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL}:
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL, "prismabuild.runtime-readiness"}:
             return True
     return False
 
@@ -355,7 +355,7 @@ CONTAINER_FLAGS = frozenset("""
 """.split())
 
 
-def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
+def _container_options(argv: list[str], *, memory_limit: int | None = None, defer_remove: bool = False) -> tuple[list[str], list[str], str | None]:
     """Retain argv verbatim except cpuset options before IMAGE.
 
     Return retained argv, normalized label options for ownership checks, and the
@@ -427,6 +427,11 @@ def _container_options(argv: list[str], *, memory_limit: int | None = None) -> t
                                                 if requested_bytes else memory_limit)])
             if name == "-m" and offset > 2:
                 kept.append(token[:offset - 1])
+            index = end
+            continue
+        if (defer_remove and name == "--rm"
+                and (not equals or value.lower() in {"true", "false", "1", "0", "t", "f"})):
+            options.extend(["--rm", value if equals else "true"])
             index = end
             continue
         if name == "--cpuset-cpus":
@@ -1090,16 +1095,38 @@ def main() -> int:
             cid_directory = Path(tempfile.mkdtemp(prefix="pbdocker-cid-"))
             cidfile = cid_directory / "cid"
             cid_option = ["--cidfile", str(cidfile)]
-        labelled = [*global_options, *sub[:relative], *labels, *containment,
-                    "--cpuset-cpus", cpuset, *cid_option, *creation]
         try:
-            ticket = _container_intent(scope[0])["ticket"] if scope else None
+            registration = _container_intent(scope[0]) if scope else {}
+            ticket = registration.get("ticket")
+            typed_launch = (registration.get("launch_outcome_protocol") == 1
+                            and sub[relative - 1] == "run")
+            remove = False
+            if typed_launch:
+                creation, launch_options, _ = _container_options(
+                    argv[insertion:], memory_limit=scope[1], defer_remove=True)
+                removals = [launch_options[i + 1] for i, value in enumerate(launch_options)
+                            if value == "--rm"]
+                remove = bool(removals and removals[-1].lower() in {"true", "1", "t"})
+                from prismabuild.gpu_capacity import RUNTIME_PROBE_ENV, RUNTIME_PROBE_LABEL
+                probe = os.environ.get(RUNTIME_PROBE_ENV)
+                if probe:
+                    labels += ["--label", f"{RUNTIME_PROBE_LABEL}={probe}"]
+            labelled = [*global_options, *sub[:relative], *labels, *containment,
+                        "--cpuset-cpus", cpuset, *cid_option, *creation]
             receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")
             result = subprocess.CompletedProcess(
                 [real, *labelled], _run_relayed(
                     real, labelled, environment, owner=owner, scope=scope,
                     global_options=global_options, nonce=nonce, cidfile=cidfile,
                     receipt_path=receipt_path))
+            if typed_launch:
+                try:
+                    cid = cidfile.read_text().strip()
+                    if re.fullmatch(r"[a-f0-9]{64}", cid):
+                        _container_broker(scope[0], "container_outcome", ticket=ticket,
+                                          container_id=cid, remove=remove)
+                except (OSError, Refused) as exc:
+                    sys.stderr.write(f"docker shim: daemon launch state unavailable: {exc}\n")
             # Only CLI success proves the daemon operation settled. A nonzero
             # exit can follow a connection failure after daemon acceptance.
             # Retain its pending ticket (also for an ordinary user-command

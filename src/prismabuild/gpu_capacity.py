@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+from typing import Literal, NamedTuple
 
 SCHEMA = 'prismabuild.gpu_capacity.v1'
 GB10_POWER_SOURCE = 'https://docs.nvidia.com/dgx/dgx-spark/hardware.html'
@@ -461,3 +462,164 @@ def collect(snapshot, records, *, timeout_s=1.0, proc_root=Path('/proc'), device
         'gpu_process_bytes': bool(snapshot.get('gpu_process_bytes', True)),
         'jobs': jobs, 'errors': errors,
     }
+
+
+# Container readiness is independent of NVML capacity (#1895).
+RUNTIME_REASON = 'gpu_container_runtime_unready'
+RUNTIME_SCHEMA = 'prismabuild.gpu-container-runtime.v1'
+RUNTIME_GATE = Path('/run/prismabuild/gpu-container-runtime.json')
+RUNTIME_PROBE_ENV = 'PRISMABUILD_GPU_RUNTIME_PROBE'
+RUNTIME_PROBE_LABEL = 'prismabuild.runtime-readiness'
+RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
+                       '5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a')
+
+
+def runtime_probe_command():
+    """No CUDA workload: exercise CDI injection, then exit immediately."""
+    return ['docker', 'run', '--pull=never', '--rm', '--network=none',
+            '--device=nvidia.com/gpu=all', '--entrypoint=/bin/true', RUNTIME_PROBE_IMAGE]
+
+
+class ContainerLaunchOutcome(NamedTuple):
+    kind: Literal['payload_exit', 'payload_started', 'host_fault', 'launch_error', 'unknown']
+    payload_started: bool | None
+    subtype: str | None = None
+    daemon_error: str = ''
+    payload_returncode: int | None = None
+
+    def as_record(self):
+        return self._asdict()
+
+
+def container_launch_outcome(container, *, cdi_sources, source_exists=os.path.exists):
+    """Classify daemon inspect state only. Callers must verify container ownership.
+
+    Exit 127 and OCI text alone prove nothing. A nonzero StartedAt means the
+    payload ran, even when its output exactly imitates a daemon failure.
+    """
+    state = container.get('State', {})
+    started = state.get('StartedAt')
+    if isinstance(started, str) and started and not started.startswith('0001-01-01T00:00:00'):
+        exited = state.get('Running') is False
+        code = state.get('ExitCode') if exited else None
+        return ContainerLaunchOutcome('payload_exit' if exited else 'payload_started', True,
+                                      payload_returncode=code if type(code) is int else None)
+    if (started != '0001-01-01T00:00:00Z' or state.get('Running') is not False
+            or not isinstance(state.get('Error'), str) or not state['Error']):
+        return ContainerLaunchOutcome('unknown', None)
+    error = state['Error']
+    lower = error.lower()
+    if 'oci runtime create failed' in lower:
+        missing = re.search(r'failed to fulfil mount request: open (/[\S]+): no such file or directory', error)
+        host = container.get('HostConfig', {})
+        requests = host.get('DeviceRequests', []) or []
+        nvidia = (host.get('Runtime') == 'nvidia' or any(
+            request.get('Driver') == 'cdi' and any(
+                str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []))
+            for request in requests))
+        if missing and nvidia and missing[1] in cdi_sources and not source_exists(missing[1]):
+            return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096])
+        if ('nvidia-container-cli: initialization error:' in lower
+                or 'nvidia-container-runtime: initialization error:' in lower
+                or 'nvidia-container-cli: device error:' in lower):
+            return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096])
+    return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
+
+
+def cdi_mount_sources(directory):
+    """Read NVIDIA's generated JSON/YAML hostPath scalars; never rewrite CDI."""
+    sources = set()
+    for path in Path(directory).iterdir():
+        if path.suffix not in {'.json', '.yaml', '.yml'}:
+            continue
+        # A partial/unreadable spec grants no positive classification.
+        raw = path.read_text()
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError('CDI spec exceeds accepted size')
+        if path.suffix == '.json':
+            value = json.loads(raw)
+            edits = [value.get('containerEdits', {})]
+            edits.extend(device.get('containerEdits', {}) for device in value.get('devices', []))
+            sources.update(mount['hostPath'] for edit in edits for mount in edit.get('mounts', [])
+                           if isinstance(mount.get('hostPath'), str))
+        else:
+            for match in re.finditer(r'^\s*(?:-\s*)?hostPath:\s*([^\n]+)$', raw, re.MULTILINE):
+                scalar = match[1].strip()
+                if scalar.startswith('"'):
+                    scalar = json.loads(scalar)
+                elif scalar.startswith("'") and scalar.endswith("'"):
+                    scalar = scalar[1:-1].replace("''", "'")
+                if scalar.startswith('/') and not any(ch.isspace() for ch in scalar):
+                    sources.add(scalar)
+    return sources
+
+
+class CDIChangeWatch:
+    """Block on the LOCAL directory and its parent, including atomic rename.
+
+    /var/run is a symlink to /run on the supported fleet. Watching the directory
+    rather than nvidia.yaml keeps a replacement file from losing the watch.
+    The parent watch also catches replacement/removal of the directory itself.
+    """
+    def __init__(self, directory):
+        import ctypes
+        self.directory = Path(directory).resolve()
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC)
+        if self.fd < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_init1')
+        self.watches = {}
+        try:
+            self._install()
+        except BaseException:
+            os.close(self.fd)
+            raise
+
+    def _add(self, path):
+        import ctypes
+        mask = 0x4 | 0x8 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
+        wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), mask)
+        if wd < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_add_watch', str(path))
+        self.watches[wd] = Path(path)
+
+    def _install(self):
+        self._add(self.directory.parent)
+        if self.directory.is_dir():
+            self._add(self.directory)
+
+    def next_change(self, stop_fd):
+        import select
+        import struct
+        while True:
+            ready, _, _ = select.select([self.fd, stop_fd], [], [])
+            if stop_fd in ready:
+                return None
+            raw = os.read(self.fd, 65536)
+            offset = 0
+            changed = False
+            reason = 'cdi_changed'
+            reinstall = False
+            while offset < len(raw):
+                wd, mask, _, length = struct.unpack_from('iIII', raw, offset)
+                name = raw[offset + 16:offset + 16 + length].split(b'\0', 1)[0].decode(errors='replace')
+                offset += 16 + length
+                path = self.watches.get(wd)
+                if mask & 0x4000:
+                    changed = reinstall = True
+                    reason = 'watch_overflow'
+                elif path == self.directory.parent and name == self.directory.name:
+                    changed = reinstall = True
+                elif path == self.directory:
+                    if mask & (0x400 | 0x800 | 0x8000):
+                        changed = reinstall = True
+                        reason = 'watch_replaced'
+                    elif name.endswith(('.yaml', '.yml', '.json')):
+                        changed = True
+            if reinstall:
+                self._install()
+            if changed:
+                return reason
+
+    def close(self):
+        os.close(self.fd)

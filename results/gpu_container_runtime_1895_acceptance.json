@@ -1,0 +1,110 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "38eed1488e",
+  "ledger_commit": "38eed1488e",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "ID-08",
+    "ID-09"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1895",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1895",
+    "source_status": "ready-for-lead-review; not merged",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "21cfd87f106843d49f2cf137578b7e5b92db3a6881d5d836d7ad78aaa213fb87",
+          "e0ded00e35c92e271bbd527fa1b9c365526a3b7b7e403d03e9407217d23d47bd",
+          "19bc861bcb769507543b224e9364004ebc67a57b31bd6959e4a07190b14d2a72",
+          "c538f799a4e3907f6dc6687343cac566be1b5a5760195f7ff65123d2a4bbbfa2",
+          "97b94d6416e46d3bbf9333f885a267429df63fd8b7ab2f9546925859995704d0",
+          "67752101a9dd880fd2a9b94290a2819ab4aef4c689d30bcc7d5fc1eecc8b16f5",
+          "2672b03ee9eb93cc641d17d7a83e54d6c8f038e2616fc4f7be3482fb2dfa1a65"
+        ],
+        "outcome": "Fixture checks retain PB claim/resource ownership, deny fenced GPU claims and continue CPU claims."
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "19bc861bcb769507543b224e9364004ebc67a57b31bd6959e4a07190b14d2a72",
+          "c538f799a4e3907f6dc6687343cac566be1b5a5760195f7ff65123d2a4bbbfa2"
+        ],
+        "outcome": "Fixture failed ending keeps action/attempt identity and consumes one attempt; explicit deadlines keep precedence."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "21cfd87f106843d49f2cf137578b7e5b92db3a6881d5d836d7ad78aaa213fb87",
+          "e0ded00e35c92e271bbd527fa1b9c365526a3b7b7e403d03e9407217d23d47bd",
+          "19bc861bcb769507543b224e9364004ebc67a57b31bd6959e4a07190b14d2a72",
+          "c538f799a4e3907f6dc6687343cac566be1b5a5760195f7ff65123d2a4bbbfa2",
+          "97b94d6416e46d3bbf9333f885a267429df63fd8b7ab2f9546925859995704d0",
+          "67752101a9dd880fd2a9b94290a2819ab4aef4c689d30bcc7d5fc1eecc8b16f5",
+          "2672b03ee9eb93cc641d17d7a83e54d6c8f038e2616fc4f7be3482fb2dfa1a65"
+        ],
+        "outcome": "Receipts and native runtime attestations distinguish x86_64 and aarch64 qualification from deployment."
+      },
+      {
+        "id": "ID-09",
+        "actions": [
+          "21cfd87f106843d49f2cf137578b7e5b92db3a6881d5d836d7ad78aaa213fb87",
+          "e0ded00e35c92e271bbd527fa1b9c365526a3b7b7e403d03e9407217d23d47bd",
+          "19bc861bcb769507543b224e9364004ebc67a57b31bd6959e4a07190b14d2a72",
+          "c538f799a4e3907f6dc6687343cac566be1b5a5760195f7ff65123d2a4bbbfa2",
+          "97b94d6416e46d3bbf9333f885a267429df63fd8b7ab2f9546925859995704d0",
+          "67752101a9dd880fd2a9b94290a2819ab4aef4c689d30bcc7d5fc1eecc8b16f5",
+          "2672b03ee9eb93cc641d17d7a83e54d6c8f038e2616fc4f7be3482fb2dfa1a65"
+        ],
+        "outcome": "Terminal records, attempt log digests and successful CAS receipts/results independently read and verified."
+      }
+    ],
+    "remaining_gaps": [
+      "#1895 attempt-free requeue remains proposed and unimplemented.",
+      "Live Docker/CDI readiness and sibling-worker convergence not exercised; no GPU containers or live CDI writes.",
+      "No installed generation, reboot/restart, root-service or power-loss qualification.",
+      "The broader staged-read requirement axes remain as recorded in the ledger; no campaign completion claim."
+    ],
+    "note": "Scoped source-fixture evidence for lead review only. This is not a merge approval, deployment acceptance, staged-read invariant proof, or a waiver. See gpu_container_runtime_1895_validation.json for exact commands, all runs and receipt paths."
+  },
+  "deploy": {
+    "status": "not-this-step",
+    "readiness": "pending lead qualification"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": [
+    {
+      "id": "SC-01",
+      "target": "PB owns admission, placement and recovery decisions.",
+      "implemented": "Scoped source fence and exact readiness recipe use existing PB admission.",
+      "deployed": "Not deployed by this task; ledger axes unchanged."
+    },
+    {
+      "id": "ID-02",
+      "target": "Keep immutable action identity and distinct charged attempt identity.",
+      "implemented": "Fixture proves the failed ending preserves identity and charges one attempt; free requeue remains proposed.",
+      "deployed": "Not deployed by this task; ledger axes unchanged."
+    },
+    {
+      "id": "ID-08",
+      "target": "Separate worker/runtime source identity from deployed support.",
+      "implemented": "Native x86_64/aarch64 fixture receipts retained; no installed-client convergence claim.",
+      "deployed": "Not deployed by this task; lead qualification pending."
+    },
+    {
+      "id": "ID-09",
+      "target": "Distinguish submission, terminal exit, CAS publication and application validity.",
+      "implemented": "Terminal/log/receipt audit recorded; application validity and staged campaign completion are outside this slice.",
+      "deployed": "Not deployed by this task; ledger axes unchanged."
+    }
+  ]
+}

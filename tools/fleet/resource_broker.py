@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import queue
 import re
 import secrets
 import select
@@ -258,6 +259,32 @@ def _load_gpu_module(filename='gpu_memory.py'):
 
 class SystemdBackend:
     def __init__(self, root=Path('/sys/fs/cgroup')):self.root=Path(root)
+    def inspect_container(self, cid):
+        reply=subprocess.run(['/usr/bin/docker','--host','unix:///run/docker.sock',
+                              'container','inspect',cid],capture_output=True,text=True,timeout=5)
+        if reply.returncode:raise ValueError('daemon launch state unavailable: '+reply.stderr[:500])
+        rows=json.loads(reply.stdout)
+        if not isinstance(rows,list) or len(rows)!=1 or not isinstance(rows[0],dict):
+            raise ValueError('daemon returned invalid container state')
+        return rows[0]
+
+    def remove_after_exit(self, cid, scope, *, running):
+        def remove_terminal():
+            # A detached --rm retains its normal lifetime. Wait for the daemon's
+            # exit event, then verify the immutable id before removal. This
+            # helper never holds admission or the authority lock while waiting.
+            command=['/usr/bin/docker','--host','unix:///run/docker.sock']
+            if running:
+                subprocess.run([*command,'wait',cid],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            try:
+                row=self.inspect_container(cid)
+                if (row.get('State',{}).get('Running') is False
+                        and row.get('HostConfig',{}).get('CgroupParent')==scope):
+                    subprocess.run([*command,'rm','-v',cid],capture_output=True,timeout=5)
+            except (OSError,ValueError,subprocess.TimeoutExpired):pass
+        thread=threading.Thread(target=remove_terminal,name='docker-auto-remove',daemon=True)
+        thread.start()
+
     def path(self, scope):
         if not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):raise ValueError('invalid scope')
         return self.root/'prismabuild.slice'/scope
@@ -410,9 +437,175 @@ class SystemdBackend:
             if leaf.exists():leaf.rmdir()
         self.command('stop',scope)
 
+class GPUContainerRuntime:
+    """Broker-owned durable fence; workers consume its public local mirror."""
+    def __init__(self, module, durable, mirror, lock, *, cdi_dir='/var/run/cdi'):
+        self.module=module;self.durable=Path(durable);self.mirror=Path(mirror)
+        self.lock=lock;self.cdi_dir=Path(cdi_dir).resolve()
+        self.boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        self.durable.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+        self.state={'schema':module.RUNTIME_SCHEMA,'latched':False}
+        try:
+            info=self.durable.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                raise ValueError('unsafe GPU runtime fence')
+            self.state=json.loads(self.durable.read_text())
+            if (not isinstance(self.state,dict) or self.state.get('schema')!=module.RUNTIME_SCHEMA
+                    or type(self.state.get('latched')) is not bool):
+                raise ValueError('invalid GPU runtime fence')
+        except FileNotFoundError:pass
+        except (OSError,ValueError) as exc:
+            self.state={'schema':module.RUNTIME_SCHEMA,'latched':True,
+                        'reason':module.RUNTIME_REASON,'subtype':'state_unknown','error':str(exc)[:1000]}
+        # Never inherit an old process's probe authorization.
+        self.state.pop('probe_token',None)
+        self._publish()
+        self.stop_read,self.stop_write=os.pipe2(os.O_CLOEXEC)
+        self.thread=None
+        self.submission_thread=None
+        self.pending=queue.SimpleQueue()
+
+    def _publish(self):
+        _atomic(self.durable,self.state)
+        _atomic(self.mirror,self.state,mode=0o644)
+
+    def latch(self, outcome, record):
+        with self.lock:
+            evidence={'action_key':record['action_key'],'attempt':record['nonce'],
+                      'scope_id':record['scope_id'],'daemon_error':outcome.daemon_error,
+                      'unix_time':time.time(),'boot_id':self.boot_id}
+            self.state={'schema':self.module.RUNTIME_SCHEMA,'latched':True,
+                        'reason':self.module.RUNTIME_REASON,'subtype':outcome.subtype,'evidence':evidence}
+            self._publish()
+            return evidence
+
+    def event(self, reason):
+        """Mint one probe for this event, never a cooldown or periodic retry."""
+        with self.lock:
+            self.state.update(latched=True,reason=self.module.RUNTIME_REASON,
+                              subtype=self.state.get('subtype','readiness_unknown'),
+                              probe_token=secrets.token_hex(32),
+                              probe_event={'reason':reason,'unix_time':time.time(),'boot_id':self.boot_id})
+            self._publish()
+            return self.state['probe_token']
+
+    def observe(self, container, record):
+        try:sources=self.module.cdi_mount_sources(self.cdi_dir)
+        except (OSError,ValueError,KeyError,TypeError):sources=set()
+        outcome=self.module.container_launch_outcome(container,cdi_sources=sources)
+        labels=container.get('Config',{}).get('Labels',{}) or {}
+        probe=labels.get(self.module.RUNTIME_PROBE_LABEL)
+        with self.lock:
+            if probe and probe==self.state.get('probe_token'):
+                state=container.get('State',{})
+                config=container.get('Config',{})
+                devices=container.get('HostConfig',{}).get('DeviceRequests',[]) or []
+                # Verify the actual daemon recipe as well as the claim's sealed
+                # recipe. A CLI status, swallowed error or arbitrary payload
+                # success cannot reopen the host.
+                injected=any(device.get('Driver')=='cdi' and device.get('DeviceIDs')==['nvidia.com/gpu=all']
+                             for device in devices)
+                if (outcome.payload_started is True and state.get('Running') is False
+                        and state.get('ExitCode')==0 and config.get('Image')==self.module.RUNTIME_PROBE_IMAGE
+                        and config.get('Entrypoint')==['/bin/true'] and not config.get('Cmd')
+                        and injected):
+                    self.state.update(latched=False,cleared={'reason':'readiness_launch_succeeded',
+                        'event':self.state['probe_event'],'action_key':record['action_key'],
+                        'attempt':record['nonce'],'unix_time':time.time(),'boot_id':self.boot_id})
+                else:
+                    self.state['last_probe']={'reason':'readiness_launch_failed',
+                        'outcome':outcome.as_record(),'action_key':record['action_key'],
+                        'attempt':record['nonce'],'unix_time':time.time(),'boot_id':self.boot_id}
+                self.state.pop('probe_token',None)
+                self._publish()
+            elif outcome.kind=='host_fault':
+                self.latch(outcome,record)
+        return outcome
+
+    def _watch(self, submit):
+        try:
+            with_watch=self.module.CDIChangeWatch(self.cdi_dir)
+            try:
+                submit(self.event('watch_restart'))
+                while True:
+                    reason=with_watch.next_change(self.stop_read)
+                    if reason is None:return
+                    submit(self.event(reason))
+            finally:with_watch.close()
+        except Exception as exc:
+            with self.lock:
+                self.state.update(latched=True,reason=self.module.RUNTIME_REASON,
+                                  subtype='watch_unknown',watch_error=str(exc)[:1000])
+                self.state.pop('probe_token',None)
+                self._publish()
+            print('GPU runtime watcher failed closed: '+str(exc)[:1000],flush=True)
+
+    def _submit_events(self, submit):
+        while True:
+            token=self.pending.get()
+            if token is None:return
+            with self.lock:
+                current=token==self.state.get('probe_token')
+            if current:submit(token)
+
+    def start(self, submit):
+        if self.cdi_dir.is_dir() or self.state['latched'] or Path('/dev/nvidiactl').exists():
+            # The inotify reader must stay responsive while the published
+            # client seals/submits. Superseded queued events coalesce; an old
+            # already-published probe may finish but cannot clear a new fence.
+            self.submission_thread=threading.Thread(target=self._submit_events,args=(submit,),
+                                                    name='cdi-probe-submit',daemon=True)
+            self.submission_thread.start()
+            self.thread=threading.Thread(target=self._watch,args=(self.pending.put,),name='cdi-readiness',daemon=True)
+            self.thread.start()
+
+    def submit_probe(self, uid, token):
+        """Submit through the published client after dropping root privileges."""
+        account=pwd.getpwuid(uid)
+        checkout=str(Path(account.pw_dir)/'tmp/prismabuild-runtime-readiness')
+        command=['/usr/bin/python3','/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py',
+                 '--cwd',checkout,'--transport','pool','--here','--gpu','--exclusive',
+                 '--cpus','1','--demand','mem_gb=1','--gpu-memory-gb','1',
+                 '--container-image',self.module.RUNTIME_PROBE_IMAGE,'--timeout-s','30',
+                 '--env',self.module.RUNTIME_PROBE_ENV+'='+token,
+                 '--env','OMP_NUM_THREADS=1','--env','MKL_NUM_THREADS=1','--env','OPENBLAS_NUM_THREADS=1',
+                 '--detach','--',*self.module.runtime_probe_command()]
+        # A tiny dedicated checkout keeps unrelated source and credentials out
+        # of the snapshot. Preparation and submission run as the worker UID.
+        prepare = ("import os, pathlib, subprocess, sys; p=pathlib.Path(sys.argv[1]); "
+                   "p.mkdir(parents=True, exist_ok=True); "
+                   "subprocess.run(['/usr/bin/git','init','-q',str(p)],check=True); "
+                   "r=subprocess.run(['/usr/bin/git','-C',str(p),'rev-parse','--verify','HEAD'],"
+                   "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+                   "subprocess.run(['/usr/bin/git','-C',str(p),'-c','user.name=PrismaBuild',"
+                   "'-c','user.email=prismabuild@localhost','commit','--allow-empty','-qm',"
+                   "'GPU runtime readiness'],check=True) if r.returncode else None; "
+                   "os.execv(sys.argv[2],sys.argv[2:])")
+        try:
+            result=subprocess.run(['/usr/bin/python3','-c',prepare,checkout,*command],
+                user=uid,group=account.pw_gid,extra_groups=[],cwd=account.pw_dir,
+                env={'HOME':account.pw_dir,'USER':account.pw_name,'PATH':'/usr/bin:/bin',
+                     'TMPDIR':str(Path(account.pw_dir)/'tmp'),'GIT_CONFIG_GLOBAL':'/dev/null'},
+                capture_output=True,text=True,timeout=120)
+            detail={'returncode':result.returncode,'stdout':result.stdout[-4000:],'stderr':result.stderr[-2000:]}
+        except (OSError,subprocess.TimeoutExpired) as exc:
+            detail={'error':str(exc)[:2000]}
+        with self.lock:
+            if self.state.get('probe_token')==token:
+                self.state['probe_submission']=detail
+                self._publish()
+
+    def close(self):
+        os.write(self.stop_write,b'x')
+        if self.thread is not None:self.thread.join()
+        self.pending.put(None)
+        if self.submission_thread is not None:self.submission_thread.join()
+        os.close(self.stop_read);os.close(self.stop_write)
+
+
 class Authority:
-    def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None):
-        self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend
+    def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None,runtime=None):
+        self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend;self.runtime=runtime
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
         # The worker reads this volatile v1 mirror.  The canonical authority is
         # separate so clearing /run at boot cannot turn a named hold into an
@@ -595,7 +788,7 @@ class Authority:
         if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end','maintenance_takeover'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
-        if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
+        if op in {'container_begin','container_end','container_outcome'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
                  else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
@@ -787,7 +980,7 @@ class Authority:
     @staticmethod
     def _stop_details(record):
         return {key:record[key] for key in ('stop_reason','stopped_unix',
-                'termination_evidence','last_cleanup_reason') if key in record}
+                'termination_evidence','last_cleanup_reason','host_fault') if key in record}
 
     def admin(self,uid,request):
         """Operate the one gate that stops this host, as a claim with a holder.
@@ -1181,7 +1374,8 @@ class Authority:
 
     def container(self,uid,pid,request):
         op=request['op'];scope=request.get('scope_id')
-        fields={'op','scope_id'} if op=='container_begin' else {'op','scope_id','ticket'}
+        fields=({'op','scope_id'} if op=='container_begin' else
+                {'op','scope_id','ticket','container_id','remove'} if op=='container_outcome' else {'op','scope_id','ticket'})
         if set(request)-fields or not isinstance(scope,str) or not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):
             raise ValueError('invalid container intent fields')
         with self.lock:
@@ -1199,10 +1393,30 @@ class Authority:
                 ticket=secrets.token_hex(32)
                 record.setdefault('container_tickets',[]).append(ticket)
                 _atomic(self.state_dir/(scope+'.json'),record)
-                return {'ok':True,'ticket':ticket}
+                return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':1} if self.runtime is not None else {})}
             ticket=request.get('ticket')
             if not isinstance(ticket,str) or HEX64.fullmatch(ticket) is None or ticket not in record.get('container_tickets',[]):
                 raise PermissionError('container intent authority does not match')
+            if op=='container_outcome':
+                cid=request.get('container_id')
+                if not isinstance(cid,str) or not HEX64.fullmatch(cid):raise ValueError('invalid container id')
+                container=self.backend.inspect_container(cid)
+                labels=container.get('Config',{}).get('Labels',{}) or {}
+                if (container.get('Id')!=cid or labels.get('prismabuild.scope')!=scope
+                        or container.get('HostConfig',{}).get('CgroupParent')!=scope):
+                    raise PermissionError('daemon container does not belong to this attempt')
+                if self.runtime is None:return {'ok':True,'launch_outcome':{'kind':'unknown'}}
+                outcome=self.runtime.observe(container,record)
+                if type(request.get('remove')) is not bool:raise ValueError('invalid removal declaration')
+                if request['remove']:self.backend.remove_after_exit(cid,scope,running=container.get('State',{}).get('Running') is True)
+
+                if outcome.kind=='host_fault':
+                    record['host_fault']={'reason':self.runtime.module.RUNTIME_REASON,
+                        'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
+                        'action_key':record['action_key'],'attempt':record['nonce'],
+                        'unix_time':time.time(),'boot_id':self.runtime.boot_id}
+                    _atomic(self.state_dir/(scope+'.json'),record)
+                return {'ok':True,'launch_outcome':outcome.as_record()}
             record['container_tickets'].remove(ticket)
             _atomic(self.state_dir/(scope+'.json'),record)
             return {'ok':True}
@@ -1436,6 +1650,10 @@ def main():
     total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))
     authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
                         maintenance_state=args.maintenance_state)
+    capacity_module=_load_gpu_module('gpu_capacity.py')
+    authority.runtime=GPUContainerRuntime(capacity_module,
+        Path(args.maintenance_state).with_name('gpu-container-runtime.json'),
+        authority.state_dir.parent/'gpu-container-runtime.json',authority.lock)
     endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
     if endpoint.exists():
         # systemd owns one broker; refuse an active endpoint rather than take it.
@@ -1447,15 +1665,18 @@ def main():
     with Server(str(endpoint),Handler) as server:
         server.authority=authority
         os.chown(endpoint,0,pwd.getpwuid(args.uid).pw_gid);endpoint.chmod(0o660)
-        monitor=ResourceMonitor(authority,_load_gpu_module(),capacity_module=_load_gpu_module('gpu_capacity.py'))
+        monitor=ResourceMonitor(authority,_load_gpu_module(),capacity_module=capacity_module)
         for name in ('resource_broker.py','resource_payload.py','gpu_memory.py','gpu_capacity.py'):
             path=_trusted_file(Path(__file__).resolve().with_name(name))
             authority.installation_paths[name]=path
             authority.installed_sha256[name]=hashlib.sha256(path.read_bytes()).hexdigest()
         authority.health_check=monitor.healthy
         monitor.start()
+        authority.runtime.start(lambda token:authority.runtime.submit_probe(args.uid,token))
         print('PrismaBuild resource broker ready',flush=True)
         try:server.serve_forever(poll_interval=0.5)
-        finally:monitor.close()
+        finally:
+            authority.runtime.close()
+            monitor.close()
 
 if __name__=='__main__':main()

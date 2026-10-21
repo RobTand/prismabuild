@@ -5512,3 +5512,42 @@ Then resume the pending publisher command for convergence and canary verificatio
 The helper itself never opens the gate. Qualified runtime identities are copied
 from verified root receipts into the plan and checked before host preparation;
 changing the plan's runtime list is not a qualification route.
+
+## A GPU host cannot start containers (#1895)
+
+With the #1895 source slice installed and converged, a proven CDI missing mount
+or NVIDIA container initialization failure latches
+`gpu_container_runtime_unready`. `pbstatus` shows the named reason on the host
+and its GPU claim denials. The host keeps taking CPU work. A failed action still
+consumes its attempt and its ending names
+`host_fault: gpu_container_runtime_unready/<subtype>`. Automatic retry without
+charging an attempt remains future #1895 work.
+
+Read the root broker's durable
+`/var/lib/prismabuild-resource-broker/gpu-container-runtime.json` or its public
+local `/run/prismabuild/gpu-container-runtime.json` mirror for the subtype,
+action key, attempt nonce, daemon error, Unix time and boot ID. Do not remove the
+record to reopen admission. The configured offer still names the physical GPU;
+the observed offer reports zero with the fence reason. Every worker on the host
+checks this same mirror rather than keeping its own cooldown.
+
+PB blocks on inotify of local `/run/cdi`, which `/var/run/cdi` resolves to.
+Replacing `nvidia.yaml` atomically, recreating the directory, watch overflow or
+watcher restart requests one bounded readiness launch. NVIDIA's package hook
+owns CDI regeneration. PB never regenerates or edits it. After an event, PB
+submits the exact pinned `/bin/true` CDI-injection probe described in
+[the design contract](design.md#host-gpu-container-runtime-fence-1895), through
+ordinary host-pinned PB admission as the worker UID. The tiny checkout is
+`~/tmp/prismabuild-runtime-readiness`. The probe declares 1 CPU, 1 GiB host RAM,
+1 GiB GPU memory, exclusive GPU admission and a 30-second payload deadline.
+It uses the digest already declared by the failed actions, with `--pull=never`.
+An absent local image, occupied device, refusal or failed launch cannot clear
+the fence. There is no periodic retry; the next CDI event authorizes another
+probe. `probe_submission`, `last_probe` and `cleared` retain available evidence.
+Only success for the latest event clears; a stale probe cannot reopen a newer
+fence.
+
+The fixture tests exercise fake Docker state and temporary local inotify
+watches. They establish no live runtime repair, real GPU container launch,
+power-loss durability or installed-generation convergence. Deployment and its
+live acceptance remain the lead's work.
