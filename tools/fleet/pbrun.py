@@ -436,7 +436,8 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
             ap.error(exc.reason)
         if args.seal_only or args.publish_sealed is not None or args.detach:
             print_consumer_refusal(exc, sealed=args.seal_only)
-            raise SystemExit((exc.reason or 1) if detach_keeps_reason(args) else 1) from None
+            if not plain_detach(args):
+                raise SystemExit(1) from None
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
 
@@ -481,9 +482,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                 parser.error(refusal.reason)
             if args.detach or args.publish_sealed is not None:
                 print_consumer_refusal(refusal, sealed=False)
-                if detach_keeps_reason(args):
-                    raise SystemExit(refusal.reason or 1)
-                return 1
+                if not plain_detach(args):
+                    return 1
             if refusal.returncode == 2:
                 if refusal.reason:
                     print(refusal.reason, file=sys.stderr)
@@ -507,9 +507,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             if isinstance(exc, ArgumentRefused):
                 parser.error(exc.reason)
             print_consumer_refusal(exc, sealed=args.seal_only)
-            if detach_keeps_reason(args):
-                raise SystemExit(exc.reason or 1) from None
-            return 1
+            if not plain_detach(args):
+                return 1
         raise SystemExit(exc.reason or exc.returncode) from None
     except (OSError, pb.PrismaBuildError, ValueError) as exc:
         if 'args' not in locals() or not (args.seal_only or args.publish_sealed is not None):
@@ -524,8 +523,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             writer.close()
 
 
-def detach_keeps_reason(args) -> bool:
-    """Plain --detach exits with the refusal's reason after its JSON line; --seal-only and --publish-sealed exit 1."""
+def plain_detach(args) -> bool:
+    """Plain --detach adds the JSON refusal line and keeps its earlier exits and messages; the #1893 verbs exit 1."""
     return args.detach and not args.seal_only and args.publish_sealed is None
 
 
