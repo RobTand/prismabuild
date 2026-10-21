@@ -5682,10 +5682,11 @@ the observed offer reports zero with the fence reason. Every worker on the host
 checks this same mirror rather than keeping its own cooldown.
 
 PB blocks on inotify of local `/run/cdi`, which `/var/run/cdi` resolves to.
-Replacing `nvidia.yaml` atomically, recreating the directory, watch overflow or
-watcher restart requests one bounded readiness launch when a fence is already
-latched or unknown. Healthy startup leaves GPU admission open. NVIDIA's package
-hook owns CDI regeneration. PB never regenerates or edits it. After an event, PB
+Replacing `nvidia.yaml` atomically or recreating the directory requests one
+bounded readiness launch while the fence is latched. Restart revalidates a
+latched or unknown fence once. Overflow marks readiness unknown and revalidates
+once. Healthy startup leaves GPU admission open. NVIDIA's package hook owns CDI
+regeneration. PB never regenerates or edits it. After an event, PB
 submits the exact pinned `/bin/true` CDI-injection probe described in
 [the design contract](design.md#host-gpu-container-runtime-fence-1895), through
 ordinary host-pinned PB admission as the worker UID. The tiny checkout is
