@@ -395,11 +395,12 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
             "scope_required": any(outcome.get(field) is not None
                                   for field in ("resource_scope", "resource_scope_intent")),
             "containers_required": outcome.get("container_owner") is not None,
-            "resource_scope_cleanup": summary["resource_scope_cleanup"] or summary["detail"].get("resource_scope_cleanup"),
-            "container_cleanup": summary["container_cleanup"] or summary["detail"].get("container_cleanup"),
             "resource_profile": summary.get("resource_profile"),
             "profile": summary.get("profile"),
         })
+        for field in ("resource_scope_cleanup", "container_cleanup"):
+            value = summary[field]
+            context[field] = value if value is not None else summary["detail"].get(field)
     return _row(
         summary["action_key"] or "",
         summary["status"],
@@ -795,21 +796,24 @@ def consumer_ending_row(q, row, *, cas, context=None):
     diagnostics = {key: value for key, value in row.items()
                    if key not in {"action_key", "status", "succeeded"}}
     diagnostics.update({key: context.get(key) for key in ("resource_profile", "profile")})
-    cleanup = context.get("resource_scope_cleanup") or row.get("resource_scope_cleanup")
-    containers = context.get("container_cleanup") or row.get("container_cleanup")
+    cleanup = context.get("resource_scope_cleanup", row.get("resource_scope_cleanup"))
+    containers = context.get("container_cleanup", row.get("container_cleanup"))
+    no_attempt = not context.get("claimed") and status in {
+        "cache_hit", "withdrawn", "superseded", "refused", "failed"}
     scope_complete = (cleanup.get("complete") is True if cleanup is not None
                       else not context.get("scope_required", True))
-    # Ordinary finish persists scope cleanup only after container cleanup
-    # succeeds. A separate cancellation/container record, when present,
-    # remains authoritative and may still report incomplete.
+    # Normal-finish invariant: PoolQueue._cleanup_payload_containers in
+    # src/prismabuild/pool.py:15010 refuses incomplete container cleanup before
+    # filing resource_scope_cleanup at :15097 and :15100. Its Docker cleaner
+    # removes then re-lists containers at :15280 and :15281. Pinned by
+    # test_scope_cleanup_is_persisted_only_after_containers_are_removed.
+    # An explicit container record always requires complete is True.
     containers_complete = (containers.get("complete") is True if containers is not None
                            else (cleanup is not None and cleanup.get("complete") is True)
-                           or not context.get("containers_required", True))
+                           or not context.get("containers_required", True) or no_attempt)
     diagnostics["cleanup"] = {
-        "complete": bool((scope_complete and containers_complete
-                          and (status != "withdrawn" or context.get("result_ended", True)))
-                         or (not context.get("claimed") and status in {
-                             "cache_hit", "withdrawn", "superseded", "refused", "failed"})),
+        "complete": bool(containers_complete and (no_attempt or (
+            scope_complete and (status != "withdrawn" or context.get("result_ended", True))))),
         "resource_scope": cleanup, "containers": containers,
     }
     result = None

@@ -1166,7 +1166,10 @@ resource-scope and container cleanup to complete. A scope or container
 owner that was never created has no cleanup debt. Ordinary finish persists
 completed scope cleanup after container cleanup succeeds, so that record also
 proves container cleanup when no separate container record is filed. An explicit
-incomplete container record still blocks completion. A running withdrawal counts
+incomplete container record still blocks completion. An explicit empty record or
+a record without `complete: true` also blocks completion. The consumer tests
+pin the cleanup writer's removal-before-proof ordering, including refusal
+and removal-error paths. A running withdrawal counts
 as cleaned only after that cleanup. If the deadline expires first, exit 75
 and `complete: false` retain each ending and its current cleanup state.
 Unreadable evidence still exits 74. Rechecks use the existing wait mechanism.

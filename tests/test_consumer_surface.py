@@ -16,6 +16,7 @@ from prismabuild import action_client, action_result, core as pb, pool
 from fleet_world import Admission, FleetWorld
 from submission_support import patch_store
 from test_verified_action_result import _standard_action, _publish_result
+from test_pool_resource_scope import scoped
 from pbmcp_fixture import settle_publishers
 from test_slurm_withdraw_siblings import controller, _lane_record, KEY as SLURM_KEY
 
@@ -377,3 +378,95 @@ def test_no_scope_or_container_owner_has_no_cleanup_debt(consumer_world):
         context={"claimed": True, "result_ended": True,
                  "scope_required": False, "containers_required": False})
     assert row["diagnostics"]["cleanup"]["complete"] is True
+
+
+
+@pytest.mark.parametrize("container_record", [{}, {"complete": False},
+    {"complete": None}, {"complete": 1}, {"complete": True}])
+@pytest.mark.parametrize("location", ["context", "row"])
+@pytest.mark.parametrize("claimed", [False, True])
+def test_explicit_container_cleanup_always_requires_true(
+        consumer_world, container_record, location, claimed):
+    row = pbwait._row("a" * 64, "withdrawn")
+    context = {"claimed": claimed, "result_ended": True,
+               "resource_scope_cleanup": {"complete": True}}
+    (context if location == "context" else row)["container_cleanup"] = container_record
+    projected = pbwait.consumer_ending_row(consumer_world.queue, row, cas=None, context=context)
+    assert projected["diagnostics"]["cleanup"]["containers"] == container_record
+    assert projected["diagnostics"]["cleanup"]["complete"] is (
+        container_record.get("complete") is True)
+
+
+@pytest.mark.parametrize("removal", ["removed", "remaining", "error"])
+def test_scope_cleanup_is_persisted_only_after_containers_are_removed(scoped, monkeypatch, removal):
+    queue, item, calls = scoped
+    queue._start_resource_scope(item)
+    key = item["action_key"]
+    owner = "c" * 64
+    item.update(container_owner=owner, max_attempts=1)
+    claim_path = queue.records.item_path("claimed", key)
+    queue.records.replace_record_at(claim_path, item)
+    marker = queue.container_marker(owner)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    containers = ["container-1892"]
+    events = []
+    published = []
+    replace = queue.records.replace_record_at
+
+    def assert_scope_cleanup_absent():
+        assert "resource_scope_cleanup" not in item
+        assert "resource_scope_cleanup" not in json.loads(claim_path.read_bytes())
+
+    def list_containers(label, value):
+        if not published:
+            assert_scope_cleanup_absent()
+        events.append("list-empty" if not containers else "list-populated")
+        return list(containers)
+
+    def remove_containers(identities):
+        assert_scope_cleanup_absent()
+        assert identities == ["container-1892"]
+        events.append("remove")
+        if removal == "error":
+            raise OSError("container daemon refused removal")
+        if removal == "removed":
+            containers.clear()
+        return list(identities)
+
+    def persist_after_removal(path, value):
+        if value.get("resource_scope_cleanup", {}).get("complete") is True:
+            assert not containers
+            assert not marker.exists()
+            assert events.index("remove") < events.index("list-empty")
+            published.append(str(path))
+        return replace(path, value)
+
+    monkeypatch.setattr(pool, "_docker_containers_with_label", list_containers)
+    monkeypatch.setattr(pool, "_docker_remove_containers", remove_containers)
+    monkeypatch.setattr(queue.records, "replace_record_at", persist_after_removal)
+    result = queue.cleanup_action_containers(item)
+    if removal != "removed":
+        assert result["complete"] is False
+        assert_scope_cleanup_absent()
+        assert not published
+        assert "release" not in calls
+        assert marker.exists()
+        return
+
+    assert result["complete"] is True
+    assert published
+    assert item["resource_scope_cleanup"]["complete"] is True
+    assert json.loads(claim_path.read_bytes())["resource_scope_cleanup"]["complete"] is True
+    assert "container_cleanup" not in item
+    # The real finish consumes the persisted proof without a second removal.
+    queue.finish(key, status="failed", detail={"returncode": 7, "stdout": "stopped\n"},
+                 claim_snapshot=item)
+    terminal = json.loads(queue.records.item_path("failed", key).read_bytes())
+    assert "container_cleanup" not in terminal
+    assert events.count("remove") == 1
+    context = {}
+    row = pbwait._from_ending(queue, (queue.records.item_path("failed", key), terminal),
+                              context=context)
+    projected = pbwait.consumer_ending_row(queue, row, cas=None, context=context)
+    assert projected["diagnostics"]["cleanup"]["complete"] is True
