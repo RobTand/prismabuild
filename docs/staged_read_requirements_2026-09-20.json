@@ -24,6 +24,22 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_1929": {
+    "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -190,6 +206,22 @@
      "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
     },
     "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   },
+   "scoped_repair_1929": {
+    "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -347,6 +379,22 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_1929": {
+    "target": "Behavior attributed per (runtime_commit, generation_id).",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -587,6 +635,22 @@
      "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
     },
     "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   },
+   "scoped_repair_1929": {
+    "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -763,6 +827,22 @@
      "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
     },
     "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   },
+   "scoped_repair_1929": {
+    "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -966,6 +1046,22 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_1929": {
+    "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -1058,7 +1154,23 @@
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: movers 68fdb8728f38 and 750a4f8c65eb of PQ consumer d54952c1fcac inherited task_class measurement and were refused measurement_host_not_idle on 1,596 passes over 134 s",
      "violation": "a mover's eligibility came from its consumer's class, which admits no stage-host placement"
     }
-   ]
+   ],
+   "scoped_repair_1929": {
+    "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+   }
   },
   {
    "acceptance": [
@@ -1771,6 +1883,22 @@
      "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
     },
     "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   },
+   "scoped_repair_1929": {
+    "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {
@@ -1888,6 +2016,22 @@
      "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
     },
     "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   },
+   "scoped_repair_1929": {
+    "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
+    "implemented_source": {
+     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "state": "component-implemented",
+     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
+     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+    },
+    "deployment": "not deployed; no runtime publication in this lane",
+    "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
+    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
    }
   },
   {

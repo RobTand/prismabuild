@@ -9,18 +9,23 @@ and verify terminal records, logs and CAS receipts. Already-admitted action
 children execute directly; do not submit recursively. Read-only inspection,
 source edits and Git operations may run on the coordinator. If the fleet is
 unavailable, repair it; do not silently fall back to local tests or GPU work.
-PrismaBuild owns placement, including its bounded best-effort preferences ---
-`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement`, which
-prefers not to spend a busy box's GPU power on work that can go elsewhere, and
-`deferred_for_ready_gpu_row`, which keeps CPU-only work out of the room a
-ready GPU row needs on a free GPU for the pass in which the scan cannot
-evaluate that row (#1169). A deferral expires by itself; do not read one as a
-refusal, and do not retag or resubmit to defeat it. One placement rule is not
-a preference and has no timer: `deferred_for_cpu_only_host` (#1262), where a
-GPU host leaves a CPU-only row to a matching host without a GPU that fits it
-now, until that host claims it or passes on it. Do not tag CPU-only work to a
-GPU host to get it placed; leave it untagged unless it truly needs that
-architecture.
+PrismaBuild owns placement. Its bounded best-effort preferences
+`deferred_for_preferred_cpu`, `deferred_for_cross_resource_placement`, and
+`deferred_for_idle_gpu_host` expire after at most 20 seconds. Do not retag or
+resubmit to defeat them. Idle GPUs give restartable portable CPU work first
+claim on the Sparks' fast CPUs (#1929). Idle requires no PB GPU reservation,
+fresh trusted GPU evidence with no foreign process, including exempt vLLM,
+and no eligible READY GPU row (#1526). A denied GPU row whose pool drain would
+resolve the refusal evicts CPU guests through ordinary preemption, lowest
+priority then most recently started, with normal cleanup and retry lineage.
+Pinned CPU rows are never guests. CPU pbtest shards declare retry safety and
+three launches; interruptions consume launches, and after two interruptions
+portable retries stay on CPU-only hosts. Nonrestartable rows retain #1262.
+While a GPU is in use or GPU work is pending, `deferred_for_cpu_only_host`
+remains an untimed rule leaving a CPU row to a matching CPU-only host that
+fits it now. `deferred_for_ready_gpu_row` also preserves the room a READY GPU
+row needs during a pass that cannot evaluate it (#1169). Leave portable work
+untagged; tags declare real architecture or host requirements.
 
 Everything vLLM is exempt, universally (Rob, 2026-09-07): a serve, a census, a
 routing run, a benchmark against a live endpoint, its GPU containers. Run it

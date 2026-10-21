@@ -1012,7 +1012,7 @@ on the same host: the lowest-priority holder whose released tokens would admit
 the denied demand is withdrawn through the existing withdrawal ladder and
 re-published at its original priority and aging count, as a new generation the
 cancellation does not cover. Release is asynchronous, so the denied item is
-admitted on a later pass. Preemption never crosses into the foreground band,
+admitted on a later pass. Ordinary background preemption never crosses into the foreground band,
 never stops a holder whose release would not close the gap, and never cancels a
 second holder while a withdrawn one's tokens are still owed. It stops nothing when
 the selected claim concluded or changed before withdrawal, and refuses rather than raises when the holder's
@@ -1038,6 +1038,38 @@ and withdrawal lineage. The same exact-generation reader serves an ordinary
 generation whose row a later run replaced, with no handoff context to follow.
 Recovery writes no queue pointer and names the immutable attempt as its source.
 Attempts predating this context provide no inferred link.
+
+GPU denial also has a guest policy (#1929). A portable CPU claim on a GPU
+host carries the claim-scoped `cpu_guest: true` only when its sealed generation
+action is restartable and its portability follows a matching CPU-only offer
+or its authorized guest-retry lineage. Automatic capability
+tags do not pin a row; explicit hostname and architecture/class tags do.
+The ordinary preemption path selects guests under admission and holds the same
+host-local `.preemption` lock through withdrawal and retry publication.
+An eligible GPU row may reclaim guests across priority bands when its refusal
+has `drain_resolves: true`, including adaptive CPU `host_pressure`. Token
+shortages use the same path. Foreign or invalid-device refusals reclaim nothing.
+Lowest priority yields first, then the most recently started claim. Several
+guests may be needed: all eligible guest tokens must cover a token gap before
+the first withdrawal, and each handoff waits for normal cleanup before selecting
+the next. Pressure drains re-evaluate the same refusal after each release;
+a held-CPU refusal selects only guests on the named CPUs. Pinned CPU rows are
+never guest victims, including background pinned rows. Ordinary background
+GPU-holder preemption remains available at its existing priority boundary.
+
+Pool CPU pbtest shards seal `retry_safe: true` and `max_attempts: 3`; GPU and
+SLURM shards keep their existing single-launch policy. Each eviction consumes
+a launch, just as background preemption does. Only a verified interruption prefix with fewer than
+two consumed launches and another launch remaining can be a guest. After two
+interruptions, or when another interruption would exhaust the budget, a
+portable retry waits for a CPU-only host even when that host is currently full.
+A larger user-supplied retry budget cannot extend guest eligibility.
+`cpu_guest_retry` is derived from the authorized prior guest handoff, so
+a disappearing CPU-only offer cannot turn an exhausted retry into protected
+GPU-host overflow. Recorded failures do not become restart permission. Nonrestartable portable work keeps
+the existing #1262 placement and overflow behavior. No attempt counter, failed
+history, sealed request, or immutable ending is refunded or rewritten.
+
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
@@ -6088,7 +6120,8 @@ unknown or mismatched evidence keeps protection. Ordinary GPU admission keeps
 checking residency and replaces the denial on reevaluation. While a lead is in
 flight, admitted CPU work may occupy the box's memory. Once residency lands,
 a GPU row reserving the full 104 GiB Spark budget then waits for CPU work to
-drain. This is the accepted #1169 behavior.
+drain. Restartable portable guests may now be reclaimed through #1929; pinned
+and nonrestartable work retains the accepted #1169 drain behavior.
 A pool-holder drain still protects the GPU row. This exception shares the
 existing lock-free host-denial snapshot used for carried withholds, adds no
 lock or timeout, and grants no GPU or CPU admission credit.
@@ -6102,25 +6135,42 @@ transition, or host-admission lock and does not change GPU admission, GPU row
 order, measurement election, or running claims. The READY snapshot remains
 advisory; the existing per-key transition and claim rename still decide ownership.
 
-CPU-only work on a GPU host is governed by a placement rule ahead of that
-preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
-feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
-refused on CPU (on 2026-09-28 both GB10s idled for 100 minutes that way). So a
-GPU host does not claim a CPU-only row while a live, matching host without a
-GPU fits the whole demand now -- free ledger tokens, free preferred CPUs and
-observed capacity -- and has not passed on the row. "Passed on" is evidence
-that host already evaluated the row and did not take it: its published latest
-denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
-any reason but `transition_busy`, or, when that file is at its record cap, an
-entry of that host in the row's reason ring. The GPU host records
-`deferred_for_cpu_only_host`, ages nothing, and this CPU-host deferral ends once
-no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
-host is full or refuses, but portable rows must also pass the eligible-READY-GPU
-rule above. A host without a GPU never yields, so no two hosts wait on each
-other. Tags excluding every host without a GPU bypass only this CPU-host
-deferral, not the READY-GPU rule. Remote reads are made once per host per claim
-pass and each yield
-charges that view, so a pass never leaves a host more rows than it fits.
+Idle GPU hosts now take restartable portable CPU work first (#1929, Rob,
+2026-10-21). Idle means no PB GPU reservation, fresh trusted GPU capacity
+samples with zero foreign GPU processes, and no eligible READY GPU row under
+the #1526 rule above. Exempt vLLM serving counts as foreign GPU use. Raw power
+or utilization alone never establishes idle. The offer retains the broker's
+`gpu_sampled_unix` separately from its observation timestamp, so a renewed offer
+cannot renew an old GPU sample. Missing or old-generation evidence grants no
+idle preference. Admission still decides actual resource fit.
+
+For such a guest, the GPU host bypasses #1262. A host without a GPU gives a
+matching idle GPU host that fits the whole CPU/memory demand on its current
+ledger, preferred CPUs and observed capacity at most 20 seconds to claim.
+It records `deferred_for_idle_gpu_host`, with no reservation or aging pass,
+through `PlacementPass` and `TimedPreference.IDLE_GPU_HOST`. The timer persists
+across passes for the exact publication, and then the CPU-only host claims
+normally. This advisory yield does not charge peer capacity. READY eligibility
+reuses `_ready_gpu_for_placement` with the peer's capabilities, tags, physical
+GPU reservation normalization and exact-attempt denial evidence.
+
+While the GPU is in use, GPU work is pending, or a portable row is not
+restartable, #1262 remains an untimed rule. A GPU host leaves CPU-only work to
+a live matching CPU-only host that fits the whole demand now and has not
+passed on it. Its latest exact-generation denial, except `transition_busy` or
+`deferred_for_idle_gpu_host`, establishes pass-on; a full denial index falls
+back to that host's non-preference entry in the row's reason ring.
+The GPU host records `deferred_for_cpu_only_host` and ages nothing. Overflow
+remains possible when CPU-only hosts fill or refuse, subject to #1526 and the
+guest retry cap. Explicit hostname/class tags keep their existing placement.
+A CPU-only host never waits indefinitely for another host. Peer reads remain
+once per host per pass; #1262 yields charge that view so it cannot leave more
+rows than a peer fits.
+
+These #1929 contracts describe source behavior. Runtime publication and the
+live guest/GPU canary proof remain separate acceptance steps. The scoped
+[source acceptance record](evidence/issue1929_guest_placement_acceptance_2026-10-21.json)
+keeps the requirement targets and remaining deployment/workload gaps explicit.
 
 Peer placement now owns one lazy offer snapshot and one advisory ledger
 observation per peer per claim pass in `_peer_placement.PlacementPass`.
@@ -6132,14 +6182,14 @@ preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
 Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
-The pass view owns both 20-second monotonic grace questions and the separate
+The pass view owns the three 20-second monotonic grace questions and the separate
 Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
 without restarting grace. Empty adaptive discovery, absent ready generations
 and a successful claim retire history through its owner. CPU-host age never
 becomes an expiry condition. Clock reads retain their original conditional
 positions and the Unix clock resolves the current pool clock on each read.
 
-Both timer rules consult capacity remaining after earlier CPU-host or scratch
+All three timer rules consult capacity remaining after earlier CPU-host or scratch
 yields in the pass. They do not charge capacity for their own yields.
 This avoids a second timer wait after another rule has already left a peer
 as much work as it fits; timer-only yields can still name more rows than the
