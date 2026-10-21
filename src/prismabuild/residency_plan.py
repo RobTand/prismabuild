@@ -4659,11 +4659,20 @@ def registry_root(queue) -> Path:
     return queue.records.residency_registry_root()
 
 
+def filed_plan_entry(entry) -> bool:
+    """A filed plan's name: a complete consumer key and ``.json``.
+
+    Reads only ``entry.name``, so a ``Path`` and an ``os.DirEntry`` select
+    alike.
+    """
+    stem, suffix = os.path.splitext(entry.name)
+    return suffix == ".json" and len(stem) == 64 and set(stem) <= _HEX
+
+
 def filed_consumers(queue) -> list[str]:
     """Filed names shaped as complete consumer keys, sorted for attribution."""
     return sorted(path.stem for path in queue.records.optional_plan_paths()
-                  if path.suffix == ".json" and len(path.stem) == 64
-                  and set(path.stem) <= _HEX)
+                  if filed_plan_entry(path))
 
 
 def filed_consumer_candidates(queue) -> list[str]:

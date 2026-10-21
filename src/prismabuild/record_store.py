@@ -2340,6 +2340,23 @@ class RecordStore:
     def optional_plan_paths(self) -> list[Path]:
         return immutable_files.scan_optional(self.residency_registry_root())
 
+    def residency_plan_records(self, *, select, parse, keep=None,
+                               ) -> list[tuple[Path, object]]:
+        """``(path, parse(path))`` for each plan ``select`` names, in name order.
+
+        A kept store (:meth:`kept`) parses a plan again only when its file
+        version moved (``DirectoryRecords``): a plan is filed once by
+        ``publish_exact`` and leaves by rename, never rewritten in place.
+        ``keep`` refuses a parse that must be read again next time.
+        """
+        directory = self.residency_registry_root()
+        if self._records is None:
+            return [(path, parse(path))
+                    for path in immutable_files.scan_optional(directory)
+                    if select(path)]
+        return self._records.read(directory, select=select, parse=parse,
+                                  keep=keep)
+
     def supersession_paths(self) -> list[Path]:
         return immutable_files.scan_optional(
             self.residency_registry_root() / RESIDENCY_SUPERSEDED)

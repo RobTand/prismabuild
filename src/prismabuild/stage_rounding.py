@@ -6,50 +6,74 @@ Imports run lazily to avoid a cycle at module load.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import functools
+from pathlib import Path
 
 
-def declared_range_index(queue) -> dict[str, int] | None:
-    """Sealed range bytes by mover key over every filed plan.
+def _plan_range_legs(queue, path: Path) -> tuple[tuple[str, int], ...] | None:
+    """One filed plan's ``(mover key, range bytes)`` legs, in plan order.
 
-    One scan for the whole mint: lists the filed plans once and
-    reads each once. Returns None when the plan directory does not
-    read, so the caller reports every in-flight holder unknown.
+    ``None`` when the plan does not read or validate: a kept read does
+    not remember that answer, so the plan is read again next cycle.
     """
     from prismabuild import pool as pool_mod
     from prismabuild import residency_plan as plan_mod
 
     try:
-        names = plan_mod.filed_consumers(queue)
+        plan = plan_mod.read_filed(queue, Path(path).stem)[0]
+    except (OSError, pool_mod.PoolContractError, ValueError):
+        return None
+    if plan is None:
+        return None
+    try:
+        phases = plan.get("phases")
+    except AttributeError:
+        return None
+    if not isinstance(phases, list):
+        return ()
+    legs: list[tuple[str, int]] = []
+    for phase in phases:
+        if not isinstance(phase, Mapping):
+            continue
+        for leg in plan_mod.prelaunch_stage_legs(phase):
+            try:
+                mover = str(leg["mover_key"])
+                start = int(leg["start_bytes"])  # type: ignore[arg-type]
+                end = int(leg["end_bytes"])  # type: ignore[arg-type]
+            except (TypeError, ValueError, KeyError):
+                continue
+            if len(mover) != 64 or end <= start or start < 0:
+                continue
+            legs.append((mover, end - start))
+    return tuple(legs)
+
+
+def declared_range_index(queue, store=None) -> dict[str, int] | None:
+    """Sealed range bytes by mover key over every filed plan.
+
+    One scan for the whole mint: lists the filed plans once and
+    reads each once. Through the tier cycle's kept ``store``
+    (``RecordStore.kept``) a plan whose file version holds is not
+    read again from one cycle to the next: the mint read all 740
+    plans, 374 MB, every cycle on dl380g10 (pb-tierscan). Returns
+    None when the plan directory does not read, so the caller
+    reports every in-flight holder unknown.
+    """
+    from prismabuild import pool as pool_mod
+    from prismabuild import residency_plan as plan_mod
+
+    records = queue.records if store is None else store
+    try:
+        filed = records.residency_plan_records(
+            select=plan_mod.filed_plan_entry,
+            parse=functools.partial(_plan_range_legs, queue),
+            keep=lambda legs: legs is not None)
     except (OSError, pool_mod.PoolContractError, ValueError):
         return None
     index: dict[str, int] = {}
-    for consumer in names:
-        try:
-            plan = plan_mod.read_filed(queue, consumer)[0]
-        except (OSError, pool_mod.PoolContractError, ValueError):
-            continue
-        if plan is None:
-            continue
-        try:
-            phases = plan.get("phases")
-        except AttributeError:
-            continue
-        if not isinstance(phases, list):
-            continue
-        for phase in phases:
-            if not isinstance(phase, Mapping):
-                continue
-            for leg in plan_mod.prelaunch_stage_legs(phase):
-                try:
-                    mover = str(leg["mover_key"])
-                    start = int(leg["start_bytes"])  # type: ignore[arg-type]
-                    end = int(leg["end_bytes"])  # type: ignore[arg-type]
-                except (TypeError, ValueError, KeyError):
-                    continue
-                if (len(mover) != 64 or end <= start or start < 0
-                        or mover in index):
-                    continue
-                index[mover] = end - start
+    for _path, legs in filed:
+        for mover, size in legs or ():
+            index.setdefault(mover, size)
     return index
 
 
@@ -106,7 +130,7 @@ def stage_holder_bytes(queue, key: str,
     return (None, declared)
 
 
-def landed_and_in_flight_bytes(queue, tier_id: str, kind: str,
+def landed_and_in_flight_bytes(queue, tier_id: str, kind: str, store=None,
                                ) -> tuple[int, int, int, int, int]:
     """Declared bytes beside held tokens for one stage tier.
 
@@ -117,6 +141,7 @@ def landed_and_in_flight_bytes(queue, tier_id: str, kind: str,
     from complete receipts; in-flight bytes come from the sealed
     plan range of each holder. A holder with no plan leg keeps its
     tokens in the counts and adds them to in_flight_unknown_gib.
+    ``store`` is the tier cycle's kept record store, when there is one.
     """
     from prismabuild import pool as pool_mod
 
@@ -126,7 +151,7 @@ def landed_and_in_flight_bytes(queue, tier_id: str, kind: str,
     in_flight_tokens = 0
     in_flight_bytes = 0
     in_flight_unknown = 0
-    index = declared_range_index(queue)
+    index = declared_range_index(queue, store)
     for key in ledger.holders():
         tokens = int(ledger.holdings(key).get(kind, 0))
         if tokens <= 0:
