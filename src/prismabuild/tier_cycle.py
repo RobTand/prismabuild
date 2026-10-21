@@ -415,8 +415,10 @@ class ReceiptCache:
     * ``records`` (:class:`kept_reads.DirectoryRecords`): the active
       movement and prewarm receipts the fill supply is folded from, every
       ``ready/`` and ``claimed/`` record (:func:`stage_release.queue_records`,
-      inside a cycle), and the tier and epoch of every residency fragment
-      (:func:`drop_prior_ram_epochs`).  A directory nothing was filed in
+      inside a cycle), the tier and epoch of every residency fragment
+      (:func:`drop_prior_ram_epochs`), and the sealed stage ranges of every
+      filed residency plan (:func:`stage_rounding.declared_range_index`, at
+      each mint).  A directory nothing was filed in
       since its last listing is not listed again, and a file whose version
       is unchanged is not read again.
     * ``census`` (:class:`kept_reads.CensusIndex`): the validated fragment
@@ -9101,7 +9103,7 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     return landed, in_flight
 
 
-def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str,
+def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str, store=None,
                 ) -> tuple[int, int, int]:
     """Byte side of the mint split, read beside the token split.
 
@@ -9111,7 +9113,8 @@ def _mint_bytes(queue: pool.PoolQueue, tier_id: str, kind: str,
     waste. Returns ``(landed_bytes, in_flight_bytes, unknown_gib)``.
     """
     try:
-        split = stage_rounding.landed_and_in_flight_bytes(queue, tier_id, kind)
+        split = stage_rounding.landed_and_in_flight_bytes(
+            queue, tier_id, kind, store)
     except (OSError, pool.PoolContractError, ValueError):
         return (0, 0, 0)
     return (split[1], split[3], split[4])
@@ -9122,6 +9125,7 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
                       writable_reader=None,
                       cap: int | None = None,
                       extra_tokens: Mapping[str, int] | None = None,
+                      store=None,
                       ) -> dict[str, object]:
     """Mint one tier's supply as writable-plus-landed, atomically (#733).
 
@@ -9142,7 +9146,10 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
     ``cap`` bounds the supply (the ram policy window); without it the
     supply is exactly ``writable + landed``.  ``extra_tokens`` carries the
     tier's other qualified kinds (fill rates and the like) into the same
-    single apply, so no kind is ever retired to zero mid-cycle.  Returns
+    single apply, so no kind is ever retired to zero mid-cycle.  ``store``
+    is the cycle's kept record store: the byte side reads the filed plans
+    through it, so an unchanged plan is not read again inside the lock
+    (pb-tierscan).  Returns
     ``{"landed", "in_flight", "supply", "ledger"}``; the caller stamps its
     own record fields.
     """
@@ -9174,7 +9181,7 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
         seen["landed"] = landed
         seen["in_flight"] = in_flight
         landed_bytes, flight_bytes, unknown_gib = _mint_bytes(
-            queue, tier_id, kind)
+            queue, tier_id, kind, store)
         seen["landed_bytes"] = landed_bytes
         seen["in_flight_bytes"] = flight_bytes
         seen["in_flight_unknown_gib"] = unknown_gib
@@ -10133,7 +10140,8 @@ def _cycle(
                 writable_tokens=supply_writable, writable_reader=reader,
                 cap=supply_cap,
                 extra_tokens={k: v for k, v in tokens.items()
-                              if k != kind})
+                              if k != kind},
+                store=store)
             record["writable_gib"] = minted.get("writable",
                                                 supply_writable)
             record["held_gib"] = minted["landed"] + minted["in_flight"]
