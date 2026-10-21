@@ -18033,6 +18033,24 @@ profile receipt, runtime deployment, cache authorization or a speedup claim.
 
 ### Merge-queue reviewed interpreter family (#1427)
 
+The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
+Runner inventory, runtime selection, history balancing, retry merging and shared
+outcome reducer. Its stricter full-suite mode rejects collect-only and deselected
+outcome records. It waits for child process exit directly, without changing the
+merge queue's tick or heartbeat loop. Gate state uses the existing single-writer
+lock and history fields under the config's `state_dir`; invocation reports and
+logs live under `gates/`. Exclusions retain their configured reasons.
+`prismabuild.mergeq_gate.v1` pins pass/fail/no_verdict with exits 0/1/125,
+sorted failing node IDs, verbatim refusal or inconclusive reasons, file inventory,
+runtime evidence and retained action/report/log/receipt references. Only a
+conclusive execution updates history. Forwarded `--env` values bind history
+compatibility and every shard request. Without forwarding, existing queue history
+identities stay unchanged. While pbtest #1891 is absent, a coordinator-only
+pbmergeq bridge adds these values at the selected published pbtest's existing
+shard-request builder, preserving its owned environment and submission path.
+Generations exposing #1891's validator receive the native `--env` flag instead.
+This is source support, not a runtime publication or staged-read acceptance claim.
+
 `tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
 compatibility identity; `pbmergeq.py` owns Git/queue lifecycle and pbtest
 submission. Configuration freezes the resolved published pbtest entrypoint once,
