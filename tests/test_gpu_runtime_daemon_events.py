@@ -77,6 +77,8 @@ def test_auto_remove_fault_needs_daemon_proof_that_payload_never_started(runtime
     ticket = container_ticket(authority, record, monkeypatch)
     row = daemon_row(record)
     row['Config']['Labels']['prismabuild.shim'] = ticket
+    row['Config']['Env'] = ['PRIVATE_PAYLOAD_VALUE=must-not-be-published']
+    row['Config']['Labels']['caller.private'] = 'also-private'
     daemon = LaunchEventDaemon(broker, backend, row, ticket)
     try:
         authority.launch_watches[ticket] = daemon.watch
@@ -91,6 +93,8 @@ def test_auto_remove_fault_needs_daemon_proof_that_payload_never_started(runtime
             'daemon_stderr': 'docker: Error response from daemon: ' + ERRORS[0]['daemon_error']})
         assert reply['launch_outcome']['kind'] == ('host_fault' if not history else 'payload_exit')
         assert runtime.state['latched'] is (not history)
+        assert 'must-not-be-published' not in json.dumps(runtime.state)
+        assert 'also-private' not in json.dumps(runtime.state)
         if not history and daemon.watch.row is None:
             assert runtime.state['launch_evidence']['inspect_snapshot'] is None
             assert runtime.state['launch_evidence']['container_id'] == row['Id']
@@ -138,6 +142,8 @@ def test_fast_auto_remove_before_inspection_still_classifies_exact_launch(runtim
     ticket = container_ticket(authority, record, monkeypatch)
     row = daemon_row(record)
     row['Config']['Labels']['prismabuild.shim'] = ticket
+    row['Config']['Env'] = ['PRIVATE_PAYLOAD_VALUE=must-not-be-published']
+    row['Config']['Labels']['caller.private'] = 'also-private'
     daemon = LaunchEventDaemon(broker, backend, row, ticket, removed=True, nvidia_injection=True)
     try:
         authority.launch_watches[ticket] = daemon.watch
@@ -149,6 +155,8 @@ def test_fast_auto_remove_before_inspection_still_classifies_exact_launch(runtim
             'daemon_stderr': 'docker: Error response from daemon: ' + error})
         assert reply['launch_outcome']['kind'] == ('payload_exit' if history else 'host_fault')
         assert runtime.state['latched'] is (not history)
+        assert 'must-not-be-published' not in json.dumps(runtime.state)
+        assert 'also-private' not in json.dumps(runtime.state)
         if not history and daemon.watch.row is None:
             assert runtime.state['launch_evidence']['inspect_snapshot'] is None
             assert runtime.state['launch_evidence']['container_id'] == row['Id']

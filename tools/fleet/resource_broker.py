@@ -348,8 +348,18 @@ class DockerLaunchWatch:
                 return None
             if self.row is not None:
                 if self.row.get('State',{}).get('StartedAt')!='0001-01-01T00:00:00Z':return None
+            snapshot=None
+            if self.row is not None:
+                # The public fence needs launch proof, never Config.Env or
+                # arbitrary caller labels/arguments from a full inspect row.
+                labels=self.row.get('Config',{}).get('Labels',{}) or {}
+                snapshot={'Id':self.row.get('Id'), 'Config':{'Labels':{
+                    key:labels.get(key) for key in ('prismabuild.scope','prismabuild.shim')}},
+                    'State':{key:self.row.get('State',{}).get(key) for key in ('StartedAt','Running','Error','ExitCode')},
+                    'HostConfig':{key:self.row.get('HostConfig',{}).get(key)
+                                  for key in ('CgroupParent','DeviceRequests','Runtime')}}
             return {'daemon_error':error[:4096], 'container_id':cid, 'ticket':self.ticket,
-                    'nvidia_injection':self.nvidia_injection, 'inspect_snapshot':self.row,
+                    'nvidia_injection':self.nvidia_injection, 'inspect_snapshot':snapshot,
                     'basis':'daemon_create_destroy_without_start_or_die'}
 
     def payload_outcome(self, module, cid):
@@ -560,13 +570,14 @@ class GPUContainerRuntime:
         _atomic(self.durable,self.state)
         _atomic(self.mirror,self.state,mode=0o644)
 
-    def latch(self, outcome, record):
+    def latch(self, outcome, record, *, launch_evidence=None):
         with self.lock:
             evidence={'action_key':record['action_key'],'attempt':record['nonce'],
                       'scope_id':record['scope_id'],'daemon_error':outcome.daemon_error,
                       'unix_time':time.time(),'boot_id':self.boot_id}
             self.state={'schema':self.module.RUNTIME_SCHEMA,'latched':True,
                         'reason':self.module.RUNTIME_REASON,'subtype':outcome.subtype,'evidence':evidence}
+            if launch_evidence is not None:self.state['launch_evidence']=launch_evidence
             self._publish()
             return evidence
 
@@ -627,10 +638,7 @@ class GPUContainerRuntime:
                 self.state.pop('probe_token',None)
                 self._publish()
             elif outcome.kind=='host_fault':
-                self.latch(outcome,record)
-                if evidence is not None:
-                    self.state['launch_evidence']=evidence
-                    self._publish()
+                self.latch(outcome,record,launch_evidence=evidence)
         return outcome
 
     def _watch(self, submit):

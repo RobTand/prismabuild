@@ -5813,6 +5813,36 @@ Do not run the commands below on sparky/sparklina's production services.
    drain. Root owns daemon setup, the opt-in, fault injection and repair;
    the worker UID owns every test and readiness submission. No payload sudo.
 
+   ROOT installs the selected pair below only on the isolated disposable host,
+   with its owned drain closed and attempts settled. Stop its updater timer so
+   the deliberate mixed pair stays in place. The normal updater restores all
+   members before the isolated host returns to ordinary use. `BGEN` selects the
+   broker generation, `SGEN` selects the shim generation; start with both `G`.
+
+   ```bash
+   # ROOT; G and OLD are the retained, reviewed isolated generation paths.
+   BGEN="$G"; SGEN="$G"
+   systemctl stop prismabuild-client-upgrade.timer prismabuild-client-upgrade.service
+   systemctl stop prismabuild-resource-broker.service
+   for leaf in resource_broker.py resource_payload.py; do
+       runuser -u rob -- cat "$BGEN/tools/$leaf" | install -o root -g root -m 0644 /dev/stdin "/opt/prismabuild-resource-broker/$leaf"
+   done
+   for leaf in gpu_memory.py gpu_capacity.py; do
+       runuser -u rob -- cat "$BGEN/src/prismabuild/$leaf" | install -o root -g root -m 0644 /dev/stdin "/opt/prismabuild-resource-broker/$leaf"
+   done
+   install -d -o root -g root -m 0755 /opt/prismabuild-1895/bin
+   runuser -u rob -- cat "$SGEN/tools/docker" | install -o root -g root -m 0755 /dev/stdin /opt/prismabuild-1895/bin/docker
+   sha256sum /opt/prismabuild-1895/bin/docker /opt/prismabuild-resource-broker/{resource_broker.py,gpu_capacity.py}
+   systemctl start prismabuild-resource-broker.service
+   ```
+
+   For old shim/new broker, use `BGEN="$G"; SGEN="$OLD"` and repeat the same
+   selection block after closing and settling the drain. For new shim/old
+   broker, use `BGEN="$OLD"; SGEN="$G"`. Reopen only after the current broker's
+   maintenance health, selected/installed hashes and all workers agree. Keep
+   producers stopped throughout these qualification-only selections. The shim
+   path is explicit in each row, so PATH cannot silently select another shim.
+
 2. Run the healthy matrix through the isolated store's **published** PB client
    as rob. Set `C` to a clean candidate checkout, `E` to a retained local-disk
    evidence directory, `G` to the candidate generation path, and `OLD` to the
@@ -5822,6 +5852,7 @@ Do not run the commands below on sparky/sparklina's production services.
 
    ```bash
    PB=/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py
+   SHIM=/opt/prismabuild-1895/bin/docker
    IMAGE=localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a
    mkdir -p "$E"
    gpu_row() {
@@ -5831,12 +5862,12 @@ Do not run the commands below on sparky/sparklina's production services.
            --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- "$@"
    }
    for rc in 0 1 125 126 127; do
-       gpu_row docker run --rm --pull=never --network=none \
+       gpu_row "$SHIM" run --rm --pull=never --network=none \
            --device=nvidia.com/gpu=all --entrypoint=/bin/sh "$IMAGE" \
            -c "exit $rc" > "$E/healthy-$rc.log" 2>&1 || test "$rc" != 0
    done
-   gpu_row /bin/sh -c 'for i in 1 2; do docker run --rm --name pb1895-reuse --pull=never --network=none --device=nvidia.com/gpu=all --entrypoint=/bin/true "$1" || exit; done' sh "$IMAGE" > "$E/name-reuse.log" 2>&1
-   gpu_row docker run --rm --pull=never --network=none \
+   gpu_row /bin/sh -c 'for i in 1 2; do "$1" run --rm --name pb1895-reuse --pull=never --network=none --device=nvidia.com/gpu=all --entrypoint=/bin/true "$2" || exit; done' sh "$SHIM" "$IMAGE" > "$E/name-reuse.log" 2>&1
+   gpu_row "$SHIM" run --rm --pull=never --network=none \
        --device=nvidia.com/gpu=all --entrypoint=/bin/sh "$IMAGE" -c \
        'echo "docker: Error response from daemon: OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded" >&2; exit 127' \
        > "$E/spoof.log" 2>&1 || test "$?" = 1
@@ -5878,7 +5909,7 @@ Do not run the commands below on sparky/sparklina's production services.
    target.replace(d / 'cdi/nvidia.yaml')
    PYCODE
    # ROB: a nonzero ending is expected. Retain the full action/attempt key.
-   gpu_row docker run --rm --pull=never --network=none \
+   gpu_row "$SHIM" run --rm --pull=never --network=none \
        --device=nvidia.com/gpu=all --entrypoint=/bin/true "$IMAGE" \
        > "$E/fault-auto-remove.log" 2>&1
    ```
@@ -5897,7 +5928,9 @@ Do not run the commands below on sparky/sparklina's production services.
    without start/die and prove inspect already returns absent. Repeat fast
    AutoRemove until a retained sample has `launch_evidence.inspect_snapshot`
    equal to null and still latches `cdi_mount_missing`. A run with a snapshot
-   does not qualify the fast-race case. Bound the exercise to ten independent
+   does not qualify the fast-race case. Before another fault sample, repair and
+   clear through step 4, then repeat the scratch injection and submission.
+   Never bypass the fence to obtain a sample. Bound the exercise to ten independent
    submissions; inability to obtain the no-snapshot sample is unqualified,
    never a pass. Use the deterministic daemon-stream fixture for repeatable
    source coverage. Verify every sibling's observed GPU is zero and a queued

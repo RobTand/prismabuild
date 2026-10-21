@@ -20188,7 +20188,9 @@ inspect attempt. The existing narrow host-fault classifier consumes that error;
 CDI mount failures additionally require NVIDIA injection in the shim's parsed
 launch intent and a missing source named by the local CDI spec. An inspect
 snapshot, when available, also verifies the actual labels, parent and injection.
-The fence retains the stream basis, ID, ticket and optional snapshot as evidence.
+The fence retains the stream basis, ID, ticket and the relevant identity, state
+and device fields of the optional snapshot. It does not publish container
+environment variables, arbitrary caller labels or payload arguments.
 Payload stdout and stderr after a start are never classification evidence.
 Missing create, interrupted streams, mismatched scope or IDs, duplicate create
 or an excessive event count return unknown. The initial `since` replay bridges
