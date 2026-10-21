@@ -130,7 +130,7 @@ def test_gate_retries_and_merges_using_existing_runner(gate_fixture):
     assert len(f.launches) == 2 and len(f.waits) == 2
     assert result["evidence"]["actions"] == ["k-" + FILE, "k-" + FILE]
     assert not result["evidence"]["inconclusive"]
-    assert all(json.loads(command[4]) == ["TL_GATE_TOKEN=retry"] for command in f.launches)
+    assert all(command[2:4] == ["--env", "TL_GATE_TOKEN=retry"] for command in f.launches)
 
 
 def test_gate_inconclusive_reason_preserves_reducer_messages(gate_fixture):
