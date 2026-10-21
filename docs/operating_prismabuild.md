@@ -274,11 +274,11 @@ defaults. Input bytes and execution policy always come from the verified seal.
 
 `--detach` and detached `--publish-sealed` print `prismabuild.submission.v1`.
 The record retains the previous fields and adds `request_sha256` and
-`publication: {published_unix, generation}`. The status is `published`,
-`attached` or `cache_hit`; a cache hit has null publication fields because this
-call publishes no generation. Consumers of the previous
-`prismaquant.prismabuild.pbrun_detach.v1` schema must accept the new schema and
-replace their `submitted` status check with `published`.
+`publication: {published_unix, generation}`. The status keeps its detach
+vocabulary, `submitted`, `attached` or `cache_hit`; a cache hit has null
+publication fields because this call publishes no generation. Consumers of the
+previous `prismaquant.prismabuild.pbrun_detach.v1` schema must accept the new
+schema name; the status values are unchanged.
 
 Both new verbs return 0 on success and 1 on refusal, with
 `{schema, refusal: {code, reason}}` on stdout. Missing requests are named

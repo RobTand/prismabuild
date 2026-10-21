@@ -1870,8 +1870,8 @@ execution policy and use current publication defaults. Deferred `--after` work
 has no seal until dependency release and is explicitly unsupported by seal-only.
 
 The CLI adapter in `submission_frontend` renders `prismabuild.submission.v1`
-for detached submissions, preserving previous fields, renaming `submitted` to
-`published`, and adding `request_sha256` and the publication identity. Internal
+for detached submissions, preserving previous fields and status values, and
+adding `request_sha256` and the publication identity. Internal
 typed reports and producer diagnostics retain their existing contract. A cache
 hit reports null publication identity because the caller published no generation.
 Named refusals distinguish missing requests, invalid seals and unavailable CAS

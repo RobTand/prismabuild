@@ -68,7 +68,7 @@ def test_seal_then_publish_matches_direct_publication(sealed_fleet, monkeypatch,
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 0
     recovered = _one_json_line(capsys.readouterr())
     assert recovered["action_key"] == direct["action_key"]
-    assert recovered["status"] == direct["status"] == "published"
+    assert recovered["status"] == direct["status"] == "submitted"
     assert recovered["request_sha256"] == direct["request_sha256"]
     assert recovered["publication"] == dict(published_unix=recovered["published_unix"],
         generation=recovered["published_unix"])
@@ -240,7 +240,7 @@ def test_existing_cas_requests_do_not_require_new_context(sealed_fleet, capsys):
     store = sealed_fleet[2]
     sealed_submission.sealed_context_path(store, sealed["action_key"]).unlink()
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 0
-    assert _one_json_line(capsys.readouterr())["status"] == "published"
+    assert _one_json_line(capsys.readouterr())["status"] == "submitted"
 
 
 def test_seal_context_cannot_silently_change_publication_choices(sealed_fleet, capsys):
@@ -275,6 +275,6 @@ def test_sealed_transport_survives_publication_defaults(sealed_fleet, monkeypatc
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 0
     record = _one_json_line(capsys.readouterr())
     assert record["transport"] == "slurm"
-    assert record["status"] == "published"
+    assert record["status"] == "submitted"
     assert record["job_id"]
     assert record["request_sha256"] == sealed["request_sha256"]

@@ -36,8 +36,9 @@ def consumer_submission_display(store: FleetStore, *, render=render_submission):
                 if action is None:
                     raise ValueError("submission acknowledgement has no verified sealed request")
                 generation = value.get("published_unix")
+                # ``status`` keeps the detach vocabulary (submitted, attached,
+                # cache_hit): TrustLadder's live_runs accepts exactly those.
                 value.update(schema=SUBMISSION_SCHEMA_V1,
-                    status="published" if value["status"] == "submitted" else value["status"],
                     request_sha256=raw_sha256(pb._canonical_file_bytes(action)),
                     publication=dict(published_unix=generation, generation=generation))
                 event = replace(event, text=json.dumps(value))
