@@ -68,7 +68,7 @@ from prismabuild.runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
-from prismabuild.submission_frontend import store_for, render_submission, request_arguments
+from prismabuild.submission_frontend import store_for, render_submission, request_arguments, SUBMISSION_SCHEMA_V1
 from prismabuild.submission_types import (
     OfferDiscoveryTimedOut, SubmissionRequest, SubmissionRefused,
 )
@@ -97,6 +97,8 @@ CLIENT_RSS_MB = 80
 #: box whose watchdog reads box-wide RAM.  ``--max-clients 0`` restores one per
 #: shard.
 DEFAULT_MAX_CLIENTS = 8
+SHARD_THREAD_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                    "OPENBLAS_NUM_THREADS", "TORCH_NUM_THREADS")
 
 #: The prefixes of the lines a shard's submitter prints about its own wait.
 #: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
@@ -230,7 +232,7 @@ def _detach_record(text: str) -> bool:
     except ValueError:
         return False
     return (isinstance(value, dict)
-            and value.get("schema") == action_client.DETACH_SCHEMA_V1)
+            and value.get("schema") in (action_client.DETACH_SCHEMA_V1, SUBMISSION_SCHEMA_V1))
 
 
 class _ShardLines:
@@ -313,7 +315,7 @@ class _Templates:
         self._prepared: dict[object, _Prepared] = {}
         self._published: dict[int, _Prepared] = {}
 
-    def prepare(self, key, request: SubmissionRequest) -> _Prepared:
+    def prepare(self, key, request: SubmissionRequest, *, deadline=None) -> _Prepared:
         with self._lock:
             known = self._prepared.get(key)
             if known is not None:
@@ -322,7 +324,7 @@ class _Templates:
             shown = _ShardLines(None, lines)
             try:
                 with submission.preparation(request, store=self.store,
-                                            display=shown) as prepared:
+                                            display=shown, deadline=deadline) as prepared:
                     template, cwd = prepared["template"], Path(prepared["cwd"])
                 refusal = None
             except OfferDiscoveryTimedOut as exc:
@@ -335,7 +337,7 @@ class _Templates:
             return record
 
     def sealing(self, plan, owner: SubmissionRequest, index: int,
-                request: SubmissionRequest, *, shared: bool):
+                request: SubmissionRequest, *, shared: bool, deadline=None):
         """The preparation a shard seals off, and the command it seals.
 
         Preparation may rewrite argv: it can relativize the interpreter and
@@ -346,7 +348,7 @@ class _Templates:
         each of its shards is prepared on its own, as before.
         """
 
-        record = self.prepare(plan, owner)
+        record = self.prepare(plan, owner, deadline=deadline)
         if record.template is None:
             return record, None
         sealed = list(record.template["params"]["command"])
@@ -354,7 +356,7 @@ class _Templates:
             return record, sealed
         if shared and sealed[1:] == list(owner.command)[1:]:
             return record, [sealed[0], *list(request.command)[1:]]
-        record = self.prepare((plan, index), request)
+        record = self.prepare((plan, index), request, deadline=deadline)
         return record, (list(record.template["params"]["command"])
                         if record.template is not None else None)
 
@@ -448,7 +450,9 @@ def publish_shard(templates: _Templates, index: int, request: SubmissionRequest,
     shown = _ShardLines(index, lines)
     report = action_client.ClientReport()
     try:
-        record, command = templates.sealing(plan, owner, index, request, shared=shared)
+        # The caller's shard --wait-s deadline also bounds preparation Git.
+        record, command = templates.sealing(plan, owner, index, request,
+                                            shared=shared, deadline=deadline)
         for line in record.lines:
             shown.line(line)
         refusal = record.refusal
@@ -1386,6 +1390,26 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
+def validate_shard_env(entries: list[str]) -> None:
+    """Check caller additions before preparing or publishing any shard (#1891)."""
+    owned = {"TMPDIR", *SHARD_THREAD_ENV, test_bound_contract.TIMEOUT_ENV,
+             test_bound_contract.SHARD_BUDGET_ENV, "PYTHONPATH", "PYTEST_ADDOPTS"}
+    seen: set[str] = set()
+    for entry in entries:
+        if "\x00" in entry:
+            raise ValueError(f"--env contains NUL: {entry!r}")
+        if "=" not in entry:
+            raise ValueError(f"--env expects KEY=VALUE, got {entry!r}")
+        key = entry.split("=", 1)[0]
+        if not key:
+            raise ValueError(f"--env has an empty key: {entry!r}")
+        if key in owned:
+            raise ValueError(f"--env {key} is set by pbtest; callers may not override it")
+        if key in seen:
+            raise ValueError(f"--env repeats key {key}")
+        seen.add(key)
+
+
 def shard_request(request: SubmissionRequest, *, environment, python_entry,
                   arguments) -> SubmissionRequest:
     """One shard's whole request: the plan's, with its environment and command."""
@@ -1477,15 +1501,62 @@ class _Progress:
             self._write()
 
 
+def _pbtest_population(checkout: Path, paths: list[str], capabilities: str | None):
+    """Discover and classify once for execution and the read-only plan (#1900)."""
+    plan = {"schema": "prismabuild.pbtest_plan.v1", "files": [],
+            "capabilities": {}, "tags": {}, "left_out": {}, "refusals": []}
+    config: dict = {}
+    declared: dict = {}
+    try:
+        plan["files"] = discover(checkout, paths)
+    except (OSError, ValueError) as exc:
+        plan["refusals"].append({"code": "discovery_failed", "reason": str(exc)})
+        return plan, config, declared
+    if not plan["files"]:
+        plan["refusals"].append({"code": "population_empty",
+                                 "reason": f"no test files under {paths} in {checkout}"})
+        return plan, config, declared
+    capabilities_path = (checkout / capabilities if capabilities is not None
+                         else checkout / "tests/pbtest_capabilities.json")
+    try:
+        if capabilities is not None and not capabilities_path.is_file():
+            raise ValueError(f"--capabilities {capabilities!r} is not a file under {checkout}")
+        if capabilities_path.is_file():
+            resolved = capabilities_path.resolve()
+            if not resolved.is_relative_to(checkout):
+                raise ValueError(
+                    f"--capabilities {capabilities!r} must name a file inside --checkout: "
+                    "the sealed snapshot carries the declaration, so an outside file "
+                    "is mutable state the run would only claim to declare")
+            config = pbtest_capabilities.load_config(resolved)
+    except (OSError, ValueError) as exc:
+        plan["refusals"].append({"code": "capabilities_invalid",
+                                 "reason": f"--capabilities {capabilities_path}: {exc}"})
+        return plan, config, declared
+    declared, problems = pbtest_capabilities.classify_files(checkout, plan["files"], config)
+    plan["refusals"] = [{"code": "capability_unclassifiable", "reason": problem}
+                        for problem in problems]
+    plan["capabilities"] = {file: declared.get(file, []) for file in plan["files"]}
+    return plan, config, declared
+
+
+def _pbtest_tags(args) -> list[str]:
+    return args.tag or (["gb10"] if args.gpu and
+                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
                     help="Git tree to snapshot and test on the pool")
-    ap.add_argument("--python", required=True,
-                    help="absolute python* executable on eligible TARGET workers")
+    ap.add_argument("--python", default=None,
+                    help="absolute python* executable on eligible TARGET workers; required except with --plan-only")
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
                          "default /home/rob/tmp (not checked on the coordinator)")
+    ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                    help="literal addition to every shard's sealed environment "
+                         "(repeatable); duplicate and pbtest-owned keys are refused")
     ap.add_argument("--basetemp", default=None,
                     help="sealed scratch root for pytest's own temporary files "
                          "(#1469), separate from --tmpdir: the worker derives "
@@ -1576,7 +1647,12 @@ def main() -> int:
                          "shard's action identity, so a profiled suite run is "
                          "a different set of actions from an unprofiled one "
                          "and never a cache hit for it")
-    ap.add_argument("--json", default="", help="write the per-shard result here")
+    ap.add_argument("--json", default="", help="write the report or --plan-only object here")
+    ap.add_argument("--plan-only", action="store_true",
+                    help="discover and classify files without preparation or submission; "
+                         "requires --json PATH. Uses --checkout, paths, --capabilities, "
+                         "--tag and the --gpu default tag; ignores execution options, "
+                         "including --pytest-args (no pytest collection)")
     ap.add_argument("--history", action="append", default=[],
                     help="prior --json run reports whose file_durations "
                          "pack this run's shards by measured duration "
@@ -1621,6 +1697,25 @@ def main() -> int:
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
     args = ap.parse_args()
+    if args.plan_only:
+        if not args.json:
+            ap.error("--plan-only requires --json PATH")
+        plan, config, declared = _pbtest_population(
+            Path(args.checkout).resolve(), args.paths or ["tests"], args.capabilities)
+        tags = _pbtest_tags(args)
+        plan["tags"] = {
+            file: sorted(set(tags) | {tag for name in names for tag in config[name]["tags"]})
+            for file, names in plan["capabilities"].items()}
+        try:
+            _write_report_bytes(Path(args.json), json.dumps(plan, indent=2).encode(), durable=True)
+        except OSError as exc:
+            sys.stderr.write(f"pbtest: cannot publish requested plan: {exc}\n")
+            return 2
+        for refusal in plan["refusals"]:
+            sys.stderr.write(f"pbtest: {refusal['code']}: {refusal['reason']}\n")
+        return 2 if plan["refusals"] else 0
+    if args.python is None:
+        ap.error("--python is required for execution")
     try:
         progress = _Progress(args.json)
     except OSError as exc:
@@ -1628,6 +1723,7 @@ def main() -> int:
         return 2
 
     try:
+        validate_shard_env(args.env)
         if submission.interpreter_of([args.python]) != args.python:
             raise ValueError("--python must name an absolute python* executable "
                              "so its path can be sealed into claim-time eligibility")
@@ -1720,11 +1816,13 @@ def main() -> int:
         return 2
 
     checkout = Path(args.checkout).resolve()
-    try:
-        files = discover(checkout, args.paths or ["tests"])
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f"cannot discover tests: {exc}\n")
+    population, config, declared = _pbtest_population(
+        checkout, args.paths or ["tests"], args.capabilities)
+    for refusal in population["refusals"]:
+        sys.stderr.write(f"pbtest: {refusal['reason']}\n")
+    if population["refusals"]:
         return 2
+    files = population["files"]
     history, history_problems = load_history(args.history)
     for problem in history_problems:
         sys.stderr.write(f"pbtest: --history {problem}\n")
@@ -1733,9 +1831,6 @@ def main() -> int:
     # The packing model (#1246): prior ``--json`` reports are the receipts'
     # content in one file, so loading them reads no live state -- and a
     # submission never fails because one old report rotted.
-    if not files:
-        sys.stderr.write(f"no test files under {args.paths} in {checkout}\n")
-        return 2
     # Tests that read the shared mount undeclared cost the fleet a scan it
     # cannot see or stage (#915), so they run only with a manifest.
     if args.residency == "stage" and not args.data_manifest:
@@ -1752,41 +1847,6 @@ def main() -> int:
             f"@pytest.mark.{FLEET_DATA_MARKER}, so they read fleet data, and "
             "no --data-manifest declares it (#915); pass one, or leave them "
             "out of the run: " + ", ".join(reading) + "\n")
-        return 2
-    # Per-file capability declarations (#1495).  The config is the
-    # population's versioned statement; a marker the config does not
-    # define, or one that cannot be classified statically, refuses the run
-    # by name -- never an unfenced file.  A population with no
-    # declarations loads nothing and runs exactly as before.
-    capabilities_path = (
-        checkout / args.capabilities if args.capabilities is not None
-        else checkout / "tests" / "pbtest_capabilities.json")
-    if args.capabilities is not None and not capabilities_path.is_file():
-        sys.stderr.write(
-            f"pbtest: --capabilities {args.capabilities!r} is not a file "
-            f"under {checkout}\n")
-        return 2
-    config: dict = {}
-    if capabilities_path.is_file():
-        resolved = capabilities_path.resolve()
-        if not resolved.is_relative_to(checkout):
-            sys.stderr.write(
-                f"pbtest: --capabilities {args.capabilities!r} must name a "
-                "file inside --checkout: the sealed snapshot carries the "
-                "declaration, so an outside file is mutable state the run "
-                "would only claim to declare\n")
-            return 2
-        try:
-            config = pbtest_capabilities.load_config(resolved)
-        except (OSError, ValueError) as exc:
-            sys.stderr.write(
-                f"pbtest: --capabilities {resolved}: {exc}\n")
-            return 2
-    declared, capability_problems = pbtest_capabilities.classify_files(
-        checkout, files, config)
-    for problem in capability_problems:
-        sys.stderr.write(f"pbtest: {problem}\n")
-    if capability_problems:
         return 2
     # The ceiling the model judges against is sealed later, beside the
     # deadline; the samples load and the predictions resolve above.  The
@@ -1814,8 +1874,7 @@ def main() -> int:
     # only correct placement", and the four shards died on dl380g10 with
     # ``can't open file '<worktree>/tools/prismabuild_worker.py'`` (#292).
     # Say nothing instead and let ``pbrun`` answer; it pins to this box.
-    tags = args.tag or (["gb10"] if args.gpu and
-                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+    tags = _pbtest_tags(args)
     shard_resources = {"cpu": cpus_per_shard, "mem_gb": args.mem_gb}
     if args.disk_metadata:
         shard_resources["disk_metadata"] = 1
@@ -1938,8 +1997,7 @@ def main() -> int:
     threads = []
     if args.threads_per_shard > 0:
         n = str(args.threads_per_shard)
-        threads = [f"OMP_NUM_THREADS={n}", f"MKL_NUM_THREADS={n}",
-                   f"OPENBLAS_NUM_THREADS={n}", f"TORCH_NUM_THREADS={n}"]
+        threads = [f"{key}={n}" for key in SHARD_THREAD_ENV]
 
     pytest_workers = (["-n", str(args.workers_per_shard)]
                       if args.workers_per_shard > 1 else [])
@@ -2075,7 +2133,7 @@ def main() -> int:
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
                        *threads, *plan["bound_env"], *explicit_env,
-                       "PYTHONPATH=src:experiments"]
+                       "PYTHONPATH=src:experiments", *args.env]
         spec: dict = {"files": bucket, "roots": requested_roots}
         if plan["selection"] is not None:
             spec["capabilities"] = plan["selection"]
@@ -2222,7 +2280,8 @@ def main() -> int:
                                  for name in bucket), 1)
                        if predicted else None)
         actual_s = summary_seconds(summary) if ran else None
-        results.append({"shard": index, "files": bucket,
+        results.append({"schema": "prismabuild.pbtest_report.v1",
+                        "shard": index, "files": bucket,
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,

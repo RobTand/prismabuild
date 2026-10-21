@@ -16,8 +16,8 @@ sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
 from prismabuild.runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild.submission_frontend import render_submission
-from prismabuild import action_edges, submission, action_client, client_channel, core as pb, pool, fleet_roster
+from prismabuild.submission_frontend import render_submission, consumer_submission_display
+from prismabuild import action_edges, submission, sealed_submission, action_client, client_channel, core as pb, pool, fleet_roster
 from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
 from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
 
@@ -40,6 +40,11 @@ def argument_parser() -> argparse.ArgumentParser:
                     "result does not depend on which."
     )
     ap.add_argument("--client-events-fd", type=int, default=None, help=argparse.SUPPRESS)
+    verbs = ap.add_mutually_exclusive_group()
+    verbs.add_argument("--seal-only", action="store_true",
+                       help="seal into the CAS, print prismabuild.sealed.v1, and publish no work")
+    verbs.add_argument("--publish-sealed", metavar="KEY",
+                       help="publish a verified CAS request without preparing the checkout again")
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
     ap.add_argument("--gpu", action="store_true",
@@ -412,6 +417,21 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
     args = ap.parse_args(argv)
     if args.json and (len(args.withdraw) != 1 or args.release_origin_consumer is not None):
         ap.error("--json requires exactly one --withdraw KEY")
+
+    if args.publish_sealed is not None:
+        if (len(args.publish_sealed) != 64
+                or any(c not in "0123456789abcdef" for c in args.publish_sealed)):
+            ap.error("--publish-sealed requires a full lowercase 64-hex action key")
+        supplied = list(sys.argv[1:] if argv is None else argv)
+        allowed = {"--publish-sealed", "--detach", "--wait-s", "--client-events-fd"}
+        if args.command or any(word.startswith("--") and word.split("=", 1)[0] not in allowed
+                               for word in supplied):
+            ap.error("--publish-sealed takes only KEY, --detach and --wait-s")
+    if args.seal_only and (args.detach or args.withdraw or args.release_origin_consumer
+                          or args.as_sealed_by):
+        ap.error("--seal-only cannot combine with --detach, --withdraw, "
+                 "--release-origin-consumer or --as-sealed-by")
+
     args.progress_policy = submission.parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
     args.awaited_batch = submission.parse_awaited_batch(args.awaited_batch)
@@ -420,6 +440,9 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
     except SubmissionRefused as exc:
         if isinstance(exc, ArgumentRefused):
             ap.error(exc.reason)
+        if args.seal_only or args.publish_sealed is not None or args.detach:
+            print_consumer_refusal(exc, sealed=args.seal_only)
+            raise SystemExit(1) from None
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
 
@@ -432,6 +455,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
     try:
         parser = argument_parser()
         args = parse_args(argv, parser=parser)
+        display = (consumer_submission_display(configured_store(), render=render_submission)
+                   if args.detach else render_submission)
         if args.client_events_fd is not None:
             try:
                 writer = client_channel.ClientEventWriter(args.client_events_fd)
@@ -450,17 +475,35 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                                         "action_key": key, "state_before": state,
                                         "withdrawn": withdrawn, "reason": args.reason})
             json_options["on_withdrawal"] = withdrawal_result
-        result = submission.submit_request(request_from_args(args), store=configured_store(), display=render_submission,
-            report=report, publication_canary_intent=publication_canary_intent,
-            authorize_canary=authorize_canary, **json_options)
+
+        if args.seal_only:
+            record = sealed_submission.seal_consumer_request(request_from_args(args),
+                store=configured_store(), display=display)
+            print(json.dumps(record), flush=True)
+            report.finish(action_client.ClientCommand(0))
+            return 0
+        if args.publish_sealed is not None:
+            result = sealed_submission.publish_consumer_seal(args.publish_sealed,
+                store=configured_store(), detach=args.detach, wait_s=args.wait_s,
+                transport=args.transport, display=display, report=report)
+        else:
+            result = submission.submit_request(request_from_args(args), store=configured_store(), display=display,
+                report=report, publication_canary_intent=publication_canary_intent,
+                authorize_canary=authorize_canary, **json_options)
         if args.json:
             if not withdrawal_rows:
                 withdrawal_result(args.withdraw[0], None, False)
             print(json.dumps(withdrawal_rows[0]))
+
         refusal = result if isinstance(result, SubmissionRefused) else None
         if refusal is not None:
             if isinstance(refusal, ArgumentRefused):
                 parser.error(refusal.reason)
+            if args.detach or args.publish_sealed is not None:
+                print_consumer_refusal(refusal, sealed=False)
+                if args.publish_sealed is None:
+                    raise SystemExit(refusal.reason or 1)
+                return 1
             if refusal.returncode == 2:
                 if refusal.reason:
                     print(refusal.reason, file=sys.stderr)
@@ -480,11 +523,32 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
     except SubmissionRefused as exc:
         if report.ending is None:
             report.finish(action_client.ClientRefused(exc.returncode))
+        if 'args' in locals() and (args.seal_only or args.publish_sealed is not None or args.detach):
+            if isinstance(exc, ArgumentRefused):
+                parser.error(exc.reason)
+            print_consumer_refusal(exc, sealed=args.seal_only)
+            if args.detach and not args.seal_only and args.publish_sealed is None:
+                raise SystemExit(exc.reason or 1) from None
+            return 1
         raise SystemExit(exc.reason or exc.returncode) from None
+    except (OSError, pb.PrismaBuildError, ValueError) as exc:
+        if 'args' not in locals() or not (args.seal_only or args.publish_sealed is not None):
+            raise
+        if report.ending is None:
+            report.finish(action_client.ClientRefused(1))
+        print_consumer_refusal(exc, sealed=args.seal_only)
+        return 1
     finally:
         report.on_event = previous_observer
         if writer is not None:
             writer.close()
+
+
+def print_consumer_refusal(exc, *, sealed: bool) -> None:
+    print(json.dumps(dict(schema=(sealed_submission.SEALED_SCHEMA if sealed
+        else sealed_submission.SUBMISSION_SCHEMA), refusal=dict(
+        code=getattr(exc, "code", "submission_refused"),
+        reason=getattr(exc, "reason", str(exc))))), flush=True)
 
 
 if __name__ == "__main__":

@@ -1548,7 +1548,7 @@ def find_git_worktree_marker(root: str | Path) -> Path | None:
     return None
 
 
-def git_checkout_identity(root: str | Path) -> dict[str, str]:
+def git_checkout_identity(root: str | Path, *, deadline: float | None = None) -> dict[str, str]:
     """Return pbrun's canonical commit-plus-working-tree identity.
 
     The submitter and the trusted worker must call this same implementation.
@@ -1581,7 +1581,7 @@ def git_checkout_identity(root: str | Path) -> dict[str, str]:
                 "-c", "core.excludesFile=/dev/null", *args,
                 input_text=input_text,
                 errors="surrogateescape",
-                timeout=30,
+                deadline=deadline,
                 env=env,
                 accepted_returncodes=accepted_returncodes,
                 fail=_identity_fail,
@@ -1868,10 +1868,15 @@ def validate_pbrun_checkout_snapshot(value: object) -> dict[str, object]:
     return validated
 
 
+def git_deadline_timeout(deadline: float | None) -> float | None:
+    """Seconds left on the caller's monotonic deadline, or wait for exit."""
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
+
+
 def _git_run(
     root: Path | str,
     *args: str,
-    timeout: float | None = 30,
+    timeout: float | None = None,
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
     errors: str | None = None,
@@ -1891,7 +1896,8 @@ def _git_run(
 def _git(
     root: Path | str,
     *args: str,
-    timeout: float | None = 30,
+    timeout: float | None = None,
+    deadline: float | None = None,
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
     errors: str | None = None,
@@ -1900,6 +1906,11 @@ def _git(
 ) -> str:
     """Run ``git -C root``; map transport and returncode failures through ``fail``."""
     try:
+        # Only the caller's deadline bounds submission preparation (#1888).
+        # An explicit timeout from another Git caller keeps its own contract.
+        remaining = git_deadline_timeout(deadline)
+        if remaining is not None:
+            timeout = remaining if timeout is None else min(timeout, remaining)
         completed = _git_run(
             root, *args, timeout=timeout, env=env,
             input_text=input_text, errors=errors,

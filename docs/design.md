@@ -1853,6 +1853,30 @@ and campaign rows still refuse every name outside `cpu`, `gpu`, `mem_gb` and
 
 ## Client SDK
 
+The consumer seal/publication boundary (#1893) is exposed by `pbrun --seal-only`
+and `pbrun --publish-sealed KEY`. Seal-only uses ordinary preparation and sealing,
+retains the canonical request in the CAS, and publishes no queue row or residency
+window. Its `prismabuild.sealed.v1` response names the action key, the SHA-256 of
+the canonical request file including its final newline, and the transport.
+
+`sealed_submission` owns CAS-only recovery. It verifies the immutable request,
+its key, and every declared input before calling `submission.submit_action`.
+That entrypoint shares ordinary cache/attachment handling, D38, worker-offer and
+interpreter checks, residency filing and publication. It never re-identifies,
+snapshots or bundles the source checkout. Nonidentity publication options are
+retained in an immutable, request-digest-bound CAS context; conflicting contexts
+for one key refuse. Older requests without a context retain their sealed
+execution policy and use current publication defaults. Deferred `--after` work
+has no seal until dependency release and is explicitly unsupported by seal-only.
+
+The CLI adapter in `submission_frontend` renders `prismabuild.submission.v1`
+for detached submissions, preserving previous fields and status values, and
+adding `request_sha256` and the publication identity. Internal
+typed reports and producer diagnostics retain their existing contract. A cache
+hit reports null publication identity because the caller published no generation.
+Named refusals distinguish missing requests, invalid seals and unavailable CAS
+inputs. Source support for these verbs does not establish fleet deployment.
+
 PrismaBuild stands alone: it imports no client, and a client reaches it only
 through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 `pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,
@@ -2158,6 +2182,38 @@ a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;
 directory discovery and deduplication retain their existing semantics.
 
+`--plan-only --json PATH` exposes the shared discovery and capability
+classification owner as `prismabuild.pbtest_plan.v1` (#1900). It returns before
+progress initialization, worker-program preparation, fleet inspection,
+checkout identity, snapshotting, or action publication. No Git checkout or
+target interpreter is required for planning. Execution still requires
+`--python`. Paths, capability config and placement tags have the same meaning
+in both modes; tags do not filter file membership. The GPU default tag follows
+the same runtime-location rule as execution. All execution-only options are
+ignored after ordinary CLI type/choice parsing, including pytest arguments,
+resource bounds, environment, history and data-residency inputs. The operating
+guide lists them explicitly. Pytest collection and case selection remain
+worker responsibilities.
+
+The plan object contains ordered deduplicated `files`, per-file `capabilities`
+and `tags` maps, `left_out`, and `refusals`. Portable files have empty capability
+lists; tags include invocation constraints and capability tags. `left_out` is
+empty because this CLI does not exclude files. Refusals contain `{code, reason}`
+with codes `discovery_failed`, `population_empty`, `capabilities_invalid`, or
+`capability_unclassifiable`. Exit 0 establishes complete classification; exit 2
+names refusals or reports usage/output failure. Classification in a refused
+plan is incomplete and cannot certify portability.
+
+The report retains its bare list layout and adds per-row
+`schema: "prismabuild.pbtest_report.v1"` (#1900). A wrapper would break existing
+TrustLadder readers that iterate the decoded list. Consumer tests pin `shard`,
+`files`, `action_key`, `ran`, `timed_out`, `returncode`, `summary`, `output`,
+`verdict`, and `receipt_path`, and the nested
+`prismabuild.pbtest_shard_verdict.v1` schema. Existing execution exit codes
+remain 0 for green, 1 for non-green/report-output failure, and 2 for
+preflight/usage refusal. These source contracts require runtime publication
+before consumers can use them through the published CLI.
+
 The original directory/file request roots remain pytest's collection targets
 inside each shard (#1458). `tools/fleet/pbtest_collection.py` limits traversal
 to the shard's immutable assigned files and their ancestor directories;
@@ -2189,6 +2245,18 @@ Unsupported relative, bare or non-`python*` entries refuse before fanout;
 there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
+
+`pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
+`SubmissionRequest.env` and template preparation used by `pbrun --env`
+(#1891). Every shard sealed from a plan retains those values in
+`environment.variables`, so they participate in action identity. No option
+means no change to request bytes or existing action keys. Before preparation
+or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
+and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
+OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
+PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+reserved when the run's options leave one unset; a caller cannot bypass
+pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
@@ -3275,18 +3343,28 @@ without the member or the ordinary package import boundary.
   Checked snapshot Git text operations share `core._git` with pbrun's
   fail factory: nonzero and transport refusals retain `SystemExit` and
   `pbrun: cannot snapshot checkout:` while naming the full Git operation
-  (#1430). Identity reads keep their 30-second bound; snapshot text reads
-  keep 120 seconds, accepted codes, surrogate decoding and optional stripping.
+  (#1430). Submission Git waits for process exit without a fixed per-call
+  wall-clock cap (#1888), including checkout identity, repository probes,
+  snapshot add/commit and bundle packing. A caller may pass its existing
+  monotonic deadline explicitly through preparation; every Git call spends
+  the remaining budget rather than renewing it. `pbtest` passes its shard
+  `--wait-s` deadline, and a windowed campaign passes its existing deadline
+  when preparing replacement rows. Initial campaign preparation and plain
+  `pbrun` preparation have no caller deadline. Their `--wait-s` budgets start
+  after publication; `--timeout-s` bounds payload execution. Accepted codes,
+  surrogate decoding and optional stripping stay unchanged.
   Their caller adapter preserves explicit OSError/TimeoutExpired causes;
   a nonzero exit does not turn an unrelated active caller exception into a
   direct cause. Delegation retains the canonical runner's broader
   SubprocessError catch, a compatibility qualification with no demonstrated
-  ordinary-production trigger; the canonical runner is unchanged.
+  ordinary-production trigger; return-code and error mapping are unchanged.
   Deterministic bundle packing remains a separate binary-streaming subprocess
-  (`stdout=file`, UTF-8 tip bytes on stdin, 1800-second pack bound); its
+  (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
-  This is diagnostic consolidation, not storage-stall recovery or a speed claim.
+  The [#1888 wait inventory](submission_git_waits_1888.md) records removed
+  caps and retained non-Git waits. This establishes no storage-stall recovery,
+  deployed support, staged-read requirement satisfaction or release-gate verdict.
 
 The supported preparation boundary is `PrismaBuildCAS.ingest_input()` or the
 dependency-free `ingest-input` CLI. It takes a stable regular-file snapshot,
@@ -16635,6 +16713,25 @@ action keys bypass that window. Git identity is not submitter identity: several
 agents can submit from the same parent, and a snapshot commit includes sealed
 changes. A missing or malformed snapshot never matches a requested Git field.
 
+For #1897, a full 64-hex key is an address, not a prefix query. MCP reads
+its state slots directly without enumerating state, attempt or withdrawal
+namespaces. A missing exact key returns `found: false`; shorter prefixes
+retain bounded discovery and ambiguity reporting. `pb_actions` restricts both
+keyed reads and terminal directory enumeration to requested states. Terminal
+selection still enumerates and stats entries in those states to find the newest
+window. Checkout, snapshot, publisher and publication-age fields have no index,
+so they filter that window after reading records. Directory mtimes are neither
+ordered nor publication times; `max_age_s` cannot safely bound enumeration.
+No index or additional scan is introduced.
+
+`pb_status(detail=false)` omits the admission sample `record` bodies from each
+node's CPU/GPU admission view before returning from its bounded read. Freshness,
+age and unavailable diagnostics remain. Raw `sample` bodies in job admission
+decisions and denial evidence are also omitted, preserving their reasons and
+metadata. `detail=true` includes these samples and the persisted node records,
+including `control_threads`. The shared census and other consumers
+retain their detailed defaults (#1897).
+
 `pb_action` reports a withdrawn action as withdrawn and reads the attempts its
 withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
 reads a record's own links: `attempts_history` names the source,
@@ -18044,6 +18141,22 @@ remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
 
 ### Merge-queue reviewed interpreter family (#1427)
+
+The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
+Runner inventory, runtime selection, history balancing, retry merging and shared
+outcome reducer. Its stricter full-suite mode rejects collect-only and deselected
+outcome records. It waits for child process exit directly, without changing the
+merge queue's tick or heartbeat loop. Gate state uses the existing single-writer
+lock and history fields under the config's `state_dir`; invocation reports and
+logs live under `gates/`. Exclusions retain their configured reasons.
+`prismabuild.mergeq_gate.v1` pins pass/fail/no_verdict with exits 0/1/125,
+sorted failing node IDs, verbatim refusal or inconclusive reasons, file inventory,
+runtime evidence and retained action/report/log/receipt references. Only a
+conclusive execution updates history. Forwarded `--env` values bind history
+compatibility and every shard request. Without forwarding, existing queue history
+identities stay unchanged. Each value reaches every shard through pbtest's own
+`--env` (#1891), which keeps pbtest's owned environment and submission path.
+This is source support, not a runtime publication or staged-read acceptance claim.
 
 `tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
 compatibility identity; `pbmergeq.py` owns Git/queue lifecycle and pbtest

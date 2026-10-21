@@ -109,11 +109,12 @@ CONTAINER_MARKER_ENV = pool.CONTAINER_MARKER_ENV
 
 
 
-def git_repository_root(cwd: Path) -> Path | None:
+def git_repository_root(cwd: Path, *, deadline: float | None = None) -> Path | None:
     """Return the worktree root, or ``None`` when it cannot be snapshotted."""
 
     try:
-        completed = pb._git_run(cwd, "rev-parse", "--show-toplevel", timeout=30)
+        completed = pb._git_run(cwd, "rev-parse", "--show-toplevel",
+                                timeout=pb.git_deadline_timeout(deadline))
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
@@ -126,7 +127,7 @@ def git_repository_root(cwd: Path) -> Path | None:
     return root
 
 
-def tested_repository_name(cwd: Path) -> str:
+def tested_repository_name(cwd: Path, *, deadline: float | None = None) -> str:
     """The repository a sealed checkout belongs to, or ``"unknown"`` (#1565).
 
     A linked worktree names its main repository, not its own directory: the
@@ -139,12 +140,13 @@ def tested_repository_name(cwd: Path) -> str:
     directory, an unreadable ``.git`` -- is ``"unknown"`` explicitly: never
     blank, and never guessed from host, interpreter or parent process.
     """
-    root = git_repository_root(cwd)
+    root = git_repository_root(cwd, deadline=deadline)
     if root is None:
         return pool.TESTED_REPOSITORY_UNKNOWN
     try:
         completed = pb._git_run(
-            root, "rev-parse", "--git-common-dir", timeout=30)
+            root, "rev-parse", "--git-common-dir",
+            timeout=pb.git_deadline_timeout(deadline))
     except (OSError, subprocess.TimeoutExpired):
         return pool.TESTED_REPOSITORY_UNKNOWN
     if completed.returncode != 0:
@@ -187,6 +189,7 @@ def _snapshot_git(
     input_text: str | None = None,
     accepted_returncodes: tuple[int, ...] = (0,),
     strip: bool = True,
+    deadline: float | None = None,
 ) -> str:
     caller_exception = sys.exception()
 
@@ -205,9 +208,9 @@ def _snapshot_git(
         env=environment,
         input_text=input_text,
         errors="surrogateescape",
-        timeout=120,
         accepted_returncodes=accepted_returncodes,
         fail=fail_snapshot_git,
+        deadline=deadline,
     )
     return output.strip() if strip else output
 
@@ -215,18 +218,19 @@ def _snapshot_git(
 PERSONAL_EXCLUDES_PIN: tuple[str, ...] = ("-c", "core.excludesFile=/dev/null")
 
 
-def snapshot_path_roster(root: Path) -> list[str]:
+def snapshot_path_roster(root: Path, *, deadline: float | None = None) -> list[str]:
     """Tracked plus nonignored-untracked paths, each counted once."""
 
     raw_paths = _snapshot_git(
         root,
         [*PERSONAL_EXCLUDES_PIN, "ls-files", "-co", "--exclude-standard", "-z"],
         strip=False,
+        deadline=deadline,
     )
     return list(dict.fromkeys(path for path in raw_paths.split("\0") if path))
 
 
-def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
+def _seed_index_roster(root: Path, environment: dict[str, str], *, deadline: float | None = None) -> None:
     """Force every source-index path into the alternate index.
 
     ``git add -A`` honours the ignore rules for a path the alternate index
@@ -242,7 +246,7 @@ def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
     deletion already did.
     """
 
-    raw_paths = _snapshot_git(root, ["ls-files", "-z"], strip=False)
+    raw_paths = _snapshot_git(root, ["ls-files", "-z"], strip=False, deadline=deadline)
     staged = []
     for relative in raw_paths.split("\0"):
         if not relative:
@@ -268,6 +272,7 @@ def _seed_index_roster(root: Path, environment: dict[str, str]) -> None:
         ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
         environment=literal_environment,
         input_text="\0".join(staged) + "\0",
+        deadline=deadline,
     )
 
 
@@ -317,13 +322,14 @@ def require_working_tree_size(
     return logical_bytes
 
 
-def require_untransformed_checkout(root: Path, paths: list[str]) -> None:
+def require_untransformed_checkout(root: Path, paths: list[str], *, deadline: float | None = None) -> None:
     """Refuse Git clean/smudge rules that can change snapshotted bytes."""
 
     autocrlf = _snapshot_git(
         root,
         ["config", "--get", "core.autocrlf"],
         accepted_returncodes=(0, 1),
+        deadline=deadline,
     ).strip().lower()
     if autocrlf not in {"", "0", "false", "no", "off"}:
         raise SubmissionRefused(
@@ -338,6 +344,7 @@ def require_untransformed_checkout(root: Path, paths: list[str]) -> None:
         ["check-attr", "-z", "-a", "--stdin"],
         input_text="\0".join(paths) + "\0",
         strip=False,
+        deadline=deadline,
     ).split("\0")
     if attributes and attributes[-1] == "":
         attributes.pop()
@@ -450,6 +457,7 @@ def require_supported_snapshot_tree(
     *,
     environment: dict[str, str],
     max_bytes: int,
+    deadline: float | None = None,
 ) -> int:
     """Return logical checkout bytes after rejecting unbundled gitlinks."""
 
@@ -458,6 +466,7 @@ def require_supported_snapshot_tree(
         ["ls-tree", "-r", "-l", "-z", tree],
         environment=environment,
         strip=False,
+        deadline=deadline,
     )
     logical_bytes = 0
     symlinks: dict[str, str] = {}
@@ -485,6 +494,7 @@ def require_supported_snapshot_tree(
                 ["cat-file", "blob", object_id],
                 environment=environment,
                 strip=False,
+                deadline=deadline,
             )
             normalized = posixpath.normpath(
                 posixpath.join(posixpath.dirname(path), target)
@@ -518,7 +528,7 @@ def require_supported_snapshot_tree(
 SPARSE_REFUSAL_SAMPLE = 3
 
 
-def require_materialized_checkout(root: Path) -> None:
+def require_materialized_checkout(root: Path, *, deadline: float | None = None) -> None:
     """Refuse a checkout whose bytes the submitter does not have on disk.
 
     Git marks a path it deliberately leaves out of the working tree with the
@@ -540,7 +550,7 @@ def require_materialized_checkout(root: Path) -> None:
     sparse submitter there would be the wrong lever.
     """
 
-    listing = _snapshot_git(root, ["ls-files", "-t", "-z"], strip=False)
+    listing = _snapshot_git(root, ["ls-files", "-t", "-z"], strip=False, deadline=deadline)
     skipped = [
         entry[2:]
         for entry in listing.split("\0")
@@ -561,7 +571,7 @@ def require_materialized_checkout(root: Path) -> None:
     )
 
 
-def require_complete_history(root: Path) -> None:
+def require_complete_history(root: Path, *, deadline: float | None = None) -> None:
     """Refuse a source whose own history it cannot hand a worker.
 
     The bundle now walks from the snapshot commit through its parents, so a
@@ -572,7 +582,7 @@ def require_complete_history(root: Path) -> None:
     it before any bytes are hashed.
     """
 
-    if _snapshot_git(root, ["rev-parse", "--is-shallow-repository"]) == "true":
+    if _snapshot_git(root, ["rev-parse", "--is-shallow-repository"], deadline=deadline) == "true":
         raise SubmissionRefused(
             "pbrun: this checkout is a shallow clone, so its snapshot cannot "
             "carry the ancestry a worker needs; unshallow it "
@@ -582,6 +592,7 @@ def require_complete_history(root: Path) -> None:
         root,
         ["config", "--get", "extensions.partialclone"],
         accepted_returncodes=(0, 1),
+        deadline=deadline,
     )
     # Modern filtered clones mark their promisor remote, without the legacy
     # extensions.partialclone key. Read Git-normalized booleans so an explicit
@@ -589,10 +600,12 @@ def require_complete_history(root: Path) -> None:
     promisors = _snapshot_git(
         root, ["config", "--bool", "--get-regexp", r"^remote\..*\.promisor$"],
         accepted_returncodes=(0, 1),
+        deadline=deadline,
     )
     filters = _snapshot_git(
         root, ["config", "--get-regexp", r"^remote\..*\.partialclonefilter$"],
         accepted_returncodes=(0, 1),
+        deadline=deadline,
     )
     if partial or filters or any(line.rsplit(" ", 1)[-1] == "true"
                                 for line in promisors.splitlines()):
@@ -607,7 +620,8 @@ def require_complete_history(root: Path) -> None:
 
 
 def resolve_snapshot_refs(
-    root: Path, names: Sequence[str]
+    root: Path, names: Sequence[str],
+    *, deadline: float | None = None,
 ) -> dict[str, str]:
     """Bind each requested branch name to the id it has in the source now.
 
@@ -637,6 +651,7 @@ def resolve_snapshot_refs(
             root,
             ["check-ref-format", "--branch", name],
             accepted_returncodes=(0, 1, 128),
+            deadline=deadline,
         )
         # ``check-ref-format --branch`` also expands ``@{-1}``, so a name it
         # rewrites is a name that means something else on a worker.
@@ -651,6 +666,7 @@ def resolve_snapshot_refs(
                 f"refs/heads/{name}^{{commit}}",
             ],
             accepted_returncodes=(0, 1),
+            deadline=deadline,
         )
         if not oid:
             raise SubmissionRefused(
@@ -688,9 +704,6 @@ BUNDLE_PACK_OPTIONS: tuple[str, ...] = (
 )
 
 
-BUNDLE_PACK_TIMEOUT_S = 1800
-
-
 def deterministic_bundle_argv(git_dir: Path) -> list[str]:
     """The exact ``pack-objects`` command line the sealer runs."""
 
@@ -710,6 +723,7 @@ def write_deterministic_bundle(
     *,
     git_dir: Path,
     environment: dict[str, str],
+    deadline: float | None = None,
 ) -> None:
     """Write a Git bundle whose bytes depend only on the objects in it.
 
@@ -733,6 +747,7 @@ def write_deterministic_bundle(
         root,
         [f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
         environment=environment,
+        deadline=deadline,
     )
     # v2 carries no capability lines and cannot name a hash algorithm, so a
     # non-SHA-1 repository needs v3 -- which is what ``bundle create`` emits
@@ -755,7 +770,7 @@ def write_deterministic_bundle(
                 input=tips.encode("utf-8"),
                 stdout=handle,
                 stderr=subprocess.PIPE,
-                timeout=BUNDLE_PACK_TIMEOUT_S,
+                timeout=pb.git_deadline_timeout(deadline),
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _snapshot_fail(f"Git {' '.join(argv[1:])} failed: {exc}", cause=exc)
@@ -826,6 +841,7 @@ def snapshot_checkout(
     max_bytes: int = CHECKOUT_SNAPSHOT_MAX_BYTES,
     expected_identity: dict[str, str] | None = None,
     snapshot_refs: Sequence[str] = (),
+    deadline: float | None = None,
 ) -> dict[str, object]:
     """Publish the exact dirty tree as an immutable Git bundle with ancestry.
 
@@ -848,7 +864,7 @@ def snapshot_checkout(
         The validated ``params.checkout_snapshot`` record.
     """
 
-    root = git_repository_root(cwd)
+    root = git_repository_root(cwd, deadline=deadline)
     if root is None:
         raise SubmissionRefused("pbrun: a non-Git checkout cannot be materialized")
     require_checkout_snapshot_limit(max_bytes)
@@ -864,9 +880,9 @@ def snapshot_checkout(
 
     # Source identity itself may traverse historic blobs. Refuse incomplete
     # sources before that walk, not merely before the eventual pack command.
-    require_materialized_checkout(root)
-    require_complete_history(root)
-    paths = snapshot_path_roster(root)
+    require_materialized_checkout(root, deadline=deadline)
+    require_complete_history(root, deadline=deadline)
+    paths = snapshot_path_roster(root, deadline=deadline)
     working_bytes = require_working_tree_size(root, paths, max_bytes=max_bytes)
     if stamp_payload is not None:
         overlay_bytes = len(stamp_payload.encode("utf-8"))
@@ -874,19 +890,19 @@ def snapshot_checkout(
             raise SubmissionRefused("pbrun: working tree plus closure stamp exceeds "
                              "checkout snapshot size limit")
     require_untransformed_checkout(
-        root, paths + ([stamp_relative] if stamp_payload is not None else []))
-    identity = expected_identity or movement_actions.checkout_identity(cwd)
-    if movement_actions.checkout_identity(cwd) != identity:
+        root, paths + ([stamp_relative] if stamp_payload is not None else []), deadline=deadline)
+    identity = expected_identity or movement_actions.checkout_identity(cwd, deadline=deadline)
+    if movement_actions.checkout_identity(cwd, deadline=deadline) != identity:
         raise SubmissionRefused("pbrun: checkout changed before it could be snapshotted")
     parent = identity["head"]
-    resolved_refs = resolve_snapshot_refs(root, snapshot_refs)
+    resolved_refs = resolve_snapshot_refs(root, snapshot_refs, deadline=deadline)
 
     with owned_snapshot_directory() as temporary:
         object_directory = temporary / "objects"
         (object_directory / "info").mkdir(parents=True)
         (object_directory / "pack").mkdir()
         index = temporary / "index"
-        source_objects_raw = _snapshot_git(root, ["rev-parse", "--git-path", "objects"])
+        source_objects_raw = _snapshot_git(root, ["rev-parse", "--git-path", "objects"], deadline=deadline)
         source_objects = Path(source_objects_raw)
         if not source_objects.is_absolute():
             source_objects = root / source_objects
@@ -913,9 +929,10 @@ def snapshot_checkout(
         # roster sealed are the same roster. ``git add -A`` then applies
         # deletions and live-byte changes on top.
         _snapshot_git(
-            root, ["read-tree", "HEAD"], environment=object_environment
+            root, ["read-tree", "HEAD"], environment=object_environment,
+            deadline=deadline,
         )
-        _seed_index_roster(root, object_environment)
+        _seed_index_roster(root, object_environment, deadline=deadline)
         # Same exclude pin as the roster, and for the same reason: ``add -A``
         # applies the ignore rules to an untracked path, so without it the
         # roster the identity hashes and the tree the bundle carries disagree
@@ -924,6 +941,7 @@ def snapshot_checkout(
             root,
             [*PERSONAL_EXCLUDES_PIN, "add", "-A"],
             environment=object_environment,
+            deadline=deadline,
         )
         if stamp_payload is not None:
             # This index and object store belong only to this submission.
@@ -932,18 +950,21 @@ def snapshot_checkout(
             stamp_blob = _snapshot_git(
                 root, ["hash-object", "-w", "--stdin", "--no-filters"],
                 environment=object_environment, input_text=stamp_payload,
+                deadline=deadline,
             )
             _snapshot_git(
                 root, ["update-index", "--add", "--cacheinfo",
                        f"100644,{stamp_blob},{stamp_relative}"],
                 environment=object_environment,
+                deadline=deadline,
             )
-        tree = _snapshot_git(root, ["write-tree"], environment=object_environment)
+        tree = _snapshot_git(root, ["write-tree"], environment=object_environment, deadline=deadline)
         require_supported_snapshot_tree(
             root,
             tree,
             environment=object_environment,
             max_bytes=max_bytes,
+            deadline=deadline,
         )
         # The snapshot's parent is the source HEAD, so the sealed commit is
         # the source history with one more commit on it.  A worker's
@@ -958,14 +979,16 @@ def snapshot_checkout(
             ["commit-tree", tree, "-p", parent],
             environment=object_environment,
             input_text="PrismaBuild pbrun checkout snapshot v2\n",
+            deadline=deadline,
         )
         bare = temporary / "bundle.git"
-        _snapshot_git(root, ["init", "-q", "--bare", str(bare)])
+        _snapshot_git(root, ["init", "-q", "--bare", str(bare)], deadline=deadline)
         ref = f"refs/heads/{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}"
         _snapshot_git(
             root,
             [f"--git-dir={bare}", "update-ref", ref, commit],
             environment=object_environment,
+            deadline=deadline,
         )
         for name, sealed_id in sorted(resolved_refs.items()):
             _snapshot_git(
@@ -975,6 +998,7 @@ def snapshot_checkout(
                     f"refs/heads/{name}", sealed_id,
                 ],
                 environment=object_environment,
+                deadline=deadline,
             )
         bundle = temporary / "checkout.bundle"
         # The bundle walks every named ref, so the ancestry travels by
@@ -993,6 +1017,7 @@ def snapshot_checkout(
             ),
             git_dir=bare,
             environment=object_environment,
+            deadline=deadline,
         )
         size = bundle.stat().st_size
         if size > max_bytes:
@@ -1001,7 +1026,7 @@ def snapshot_checkout(
                 f"{size} bytes, above the {max_bytes}-byte safety limit; "
                 "remove generated data from the worktree or lower its footprint"
             )
-        if movement_actions.checkout_identity(cwd) != identity:
+        if movement_actions.checkout_identity(cwd, deadline=deadline) != identity:
             raise SubmissionRefused("pbrun: checkout changed while it was snapshotted")
         snapshot_input, _ = cas.ingest_input(
             bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
@@ -1360,7 +1385,7 @@ def result_and_stamp_names(
 
 
 
-def keep_droppings_out_of_git(cwd: Path) -> Path | None:
+def keep_droppings_out_of_git(cwd: Path, *, deadline: float | None = None) -> Path | None:
     """Teach git to ignore the stamp and the result logs, locally.
 
     Ask git where its exclude file is; do not compute it.  ``cwd/.git`` is a
@@ -1389,7 +1414,8 @@ def keep_droppings_out_of_git(cwd: Path) -> Path | None:
     except pb.ActionContractError as exc:
         raise SubmissionRefused(f"pbrun: {exc}") from exc
     try:
-        out = pb._git_run(cwd, "rev-parse", "--git-common-dir", timeout=30)
+        out = pb._git_run(cwd, "rev-parse", "--git-common-dir",
+                          timeout=pb.git_deadline_timeout(deadline))
     except (OSError, subprocess.SubprocessError) as exc:
         raise SubmissionRefused(
             f"pbrun: cannot inspect local Git excludes: {exc}"
@@ -4103,7 +4129,9 @@ def freeze_template(
     requires_files: list[dict] | None = None,
     resident_set: str | None = None,
     target_evidence: Mapping[str, object] | None = None,
-store: FleetStore) -> dict[str, object]:
+    store: FleetStore,
+    deadline: float | None = None,
+) -> dict[str, object]:
     """Read the tree and the environment once, and freeze what they say.
 
     Everything in here is a measurement of the submitter's box at one instant
@@ -4159,13 +4187,13 @@ store: FleetStore) -> dict[str, object]:
     prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
     variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
                          else f"{wrapper_dir}:{prior_path}")
-    identity = movement_actions.checkout_identity(cwd)
+    identity = movement_actions.checkout_identity(cwd, deadline=deadline)
     # Which repository this template's tree belongs to (#1565): the owning
     # repository's name -- a linked worktree resolves to its main repo --
     # ``"unknown"`` when Git cannot place the checkout.  A submitter's
     # handle, never sealed -- the queue row carries it, so the action key
     # is byte-identical with and without it.
-    tested_repository = tested_repository_name(cwd)
+    tested_repository = tested_repository_name(cwd, deadline=deadline)
     marker_root = store.queue_root / pool.CONTAINER_OWNERS
     # This owner belongs to the template's own command, and its only job here
     # is to be part of what the stamp name is fingerprinted over.  Ownership
@@ -4195,7 +4223,7 @@ store: FleetStore) -> dict[str, object]:
     # Migrate the former broad prefix globs before identity asks Git for its
     # untracked roster; otherwise a legitimate prefix-bearing payload remains
     # hidden for this submission even though the new grammar is exact.
-    keep_droppings_out_of_git(cwd)
+    keep_droppings_out_of_git(cwd, deadline=deadline)
     log_name, stamp_name = result_and_stamp_names(
         command,
         cwd,
@@ -4222,6 +4250,7 @@ store: FleetStore) -> dict[str, object]:
         max_bytes=checkout_snapshot_max_bytes,
         expected_identity=identity,
         snapshot_refs=list(snapshot_refs),
+        deadline=deadline,
     )
     inputs = [checkout_snapshot["input"]]
     origin_batch_refs = None
@@ -4750,7 +4779,7 @@ def seal_child(
     )
 
 
-def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink = discard_display) -> dict[str, object]:
+def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink = discard_display, deadline: float | None = None) -> dict[str, object]:
     """Resolve one submission against this box, and freeze what it says.
 
     Everything between the arguments and the frozen template: the checkout
@@ -4838,7 +4867,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             f"shared, the filesystem is not."
         )
 
-    repository_root = git_repository_root(cwd)
+    repository_root = git_repository_root(cwd, deadline=deadline)
     if repository_root is None:
         raise SubmissionRefused(
             "pbrun: --cwd must be inside a Git checkout so its exact bytes "
@@ -4849,15 +4878,15 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     # Before the stamp is written, before Git hashes a byte, and before
     # anything reaches the CAS or the queue: an unresolvable ref name is a
     # typo, and the only cheap moment to say so is now.
-    require_complete_history(repository_root)
-    resolve_snapshot_refs(repository_root, list(args.snapshot_ref))
-    early_paths = snapshot_path_roster(repository_root)
+    require_complete_history(repository_root, deadline=deadline)
+    resolve_snapshot_refs(repository_root, list(args.snapshot_ref), deadline=deadline)
+    early_paths = snapshot_path_roster(repository_root, deadline=deadline)
     require_working_tree_size(
         repository_root,
         early_paths,
         max_bytes=args.checkout_snapshot_max_bytes,
     )
-    require_untransformed_checkout(repository_root, early_paths)
+    require_untransformed_checkout(repository_root, early_paths, deadline=deadline)
     require_checkout_owned_scripts(
         command, cwd, repository_root=repository_root
     )
@@ -5152,7 +5181,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         gang=gang,
         resident_set=getattr(args, "resident_set", None),
         requires_files=requirements,
-    store=store)
+        store=store, deadline=deadline)
     return {
         "args": args,
         "template": template,
@@ -6089,11 +6118,12 @@ def release_declared_consumer(batch_ref: str, consumer_key: str, *,
 
 
 def _prepare_and_publish(args, *, publication_canary_intent=None,
-                       authorize_canary=None, report=None, store: FleetStore, display: DisplaySink = discard_display):
+                       authorize_canary=None, report=None, store: FleetStore,
+                       display: DisplaySink = discard_display, deadline: float | None = None):
     """Seal, publish and submit; an attached wait is returned, not run."""
 
     report = report if report is not None else action_client.ClientReport()
-    prepared = prepare(args, store=store, display=display)
+    prepared = prepare(args, store=store, display=display, deadline=deadline)
     if args.after:
         return register_deferred(prepared, args, report=report, store=store, display=display)
     template = prepared["template"]
@@ -6477,7 +6507,8 @@ def _request_value_matches(value, expected) -> bool:
 
 def submit_request(request: SubmissionRequest, *, store: FleetStore,
            display: DisplaySink = discard_display, report=None,
-           publication_canary_intent=None, authorize_canary=None, on_withdrawal=None
+           publication_canary_intent=None, authorize_canary=None, on_withdrawal=None,
+           deadline: float | None = None,
            ) -> action_client.ClientReport | SubmissionRefused:
     """Own one complete submission and its C06 report/reader lifetime."""
     report = report if report is not None else action_client.ClientReport()
@@ -6510,7 +6541,7 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
                 continuation = _prepare_and_publish(request, store=store,
                     display=display, report=report,
                     publication_canary_intent=publication_canary_intent,
-                    authorize_canary=authorize_canary)
+                    authorize_canary=authorize_canary, deadline=deadline)
             if callable(continuation):
                 continuation()
             if report.ending is None:
@@ -6862,11 +6893,13 @@ def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
 
 @contextlib.contextmanager
 def preparation(request: SubmissionRequest, *, store: FleetStore,
-                display: DisplaySink = discard_display):
+                display: DisplaySink = discard_display, deadline: float | None = None):
     """Keep batch preparation reads and writes inside the package boundary."""
+    # This is the caller's deadline, e.g. pbtest's existing shard --wait-s,
+    # shared by every Git process in preparation rather than renewed per call.
     with action_wait.client_readers():
         with write_window(request, store=store):
-            yield prepare(request, store=store, display=display)
+            yield prepare(request, store=store, display=display, deadline=deadline)
 
 
 @contextlib.contextmanager
