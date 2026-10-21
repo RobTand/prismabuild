@@ -113,7 +113,7 @@ def test_atomic_repair_resumes_one_pass_with_the_first_known_loaded_identity(tmp
         if unknown_side == "published":
             _replace(tmp_path / "loaded.json", {**KNOWN, "generation": "replacement"})
         _replace(tmp_path / f"{unknown_side}.json", KNOWN)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=1, queue_created=True, parked=0)
     finally:
@@ -123,13 +123,14 @@ def test_atomic_repair_resumes_one_pass_with_the_first_known_loaded_identity(tmp
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
 def test_unknown_retry_wait_is_interruptible(tmp_path, unknown_side, stop_signal):
+    # Only a stop can end this retry before the per-test alarm.
     child = _start(tmp_path, None if unknown_side == "loaded" else KNOWN,
-                   None if unknown_side == "published" else KNOWN, interval=3600)
+                   None if unknown_side == "published" else KNOWN, interval=1e9)
     try:
         prefix = _unknown_boundary(child)
         _assert_state(tmp_path, passes=0, queue_created=False, parked=0)
         child.send_signal(stop_signal)
-        output = prefix + child.communicate(timeout=3)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=0, queue_created=False, parked=0)
     finally:
@@ -146,7 +147,7 @@ def test_unknown_publication_still_allows_an_idle_park_proof(tmp_path, after_pas
             prefix = _unknown_boundary(child)
             _assert_state(tmp_path, passes=1, queue_created=True, parked=1)
             child.send_signal(signal.SIGTERM)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (0 if after_pass else 75), output.decode(errors="replace")
         _assert_state(tmp_path, passes=int(after_pass), queue_created=after_pass, parked=1)
     finally:
@@ -157,7 +158,7 @@ def test_unknown_publication_still_allows_an_idle_park_proof(tmp_path, after_pas
 def test_completed_pass_stays_complete_when_publication_is_lost_before_stop(tmp_path, stop_signal):
     child = _start(tmp_path, KNOWN, KNOWN, mode="lose-and-stop", stop_signal=stop_signal)
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_state(tmp_path, passes=1, queue_created=True, parked=0)
     finally:

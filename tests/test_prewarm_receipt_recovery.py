@@ -152,7 +152,7 @@ def test_atomic_repair_resumes_with_the_first_known_loaded_identity(tmp_path, un
         if unknown_side == "published":
             _replace(tmp_path / "loaded.json", {**KNOWN, "generation": "replacement"})
         _replace(tmp_path / f"{unknown_side}.json", KNOWN)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)
@@ -163,12 +163,13 @@ def test_atomic_repair_resumes_with_the_first_known_loaded_identity(tmp_path, un
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
 def test_unknown_wait_is_interruptible(tmp_path, unknown_side, stop_signal):
+    # Only a stop can end this retry before the per-test alarm.
     child, fleet, key = _start(tmp_path, None if unknown_side == "loaded" else KNOWN,
-                              None if unknown_side == "published" else KNOWN, interval=3600)
+                              None if unknown_side == "published" else KNOWN, interval=1e9)
     try:
         prefix = _boundary(child)
         child.send_signal(stop_signal)
-        output = prefix + child.communicate(timeout=3)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=0, queue_opened=False, parked=0)
@@ -186,7 +187,7 @@ def test_unknown_publication_allows_only_the_actual_idle_park(tmp_path, after_cy
             prefix = _boundary(child, b"maintenance gate closed; storage cycle deferred")
             _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=1)
             child.send_signal(signal.SIGTERM)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (0 if after_cycle else 75), output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=int(after_cycle), queue_opened=after_cycle, parked=1)
@@ -198,7 +199,7 @@ def test_unknown_publication_allows_only_the_actual_idle_park(tmp_path, after_cy
 def test_receipt_loss_does_not_undo_completed_read_or_accounting(tmp_path, stop_signal):
     child, fleet, key = _start(tmp_path, KNOWN, KNOWN, mode="lose-and-stop", stop_signal=stop_signal)
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)
@@ -214,7 +215,7 @@ def test_topology_return_cannot_authorize_work_after_publication_loss(tmp_path, 
         _assert_state(tmp_path, fleet, key, cycles=0, queue_opened=True, parked=0)
         if not once:
             _replace(tmp_path / "published.json", KNOWN)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (75 if once else 0), output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=int(not once), queue_opened=True, parked=0)
@@ -225,7 +226,7 @@ def test_topology_return_cannot_authorize_work_after_publication_loss(tmp_path, 
 def test_known_drift_after_a_real_read_retires_before_a_second_cycle(tmp_path):
     child, fleet, key = _start(tmp_path, KNOWN, KNOWN, mode="move")
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)

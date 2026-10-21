@@ -108,7 +108,7 @@ if not {continuous!r}:
     arguments.append("--once")
 code = wl.main(arguments, on_outcome=lambda value: record("outcomes.jsonl", value))
 for publisher in publishers:
-    assert publisher.wait(timeout=10) == 0
+    assert publisher.wait() == 0
     record("settled-publishers.jsonl", publisher.pid)
 assert os.sched_getaffinity(0) == affinity
 raise SystemExit(code)
@@ -166,7 +166,7 @@ def _assert_one_completed(queue, tmp_path):
 def test_known_match_offer_carries_the_loaded_commit(tmp_path):
     queue, child = _start(tmp_path, KNOWN, KNOWN)
     try:
-        output = child.communicate(timeout=30)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
@@ -176,7 +176,7 @@ def test_known_match_offer_carries_the_loaded_commit(tmp_path):
 def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
     queue, child = _start(tmp_path, KNOWN, MOVED)
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert queue.offers() == []
         assert queue.terminal_keys() == frozenset()
@@ -202,7 +202,7 @@ def test_atomic_receipt_repair_resumes_one_authorized_unit(tmp_path, unknown_sid
         if unknown_side == "published":
             _replace(tmp_path / "loaded.json", MOVED)
         _replace(tmp_path / f"{unknown_side}.json", KNOWN)
-        output = prefix + child.communicate(timeout=30)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
@@ -211,14 +211,15 @@ def test_atomic_receipt_repair_resumes_one_authorized_unit(tmp_path, unknown_sid
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
 def test_sigterm_interrupts_unknown_retry_wait(tmp_path, unknown_side):
+    # Inject a retry deadline beyond the per-test bound, so only SIGTERM ends it.
     queue, child = _start(tmp_path, None if unknown_side == "loaded" else KNOWN,
                           None if unknown_side == "published" else KNOWN,
-                          continuous=True, poll_s=60)
+                          continuous=True, poll_s=1e9)
     try:
         prefix = _unknown_boundary(child)
         _assert_paused(queue, tmp_path)
         child.send_signal(signal.SIGTERM)
-        output = prefix + child.communicate(timeout=3)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_paused(queue, tmp_path)
     finally:
@@ -234,7 +235,7 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
             prefix = _unknown_boundary(child, "claim boundary")
             _assert_paused(queue, tmp_path)
             _replace(tmp_path / "published.json", KNOWN)
-        output = prefix + child.communicate(timeout=30)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (0 if continuous else 75), output.decode(errors="replace")
         assert (tmp_path / "publication-removed").is_file()
         if continuous:
@@ -251,7 +252,7 @@ def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_
     queue, child = _start(tmp_path, KNOWN, KNOWN, corrupt_first_files=value)
     before = queue.records.item_path(pool.READY, KEYS[0]).read_bytes()
     try:
-        output = child.communicate(timeout=30)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         publishers = _lines(tmp_path / "publishers.jsonl")
         assert publishers
