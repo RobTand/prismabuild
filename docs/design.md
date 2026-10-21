@@ -16679,6 +16679,25 @@ action keys bypass that window. Git identity is not submitter identity: several
 agents can submit from the same parent, and a snapshot commit includes sealed
 changes. A missing or malformed snapshot never matches a requested Git field.
 
+For #1897, a full 64-hex key is an address, not a prefix query. MCP reads
+its state slots directly without enumerating state, attempt or withdrawal
+namespaces. A missing exact key returns `found: false`; shorter prefixes
+retain bounded discovery and ambiguity reporting. `pb_actions` restricts both
+keyed reads and terminal directory enumeration to requested states. Terminal
+selection still enumerates and stats entries in those states to find the newest
+window. Checkout, snapshot, publisher and publication-age fields have no index,
+so they filter that window after reading records. Directory mtimes are neither
+ordered nor publication times; `max_age_s` cannot safely bound enumeration.
+No index or additional scan is introduced.
+
+`pb_status(detail=false)` omits the admission sample `record` bodies from each
+node's CPU/GPU admission view before returning from its bounded read. Freshness,
+age and unavailable diagnostics remain. Raw `sample` bodies in job admission
+decisions and denial evidence are also omitted, preserving their reasons and
+metadata. `detail=true` includes these samples and the persisted node records,
+including `control_threads`. The shared census and other consumers
+retain their detailed defaults (#1897).
+
 `pb_action` reports a withdrawn action as withdrawn and reads the attempts its
 withdrawal preserved under `attempt_history_before_withdrawal` exactly as it
 reads a record's own links: `attempts_history` names the source,
@@ -18088,6 +18107,22 @@ remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
 
 ### Merge-queue reviewed interpreter family (#1427)
+
+The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
+Runner inventory, runtime selection, history balancing, retry merging and shared
+outcome reducer. Its stricter full-suite mode rejects collect-only and deselected
+outcome records. It waits for child process exit directly, without changing the
+merge queue's tick or heartbeat loop. Gate state uses the existing single-writer
+lock and history fields under the config's `state_dir`; invocation reports and
+logs live under `gates/`. Exclusions retain their configured reasons.
+`prismabuild.mergeq_gate.v1` pins pass/fail/no_verdict with exits 0/1/125,
+sorted failing node IDs, verbatim refusal or inconclusive reasons, file inventory,
+runtime evidence and retained action/report/log/receipt references. Only a
+conclusive execution updates history. Forwarded `--env` values bind history
+compatibility and every shard request. Without forwarding, existing queue history
+identities stay unchanged. Each value reaches every shard through pbtest's own
+`--env` (#1891), which keeps pbtest's owned environment and submission path.
+This is source support, not a runtime publication or staged-read acceptance claim.
 
 `tools/fleet/pbmergeq_runtime.py` owns declarative runtime selection and
 compatibility identity; `pbmergeq.py` owns Git/queue lifecycle and pbtest

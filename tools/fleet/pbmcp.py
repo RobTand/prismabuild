@@ -354,6 +354,10 @@ def _valid_prefix(key_prefix: object) -> str:
 
 def _resolve_prefix(queue_root: Path, key_prefix: str) -> list[str]:
     prefix = _valid_prefix(key_prefix)
+    # A full key is already an address. Existence and unreadability belong to
+    # the record read, not to a census of unrelated keys (#1897).
+    if len(prefix) == 64:
+        return [prefix]
     return pool.record_store.RecordStore(queue_root).inspection_prefix(prefix)
 
 
@@ -1022,9 +1026,10 @@ class Session:
 
     # -- pb_status ---------------------------------------------------------
 
-    def pb_status(self, call: Call, *, recent: int | None = None) -> dict:
+    def pb_status(self, call: Call, *, recent: int | None = None,
+                  detail: bool = False) -> dict:
         limit = self.recent if recent is None else int(recent)
-        census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
+        census = call.read("pool", lambda: _status_rows(self.queue_root, detail=detail))
         endings = call.read("endings",
                             lambda: fleet_census.endings(self.queue_root, limit=limit))
         reservations = call.read("reservations",
@@ -1849,6 +1854,32 @@ def _blob_identity(path: Path, *, hash_payload: bool) -> dict:
     return {"present": True, "bytes": size, "sha256": digest}
 
 
+def _status_rows(queue_root: Path, *, detail: bool) -> dict:
+    """Project sample detail before it crosses the bounded-reader pipe (#1897)."""
+    census = fleet_census.action_rows(queue_root).value
+    if not detail:
+        for node in census.get("nodes") or ():
+            for sample in (node.get("admission") or {}).values():
+                sample.pop("record", None)
+        for job in census.get("jobs") or ():
+            for denial in job.get("admission_denials") or ():
+                if "evidence" in denial:
+                    denial["evidence"] = _without_admission_samples(denial["evidence"])
+            if "gpu_admission" in job:
+                job["gpu_admission"] = _without_admission_samples(job["gpu_admission"])
+    return census
+
+
+def _without_admission_samples(value):
+    """Admission decisions retain reasons and metadata, with raw samples opt-in."""
+    if isinstance(value, dict):
+        return {key: _without_admission_samples(child)
+                for key, child in value.items() if key != "sample"}
+    if isinstance(value, list):
+        return [_without_admission_samples(child) for child in value]
+    return value
+
+
 def _scan_actions(queue_root: Path, *, states: Sequence[str],
                   keys: Sequence[str], limit: int) -> dict:
     """Rows for a bounded window of the queue, read before anything is filtered.
@@ -1871,11 +1902,10 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     if keys:
         for prefix in keys:
             for key in _resolve_prefix(root, prefix):
-                for state, record in pool.record_store.RecordStore(root).inspection_records(
-                    key,
-                ).items(
-                ):
-                    if state in states:
+                store = pool.record_store.RecordStore(root)
+                for state in states:
+                    record = store.inspection_slot(state, key)
+                    if record is not None:
                         scanned += 1
                         rows.append(_row(state, record, now))
         return {"rows": rows, "scanned": scanned, "truncated": False}
@@ -1890,7 +1920,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     terminal = [state for state in states
                 if state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
     if terminal and limit:
-        entries = fleet_census.recent_ending_paths(root, limit)
+        entries = fleet_census.recent_ending_paths(root, limit, states=terminal)
         truncated = len(entries) >= limit
         for entry in entries:
             path = Path(entry.path)
@@ -1980,6 +2010,8 @@ TOOLS: tuple[dict, ...] = (
         "inputSchema": {
             "type": "object",
             "properties": {
+                "detail": {"type": "boolean", "default": False,
+                           "description": "Include persisted CPU/GPU admission sample records."},
                 "recent": {"type": "integer", "minimum": 0,
                            "description": "How many terminal records to read, "
                                           "newest first."},
