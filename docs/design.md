@@ -9487,6 +9487,10 @@ as their `/mnt/shared` mount sources, including Celestia's private LAN route.
 `queue_bell.Client` uses the longest covering mount's NFS source address from
 local `/proc/self/mountinfo`, or loopback on a local filesystem. No queue
 lookup or hostname guess is required to discover the endpoint.
+The client sends its queue path in `X-PrismaBuild-Queue`. A different queue
+path receives HTTP 503 and uses fallback, so scratch queues sharing the mount
+source cannot wait on the production queue's stream. This is routing only;
+unqualified read-only health queries still work.
 
 `GET /v1/now` returns `{epoch, seq}`. The epoch is a random UUID per start;
 sequence numbers increase for the life of that epoch. `GET /v1/wait` takes

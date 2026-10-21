@@ -127,8 +127,9 @@ class InotifyQueue:
 
 
 class BellHTTPServer(ThreadingHTTPServer):
-    def __init__(self, address, ring: EventRing):
+    def __init__(self, address, ring: EventRing, root: Path):
         self.ring = ring
+        self.queue_root = str(root.absolute())
         super().__init__(address, BellRequest)
 
     def get_request(self):
@@ -141,6 +142,13 @@ class BellRequest(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
+        # A scratch queue may share the production queue's mount source. It
+        # cannot use this stream to wait for its own records. This is routing,
+        # not authorization; unqualified read-only health queries still work.
+        queue = self.headers.get("X-PrismaBuild-Queue")
+        if queue is not None and queue != self.server.queue_root:
+            self.send_error(503, "bell serves a different queue")
+            return
         target = urlsplit(self.path)
         try:
             if target.path == "/v1/now":
@@ -193,7 +201,7 @@ class BellService:
         self.on_exit = on_exit
         try:
             for address in addresses:
-                self.servers.append(BellHTTPServer(address, self.ring))
+                self.servers.append(BellHTTPServer(address, self.ring, root))
             self.reader, self.writer = socket.socketpair()
         except BaseException:
             for server in self.servers:

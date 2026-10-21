@@ -72,6 +72,13 @@ def test_close_write_without_rename_is_a_hint_too(bell):
     assert bell.client.wait(cursor, ("done",), (KEY,), 5)["events"]
 
 
+def test_another_queue_on_the_same_host_cannot_promise_a_callback(bell):
+    other = queue_bell.Client(bell.root.parent / "other-queue",
+                              host="127.0.0.1", port=bell.client.port)
+    with pytest.raises(queue_bell.Unavailable):
+        other.now()
+
+
 def test_epoch_change_and_future_cursor_reset_over_http(bell):
     cursor = bell.client.now()
     for other in (queue_bell.Cursor("0" * 32, 0),

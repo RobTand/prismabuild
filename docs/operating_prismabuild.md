@@ -1043,6 +1043,8 @@ It listens on TCP 9470 at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and
 192.168.1.107, declared in the roster. The Sparks and Celestia discover their
 address from their own `/mnt/shared` mount source. Inspect `pb-role-bell.log`
 alongside other supervised role logs.
+Clients also identify their queue path; a bell serving another queue returns
+unavailable, so scratch queues retain bounded fallback.
 `GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
 300 seconds; a restart changes epoch. An occupied port exits 3 and uses the
 supervisor's existing refusal backoff. A lost state-directory watch exits

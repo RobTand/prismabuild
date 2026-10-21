@@ -73,7 +73,8 @@ class Client:
                 host, self.port, timeout=min(CONNECT_TIMEOUT_S, budget_s))
             connection.connect()
             connection.sock.settimeout(timeout)
-            connection.request("GET", path)
+            connection.request("GET", path, headers={
+                "X-PrismaBuild-Queue": str(self.queue_root.absolute())})
             response = connection.getresponse()
             if response.status != 200:
                 raise Unavailable(f"bell HTTP {response.status}")
