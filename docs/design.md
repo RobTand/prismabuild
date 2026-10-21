@@ -9558,7 +9558,8 @@ shared event stream. The roster declares the addresses submitting hosts use
 as their `/mnt/shared` mount sources, including Celestia's private LAN route.
 `queue_bell.Client` uses the longest covering mount's NFS source address from
 local `/proc/self/mountinfo`, or loopback on a local filesystem. No queue
-lookup or hostname guess is required to discover the endpoint.
+lookup or hostname guess is required to discover the endpoint. Only numeric
+IPv4 or IPv6 literals are accepted; hostname mount sources use fallback.
 The client sends its queue path in `X-PrismaBuild-Queue`. A different queue
 path receives HTTP 503 and uses fallback, so scratch queues sharing the mount
 source cannot wait on the production queue's stream. This is routing only;
@@ -9589,7 +9590,10 @@ The role posts no park marker while serving and owns no admitted work. Binding
 an occupied port refuses with the standard singleton exit so supervisor
 backoff applies.
 
-Client connect, headers and body consume one monotonic deadline. Buffered
+Client request preparation, connect, headers and body consume one monotonic
+deadline. Expired or zero budgets raise typed Unavailable before any I/O.
+Connection establishment uses one numeric-address socket with its timeout
+clipped to the remaining budget, without DNS or multiple-address retries. Buffered
 HTTP reads re-arm the remaining timeout before every recv, preventing a
 trickling peer from extending patience. Long-poll delivery allowance comes
 from that same budget. Repeated immediate resets or empty replies enter the

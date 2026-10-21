@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+import socket
 import time
 from urllib.parse import urlencode
 
@@ -70,14 +71,22 @@ class Client:
                  port: int = DEFAULT_PORT):
         self.queue_root, self.host, self.port = queue_root, host, port
 
-    def _request(self, path: str, *, budget_s: float) -> dict:
+    def _request(self, path: str, *, deadline: float) -> dict:
         connection = None
-        deadline = time.monotonic() + budget_s
         try:
+            if deadline <= time.monotonic():
+                raise TimeoutError("bell HTTP deadline exhausted")
             host = self.host if self.host is not None else bell_host(self.queue_root)
-            connection = http.client.HTTPConnection(
-                host, self.port, timeout=min(CONNECT_TIMEOUT_S, deadline - time.monotonic()))
-            connection.connect()
+            # Numeric endpoints avoid unbounded DNS and per-address retries.
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            socket.inet_pton(family, host)
+            connection = http.client.HTTPConnection(host, self.port)
+            connection.sock = socket.socket(family, socket.SOCK_STREAM)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bell HTTP deadline exhausted")
+            connection.sock.settimeout(min(CONNECT_TIMEOUT_S, remaining))
+            connection.sock.connect((host, self.port))
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("bell HTTP deadline exhausted")
@@ -105,7 +114,8 @@ class Client:
                 connection.close()
 
     def now(self, *, budget_s: float = CONNECT_TIMEOUT_S) -> Cursor:
-        body = self._request("/v1/now", budget_s=min(CONNECT_TIMEOUT_S, budget_s))
+        deadline = time.monotonic() + min(CONNECT_TIMEOUT_S, budget_s)
+        body = self._request("/v1/now", deadline=deadline)
         return Cursor.parse(f"{body['epoch']}:{body['seq']}")
 
     def wait(self, since: Cursor, dirs: tuple[str, ...], keys: tuple[str, ...],
@@ -113,12 +123,12 @@ class Client:
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("bell timeout must be finite and nonnegative")
         timeout = min(timeout, MAX_WAIT_S)
+        deadline = time.monotonic() + timeout
         # Reserve reply delivery inside the same caller budget, never after it.
         server_wait = max(0.0, timeout - min(0.05, timeout / 10))
         query = urlencode({"since": str(since), "dirs": ",".join(dirs),
                            "keys": ",".join(keys), "timeout": server_wait})
-        body = self._request("/v1/wait?" + query,
-                             budget_s=timeout if timeout > 0 else CONNECT_TIMEOUT_S)
+        body = self._request("/v1/wait?" + query, deadline=deadline)
         if (body.get("reset") is not True
                 and not isinstance(body.get("events"), list)):
             raise Unavailable("invalid bell wait reply")

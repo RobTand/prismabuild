@@ -83,7 +83,7 @@ def test_epoch_change_and_future_cursor_reset_over_http(bell):
     cursor = bell.client.now()
     for other in (queue_bell.Cursor("0" * 32, 0),
                   queue_bell.Cursor(cursor.epoch, cursor.seq + 1)):
-        assert bell.client.wait(other, (), (), 0)["reset"] is True
+        assert bell.client.wait(other, (), (), 0.3)["reset"] is True
 
 
 def test_overflow_packet_resets_an_already_waiting_client(bell, monkeypatch):
@@ -110,9 +110,9 @@ def test_ring_loss_resets_but_last_retained_cursor_still_works(bell):
     cursor = bell.client.now()
     for _ in range(queue_notifier.DEFAULT_RING_SIZE + 1):
         ring.append("done", KEY)
-    assert bell.client.wait(cursor, (), (), 0)["reset"] is True
+    assert bell.client.wait(cursor, (), (), 0.3)["reset"] is True
     boundary = queue_bell.Cursor(cursor.epoch, ring.floor)
-    assert len(bell.client.wait(boundary, (), (), 0)["events"]) == ring.events.maxlen
+    assert len(bell.client.wait(boundary, (), (), 0.3)["events"]) == ring.events.maxlen
 
 
 def test_server_caps_wait_and_rejects_bad_queries(bell, monkeypatch):
@@ -144,6 +144,77 @@ def test_mount_source_locates_the_bell(tmp_path, source, filesystem, expected):
     table.write_text("1 0 0:1 / / rw - ext4 /dev/root rw\n"
                      f"2 1 0:2 / /mnt/shared rw - {filesystem} {source} rw\n")
     assert queue_bell.bell_host(Path("/mnt/shared/queue"), mountinfo=table) == expected
+
+
+@pytest.mark.parametrize("endpoint", ["now", "wait", "caller-expiry"])
+def test_expired_bell_budget_performs_no_io(tmp_path, monkeypatch, endpoint):
+    clock = [0.0]
+    client = queue_bell.Client(tmp_path, host="127.0.0.1")
+
+    def forbid_bell_socket(*args, **kwargs):
+        pytest.fail("expired bell budget started network I/O")
+
+    monkeypatch.setattr(socket, "socket", forbid_bell_socket)
+    monkeypatch.setattr(queue_bell, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    if endpoint == "caller-expiry":
+        monkeypatch.setattr(client, "now", lambda **kwargs: queue_bell.Cursor("a" * 32, 0))
+        monkeypatch.setattr(action_wait, "time", SimpleNamespace(
+            monotonic=lambda: clock[0], sleep=lambda delay: None))
+
+        def expire_before_bell_wait():
+            # Cross the deadline after await_action's last patience check.
+            clock[0] = 1.0
+            return True
+
+        result = action_wait.await_action(
+            lambda **kwargs: action_wait.Pending(None), generation=None,
+            patience=action_wait.WaitUntil(1.0), profile=action_wait.AwaitProfile.SYNCHRONOUS,
+            tool="test", subject=KEY, notice=lambda event: None, bell=client, bell_key=KEY,
+            use_bell=expire_before_bell_wait)
+        assert isinstance(result, action_wait.PatienceExpired)
+    else:
+        with pytest.raises(queue_bell.Unavailable):
+            if endpoint == "now":
+                client.now(budget_s=0)
+            else:
+                client.wait(queue_bell.Cursor("a" * 32, 0), (), (), 0)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "bell.example"])
+def test_bell_connection_has_one_deadline_and_no_resolution(tmp_path, monkeypatch, host):
+    clock, resolutions, attempts, closed = [0.0], [], [], []
+
+    def multiple_bell_addresses(*args):
+        resolutions.append(args)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 9470)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.2", 9470))]
+
+    class DelayedBellSocket:
+        def __init__(self, *args):
+            # Setup consumes caller time before the actual connect starts.
+            clock[0] += 0.04
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            attempts.append(address)
+            clock[0] += self.timeout
+            raise TimeoutError("delayed bell connection")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(queue_bell, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(socket, "getaddrinfo", multiple_bell_addresses)
+    monkeypatch.setattr(socket, "socket", DelayedBellSocket)
+    with pytest.raises(queue_bell.Unavailable):
+        queue_bell.Client(tmp_path, host=host).wait(
+            queue_bell.Cursor("a" * 32, 0), (), (), 0.1)
+    assert resolutions == [], "bell endpoints must not invoke a resolver"
+    assert len(attempts) == (0 if host == "bell.example" else 1)
+    assert len(closed) == len(attempts)
+    assert clock[0] <= 0.1
 
 
 def test_client_unavailable_and_waiter_capped_fallback(tmp_path, monkeypatch):
