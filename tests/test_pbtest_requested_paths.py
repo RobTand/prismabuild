@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools/fleet"))
 import pbtest
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 @pytest.mark.parametrize("missing", ["tests/test_typo.py", "misspelled_suite"])
@@ -20,6 +21,7 @@ def test_missing_path_refuses_before_submitting_a_valid_subset(tmp_path, monkeyp
         pytest.fail("submitted a subset despite a missing explicit path")
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", no_submit)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "argv", ["pbtest.py", "--checkout", str(tmp_path),
                                     "--python", sys.executable,
                                     "tests/test_real.py", missing])

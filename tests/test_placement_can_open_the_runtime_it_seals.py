@@ -45,6 +45,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from pbtest_shard_output import ShardProcess  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
     "pbtest_placement", REPOSITORY / "tools" / "fleet" / "pbtest.py"
@@ -129,6 +130,7 @@ def _shard_argv(tmp_path, monkeypatch, *, runtime_root, extra=()):
     monkeypatch.setattr(
         pbtest.subprocess, "Popen",
         lambda command, **_kw: (calls.append(list(command)), _FinishedProcess())[1])
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(pbtest, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(
         sys, "argv",

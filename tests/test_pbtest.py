@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from pbtest_shard_output import ShardProcess, ONE_PASS, admitted_child, shard_environment  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
         return FinishedProcess()
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         sys,
@@ -111,6 +113,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
         return FinishedProcess()
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         sys, "argv",
@@ -218,6 +221,7 @@ def test_relative_tmpdir_refuses_before_submission(
             pbtest.subprocess, "Popen",
             lambda *args, **kwargs: calls.append(args),
         )
+        monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         monkeypatch.setattr(sys, "argv", [
             "pbtest.py", "--checkout", str(tmp_path),
             "--python", "/target/python", "--tmpdir", invalid,
@@ -263,6 +267,7 @@ def test_two_shards_have_distinct_tmpdir_children_and_output(
 
     with monkeypatch.context() as scoped:
         scoped.setattr(pbtest.subprocess, "Popen", execute_admitted_child)
+        scoped.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
         scoped.setattr(pbtest, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
         scoped.setattr(sys, "argv", [
             "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,

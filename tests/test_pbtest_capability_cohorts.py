@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 8, "mem_gb": 16}
@@ -121,6 +122,7 @@ def _dispatch(tmp_path: Path, monkeypatch, checkout, extra, *, shards=4,
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout),
@@ -351,6 +353,7 @@ def test_an_unused_config_leaves_the_dispatch_byte_identical(
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     # A run with no config file at all.
     monkeypatch.setattr(
         sys, "argv",

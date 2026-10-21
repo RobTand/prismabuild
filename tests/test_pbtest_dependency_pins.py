@@ -14,6 +14,7 @@ from pbtest_shard_output import admitted_child
 import pytest
 
 from pbtest_shard_output import ShardProcess, ONE_PASS  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,7 @@ def dispatch(checkout, monkeypatch):
         return original(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,
         "--shards", "1", "--threads-per-shard", "1",
@@ -162,6 +164,7 @@ def test_pin_resolution_waits_for_worker_execution(tmp_path, monkeypatch):
             return ONE_PASS, None
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or Queued())
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
         "--shards", "1", "tests",

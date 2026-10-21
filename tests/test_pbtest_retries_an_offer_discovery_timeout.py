@@ -38,6 +38,7 @@ SPEC = importlib.util.spec_from_file_location(
 pbtest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pbtest)  # type: ignore[union-attr]
 import pbrun
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 REAL_POPEN = subprocess.Popen
 
@@ -138,6 +139,7 @@ def _shard(tmp_path: Path, monkeypatch, endings: list[tuple[str, int]],
             expected_identity=submitted_identity if recovering else None)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     # ``raising=False``: the clock is read through ``pbtest.time``, which a
     # pbtest without the retry never imported.  The test then fails on what
     # the shard reports, not on the patch.

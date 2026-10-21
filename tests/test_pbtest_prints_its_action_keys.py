@@ -48,6 +48,7 @@ _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from prismabuild import core as pb, pool  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 # --- pbrun ------------------------------------------------------------------
@@ -131,6 +132,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shard_class, *, shards
         return emit_client_events(shard, _kwargs, reply)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = tmp_path / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

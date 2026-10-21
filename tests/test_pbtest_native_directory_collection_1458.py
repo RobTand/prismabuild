@@ -13,6 +13,7 @@ import sys
 from pbtest_shard_output import admitted_child
 
 import pytest
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +85,7 @@ def _dispatch(root, monkeypatch, *, workers, shards=1, paths=("tests",)):
         return REAL_POPEN(argv, cwd=root, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     report = root.parent / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(root), "--python", sys.executable,
