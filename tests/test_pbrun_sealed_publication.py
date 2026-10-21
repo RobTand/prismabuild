@@ -253,14 +253,18 @@ def test_seal_context_cannot_silently_change_publication_choices(sealed_fleet, c
 def test_publication_keeps_the_interpreter_verdict(sealed_fleet, capsys):
     from prismabuild import capability_eligibility, contracts
     work, queue, store = sealed_fleet
-    sealed = _seal_fixture(sealed_fleet, capsys)
+    interpreter = submission.sys.executable
+    argv = _consumer_argv(work, "--seal-only")
+    argv[-3:] = [interpreter, "-c", "print('sealed interpreter')"]
+    assert pbrun.main(argv) == 0
+    sealed = _one_json_line(capsys.readouterr())
     queue.announce(host="sparky", tags=["sparky", "gb10", contracts.INTERPRETER_TAG],
         has_gpu=True, capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         capabilities=capability_eligibility.OfferCapabilities(
-            interpreters=capability_eligibility.InterpreterAnswers.from_observed([], ["/bin/bash"])))
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed([], [interpreter])))
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 1
     reason = _one_json_line(capsys.readouterr())["refusal"]["reason"]
-    assert "/bin/bash" in reason
+    assert interpreter in reason
     assert "every recorded eligible worker names it absent" in reason
     assert queue.ready_items() == []
 
