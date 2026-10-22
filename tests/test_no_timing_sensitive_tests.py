@@ -46,6 +46,12 @@ class TimingIdentity(NamedTuple):
     kind: str
 
 
+class TimingScan(NamedTuple):
+    findings: Counter
+    files: int
+    skipped: int
+
+
 class _TimingScope:
     def __init__(self, qualname, parent=None, is_class=False):
         self.qualname = qualname
@@ -152,6 +158,41 @@ class _TimingScopes:
                         pending.append(value)
 
 
+# These lexical cues overapproximate the subject immediately below. Imports of
+# time.sleep necessarily contain "sleep", including every imported alias; all
+# timed methods contain "timeout". Positional subjects need their method prefix
+# and, for join/get, the start of a literal. Comments, parentheses and signs may
+# precede that literal. False positives are harmless: only the AST makes findings.
+_TIMING_MARKERS = ("sleep", "timeout", "pb-timing-ok")
+_TRIVIA = r"(?:\s|#[^\n]*(?:\n|$))*"
+_ARGUMENT_PREFIX = r"(?:\s|#[^\n]*(?:\n|$)|[()+-])*"
+_NUMBER_PREFIX = r"(?:[0-9]|\.[0-9])"
+_METHOD_PREFIXES = {kind: rf"\.{_TRIVIA}{kind}{_TRIVIA}\(" for kind in TIMING_METHODS}
+_POSITIONAL_SUBJECTS = re.compile("|".join((
+    _METHOD_PREFIXES["wait"],
+    _METHOD_PREFIXES["join"] + _ARGUMENT_PREFIX + _NUMBER_PREFIX,
+    _METHOD_PREFIXES["get"] + _ARGUMENT_PREFIX + r"(?:True|False)\b",
+)))
+_JOIN_PREFIX = re.compile(_METHOD_PREFIXES["join"])
+_LATER_NUMBER = re.compile("," + _ARGUMENT_PREFIX + _NUMBER_PREFIX)
+
+
+def timing_source_needs_ast(source):
+    """Keep every possible subject or pragma; skipped files have zero findings."""
+    if any(marker in source for marker in _TIMING_MARKERS):
+        return True
+    if not source.isascii():
+        source = unicodedata.normalize("NFKC", source)
+    source = source.replace("\\\r\n", "").replace("\\\n", "")
+    if any(marker in source for marker in _TIMING_MARKERS):
+        return True
+    if _POSITIONAL_SUBJECTS.search(source):
+        return True
+    # The classifier also accepts a numeric literal in a later join position.
+    # This deliberately broad fallback preserves that subject without parsing.
+    return bool(_JOIN_PREFIX.search(source) and _LATER_NUMBER.search(source))
+
+
 def _timing_call_kind(call, scope):
     callee = call.func
     imported_sleep = (
@@ -211,7 +252,7 @@ def scan_timing_source(source, path="tests/snippet.py"):
         tree = ast.parse(source, filename=path)
     except SyntaxError as exc:
         raise ValueError(f"{path}:{exc.lineno}: syntax error: {exc.msg}") from exc
-    # Still parse every file once. Skip walking subtrees whose source cannot
+    # Skip walking subtrees whose source cannot
     # contain a subject method or imported alias spelling. Alias spellings also
     # keep every binding that could shadow them. Python normalizes identifiers
     # with NFKC. Non-ASCII aliases and explicit continuations use the full walk.
@@ -247,33 +288,35 @@ def scan_timing_source(source, path="tests/snippet.py"):
                    if not pragmas.get(line))
 
 
-def _scan_timing_file(item):
-    path, relative = item
-    return scan_timing_source(path.read_text(encoding="utf-8"), relative)
-
-
 def _scan_timing_chunk(files):
     counts = Counter()
-    for item in files:
-        counts.update(_scan_timing_file(item))
-    return counts
+    skipped = 0
+    for path, relative in files:
+        source = path.read_text(encoding="utf-8")
+        if timing_source_needs_ast(source):
+            counts.update(scan_timing_source(source, relative))
+        else:
+            skipped += 1
+    return TimingScan(counts, len(files), skipped)
 
 
 def scan_timing_tests(repository):
     files = [(path, path.relative_to(repository).as_posix())
              for path in sorted((repository / "tests").rglob("*.py"))]
-    # Parsing itself exceeds the budget on x86 in one process. Use at most two
-    # of the action's assigned CPUs, without changing affinity or native threads.
+    # The single-process pre-filtered x86 scan still exceeds the budget. Use
+    # at most two assigned CPUs without changing affinity or native threads.
     workers = min(2, len(os.sched_getaffinity(0)))
     if len(files) < 32 or workers == 1:
         return _scan_timing_chunk(files)
     counts = Counter()
+    skipped = 0
     chunks = [files[index:index + 32] for index in range(0, len(files), 32)]
     with ProcessPoolExecutor(max_workers=workers,
                              mp_context=multiprocessing.get_context("spawn")) as pool:
         for result in pool.map(_scan_timing_chunk, chunks):
-            counts.update(result)
-    return counts
+            counts.update(result.findings)
+            skipped += result.skipped
+    return TimingScan(counts, len(files), skipped)
 
 
 def parse_timing_allowlist(contents):
@@ -326,35 +369,69 @@ def validate_timing_allowlist(counts, contents):
         raise ValueError("\n".join(errors))
 
 
-def test_repository_has_no_unallowlisted_timing_calls():
+def test_repository_has_no_unallowlisted_timing_calls(capsys):
     repository = Path(__file__).resolve().parents[1]
-    validate_timing_allowlist(scan_timing_tests(repository),
+    scan = scan_timing_tests(repository)
+    validate_timing_allowlist(scan.findings,
                               (repository / "tests/timing_allowlist.txt").read_text(encoding="utf-8"))
+    with capsys.disabled():
+        print(f"timing-prefilter: files={scan.files} parsed={scan.files - scan.skipped} skipped={scan.skipped}")
+
+
+POSITIVE_TIMING_CASES = [
+    ("import time", "time.sleep(1)", "sleep"),
+    ("import time as clock", "clock.sleep(delay)", "sleep"),
+    ("from time import sleep", "sleep(1)", "sleep"),
+    ("from time import sleep as nap", "nap(secs=delay)", "sleep"),
+    ("from time import sleep as \uff4e\uff41\uff50", "\uff4e\uff41\uff50(1)", "sleep"),
+    ("from time import sleep as nap\u0301", "nap\u0301(1)", "sleep"),
+    ("from time import \uff53\uff4c\uff45\uff45\uff50 as nap", "nap(1)", "sleep"),
+    *[("import time", f"time.sleep({value})", "sleep") for value in (
+        "-1", "-0.1", "+0", "-0.0", "False", "None", "1 - 1", "settings.delay", "duration()")],
+    *[("", expression, "wait") for expression in (
+        "event.wait(0)", "event.wait(None)", "event.wait(delay)",
+        "event.wait(timeout=0)", "event.wait(timeout=False)", "event.wait(timeout=delay)")],
+    *[("", expression, "join") for expression in (
+        "thread.join(5)", "thread.join(0.0)", "thread.join(-1)", "thread.join(+1)",
+        "thread.join(timeout=0)", "thread.join(timeout=delay)", "thread.join(timeout=60)",
+        "thread.join(value, 5)", "thread.join((+.5))", "thread.join(0x10)",
+        "thread.join(2j)", "thread.join(\n# argument\n(-1))")],
+    *[("", expression, "get") for expression in (
+        "q.get(timeout=0)", "q.get(timeout=False)", "q.get(timeout=delay)",
+        "q.get(True, 5)", "q.get(False, delay)", "q.get((True), 5)",
+        "q.get(\n# blocking\nFalse, delay)")],
+    ("", "(event. # attribute\nwait # call\n(1))", "wait"),
+    ("", "event.\uff57\uff41\uff49\uff54(1)", "wait"),
+    ("", "event.\\\nwait(1)", "wait"),
+    ("", "q.get(\uff54\uff49\uff4d\uff45\uff4f\uff55\uff54=1)", "get"),
+]
 
 
 def test_every_in_scope_timing_form():
-    cases = [
-        ("import time", "time.sleep(1)", "sleep"),
-        ("import time as clock", "clock.sleep(delay)", "sleep"),
-        ("from time import sleep", "sleep(1)", "sleep"),
-        ("from time import sleep as nap", "nap(secs=delay)", "sleep"),
-        ("from time import sleep as \uff4e\uff41\uff50", "\uff4e\uff41\uff50(1)", "sleep"),
-        ("from time import sleep as nap\u0301", "nap\u0301(1)", "sleep"),
-        *[("import time", f"time.sleep({value})", "sleep") for value in (
-            "-1", "-0.1", "+0", "-0.0", "False", "None", "1 - 1", "settings.delay", "duration()")],
-        *[("", expression, "wait") for expression in (
-            "event.wait(0)", "event.wait(None)", "event.wait(delay)",
-            "event.wait(timeout=0)", "event.wait(timeout=False)", "event.wait(timeout=delay)")],
-        *[("", expression, "join") for expression in (
-            "thread.join(5)", "thread.join(0.0)", "thread.join(-1)", "thread.join(+1)",
-            "thread.join(timeout=0)", "thread.join(timeout=delay)", "thread.join(timeout=60)")],
-        *[("", expression, "get") for expression in (
-            "q.get(timeout=0)", "q.get(timeout=False)", "q.get(timeout=delay)",
-            "q.get(True, 5)", "q.get(False, delay)")],
-    ]
-    for imports, expression, kind in cases:
+    for imports, expression, kind in POSITIVE_TIMING_CASES:
         assert scan_timing_source(f"{imports}\n{expression}\n") == {
             TimingIdentity("tests/snippet.py", "<module>", kind): 1}, expression
+
+
+def test_prefilter_keeps_every_in_scope_positive_snippet():
+    for imports, expression, _ in POSITIVE_TIMING_CASES:
+        assert timing_source_needs_ast(f"{imports}\n{expression}\n"), expression
+
+
+def test_full_and_prefiltered_scans_agree_on_fixed_repository_sample():
+    repository = Path(__file__).resolve().parents[1]
+    sample = (
+        "tests/conftest.py", "tests/test_no_timing_sensitive_tests.py",
+        "tests/test_profile_window_deadline.py", "tests/test_c26_progress_characterization.py",
+        "tests/test_design_doc_line_references.py",
+    )
+    full, filtered = Counter(), Counter()
+    for relative in sample:
+        source = (repository / relative).read_text(encoding="utf-8")
+        full.update(scan_timing_source(source, relative))
+        if timing_source_needs_ast(source):
+            filtered.update(scan_timing_source(source, relative))
+    assert full == filtered
 
 
 def test_untimed_unrelated_and_policy_out_of_scope_forms():
@@ -425,12 +502,26 @@ def test_scan_includes_conftest_and_support_but_excludes_src_and_tools(tmp_path,
         return real_parse(source, filename=filename)
 
     monkeypatch.setattr(ast, "parse", record_parse)
-    assert scan_timing_tests(tmp_path) == {
+    scan = scan_timing_tests(tmp_path)
+    assert scan.findings == {
         TimingIdentity(path, "<module>", "sleep"): 1 for path in paths[:2]}
-    assert sorted(parsed) == sorted((*paths[:2], "tests/test_example.py"))
-    (tmp_path / "tests/broken.py").write_text("def broken(:\n", encoding="utf-8")
+    assert scan.files == 3 and scan.skipped == 1
+    assert sorted(parsed) == sorted(paths[:2])
+    (tmp_path / "tests/broken.py").write_text("def broken(: # sleep\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"tests/broken.py:1: syntax error"):
         scan_timing_tests(tmp_path)
+
+
+def test_skipped_file_still_rejects_stale_allowlist_debt(tmp_path):
+    import pytest
+
+    path = tmp_path / "tests/test_clean.py"
+    path.parent.mkdir()
+    path.write_text("assert 1 + 1 == 2\n", encoding="utf-8")
+    scan = scan_timing_tests(tmp_path)
+    assert scan.skipped == 1
+    with pytest.raises(ValueError, match="stale entry/count mismatch, found 0, listed 1"):
+        validate_timing_allowlist(scan.findings, "tests/test_clean.py::<module> sleep 1 #2035")
 
 
 def test_controlled_timing_pragma_exempts_only_the_call_line():
@@ -441,19 +532,21 @@ time.sleep(5)
     assert scan_timing_source(source) == {TimingIdentity("tests/snippet.py", "<module>", "sleep"): 1}
 
 
-def test_pruning_keeps_decorators_defaults_and_multiline_or_unicode_calls():
+def test_scanner_keeps_decorators_defaults_and_multiline_or_unicode_calls():
     source = """@event.wait(timeout=1)
 def example(value=queue.get(True, 5)):
     thread.join(
         1
     )
 """
+    assert timing_source_needs_ast(source)
     assert scan_timing_source(source) == {
         TimingIdentity("tests/snippet.py", "<module>", "wait"): 1,
         TimingIdentity("tests/snippet.py", "<module>", "get"): 1,
         TimingIdentity("tests/snippet.py", "example", "join"): 1,
     }
     for expression in ("event.\uff57\uff41\uff49\uff54(1)", "event.\\\nwait(1)", "event.wait(1) # \u2603"):
+        assert timing_source_needs_ast(expression)
         assert scan_timing_source(expression) == {
             TimingIdentity("tests/snippet.py", "<module>", "wait"): 1}
 
@@ -465,12 +558,14 @@ def test_empty_or_stale_pragmas_fail():
         ("import time\ntime.sleep(1)  # pb-timing-ok:", "requires a reason"),
         ("import time\ntime.sleep(1)  # pb-timing-ok:   ", "requires a reason"),
         ("import time\ntime.sleep(1)  # pb-timing-ok", "requires a reason"),
+        ("# pb-timing-ok\u0301: fake clock", "requires a reason"),
         ("# pb-timing-ok: fake clock", "stale pb-timing-ok"),
         ("clock.sleep(1)  # pb-timing-ok: fake clock", "stale pb-timing-ok"),
         ("import time\ntime.sleep(0)  # pb-timing-ok: fake clock", "stale pb-timing-ok"),
         ("import time\n# pb-timing-ok: fake clock\ntime.sleep(1)", "stale pb-timing-ok"),
     ]
     for source, error in cases:
+        assert timing_source_needs_ast(source)
         with pytest.raises(ValueError, match=error):
             scan_timing_source(source)
 

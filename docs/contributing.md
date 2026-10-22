@@ -102,7 +102,10 @@ Review the visible allowlist diff, as with the duplication baseline; the
 guard does not read Git history.
 
 The full-tree scan uses at most two CPUs from the process's assigned affinity.
-Each file is parsed once. Small fixture trees use the calling process.
+A conservative source filter beside the subject definition skips files with no
+possible subject or pragma; each remaining file is parsed once. A skipped file
+contributes zero findings, so obsolete allowlist entries still fail. Small fixture
+trees use the calling process. The guard never asserts its own runtime.
 
 The following forms are explicitly out of scope and non-blocking for review
 of this guard: `asyncio.sleep` and `asyncio.wait_for`; subprocess `timeout=`
