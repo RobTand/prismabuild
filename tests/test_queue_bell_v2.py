@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 import pytest
 
 from prismabuild import queue_bell, queue_bell_events, queue_notifier
+from prismabuild.queue_bell_topics import TOPICS
 from test_queue_bell import bell, KEY
 
 
@@ -35,10 +36,10 @@ def _v2_poll(bell, before, **overrides):
     return _v2_get(bell, "/v2/wait", **query)
 
 
-def test_v2_declares_only_existing_outcomes_and_projects_v1_events(bell):
+def test_v2_declares_covered_topics_and_projects_v1_events(bell):
     before = _v2_get(bell, "/v2/now")
     assert before["coverage"]["version"] >= 1
-    assert before["coverage"]["topics"] == sorted(queue_bell.STATE_DIRS)
+    assert before["coverage"]["topics"] == sorted(TOPICS)
     cursor = bell.client.now()
     bell.service.ring.append("done", KEY)
     old = bell.client.wait(cursor, ("done",), (KEY,), 1)
@@ -103,19 +104,19 @@ def test_v2_loss_never_reports_complete_wait(bell, loss):
     elif loss == "coverage":
         bell.service.ring.set_coverage(("ready",))
     else:
-        overrides["topics"] = "workers"
+        overrides["topics"] = "tiers"
     reply = _v2_poll(bell, before, **overrides)
     assert reply["reset"] is True
     assert reply["reason"]
     assert "events" not in reply
     assert reply["coverage"]["topics"] == (["ready"] if loss == "coverage"
-                                                else sorted(queue_bell.STATE_DIRS))
+                                                else sorted(TOPICS))
 
 
 def test_v2_positive_client_negotiation_and_wrong_queue(bell):
     before = bell.client.now_v2(("done",))
     with pytest.raises(queue_bell.Unavailable, match="coverage"):
-        bell.client.now_v2(("workers",))
+        bell.client.now_v2(("tiers",))
     other = queue_bell.Client(bell.root / "other", host="127.0.0.1", port=bell.client.port)
     with pytest.raises(queue_bell.Unavailable, match="503"):
         other.now_v2(("done",))

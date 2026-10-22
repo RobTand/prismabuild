@@ -1186,9 +1186,11 @@ required topic in `coverage.topics`. Preserve its `coverage.version` with the
 epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
 503. An old bell's 404 or a partial topic set requires degraded recovery.
 
-Initially, v2 covers only `ready`, `claimed`, `done`, `failed`, `withdrawn`,
-`deferred`, `intent`, `attempts` and `publication-endings`. IDs for those topics
-are lowercase 64-hex action keys. Later adapters declare their own bounded ID
+V2 covers `ready`, `claimed`, `done`, `failed`, `withdrawn`, `deferred`, `intent`,
+`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940).
+Outcome IDs are lowercase 64-hex action keys. Host IDs preserve the exact store
+spelling, including dots, with at most 128 ASCII letters, digits, dots,
+underscores or hyphens and a leading letter or digit. Later adapters declare their own bounded ID
 grammars. Wait filters accept at most 32 topic entries and 128 ID entries, with
 64-character topic and 128-character ID limits. Empty filters select all
 available topics or IDs. Unknown topics do not grant coverage. Invalid filters
@@ -1211,6 +1213,52 @@ resets, coverage changes, subscriptions, active/capped connections and watch
 count. Inspect these when diagnosing fallback or watch exhaustion. Healthy
 renewals produce no per-request logs and perform no namespace discovery.
 
+`workers` observes `workers/<host>.json` replacement, in-place writes, metadata
+changes and removal. `reservations` observes each host root, `free`, `minted`,
+`held`, and immediate holder contents, including hidden `.adaptive.json` and
+`.gpu.json` metadata. Private acquisitions, rollback and release can wake a
+host subscriber without any ready or terminal activity. Populated moved-in
+holders install watches before scanning. Traversal stops at holder contents;
+host adaptive mirrors, passes and denial topics require later slices.
+Hidden and unknown holder directories use the `HolderCensus` enumeration and
+each add one watch. Reconstruction also retains all symlinks for rejection
+before checking directory membership. Every immediate holder entry invalidates
+its host, including hidden unfinished files. Hidden free and minted token names
+also invalidate. In-place byte writes invalidate before the writer closes.
+Nameless events on `workers/` or `reservations/`, queue-root attributes and
+ancestor permission changes advance the v2 reset marker so subscribers reread
+their host inputs. Each lexical ancestor adds one watch without a scan;
+ancestor replacement or watch loss withdraws both host topics.
+
+Expected host directory shapes replaced by symlinks or non-directories remain
+incomplete. Symlinked offer files, CPU maps, tokens and holder metadata also
+withdraw coverage, even when their targets are currently absent or in-tree.
+Nonregular, unreadable or multiply linked byte-read leaves, noncanonical offer
+filenames, unknown nested token shapes such as `minted/dead`, and symlinked or unwatchable
+ancestors cannot establish complete host coverage. Offer, CPU-map and holder
+metadata files have inode watches as well as parent watches, so an external
+hard link added later cannot bypass invalidation. Name-only token inputs do
+not add inode watches. The bell checks shapes at reconstruction and on mutations
+without parsing contents. Unexplained nested watch loss withdraws the affected
+topic. Repair the watch limit or invalid tree, then reconstruct or restart the scratch/service
+generation before accepting coverage again. Normal parent-observed removal
+retains the parent watch. Moved-out trees lose their watches, so later writes
+outside the queue do not produce hints under the old host ID. Inspect the
+existing coverage-change, reset and watch counters for these boundaries.
+An inode rebound to a different name gets a new watch descriptor, so stale
+self-events cannot discard its replacement watch during reconstruction.
+
+Hints grant no free capacity. Keep the existing confirmed offer/ledger reads.
+`DirtyHostInputs` is available to later consumers to retain unknown host IDs,
+retry NFS visibility from 50 ms to one second within the original read budget,
+and expose `read_attempts` and `visibility_retries`. Confirmation or stop cancels
+the retry; exhaustion keeps the ID dirty and reports `Unavailable`. Duplicate
+hints do not extend the budget. A hint received during confirmation keeps its
+new generation dirty until another read confirms it within that same deadline.
+Run these reads outside admission and transition
+locks. The recorded offer expiry remains 120 seconds and is a separate consumer
+deadline. This source slice activates no consumer and adds no periodic discovery.
+
 The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
 one-second connect deadline and absolute five-second server I/O budget retain
 their existing values. A healthy empty v2 renewal renews transport only. The
@@ -1225,7 +1273,13 @@ the 30-minute gate watch. The #1881 baseline remains the comparison: event-to-
 claim p50 at most one second, p95 no worse than the measured poll baseline,
 fallback claims resuming within 60 seconds of bell outage, and authoritative
 records without lost or double claims. Connection/watch budgets must follow
-measured demand; v2 adds no watch tree in this slice. Roll back through
+measured demand. The host adapters add one watch per existing offer root,
+reservation root, host, free/minted/held directory and holder, plus each queue
+ancestor and each byte-read offer, map or metadata leaf. Measure private
+scratch demand with `tools/maintenance/prove_queue_bell_host_inputs.py` through
+published pbrun, using two CPUs, four GiB and one native thread. It binds an
+ephemeral private port, reports watch/connection/ring demand, and touches no live
+bell. Roll back through
 `pbpublish rollback` to the previous accepted generation.
 
 The service is unauthenticated on the listed private addresses. Peers can see

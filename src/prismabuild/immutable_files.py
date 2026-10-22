@@ -626,11 +626,15 @@ def file_identity_nofollow(
     where: str,
     expected_sha256: str | None = None,
     expected_bytes: int | None = None,
+    require_readonly: bool = False,
+    observer_factory: Callable[[], Callable[[bytes], None]] | None = None,
 ) -> tuple[str, int, int]:
     """Hash one stable inode reached through a fresh held no-follow parent.
 
     Every retry reopens the full path and hashes from byte zero.  A wrong
     expected address is immediate tamper even when metadata is also unstable.
+    An optional observer consumes each chunk without retaining the whole file;
+    its factory starts fresh on every stable-read retry.
     """
 
     for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
@@ -641,12 +645,21 @@ def file_identity_nofollow(
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode):
                 raise CASTamperError(f"{where} is not a regular file: {path}")
+            if require_readonly and before.st_mode & 0o222:
+                raise CASTamperError(f"{where} is writable: {path}")
+            if expected_bytes is not None and before.st_size != expected_bytes:
+                raise CASTamperError(f"{where} size differs from its address: {path}")
+            observe = observer_factory() if observer_factory is not None else None
             while True:
                 chunk = os.read(descriptor, 4 * 1024 * 1024)
                 if not chunk:
                     break
                 digest.update(chunk)
                 size += len(chunk)
+                if expected_bytes is not None and size > expected_bytes:
+                    raise CASTamperError(f"{where} grew beyond its address: {path}")
+                if observe is not None:
+                    observe(chunk)
             observed_digest = digest.hexdigest()
             if expected_bytes is not None and size != expected_bytes:
                 raise CASTamperError(
