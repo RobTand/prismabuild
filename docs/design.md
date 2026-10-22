@@ -20696,7 +20696,8 @@ The proposed archive is
 exactly `schema=prismabuild.attempt-log-store.v1`, `queue_root`, `queue_id`,
 `store_id`, `dataset`, `dataset_guid`. `queue_root` binds the canonical queue
 address. Apply rechecks the mounted ZFS source, GUID, mountpoint, effective
-`sync=standard` and zstd compression. Code never creates or modifies a dataset.
+`sync=standard` and zstd compression. Apply refuses any dataset name other than
+`storage_pool/shared/pb-queue-evidence`. Code never creates or modifies a dataset.
 
 | Address relative to archive root | Contents and bounds |
 |---|---|

@@ -198,7 +198,7 @@ def _stream_live_attempt_log(path: Path, fact: Mapping, consume: Callable[[bytes
         try:
             native.assert_regular_identity(fd, parent, path, where="pool attempt log")
         except native.CASTamperError:
-            if os.fstat(fd).st_nlink != 0:
+            if os.fstat(fd).st_nlink != 0 or not native.confirmed_metadata_absence(path):
                 raise
         native.assert_directory_identity(parent, path.parent, where="pool attempt log parent")
     finally:
@@ -234,8 +234,6 @@ def _attempt_archive_zstd(raw: bytes, *, decode: bool) -> bytes:
                     output.extend(part)
                     if len(output) > limit:
                         raise AttemptLogIntegrityError("attempt archive zstd output exceeds bound")
-            if len(output) > limit:
-                raise AttemptLogIntegrityError("attempt archive zstd output exceeds bound")
             if child.wait(timeout=max(0, deadline - time.monotonic())) != 0:
                 raise AttemptLogIntegrityError("attempt archive zstd frame is corrupt")
             return bytes(output)

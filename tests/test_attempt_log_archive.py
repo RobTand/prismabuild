@@ -112,6 +112,28 @@ def test_live_integrity_failure_never_falls_back(fleet, zstd_required, damage):
         resolve_attempt_log(fleet.queue.root, fact)
 
 
+@pytest.mark.parametrize("change", ["unlink", "regular", "symlink"])
+def test_live_custody_distinguishes_gc_unlink_from_replacement(fleet, change):
+    record = fleet.finish()
+    fact = fleet.descriptors(record)["stdout"]
+    path = fleet.queue.root / fact["path"]
+    chunks = []
+    def consume(raw):
+        chunks.append(raw)
+        if len(chunks) == 1:
+            path.unlink()
+            if change == "regular":
+                native.publish_immutable(path, b"substituted")
+            elif change == "symlink":
+                path.symlink_to(path.with_suffix(".unrelated"))
+    if change == "unlink":
+        archive._stream_verified_attempt_log(fleet.queue.root, fact, consume)
+        assert b"".join(chunks) == b"stdout evidence\n"
+    else:
+        with pytest.raises(AttemptLogIntegrityError):
+            archive._stream_verified_attempt_log(fleet.queue.root, fact, consume)
+
+
 @pytest.mark.parametrize("damage", ["compressed", "manifest", "index", "missing_chunk", "misbound_store"])
 def test_archived_integrity_and_unavailable_errors(fleet, zstd_required, damage):
     record = fleet.finish()
