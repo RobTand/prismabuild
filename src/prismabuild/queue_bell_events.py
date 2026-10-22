@@ -205,6 +205,7 @@ class InotifyQueue:
         self.incomplete_topics = set()
         self.file_watches = {}
         self.ancestor_names = {}
+        self.ancestor_watches = {}
         self.host_ancestry_complete = False
         try:
             self._tree(Path())
@@ -239,11 +240,15 @@ class InotifyQueue:
             previous = self.directories.pop(wd)
             self.root_watches.pop(previous, None)
             self.file_watches.pop(previous, None)
+            if self.ancestor_watches.get(previous) == wd:
+                self.ancestor_watches.pop(previous)
             self.libc.inotify_rm_watch(self.fd, wd)
             wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), mask)
             if wd < 0:
                 raise OSError(ctypes.get_errno(), str(path))
         self.directories[wd] = relative
+        if relative is not None and relative.is_absolute():
+            self.ancestor_watches[relative] = wd
         if relative is not None and not relative.is_absolute() and len(relative.parts) <= 1:
             self.root_watches[relative] = wd
         return wd
@@ -279,6 +284,7 @@ class InotifyQueue:
                 self.libc.inotify_rm_watch(self.fd, wd)
                 self.directories.pop(wd)
         self.ancestor_names.clear()
+        self.ancestor_watches.clear()
         self.host_ancestry_complete = False
         absolute = self.root.absolute()
         if ".." in absolute.parts:
@@ -351,7 +357,8 @@ class InotifyQueue:
         if Path() not in watched:
             return ()
         ancestors_installed = (self.host_ancestry_complete
-                               and self.ancestor_names.keys() <= set(self.directories.values()))
+                               and all(self.directories.get(self.ancestor_watches.get(path)) == path
+                                       for path in self.ancestor_names))
         # An absent optional root is covered by the installed queue-root watch.
         # Its creation withdraws that proof until installation has invalidated
         # observations made before its descendant watches existed.
