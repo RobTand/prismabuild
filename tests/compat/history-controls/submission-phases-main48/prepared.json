@@ -1,0 +1,9 @@
+[
+  {
+    "archive_sha256": "635d5ac00c7abcff6511d4bca81d907f759208883e203328ec9573f71a7f1715",
+    "commit": "48c47c0540483461201dc8b5f8996976390fdd9d",
+    "generation": "main48-48c47c054048",
+    "provenance_file": "COMPAT_SOURCE.json",
+    "receipt_sha256": "6d252b40161a7a11d2c6674958cdfd2d33413e07305d9a925d2a89cc2342350b"
+  }
+]
