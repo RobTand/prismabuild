@@ -242,6 +242,28 @@ def test_bounded_action_result_log_reader_uses_archive(fleet, zstd_required):
         action_result._verified_attempt_log(fleet.queue, record, attempt, 1, "stdout", 1)
 
 
+@pytest.mark.parametrize("oversized", [False, True])
+def test_ending_log_stream_preserves_archive_verification_and_caps(fleet, zstd_required, oversized):
+    import time
+    from prismabuild import action_result, endings
+    cap = endings.TERMINAL_STREAM_TAIL_BYTES
+    text = "evidence\n" if not oversized else "x" * (cap + 17) + "\n"
+    record = fleet.finish(stdout=text)
+    attempt = fleet.queue.records.attempt_document(fleet.queue.records.attempt_path(record, 1))
+    fleet.retire()
+    descriptor, raw, announcements = action_result._stream_ending_log(
+        fleet.queue, record, attempt, 1, "stdout", cap, 1024, time.monotonic() + 30)
+    assert raw == text.encode()[-cap:]
+    assert descriptor["bytes"] == len(text.encode()) and not announcements
+    assert descriptor.get("truncated", False) is oversized
+    if oversized:
+        assert descriptor["evidence"]["bytes"] == cap
+        assert descriptor["evidence"]["sha256"] == digests.raw_sha256(raw)
+    with pytest.raises(action_result.ActionResultError, match="evidence cap"):
+        action_result._stream_ending_log(
+            fleet.queue, record, attempt, 1, "stdout", 1, 1024, time.monotonic() + 30)
+
+
 def test_archive_rejects_wrong_synchronous_backing(fleet, monkeypatch):
     record = fleet.finish()
     fact = fleet.descriptors(record)["stdout"]
