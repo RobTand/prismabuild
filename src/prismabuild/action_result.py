@@ -201,6 +201,14 @@ def _select_terminal(queue, key, published, number, evidence_cap, *, successful=
             f"{published!r}")
     if record.get("action_key") != key:
         raise ActionResultError("the terminal record names another action key")
+    # Bind the captured terminal slot before any log read (or incomplete
+    # verification return). Attempt/status agreement alone cannot detect a
+    # terminal moved from failed/ to done/, or the reverse.
+    expected_state = (_pool.record_store.DONE if record.get("status") in {"executed", "cache_hit"}
+                      else _pool.record_store.WITHDRAWN if record.get("status") == "withdrawn"
+                      else _pool.record_store.FAILED)
+    if ending["state"] != expected_state:
+        raise ActionResultError("terminal queue directory differs from its status")
     if successful and record.get("status") not in {"executed", "cache_hit"}:
         raise ActionResultError(
             f"the terminal status is not a success: {record.get('status')!r}")

@@ -258,6 +258,73 @@ def test_concluded_withdrawal_verifies_its_attempt_logs(consumer_world, capsys):
     assert Path(row["result"]["stdout"]["path"]).read_text() == "partial output\n"
 
 
+@pytest.mark.parametrize("status,destination", [
+    ("failed", "done"), ("refused", "done"),
+    ("executed", "failed"), ("cache_hit", "failed"),
+])
+@pytest.mark.parametrize("reader", ["consumer", "direct"])
+def test_terminal_directory_binding_is_required(
+        consumer_world, capsys, status, destination, reader):
+    key, _ = consumer_action(consumer_world, "misfiled", status)
+    queue = consumer_world.queue
+    source = queue.records.item_path("done" if status in {"executed", "cache_hit"}
+                                     else "failed", key)
+    record = json.loads(source.read_bytes())
+    source.rename(queue.records.item_path(destination, key))
+    if reader == "direct":
+        with pytest.raises(action_result.ActionResultError, match="directory"):
+            action_result.read_verified_ending_result(
+                queue, key, published_unix=record["published_unix"], attempt=1)
+    else:
+        healthy, _ = consumer_action(consumer_world, "healthy")
+        assert pbwait.main(["--endings", "--wait-s", "0", key, healthy]) == 74
+        body = json.loads(capsys.readouterr().out)
+        assert body["complete"] is False
+        corrupt, intact = body["endings"]
+        assert corrupt["action_key"] == key
+        assert corrupt["status"] == "unreadable"
+        assert corrupt["result"] is None
+        assert intact["status"] == "executed"
+        assert intact["result"]["verified"] is True
+
+
+@pytest.mark.parametrize("corruption", [
+    {"attempt_history": []}, {"attempt_history": None},
+    {"attempt_history": [None]}, {"attempt_history": [{}]},
+    {"attempt_history": [{"attempt": 1, "outcome": "not-canonical"}]},
+    {"attempts": 0, "attempt_history": []},
+    {"attempt_history_missing_before": 1, "attempt_history": []},
+    {"detail": None}, {"detail": []},
+    {"status": None},
+    "attempt_history", "status", "detail", "finished_unix", "finished_host",
+])
+def test_malformed_retained_withdrawal_is_isolated(consumer_world, capsys, corruption):
+    key, _ = consumer_action(consumer_world, "corrupt-withdrawal", "waiting")
+    queue = consumer_world.queue
+    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.withdraw(key, reason="stop", signal_child=False)
+    queue.finish(key, status="withdrawn", detail={
+        "returncode": 143, "stdout": "partial output\n", "stderr": "stopped\n"})
+    settle_publishers()
+    path = queue.records.item_path("withdrawn", key)
+    record = json.loads(path.read_bytes())
+    if isinstance(corruption, str):
+        del record["withdrawn_attempt"][corruption]
+    else:
+        record["withdrawn_attempt"].update(corruption)
+    path.write_bytes(pb._canonical_file_bytes(record))
+    healthy, _ = consumer_action(consumer_world, "healthy")
+    assert pbwait.main(["--endings", "--wait-s", "0", key, healthy]) == 74
+    body = json.loads(capsys.readouterr().out)
+    assert body["complete"] is False
+    corrupt, intact = body["endings"]
+    assert corrupt["action_key"] == key
+    assert corrupt["status"] == "unreadable"
+    assert corrupt["result"] is None
+    assert intact["status"] == "executed"
+    assert intact["result"]["verified"] is True
+
+
 def test_slurm_withdraw_json_reports_the_filed_decision_when_scancel_refuses(
         consumer_world, controller, monkeypatch, capsys):
     _lane_record(consumer_world.root / "slurm")

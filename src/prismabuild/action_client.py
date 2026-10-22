@@ -707,17 +707,26 @@ def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
                 or any(retained.get(field) != outcome.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
+        # The streaming consumer defers reading attempts and logs, not shape
+        # validation: malformed retained metadata must take the per-key refusal
+        # path rather than fail an index/key lookup in the observer's caller.
+        _missing, links = q._attempt_history_links(retained)
+        if not links:
+            raise pool.PoolContractError("a concluded withdrawn attempt has no immutable outcome")
+        if (not isinstance(retained.get("detail"), Mapping)
+                or any(field not in retained for field in ("finished_unix", "finished_host"))):
+            raise pool.PoolContractError("withdrawn attempt summary is malformed")
         stopped = (q.attempt_ending(retained) if verify_attempts else
                    {**retained, "attempt": retained.get("attempts"),
                     "disposition": pool.WITHDRAWN})
-        if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
+        if stopped.get("status") != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
             raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
         for field in ("resource_scope_cleanup", "container_cleanup"):
             if stopped["detail"].get(field) != outcome.get(field):
                 raise pool.PoolContractError("withdrawn cleanup differs from its immutable attempt")
         withdrawn_attempt = {field: stopped[field] for field in
                              ("attempt", "status", "disposition", "finished_unix", "finished_host")}
-        withdrawn_attempt["outcome"] = retained["attempt_history"][-1]["outcome"]
+        withdrawn_attempt["outcome"] = links[-1]["outcome"]
     return {
         "action_key": str(outcome.get("action_key") or ""),
         "status": status,
