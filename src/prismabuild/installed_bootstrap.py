@@ -206,7 +206,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
             runtime_key = canonical_sha256(runtime)
         rows = lanes.setdefault((kind, machine, runtime_key), [])
         rows.append({'shard': len(rows), 'files': files, 'returncode': 0,
-                     'timed_out': False, 'output': log})
+                     'timed_out': False, 'output': log, 'record_binding': binding})
         keys.append(full)
     if (not {('root', 'aarch64'), ('root', 'x86_64')} <= {(kind, machine) for kind, machine, _ in lanes}
             or not any(kind == 'corpus' for kind, _, _ in lanes)):

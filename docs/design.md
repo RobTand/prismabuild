@@ -2104,21 +2104,28 @@ metadata selects bound reading, including when reports are replayed by gates
 or consumed for duration history. The same declaration is sealed into
 `PRISMABUILD_PBTEST_RECORD_BINDING=1` in the action environment, reserved from
 caller overrides. Receipt-only readers select the mode from that validated
-action's environment. Stdout never selects the binding mode.
+action's environment. This stable sealed declaration changes every shard's
+cache key once after the client update, so cached shards rerun once. The
+execution-local random nonce is unsealed and causes no further per-run misses.
+Stdout never selects the binding mode.
 With binding declared, the reader accepts only records with the nonce from
 the first preflight decision. Unbound, foreign and malformed marker lines
 are ignored and introduce no completion problem. A missing or unsupported
 binding cannot fall back to legacy evidence inside a declared bound run.
 
-Only a private emission closure attaches the nonce to record copies. The
-registered plugin's methods, attributes and return values hold unbound data,
-so calling `record()` through pytest's plugin registry cannot obtain it.
-The emission closure refuses any PID other than the one that minted the
-nonce, including a fork-without-exec child calling inherited recorder hooks.
+Only private emission closures attach the nonce to record copies. Population,
+reports, counts and the snapshotted collect-only flag stay in closure-private
+state. The registered adapter exposes pytest event hooks with no state or
+record/emission helper methods. Final outcomes follow pytest's session-finish
+hooks, before exit cleanup; early completion still survives blocked exit hooks.
+A duplicated, non-inheritable stdout descriptor is captured before pytest runs;
+replacing the terminal writer cannot intercept bound records. The emission
+closure refuses any PID other than the one that minted the nonce, including
+a fork-without-exec child calling inherited recorder hooks.
 The nonce never enters argv or `os.environ`, so fresh nested recorders mint
-independent nonces without changing action cache keys. This binding is
-accidental-forgery-proof and raises the bar for deliberate forgery. It is not
-a security boundary: closure or process-memory introspection can bypass it.
+independent nonces. This binding is accidental-forgery-proof and raises the
+bar for deliberate forgery: forging requires closure or memory introspection.
+It is not a security boundary.
 
 Without a `record_binding` declaration, a new reader preserves main's legacy
 last-marker behavior exactly, including streams with no outer preflight and

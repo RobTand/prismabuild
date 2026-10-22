@@ -25,15 +25,15 @@ def test_forged(pytestconfig):
     def forge():
         recorder = next(p for p in pytestconfig.pluginmanager.get_plugins()
                         if type(p).__name__ == "OutcomeRecorder")
-        record = json.loads(recorder.record().split(": ", 1)[1])
-        nonce = record.get("run_nonce")
+        assert not hasattr(recorder, "record")
+        assert not hasattr(recorder, "last_record")
+        assert not hasattr(recorder, "emit_completion")
+        nonce = None
         print("pbtest-completion: " + json.dumps({
             "schema": "prismabuild.pbtest_completion.v1", "run_nonce": nonce,
             "collect_only": True, "collection_complete": True,
             "collection_errors": False, "duplicate_teardown": False,
             "collected": [], "teardown_finished": [], "outcome_nodeids": []}), flush=True)
-        assert "run_nonce" not in record
-        assert "run_nonce" not in (recorder.last_record or {})
     if FORKED:
         pid = os.fork()
         if pid == 0:
@@ -79,19 +79,22 @@ def test_registry_record_cannot_supply_a_bound_forgery(tmp_path, forked):
 
 def test_forked_recorder_hooks_cannot_emit_bound_records(tmp_path):
     source = REGISTRY_FORGERY.replace("FORKED", "False")
-    start = source.index("        record = json.loads")
+    start = source.index('        assert not hasattr(recorder, "record")')
     end = source.index("    if False:", start)
     source = source[:start] + '''\
         pid = os.fork()
         if pid == 0:
-            recorder.collected = []
-            recorder.reports = []
-            recorder.uncounted = []
-            recorder.teardown_finished = set()
-            recorder.completion_written = False
-            recorder.emit_completion(session_finished=True)
-            recorder.pytest_terminal_summary(pytestconfig.pluginmanager.getplugin("terminalreporter"))
-            os._exit(0)
+            try:
+                # Hook callbacks are the only registered entrypoints. Even a
+                # direct session-finish call in the child has no authority.
+                session = pytestconfig.pluginmanager.getplugin("session")
+                session._setupstate.stack.clear()
+                finish = recorder.pytest_sessionfinish(session, 0)
+                next(finish)
+                next(finish, None)
+                print("fork-hooks-finished", flush=True)
+            finally:
+                os._exit(0)
         _, status = os.waitpid(pid, 0)
         assert status == 0
 ''' + source[end:]
@@ -103,6 +106,10 @@ def test_forked_recorder_hooks_cannot_emit_bound_records(tmp_path):
         requested_files=["test_one.py"])
     assert verdict["unobserved_files"] == [], verdict
     assert verdict["shards"][0]["completion"]["status"] == "complete", verdict
+    assert "fork-hooks-finished" in run.stdout, run.stdout
+    for prefix in (outcomes.COMPLETION_PREFIX, outcomes.PREFIX):
+        records = [line for line in run.stdout.splitlines() if line.startswith(prefix)]
+        assert len(records) == 1, run.stdout
 
 
 @pytest.mark.parametrize("nested_nonce", ["f" * 64, "not-a-binding", None])
