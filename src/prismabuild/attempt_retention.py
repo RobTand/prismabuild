@@ -270,7 +270,19 @@ def _attempt_retention_snapshot(queue, key: str, *, cutoff: float) -> tuple[dict
                 if last.get("disposition") not in {records.DONE, records.FAILED, records.WITHDRAWN}:
                     return None, "archived generation has no immutable ending"
                 if directory.name == generation and path.parent.name != records.WITHDRAWN:
-                    if any(last.get(field) != record.get(field) for field in ("status", "finished_unix", "detail")):
+                    queue._bind_linked_attempt(record, last, attempt=last["attempt"],
+                                               where="attempt log retirement ending")
+                    derived = {f"{stream}{suffix}" for stream in ("stdout", "stderr")
+                               for suffix in ("", "_bytes", "_truncated", "_log")}
+                    terminal_detail, attempt_detail = record.get("detail"), last.get("detail")
+                    if (record.get("attempts") != last["attempt"]
+                            or any(last.get(field) != record.get(field)
+                                   for field in ("status", "finished_unix", "finished_host"))
+                            or not isinstance(terminal_detail, dict) or not isinstance(attempt_detail, dict)
+                            or {k: v for k, v in terminal_detail.items() if k not in derived}
+                               != {k: v for k, v in attempt_detail.items() if k not in derived}
+                            or any(terminal_detail.get(f"{stream}_log") != last["logs"][stream]
+                                   for stream in ("stdout", "stderr"))):
                         return None, "terminal summary differs from immutable ending"
         if not logs:
             return None, "no live immutable attempt logs"

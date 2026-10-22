@@ -6,9 +6,11 @@ import errno
 import os
 from pathlib import Path
 import re
+import selectors
 import stat
 import subprocess
 import tempfile
+import time
 
 from . import digest_primitives as digests, immutable_files as native
 
@@ -18,6 +20,7 @@ MAX_LOG_COMPRESSED_BYTES = 9 * 1024 * 1024
 MAX_LOG_MANIFEST_BYTES = 1024 * 1024
 MAX_LOG_INDEX_BYTES = 4096
 MAX_LOG_CONFIG_BYTES = 16384
+LOG_CODEC_TIMEOUT_S = 30
 ATTEMPT_LOG_RESOLVER_PROTOCOL = 1
 ATTEMPT_LOG_RESOLVER_CAPABILITY = "attempt-log-resolver-v1"
 RETENTION_CONFIG = "attempt-log-retention.json"
@@ -25,6 +28,7 @@ RETENTION_CONFIG_SCHEMA = "prismabuild.attempt-log-retention.v1"
 ARCHIVE_STORE_SCHEMA = "prismabuild.attempt-log-store.v1"
 ARCHIVE_INDEX_SCHEMA = "prismabuild.attempt-log-index.v1"
 ARCHIVE_MANIFEST_SCHEMA = "prismabuild.attempt-log-manifest.v1"
+ATTEMPT_LOG_ARCHIVE_DATASET = "storage_pool/shared/pb-queue-evidence"
 _ARCHIVE_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ARCHIVE_LOG_PATH = re.compile(
     r"attempts/([0-9a-f]{64})/([0-9a-f]{64})/"
@@ -116,6 +120,8 @@ def _check_attempt_archive_store(queue_root: Path, *, for_apply: bool = False) -
         if marker != expected:
             raise AttemptArchiveUnavailable("attempt archive marker does not bind this queue/store")
         if for_apply:
+            if config["dataset"] != ATTEMPT_LOG_ARCHIVE_DATASET:
+                raise AttemptArchiveUnavailable("archive backing dataset is not the approved HDD dataset")
             # These are observations only. Provisioning is an explicit lead operation.
             result = subprocess.run(
                 ["zfs", "get", "-H", "-p", "-o", "property,value", "guid,mountpoint,sync,compression",
@@ -214,12 +220,25 @@ def _attempt_archive_zstd(raw: bytes, *, decode: bool) -> bytes:
         child = subprocess.Popen(arguments, stdin=source, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
         try:
-            output = child.stdout.read(limit + 1)
+            deadline = time.monotonic() + LOG_CODEC_TIMEOUT_S
+            output = bytearray()
+            with selectors.DefaultSelector() as readable:
+                readable.register(child.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not readable.select(remaining):
+                        raise AttemptArchiveUnavailable("attempt archive zstd deadline expired")
+                    part = os.read(child.stdout.fileno(), min(1024 * 1024, limit + 1 - len(output)))
+                    if not part:
+                        break
+                    output.extend(part)
+                    if len(output) > limit:
+                        raise AttemptLogIntegrityError("attempt archive zstd output exceeds bound")
             if len(output) > limit:
                 raise AttemptLogIntegrityError("attempt archive zstd output exceeds bound")
-            if child.wait(timeout=30) != 0:
+            if child.wait(timeout=max(0, deadline - time.monotonic())) != 0:
                 raise AttemptLogIntegrityError("attempt archive zstd frame is corrupt")
-            return output
+            return bytes(output)
         finally:
             child.stdout.close()
             if child.poll() is None:

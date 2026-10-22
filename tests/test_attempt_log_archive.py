@@ -33,6 +33,8 @@ def test_real_writer_live_then_archive_equality_and_pool_reader(fleet, zstd_requ
     record = fleet.finish()
     logs = fleet.descriptors(record)
     before = {name: resolve_attempt_log(fleet.queue.root, fact) for name, fact in logs.items()}
+    plan = fleet.plan()
+    assert plan["candidates"], plan["retained_keys"]
     result = fleet.retire()
     assert len(result["removed"]) == 2 and not result["skipped"]
     assert all(not (fleet.queue.root / fact["path"]).exists() for fact in logs.values())
@@ -231,3 +233,33 @@ def test_archive_rejects_wrong_synchronous_backing(fleet, monkeypatch):
     with pytest.raises(AttemptArchiveUnavailable, match="backing dataset"):
         archive._publish_attempt_log_archive(fleet.queue.root, fact)
     assert (fleet.queue.root / fact["path"]).exists()
+
+
+def test_apply_rejects_another_dataset_even_with_matching_marker(fleet):
+    fleet.config["dataset"] = "nvme/scratch-evidence"
+    fleet.write_config()
+    marker_path = fleet.root / "store.json"
+    marker = json.loads(marker_path.read_bytes())
+    marker["dataset"] = fleet.config["dataset"]
+    marker_path.unlink()
+    native.publish_immutable(marker_path, digests._canonical_bytes(marker))
+    with pytest.raises(AttemptArchiveUnavailable, match="approved HDD dataset"):
+        archive._check_attempt_archive_store(fleet.queue.root, for_apply=True)
+
+
+def test_codec_deadline_cancels_a_process_that_never_writes(tmp_path, monkeypatch):
+    import os
+    child_script = tmp_path / "zstd"
+    child_script.write_text(f"#!{sys.executable}\nimport signal\nsignal.pause()\n")
+    child_script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(archive, "LOG_CODEC_TIMEOUT_S", 0.2)
+    popen, children = archive.subprocess.Popen, []
+    def observe(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(archive.subprocess, "Popen", observe)
+    with pytest.raises(AttemptArchiveUnavailable, match="deadline expired"):
+        archive._attempt_archive_zstd(b"input", decode=False)
+    assert len(children) == 1 and children[0].poll() is not None

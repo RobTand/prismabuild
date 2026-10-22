@@ -30,7 +30,7 @@ class AttemptArchiveFixture:
         self.monkeypatch = monkeypatch
         self.config = dict(schema=archive.RETENTION_CONFIG_SCHEMA, queue_id="a" * 64,
                            store_id="b" * 64, archive_root=str(tmp_path / "archive"),
-                           dataset="scratch/pb-evidence", dataset_guid="12345", retention_days=14,
+                           dataset=archive.ATTEMPT_LOG_ARCHIVE_DATASET, dataset_guid="12345", retention_days=14,
                            reader_gate="retention-gates/gate.json")
         self.root = Path(self.config["archive_root"])
         native.publish_immutable(self.root / "store.json", digests._canonical_bytes(
@@ -43,7 +43,7 @@ class AttemptArchiveFixture:
                 return subprocess.CompletedProcess(argv, 0,
                     f"guid\t12345\nmountpoint\t{self.root}\nsync\tstandard\ncompression\tzstd\n".encode(), b"")
             if argv[0] == "findmnt":
-                return subprocess.CompletedProcess(argv, 0, b"scratch/pb-evidence zfs\n", b"")
+                return subprocess.CompletedProcess(argv, 0, f"{self.config['dataset']} zfs\n".encode(), b"")
             return original_run(argv, **kwargs)
         monkeypatch.setattr(archive.subprocess, "run", observe_backing)
         self.generation = "qualified-reader-generation"
