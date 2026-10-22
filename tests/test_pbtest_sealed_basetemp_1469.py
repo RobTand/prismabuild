@@ -255,9 +255,12 @@ def test_worker_derives_the_action_owned_basetemp(
     root = tmp_path / "qualified"
     root.mkdir()
     checkout = _checkout(tmp_path, KEPT_RECORDER)
+    compiler_scratch = tmp_path / "compiler"
+    compiler_scratch.mkdir()
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", TEST_ACTION_KEY)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", TEST_ACTION_NONCE)
-    assert _real_dispatch(monkeypatch, checkout, ["--basetemp", str(root)],
+    assert _real_dispatch(monkeypatch, checkout,
+                          ["--basetemp", str(root), "--tmpdir", str(compiler_scratch)],
                           expect=1)
     records = _records(root)
     assert len(records) == 1
@@ -267,7 +270,7 @@ def test_worker_derives_the_action_owned_basetemp(
     assert namespace == (TEST_ACTION_KEY, TEST_ACTION_NONCE, "pytest")
     assert (scratch / "sentinel").read_text() == "kept"
     assert record["debug_temproot"] is None
-    assert record["tmpdir"] == "/home/rob/tmp"
+    assert record["tmpdir"] == str(compiler_scratch)
 
 
 def test_xdist_children_remain_under_the_action_root(

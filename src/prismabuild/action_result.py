@@ -29,8 +29,10 @@ from __future__ import annotations
 from . import immutable_files
 
 import ast
+import codecs
 import math
 import re
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -199,6 +201,14 @@ def _select_terminal(queue, key, published, number, evidence_cap, *, successful=
             f"{published!r}")
     if record.get("action_key") != key:
         raise ActionResultError("the terminal record names another action key")
+    # Bind the captured terminal slot before any log read (or incomplete
+    # verification return). Attempt/status agreement alone cannot detect a
+    # terminal moved from failed/ to done/, or the reverse.
+    expected_state = (_pool.record_store.DONE if record.get("status") in {"executed", "cache_hit"}
+                      else _pool.record_store.WITHDRAWN if record.get("status") == "withdrawn"
+                      else _pool.record_store.FAILED)
+    if ending["state"] != expected_state:
+        raise ActionResultError("terminal queue directory differs from its status")
     if successful and record.get("status") not in {"executed", "cache_hit"}:
         raise ActionResultError(
             f"the terminal status is not a success: {record.get('status')!r}")
@@ -540,7 +550,7 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
     }
 
 
-def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap):
+def _attempt_log_descriptor(queue, record, attempt_record, number, stream):
     logs = attempt_record.get("logs")
     metadata = logs.get(stream) if isinstance(logs, Mapping) else None
     if not isinstance(metadata, Mapping):
@@ -555,18 +565,115 @@ def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap
         or any(character not in "0123456789abcdef" for character in declared_sha)
     ):
         raise ActionResultError(f"the selected attempt {stream} digest is invalid")
-    if declared_bytes > log_cap:
-        raise ActionResultError(f"the selected attempt {stream} exceeds the evidence cap")
     log_path = queue.records.attempt_log_path(record, number, stream, declared_sha)
     if metadata.get("path") != str(log_path.relative_to(queue.root)):
         raise ActionResultError(f"the selected attempt {stream} link is not canonical")
-    raw = _read_bounded(
-        log_path, where=f"pool attempt {stream}", max_bytes=log_cap,
-        require_readonly=True)
-    if len(raw) != declared_bytes or pb.raw_sha256(raw) != declared_sha:
-        raise ActionResultError(f"the selected attempt {stream} differs from its address")
+    return {"path": str(log_path), "bytes": declared_bytes, "sha256": declared_sha}
 
-    return {"path": str(log_path), "bytes": declared_bytes, "sha256": declared_sha}, raw
+
+def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap):
+    descriptor = _attempt_log_descriptor(queue, record, attempt_record, number, stream)
+    if descriptor["bytes"] > log_cap:
+        raise ActionResultError(f"the selected attempt {stream} exceeds the evidence cap")
+    raw = _read_bounded(
+        Path(descriptor["path"]), where=f"pool attempt {stream}", max_bytes=log_cap,
+        require_readonly=True)
+    if len(raw) != descriptor["bytes"] or pb.raw_sha256(raw) != descriptor["sha256"]:
+        raise ActionResultError(f"the selected attempt {stream} differs from its address")
+    return descriptor, raw
+
+
+class _EndingVerificationIncomplete(RuntimeError):
+    """A bounded verification could not cover all the evidence."""
+
+
+def unverified_ending_result(reason):
+    return {"verified": False, "verification_error": str(reason),
+            "receipt_sha256": None, "stdout": None, "stderr": None, "outputs": []}
+
+
+class _EndingLogObserver:
+    """Retain a bounded tail and scan complete announcement lines in one pass."""
+
+    def __init__(self, cap, line_cap, deadline, *, scan):
+        self.cap, self.line_cap, self.deadline, self.scan = cap, line_cap, deadline, scan
+
+    def check_budget(self):
+        if time.monotonic() >= self.deadline:
+            raise _EndingVerificationIncomplete("ending verification exceeded its observation budget")
+
+    def start(self):
+        self.check_budget()
+        self.tail = bytearray()
+        self.line = bytearray()
+        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.discarding_line = False
+        self.announcements = []
+        return self.feed
+
+    def feed(self, chunk):
+        self.check_budget()
+        self.tail.extend(chunk)
+        if len(self.tail) > self.cap:
+            del self.tail[:len(self.tail) - self.cap]
+        if not self.scan:
+            return
+        self.scan_text(self.decoder.decode(chunk))
+
+    def scan_text(self, text):
+        for text_piece in text.splitlines(keepends=True):
+            self.check_budget()
+            complete = text_piece.endswith(("\n", "\r", "\v", "\f", "\x1c", "\x1d",
+                                            "\x1e", "\x85", "\u2028", "\u2029"))
+            piece = text_piece.encode("utf-8")
+            if not self.discarding_line:
+                if len(self.line) + len(piece) <= self.line_cap:
+                    self.line.extend(piece)
+                else:
+                    prefix = bytes(self.line) + piece[:self.line_cap - len(self.line)]
+                    stripped = prefix.decode("utf-8", errors="ignore").lstrip()
+                    if not stripped or stripped.startswith("{"):
+                        raise _EndingVerificationIncomplete("receipt candidate line exceeds the evidence cap")
+                    self.line.clear()
+                    self.discarding_line = True
+            if complete:
+                self.finish_line()
+
+    def finish(self):
+        if self.scan:
+            self.scan_text(self.decoder.decode(b"", final=True))
+            self.finish_line()
+
+    def finish_line(self):
+        if not self.discarding_line:
+            self.announcements.extend(_ending_announcements(bytes(self.line)))
+            if len(self.announcements) > 1:
+                raise ActionResultError("the selected attempt has ambiguous receipts")
+        self.line.clear()
+        self.discarding_line = False
+
+
+def _stream_ending_log(queue, record, selected, number, stream, cap, evidence_cap, deadline):
+    descriptor = _attempt_log_descriptor(queue, record, selected, number, stream)
+    if descriptor["bytes"] > cap and cap < endings.TERMINAL_STREAM_TAIL_BYTES:
+        raise ActionResultError(f"the selected attempt {stream} evidence cap cannot cover its terminal summary")
+    observer = _EndingLogObserver(cap, evidence_cap, deadline, scan=stream == "stdout")
+    try:
+        immutable_files.file_identity_nofollow(
+            Path(descriptor["path"]), where=f"pool attempt {stream}",
+            expected_sha256=descriptor["sha256"], expected_bytes=descriptor["bytes"],
+            require_readonly=True, observer_factory=observer.start)
+    except (pb.PrismaBuildError, OSError) as exc:
+        raise ActionResultError(f"pool attempt {stream} refused: {exc}") from exc
+    observer.check_budget()
+    observer.finish()
+    raw = bytes(observer.tail)
+    if descriptor["bytes"] > cap:
+        descriptor.update(truncated=True, evidence={
+            "offset": descriptor["bytes"] - len(raw), "bytes": len(raw),
+            "sha256": pb.raw_sha256(raw)})
+    return descriptor, raw, observer.announcements
+
 
 
 def read_verified_ending_result(
@@ -574,13 +681,32 @@ def read_verified_ending_result(
     max_log_bytes: int = 16 * 1024 * 1024,
     max_evidence_bytes: int = 4 * 1024 * 1024,
     max_result_bytes: int = 64 * 1024 * 1024,
+    max_observation_s: float = 4.0,
 ) -> dict[str, object]:
+    if (isinstance(max_observation_s, bool) or not isinstance(max_observation_s, (int, float))
+            or not math.isfinite(max_observation_s) or max_observation_s < 0):
+        raise ActionResultError("max_observation_s must be finite and nonnegative")
+    try:
+        return _read_streamed_ending_result(
+            queue, action_key, published_unix=published_unix, attempt=attempt,
+            max_log_bytes=max_log_bytes, max_evidence_bytes=max_evidence_bytes,
+            max_result_bytes=max_result_bytes, deadline=time.monotonic() + max_observation_s)
+    except _EndingVerificationIncomplete as exc:
+        return unverified_ending_result(exc)
+
+
+def _read_streamed_ending_result(
+    queue, action_key, *, published_unix, attempt, max_log_bytes,
+    max_evidence_bytes, max_result_bytes, deadline,
+):
     """Verify the selected ending's logs, including a failed worker (#1892).
 
     This sibling makes no success claim and does not relax the SDK reader.
-    Only the selected attempt is read. Logs, evidence and a receipt's payload
-    each have an explicit byte cap. Produced-output discovery has no bounded
-    verified reader yet, so outputs is empty. Paths are point-in-time evidence.
+    Only the selected attempt is read. Full logs are hashed in stable streaming
+    passes; oversized logs retain bounded tail evidence in memory.
+    Evidence and a receipt's payload each have an explicit byte cap.
+    Produced-output discovery has no bounded verified reader yet, so outputs
+    is empty. Paths are point-in-time evidence.
     """
     key = _checked_action_key(action_key)
     published = _checked_publication_unix(published_unix)
@@ -597,21 +723,25 @@ def read_verified_ending_result(
                 else _pool.record_store.FAILED)
     if selected.get("disposition") != expected:
         raise ActionResultError("pool attempt disposition differs from the ending")
-    stdout, raw = _verified_attempt_log(
-        queue, record, selected, number, "stdout", log_cap)
+    stdout, raw, announcements = _stream_ending_log(
+        queue, record, selected, number, "stdout", log_cap, evidence_cap, deadline)
     stderr = None
-    expanded = {**selected, "stdout": raw.decode("utf-8")}
+    expanded = {**selected, "stdout": raw.decode("utf-8", errors="replace")}
     if "stderr" in selected.get("logs", {}):
-        stderr, stderr_raw = _verified_attempt_log(
-            queue, record, selected, number, "stderr", log_cap)
-        expanded["stderr"] = stderr_raw.decode("utf-8")
+        stderr, stderr_raw, _ = _stream_ending_log(
+            queue, record, selected, number, "stderr", log_cap, evidence_cap, deadline)
+        expanded["stderr"] = stderr_raw.decode("utf-8", errors="replace")
     adopted = endings.resolve_attempt(
         [expanded], invalid=ActionResultError,
         validate_output_retry_stop=queue._validate_output_retry_stop)
+    for stream, descriptor in (("stdout", stdout), ("stderr", stderr)):
+        if descriptor and descriptor.get("truncated"):
+            detail = adopted["detail"]
+            detail[f"{stream}_bytes"] = descriptor["bytes"]
+            detail[f"{stream}_truncated"] = True
     for field in ("status", "finished_unix", "finished_host", "detail"):
         if adopted[field] != record.get(field):
             raise ActionResultError(f"pool attempt {field} differs from the terminal")
-    announcements = _ending_announcements(raw)
     if len(announcements) > 1:
         raise ActionResultError("the selected attempt has ambiguous receipts")
     receipt_sha256 = None
@@ -646,6 +776,8 @@ def read_verified_ending_result(
     if (rechecked != record or new_generation != generation or new_path != path
             or reselected != selected):
         raise ActionResultError("the selected ending changed while its logs were read")
+    if time.monotonic() >= deadline:
+        raise _EndingVerificationIncomplete("ending verification exceeded its observation budget")
     return {"verified": True, "receipt_sha256": receipt_sha256,
             "stdout": stdout, "stderr": stderr, "outputs": []}
 

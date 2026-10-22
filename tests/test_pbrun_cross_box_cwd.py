@@ -42,14 +42,15 @@ def _refusal(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_the_refusal_names_the_box_that_could_not_see_the_path(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    missing_checkout = tmp_path / "checkout-on-another-box"
     message = _refusal(
-        ["--cwd", "/home/rob/tessera-verify-on-the-other-box", "--", "true"],
+        ["--cwd", str(missing_checkout), "--", "true"],
         monkeypatch,
     )
     assert socket.gethostname() in message, message
-    assert "/home/rob/tessera-verify-on-the-other-box" in message, message
+    assert str(missing_checkout) in message, message
 
 
 def test_the_refusal_says_to_submit_from_the_box_that_holds_the_checkout(

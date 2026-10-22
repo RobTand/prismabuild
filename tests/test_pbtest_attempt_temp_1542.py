@@ -13,6 +13,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,50 @@ SPEC.loader.exec_module(pbtest)
 
 ACTION_KEY = "ab12" * 16
 NONCE = "cd34" * 8
+
+
+SOCKET_SUFFIX = Path("pb-xxxxxxxx/pytest/popen-gw0") / ("test_" + "x" * 25 + "0") / "service.sock"
+
+
+@pytest.fixture
+def short_scratch():
+    # The directory and its short alias both belong to this run's TMPDIR.
+    with tempfile.TemporaryDirectory(prefix="s-", dir=os.environ["TMPDIR"]) as name:
+        scratch = Path(name)
+        size = len(os.fsencode(scratch / SOCKET_SUFFIX))
+        if size <= 100:
+            yield scratch
+            return
+        descriptor = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            alias = Path(f"/proc/self/fd/{descriptor}")
+            alias_size = len(os.fsencode(alias / SOCKET_SUFFIX))
+            if alias.is_dir() and alias_size <= 100:
+                yield alias
+                return
+            pytest.skip(
+                f"no short run-owned socket scratch: base {scratch} "
+                f"({len(os.fsencode(scratch))} bytes), socket path {size} bytes; "
+                f"alias base {alias} ({len(os.fsencode(alias))} bytes), "
+                f"socket path {alias_size} bytes, limit 100")
+        finally:
+            os.close(descriptor)
+
+
+def test_socket_scratch_stays_inside_the_runs_tmpdir(short_scratch):
+    root = Path(os.environ["TMPDIR"]).resolve()
+    assert short_scratch.resolve().is_relative_to(root), (
+        f"socket scratch {short_scratch} is outside run TMPDIR {root}")
+
+
+def test_socket_fixture_preserves_tempfile_cache():
+    before = tempfile.tempdir
+    fixture = short_scratch.__wrapped__()
+    try:
+        next(fixture)
+    finally:
+        fixture.close()
+    assert tempfile.tempdir == before
 
 
 def _checkout(parent: Path, body: str) -> Path:
@@ -164,9 +209,9 @@ def test_attempt_namespaces_do_not_overlap_without_a_launcher_nonce(tmp_path, mo
 
 
 @pytest.mark.parametrize("worker", [None, "popen-gw0"])
-def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worker):
+def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worker, short_scratch):
     program = pbtest.shard_entry(sys.executable, tmp_path, collection=True)[2]
-    monkeypatch.setenv("TMPDIR", "/home/rob/tmp")
+    monkeypatch.setenv("TMPDIR", str(short_scratch))
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", uuid.uuid4().hex * 2)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", uuid.uuid4().hex)
     monkeypatch.setattr(sys, "argv", ["-c", "{}", "-q", "tests/test_one.py"])
@@ -186,19 +231,28 @@ def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worke
 
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
-def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers):
+def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, short_scratch):
+    # The shard prefix preserves the alias, but pytest resolves --basetemp
+    # before deriving tmp_path, so a real shard must fit the resolved base.
+    resolved = short_scratch.resolve()
+    size = len(os.fsencode(resolved / SOCKET_SUFFIX))
+    if size > 100:
+        pytest.skip(
+            f"pytest resolves socket scratch to {resolved} "
+            f"(base {len(os.fsencode(resolved))} bytes), "
+            f"socket path {size} bytes, limit 100")
     checkout = _checkout(tmp_path, "assert True")
     (checkout / "tests" / "test_one.py").write_text(
         "import json, os, socket\n"
         "from pathlib import Path\n"
         "def test_xxxxxxxxxxxxxxxxxxxxxxxxx(tmp_path):\n"
         "    path = tmp_path / 'service.sock'\n"
-        "    assert os.environ['TMPDIR'] == '/home/rob/tmp'\n"
+        f"    assert os.environ['TMPDIR'] == {str(short_scratch)!r}\n"
         "    assert len(os.fsencode(path)) <= 100, str(path)\n"
         "    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:\n"
         "        server.bind(str(path))\n"
         "    Path('socket-path.json').write_text(json.dumps(str(path)))\n")
-    result = _run(checkout, Path("/home/rob/tmp"), workers)
+    result = _run(checkout, short_scratch, workers)
     assert result.returncode == 0, result.stdout + result.stderr
     path = Path(json.loads((checkout / "socket-path.json").read_text()))
     base = path.parent.parent.parent if workers > 1 else path.parent.parent
