@@ -29,6 +29,7 @@ from . import (action_edges, adaptive_gpu, capability_eligibility, container_ima
     core as pb, decomposition as dc, dependency_digest, filesystem_floor, fleet_roster,
     materialize, movement_actions, owned_tree, pool, residency_plan, slurm_lane, storage_tiers,
     local_dependencies, _bounded_reader, d38_gate, target_evidence)
+from .submission_timing import submission_phase
 from .queue_publication import RowPublication
 from .generation_receipt import GenerationReceipt
 from . import data_manifest as manifest_codec
@@ -817,7 +818,8 @@ def owned_snapshot_directory():
         held = os.open(temporary.name, os.O_RDONLY | os.O_DIRECTORY
                        | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
         try:
-            lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME)
+            lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME,
+                acquisition=submission_phase("lock_wait"))
         finally:
             os.close(held)
         try:
@@ -832,6 +834,7 @@ def owned_snapshot_directory():
         os.close(root)
 
 
+@submission_phase("bundle_pack")
 def snapshot_checkout(
     cwd: Path,
     *,
@@ -1282,6 +1285,7 @@ class _OfferSnapshot(pool.PoolQueue):
         return list(self._records)
 
 
+@submission_phase("offer_read")
 def bounded_offer_snapshot(queue) -> _OfferSnapshot:
     """Read worker offers once in an abandonable child, or refuse before READY.
 
@@ -2732,6 +2736,7 @@ def _attachment_value(q, key: str, *, lane_root=None):
             "job_id": job_id, "submission": str(record)}
 
 
+@submission_phase("queue_publication")
 def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
     """Discover an attachment without letting a queue read park the submitter.
 
@@ -4097,6 +4102,7 @@ def gang_declaration(args) -> dict | None:
         raise SubmissionRefused(f"pbrun: {exc}") from None
 
 
+@submission_phase("checkout_identity")
 def freeze_template(
     *,
     command: Sequence[str],
@@ -4779,6 +4785,16 @@ def seal_child(
     )
 
 
+def _time_checkout_preparation(function):
+    # The entrypoint's code object remains in its attested package source.
+    @functools.wraps(function)
+    def timed_preparation(*args, **kwargs):
+        with submission_phase("checkout_identity"):
+            return function(*args, **kwargs)
+    return timed_preparation
+
+
+@_time_checkout_preparation
 def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink = discard_display, deadline: float | None = None) -> dict[str, object]:
     """Resolve one submission against this box, and freeze what it says.
 
@@ -5191,6 +5207,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     }
 
 
+@submission_phase("offer_read")
 def announce_placement(
     queue,
     action: Mapping[str, object],
@@ -6171,8 +6188,9 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
         placement_announced = True
         authorize_canary(action)
     if gate_before_request:
-        d38_gate.require(args, action, cas=cas, queue_root=store.queue_root,
-                         transport=args.transport, store=store, display=display)
+        with submission_phase("d38_gate"):
+            d38_gate.require(args, action, cas=cas, queue_root=store.queue_root,
+                             transport=args.transport, store=store, display=display)
     request_path = prepared.get("request_path") or cas.publish_action_request(action)
 
     # A movement receipt describes an earlier host-side effect; a deferred
@@ -6180,7 +6198,8 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
     # existing queue/SLURM dispatch semantics. Only ordinary client submissions
     # and decomposed children use the detached cache and attachment shortcuts.
     detached_probe = args.detach and producer is None and prepared.get("movement") is None and not gate_before_request
-    cached = cas.lookup(action) if detached_probe else None
+    with submission_phase("cas_read"):
+        cached = cas.lookup(action) if detached_probe else None
     if cached is not None:
         identity = action_client.CachedClientIdentity(key, store.queue_root, Path(cas.root),
             action_client.ClientTransport(args.transport), cached['result']['sha256'])
@@ -6245,11 +6264,12 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
     # it may only wait on a pool run it can see, or refuse.  (The detached
     # branches above already answered a cache hit and a live attachment without
     # publishing.)
-    verdict = None if gate_before_request else d38_gate.judge_publication(
-        args, action, cas=cas, queue_root=store.queue_root,
-        transport=args.transport, store=store, display=display,
-        demand=({**demand, "gpu": max(1, int(demand.get("gpu", 0)))}
-                if producer is not None and producer.needs_gpu else demand), required_tags=tags)
+    with submission_phase("d38_gate"):
+        verdict = None if gate_before_request else d38_gate.judge_publication(
+            args, action, cas=cas, queue_root=store.queue_root,
+            transport=args.transport, store=store, display=display,
+            demand=({**demand, "gpu": max(1, int(demand.get("gpu", 0)))}
+                    if producer is not None and producer.needs_gpu else demand), required_tags=tags)
     if verdict is not None:
         if not args.detach:
             try:
@@ -6334,8 +6354,9 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
     # content hash, so re-submitting one is how anybody asks for the same work
     # again -- and a submission that silently revived somebody's cancellation
     # would be as bad as the blacklist it replaced.
-    superseding = q.records.wait_notice_at(
-        q.records.item_path(pool.record_store.WITHDRAWN, key))
+    with submission_phase("queue_publication"):
+        superseding = q.records.wait_notice_at(
+            q.records.item_path(pool.record_store.WITHDRAWN, key))
 
     # A consumer of consumed produced-output batches is filed against them
     # before its row exists, so their retirement cannot run ahead of it.  A
@@ -6344,31 +6365,32 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
     # the row this process holds the key's transition lock, so an operator
     # cannot release the declaration while the row is still to come (#945).
     origin_refs = template.get(_ORIGIN_BATCHES_TEMPLATE_KEY) or []
-    with submission_window(q, key, origin_refs):
-        if origin_refs:
-            declare_origin_consumers(q, origin_refs, consumer_action_key=key)
-        # Filed before the row, so an edge that names the replaced key
-        # follows this one from the moment it can run (#913), but only once
-        # everything that can still refuse has had its say (#1585): the
-        # record is immutable, and one filed for a replacement that then
-        # refused named a key that never published, which the corrected
-        # submission (another key) could not replace and a reader following
-        # it could not find.  What can be refused now is refused now, with
-        # nothing written; the record itself goes in right before the row.
-        supersede = None
-        if args.supersedes is not None:
-            validate_supersession_request(q, args.supersedes, new=key,
-                                       new_kind=action_edges.PRODUCER_KEY)
+    with submission_phase("queue_publication"):
+        with submission_window(q, key, origin_refs):
+            if origin_refs:
+                declare_origin_consumers(q, origin_refs, consumer_action_key=key)
+            # Filed before the row, so an edge that names the replaced key
+            # follows this one from the moment it can run (#913), but only once
+            # everything that can still refuse has had its say (#1585): the
+            # record is immutable, and one filed for a replacement that then
+            # refused named a key that never published, which the corrected
+            # submission (another key) could not replace and a reader following
+            # it could not find.  What can be refused now is refused now, with
+            # nothing written; the record itself goes in right before the row.
+            supersede = None
+            if args.supersedes is not None:
+                validate_supersession_request(q, args.supersedes, new=key,
+                                           new_kind=action_edges.PRODUCER_KEY)
 
-            def supersede() -> None:
-                record_supersession_request(q, args.supersedes, new=key,
-                                          new_kind=action_edges.PRODUCER_KEY, display=display)
+                def supersede() -> None:
+                    record_supersession_request(q, args.supersedes, new=key,
+                                              new_kind=action_edges.PRODUCER_KEY, display=display)
 
-        queued_path, generation = publish_consumer_row(
-            q, action, template, key=key, args=args, cas=cas,
-            before_publish=supersede, store=store, display=display,
-            staged_plan=prepared.get("staged_plan"), producer=producer,
-            attach=prepared.get("attach", False), movement=prepared.get("movement"))
+            queued_path, generation = publish_consumer_row(
+                q, action, template, key=key, args=args, cas=cas,
+                before_publish=supersede, store=store, display=display,
+                staged_plan=prepared.get("staged_plan"), producer=producer,
+                attach=prepared.get("attach", False), movement=prepared.get("movement"))
     identity = action_client.PoolClientIdentity(key, generation, q.root, Path(cas.root),
         queued_path, (action_client.ClientArrival.SUBMITTED if queued_path is not None
                       else action_client.ClientArrival.ATTACHED))
@@ -6905,11 +6927,18 @@ def preparation(request: SubmissionRequest, *, store: FleetStore,
 @contextlib.contextmanager
 def write_window(request: SubmissionRequest, *, store: FleetStore):
     try:
-        with filesystem_floor.operation(store.queue_root, label="pbrun",
-                used_paths=[request.cwd or os.getcwd(), store.cas_root,
-                            store.queue_root, tempfile.gettempdir()],
-                growth_gib=({store.cas_root: request.filesystem_growth_gib}
-                            if request.transport == "pool" else {})):
+        with contextlib.ExitStack() as stack:
+            with submission_phase("filesystem_floor"):
+                stack.enter_context(filesystem_floor.operation(store.queue_root, label="pbrun",
+                    used_paths=[request.cwd or os.getcwd(), store.cas_root,
+                                store.queue_root, tempfile.gettempdir()],
+                    growth_gib=({store.cas_root: request.filesystem_growth_gib}
+                                if request.transport == "pool" else {})))
+            exit_window = stack.pop_all().__exit__
+            def finish_floor(*exc):
+                with submission_phase("filesystem_floor"):
+                    return exit_window(*exc)
+            stack.push(finish_floor)
             yield
     except filesystem_floor.FloorRefused as exc:
         raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "

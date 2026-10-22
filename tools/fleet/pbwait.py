@@ -329,7 +329,7 @@ def _row(key: str, status: str, **fields) -> dict:
         "action_key": key, "status": status, "transport": "-", "job": "-",
         "host": "-", "elapsed_s": None, "returncode": None,
         "action_returncode": None, "action_signal": None,
-        "receipt_published": None, "note": None,
+        "receipt_published": None, "note": None, "phases": {},
         "succeeded": status in {"executed", "cache_hit"},
     }
     row.update(fields)
@@ -355,12 +355,29 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
     if context is not None:
         context.clear()
     if isinstance(ending, endings.PublicationSupersession):
+        def retained_publication_phases():
+            sources = (q.records.attempt_documents(ending.action_key, generation=ending.published_unix),
+                       q.records.superseded_records(ending.action_key, fresh=True))
+            for records in sources:
+                for _, record in records:
+                    if (isinstance(record, dict)
+                            and record.get("action_key") == ending.action_key
+                            and endings.publication_generation(record.get("published_unix")) == ending.published_unix
+                            and isinstance(record.get("phases"), dict)):
+                        return record["phases"]
+            return {}
+        try:
+            phases = action_wait.read_observation("publication timing", retained_publication_phases,
+                budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+        except (action_wait.OutcomeReadUnavailable, OSError, pool.PoolContractError):
+            phases = {}
         if context is not None:
             context.update({"claimed": ending.record.get("claimed_unix") is not None,
                             "published_unix": ending.published_unix})
         return _row(
             ending.action_key, "superseded", transport="pool",
             published_unix=ending.published_unix,
+            phases=phases,
             superseded_by_published_unix=ending.successor_published_unix,
             note=(f"publication {ending.published_unix!r} superseded by "
                   f"publication {ending.successor_published_unix!r}; no execution verdict"),
@@ -411,6 +428,7 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
         summary["action_key"] or "",
         summary["status"],
         transport=summary["transport"],
+        phases=outcome.get("phases", {}),
         # What an operator needs to read the logs the record names: under SLURM
         # that is the job id, and under the pull queue there is no such handle
         # -- the worker ran it in a process that is gone.
@@ -461,7 +479,8 @@ def wait_one(
 
     def waiting_row():
         found = context['found']
-        return _row(key, 'waiting', transport=found[0] if found else '-', job=_job_id(found))
+        return _row(key, 'waiting', transport=found[0] if found else '-', job=_job_id(found),
+                    phases=found[2].get('phases', {}) if found else {})
 
     def observe(*, budget_s, generation, remaining_s):
         context['generation'] = generation
@@ -802,7 +821,7 @@ def consumer_ending_row(q, row, *, cas, context=None):
                         "superseded", "waiting", "refused"}:
         status = "failed"
     diagnostics = {key: value for key, value in row.items()
-                   if key not in {"action_key", "status", "succeeded"}}
+                   if key not in {"action_key", "status", "succeeded", "phases"}}
     diagnostics.update({key: context.get(key) for key in ("resource_profile", "profile")})
     cleanup = context.get("resource_scope_cleanup", row.get("resource_scope_cleanup"))
     containers = context.get("container_cleanup", row.get("container_cleanup"))
@@ -884,6 +903,7 @@ def consumer_ending_row(q, row, *, cas, context=None):
         "started_unix": context.get("started_unix"), "ended_unix": context.get("ended_unix"),
         "reason": str(reason) if reason is not None else None,
         "result": result, "diagnostics": diagnostics,
+        "phases": row.get("phases", {}),
     }
 
 

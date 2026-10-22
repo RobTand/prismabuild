@@ -24,7 +24,7 @@ from test_slurm_withdraw_siblings import controller, _lane_record, KEY as SLURM_
 
 ROW_FIELDS = {"action_key", "status", "succeeded", "exit_code", "signal", "host",
               "attempt", "publication", "started_unix", "ended_unix", "reason",
-              "result", "diagnostics"}
+              "result", "diagnostics", "phases"}
 RESULT_FIELDS = {"verified", "receipt_sha256", "stdout", "stderr", "outputs"}
 
 
@@ -286,7 +286,7 @@ def test_legacy_json_supports_trustladder_parse(consumer_world, capsys, status, 
     assert row["status"] == status
     expected = {"action_key", "status", "transport", "job", "host", "elapsed_s",
                 "returncode", "action_returncode", "action_signal", "receipt_published",
-                "note", "succeeded"}
+                "note", "succeeded", "phases"}
     if status != "waiting":
         expected |= {"withdrawn_attempt", "resource_scope_cleanup", "container_cleanup"}
     assert set(row) == expected

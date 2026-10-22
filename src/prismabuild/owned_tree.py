@@ -15,6 +15,7 @@ shard's interpreter (see ``docs/design.md``, "Owned trees").
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 import errno
 import fcntl
 import os
@@ -41,7 +42,7 @@ def _owner_header() -> bytes:
     return f"prismabuild owner lock v1 host={socket.gethostname()}\n".encode()
 
 
-def take_owner_lock(dir_fd: int, name: str) -> int:
+def take_owner_lock(dir_fd: int, name: str, *, acquisition=None) -> int:
     """Hold lock ``name`` under ``dir_fd`` for this process's life; its fd.
 
     A reaper's probe holds a fresh lock for an instant, so a busy lock is
@@ -53,14 +54,15 @@ def take_owner_lock(dir_fd: int, name: str) -> int:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise OSError(errno.EINVAL, f"{name} is not a private lock file")
-        for _ in range(100):
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                time.sleep(0.01)
-        else:
-            raise BlockingIOError(errno.EWOULDBLOCK, f"{name} has a live owner")
+        with acquisition if acquisition is not None else nullcontext():
+            for _ in range(100):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.01)
+            else:
+                raise BlockingIOError(errno.EWOULDBLOCK, f"{name} has a live owner")
         os.ftruncate(fd, 0)
         os.pwrite(fd, _owner_header() + _RUNNING, 0)
     except BaseException:
