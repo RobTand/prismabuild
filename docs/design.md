@@ -5009,6 +5009,8 @@ competing `signal.set_wakeup_fd` user, including an asyncio event loop, must not
 run inside that context. Native notifications wake the wait before deferred
 Python signal dispatch; only the selected Python handlers request a stop.
 Unrelated notifications are drained without shortening the monotonic timeout.
+`StopRequest.fileno()` exposes its pipe to the role's descriptor selector.
+A selector consumer drains unrelated native notifications with `wait(0)`.
 Each `StopRequest` supports one waiter, the role's main loop. Other threads may
 observe or request its stop. Forked readers detach the inherited native wakeup
 registration, and the inherited request cannot write to or close its parent's
@@ -9593,6 +9595,26 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Broker listener completion (#1937)
+
+The resource broker listener selects its socket and a stop pipe without a
+shutdown tick. In-process `Server.shutdown()` wakes that listener. Stop-pipe
+writers and teardown share a lock, so no late write reaches a closed or reused
+descriptor. Run handlers block only on the client socket and child pidfd.
+Client EOF and unexpected protocol data retain their existing authenticated
+scope-stop behavior. Listener shutdown does not cancel in-flight requests.
+
+Broker restart behavior is unchanged: main installs no signal handlers and
+request threads remain daemon threads. Default SIGTERM ends the broker and
+closes control channels without stopping contained payloads. Launchers report
+broker EOF as exit 125; surviving payloads may complete and publish receipts.
+Explicit reconciliation still requires the existing exact-attempt cleanup,
+receipt and termination checks described above. SIGINT retains main's existing
+exception and monitor cleanup path. Startup and request framing retain their
+10-second bounds; process termination retains its 15-second waits.
+`ResourceMonitor` retains its independent 1-second sampler. No background loop
+is added by the listener change.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 The continuous exporter keeps serving under a closed or missing maintenance
@@ -9602,10 +9624,11 @@ supervisor owns its generation retirement and drift record, then respawns an
 exporter from the active generation. A direct exporter whose loaded receipt is
 unknown keeps serving until explicitly stopped, as it did before this change.
 
-SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
-the listener closes before any park proof, and the exporter joins every request
-thread it started. `ThreadingHTTPServer` uses daemon request threads, so
-`handle_request()` returning does not establish request completion.
+SIGTERM and SIGINT request stop through the shared `StopRequest`. The metrics
+listener selects its HTTP socket and the stop descriptor without a timeout.
+At a stop boundary the listener closes before any park proof, and the exporter
+joins every request thread it started. `ThreadingHTTPServer` uses daemon request
+threads, so listener exit does not establish request completion.
 
 The shutdown grace is 10 seconds in total, starting when accepts stop. This is
 a new stop-only bound, using the same operational patience as pbstatus's default
