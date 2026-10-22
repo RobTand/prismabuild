@@ -2,12 +2,13 @@
 import json
 import os
 from pathlib import Path
-import selectors
 import signal
 import subprocess
 import sys
 
 import pytest
+
+from role_wait_support import read_until_output, stop_role_child
 
 from prismabuild import pool
 
@@ -107,7 +108,7 @@ if not {continuous!r}:
     arguments.append("--once")
 code = wl.main(arguments, on_outcome=lambda value: record("outcomes.jsonl", value))
 for publisher in publishers:
-    assert publisher.wait(timeout=10) == 0
+    assert publisher.wait() == 0
     record("settled-publishers.jsonl", publisher.pid)
 assert os.sched_getaffinity(0) == affinity
 raise SystemExit(code)
@@ -128,23 +129,9 @@ raise SystemExit(code)
     return queue, child
 
 
-def _finish(child):
-    if child.poll() is None:
-        child.kill()
-    child.communicate(timeout=5)
-
-
 def _unknown_boundary(child, boundary="poll top"):
-    output = bytearray()
     marker = f"runtime receipt unknown at {boundary}".encode()
-    with selectors.DefaultSelector() as selector:
-        selector.register(child.stdout, selectors.EVENT_READ)
-        while marker not in output:
-            assert selector.select(5), bytes(output).decode(errors="replace")
-            chunk = os.read(child.stdout.fileno(), 65536)
-            assert chunk, bytes(output).decode(errors="replace")
-            output.extend(chunk)
-    return bytes(output)
+    return read_until_output(child, marker)
 
 
 def _lines(path):
@@ -179,17 +166,17 @@ def _assert_one_completed(queue, tmp_path):
 def test_known_match_offer_carries_the_loaded_commit(tmp_path):
     queue, child = _start(tmp_path, KNOWN, KNOWN)
     try:
-        output = child.communicate(timeout=30)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
     queue, child = _start(tmp_path, KNOWN, MOVED)
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert queue.offers() == []
         assert queue.terminal_keys() == frozenset()
@@ -202,7 +189,7 @@ def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
         assert len(records) == 1
         assert json.loads(records[0].read_text())["loaded_commit"] == KNOWN["commit"]
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
@@ -215,27 +202,28 @@ def test_atomic_receipt_repair_resumes_one_authorized_unit(tmp_path, unknown_sid
         if unknown_side == "published":
             _replace(tmp_path / "loaded.json", MOVED)
         _replace(tmp_path / f"{unknown_side}.json", KNOWN)
-        output = prefix + child.communicate(timeout=30)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_one_completed(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
 def test_sigterm_interrupts_unknown_retry_wait(tmp_path, unknown_side):
+    # Inject a retry deadline beyond the per-test bound, so only SIGTERM ends it.
     queue, child = _start(tmp_path, None if unknown_side == "loaded" else KNOWN,
                           None if unknown_side == "published" else KNOWN,
-                          continuous=True, poll_s=60)
+                          continuous=True, poll_s=1e9)
     try:
         prefix = _unknown_boundary(child)
         _assert_paused(queue, tmp_path)
         child.send_signal(signal.SIGTERM)
-        output = prefix + child.communicate(timeout=3)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         _assert_paused(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("continuous", [False, True])
@@ -247,7 +235,7 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
             prefix = _unknown_boundary(child, "claim boundary")
             _assert_paused(queue, tmp_path)
             _replace(tmp_path / "published.json", KNOWN)
-        output = prefix + child.communicate(timeout=30)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (0 if continuous else 75), output.decode(errors="replace")
         assert (tmp_path / "publication-removed").is_file()
         if continuous:
@@ -255,7 +243,7 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
         else:
             _assert_paused(queue, tmp_path)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("value", [7, True])
@@ -264,7 +252,7 @@ def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_
     queue, child = _start(tmp_path, KNOWN, KNOWN, corrupt_first_files=value)
     before = queue.records.item_path(pool.READY, KEYS[0]).read_bytes()
     try:
-        output = child.communicate(timeout=30)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         publishers = _lines(tmp_path / "publishers.jsonl")
         assert publishers
@@ -280,4 +268,4 @@ def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_
         assert not queue.records.lease_path(KEYS[0]).exists()
         assert queue.ledger().held_keys() == []
     finally:
-        _finish(child)
+        stop_role_child(child)
