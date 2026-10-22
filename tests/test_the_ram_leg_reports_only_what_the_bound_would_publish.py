@@ -39,7 +39,9 @@ STAGE_TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
 STAGE_KIND = f"stage_gib@{STAGE_TIER}"
-GIB = storage_tiers.GIB
+# These window decisions use capacity units, not GiB-sized payloads. Scale
+# bytes and their conversion together, retaining real hashes and receipts.
+GIB = 1 << 10
 #: The head fits any budget; the 8 GiB tail phases do not fit ``prefill_depth``
 #: 4 once the bound applies past the phase being read.
 PHASE_GIB = [2, 8, 8]
@@ -101,7 +103,7 @@ def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
     }
 
 
-def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
+def _fixture(tmp_path: Path, monkeypatch, *, landed: tuple[int, ...]) -> pool.PoolQueue:
     """A consumer that accepted nothing, with ``landed`` stage ranges resident.
 
     Nothing holds ``ram_gib``: no promotion is queued and none is pinned, so
@@ -109,6 +111,7 @@ def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
     publish next.
     """
 
+    monkeypatch.setattr(storage_tiers, "GIB", GIB)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     queue.ledger("dl380g10").ensure_capacity({"mem_gb": 32})
@@ -152,7 +155,7 @@ def test_a_promotion_the_bound_declines_is_not_ram_pressure(
     publish.
     """
 
-    queue = _fixture(tmp_path, landed=(1, 2))
+    queue = _fixture(tmp_path, monkeypatch, landed=(1, 2))
     monkeypatch.setattr(tier_loop, "load_ram_policy",
                         lambda: {"prefill_depth": 4})
 
@@ -166,7 +169,7 @@ def test_a_promotion_the_bound_covers_is_still_ram_pressure(
     step budget covers phase-0001, its stage range has landed, and the ram
     tier names its 8 GiB alongside the stage tier's head."""
 
-    queue = _fixture(tmp_path, landed=(1, 2))
+    queue = _fixture(tmp_path, monkeypatch, landed=(1, 2))
     monkeypatch.setattr(tier_loop, "load_ram_policy",
                         lambda: {"prefill_depth": None})
 
@@ -179,7 +182,7 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     """#829: a published tail is not admission of an absent RAM lead."""
     from prismabuild import stage_release
 
-    queue = _fixture(tmp_path, landed=(0, 1, 2))
+    queue = _fixture(tmp_path, monkeypatch, landed=(0, 1, 2))
     monkeypatch.setattr(tier_loop, "load_ram_policy",
                         lambda: {"prefill_depth": None})
     tiers = _tiers(tmp_path)

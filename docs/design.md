@@ -2067,6 +2067,28 @@ An outer client exit of 1 can report ordinary shard test failures. Other
 nonzero outer exits leave the requested files unknown even when the shard
 records contain test failures; the known failing nodes remain in the verdict.
 
+Bound failures retain their cause through a typed pytest exception and report
+attributes, including xdist's existing report channel (#1919). The recorder
+adds `bound_failures: [{nodeid, when, kind}]` to
+`prismabuild.pbtest_outcomes.v1`; judgment copies it into
+`prismabuild.pbtest_shard_verdict.v1`. Kinds are `per_test_bound` for the full
+configured bound and `shard_budget_exhausted` for a shortened alarm. Only
+counted failing phases enter this list. Ordinary failures are unchanged, and
+the existing five-column outcome rows, failing-node list and non-green policy
+are preserved. Legacy missing metadata remains readable with unknown causes
+(`bound_failures: null` in the verdict); present metadata must match actual
+failed node/phase reports. Unknown additive object fields remain readable.
+
+The optional `first_tightened_test_budget_remaining_s` records raw shard budget
+left at setup start of the first test with a shortened alarm, before margin
+and minimum-alarm adjustments. The plugin retains that start even if a later
+phase first tightens; the recorder selects the earliest observed start across
+xdist workers using their shared host monotonic clock. A tightened test need
+not fail. Missing or interrupted reports provide no such observation.
+These invocation operator records have no retained-generation corpus goldens;
+their schema names remain unchanged. See the operating guide for release-gate
+classification and missing-field semantics.
+
 The sealed recorder emits its first `prismabuild.pbtest_preflight.v1` decision
 before importing pytest. Dependency-pin refusal is typed at that boundary;
 an accepted decision prevents later test output from inventing runtime refusal.
@@ -2112,6 +2134,58 @@ with `pbrun.result_and_stamp_names`.
 
 The tool knows nothing about the client that runs it. The client decides what
 to do with the list.
+
+### Versioned CLI endings (#1892)
+
+`pbwait --endings` returns `prismabuild.endings.v1`, an object with `schema`,
+`complete` and argument-ordered `endings`. The mutually exclusive `--json`
+retains its bare list, row fields and exits unchanged. Consumer context is
+captured separately from the shared rows used by campaigns and legacy JSON. The consumer contract separates execution identity, action exit/signal,
+publication identity and timestamps from `diagnostics`, which retains the
+existing telemetry, transport and cleanup fields. A zero wait reads once.
+`--endings` exit precedence is unreadable/integrity 74, failed/withdrawn/refused 1,
+superseded 76, waiting 75, success 0; usage and unknown keys exit 2. Human
+rendering and its existing exit codes are unchanged.
+
+`--until ended` is the default. `--until cleaned` requires `--endings` and
+rechecks through the same `wait_one` / `action_wait.await_action` observation
+path until every ending's `diagnostics.cleanup.complete` is true. An ending
+with no claimed attempt has nothing to clean. A claimed attempt requires
+completed resource-scope and container cleanup evidence. A scope or container
+owner that was never created has no cleanup debt. Ordinary finish persists
+completed scope cleanup after container cleanup succeeds, so that record also
+proves container cleanup when no separate container record is filed. An explicit
+incomplete container record still blocks completion. An explicit empty record or
+a record without `complete: true` also blocks completion. The consumer tests
+pin the cleanup writer's removal-before-proof ordering, including refusal
+and removal-error paths. A running withdrawal
+is an ending before it is quiescent. At the deadline, pending cleanup returns
+75 and `complete: false`, retaining the ending and current cleanup diagnostics.
+Unreadable evidence still returns 74. This adds no separate polling loop and
+does not change `action_wait`'s polling, owned by #1894.
+
+`action_result.read_verified_ending_result` is an internal sibling of the
+success-only SDK result reader. It authenticates failed attempts too, using
+shared canonical log verification and exact immutable attempt binding. It
+reads only the selected attempt, checks stdout and filed stderr against their
+addresses, verifies the announced execution receipt and payload when present,
+and rechecks the ending before returning. Default caps are 16 MiB per log,
+4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
+wraps that read in its isolated five-second observation budget. A mismatch,
+missing evidence or exceeded bound yields `unreadable`, never verified bytes.
+No bounded verified produced-output discovery exists, so `outputs` is empty.
+The existing SDK exports, version and success-only guarantees are unchanged.
+
+`pbrun --withdraw KEY --reason TEXT --json` returns
+`prismabuild.withdrawal.v1` with action key, prior state, withdrawal decision
+and reason. An optional result callback carries the actual withdrawal owner's
+answer to the CLI; the CLI does not infer success from a printed message or a
+later queue scan. Cleanup remains a separate ending diagnostic. This changes
+reporting only, with no admission, lifecycle, residency or polling change.
+`tests/test_consumer_surface.py` pins both schemas and JSON exit codes with
+private queues. Source implementation does not establish runtime deployment.
+
+
 
 ## Work decomposition boundary
 
@@ -19266,6 +19340,18 @@ reader closure is a prepared source control. Publication, fleet convergence,
 actual immutable generation designation and physical G-to-bridge rollback
 remain root deployment gates. This local designation changes no deployed
 pointer or setting and promises no permanent support for a pinned snapshot.
+
+Before a pytest session executes selected record-compatibility files, its
+collection-finish preflight runs the harness's exact bubblewrap PID/proc probe
+once. A nonzero probe with `Can't mount proc on /newroot/proc: Operation not
+permitted` stops the session with exit 78 and a named `bwrap_proc_mount`
+infrastructure refusal. The refusal records the host, exact probe argv/stderr,
+proc mounts, privilege/security status, namespace identities and limits, and a
+bounded sibling-scope listing. Other probe errors and ordinary test results do
+not trigger this classification. Collection-only and unrelated sessions do not
+probe. Successful preflight preserves the existing private PID/proc namespace,
+stable paths, source attestation and affinity checks. This detects the observed
+state-dependent #1889 failure, without claiming its host/kernel cause is fixed.
 
 Retained operations run in fresh `python -I -S` processes with closure/stdlib-only
 paths. Complete source closures, raw receipts, imported module paths/hashes and

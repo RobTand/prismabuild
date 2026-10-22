@@ -381,6 +381,8 @@ def argument_parser() -> argparse.ArgumentParser:
                     help="K=V added to the action's environment (repeatable)")
     ap.add_argument("--no-default-env", action="store_true",
                     help="declare only --env, without the fleet defaults")
+    ap.add_argument("--json", action="store_true",
+                    help="emit prismabuild.withdrawal.v1 for one --withdraw")
     ap.add_argument("--withdraw", action="append", default=[], metavar="KEY",
                     help="cancel this queued or running action (a key prefix is "
                          "enough) instead of submitting; repeatable")
@@ -413,6 +415,9 @@ def argument_parser() -> argparse.ArgumentParser:
 def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Namespace:
     ap = parser if parser is not None else argument_parser()
     args = ap.parse_args(argv)
+    if args.json and (len(args.withdraw) != 1 or args.release_origin_consumer is not None):
+        ap.error("--json requires exactly one --withdraw KEY")
+
     if args.publish_sealed is not None:
         if (len(args.publish_sealed) != 64
                 or any(c not in "0123456789abcdef" for c in args.publish_sealed)):
@@ -426,6 +431,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
                           or args.as_sealed_by):
         ap.error("--seal-only cannot combine with --detach, --withdraw, "
                  "--release-origin-consumer or --as-sealed-by")
+
     args.progress_policy = submission.parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
     args.awaited_batch = submission.parse_awaited_batch(args.awaited_batch)
@@ -436,7 +442,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
             ap.error(exc.reason)
         if args.seal_only or args.publish_sealed is not None or args.detach:
             print_consumer_refusal(exc, sealed=args.seal_only)
-            raise SystemExit(1) from None
+            raise SystemExit((exc.reason or 1) if plain_detach(args) else 1) from None
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
 
@@ -461,6 +467,15 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                 if previous_observer is not None:
                     previous_observer(event)
             report.on_event = send
+        json_options = {}
+        withdrawal_rows = []
+        if args.json:
+            def withdrawal_result(key, state, withdrawn):
+                withdrawal_rows.append({"schema": "prismabuild.withdrawal.v1",
+                                        "action_key": key, "state_before": state,
+                                        "withdrawn": withdrawn, "reason": args.reason})
+            json_options["on_withdrawal"] = withdrawal_result
+
         if args.seal_only:
             record = sealed_submission.seal_consumer_request(request_from_args(args),
                 store=configured_store(), display=display)
@@ -474,14 +489,19 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
         else:
             result = submission.submit_request(request_from_args(args), store=configured_store(), display=display,
                 report=report, publication_canary_intent=publication_canary_intent,
-                authorize_canary=authorize_canary)
+                authorize_canary=authorize_canary, **json_options)
+        if args.json:
+            if not withdrawal_rows:
+                withdrawal_result(args.withdraw[0], None, False)
+            print(json.dumps(withdrawal_rows[0]))
+
         refusal = result if isinstance(result, SubmissionRefused) else None
         if refusal is not None:
             if isinstance(refusal, ArgumentRefused):
                 parser.error(refusal.reason)
             if args.detach or args.publish_sealed is not None:
                 print_consumer_refusal(refusal, sealed=False)
-                if args.publish_sealed is None:
+                if plain_detach(args):
                     raise SystemExit(refusal.reason or 1)
                 return 1
             if refusal.returncode == 2:
@@ -507,7 +527,7 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             if isinstance(exc, ArgumentRefused):
                 parser.error(exc.reason)
             print_consumer_refusal(exc, sealed=args.seal_only)
-            if args.detach and not args.seal_only and args.publish_sealed is None:
+            if plain_detach(args):
                 raise SystemExit(exc.reason or 1) from None
             return 1
         raise SystemExit(exc.reason or exc.returncode) from None
@@ -522,6 +542,11 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
         report.on_event = previous_observer
         if writer is not None:
             writer.close()
+
+
+def plain_detach(args) -> bool:
+    """Plain --detach exits 1 with the refusal's reason after its JSON line; the #1893 verbs exit 1 silently."""
+    return args.detach and not args.seal_only and args.publish_sealed is None
 
 
 def print_consumer_refusal(exc, *, sealed: bool) -> None:
