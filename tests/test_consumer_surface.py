@@ -722,3 +722,11 @@ def test_stream_scanner_preserves_line_boundaries_across_utf8_chunks(separator, 
         scan()
         assert len(observer.announcements) == 1
         assert len(observer.tail) == 64
+
+
+def test_oversized_receipt_prefix_cut_inside_whitespace_is_unverified():
+    import time
+    observer = action_result._EndingLogObserver(64, 1, time.monotonic() + 30, scan=True)
+    observer.start()
+    with pytest.raises(action_result._EndingVerificationIncomplete, match="receipt candidate"):
+        observer.feed(("\u2003" * 10 + '{"receipt": {}}').encode("utf-8"))

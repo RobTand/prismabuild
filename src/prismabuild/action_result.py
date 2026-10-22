@@ -623,7 +623,7 @@ class _EndingLogObserver:
                     self.line.extend(piece)
                 else:
                     prefix = bytes(self.line) + piece[:self.line_cap - len(self.line)]
-                    stripped = prefix.decode("utf-8", errors="replace").lstrip()
+                    stripped = prefix.decode("utf-8", errors="ignore").lstrip()
                     if not stripped or stripped.startswith("{"):
                         raise _EndingVerificationIncomplete("receipt candidate line exceeds the evidence cap")
                     self.line.clear()
