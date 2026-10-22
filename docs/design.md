@@ -9597,16 +9597,23 @@ loop there.
 
 ### Broker listener completion (#1937)
 
-The resource broker selects its listener and a sticky stop pipe without a
-shutdown tick. SIGTERM, SIGINT and `Server.shutdown()` write that same pipe.
-Run handlers block on the client socket, child pidfd and stop pipe. A disconnect,
-unexpected client data or broker stop requests token-authenticated termination
-of that exact attempt. Child exit wakes the pidfd directly. Server close joins
-request threads before closing the stop pipe. Request framing uses a single
-10-second deadline that also observes stop. The existing payload-startup
-10-second budget and process-termination 15-second budget remain finite waits.
-No background loop is added. `ResourceMonitor` retains its independent 1-second
-sampler; it is outside this listener change.
+The resource broker listener selects its socket and a stop pipe without a
+shutdown tick. In-process `Server.shutdown()` wakes that listener. Stop-pipe
+writers and teardown share a lock, so no late write reaches a closed or reused
+descriptor. Run handlers block only on the client socket and child pidfd.
+Client EOF and unexpected protocol data retain their existing authenticated
+scope-stop behavior. Listener shutdown does not cancel in-flight requests.
+
+Broker restart behavior is unchanged: main installs no signal handlers and
+request threads remain daemon threads. Default SIGTERM ends the broker and
+closes control channels without stopping contained payloads. Launchers report
+broker EOF as exit 125; surviving payloads may complete and publish receipts.
+Explicit reconciliation still requires the existing exact-attempt cleanup,
+receipt and termination checks described above. SIGINT retains main's existing
+exception and monitor cleanup path. Startup and request framing retain their
+10-second bounds; process termination retains its 15-second waits.
+`ResourceMonitor` retains its independent 1-second sampler. No background loop
+is added by the listener change.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 

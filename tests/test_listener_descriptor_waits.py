@@ -110,8 +110,8 @@ def test_broker_listener_has_no_shutdown_tick(listener_broker, listener_wait_cal
         assert not thread.is_alive(), 'shutdown did not wake the idle listener'
 
 
-@pytest.mark.parametrize('ending', ['exit', 'disconnect', 'stop'])
-def test_broker_run_waits_on_pidfd_client_and_stop(
+@pytest.mark.parametrize('ending', ['exit', 'disconnect', 'unexpected', 'shutdown'])
+def test_broker_run_waits_on_pidfd_and_client_without_tick(
         listener_broker, monkeypatch, tmp_path, ending):
     m = listener_broker
     calls = queue.Queue()
@@ -150,24 +150,32 @@ def test_broker_run_waits_on_pidfd_client_and_stop(
                 assert launched.wait(5)
                 readers, timeout = calls.get(timeout=5)
                 assert timeout is None, 'run handler still wakes on a fixed tick'
-                assert len(readers) == 3, 'run stop must share the socket/pidfd wait'
+                assert len(readers) == 2, 'listener stop must not cancel an active run'
                 if ending == 'exit':
                     child.stdin.write(b'x')
                     child.stdin.flush()
                     answer = json.loads(client.makefile('rb').readline())
                     assert answer == {'ok': True, 'returncode': 0}
                     assert not stopped.is_set()
-                elif ending == 'disconnect':
-                    client.close()
-                    assert stopped.wait(5), 'EOF did not stop the exact run'
+                elif ending in ('disconnect', 'unexpected'):
+                    if ending == 'disconnect':
+                        client.close()
+                    else:
+                        client.sendall(b'x')
+                    assert stopped.wait(5), 'client EOF/data did not stop the exact run'
                 else:
                     server.shutdown()
-                    assert stopped.wait(5), 'server stop did not stop its run'
+                    server.server_close()
+                    child.stdin.write(b'x')
+                    child.stdin.flush()
+                    answer = json.loads(client.makefile('rb').readline())
+                    assert answer == {'ok': True, 'returncode': 0}
+                    assert not stopped.is_set(), 'listener shutdown cancelled its payload'
             finally:
                 client.close()
                 server.shutdown()
                 thread.join(5)
-        assert child.poll() is not None, 'server close did not join/reap its request'
+        assert child.wait(timeout=5) is not None
     finally:
         if child.poll() is None:
             child.kill()
@@ -226,14 +234,11 @@ def test_metrics_stop_joins_the_inflight_scrape(tmp_path, monkeypatch):
         stop._close()
 
 
-def test_broker_close_joins_request_threads(listener_broker, monkeypatch, tmp_path):
+def test_broker_close_retains_main_daemon_request_semantics(listener_broker, tmp_path):
     m = listener_broker
     entered = threading.Event()
     release = threading.Event()
-    joining = threading.Event()
-    finished = threading.Event()
     handlers = []
-    native_join = threading.Thread.join
 
     class HeldHandler(m.Handler):
         def handle(self):
@@ -241,42 +246,24 @@ def test_broker_close_joins_request_threads(listener_broker, monkeypatch, tmp_pa
             entered.set()
             assert release.wait(5)
 
-    def observe_join(thread, *args, **kwargs):
-        if thread in handlers:
-            joining.set()
-        return native_join(thread, *args, **kwargs)
-
-    monkeypatch.setattr(threading.Thread, 'join', observe_join)
-    server = m.Server(str(tmp_path / 'join.sock'), HeldHandler)
+    server = m.Server(str(tmp_path / 'daemon.sock'), HeldHandler)
     listener = threading.Thread(target=server.serve_forever)
     listener.start()
     client = socket.socket(socket.AF_UNIX)
-    closer = None
     try:
         client.connect(server.server_address)
         assert entered.wait(5)
         server.shutdown()
         listener.join(5)
-
-        def close_probe():
-            server.server_close()
-            finished.set()
-
-        closer = threading.Thread(target=close_probe)
-        closer.start()
-        assert joining.wait(5), 'broker never joined its request thread'
-        assert not finished.is_set()
-        release.set()
-        closer.join(5)
-        assert finished.is_set()
-        assert all(not handler.is_alive() for handler in handlers)
+        server.server_close()
+        assert handlers[0].daemon and handlers[0].is_alive()
     finally:
         release.set()
         client.close()
         server.shutdown()
         listener.join(5)
-        if closer is not None:
-            closer.join(5)
+        for handler in handlers:
+            handler.join(5)
         server.server_close()
 
 
@@ -301,30 +288,33 @@ def test_metrics_cache_still_expires_on_the_next_scrape_at_ten_seconds(tmp_path,
     assert collected == [100.0, 110]
 
 
-def test_broker_stop_interrupts_an_unfinished_request(listener_broker, monkeypatch, tmp_path):
+def test_broker_listener_stop_preserves_an_unfinished_request(listener_broker, tmp_path):
     m = listener_broker
     receiving = threading.Event()
     finished = threading.Event()
 
     class FramingHandler(m.Handler):
-        def _request_ready(self, deadline):
+        def handle(self):
             receiving.set()
-            return super()._request_ready(deadline)
-
+            super().handle()
         def finish(self):
             finished.set()
 
     with m.Server(str(tmp_path / 'framing.sock'), FramingHandler) as server:
+        server.authority = SimpleNamespace(handle=lambda *a: {'ok': True})
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         client = socket.socket(socket.AF_UNIX)
         client.settimeout(5)
         try:
             client.connect(server.server_address)
+            client.sendall(b'{"op":')
             assert receiving.wait(5)
             server.shutdown()
-            assert finished.wait(2), 'stop waited for the framing timeout'
-            assert json.loads(client.recv(4096))['ok'] is False
+            server.server_close()
+            client.sendall(b'"status"}\n')
+            assert json.loads(client.recv(4096)) == {'ok': True}
+            assert finished.wait(5)
         finally:
             client.close()
             server.shutdown()

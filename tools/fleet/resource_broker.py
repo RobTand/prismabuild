@@ -19,7 +19,6 @@ import re
 import secrets
 import select
 import selectors
-import signal
 import socket
 import socketserver
 import stat
@@ -1343,25 +1342,15 @@ class ResourceMonitor:
 
 
 class Handler(socketserver.BaseRequestHandler):
-    def _request_ready(self,deadline):
-        # Request framing has one ten-second deadline; stop is also readable.
-        ready=select.select([self.request,self.server.stop_read],[],[],
-                            max(0.0,deadline-time.monotonic()))[0]
-        if self.server.stop_read in ready:raise ValueError('resource broker stopping')
-        if not ready:raise TimeoutError('request framing deadline expired')
-
     def handle(self):
         self.request.settimeout(10);descriptors=[];process=None;request=None
         pid,uid,_=struct.unpack('3i',self.request.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
         try:
-            deadline=time.monotonic()+10
-            self._request_ready(deadline)
             raw,ancillary,flags,_=self.request.recvmsg(65537,socket.CMSG_SPACE(16*array.array('i').itemsize))
             for level,kind,data in ancillary:
                 if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:
                     fds=array.array('i');fds.frombytes(data[:len(data)-len(data)%fds.itemsize]);descriptors.extend(fds)
             while not raw.endswith(b'\n') and len(raw)<=65536:
-                self._request_ready(deadline)
                 more=self.request.recv(65537-len(raw))
                 if not more:break
                 raw+=more
@@ -1369,7 +1358,6 @@ class Handler(socketserver.BaseRequestHandler):
                 raise ValueError('request exceeds framing limit')
             request=json.loads(raw)
             if isinstance(request,dict) and request.get('op')=='run':
-                if self.server.stopping:raise ValueError('resource broker stopping')
                 process=self.server.authority.run(uid,pid,request,descriptors)
                 # Close our duplicates; only the launched child needs stdio.
                 for fd in descriptors:os.close(fd)
@@ -1377,13 +1365,13 @@ class Handler(socketserver.BaseRequestHandler):
                 exit_fd=os.pidfd_open(process.pid)
                 try:
                     while process.poll() is None:
-                        ready=select.select([self.request,exit_fd,self.server.stop_read],[],[])[0]
-                        if self.server.stop_read in ready or self.request in ready:
+                        ready=select.select([self.request,exit_fd],[],[])[0]
+                        if self.request in ready:
+                            extra=self.request.recv(1)
                             # Both EOF and unexpected in-flight protocol data
                             # end only this attempt; never spin on unread bytes.
                             self.server.authority.handle(uid,pid,{k:v for k,v in {
-                                **request,'op':'stop','reason':('resource broker stopping' if self.server.stop_read in ready
-                                    else 'execution client disconnected or sent unexpected data')}.items()
+                                **request,'op':'stop','reason':'execution client disconnected or sent unexpected data'}.items()
                                 if k in {'op','action_key','nonce','token','reason'}})
                             break
                     code=process.wait(timeout=15)
@@ -1407,10 +1395,10 @@ class Handler(socketserver.BaseRequestHandler):
         except OSError:pass
 
 class Server(socketserver.ThreadingUnixStreamServer):
-    # ThreadingMixIn.server_close joins all requests before the stop pipe closes.
-    daemon_threads=False
+    daemon_threads=True
 
     def __init__(self,*args,**kwargs):
+        self.stop_lock=threading.Lock()
         self.stop_read,self.stop_write=os.pipe2(os.O_CLOEXEC|os.O_NONBLOCK)
         self.stopping=False;self.stop_closed=False;self.serve_done=threading.Event()
         try:super().__init__(*args,**kwargs)
@@ -1419,11 +1407,12 @@ class Server(socketserver.ThreadingUnixStreamServer):
                 os.close(self.stop_read);os.close(self.stop_write)
             raise
 
-    def request_stop(self,*_):
-        self.stopping=True
-        if self.stop_closed:return
-        try:os.write(self.stop_write,b'x')
-        except BlockingIOError:pass
+    def request_stop(self):
+        with self.stop_lock:
+            self.stopping=True
+            if self.stop_closed:return
+            try:os.write(self.stop_write,b'x')
+            except BlockingIOError:pass
 
     def serve_forever(self,poll_interval=None):
         # Retain socketserver's call signature; shutdown is a descriptor event.
@@ -1438,7 +1427,6 @@ class Server(socketserver.ThreadingUnixStreamServer):
                     for key,_ in ready:
                         if key.fileobj is self:self._handle_request_noblock()
         finally:
-            self.request_stop()
             self.serve_done.set()
 
     def shutdown(self):
@@ -1449,9 +1437,10 @@ class Server(socketserver.ThreadingUnixStreamServer):
         self.request_stop()
         try:super().server_close()
         finally:
-            if not self.stop_closed:
-                self.stop_closed=True
-                os.close(self.stop_read);os.close(self.stop_write)
+            with self.stop_lock:
+                if not self.stop_closed:
+                    self.stop_closed=True
+                    os.close(self.stop_read);os.close(self.stop_write)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1512,13 +1501,7 @@ def main():
         authority.health_check=monitor.healthy
         monitor.start()
         print('PrismaBuild resource broker ready',flush=True)
-        previous={}
-        try:
-            for signum in (signal.SIGTERM,signal.SIGINT):
-                previous[signum]=signal.signal(signum,server.request_stop)
-            server.serve_forever()
-        finally:
-            for signum,handler in previous.items():signal.signal(signum,handler)
-            monitor.close()
+        try:server.serve_forever()
+        finally:monitor.close()
 
 if __name__=='__main__':main()
