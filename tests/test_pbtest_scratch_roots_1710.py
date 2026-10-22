@@ -1,10 +1,15 @@
 """Idle expiry discovers roots without replacing owned_tree's custody."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import errno
 import os
 from pathlib import Path
 import pwd
+import stat
+import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 
@@ -165,6 +170,120 @@ def test_registration_is_idempotent_and_each_layout_is_separate(registry, tmp_pa
     finally:
         os.close(descriptor)
     assert len(list(registry.iterdir())) == 2
+
+
+@pytest.mark.parametrize("shared_root", [True, False], ids=["same-root", "different-roots"])
+@pytest.mark.parametrize("basetemp", [False, True], ids=["tmpdir", "basetemp"])
+def test_concurrent_registration_publishes_complete_entries_without_lost_roots(
+        registry, tmp_path, monkeypatch, shared_root, basetemp):
+    worker_count = 4
+    worker_roots = [tmp_path / ("shared" if shared_root else f"root-{index}")
+                    for index in range(worker_count)]
+    for root in set(worker_roots):
+        root.mkdir()
+    staged = []
+
+    def inspect_staged_publications():
+        entries = list(registry.iterdir())
+        assert len(entries) == worker_count
+        assert all(entry.name.startswith(".") and entry.is_symlink() for entry in entries)
+        assert sorted(entry.readlink() for entry in entries) == sorted(worker_roots)
+        reaper = Mock(side_effect=AssertionError("unpublished roots reached the reaper"))
+        assert roots.sweep_pbtest_roots(reaper) == []
+        reaper.assert_not_called()
+        staged.append(True)
+
+    start = threading.Barrier(worker_count, timeout=30)
+    publish = threading.Barrier(worker_count, action=inspect_staged_publications, timeout=30)
+    actual_replace = roots.os.replace
+
+    def synchronized_publication(*args, **kwargs):
+        if os.fspath(args[0]).startswith((".tmpdir-", ".basetemp-")):
+            publish.wait()
+        return actual_replace(*args, **kwargs)
+
+    monkeypatch.setattr(roots.os, "replace", synchronized_publication)
+
+    def register(root):
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            start.wait()
+            roots.register_pbtest_root(descriptor, basetemp=basetemp)
+        finally:
+            os.close(descriptor)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as workers:
+        futures = [workers.submit(register, root) for root in worker_roots]
+        for future in futures:
+            future.result(timeout=60)
+
+    layout = "basetemp" if basetemp else "tmpdir"
+    expected = {f"{layout}-{root.stat().st_dev}-{root.stat().st_ino}": root
+                for root in worker_roots}
+    assert staged == [True], "workers did not overlap at publication"
+    assert {entry.name for entry in registry.iterdir()} == set(expected)
+    for name, root in expected.items():
+        entry = registry / name
+        assert entry.is_symlink() and entry.readlink() == root
+        assert entry.resolve(strict=True) == root
+
+
+@pytest.mark.parametrize("refusal", ["malformed-entry", "unreadable-root", "foreign-owner"])
+@pytest.mark.parametrize("basetemp", [False, True], ids=["tmpdir", "basetemp"])
+def test_registry_refusals_never_call_the_reaper_or_remove_scratch(
+        registry, tmp_path, monkeypatch, refusal, basetemp):
+    root = tmp_path / "scratch"
+    attempt, lock = _root_attempt(root, basetemp=basetemp)
+    os.close(lock)
+    marker = attempt / "keep.txt"
+    marker.write_text("scratch survives refusal")
+    then = time.time() - 90000
+    os.utime(attempt / owned_tree.LOCK_NAME, (then, then))
+    entry, = registry.iterdir()
+    observations = []
+    if refusal == "malformed-entry":
+        entry.unlink()
+        entry.write_text(str(root))
+    elif refusal == "unreadable-root":
+        actual_open = roots.os.open
+
+        def unreadable(path, *args, **kwargs):
+            if os.fspath(path) == str(root):
+                observations.append("denied")
+                raise PermissionError(errno.EACCES, "root unreadable", str(root))
+            return actual_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(roots.os, "open", unreadable)
+    else:
+        identity = root.stat().st_dev, root.stat().st_ino
+        actual_fstat = roots.os.fstat
+
+        def foreign_owner(descriptor):
+            info = actual_fstat(descriptor)
+            if (info.st_dev, info.st_ino) == identity:
+                observations.append("foreign")
+                fields = list(info)
+                fields[stat.ST_UID] = os.geteuid() + 1
+                return os.stat_result(fields)
+            return info
+
+        monkeypatch.setattr(roots.os, "fstat", foreign_owner)
+
+    reaper = Mock(side_effect=AssertionError("refused root reached owned_tree"))
+    monkeypatch.setattr(owned_tree, "reap_dead_trees", reaper)
+    reports = roots.sweep_pbtest_roots(owned_tree.reap_dead_trees)
+    assert len(reports) == 1 and reports[0][0] == entry.name
+    assert reports[0][1] == [] and reports[0][2]
+    reaper.assert_not_called()
+    if refusal == "unreadable-root":
+        assert observations == ["denied"]
+        assert "root unreadable" in reports[0][2]
+    elif refusal == "foreign-owner":
+        assert observations == ["foreign"]
+        assert "unknown owner" in reports[0][2]
+    assert root.is_dir() and attempt.is_dir()
+    assert marker.read_text() == "scratch survives refusal"
+    assert (attempt / owned_tree.LOCK_NAME).is_file()
 
 
 def test_registration_refreshes_a_stale_inode_reference(registry, tmp_path):
