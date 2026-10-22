@@ -68,6 +68,51 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
+## Test timing (D-19)
+
+Rob, 2026-10-11: tests validate correctness only. A test must not depend on
+timing: no wall-clock deadlines, sleep-based synchronization, or assertions
+that something happens within N seconds. Use an event, a controlled barrier,
+or an injected clock instead. Let the harness's `--test-timeout-s` bound hangs.
+
+`tests/test_no_timing_sensitive_tests.py` scans every Python file under
+`tests/`, including conftest and support modules. It flags imported
+`time.sleep` calls except literal `0` or `0.0`, `.wait` with any positional
+argument or a non-`None` `timeout=`, `.join` with a numeric literal positional
+argument or a non-`None` `timeout=`, and `.get` with a non-`None` `timeout=` or
+two positional arguments whose first is a bool literal. Time imports may use
+aliases. A fake clock's `clock.sleep`, string joins and dictionary lookups
+are outside this subject.
+
+For controlled timing that does not wait on the host's real clock, put
+`# pb-timing-ok: <reason>` on the call's starting line. Explain why the clock
+is controlled, for example that monkeypatch replaced `time.sleep` with a
+fake clock. The guard rejects missing reasons and stale pragmas. Reviewers
+check the reason; a real-clock hang backstop such as `join(timeout=60)` does
+not qualify.
+
+Existing debt is in `tests/timing_allowlist.txt`. Each entry is
+`path::qualname kind count #issue`, where `qualname` is the enclosing function
+or class, or `<module>`, and `kind` is `sleep`, `wait`, `join` or `get`.
+The live counts and the allowlist must match exactly in both directions.
+Fixes lower or remove their entries in the same change. Link an existing
+timing issue where one applies; otherwise use [#2035](https://github.com/RobTand/prismabuild/issues/2035).
+Growing the allowlist is reviewer-blocking unless the PB lead approves it.
+Review the visible allowlist diff, as with the duplication baseline; the
+guard does not read Git history.
+
+The full-tree scan uses at most two CPUs from the process's assigned affinity.
+Each file is parsed once. Small fixture trees use the calling process.
+
+The following forms are explicitly out of scope and non-blocking for review
+of this guard: `asyncio.sleep` and `asyncio.wait_for`; subprocess `timeout=`
+and `communicate(timeout=)`; `select` and `poll` timeouts; `time.monotonic()`
+deadline loops; elapsed-time assertions; indirect forms such as
+`functools.partial(time.sleep, 1)` and `getattr(time, "sleep")`; and sleeps in
+`src/` or `tools/` code that tests call. The D-19 rule still guides test
+writing; these are the guard's detection limits under the
+[#1771 design ruling](https://github.com/RobTand/prismabuild/issues/1771#issuecomment-6350106206).
+
 ## Pool regression fixtures
 
 Keep fixture inputs valid for the reviewed admission contract. Executable
