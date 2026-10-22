@@ -10,6 +10,7 @@ from test_core import _body
 
 
 CAPACITY = {"cpu": 8, "mem_gb": 16, "gpu": 1}
+CPU_CAPACITY = {**CAPACITY, "gpu": 0}
 NOW = 1000.
 
 
@@ -30,10 +31,11 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
         retry_safe=True, retry_scope="interruption", max_attempts=3, **fields)
     item = queue.ready_items()[0]
     for host, gpu in (("cpu-peer", False), ("spark", True)):
-        queue.ledger(host).ensure_capacity(CAPACITY)
+        capacity = CAPACITY if gpu else CPU_CAPACITY
+        queue.ledger(host).ensure_capacity(capacity)
         present = gpu or answer == "present"
         queue.announce(host=host, has_gpu=gpu, tags=[host, contracts.INTERPRETER_TAG],
-            capacity=CAPACITY, observed_capacity=CAPACITY,
+            capacity=capacity, observed_capacity=capacity,
             capabilities=eligibility.OfferCapabilities(interpreters=eligibility.InterpreterAnswers(
                 frozenset([sys.executable] if present else []),
                 frozenset([sys.executable] if not gpu and answer == "absent" else []))),
@@ -42,7 +44,7 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
     if reserved:
         assert queue.ledger("spark").acquire("e" * 64, {"gpu": 1})
     identity = f"{item['action_key']}:{float(item['published_unix'])!r}"
-    peer = PeerObservation(PeerCapacity(dict(CAPACITY), dict(CAPACITY), 8), {
+    peer = PeerObservation(PeerCapacity(dict(CPU_CAPACITY), dict(CPU_CAPACITY), 8), {
         identity: {"host": "cpu-peer", "reason": "transition_busy"}})
     placement = PlacementPass(queue.offers, lambda host, offer: peer,
         history=PlacementHistory(), wall_clock=lambda: NOW)
