@@ -4516,8 +4516,26 @@ After both approvals and the full reader gate verify, apply the logs-only pass:
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py \
   --queue-root QUEUE --summary --apply --all-lock-takers-verify \
-  --retire-attempt-logs
+  --retire-attempt-logs --attempt-log-max-keys 1 --attempt-log-max-bytes 16777216
 ```
+
+Start with small, lead-set limits and size later batches from measured
+replication capacity. The example caps the survey at one key and retirement at
+16 MiB of logical log payloads. `--attempt-log-max-keys N` accepts 1 through 256;
+its default remains 256. `--attempt-log-max-bytes B` accepts nonnegative integer
+bytes and defaults to unlimited. Apply stops before a descriptor that would
+exceed the aggregate byte budget, without overshoot. Zero-byte logs fit zero.
+If the next descriptor alone exceeds the budget, raise the cap to fit it before
+retrying; retirement does not skip that descriptor to spend the budget elsewhere.
+
+The apply summary and receipt report `bytes_retired` and `stopped_on_budget`,
+plus the actual continuation cursor. After a byte stop, the next ordinary run
+re-surveys the partly processed key through the normal cursor checkpoint.
+Uncertain unlink outcomes keep their byte reservations, so the budget can be
+exhausted while confirmed `bytes_retired` remains below the cap. Snapshot retention can pin freed
+blocks and `used` can grow after unlinks. A logical payload cap does not bound
+physical space freed or replication wire bytes; measure snapshot and receive
+backlogs when choosing the next batch.
 
 Inspect terminal exit status and `gc-receipts/attempt-logs-*.json`, including
 skips. A process interruption may leave valid archive entries and live duplicate

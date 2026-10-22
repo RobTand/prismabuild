@@ -1697,6 +1697,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "with --apply for the queue kinds")
     ap.add_argument("--attempt-log-after", default=None,
                     help="explicit attempt-log survey continuation key; the report prints the next key")
+    ap.add_argument("--attempt-log-max-keys", type=int, default=attempt_retention.MAX_RETENTION_KEYS,
+                    metavar="N", help="maximum keys in each attempt-log survey, from 1 to "
+                    f"{attempt_retention.MAX_RETENTION_KEYS} (default {attempt_retention.MAX_RETENTION_KEYS})")
+    ap.add_argument("--attempt-log-max-bytes", type=int, default=None, metavar="B",
+                    help="aggregate retired log payload byte budget for this run (default unlimited); "
+                         "nonnegative; stop before a descriptor that would exceed it")
     ap.add_argument("--retire-attempt-logs", action="store_true",
                     help="archive and retire old immutable attempt stdout/stderr only; "
                          "requires the complete reader gate, verified HDD store and --apply")
@@ -1729,7 +1735,8 @@ def _main_queue(args: argparse.Namespace) -> int:
         return 2
     try:
         log_plan = attempt_retention.survey_attempt_log_retention(
-            pool.PoolQueue(Path(args.queue_root).absolute()), after_key=args.attempt_log_after)
+            pool.PoolQueue(Path(args.queue_root).absolute()), after_key=args.attempt_log_after,
+            max_keys=args.attempt_log_max_keys)
     except (attempt_retention.AttemptRetentionRefused, attempt_archive.AttemptArchiveUnavailable) as exc:
         print(f"pb_gc: attempt log survey refused: {exc}", file=sys.stderr)
         return 2
@@ -1744,11 +1751,15 @@ def _main_queue(args: argparse.Namespace) -> int:
     if args.apply and args.retire_attempt_logs:
         try:
             log_result = attempt_retention.apply_attempt_log_retention(
-                pool.PoolQueue(Path(args.queue_root).absolute()), log_plan)
+                pool.PoolQueue(Path(args.queue_root).absolute()), log_plan,
+                max_bytes=args.attempt_log_max_bytes)
         except (attempt_retention.AttemptRetentionRefused, attempt_archive.AttemptArchiveUnavailable) as exc:
             print(f"pb_gc: attempt log retirement refused: {exc}", file=sys.stderr)
             return 2
-        print(f"attempt logs retired: {len(log_result['removed'])}; skipped: {len(log_result['skipped'])}")
+        log_plan["next_cursor"] = log_result["next_cursor"]
+        print(f"attempt logs retired: {len(log_result['removed'])}; skipped: {len(log_result['skipped'])}; "
+              f"bytes_retired={log_result['bytes_retired']}; stopped_on_budget={log_result['stopped_on_budget']}; "
+              f"next_cursor={log_result['next_cursor']}")
     outcome = None
     if args.apply and not args.retire_attempt_logs:
         try:
@@ -1784,6 +1795,13 @@ def _main_queue(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not 1 <= args.attempt_log_max_keys <= attempt_retention.MAX_RETENTION_KEYS:
+        print(f"pb_gc: --attempt-log-max-keys must be between 1 and {attempt_retention.MAX_RETENTION_KEYS}",
+              file=sys.stderr)
+        return 2
+    if args.attempt_log_max_bytes is not None and args.attempt_log_max_bytes < 0:
+        print("pb_gc: --attempt-log-max-bytes must be nonnegative", file=sys.stderr)
+        return 2
     if not math.isfinite(args.min_age_hours) or args.min_age_hours < 0:
         print("pb_gc: --min-age-hours must be finite and nonnegative", file=sys.stderr)
         return 2

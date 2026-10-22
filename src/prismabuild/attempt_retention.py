@@ -339,17 +339,26 @@ def survey_attempt_log_retention(queue, *, now: float | None = None, max_keys: i
                 reader_gate=gate)
 
 
-def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
+def apply_attempt_log_retention(queue, plan: Mapping, *, max_bytes: int | None = None) -> dict:
     """Publish/read back outside locks, then recheck under the key lock per unlink."""
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise AttemptRetentionRefused("attempt retirement byte bound must be a nonnegative integer")
     if plan.get("queue_root") != str(queue.root):
         raise AttemptRetentionRefused("attempt retirement plan belongs to another queue")
     _config, days, _gate = _attempt_retention_settings(queue.root, now=time.time(), applying=True)
     if digests.canonical_sha256(_config) != plan.get("config_sha256") or days != plan.get("retention_days"):
         raise AttemptRetentionRefused("attempt log retention configuration changed after survey")
     removed, skipped, aborted = [], [], None
+    budget_bytes, stopped_on_budget = 0, False
+    next_cursor = plan["next_cursor"]
     for candidate in plan["candidates"]:
         key = candidate["key"]
         for fact in candidate["logs"]:
+            if max_bytes is not None and fact["bytes"] > max_bytes - budget_bytes:
+                stopped_on_budget = True
+                key_number = int(key, 16)
+                next_cursor = f"{key_number - 1:064x}" if key_number else ""
+                break
             try:
                 archive._publish_attempt_log_archive(queue.root, fact)
                 with queue.action_transition_lock(key, blocking=False) as acquired:
@@ -382,9 +391,16 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                             expected_sha256=fact["sha256"], expected_bytes=fact["bytes"])
                         if time.time() >= expires:
                             raise AttemptRetentionRefused("reader gate expired before unlink")
-                        native.unlink_nofollow(path, where="retiring attempt log",
-                            expected_identity=candidate["source_identities"][fact["path"]],
-                            expected_bytes=fact["bytes"])
+                        # Reserve before unlink: a later custody error may follow
+                        # an actual deletion. Only proven pre-unlink failures refund.
+                        budget_bytes += fact["bytes"]
+                        try:
+                            native.unlink_nofollow(path, where="retiring attempt log",
+                                expected_identity=candidate["source_identities"][fact["path"]],
+                                expected_bytes=fact["bytes"])
+                        except native.ReplacedRecordError:
+                            budget_bytes -= fact["bytes"]
+                            raise
                     except native.CASTamperError as exc:
                         raise AttemptRetentionRefused("attempt log source changed before unlink") from exc
                     removed.append({"path": fact["path"], "bytes": fact["bytes"]})
@@ -397,11 +413,12 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                 aborted = f"{type(exc).__name__}: {exc}"
                 skipped.append({"path": fact["path"], "reason": aborted})
                 break
-        if aborted is not None:
+        if aborted is not None or stopped_on_budget:
             break
     receipt = dict(schema="prismabuild.attempt-log-retirement-receipt.v1", queue_root=str(queue.root),
                    unix=time.time(), retention_days=days, removed=removed, skipped=skipped,
-                   aborted=aborted)
+                   aborted=aborted, bytes_retired=sum(row["bytes"] for row in removed),
+                   stopped_on_budget=stopped_on_budget, next_cursor=next_cursor)
     raw = digests._canonical_bytes(receipt)
     destination = queue.root / "gc-receipts" / f"attempt-logs-{digests.raw_sha256(raw)}.json"
     native.publish_immutable(destination, raw)

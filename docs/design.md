@@ -20784,8 +20784,13 @@ After the preliminary digest, the final eligibility and full authority checks
 finish before the final source digest. The no-follow unlink boundary then holds
 one parent directory fd, compares the leaf's no-follow stat with the surveyed
 device, inode, size, mtime, ctime and mode and the descriptor's byte count, and
-immediately unlinks through that same fd. A missing or changed source is retained
-and reported as changed, never recorded as removed. The gate expiry is checked
+immediately unlinks through that same fd. A missing or changed source observed by
+these checks is retained and reported as changed. Exclusion is advisory, through
+the per-key transition lock. A writer outside that lock can still replace the
+leaf between the final no-follow stat and unlinkat; POSIX provides no atomic
+compare-and-unlink. Every queue mutation must follow the key-lock protocol.
+Archived bytes remain exact for the original descriptor either way, even if an
+outside-lock replacement is unlinked and reported as removed. The gate expiry is checked
 locally after the final digest; no slow authority census intervenes before unlink.
 The plan binds the complete config digest and window. A changed store, window,
 gate, active reader or ownership state skips removal. Gate freshness is rechecked
@@ -20794,6 +20799,20 @@ after lengthy verification. No recursive deletion runs. Durable receipts in
 the indexes authorize recovery when an interruption precedes the receipt.
 Archive corruption or unavailable custody stops the remaining batch, files a
 receipt for the completed prefix with `aborted`, and returns a refusal.
+
+The GC CLI exposes the existing survey bound as `--attempt-log-max-keys N`,
+from 1 to 256, default 256. `--attempt-log-max-bytes B` adds a nonnegative
+aggregate per-run budget of retired payload bytes; absent the flag, bytes remain
+unlimited. Before processing each descriptor, apply stops if its payload would
+exceed the remaining budget. Each unlink reserves those bytes; only a proven
+pre-unlink replacement refusal releases the reservation, so uncertain outcomes
+cannot allow extra unlinks beyond the budget. Zero-byte logs fit a zero budget.
+The result and receipt report confirmed `bytes_retired`, `stopped_on_budget`
+and `next_cursor`. A budget stop checkpoints immediately before the unfinished
+key through the normal cursor comparison, so the next survey revisits a partly
+processed key. If one descriptor exceeds the budget, increase the budget to fit
+that descriptor before retrying. The budget measures logical payload bytes, not
+physical space freed or replication traffic.
 
 Surveys stream flat terminal names and keep a heap of at most 256 selected keys.
 The next page starts after the previous key and wraps after the last key, so old

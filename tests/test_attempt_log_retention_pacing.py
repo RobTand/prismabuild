@@ -110,6 +110,26 @@ def test_skipped_descriptor_does_not_consume_retirement_budget(fleet, monkeypatc
     assert (fleet.queue.root / first["path"]).exists()
 
 
+def test_uncertain_post_unlink_error_keeps_its_byte_reservation(fleet, monkeypatch):
+    record = fleet.finish(stdout="aaaa", stderr="bbbb")
+    plan = fleet.plan()
+    first, second = plan["candidates"][0]["logs"]
+    original = native.unlink_nofollow
+
+    def unlink_then_lose_custody(path, **kwargs):
+        original(path, **kwargs)
+        raise native.CASTamperError("injected parent custody error after unlink")
+
+    monkeypatch.setattr(native, "unlink_nofollow", unlink_then_lose_custody)
+    result = retention.apply_attempt_log_retention(fleet.queue, plan, max_bytes=4)
+    assert not (fleet.queue.root / first["path"]).exists()
+    assert (fleet.queue.root / second["path"]).exists()
+    assert result["stopped_on_budget"] and not result["removed"]
+    assert result["bytes_retired"] == 0
+    for fact in fleet.descriptors(record).values():
+        assert len(archive.resolve_attempt_log(fleet.queue.root, fact)) == 4
+
+
 @pytest.mark.parametrize("budget", [-1, True, 1.5])
 def test_invalid_python_byte_budget_refuses_before_apply(fleet, budget):
     fleet.finish()
