@@ -213,6 +213,8 @@ def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
                 elif stat.S_ISREG(mode):
                     # Root-level files have an explicit synthetic directory row.
                     row('.')
+                else:
+                    excluded.append({'path': entry.path, 'reason': 'not regular file'})
         for name in list(rows):
             if name != '.':
                 walk(root / name, name)
@@ -251,7 +253,10 @@ def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
                 if not work():
                     break
                 relative = inside(value)
-                if relative is not None and row_name(relative) in rows:
+                if relative is None:
+                    excluded.append({'path': value, 'record_path': path,
+                                     'reason': 'reference outside stage or symlink'})
+                elif row_name(relative) in rows:
                     rows[row_name(relative)]['references'].append(ref)
                     positive_paths.add(value)
         references.extend(census.references)

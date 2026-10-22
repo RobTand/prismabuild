@@ -702,14 +702,28 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             check()
             yield int(entry["bytes"])
 
-    def manifests(value, own_cas, origin, paths, bound=None):
+    def declared_destination(value, inherited):
+        # This is positive declaration evidence, unlike W1's conservative
+        # selected-stage protection set. Never infer a destination from the
+        # selected stage, tier, source_stage_root or ram_root.
+        if "stage_root" not in value:
+            return inherited
+        root = value["stage_root"]
+        if (not isinstance(root, str) or not root.startswith("/")
+                or ".." in Path(root).parts):
+            return None
+        return Path(os.path.normpath(root))
+
+    def manifests(value, own_cas, origin, paths, bound=None, destination=None):
         check()
         if isinstance(value, list):
             for item in value:
-                manifests(item, own_cas, origin, paths)
+                manifests(item, own_cas, origin, paths, destination=destination)
             return
         if not isinstance(value, dict):
             return
+        if io is not None:
+            destination = declared_destination(value, destination)
         digest = value.get("manifest_sha256")
         declaration = value.get("data_manifest")
         if isinstance(declaration, dict):
@@ -742,13 +756,16 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                 if (staged_path.bounded_int(start) is None
                         or staged_path.bounded_int(end) is None or end < start):
                     raise ValueError("reference names an invalid extent")
+                if io is not None and destination is None:
+                    raise ValueError("reference manifest has no valid declared stage destination")
+                path_roots = roots if io is None else (destination,)
                 resolved = set()
                 for entry in manifest_layout.entries_between(entries, start, end):
                     check()
                     relative = staged_path.stage_relative(
                         str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
                         mount_prefix=prefix)
-                    found = {str(root / relative) for root in roots}
+                    found = {str(root / relative) for root in path_roots}
                     resolved.update(found)
                     paths.update(found)
                     named.update(found)
@@ -768,9 +785,10 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                                       "reason": str(exc) or type(exc).__name__})
         for item in value.values():
             if isinstance(item, (dict, list)):
-                # A parent mover's destination says nothing about nested
-                # documents' source-read obligations.
-                manifests(item, own_cas, origin, paths)
+                # Report paths inherit the declared destination, but a parent
+                # mover's uncertainty bound says nothing about nested source
+                # obligations: never pass bound into the recursive call.
+                manifests(item, own_cas, origin, paths, destination=destination)
 
     def mover_bound(value):
         if (value.get("schema") != pool.POOL_MOVE_SCHEMA_V1

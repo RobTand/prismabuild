@@ -36,7 +36,14 @@ max_seconds=30)` in `tools/fleet/stage_reclaim.py`.
 - `references`: exact record paths/documents and W1 resolved manifest
   digests/paths. Direct residency-tree path provenance is retained too.
   A directory can have several consumers and movers; no single-owner guess is
-  made. Holder entries contain token paths and per-resource `holdings`.
+  made. In report mode, manifest paths use their declaration's explicit
+  `stage_root` (inherited by nested declarations unless overridden), not the
+  selected stage root. Outside destinations stay outside and their paths are
+  explicitly excluded from directory ownership joins. A missing or invalid
+  destination leaves attribution unknown; neither source-stage/RAM hints nor a
+  matching tier proves destination ownership. Strict reclaim retains W1's
+  conservative selected-stage protection set, which is not affirmative report
+  ownership. Holder entries contain token paths and per-resource `holdings`.
 - `unresolved_manifests`: originating record, digest, uncertainty `scope` and
   diagnostic reason. Only an input mover's own destination contract bounds
   its missing-layout uncertainty. Source-stage/RAM hints cannot narrow it.

@@ -3,7 +3,7 @@
 No live stage inventory or reclaim was performed. The incident's 271.4-GiB
 figure was not remeasured. See [report semantics](../stage_ownership_report.md).
 
-Final scoped check, using the provided admitted x86/Python 3.14 environment:
+Initial implementation check, using the provided admitted x86/Python 3.14 environment:
 
 ```sh
 python -m pytest tests/test_stage_ownership_report.py tests/test_stage_ownership_bounds.py tests/test_a_source_mark_copy_with_a_proven_original_is_reclaimed.py tests/test_reader_lease_lifetime.py -q --basetemp="$TMPDIR/pytest"
@@ -32,3 +32,54 @@ Full-suite and live-system qualification were not run. Final source diff was
 inspected and `git diff --check` passed.
 
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"0e5ea7bfca0b403c62bffc73c3655982efd6d9a49a67e12fd1f3eeb093127aed","size":2455}},"operation":"48bbc0cd96a3a10745dfe5ea3df427421e4ca46190a90625f56285ffc8e7e2d7","receipt":"fa7116442ee86be8cd53bc0c78fa7e63fa432cb8febb494c8c2730f1bb7d7ecd"}]
+
+## Review repair: destination containment and explicit exclusions
+
+Rechecked both O5 failures against the implementation above, using new
+supplemental fixture tests (not edits to the acceptance file):
+
+```sh
+python -m pytest tests/test_stage_ownership_bounds.py -q -k 'outside_mover or fifo' --basetemp="$TMPDIR/pytest"
+```
+
+Before the repair, both cases failed: an outside mover's manifest falsely owned
+11 bytes inside the selected stage, and a top-level FIFO was absent from
+`excluded`.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"601e5c722c845f259da2544e0dfc68b91b4fc2d361db28848275d5776edd946e","size":3611}},"operation":"3fc453ecea1ddc30ff7f2e79a17481fa047630aed4d6d1a310c4bd6387b43a95","receipt":"660c5cd47847d1483ae8e28113a6c8fea5db727131c6e53a38210d632f598948"}]
+
+Report-mode manifest paths now use the declared destination instead of the
+selected stage root. Outside paths retain provenance but are excluded from
+inside ownership joins. Strict reclaim's conservative selected-stage protection
+set is unchanged. Top-level non-regular entries, including FIFOs, are explicitly
+excluded. Added regressions also cover a nested destination and missing/invalid
+destinations remaining unknown rather than importing source-stage hints.
+
+Final repair regression check used the same four-file command shown above:
+**147 passed, 1 teardown error; exit 1**. This includes all 14 acceptance test
+calls, 14 supplemental calls and the existing reclaim/restore, publication
+closure and reader-lifetime cases. It is not a clean acceptance pass.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"86885af549dd59c0f0bc5dda51b8f5cb3b7a24c0df10d5002e87b8f8f1679e91","size":2537}},"operation":"3b9985398d492d069da1403252652988fa5f3e4531fe6f3820fb1aeb264f0887","receipt":"cbfafc43e78d51ca7bae001fe3ad173facc7312f63886f2b1f48213074ebdd76"}]
+
+### O6 remains blocked by the acceptance fixture (#2013)
+
+Re-ran the exact required check after the repair:
+
+```sh
+python -m pytest tests/test_stage_ownership_report.py -q -k 'budget or unreadable_directory' --basetemp="$TMPDIR/pytest"
+```
+
+Observed **4 passed, 10 deselected, 1 teardown error; exit 1**. The same patched
+`os.scandir` wrapper rejects integer descriptor 11 at line 397. Source inspection
+identifies the cleanup interaction: the autouse `d38_config` fixture requests
+`monkeypatch` before `tmp_path`; reverse teardown therefore cleans `tmp_path`
+before undoing the patch. With `tmp_path_retention_policy = "failed"`, a passing
+body triggers descriptor-based cleanup through `shutil.rmtree`.
+
+The minimum external repair is for the acceptance-file owner to fix the wrapper
+under the existing #2013 issue. This work is forbidden to edit that acceptance
+file. No application workaround, test suppression, retention-policy change or
+duplicate issue was added. O6's required check remains failing, not met.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"80b1d3721b0d3327f667754f813eeca27f6d39528e650da5528cfc5830f95f8b","size":1730}},"operation":"4085ede3f957bcebdfa90e28fa1ec9d03e8e69f7f633a03bb511c2413683c8cb","receipt":"13b97cfab10d620277d3aa609b632a1be3bf9729c9f0102a76c8393ccf298877"}]
