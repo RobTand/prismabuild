@@ -1032,22 +1032,24 @@ def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
 
 
 @pytest.mark.parametrize("opted_in", [False, True], ids=["old-priority-gate", "measured-priority-gate"])
-def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in):
+@pytest.mark.parametrize("portable_guest", [False, True], ids=["pinned-background", "portable-guest"])
+def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in, portable_guest):
     (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
-    # #1929 protects pinned CPU rows. Make this holder a real portable guest
-    # overflowing from a full CPU-only host, retaining the sealed retry proof.
-    cpu_capacity = {"cpu": 4, "mem_gb": 32}
-    ledger = fleet.queue.ledger("scratch-cpu")
-    ledger.configure_cpu_tiers(fleet.tiers)
-    ledger.ensure_capacity(cpu_capacity)
-    assert ledger.acquire("f" * 64, {"mem_gb": 32})
-    fleet.queue.announce(host="scratch-cpu", has_gpu=False, tags=[], capacity=cpu_capacity,
-        observed_capacity=cpu_capacity, cpu_tiers=fleet.tiers,
-        observed_detail={"observed_unix": fleet.clock[0], "load1": 0.})
-    holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True, tags=())
+    if portable_guest:
+        cpu_capacity = {"cpu": 4, "mem_gb": 32}
+        ledger = fleet.queue.ledger("scratch-cpu")
+        ledger.configure_cpu_tiers(fleet.tiers)
+        ledger.ensure_capacity(cpu_capacity)
+        assert ledger.acquire("f" * 64, {"mem_gb": 32})
+        fleet.queue.announce(host="scratch-cpu", has_gpu=False, tags=[], capacity=cpu_capacity,
+            observed_capacity=cpu_capacity, cpu_tiers=fleet.tiers,
+            observed_detail={"observed_unix": fleet.clock[0], "load1": 0.})
+    holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True,
+                                     tags=() if portable_guest else ("gb10",))
     first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder, fleet.denial_for(holder, SLOW)
-    assert first["priority"] == -10 and first["retry_safe"] is True and first["cpu_guest"]
+    assert first["priority"] == -10 and first["retry_safe"] is True
+    assert bool(first.get("cpu_guest")) is portable_guest
     fleet.clock[0] += 1.
     fleet.announce(SLOW)
     fleet.publish(opted_in=opted_in)

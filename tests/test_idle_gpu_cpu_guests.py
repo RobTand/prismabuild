@@ -49,7 +49,7 @@ def test_cpu_host_claims_at_twenty_seconds_even_if_idle_gpu_peer_does_nothing(gu
     assert row['action_key'] == key and not row.get('cpu_guest')
 
 
-@pytest.mark.parametrize('fault', ['foreign', 'vllm', 'stale', 'untrusted', 'missing', 'reserved'])
+@pytest.mark.parametrize('fault', ['foreign', 'vllm', 'stale', 'future', 'untrusted', 'missing', 'reserved'])
 def test_gpu_in_use_or_unknown_keeps_cpu_host_placement(guest_fleet, fault):
     fleet = guest_fleet
     _cpu_available(fleet)
@@ -66,6 +66,8 @@ def test_gpu_in_use_or_unknown_keeps_cpu_host_placement(guest_fleet, fault):
         assert fleet.queue.ledger('sparky').acquire('e' * 64, {'gpu': 1})
     elif fault == 'stale':
         _guest_offer(fleet, gpu_sampled_unix=time.time() - 100)
+    elif fault == 'future':
+        _guest_offer(fleet, gpu_sampled_unix=time.time() + 60)
     elif fault == 'untrusted':
         _guest_offer(fleet, gpu_capacity_trusted=False)
     else:
@@ -122,3 +124,25 @@ def test_nonrestartable_portable_work_keeps_cpu_first(guest_fleet, restartable):
     key = fleet.publish('a', retry_safe=restartable, max_attempts=1)
     assert fleet.claim() is None
     assert fleet.claim('cpuhost')['action_key'] == key
+
+
+def test_deferring_rows_charge_the_idle_peer_once_per_scan(guest_fleet):
+    fleet = guest_fleet
+    _cpu_available(fleet)
+    first = fleet.publish('a', cpu=6)
+    second = fleet.publish('b', cpu=6)
+    row = fleet.claim('cpuhost')
+    assert row['action_key'] == second
+    assert _placement_denial(fleet, first, 'cpuhost')['reason'] == 'deferred_for_idle_gpu_host'
+
+
+def test_busy_gpu_cpu_host_deferral_skips_restartability_io(guest_fleet, monkeypatch):
+    fleet = guest_fleet
+    _cpu_available(fleet)
+    assert fleet.queue.ledger('sparky').acquire('e' * 64, {'gpu': 1})
+    key = fleet.publish('a')
+    def unexpected(row):
+        pytest.fail('busy-host CPU deferral read sealed guest restartability')
+    monkeypatch.setattr(fleet.queue, '_guest_restartable', unexpected)
+    assert fleet.claim() is None
+    assert _placement_denial(fleet, key, 'sparky')['reason'] == 'deferred_for_cpu_only_host'

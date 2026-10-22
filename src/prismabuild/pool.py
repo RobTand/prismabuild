@@ -15831,7 +15831,7 @@ class PoolQueue:
 
     def _defer_to_cpu_host(
         self, item: Mapping, demand: Mapping, *, has_gpu: bool,
-        placement: _peer_placement.PlacementPass,
+        placement: _peer_placement.PlacementPass, require_fit: bool = True,
     ) -> dict[str, object] | None:
         """Leave a CPU-only row to a host without a GPU that can run it now (#1262).
 
@@ -15851,7 +15851,9 @@ class PoolQueue:
         disappeared. CPU-only work still overflows onto GPU hosts when the CPU
         host cannot take it, subject to #1526's eligible-READY-GPU rule above
         this preference. A host without a GPU never yields, so two hosts cannot
-        wait on each other. A row whose tags exclude every host without a GPU
+        wait on each other. ``require_fit=False`` is only the exhausted-guest
+        policy: a live matching peer must claim or pass even when currently full.
+        A row whose tags exclude every host without a GPU
         (aarch64-only work tagged ``gb10``) has no CPU host to wait for and is
         spread across GPU hosts, subject to the same READY-GPU rule, by
         their own claims.
@@ -15868,7 +15870,7 @@ class PoolQueue:
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue
-            if self._opposite_resource_load(offer, gpu_job=False) is None:
+            if require_fit and self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
             try:
                 view = placement.peer(remote_host, offer)
@@ -15877,12 +15879,13 @@ class PoolQueue:
             if view is None or self._cpu_host_passed_on(item, remote_host, view):
                 continue
             capacity = view.remaining
-            if not capacity.fits_measured(demand):
+            if require_fit and not capacity.fits_measured(demand):
                 continue
             evidence = placement.cpu_host_evidence(
                 (str(item["action_key"]), repr(item.get("published_unix"))),
                 remote_host, capacity, demand)
-            view.charge(demand)
+            if require_fit:
+                view.charge(demand)
             return evidence
         return None
 
@@ -15938,9 +15941,11 @@ class PoolQueue:
             generation = (str(item["action_key"]), repr(item.get("published_unix")))
             if placement.timer_expired(_peer_placement.TimedPreference.IDLE_GPU_HOST, generation):
                 return None
-            return {"host": host, "available": dict(peer.remaining.available),
+            evidence = {"host": host, "available": dict(peer.remaining.available),
                     "observed_capacity": dict(peer.remaining.observed),
                     "demand": dict(demand), "preference_s": 20.0}
+            peer.charge(demand)
+            return evidence
         return None
 
     @staticmethod
@@ -16654,6 +16659,7 @@ class PoolQueue:
         available = ledger.available()
         pending: dict[str, int] = {}
         pending_guest = False
+        holders: set[str] = set()
         candidates: list[tuple[int, float, str, dict[str, object], dict[str, int]]] = []
         for holder in ledger.held_keys():
             if holder == action_key:
@@ -16661,6 +16667,7 @@ class PoolQueue:
             tokens = ledger.holder_tokens(holder)
             if not tokens:
                 continue
+            holders.add(holder)
             try:
                 record = record_store.value_or_raise(self.records.item(CLAIMED, holder))
             except PoolContractError:
@@ -16687,9 +16694,6 @@ class PoolQueue:
                 holder_priority = int(record.get("priority", 0))
                 claimed_unix = float(record.get("claimed_unix") or 0.0)
             except (TypeError, ValueError):
-                continue
-            if (guest_drain is None and wanted.get("gpu")
-                    and not (record.get("resources") or {}).get("gpu")):
                 continue
             proof = None if proofs is None else proofs.get(holder)
             if ((record.get("cpu_guest") is not True if guest_drain is not None
@@ -16720,6 +16724,8 @@ class PoolQueue:
             # normal cleanup, without promising another guest's release early.
             if pending:
                 return None
+            if guest_drain == "exclusive" and holders != {entry[2] for entry in candidates}:
+                return None  # an exclusive drain must be achievable by guests alone
             if guest_drain != "tokens":
                 usable = [entry for entry in candidates if entry[4].get("cpu", 0)]
             else:
@@ -17112,12 +17118,6 @@ class PoolQueue:
                 capability_eligibility.HostPresence.from_offer(offer).gpu
                 is capability_eligibility.Presence.ABSENT
                 for offer in self._matching_offers(item, live=placement.offers())))
-        cpu_guest = portable and self._guest_restartable(item)
-        if portable and item.get("cpu_guest_retry") is True and not cpu_guest:
-            return candidate_policy.CandidateDenial("deferred_for_cpu_only_host", {
-                "demand": demand, "reservation_demand": reservation_demand,
-                "cpu_host": {"reason": "guest_retry_budget_exhausted"},
-            }, scan)
         if not has_gpu:
             idle_peer = self._defer_to_idle_gpu_host(
                 item, reservation_demand, placement=placement, ready=ready)
@@ -17128,16 +17128,24 @@ class PoolQueue:
                 }, scan)
         local_offer = next((offer for offer in placement.offers()
                             if offer.get("host") == socket.gethostname()), {})
-        idle_guest = (cpu_guest and ready_gpu is None and self._idle_gpu_offer(local_offer)
-                      and not self.ledger().held().get("gpu"))
-        # Peer registry and ledger I/O must not hold host admission (#351).
-        cpu_host = (None if idle_guest else self._defer_to_cpu_host(
-            item, reservation_demand, has_gpu=has_gpu, placement=placement))
+        idle_here = (portable and ready_gpu is None and self._idle_gpu_offer(local_offer)
+                     and not self.ledger().held().get("gpu"))
+        guest_retry = portable and item.get("cpu_guest_retry") is True
+        # Most busy-host #1262 deferrals need no sealed CAS/lineage proof.
+        restartable = (self._guest_restartable(item)
+                       if idle_here or guest_retry else False)
+        exhausted = guest_retry and not restartable
+        cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
+            item, reservation_demand, has_gpu=has_gpu, placement=placement,
+            **({"require_fit": False} if exhausted else {})))
         if cpu_host is not None:
-            return candidate_policy.CandidateDenial("deferred_for_cpu_only_host", {
-                "demand": demand, "reservation_demand": reservation_demand,
-                "cpu_host": cpu_host,
-            }, scan)
+            return candidate_policy.CandidateDenial(
+                "guest_retry_budget_exhausted" if exhausted else "deferred_for_cpu_only_host", {
+                    "demand": demand, "reservation_demand": reservation_demand,
+                    "cpu_host": cpu_host,
+                }, scan)
+        cpu_guest = portable and (restartable if idle_here or guest_retry
+                                 else self._guest_restartable(item))
         cross_resource = self._defer_cross_resource_placement(
             item, reservation_demand, placement=placement)
         if cross_resource is not None:
@@ -17717,8 +17725,7 @@ class PoolQueue:
                     ledger, action_key=key, demand=asked,
                     priority=int(item.get("priority", 0)), controller=controller,
                     guest_drain="tokens") is not None
-            if not preempted and (not demand.get("gpu")
-                                  or verdict.get("drain_resolves") is not False):
+            if not preempted:
                 # Selection reacquires admission, while the separate
                 # handoff lock spans withdrawal/requeue as well. A
                 # stalled handoff cannot stop ordinary fitting work.
