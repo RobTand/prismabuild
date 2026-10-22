@@ -690,7 +690,7 @@ def fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None, *, io
     and retains.
 
     Optional keyword-only ``io`` uses the same protocol as
-    :func:`reader_lease.live_for`: ``check()``, ``scandir(Path)`` as a
+    :func:`reader_lease._bounded_live_for`: ``check()``, ``scandir(Path)`` as a
     context manager of DirEntry-compatible entries, and
     ``read_document(Path, *, max_bytes)`` returning decoded JSON. Reads
     request at most ``reader_lease.CENSUS_DOCUMENT_MAX_BYTES`` (16 MiB).

@@ -796,6 +796,18 @@ def _census_entries(io, directory: Path, tainted: list[str], *, missing_ok=False
 
 def _bounded_live_for(root: Path, wanted: set[str] | None, io
                       ) -> tuple[dict[str, list[str]], list[str]]:
+    """Census live pins through the report's private bounded I/O protocol.
+
+    ``io`` supplies ``check()`` (raise on exhausted budget), ``scandir(Path)``
+    (an os.scandir-style context manager yielding DirEntry-compatible objects),
+    and ``read_document(Path, *, max_bytes)`` (bounded read and JSON decode,
+    returning a Python document, not bytes). Reads request at most
+    ``CENSUS_DOCUMENT_MAX_BYTES`` (16 MiB); the hook must enforce that ceiling
+    and bound its own blocking operations. Checks occur on every traversal
+    iteration and before reads. Hook/validation exceptions become taint while
+    earlier positives survive. This path uses no memo and follows the hook's
+    traversal order, not sorted order.
+    """
     owners: dict[str, list[str]] = {}
     tainted: list[str] = []
     for consumer in _census_entries(io, root, tainted, missing_ok=True):
@@ -840,7 +852,7 @@ def _bounded_live_for(root: Path, wanted: set[str] | None, io
 
 
 def live_for(queue, wanted: set[str] | None, *, residency_root=None,
-             memo: dict[str, object] | None = None, io=None,
+             memo: dict[str, object] | None = None,
              ) -> tuple[dict[str, list[str]], list[str]]:
     """Which of ``wanted`` paths a live pin refs (``None``: all pinned paths).
 
@@ -856,22 +868,9 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None,
     taken under reuses that parse.  A pin gains a ref by an atomic rewrite,
     which is a new inode, so a new ref is never hidden.  A read that failed
     is never remembered.
-
-    Optional keyword-only ``io`` supplies ``check()`` (raise on exhausted
-    budget), ``scandir(Path)`` (an os.scandir-style context manager yielding
-    DirEntry-compatible objects), and ``read_document(Path, *, max_bytes)``
-    (bounded read and JSON decode, returning a Python document, not bytes).
-    Reads request at most ``CENSUS_DOCUMENT_MAX_BYTES`` (16 MiB); the hook
-    must enforce that ceiling and bound its own blocking operations. Checks
-    occur on every traversal iteration and before reads. Hook/validation
-    exceptions become taint while earlier positives survive. With ``io``,
-    memo is ignored and traversal order is the hook's order, not sorted.
-    Without ``io``, the existing strict read/cache behavior is unchanged.
     """
 
     root = leases_root(queue, residency_root)
-    if io is not None:
-        return _bounded_live_for(root, wanted, io)
     owners: dict[str, list[str]] = {}
     tainted: list[str] = []
     try:

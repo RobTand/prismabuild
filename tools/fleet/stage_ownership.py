@@ -303,7 +303,8 @@ def collect_stage_ownership(queue, *, tier_id, stage_root, cas_root, residency_r
             rows[name]['references'].append(ref)
 
     try:
-        pins, taint = reader_lease.live_for(queue, None, residency_root=residence, io=io)
+        pins, taint = reader_lease._bounded_live_for(
+            reader_lease.leases_root(queue, residence), None, io)
         for message in taint:
             error(residence, message)
         for value, ids in pins.items():
