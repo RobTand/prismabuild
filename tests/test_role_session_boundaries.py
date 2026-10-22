@@ -27,11 +27,11 @@ CONTEXT = multiprocessing.get_context("fork")
 WORK_UNIT_ROLES = ("storage", "tiers", "localtier")
 
 
-def test_production_roles_have_metrics_as_the_only_observer():
+def test_production_roles_declare_the_observers():
     import supervise
 
     assert set(WORK_UNIT_ROLES) <= supervise.ROLE_SCRIPTS.keys()
-    assert set(supervise.ROLE_SCRIPTS) - set(WORK_UNIT_ROLES) == {"metrics"}
+    assert set(supervise.ROLE_SCRIPTS) - set(WORK_UNIT_ROLES) == {"metrics", "bell"}
 
 
 @pytest.fixture
