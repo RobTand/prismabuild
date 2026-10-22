@@ -352,6 +352,10 @@ class _HistoryGuard:
             owner, value = scope.lookup(node.id)
             if isinstance(value, ast.AST):
                 return self.program(value, seen)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            text = self.text(node)
+            if '?' not in text:
+                return text.rsplit('/', 1)[-1]
         if isinstance(node, (ast.List, ast.Tuple, ast.BinOp)):
             sequence = self.sequence(node)
             if sequence:
@@ -627,6 +631,8 @@ class _HistoryGuard:
         # Compound statements span other statements; only the smallest owning
         # statement can own a trailing comment. AST columns are UTF-8 bytes.
         statements = {node for node in ast.walk(self.tree) if isinstance(node, ast.stmt)}
+        starts = {stmt: (min([stmt.lineno, *(decorator.lineno for decorator in getattr(stmt, 'decorator_list', []))]),
+                         stmt.col_offset) for stmt in statements}
         owners = {}
         for launch in launches:
             parent = self.parents.get(launch)
@@ -645,8 +651,8 @@ class _HistoryGuard:
                 attached = [node for node in launches if node.lineno == line + 1]
             else:
                 candidates = [stmt for stmt in statements
-                              if (stmt.lineno, stmt.col_offset) <= position and stmt.end_lineno >= line]
-                owner = max(candidates, key=lambda stmt: (stmt.lineno, stmt.col_offset), default=None)
+                              if starts[stmt] <= position and stmt.end_lineno >= line]
+                owner = max(candidates, key=starts.__getitem__, default=None)
                 attached = [node for node in launches if owners[node] is owner and owner is not None]
             on_line = [node for node in launches if node.lineno <= line <= node.end_lineno]
             if not standalone and any(node in attached for node in on_line):
@@ -887,8 +893,38 @@ def test_history_guard_resolves_repository_imports(tmp_path, command, finding):
 
 
 @pytest.mark.parametrize("source", [
+    'subprocess.run(["g" + "it", "show", "deadbeef:file"])',
+    'CMD="/usr/bin/" + "git"\nsubprocess.run([CMD,"show","deadbeef:file"])',
+    'PREFIX="/usr/bin/"\nNAME="git"\nCMD=PREFIX + NAME\ndef read():\n subprocess.run([CMD,"show","deadbeef:file"])',
+])
+@pytest.mark.parametrize("revision, finding", [('deadbeef:file', True), ('HEAD:file', False)])
+def test_history_guard_concatenated_program(source, revision, finding):
+    assert bool(history_read_sites(source.replace('deadbeef:file', revision))) is finding
+
+
+@pytest.mark.parametrize("command, finding", [
+    ('from constants import CMD\nsubprocess.run([CMD, "sh" + "ow", "deadbeef" + ":file"])', True),
+    ('import constants as c\nsubprocess.run([c.CMD, "sh" + "ow", "HEAD" + ":file"])', False),
+    ('from constants import COMMAND\nsubprocess.run(COMMAND)', True),
+    ('from constants import OTHER\nsubprocess.run([OTHER, "show", "deadbeef:file"])', False),
+])
+def test_history_guard_concatenated_repository_program(tmp_path, command, finding):
+    directory = tmp_path / 'tests'
+    directory.mkdir()
+    (directory / 'constants.py').write_text(
+        'PREFIX="/usr/bin/"\nNAME="g" + "it"\nCMD=PREFIX + NAME\n'
+        'COMMAND=[CMD, "sh" + "ow", "deadbeef" + ":file"]\n'
+        'OTHER="py" + "thon"\nraise RuntimeError("Scanning must never execute this module")\n')
+    path = directory / 'example.py'
+    path.write_text(command)
+    assert bool(history_tree_reads(tmp_path)) is finding
+
+
+@pytest.mark.parametrize("source", [
     '# pb-history-ok: Reads objects supplied by the fixture bundle.\nsubprocess.run(["git", "show", "fixture:file"])',
     'subprocess.run(["git", "show", "fixture:file"])  # pb-history-ok: Reads objects supplied by the fixture bundle.',
+    '@pytest.mark.parametrize("data", subprocess.check_output(["git", "show", "fixture:file"])) '
+    '# pb-history-ok: Reads fixture-created repository objects.\ndef test_data(data):\n pass',
 ])
 def test_history_guard_valid_pragma(source):
     assert not history_read_sites(source)
@@ -1037,6 +1073,30 @@ def test_history_guard_pragma_on_non_git_header_is_stale():
               ' subprocess.run(["git","show","deadbeef:file"])')
     sites = history_read_sites(source)
     assert [(line, verb) for line, verb, _ in sites] == [(1, 'pragma'), (2, 'show')]
+
+
+@pytest.mark.parametrize("definition", ['def test_data(data):', 'async def test_data(data):', 'class TestData:'])
+@pytest.mark.parametrize("decorator, bad_lines, pragma_lines", [
+    ('@pytest.mark.parametrize("data", subprocess.check_output(["git", "show", "fixture:file"]))', [], []),
+    ('@pytest.mark.parametrize(\n "data", subprocess.check_output(["git", "show", "fixture:file"]))', [], []),
+    ('@decorator', [], [1]),
+    ('@decorator(subprocess.check_output(["git", "show", "a:file"]), subprocess.check_output(["git", "show", "b:file"]))', [1, 1], [1]),
+])
+def test_history_guard_decorator_pragma(definition, decorator, bad_lines, pragma_lines):
+    source = (decorator + '  # pb-history-ok: Reads fixture-created repository objects.\n'
+              + definition + '\n subprocess.run(["git", "show", "deadbeef:file"])')
+    sites = history_read_sites(source)
+    body_line = len(source.splitlines())
+    assert sorted(line for line, verb, _ in sites if verb != 'pragma') == [*bad_lines, body_line]
+    assert sorted(line for line, verb, _ in sites if verb == 'pragma') == pragma_lines
+
+
+def test_history_guard_decorator_pragma_is_consumed_once():
+    source = ('# pb-history-ok: Reads fixture-created repository objects.\n'
+              '@decorator(subprocess.check_output(["git", "show", "fixture:file"]))  '
+              '# pb-history-ok: Reads fixture-created repository objects.\n'
+              'def test_data():\n pass')
+    assert [(line, verb) for line, verb, _ in history_read_sites(source)] == [(2, 'pragma')]
 
 
 @pytest.mark.parametrize("capture, use, finding", [
