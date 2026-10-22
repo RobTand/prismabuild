@@ -16662,13 +16662,16 @@ class PoolQueue:
         available = ledger.available()
         pending: dict[str, int] = {}
         pending_guest = False
+        pending_release = False
+        pressure_drain = guest_drain is not None and guest_drain != "tokens"
         holders: set[str] = set()
+        cpu_occupants: set[str] = set()
         candidates: list[tuple[int, float, str, dict[str, object], dict[str, int]]] = []
         for holder in ledger.held_keys():
             if holder == action_key:
                 continue
             tokens = ledger.holder_tokens(holder)
-            if not tokens:
+            if not tokens and not pressure_drain:
                 continue
             holders.add(holder)
             try:
@@ -16685,6 +16688,7 @@ class PoolQueue:
                 continue
             if (covered or record.get("finish_pending") is not None
                     or record.get("container_cleanup_pending") is not None):
+                pending_release = True
                 pending_guest = pending_guest or record.get("cpu_guest") is True
                 for kind, count in tokens.items():
                     pending[kind] = pending.get(kind, 0) + count
@@ -16705,11 +16709,17 @@ class PoolQueue:
                     or self._preemption_proof_binding(record) != proof[1]
                     or not proof[2]):
                 continue
-            if guest_drain == DRAIN_HELD_CPUS:
+            if pressure_drain:
+                # Borrowed CPUs occupy the host even when this holder owns no
+                # physical CPU tokens. Count allocation only for pressure, never
+                # as tokens its cleanup would return to close a capacity gap.
                 allocation = record.get("cpu_allocation") or {}
                 assigned = (allocation.get("preferred") or []) + (allocation.get("fallback") or [])
-                if not set(assigned).intersection(held_cpus or ()):
+                if (guest_drain == DRAIN_HELD_CPUS
+                        and not set(assigned).intersection(held_cpus or ())):
                     continue
+                if assigned or tokens.get("cpu", 0):
+                    cpu_occupants.add(holder)
             candidates.append(
                 (holder_priority, claimed_unix, holder, record, tokens))
 
@@ -16725,12 +16735,12 @@ class PoolQueue:
         if guest_drain is not None:
             # One withdrawal at a time. Reevaluate pressure and tokens after
             # normal cleanup, without promising another guest's release early.
-            if pending:
+            if pending_release:
                 return None
             if guest_drain == "exclusive" and holders != {entry[2] for entry in candidates}:
                 return None  # an exclusive drain must be achievable by guests alone
-            if guest_drain != "tokens":
-                usable = [entry for entry in candidates if entry[4].get("cpu", 0)]
+            if pressure_drain:
+                usable = [entry for entry in candidates if entry[2] in cpu_occupants]
             else:
                 released = {}
                 for entry in candidates:
