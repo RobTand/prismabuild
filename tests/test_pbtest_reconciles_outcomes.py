@@ -30,6 +30,7 @@ import pytest
 
 from pbtest_shard_output import ShardProcess, admitted_child  # noqa: E402
 from pbtest_shard_output import pbrun_client  # noqa: E402
+from pbtest_shard_output import recorded_shard_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -219,7 +220,7 @@ def test_a_test_stopped_by_maxfail_is_named_as_never_run(tmp_path, monkeypatch, 
 
 
 def _record(collected, reports, *, collect_only=False) -> str:
-    return outcomes.PREFIX + json.dumps({
+    return recorded_shard_evidence({
         "schema": outcomes.SCHEMA, "collect_only": collect_only,
         "collected": collected, "reports": reports, "uncounted": []})
 

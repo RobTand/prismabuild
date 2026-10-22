@@ -81,6 +81,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
     assert command[command.index("--cwd") + 1] == str(checkout.resolve())
     assert str(checkout.resolve()) not in " ".join(command[separator + 1:])
     assert "PYTHONPATH=src:experiments" in command
+    assert shard_environment(command)["PRISMABUILD_PBTEST_RECORD_BINDING"] == "1"
 
 
 #: The runtime these shards are dispatched from.  ``pbtest`` names no tag when

@@ -746,7 +746,10 @@ class Runner:
             for row in report:
                 if not isinstance(row, dict) or not row.get("ran"):
                     continue
-                record = self.outcomes.parse(row.get("output") or "")
+                record = self.outcomes.parse(row.get("output") or "", **(
+                    {"record_binding": row["record_binding"]}
+                    if row.get("record_binding") is not None
+                    and getattr(self.outcomes, "RECORD_BINDING_VERSION", None) is not None else {}))
                 durations = record.get("file_durations") if record else None
                 files = row.get("files")
                 if (not isinstance(durations, dict) or not durations
@@ -883,7 +886,10 @@ class Runner:
                                client_returncode=returncode)
         if self.full_suite and isinstance(rows, list):
             for row in rows:
-                record = (self.outcomes.parse(row["output"])
+                record = (self.outcomes.parse(row["output"], **(
+                              {"record_binding": row["record_binding"]}
+                              if row.get("record_binding") is not None
+                              and getattr(self.outcomes, "RECORD_BINDING_VERSION", None) is not None else {}))
                           if isinstance(row, dict) and isinstance(row.get("output"), str) else None)
                 if record and (record.get("collect_only") or record.get("deselected")):
                     result.suite_refusal = "filtered or collect-only execution is not the queue's suite"
