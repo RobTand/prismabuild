@@ -497,7 +497,9 @@ def wait_one(
     result = action_wait.await_action(
         observe, generation=generation, patience=action_wait.WaitUntil(deadline),
         profile=action_wait.AwaitProfile.DETACHED,
-        tool='pbwait', subject=key[:12], notice=notice)
+        tool='pbwait', subject=key[:12], notice=notice,
+        bell=action_wait.queue_bell.Client(q.root), bell_key=key,
+        use_bell=lambda: context['found'] is not None and context['found'][0] == 'pool')
     if isinstance(result, action_wait.Ready):
         return result.value
     if isinstance(result, action_wait.Unreadable):

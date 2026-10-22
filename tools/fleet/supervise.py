@@ -129,7 +129,7 @@ ROLE_SCRIPTS = {"storage": "prewarm_loop.py", "tiers": "tier_loop.py",
                 # The Prometheus exporter (#1020): one per fleet, on the box
                 # whose own filesystem holds the queue, where an unchanged
                 # queue costs a scrape one ``lstat`` per directory.
-                "metrics": "pbmetrics.py"}
+                "metrics": "pbmetrics.py", "bell": "pbbell.py"}
 
 # Periodic diagnostic hysteresis, not an all-times cap (#1396).
 ROLE_LOG_TRIGGER_BYTES = 64 * 1024 * 1024

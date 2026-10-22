@@ -833,7 +833,9 @@ def await_pool_outcome(
             observe, generation=generation, patience=patience,
             profile=action_wait.AwaitProfile.SYNCHRONOUS,
             tool='pbrun', subject=f'pool outcome for {key[:12]}',
-            notice=notice if notice is not None else lambda _event: None)
+            notice=notice if notice is not None else lambda _event: None,
+            bell=(None if isinstance(patience, action_wait.ProbeOnce)
+                  else action_wait.queue_bell.Client(q.records.root)), bell_key=key)
         ending = ClientEnding(_pool_client_verdict(key, result), history.snapshot())
     return PoolClientOutcome(key, result, ending, host)
 
