@@ -1022,7 +1022,7 @@ on the same host: the lowest-priority holder whose released tokens would admit
 the denied demand is withdrawn through the existing withdrawal ladder and
 re-published at its original priority and aging count, as a new generation the
 cancellation does not cover. Release is asynchronous, so the denied item is
-admitted on a later pass. Preemption never crosses into the foreground band,
+admitted on a later pass. Ordinary background preemption never crosses into the foreground band,
 never stops a holder whose release would not close the gap, and never cancels a
 second holder while a withdrawn one's tokens are still owed. It stops nothing when
 the selected claim concluded or changed before withdrawal, and refuses rather than raises when the holder's
@@ -1048,6 +1048,57 @@ and withdrawal lineage. The same exact-generation reader serves an ordinary
 generation whose row a later run replaced, with no handoff context to follow.
 Recovery writes no queue pointer and names the immutable attempt as its source.
 Attempts predating this context provide no inferred link.
+
+GPU denial also has a guest policy (#1929). A portable CPU claim on a GPU
+host carries the claim-scoped `cpu_guest: true` only when its sealed generation
+action is restartable and its portability follows a matching CPU-only offer
+or its authorized guest-retry lineage. Automatic capability
+tags do not pin a row; explicit hostname and architecture/class tags do.
+The ordinary preemption path selects guests under admission and holds the same
+host-local `.preemption` lock through withdrawal and retry publication.
+An eligible GPU row may reclaim guests across priority bands when its refusal
+has `drain_resolves: true`, including adaptive CPU `host_pressure`. Token
+shortages use the same path. The guest rule reclaims nothing for foreign or
+invalid-device refusals.
+Lowest priority yields first, then the most recently started claim. Several
+guests may be needed: all eligible guest tokens must cover a token gap before
+the first withdrawal, and each handoff waits for normal cleanup before selecting
+the next. Pressure drains re-evaluate the same refusal after each release;
+a held-CPU refusal selects only guests on the named CPUs. An exclusive drain
+requires every holder without a pending release to be an eligible guest. Any
+pending release blocks another guest handoff. Pinned CPU rows are never guest
+victims. Ordinary background preemption (#364) retains its existing priority
+boundary and may reclaim restartable pinned CPU holders for a foreground GPU
+row, independently of the guest drain classifier.
+
+Pool CPU pbtest shards seal `retry_safe: true`, `retry_scope: "interruption"`
+and `max_attempts: 3`; GPU and SLURM shards keep their existing single-launch
+policy. The scope is part of action identity, is checked against queue
+publication, and survives retry projection and immutable attempt evidence.
+The immutable `worker_reported` marker distinguishes worker failures from
+lease-loss outcomes, including lease recovery with resource-failure telemetry.
+A worker-reported failure is terminal on its first attempt, including pinned
+x86 shards: a red test is never retried into green. Omitted scope preserves
+the existing general retry policy. Preemption, guest eviction and lease-loss
+recovery keep their requeue paths within the declared launch budget. In
+particular, a pbtest CPU shard whose worker died is now rerun instead of filed
+`lease_lost_max_attempts` after its first launch. Retry-safe pbtest shards at
+priority -10 also become eligible for ordinary background preemption (#364),
+including pinned shards; priority alone still grants no restart permission.
+
+Each eviction consumes a launch, just as background preemption does. Only a
+verified interruption prefix with fewer than two consumed launches and another
+launch remaining can be a guest. A larger retry budget cannot extend guest
+eligibility. After that budget is exhausted, a portable guest retry records
+`guest_retry_budget_exhausted` only while a live matching CPU-only offer has
+not passed on this generation; that host may be full. If every such host has
+passed, gone stale or disappeared, the GPU host may claim it as a non-guest.
+`cpu_guest_retry` is derived from the authorized prior guest handoff. Recorded
+failure history prevents guest eligibility; interruption-only worker failures
+are terminal regardless of remaining attempts. Nonrestartable portable work
+keeps the existing #1262 placement and overflow behavior. No attempt counter,
+failed history, sealed request, or immutable ending is refunded or rewritten.
+
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
 handoff cannot report cancellation while the replacement is being published.
@@ -1887,6 +1938,67 @@ hit reports null publication identity because the caller published no generation
 Named refusals distinguish missing requests, invalid seals and unavailable CAS
 inputs. Source support for these verbs does not establish fleet deployment.
 
+### Submission phase diagnostics (#1936)
+
+Submission timing is invocation-local diagnostic metadata, outside the sealed
+request, action key, publication identity and shard verdict. Durations use
+`time.monotonic()` in seconds. Nested work pauses its parent, so lock waits
+are separate from I/O. Repeated spans accumulate under their fixed phase name.
+No phase contains arguments, environment values, paths or refusal details.
+
+`phases` is an additive object mapping phase names to nonnegative seconds on
+`prismabuild.submission.v1` and `prismabuild.sealed.v1`, including named refusals.
+Plain submission, seal-only and `--as-sealed-by` measure `checkout_identity`,
+`bundle_pack`, `cas_stage` and `cas_write`. Checkout identity includes preparation
+and Git checks; bundle packing includes the private snapshot index and pack.
+CAS staging includes private staging setup, copy, hashing and cleanup; CAS writes
+include blob/request publication and readback. CAS-only `--publish-sealed`
+measures `sealed_request_read` and `cas_input_verify` instead of preparing Git.
+The common publication tail measures `cas_read`, `offer_read`, `d38_gate` and
+`queue_publication` when reached. `filesystem_floor` measures entry and cleanup
+of the filesystem floor window, including the mode read when disabled.
+`acknowledgement_verify` measures the detached acknowledgement's CAS request
+read and verification; its completed duration refreshes the response's sample.
+`transition_lock_wait` measures the per-key
+thread mutex and POSIX lock acquisitions. Other POSIX acquisitions and the CAS
+staging-owner flock use `lock_wait`. Snapshot owner timing covers only flock
+acquisition and its bounded retries; owner-file I/O stays in `bundle_pack`.
+With no submitter observer, worker POSIX
+lock acquisitions bypass timing contexts and phase-name resolution entirely.
+A span closes on refusal too. A completed span taking at least one second
+prints one line on stderr.
+Diagnostic callback failures do not interrupt submission. Acquired mutexes and
+kernel locks are protected before timing finalization can run.
+
+The publisher samples `phases` immediately before the single ordinary READY
+write under its existing transition lock. The READY write, later readback,
+acknowledgement verification and floor cleanup are outside that persisted
+sample. Timing adds no READY replacement or fsync. Responses and phase-end
+events include completed publication and acknowledgement verification.
+Claimed rows, immutable attempts and terminal records retain the publisher's
+sample. Exact publication supersession keeps its original five-field contract;
+`pbwait` obtains that publication's timing from retained original-generation
+evidence through a bounded read. Missing timing never borrows the successor's
+sample or changes the supersession verdict. Attachments and cache hits report
+this invocation's timings without replacing the earlier publisher's sample.
+`pbwait --endings` rows and legacy `pbwait --json` rows expose `phases`; missing
+legacy timing is `{}`, never a measured zero. Existing schema IDs, including
+`prismabuild.pbtest_shard_verdict.v1`, are unchanged. Retained record readers
+ignore the additive field, and current readers accept its absence.
+
+The existing private client channel adds `event: "phase"` under
+`prismabuild.client_event.v1`, with `phase`, `state` and `seconds`. A `started`
+event has null seconds and precedes the operation; `finished` has that span's
+exclusive duration, including when it raised. The CLI sends its single ending
+after submission cleanup so no phase follows it. Identity and ending event
+fields, ordering, exit verification and recovery rules are unchanged. The decoder accepts
+old streams and keeps phase events separate from the two control events. Phase
+traffic is bounded to 256 events, each at most 1024 bytes; the pipe stays
+nonblocking and best effort. Phase events never authorize recovery. Strict
+consumers must recognize this additive event variant before reading a new
+client's stream. A killed client can leave a start without an end or identity;
+that identifies entered work, not successful sealing or publication.
+
 PrismaBuild stands alone: it imports no client, and a client reaches it only
 through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 `pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,
@@ -2105,6 +2217,62 @@ an accepted decision prevents later test output from inventing runtime refusal.
 The coordinator records interpreter-absent refusal directly from eligibility.
 Human output is presentation and cannot control either refusal or progress.
 
+The recorder also creates a fresh 256-bit `run_nonce` inside each shard
+invocation before importing pytest (#1842). Its first preflight decision,
+completion and outcome records carry that additive field. The coordinator
+declares `record_binding: 1` in each raw observation and report row because
+it seals this recorder version into the shard program. This invocation-owned
+metadata selects bound reading, including when reports are replayed by gates
+or consumed for duration history. The same declaration is sealed into
+`PRISMABUILD_PBTEST_RECORD_BINDING=1` in the action environment, reserved from
+caller overrides. Receipt-only readers select the mode from that validated
+action's environment. This stable sealed declaration changes every shard's
+cache key once after the client update, so cached shards rerun once. The
+execution-local random nonce is unsealed and causes no further per-run misses.
+Stdout never selects the binding mode.
+With binding declared, the reader accepts only records with the nonce from
+the first preflight decision. Unbound, foreign and malformed marker lines
+are ignored and introduce no completion problem. A missing or unsupported
+binding cannot fall back to legacy evidence inside a declared bound run.
+
+Only private emission closures attach the nonce to record copies. Population,
+reports, counts and the snapshotted collect-only flag stay in closure-private
+state. The registered adapter exposes pytest event hooks with no state or
+record/emission helper methods. A private dispatch monitor, installed through
+pluggy's public `add_hookcall_monitoring` API during recorder registration and
+before conftests load, owns the phase flags. It tracks complete hook dispatches,
+not generator advancement: sessionstart must return before collection starts;
+the population is snapshotted only after real collection returns; and final
+emission requires the real test-loop dispatch to return or raise. Lifecycle
+events must belong directly to this invocation's command and recorded session.
+The registered lifecycle adapters cannot authorize these transitions. The
+monitor also records each completed test-report dispatch, so abandoning a
+direct adapter generator cannot suppress a real failure. Other report and
+worker-population adapters accept the matching dispatched argument objects only
+once per dispatch, so direct calls cannot fabricate or duplicate them.
+Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
+final-teardown completion still survives blocked exit hooks, including xdist
+workers that prevent the controller's test loop from returning.
+A duplicated, non-inheritable stdout descriptor is captured before pytest runs;
+replacing the terminal writer cannot intercept bound records. The emission
+closure refuses any PID other than the one that minted the nonce, including
+a fork-without-exec child calling inherited recorder hooks.
+The nonce never enters argv or `os.environ`, so fresh nested recorders mint
+independent nonces. In a declared bound run, printed or nested markers cannot
+be accepted, nor can direct calls to recorder hooks outside pytest's real event
+order. Deliberate in-process tampering with closures, pluggy internals or file
+descriptors remains possible because tests run in the harness's process. This
+is not a security boundary. TrustLadder's control for that is reviewing
+agent-written tests.
+
+Without a `record_binding` declaration, a new reader preserves main's legacy
+last-marker behavior exactly, including streams with no outer preflight and
+a nested new preflight. That nested decision cannot enable bound mode.
+Old readers accept new records because the nonce and report declaration are
+additive; they retain their original susceptibility until upgraded. Existing
+receipts stay readable and the verdict schema remains exactly
+`prismabuild.pbtest_shard_verdict.v1`. No existing schema ID changes.
+
 `--json PATH` retains its list report and atomically writes the companion
 `PATH.progress.json` using `prismabuild.pbtest_progress.v1`. Each invocation has
 a UUID, configured launch entrypoint and actual producer generation. Producer
@@ -2304,7 +2472,8 @@ means no change to request bytes or existing action keys. Before preparation
 or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
 and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
 OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
-PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+PRISMABUILD_SHARD_BUDGET_S, PRISMABUILD_PBTEST_RECORD_BINDING, PYTHONPATH and
+PYTEST_ADDOPTS. These keys remain
 reserved when the run's options leave one unset; a caller cannot bypass
 pbtest's resource, deadline or pytest configuration through the environment.
 
@@ -6174,7 +6343,8 @@ unknown or mismatched evidence keeps protection. Ordinary GPU admission keeps
 checking residency and replaces the denial on reevaluation. While a lead is in
 flight, admitted CPU work may occupy the box's memory. Once residency lands,
 a GPU row reserving the full 104 GiB Spark budget then waits for CPU work to
-drain. This is the accepted #1169 behavior.
+drain. Restartable portable guests may now be reclaimed through #1929; pinned
+and nonrestartable work retains the accepted #1169 drain behavior.
 A pool-holder drain still protects the GPU row. This exception shares the
 existing lock-free host-denial snapshot used for carried withholds, adds no
 lock or timeout, and grants no GPU or CPU admission credit.
@@ -6188,25 +6358,47 @@ transition, or host-admission lock and does not change GPU admission, GPU row
 order, measurement election, or running claims. The READY snapshot remains
 advisory; the existing per-key transition and claim rename still decide ownership.
 
-CPU-only work on a GPU host is governed by a placement rule ahead of that
-preference, and the rule has no timer (#1262). A GPU host's CPUs and memory
-feed its GPU; CPU-only rows it admits leave GPU rows arriving behind them to be
-refused on CPU (on 2026-09-28 both GB10s idled for 100 minutes that way). So a
-GPU host does not claim a CPU-only row while a live, matching host without a
-GPU fits the whole demand now -- free ledger tokens, free preferred CPUs and
-observed capacity -- and has not passed on the row. "Passed on" is evidence
-that host already evaluated the row and did not take it: its published latest
-denial for the generation (`reservations/<host>/adaptive/claim-denials.json`),
-any reason but `transition_busy`, or, when that file is at its record cap, an
-entry of that host in the row's reason ring. The GPU host records
-`deferred_for_cpu_only_host`, ages nothing, and this CPU-host deferral ends once
-no such host remains. CPU-only work still overflows onto GPU hosts when the CPU
-host is full or refuses, but portable rows must also pass the eligible-READY-GPU
-rule above. A host without a GPU never yields, so no two hosts wait on each
-other. Tags excluding every host without a GPU bypass only this CPU-host
-deferral, not the READY-GPU rule. Remote reads are made once per host per claim
-pass and each yield
-charges that view, so a pass never leaves a host more rows than it fits.
+Idle GPU hosts now take restartable portable CPU work first (#1929, Rob,
+2026-10-21). Idle means no PB GPU reservation, fresh trusted GPU capacity
+samples with zero foreign GPU processes, and no eligible READY GPU row under
+the #1526 rule above. Exempt vLLM serving counts as foreign GPU use. Raw power
+or utilization alone never establishes idle. The offer retains the broker's
+`gpu_sampled_unix` separately from its observation timestamp, so a renewed offer
+cannot renew an old GPU sample. Missing or old-generation evidence grants no
+idle preference. The initial cheap idle check precedes restartability proof
+reads; after those blocking reads, the original sample must still be fresh
+before a CPU host yields or a GPU host bypasses #1262. Expired evidence grants
+neither preference. Admission still decides actual resource fit.
+
+For such a guest, the GPU host bypasses #1262. A host without a GPU gives a
+matching idle GPU host that fits the whole CPU/memory demand on its current
+ledger, preferred CPUs and observed capacity at most 20 seconds to claim.
+It records `deferred_for_idle_gpu_host`, with no reservation or aging pass,
+through `PlacementPass` and `TimedPreference.IDLE_GPU_HOST`. The timer persists
+across passes for the exact publication, and then the CPU-only host claims
+normally. Each yield charges the advisory peer view for this pass, so several
+rows cannot all defer to capacity that fits only one. It reserves no live
+tokens. READY eligibility
+reuses `_ready_gpu_for_placement` with the peer's capabilities, tags, physical
+GPU reservation normalization and exact-attempt denial evidence.
+
+While the GPU is in use, GPU work is pending, or a portable row is not
+restartable, #1262 remains an untimed rule. A GPU host leaves CPU-only work to
+a live matching CPU-only host that fits the whole demand now and has not
+passed on it. Its latest exact-generation denial, except `transition_busy` or
+`deferred_for_idle_gpu_host`, establishes pass-on; a full denial index falls
+back to that host's non-preference entry in the row's reason ring.
+The GPU host records `deferred_for_cpu_only_host` and ages nothing. Overflow
+remains possible when CPU-only hosts fill or refuse, subject to #1526 and the
+guest retry cap. Explicit hostname/class tags keep their existing placement.
+A CPU-only host never waits indefinitely for another host. Peer reads remain
+once per host per pass; #1262 yields charge that view so it cannot leave more
+rows than a peer fits.
+
+These #1929 contracts describe source behavior. Runtime publication and the
+live guest/GPU canary proof remain separate acceptance steps. The scoped
+[source acceptance record](evidence/issue1929_round2_acceptance_2026-10-21.json)
+keeps the requirement targets and remaining deployment/workload gaps explicit.
 
 Peer placement now owns one lazy offer snapshot and one advisory ledger
 observation per peer per claim pass in `_peer_placement.PlacementPass`.
@@ -6218,18 +6410,20 @@ preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
 Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
-The pass view owns both 20-second monotonic grace questions and the separate
+The pass view owns the three 20-second monotonic grace questions and the separate
 Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
 without restarting grace. Empty adaptive discovery, absent ready generations
 and a successful claim retire history through its owner. CPU-host age never
 becomes an expiry condition. Clock reads retain their original conditional
 positions and the Unix clock resolves the current pool clock on each read.
 
-Both timer rules consult capacity remaining after earlier CPU-host or scratch
-yields in the pass. They do not charge capacity for their own yields.
+All three timer rules consult capacity remaining after earlier CPU-host or scratch
+yields in the pass. Preferred-CPU and cross-resource timer rules do not charge
+capacity for their own yields; idle-GPU yields charge the advisory peer view.
 This avoids a second timer wait after another rule has already left a peer
-as much work as it fits; timer-only yields can still name more rows than the
-peer fits. These are advisory placement decisions, not peer reservations.
+as much work as it fits; preferred-CPU and cross-resource timer yields can
+still name more rows than the peer fits. These are advisory placement
+decisions, not peer reservations.
 
 Reusing the first advisory observation deliberately changes observation
 timing: a peer ledger or offer replacement after that read is ordinarily observed on the
@@ -16375,8 +16569,30 @@ Fresh checks under the stage ownership lock protect these references:
 - Held ledger keys, whose scope must be readable.
 - The produced-output lane.
 
-An unreadable reference record refuses the pass. The final reference census
-also covers references that appear during the quarantine copy. Identity
+An unreadable reference record refuses the pass, as do ledger/holder census
+failures, reader barriers and unsafe walks. An unavailable, malformed or invalid
+referenced manifest instead remains an explicit unresolved reference, never
+an empty read-set. The census retains the originating record and manifest
+digest alongside usable layouts and unresolved coverage. When unresolved
+references are found, the receipt includes `reference_refusals`, naming each
+unresolved record, digest, protected scope and reason. The field is omitted
+when empty to preserve existing receipt bytes.
+
+A recognized input-mover receipt's authoritative top-level `stage_root` can
+bound its own staged destinations even without a usable manifest layout. The
+entire bounded root remains protected while independently proven copies outside
+it can be reclaimed. This exception does not transfer to nested documents,
+residency summaries, consumer declarations or promotion destination roots:
+promotion source reads still require protection. Without a defensible physical
+bound, uncertainty protects the entire potentially affected stage, including
+ready/claimed declarations for a different tier. Partial positive path hints
+are not exhaustive coverage; ordinary input filenames cannot be inferred from
+a manifest digest or byte windows alone.
+
+The final reference census runs afresh under the ownership lock after the
+quarantine copy. It observes both newly published ownership and newly unresolved
+references, adds their named refusal diagnostics, and protects their scopes
+before removal. Initial uncertainty remains protected for the pass. Identity
 checks run again immediately before removal.
 
 Apply requires `--apply`, a new `--run-id`, and `--quarantine-root`.
@@ -18309,8 +18525,14 @@ profile receipt, runtime deployment, cache authorization or a speedup claim.
 The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
 Runner inventory, runtime selection, history balancing, retry merging and shared
 outcome reducer. Its stricter full-suite mode rejects collect-only and deselected
-outcome records. It waits for child process exit directly, without changing the
-merge queue's tick or heartbeat loop. Gate state uses the existing single-writer
+outcome records. It waits for child process exit directly with `process.wait()`.
+Ordinary merge-queue runs instead block on owned child pidfds with `poll`,
+using the time remaining to the next monotonic heartbeat deadline as the timeout.
+Ready children are reaped once and their pidfds removed and closed; notifications
+do not restart the heartbeat interval. Progress snapshots and status writes remain
+heartbeat-driven, while report reduction and `ended` events retain the all-children
+barrier and launch order. Exceptional exits also close remaining pidfds.
+Gate state uses the existing single-writer
 lock and history fields under the config's `state_dir`; invocation reports and
 logs live under `gates/`. Exclusions retain their configured reasons.
 `prismabuild.mergeq_gate.v1` pins pass/fail/no_verdict with exits 0/1/125,

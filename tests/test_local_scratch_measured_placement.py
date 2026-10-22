@@ -966,10 +966,12 @@ def test_real_successful_cas_negative_producers_are_not_qualified(fleet, monkeyp
     assert detail[PROFILES] == [] and fleet.scratch not in detail[DEVICES]
 
 
-def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, label="holder"):
+def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, label="holder",
+                            tags=("gb10",)):
     args = pbrun.parse_args([
-        "--cwd", str(fleet.work), "--transport", "pool", "--no-default-env", "--tag", "gb10",
-        "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
+        "--cwd", str(fleet.work), "--transport", "pool", "--no-default-env",
+        *(flag for tag in tags for flag in ("--tag", tag)),
+        *(["--anywhere"] if not tags else []), "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
         "--timeout-s", "30", *(["--max-attempts", "2", "--retry-safe"] if retry else []),
         "--", "/bin/bash", "-c", f"true # {label}"])
     action = submit_core.seal(submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"])
@@ -1030,12 +1032,24 @@ def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
 
 
 @pytest.mark.parametrize("opted_in", [False, True], ids=["old-priority-gate", "measured-priority-gate"])
-def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in):
+@pytest.mark.parametrize("portable_guest", [False, True], ids=["pinned-background", "portable-guest"])
+def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in, portable_guest):
     (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
-    holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True)
+    if portable_guest:
+        cpu_capacity = {"cpu": 4, "mem_gb": 32}
+        ledger = fleet.queue.ledger("scratch-cpu")
+        ledger.configure_cpu_tiers(fleet.tiers)
+        ledger.ensure_capacity(cpu_capacity)
+        assert ledger.acquire("f" * 64, {"mem_gb": 32})
+        fleet.queue.announce(host="scratch-cpu", has_gpu=False, tags=[], capacity=cpu_capacity,
+            observed_capacity=cpu_capacity, cpu_tiers=fleet.tiers,
+            observed_detail={"observed_unix": fleet.clock[0], "load1": 0.})
+    holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True,
+                                     tags=() if portable_guest else ("gb10",))
     first = fleet.claim(SLOW)
-    assert first is not None and first["action_key"] == holder
+    assert first is not None and first["action_key"] == holder, fleet.denial_for(holder, SLOW)
     assert first["priority"] == -10 and first["retry_safe"] is True
+    assert bool(first.get("cpu_guest")) is portable_guest
     fleet.clock[0] += 1.
     fleet.announce(SLOW)
     fleet.publish(opted_in=opted_in)

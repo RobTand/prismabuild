@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 import errno
 import fcntl
 import gzip
@@ -80,6 +81,26 @@ else:
 CASTamperError = immutable_files.CASTamperError
 CASUnavailableError = immutable_files.CASUnavailableError
 ReplacedRecordError = immutable_files.ReplacedRecordError
+
+
+# Inert for execution and standalone core readers. A submitting CLI installs
+# its invocation-local observer without extending core's standalone closure.
+_SUBMISSION_TIMINGS = ContextVar("submission_timings", default=None)
+
+
+@contextmanager
+def submission_phase(name: str):
+    timings = _SUBMISSION_TIMINGS.get()
+    if timings is None:
+        yield
+    else:
+        with timings.span(name):
+            yield
+
+
+def submission_phase_snapshot() -> dict[str, float]:
+    timings = _SUBMISSION_TIMINGS.get()
+    return {} if timings is None else timings.snapshot()
 
 
 ACTION_SCHEMA_V1 = "prismaquant.prismabuild.action.v1"
@@ -2535,7 +2556,8 @@ def _private_staging_directory(staging_directory: Path):
             os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
             0o600, dir_fd=private_fd,
         )
-        fcntl.flock(owner_fd, fcntl.LOCK_EX)
+        with submission_phase("lock_wait"):
+            fcntl.flock(owner_fd, fcntl.LOCK_EX)
         published_name = name[1:]
         os.rename(name, published_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         name = published_name
@@ -3274,6 +3296,7 @@ class PrismaBuildCAS:
         )
         return shard / digest, descriptor
 
+    @submission_phase("cas_write")
     def _publish_staged_input_blob(
         self, staging: Path, contract: Mapping[str, object]
     ) -> tuple[Path, bool]:
@@ -3392,6 +3415,7 @@ class PrismaBuildCAS:
         # reopen and hash every byte before it can satisfy this publication.
         return self._verify_input_blob(contract), False
 
+    @submission_phase("cas_stage")
     def ingest_input(
         self,
         source_path: str | Path,
@@ -3440,6 +3464,7 @@ class PrismaBuildCAS:
             finally:
                 immutable_files.unlink_nofollow(staging, where="CAS staging file")
 
+    @submission_phase("cas_stage")
     def ingest_bytes(
         self, raw: bytes, *, input_id: str
     ) -> tuple[dict[str, object], bool]:
@@ -3492,6 +3517,7 @@ class PrismaBuildCAS:
             {"sha256": entry["sha256"], "bytes": entry["bytes"]}
         )
 
+    @submission_phase("cas_write")
     def publish_action_request(self, action: object) -> Path:
         """Publish the canonical immutable request consumed by remote workers."""
 

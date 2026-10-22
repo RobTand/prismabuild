@@ -1029,6 +1029,224 @@ def test_the_tool_runs_from_only_the_published_generation(tmp_path) -> None:
         assert "--quarantine-root" in shown.stdout
 
 
+# #1972: unavailable layout is uncertainty, never an empty ownership set.
+# A mover's declared destination root bounds that mover's input-stage paths.
+# Nest a registered root to exercise affected and independent copies in one
+# census; this does not qualify concurrent reclaim of overlapping roots.
+def _uncertain_copy(fleet):
+    queue, stage, mount, _quarantine, good = fleet
+    nested = stage / "uncertain"
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=str(nested))
+    original = mount / "uncertain" / "held.bin"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(good)
+    target = _stage_copy(stage, mount, "uncertain/held.bin", good)
+    return nested, target
+
+
+def _unavailable_manifest(fleet, kind):
+    queue, _stage, _mount, _quarantine, _good = fleet
+    cas = pb.PrismaBuildCAS(queue.root.parent / "cas")
+    if kind == "missing":
+        return "7" * 64
+    if kind == "invalid-json":
+        raw = b"{"
+    else:
+        # Valid JSON and a genuine content address, but no usable layout.
+        raw = json.dumps({"schema": "not-a-data-manifest", "entries": []}).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = cas.blob_path(digest)
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(raw)
+    return digest
+
+
+def _unresolved_move(fleet, digest, root, *, key="7" * 64, **extra):
+    queue, _stage, _mount, _quarantine, _good = fleet
+    record = {
+        "schema": pool.POOL_MOVE_SCHEMA_V1,
+        "action_key": key, "consumer_action_key": "8" * 64,
+        "tier_id": TIER, "manifest_sha256": digest,
+        "range_start_bytes": 0, "range_end_bytes": SIZE,
+        "range_bytes": SIZE, "bytes_staged": SIZE,
+        "entries_declared": 1, "entries_staged": 1, "complete": True,
+        **extra,
+    }
+    if root is not None:
+        record["stage_root"] = str(root)
+    queue.record_move(key, record)
+    return queue.records.move_path(key)
+
+
+def _reclaim_ledger_counts(queue):
+    ledger = queue.tier(TIER)
+    return ledger.mint_supply(), ledger.free_supply(), ledger.holdings(), ledger.holders()
+
+
+def _assert_reference_refusal(receipt, record_path, digest, scope):
+    # New receipt surface: one or more structured unresolved-reference records.
+    # Leave the field names inside each diagnostic open, except for its reason.
+    refusals = receipt.get("reference_refusals", [])
+    matches = [row for row in refusals
+               if str(record_path) in json.dumps(row)
+               and digest in json.dumps(row)
+               and str(scope) in json.dumps(row)]
+    assert matches, ("missing named unresolved-reference refusal", receipt)
+    assert any(isinstance(row.get("reason"), str) and row["reason"].strip()
+               for row in matches), matches
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+@pytest.mark.parametrize("damage", ["missing", "invalid-json", "invalid-layout"])
+def test_unresolved_manifest_is_scoped_without_losing_independent_work(
+        fleet, apply, damage):
+    queue, stage, mount, quarantine, _good = fleet
+    nested, held = _uncertain_copy(fleet)
+    digest = _unavailable_manifest(fleet, damage)
+    record_path = _unresolved_move(fleet, digest, nested)
+    run_id = "scoped-" + damage
+    before = {name: (
+        _staged(stage, mount, name).read_bytes(),
+        os.getxattr(_staged(stage, mount, name), stage_marks.STAGE_SOURCE_XATTR),
+        os.stat(_staged(stage, mount, name))) for name in NAMES}
+    held_before = held.read_bytes(), os.getxattr(held, stage_marks.STAGE_SOURCE_XATTR)
+    ledger_before = _reclaim_ledger_counts(queue)
+
+    got = _reclaim(fleet, apply=apply, run_id=run_id)
+
+    assert got["entries_paired"] == len(NAMES), got
+    assert got["bytes_paired"] == len(NAMES) * SIZE
+    assert got.get("entries_moved", 0) == (len(NAMES) if apply else 0)
+    assert got.get("bytes_moved", 0) == (len(NAMES) * SIZE if apply else 0)
+    assert got["bytes_hashed"] <= got["read_budget_bytes"]
+    rows = {row["stage_path"]: row for row in got["entries"]}
+    assert rows[str(held)]["status"] != "paired"
+    _assert_reference_refusal(got, record_path, digest, nested)
+    assert held.read_bytes() == held_before[0]
+    assert os.getxattr(held, stage_marks.STAGE_SOURCE_XATTR) == held_before[1]
+    assert _reclaim_ledger_counts(queue) == ledger_before
+    if not apply:
+        assert not (quarantine / run_id).exists()
+        for name in NAMES:
+            assert _staged(stage, mount, name).read_bytes() == before[name][0]
+        return
+
+    journal = json.loads((quarantine / run_id / "manifest.json").read_text())
+    assert sum(row["size"] for row in journal["entries"]) == len(NAMES) * SIZE
+    assert {row["stage_path"] for row in journal["entries"]} == {
+        str(_staged(stage, mount, name)) for name in NAMES}
+    assert all(not Path(row["stage_path"]).exists() for row in journal["entries"])
+    restored = stage_reclaim.restore_run(
+        queue, stage_root=str(stage), quarantine_root=str(quarantine), run_id=run_id)
+    assert restored["complete"] is True
+    assert restored["entries_restored"] == len(NAMES)
+    for name in NAMES:
+        path = _staged(stage, mount, name)
+        live = os.stat(path)  # Stat before this test's own read changes atime.
+        assert path.read_bytes() == before[name][0]
+        assert os.getxattr(path, stage_marks.STAGE_SOURCE_XATTR) == before[name][1]
+        assert live.st_atime_ns == before[name][2].st_atime_ns
+        assert live.st_mtime_ns == before[name][2].st_mtime_ns
+    assert _reclaim_ledger_counts(queue) == ledger_before
+    again = stage_reclaim.restore_run(
+        queue, stage_root=str(stage), quarantine_root=str(quarantine), run_id=run_id)
+    assert again["entries_restored"] == 0
+    assert again["entries_skipped_identical"] == len(NAMES)
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+@pytest.mark.parametrize("origin", ["move", "ready", "claimed"])
+def test_unresolved_manifest_without_a_bound_keeps_every_possible_owner(
+        fleet, apply, origin):
+    queue, stage, mount, quarantine, _good = fleet
+    digest = _unavailable_manifest(fleet, "missing")
+    if origin == "move":
+        # A partial positive path hint is not an exhaustive read-set. Omitting
+        # stage_root must not shrink uncertainty to just this listed entry.
+        record_path = _unresolved_move(
+            fleet, digest, None,
+            entries=[{"stage_path": str(_staged(stage, mount, NAMES[0])),
+                      "bytes": SIZE}])
+    else:
+        key, digest = _reference_action(
+            fleet, tier="hdd:other", claim=origin == "claimed")
+        # Keep the sealed declaration, but make its manifest unavailable.
+        pb.PrismaBuildCAS(queue.root.parent / "cas").blob_path(digest).unlink()
+        state = pool.record_store.CLAIMED if origin == "claimed" else pool.record_store.READY
+        record_path = queue.records.item_path(state, key)
+    before = _reclaim_ledger_counts(queue)
+
+    got = _reclaim(fleet, apply=apply, run_id="unbounded-" + origin)
+
+    assert got.get("entries_paired", 0) == 0, got
+    assert got.get("entries_moved", 0) == 0, got
+    _assert_reference_refusal(got, record_path, digest, stage)
+    for name in NAMES:
+        assert _staged(stage, mount, name).exists()
+    assert _reclaim_ledger_counts(queue) == before
+    for manifest_path in quarantine.rglob(stage_reclaim.MANIFEST_NAME):
+        assert json.loads(manifest_path.read_text())["entries"] == []
+
+
+def test_scoped_uncertainty_does_not_bypass_late_ownership_publication(
+        fleet, monkeypatch):
+    queue, stage, mount, _quarantine, _good = fleet
+    nested, held = _uncertain_copy(fleet)
+    digest = _unavailable_manifest(fleet, "missing")
+    record_path = _unresolved_move(fleet, digest, nested)
+    first = _staged(stage, mount, NAMES[0])
+    copier = stage_reclaim._copy_to_quarantine
+    published = []
+
+    def publish_after_copy(*args, **kwargs):
+        result = copier(*args, **kwargs)
+        if not published:
+            # A valid manifest appears only after the initial proof/copy.
+            published.append(_reference_action(fleet, tier="hdd:other"))
+        return result
+
+    monkeypatch.setattr(stage_reclaim, "_copy_to_quarantine", publish_after_copy)
+    got = _reclaim(fleet, apply=True, run_id="late-valid-owner")
+
+    assert published
+    assert got["entries_moved"] == 1, got
+    assert first.exists() and held.exists()
+    assert not _staged(stage, mount, NAMES[1]).exists()
+    _assert_reference_refusal(got, record_path, digest, nested)
+    assert any(str(first.relative_to(stage)) in error and "reference" in error
+               for error in got["errors"])
+
+
+@pytest.mark.parametrize("bounded", [True, False], ids=["bounded", "unbounded"])
+def test_new_unresolved_manifest_is_rechecked_under_the_final_lock(
+        fleet, monkeypatch, bounded):
+    queue, stage, mount, _quarantine, _good = fleet
+    nested, held = _uncertain_copy(fleet)
+    digest = _unavailable_manifest(fleet, "missing")
+    initial_record = _unresolved_move(fleet, digest, nested)
+    first = _staged(stage, mount, NAMES[0])
+    copier = stage_reclaim._copy_to_quarantine
+    late = []
+
+    def publish_after_copy(*args, **kwargs):
+        result = copier(*args, **kwargs)
+        if not late:
+            root = first.parent if bounded else None
+            late.append(_unresolved_move(fleet, "6" * 64, root, key="6" * 64))
+        return result
+
+    monkeypatch.setattr(stage_reclaim, "_copy_to_quarantine", publish_after_copy)
+    got = _reclaim(fleet, apply=True, run_id="late-unresolved-" + str(bounded))
+
+    assert late
+    assert got["entries_moved"] == (1 if bounded else 0), got
+    assert first.exists() and held.exists()
+    assert _staged(stage, mount, NAMES[1]).exists() is (not bounded)
+    _assert_reference_refusal(got, initial_record, digest, nested)
+    _assert_reference_refusal(got, late[0], "6" * 64,
+                              first.parent if bounded else stage)
+
+
 def test_the_cli_help_explains_every_flag_and_renders(capsys) -> None:
     with pytest.raises(SystemExit) as stopped:
         stage_reclaim.main(["--help"])
