@@ -18,12 +18,15 @@ fresh trusted GPU evidence with no foreign process, including exempt vLLM,
 and no eligible READY GPU row (#1526). A denied GPU row whose pool drain would
 resolve the refusal evicts CPU guests through ordinary preemption, lowest
 priority then most recently started, with normal cleanup and retry lineage.
-Pinned CPU rows are never guests. CPU pbtest shards declare retry safety and
-three launches; interruptions consume launches, and after two interruptions
-portable retries stay on CPU-only hosts. Nonrestartable rows retain #1262.
+Pinned CPU rows are never guests; ordinary #364 preemption still applies. CPU
+pbtest shards seal interruption-only retry safety and three launches: worker
+failures end immediately; interruptions and lease loss may requeue. After two
+interruptions, a portable retry waits only while a live matching CPU-only host
+has not passed on it; otherwise it may run as a non-guest. Nonrestartable rows
+retain #1262.
 While a GPU is in use or GPU work is pending, `deferred_for_cpu_only_host`
 remains an untimed rule leaving a CPU row to a matching CPU-only host that
-fits it now. `deferred_for_ready_gpu_row` also preserves the room a READY GPU
+fits it now, until that host claims it or passes on it. `deferred_for_ready_gpu_row` also preserves the room a READY GPU
 row needs during a pass that cannot evaluate it (#1169). Leave portable work
 untagged; tags declare real architecture or host requirements.
 

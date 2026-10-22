@@ -1053,22 +1053,40 @@ Lowest priority yields first, then the most recently started claim. Several
 guests may be needed: all eligible guest tokens must cover a token gap before
 the first withdrawal, and each handoff waits for normal cleanup before selecting
 the next. Pressure drains re-evaluate the same refusal after each release;
-a held-CPU refusal selects only guests on the named CPUs. Pinned CPU rows are
-never guest victims, including background pinned rows. Ordinary background
-GPU-holder preemption remains available at its existing priority boundary.
+a held-CPU refusal selects only guests on the named CPUs. An exclusive drain
+requires every holder without a pending release to be an eligible guest. Any
+pending release blocks another guest handoff. Pinned CPU rows are never guest
+victims. Ordinary background preemption (#364) retains its existing priority
+boundary and may reclaim restartable pinned CPU holders for a foreground GPU
+row, independently of the guest drain classifier.
 
-Pool CPU pbtest shards seal `retry_safe: true` and `max_attempts: 3`; GPU and
-SLURM shards keep their existing single-launch policy. Each eviction consumes
-a launch, just as background preemption does. Only a verified interruption prefix with fewer than
-two consumed launches and another launch remaining can be a guest. After two
-interruptions, or when another interruption would exhaust the budget, a
-portable retry waits for a CPU-only host even when that host is currently full.
-A larger user-supplied retry budget cannot extend guest eligibility.
-`cpu_guest_retry` is derived from the authorized prior guest handoff, so
-a disappearing CPU-only offer cannot turn an exhausted retry into protected
-GPU-host overflow. Recorded failures do not become restart permission. Nonrestartable portable work keeps
-the existing #1262 placement and overflow behavior. No attempt counter, failed
-history, sealed request, or immutable ending is refunded or rewritten.
+Pool CPU pbtest shards seal `retry_safe: true`, `retry_scope: "interruption"`
+and `max_attempts: 3`; GPU and SLURM shards keep their existing single-launch
+policy. The scope is part of action identity, is checked against queue
+publication, and survives retry projection and immutable attempt evidence.
+The immutable `worker_reported` marker distinguishes worker failures from
+lease-loss outcomes, including lease recovery with resource-failure telemetry.
+A worker-reported failure is terminal on its first attempt, including pinned
+x86 shards: a red test is never retried into green. Omitted scope preserves
+the existing general retry policy. Preemption, guest eviction and lease-loss
+recovery keep their requeue paths within the declared launch budget. In
+particular, a pbtest CPU shard whose worker died is now rerun instead of filed
+`lease_lost_max_attempts` after its first launch. Retry-safe pbtest shards at
+priority -10 also become eligible for ordinary background preemption (#364),
+including pinned shards; priority alone still grants no restart permission.
+
+Each eviction consumes a launch, just as background preemption does. Only a
+verified interruption prefix with fewer than two consumed launches and another
+launch remaining can be a guest. A larger retry budget cannot extend guest
+eligibility. After that budget is exhausted, a portable guest retry records
+`guest_retry_budget_exhausted` only while a live matching CPU-only offer has
+not passed on this generation; that host may be full. If every such host has
+passed, gone stale or disappeared, the GPU host may claim it as a non-guest.
+`cpu_guest_retry` is derived from the authorized prior guest handoff. Recorded
+failure history prevents guest eligibility; interruption-only worker failures
+are terminal regardless of remaining attempts. Nonrestartable portable work
+keeps the existing #1262 placement and overflow behavior. No attempt counter,
+failed history, sealed request, or immutable ending is refunded or rewritten.
 
 The withdrawal and replacement publication share the holder's transition lock;
 waiters acquire it before resolving the replacement, so a partially completed
@@ -6150,7 +6168,9 @@ ledger, preferred CPUs and observed capacity at most 20 seconds to claim.
 It records `deferred_for_idle_gpu_host`, with no reservation or aging pass,
 through `PlacementPass` and `TimedPreference.IDLE_GPU_HOST`. The timer persists
 across passes for the exact publication, and then the CPU-only host claims
-normally. This advisory yield does not charge peer capacity. READY eligibility
+normally. Each yield charges the advisory peer view for this pass, so several
+rows cannot all defer to capacity that fits only one. It reserves no live
+tokens. READY eligibility
 reuses `_ready_gpu_for_placement` with the peer's capabilities, tags, physical
 GPU reservation normalization and exact-attempt denial evidence.
 

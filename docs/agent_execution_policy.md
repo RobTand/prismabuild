@@ -49,9 +49,11 @@ Idle GPUs give restartable portable CPU rows first claim on the Sparks' CPUs
 (#1929). Idle requires no PB GPU reservation, a fresh trusted GPU sample with
 no foreign process, including exempt vLLM serving, and no eligible READY GPU
 row. A draining GPU denial can evict CPU guests through existing preemption;
-pinned CPU rows never become guests. CPU pbtest shards seal retry safety and
-three launches. Interruptions consume launches, and portable retries stay on
-CPU-only hosts after two interruptions or without another restart available.
+pinned CPU rows never become guests; ordinary #364 preemption still applies.
+CPU pbtest shards seal interruption-only retry safety and three launches. A
+worker-reported failure is final immediately; interruptions and lease loss may
+requeue within that budget. An exhausted guest waits only while a live matching
+CPU-only host has not passed on it, then may run as a non-guest.
 While the GPU is in use or GPU work is pending, #1262 and #1526 still apply.
 `deferred_for_cpu_only_host` remains an untimed placement rule for that case
 and for nonrestartable portable work. Leave portable work untagged.

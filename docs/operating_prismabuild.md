@@ -997,10 +997,14 @@ says `drain_resolves: true`, including adaptive CPU `host_pressure`. The normal
 preemption lock, withdrawal ladder and cleanup apply. The lowest priority,
 most recently started guest yields first, with one release completed before
 the next handoff. Pinned rows never yield as guests. Pool CPU pbtest shards now
-seal retry safety and three total launches. Each interruption consumes a
-launch; after two, or without enough budget for another restart, the portable
-retry stays on CPU-only hosts. Nonrestartable portable work keeps #1262's
-existing overflow behavior. Waiters follow the ordinary lineage below.
+seal `retry_safe: true`, `retry_scope: "interruption"`, and `max_attempts: 3`.
+Worker-reported failures end on the first attempt; interruptions and lease loss
+may rerun within the budget. This also permits ordinary #364 preemption of
+retry-safe -10 shards, including pinned CPU shards. Each interruption consumes
+one launch. After two, an exhausted guest records `guest_retry_budget_exhausted`
+while a live matching CPU-only host has not passed on it, even if full.
+Otherwise it may run on a GPU host as a non-guest. Nonrestartable portable work
+keeps #1262's existing overflow behavior. Waiters follow the ordinary lineage below.
 This source behavior still needs publication and a live fleet canary.
 
 A submitter waiting on a preempted action is not told it was withdrawn. The
