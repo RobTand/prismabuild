@@ -2095,6 +2095,26 @@ an accepted decision prevents later test output from inventing runtime refusal.
 The coordinator records interpreter-absent refusal directly from eligibility.
 Human output is presentation and cannot control either refusal or progress.
 
+The recorder also creates a fresh 256-bit `run_nonce` inside each shard
+invocation before importing pytest (#1842). Its first preflight decision,
+completion and outcome records carry that additive field. The reader selects
+records with the nonce from the first preflight decision and ignores other
+marker lines, including malformed or unbound test output. Ignored completion
+markers introduce no completion problem. Nested recorders mint their own nonce.
+The nonce stays in the recorder's local state, never in argv or `os.environ`,
+so subprocesses cannot inherit it and it does not change action cache keys.
+The preflight must precede all test execution; a test cannot choose a later
+preflight to replace this binding. This isolates printed output and inherited
+environments, not deliberately hostile code inspecting the recorder's memory.
+
+A new reader keeps the legacy unbound-record path when the first preflight
+has no nonce or historical output has no preflight. That path ignores bound
+records from nested new recorders, but cannot authenticate legacy unbound
+markers. Old readers accept new records because nonce fields are additive;
+they retain their original susceptibility until upgraded. Existing receipts
+stay readable and the verdict schema remains exactly
+`prismabuild.pbtest_shard_verdict.v1`. No existing schema ID changes.
+
 `--json PATH` retains its list report and atomically writes the companion
 `PATH.progress.json` using `prismabuild.pbtest_progress.v1`. Each invocation has
 a UUID, configured launch entrypoint and actual producer generation. Producer

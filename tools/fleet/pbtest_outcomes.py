@@ -35,6 +35,7 @@ from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
 import re
+import secrets
 from contextlib import nullcontext
 from pathlib import Path
 import sys
@@ -237,22 +238,37 @@ def parse(output: str) -> dict | None:
 
 
 def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
+    record = next(_record_candidates(output, prefix), None)
+    return record if isinstance(record, dict) and record.get("schema") == schema else None
+
+
+def _record_candidates(output: str, prefix: str):
+    # The first preflight precedes pytest and cannot be replaced by captured
+    # test output. No nonce means an old shard, whose unbound records remain
+    # readable during rollout. Bound records from nested new shards do not.
+    decision, _ = _preflight(output)
+    run_nonce = decision.get("run_nonce") if decision is not None else None
     for line in reversed((output or "").splitlines()):
         if not line.startswith(prefix):
             continue
         try:
             record = json.loads(line[len(prefix):])
         except ValueError:
-            return None
-        if isinstance(record, dict) and record.get("schema") == schema:
-            return record
-        return None
-    return None
+            record = None
+        if isinstance(record, dict):
+            if record.get("run_nonce") != run_nonce:
+                continue
+        elif run_nonce is not None:
+            continue
+        yield record
 
 
 def completion(output: str) -> dict:
     """Verify selected-test completion, not final outcomes or process exit."""
-    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA)
+    return _completion_evidence(_parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA))
+
+
+def _completion_evidence(record: dict | None) -> dict:
     if record is None:
         return {"status": "unknown", "problems": ["no valid test completion record"]}
     lists = ("collected", "teardown_finished", "outcome_nodeids")
@@ -453,10 +469,14 @@ def _valid_runtime_refusal(value):
             and isinstance(value["message"], str) and bool(value["message"]))
 
 
-def preflight_record(exit_code: int, refusal: dict | None) -> str:
-    return PREFLIGHT_PREFIX + json.dumps({"schema": PREFLIGHT_SCHEMA,
+def preflight_record(exit_code: int, refusal: dict | None, *,
+                     run_nonce: str | None = None) -> str:
+    record = {"schema": PREFLIGHT_SCHEMA,
         "status": "refused" if exit_code else "accepted", "exit_code": exit_code,
-        "runtime_refusal": refusal}, separators=(",", ":"))
+        "runtime_refusal": refusal}
+    if run_nonce is not None:
+        record["run_nonce"] = run_nonce
+    return PREFLIGHT_PREFIX + json.dumps(record, separators=(",", ":"))
 
 
 def _preflight(output):
@@ -469,6 +489,8 @@ def _preflight(output):
             refusal = value["runtime_refusal"]
             if (value.get("schema") == PREFLIGHT_SCHEMA and type(code) is int
                     and code >= 0 and value.get("status") == ("refused" if code else "accepted")
+                    and ("run_nonce" not in value or isinstance(value["run_nonce"], str)
+                         and re.fullmatch(r"[0-9a-f]{64}", value["run_nonce"]))
                     and (refusal is None or code > 0 and _valid_runtime_refusal(refusal))):
                 return value, None
         except (ValueError, KeyError, TypeError):
@@ -629,7 +651,7 @@ def _judge_row(row, index):
         verdict["coverage"] = ("collection_only" if record.get("collect_only") else
                                "executed" if verdict["collected"] else "excluded")
     complete = verdict["completion"]
-    if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
+    if any(True for _ in _record_candidates(output, COMPLETION_PREFIX)):
         for message in complete["problems"]:
             if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
                 continue
@@ -748,8 +770,11 @@ def main(argv: list[str] | None = None, *, preflight=None,
     ``TMPDIR``.
     """
 
+    # Execution-local, never sealed into argv or placed in os.environ. Nested
+    # pytest invocations get their own nonce, even with identical source/env.
+    run_nonce = secrets.token_hex(32)
     refused, refusal = (0, None) if preflight is None else preflight()
-    print(preflight_record(refused, refusal), flush=True)
+    print(preflight_record(refused, refusal, run_nonce=run_nonce), flush=True)
     if refused:
         return int(refused)
     import pytest
@@ -832,6 +857,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                             for ids in self.worker_collections.values()))
             record = {
                 "schema": COMPLETION_SCHEMA,
+                "run_nonce": run_nonce,
                 "collection_complete": collection_complete,
                 "collect_only": bool(self.config.getoption("collectonly", False)),
                 "collection_errors": any(row[1:3] == ["collect", "error"]
@@ -844,7 +870,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     | {row[0] for row in self.uncounted}),
             }
             line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
-            if session_finished or completion(line)["status"] == "complete":
+            if session_finished or _completion_evidence(record)["status"] == "complete":
                 self.emit(line)
                 self.completion_written = True
 
@@ -980,6 +1006,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             config = self.config
             record = {
                 "schema": SCHEMA,
+                "run_nonce": run_nonce,
                 "rootdir_relative": (os.path.relpath(config.rootpath,
                     config.invocation_params.dir) if config is not None else "."),
                 "collect_only": bool(config is not None
