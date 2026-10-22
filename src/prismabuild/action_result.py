@@ -540,7 +540,8 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
     }
 
 
-def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap):
+def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap,
+                          *, allow_truncated=False):
     logs = attempt_record.get("logs")
     metadata = logs.get(stream) if isinstance(logs, Mapping) else None
     if not isinstance(metadata, Mapping):
@@ -555,18 +556,33 @@ def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap
         or any(character not in "0123456789abcdef" for character in declared_sha)
     ):
         raise ActionResultError(f"the selected attempt {stream} digest is invalid")
-    if declared_bytes > log_cap:
+    if declared_bytes > log_cap and not allow_truncated:
         raise ActionResultError(f"the selected attempt {stream} exceeds the evidence cap")
     log_path = queue.records.attempt_log_path(record, number, stream, declared_sha)
     if metadata.get("path") != str(log_path.relative_to(queue.root)):
         raise ActionResultError(f"the selected attempt {stream} link is not canonical")
+    descriptor = {"path": str(log_path), "bytes": declared_bytes, "sha256": declared_sha}
+    if declared_bytes > log_cap:
+        if log_cap < min(declared_bytes, endings.TERMINAL_STREAM_TAIL_BYTES):
+            raise ActionResultError(
+                f"the selected attempt {stream} evidence cap cannot cover its terminal summary")
+        try:
+            raw = immutable_files.read_immutable_tail(
+                log_path, where=f"pool attempt {stream}", max_bytes=log_cap,
+                expected_size=declared_bytes)
+        except (pb.PrismaBuildError, OSError) as exc:
+            raise ActionResultError(f"pool attempt {stream} refused: {exc}") from exc
+        descriptor.update(truncated=True, evidence={
+            "offset": declared_bytes - len(raw), "bytes": len(raw),
+            "sha256": pb.raw_sha256(raw)})
+        return descriptor, raw
     raw = _read_bounded(
         log_path, where=f"pool attempt {stream}", max_bytes=log_cap,
         require_readonly=True)
     if len(raw) != declared_bytes or pb.raw_sha256(raw) != declared_sha:
         raise ActionResultError(f"the selected attempt {stream} differs from its address")
 
-    return {"path": str(log_path), "bytes": declared_bytes, "sha256": declared_sha}, raw
+    return descriptor, raw
 
 
 def read_verified_ending_result(
@@ -578,9 +594,11 @@ def read_verified_ending_result(
     """Verify the selected ending's logs, including a failed worker (#1892).
 
     This sibling makes no success claim and does not relax the SDK reader.
-    Only the selected attempt is read. Logs, evidence and a receipt's payload
-    each have an explicit byte cap. Produced-output discovery has no bounded
-    verified reader yet, so outputs is empty. Paths are point-in-time evidence.
+    Only the selected attempt is read. Oversized logs return bounded tail
+    evidence, with the unread prefix explicitly excluded from verification.
+    Evidence and a receipt's payload each have an explicit byte cap.
+    Produced-output discovery has no bounded verified reader yet, so outputs
+    is empty. Paths are point-in-time evidence.
     """
     key = _checked_action_key(action_key)
     published = _checked_publication_unix(published_unix)
@@ -598,20 +616,28 @@ def read_verified_ending_result(
     if selected.get("disposition") != expected:
         raise ActionResultError("pool attempt disposition differs from the ending")
     stdout, raw = _verified_attempt_log(
-        queue, record, selected, number, "stdout", log_cap)
+        queue, record, selected, number, "stdout", log_cap, allow_truncated=True)
     stderr = None
-    expanded = {**selected, "stdout": raw.decode("utf-8")}
+    expanded = {**selected, "stdout": raw.decode("utf-8", errors="replace")}
     if "stderr" in selected.get("logs", {}):
         stderr, stderr_raw = _verified_attempt_log(
-            queue, record, selected, number, "stderr", log_cap)
-        expanded["stderr"] = stderr_raw.decode("utf-8")
+            queue, record, selected, number, "stderr", log_cap, allow_truncated=True)
+        expanded["stderr"] = stderr_raw.decode("utf-8", errors="replace")
     adopted = endings.resolve_attempt(
         [expanded], invalid=ActionResultError,
         validate_output_retry_stop=queue._validate_output_retry_stop)
+    for stream, descriptor in (("stdout", stdout), ("stderr", stderr)):
+        if descriptor and descriptor.get("truncated"):
+            detail = adopted["detail"]
+            detail[f"{stream}_bytes"] = descriptor["bytes"]
+            detail[f"{stream}_truncated"] = True
     for field in ("status", "finished_unix", "finished_host", "detail"):
         if adopted[field] != record.get(field):
             raise ActionResultError(f"pool attempt {field} differs from the terminal")
-    announcements = _ending_announcements(raw)
+    announcement_raw = raw
+    if stdout.get("truncated"):
+        announcement_raw = raw.partition(b"\n")[2]
+    announcements = _ending_announcements(announcement_raw)
     if len(announcements) > 1:
         raise ActionResultError("the selected attempt has ambiguous receipts")
     receipt_sha256 = None

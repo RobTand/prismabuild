@@ -38,7 +38,7 @@ def consumer_world(tmp_path, monkeypatch):
     return world
 
 
-def consumer_action(world, name, status="executed", action_exit=None, *, with_receipt=False):
+def consumer_action(world, name, status="executed", action_exit=None, *, with_receipt=False, log_padding=None):
     base = world.root / name
     checkout = world.root / "checkout"
     checkout.mkdir(parents=True, exist_ok=True)
@@ -52,6 +52,10 @@ def consumer_action(world, name, status="executed", action_exit=None, *, with_re
         scratch_cas, receipt = _publish_result(world.root, action, b"result\n")
         assert scratch_cas.root == cas.root
         stdout = json.dumps({"status": "published", "receipt": receipt}) + "\n"
+    streams = {"stdout": stdout, "stderr": "diagnostic\n"}
+    if log_padding is not None:
+        stream, padding = log_padding
+        streams[stream] = padding + streams[stream]
     key = action["action_key"]
     world.actions.publish(key, cas_root=cas.root, checkout_root=checkout, tags=["x86"],
                           resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
@@ -60,7 +64,7 @@ def consumer_action(world, name, status="executed", action_exit=None, *, with_re
         world.queue.finish(key, status=status, detail={
             "status": status, "returncode": 0 if receipt else 1,
             "action_returncode": action_exit if action_exit is not None else 0 if receipt else 7,
-            "stdout": stdout, "stderr": "diagnostic\n"})
+            **streams})
         settle_publishers()
     return key, receipt
 
@@ -470,3 +474,72 @@ def test_scope_cleanup_is_persisted_only_after_containers_are_removed(scoped, mo
                               context=context)
     projected = pbwait.consumer_ending_row(queue, row, cas=None, context=context)
     assert projected["diagnostics"]["cleanup"]["complete"] is True
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("status,expected", [("executed", 0), ("failed", 1)])
+def test_oversized_ending_logs_preserve_outcome(consumer_world, capsys, stream, status, expected):
+    cap = 16 * 1024 * 1024
+    padding = "x" * cap + "\n"
+    key, receipt = consumer_action(consumer_world, "large-" + stream + status, status,
+                                  log_padding=(stream, padding))
+    exit_code = pbwait.main(["--endings", "--wait-s", "0", key])
+    row, = json.loads(capsys.readouterr().out)["endings"]
+    assert (row["status"], exit_code) == (status, expected), row
+    assert row["succeeded"] is (status == "executed")
+    assert row["result"]["receipt_sha256"] == (receipt["receipt_sha256"] if receipt else None)
+    log = row["result"][stream]
+    assert log["truncated"] is True
+    assert log["bytes"] > cap
+    raw = Path(log["path"]).read_bytes()
+    assert log["sha256"] == pb.raw_sha256(raw)
+    evidence = log["evidence"]
+    assert evidence["bytes"] <= cap
+    assert evidence["offset"] == len(raw) - evidence["bytes"]
+    assert evidence["sha256"] == pb.raw_sha256(raw[evidence["offset"]:])
+
+
+@pytest.mark.parametrize("damage", ["tail", "size", "receipt"])
+def test_oversized_ending_still_refuses_integrity_damage(consumer_world, capsys, damage):
+    key, receipt = consumer_action(consumer_world, "damaged-large",
+        log_padding=("stdout", "x" * (16 * 1024 * 1024) + "\n"))
+    queue = consumer_world.queue
+    record = json.loads(queue.records.item_path("done", key).read_bytes())
+    selected = json.loads(queue.records.attempt_path(record, 1).read_bytes())
+    if damage == "receipt":
+        path = pb.PrismaBuildCAS(consumer_world.root / "cas").blob_path(receipt["result"]["sha256"])
+    else:
+        path = queue.root / selected["logs"]["stdout"]["path"]
+    path.chmod(0o644)
+    if damage == "size":
+        with path.open("ab") as handle:
+            handle.write(b"extra")
+    else:
+        with path.open("r+b") as handle:
+            handle.seek(-2, 2)
+            handle.write(b"!")
+    path.chmod(0o444)
+    assert pbwait.main(["--endings", "--wait-s", "0", key]) == 74
+    row, = json.loads(capsys.readouterr().out)["endings"]
+    assert row["status"] == "unreadable"
+    assert row["succeeded"] is False
+
+
+def test_truncated_read_has_a_byte_bound_and_checks_summary(consumer_world, monkeypatch):
+    cap = 128 * 1024
+    key, _ = consumer_action(consumer_world, "bounded-tail", "failed",
+                            log_padding=("stderr", "a" * cap + "\n"))
+    queue = consumer_world.queue
+    record = json.loads(queue.records.item_path("failed", key).read_bytes())
+    read = action_result.immutable_files.os.read
+    counts = []
+    def bounded_read(fd, amount):
+        raw = read(fd, amount)
+        if action_result.immutable_files.os.fstat(fd).st_size > cap:
+            counts.append(len(raw))
+        return raw
+    monkeypatch.setattr(action_result.immutable_files.os, "read", bounded_read)
+    result = action_result.read_verified_ending_result(queue, key,
+        published_unix=record["published_unix"], attempt=1, max_log_bytes=cap)
+    assert sum(counts) == cap
+    assert result["stderr"]["evidence"]["bytes"] == cap

@@ -2171,9 +2171,27 @@ reads only the selected attempt, checks stdout and filed stderr against their
 addresses, verifies the announced execution receipt and payload when present,
 and rechecks the ending before returning. Default caps are 16 MiB per log,
 4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
-wraps that read in its isolated five-second observation budget. A mismatch,
-missing evidence or exceeded bound yields `unreadable`, never verified bytes.
-No bounded verified produced-output discovery exists, so `outputs` is empty.
+wraps that read in its isolated five-second observation budget.
+
+For logs above 16 MiB, the reader checks the canonical, stable, read-only file
+and declared full size, but reads only the last 16 MiB. Its descriptor retains
+`path`, `bytes` and `sha256` for the complete log and adds `truncated: true`
+and `evidence: {offset, bytes, sha256}` for the tail actually read. The full
+log digest is declared evidence, not a claim that the unread prefix was hashed.
+The tail must agree with the terminal's existing 64 KiB stream summary. Only
+complete lines in the tail are searched for receipt announcements; any present
+receipt is still verified against its execution receipt and payload, and a
+successful action still requires an announcement. `result.verified` covers the
+ending, bounded log evidence and any receipt, excluding the unread prefix.
+Truncation preserves the action's status, success flag and exit outcome,
+including failed actions that published receipts. It does not itself yield
+`unreadable`. Consumers needing every byte can read `result.stdout.path` or
+`result.stderr.path` on the shared filesystem and verify the full byte count
+and SHA-256 from that descriptor, using their own budget.
+
+A mismatch, missing evidence or exceeded non-log bound yields `unreadable`,
+never verified bytes. No bounded verified produced-output discovery exists,
+so `outputs` is empty.
 The existing SDK exports, version and success-only guarantees are unchanged.
 
 `pbrun --withdraw KEY --reason TEXT --json` returns
