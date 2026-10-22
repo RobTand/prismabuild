@@ -43,6 +43,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import pool
 from prismabuild import submission as submit_core
 from pbtest_shard_output import ShardProcess  # noqa: E402
 from pbtest_shard_output import pbrun_client  # noqa: E402
@@ -53,55 +54,60 @@ _SPEC = importlib.util.spec_from_file_location(
 pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
-#: A runtime every box can open, and one only this box can.  Both are lexical:
-#: ``pool.is_box_local_path`` is a string test on purpose, so neither has to
-#: exist for the rule to answer.
-PUBLISHED = Path("/mnt/shared/prismabuild-fleet/runtime-generations/g-1")
-WORKTREE = Path("/home/rob/tmp/some-worktree")
+@pytest.fixture
+def runtime_paths(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    published = shared / "runtime-generations" / "g-1"
+    published.mkdir(parents=True)
+    worktree = tmp_path / "some-worktree"
+    worktree.mkdir()
+    monkeypatch.setattr(pool, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
+    return {"worktree": worktree, "published": published}
 
 
 # --------------------------------------------------------------------------
 # pbrun: the refusal
 # --------------------------------------------------------------------------
 
-def test_a_worktree_runtime_refuses_a_placement_that_does_not_name_this_box():
+def test_a_worktree_runtime_refuses_a_placement_that_does_not_name_this_box(runtime_paths):
     with pytest.raises(submit_core.SubmissionRefused) as refusal:
         submit_core.require_reachable_runtime(
-            ["x86"], hostname="sparky", runtime_root=WORKTREE)
+            ["x86"], hostname="sparky", runtime_root=runtime_paths["worktree"])
     said = str(refusal.value)
     # The reader has to be able to act on it without reading pbrun, so the
     # message carries all three facts: which runtime, which box has it, and
     # which placement was asked for.
-    assert str(WORKTREE) in said
+    assert str(runtime_paths["worktree"]) in said
     assert "sparky" in said
     assert "x86" in said
 
 
-def test_a_worktree_runtime_refuses_an_unpinned_placement():
+def test_a_worktree_runtime_refuses_an_unpinned_placement(runtime_paths):
     # ``--anywhere`` normalizes to no tags at all, which is the widest
     # placement there is and therefore the most certainly wrong one here.
     with pytest.raises(submit_core.SubmissionRefused) as refusal:
         submit_core.require_reachable_runtime(
-            [], hostname="sparky", runtime_root=WORKTREE)
+            [], hostname="sparky", runtime_root=runtime_paths["worktree"])
     assert "any eligible worker" in str(refusal.value)
 
 
-def test_a_worktree_runtime_admits_a_placement_that_names_this_box():
+def test_a_worktree_runtime_admits_a_placement_that_names_this_box(runtime_paths):
     # ``--tag x86 --here`` on an x86 box is a real request -- a class AND this
     # machine -- and the refusal must not be what answers it.  Whether any box
     # satisfies the conjunction is the queue's question, asked later.
     assert submit_core.require_reachable_runtime(
-        ["x86", "sparky"], hostname="sparky", runtime_root=WORKTREE) is None
+        ["x86", "sparky"], hostname="sparky", runtime_root=runtime_paths["worktree"]) is None
     assert submit_core.require_reachable_runtime(
-        ["sparky"], hostname="sparky", runtime_root=WORKTREE) is None
+        ["sparky"], hostname="sparky", runtime_root=runtime_paths["worktree"]) is None
 
 
 @pytest.mark.parametrize("tags", [[], ["x86"], ["gb10"], ["sparky"]])
-def test_a_published_runtime_admits_every_placement(tags):
+def test_a_published_runtime_admits_every_placement(tags, runtime_paths):
     # Nothing here narrows what the queue may choose.  The check states a fact
     # about this runtime, and a published runtime constrains nothing.
     assert submit_core.require_reachable_runtime(
-        tags, hostname="sparky", runtime_root=PUBLISHED) is None
+        tags, hostname="sparky", runtime_root=runtime_paths["published"]) is None
 
 
 
@@ -152,32 +158,32 @@ def _tags(command) -> list[str]:
 
 
 def test_a_worktree_pbtest_names_no_tag_and_lets_pbrun_pin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_paths
 ):
     # No tag is not "run anywhere": pbrun derives the host pin from the
     # payload's own executable, and only an explicit tag could overrule it.
-    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=WORKTREE)
+    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_paths["worktree"])
     assert _tags(argv) == []
     assert "--anywhere" not in _flags(argv)
 
 
 def test_a_published_pbtest_asserts_portability_and_names_no_class_tag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_paths
 ):
     # Since #1462 an untagged CPU shard from the shared runtime says so with
     # pbrun's own --anywhere, and carries no class tag: the interpreter
     # requirement, not a default x86 tag, keeps it off hosts that cannot run it.
-    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=PUBLISHED)
+    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_paths["published"])
     assert _tags(argv) == []
     assert "--anywhere" in _flags(argv)
 
 
-@pytest.mark.parametrize("runtime_root", [WORKTREE, PUBLISHED])
+@pytest.mark.parametrize("runtime_name", ["worktree", "published"])
 def test_an_explicit_tag_is_forwarded_from_either_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_root
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_paths, runtime_name
 ):
     # The operator's explicit tag must reach the shard unchanged.
-    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_root,
+    argv = _shard_argv(tmp_path, monkeypatch, runtime_root=runtime_paths[runtime_name],
                        extra=("--tag", "sparky"))
     assert _tags(argv) == ["sparky"]
 
@@ -187,7 +193,7 @@ def test_an_explicit_tag_is_forwarded_from_either_runtime(
 # --------------------------------------------------------------------------
 
 def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_paths
 ):
     """The check has to be reached, and reached before anything is queued.
 
@@ -204,8 +210,8 @@ def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
     subprocess.run(["git", "init", "-q", str(work)], check=True)
 
     with mock.patch.object(pbrun, "configured_store", return_value=submit_core.FleetStore(
-            tmp_path / "fleet", WORKTREE, pbrun.configured_store().roster_path)), \
-         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=WORKTREE)), \
+            tmp_path / "fleet", runtime_paths["worktree"], pbrun.configured_store().roster_path)), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=runtime_paths["worktree"])), \
          mock.patch.object(submit_core.socket, "gethostname", return_value="sparky"), \
          mock.patch.object(
              sys, "argv",
@@ -215,7 +221,7 @@ def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
             pbrun.main()
 
     said = str(refusal.value)
-    assert "box-local" in said and str(WORKTREE) in said
+    assert "box-local" in said and str(runtime_paths["worktree"]) in said
     # Nothing may have been queued: the point of refusing at submit is that no
     # box claims an action it cannot run, so the queue must still be empty.
     queued = list((tmp_path / "fleet" / "pb-queue" / "ready").glob("*")) \

@@ -32,7 +32,7 @@ import pbrun  # noqa: E402
 from test_pbrun_detach import _checkout, _queue, _run_pbrun  # noqa: E402
 
 CAPABILITY = contracts.CONTAINER_IMAGE_TAG
-PYTHON = "/home/rob/venvs/pq-pb461728e4-tessera-43da1c39/bin/python"
+PYTHON = sys.executable
 REF_A = "ghcr.io/example/stage-a@sha256:" + "a" * 64
 REF_B = "ghcr.io/example/stage-b@sha256:" + "b" * 64
 
