@@ -106,6 +106,8 @@ FLEET_SCRIPTS = (
     # The stage lives on dl380g10, which has no checkout, so a generation
     # without it leaves that command with no place to run.
     "stage_reclaim.py",
+    # Bounded read-only evidence collection used by stage_reclaim --report.
+    "stage_ownership.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing
