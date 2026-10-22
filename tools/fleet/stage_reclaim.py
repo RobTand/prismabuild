@@ -843,14 +843,19 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
         except (OSError, ValueError) as exc:
             error(path, exc)
 
-    def tree(root):
+    def tree(root, *, missing_ok=False):
         if io is not None:
+            opened = False
             try:
                 check()
                 with io.scandir(root) as entries:
+                    opened = True
                     for entry in entries:
                         check()
                         yield from visit(Path(entry.path))
+            except FileNotFoundError as exc:
+                if not missing_ok or opened:
+                    error(root, exc)
             except (OSError, ValueError) as exc:
                 error(root, exc)
             return
@@ -864,7 +869,9 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
 
     for root in (queue.root / pool.record_store.MOVERS, queue.root / pool.record_store.MOVERS_RETIRED,
                  residency_plan.registry_root(queue)):
-        for path in tree(root):
+        # Movement/plan namespaces are created lazily. Absence before opening
+        # is empty; a missing residency root or live-state directory is not.
+        for path in tree(root, missing_ok=True):
             try:
                 check()
                 record(path, mover=root != residency_plan.registry_root(queue))

@@ -1,5 +1,7 @@
 """Supplemental report boundary checks; no live stage inventory."""
+from contextlib import contextmanager
 import json
+import os
 import math
 from pathlib import Path
 import subprocess
@@ -10,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
 from prismabuild import core as pb, data_manifest, pool, residency_map, staged_path  # noqa: E402
+from prismabuild import residency_plan, stage_release  # noqa: E402
 import stage_reclaim  # noqa: E402
 from tools.fleet.stage_ownership import _IO  # noqa: E402
 
@@ -211,3 +214,162 @@ def test_symlinked_stage_ancestor_is_incomplete(tmp_path):
     assert not got['complete']
     assert got['scan']['files_observed'] == 0
     assert 'symlink' in str(got['errors'])
+
+
+def test_missing_configured_residency_root_is_unknown_not_empty(tmp_path):
+    queue, stage = setup(tmp_path)
+    (stage / 'data').write_bytes(b'abc')
+    missing = tmp_path / 'missing-residency'
+
+    got = stage_reclaim.ownership_report(queue, tier_id='test-tier',
+        stage_root=stage, residency_root=missing)
+
+    assert not got['complete']
+    assert any(error['record_path'] == str(missing) for error in got['errors'])
+    assert got['totals']['observed']['apparent_bytes'] == 3
+    assert got['totals']['physical_bytes'] == dict(owned=0, source_only=0,
+                                                   unattributed=0, unknown=3)
+
+
+@pytest.mark.parametrize('entries,indices', [([], [0]), (None, [1])],
+                         ids=['empty-entries', 'absent-index'])
+def test_malformed_manifest_retains_observations_and_diagnostic(tmp_path, entries, indices):
+    queue, stage = setup(tmp_path)
+    record, relative = manifest_move(queue, stage)
+    target = stage / relative
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'abc')
+    movement = json.loads(record.read_text())
+    cas = pb.PrismaBuildCAS(queue.root.parent / 'cas')
+    document = json.loads(cas.blob_path(movement['manifest_sha256']).read_bytes())
+    document['schema'] = data_manifest.DATA_MANIFEST_SCHEMA_V2
+    if entries is not None:
+        document.update(entries=entries, entry_count=0, total_bytes=0)
+    document['read_plan'] = dict(read_bytes=0, phases=[dict(
+        name='phase-0', entry_indices=indices, bytes=0, cumulative_bytes=0)])
+    raw = json.dumps(document, sort_keys=True).encode()
+    digest = pb.new_sha256(raw).hexdigest()
+    blob = cas.blob_path(digest)
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(raw)
+    movement['manifest_sha256'] = digest
+    record.write_text(json.dumps(movement))
+
+    got = stage_reclaim.ownership_report(queue, tier_id='test-tier', stage_root=stage)
+
+    assert not got['complete']
+    assert got['totals']['observed']['apparent_bytes'] == 3
+    assert got['totals']['physical_bytes']['unknown'] == 3
+    refusal = next(item for item in got['unresolved_manifests']
+                   if item['record_path'] == str(record))
+    assert refusal['manifest_sha256'] == digest
+    assert 'entries' in refusal['reason'] or 'entry' in refusal['reason']
+
+
+def test_malformed_ready_leads_keeps_partial_report_and_live_owner(tmp_path):
+    queue, stage = setup(tmp_path)
+    target = stage / 'owned'
+    target.write_bytes(b'abc')
+    ref = fragment(queue, stage, target)
+    (stage / 'uncertain').write_bytes(b'defg')
+    ready = queue.records.dir(pool.record_store.READY) / f"{'a' * 64}.json"
+    ready.write_text(json.dumps(dict(schema='fixture-ready', action_key='a' * 64,
+                                    residency=dict(leads=1))))
+
+    got = stage_reclaim.ownership_report(queue, tier_id='test-tier', stage_root=stage)
+
+    assert not got['complete']
+    assert got['totals']['observed']['apparent_bytes'] == 7
+    assert got['totals']['physical_bytes'] == dict(owned=3, source_only=0,
+                                                   unattributed=0, unknown=4)
+    errors = [error for error in got['errors'] if error['record_path'] == str(ready)]
+    assert any('residency.leads' in error['reason'] for error in errors)
+    assert any('residency.leads' not in error['reason'] for error in errors)
+    known = next(item for item in got['references']
+                 if item['record_path'] == str(ref) and item.get('kind') == 'fragment')
+    assert known['live_consumer_observed'] is True
+    assert known['potentially_stale'] is False
+    assert got['read_only'] and not got['deletion_authorized']
+
+
+@pytest.mark.parametrize('leads', [1, 0, False, 'mover', {}, [1, '']])
+def test_evidence_join_rejects_malformed_leads_without_losing_positives(tmp_path, leads):
+    queue, _stage = setup(tmp_path)
+    good_key, bad_key, mover = 'a' * 64, 'b' * 64, 'c' * 64
+    root = queue.records.dir(pool.record_store.READY)
+    good = dict(record_path=str(root / f'{good_key}.json'), document=dict(
+        action_key=good_key, residency=dict(leads=[mover])))
+    bad = dict(record_path=str(root / f'{bad_key}.json'), document=dict(
+        action_key=bad_key, residency=dict(leads=leads)))
+    errors = []
+
+    wanted, owners = stage_release.live_claims(queue,
+        evidence=iter([bad, good]), evidence_errors=errors)
+
+    assert wanted == {mover}
+    assert owners == {good_key: good_key, bad_key: bad_key}
+    assert errors and all(error['record_path'] == bad['record_path'] for error in errors)
+    assert all('residency.leads' in error['reason'] for error in errors)
+
+
+@pytest.mark.parametrize('residency', [{}, dict(leads=None), dict(leads=[]),
+                                    dict(leads=['b' * 64])])
+def test_evidence_join_accepts_valid_or_absent_leads(tmp_path, residency):
+    queue, _stage = setup(tmp_path)
+    key = 'a' * 64
+    record = dict(record_path=str(queue.records.dir(pool.record_store.READY) / f'{key}.json'),
+                  document=dict(action_key=key, residency=residency))
+    errors = []
+
+    wanted, owners = stage_release.live_claims(queue,
+        evidence=iter([record]), evidence_errors=errors)
+
+    assert wanted == set(residency.get('leads') or [])
+    assert owners == {key: key}
+    assert not errors
+
+
+def test_missing_optional_metadata_namespaces_remain_clean(tmp_path):
+    queue, stage = setup(tmp_path)
+    (stage / 'data').write_bytes(b'abc')
+    optional = (queue.root / pool.record_store.MOVERS,
+                queue.root / pool.record_store.MOVERS_RETIRED,
+                residency_plan.registry_root(queue), queue.tier('test-tier').paths.held)
+    for path in optional:
+        if path.exists():
+            path.rmdir()
+
+    got = stage_reclaim.ownership_report(queue, tier_id='test-tier', stage_root=stage)
+
+    assert got['complete'] and not got['errors']
+    assert got['totals']['physical_bytes']['unattributed'] == 3
+
+
+@pytest.mark.parametrize('namespace', ['plans', 'held'])
+def test_optional_namespace_disappearance_after_open_is_not_empty(tmp_path, monkeypatch, namespace):
+    queue, stage = setup(tmp_path)
+    (stage / 'data').write_bytes(b'abc')
+    missing = (residency_plan.registry_root(queue) if namespace == 'plans'
+               else queue.tier('test-tier').paths.held)
+    missing.mkdir(parents=True, exist_ok=True)
+    real_scandir = os.scandir
+
+    def vanished():
+        raise FileNotFoundError('namespace disappeared during iteration')
+        yield  # make this an iterator that fails on next(), not on open
+
+    @contextmanager
+    def scandir(path):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == missing:
+            yield vanished()
+        else:
+            with real_scandir(path) as entries:
+                yield entries
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'scandir', scandir)
+        got = stage_reclaim.ownership_report(queue, tier_id='test-tier', stage_root=stage)
+
+    assert not got['complete']
+    assert any(error['record_path'] == str(missing) for error in got['errors'])
+    assert got['totals']['physical_bytes']['unknown'] == 3

@@ -220,7 +220,7 @@ def _relative_under(stage: Path, resolved: str) -> str | None:
 
 def _evidence_live_claims(
     evidence: Iterable[Mapping[str, object]], *, live_roots: set[Path],
-    plan_root: Path,
+    plan_root: Path, errors: list[dict[str, object]] | None = None,
 ) -> tuple[set[str], dict[str, str]]:
     """Join already-read census documents without performing any I/O.
 
@@ -244,7 +244,23 @@ def _evidence_live_claims(
             owners[key] = key
             residency = document.get("residency")
             if isinstance(residency, dict):
-                wanted.update(str(lead) for lead in residency.get("leads") or [])
+                # Census evidence can survive a later record-validation error.
+                # Keep the live owner, but never iterate scalar/string leads
+                # or turn malformed entries into affirmative mover identities.
+                leads = residency.get("leads")
+                if leads is None:
+                    continue
+                if not isinstance(leads, list):
+                    if errors is not None:
+                        errors.append({"record_path": str(path),
+                                       "reason": "residency.leads must be a list"})
+                    continue
+                for lead in leads:
+                    if isinstance(lead, str) and lead:
+                        wanted.add(lead)
+                    elif errors is not None:
+                        errors.append({"record_path": str(path),
+                                       "reason": "residency.leads must contain nonempty strings"})
         elif plan_root in path.parents:
             plans.append(document)
     for plan in plans:
@@ -256,6 +272,7 @@ def _evidence_live_claims(
 
 def live_claims(queue: pool.PoolQueue, *, store=None,
                 evidence: Iterable[Mapping[str, object]] | None = None,
+                evidence_errors: list[dict[str, object]] | None = None,
                 ) -> tuple[set[str], dict[str, str]]:
     """Every mover key a ready or claimed item still wants, and those items.
 
@@ -277,7 +294,9 @@ def live_claims(queue: pool.PoolQueue, *, store=None,
     owners includes *all* ready/claimed action keys, even bare fragment
     consumers without residency. Only their declared leads and matching frozen
     plan movers enter wanted. Missing evidence is not fetched or repaired;
-    census errors remain the report caller's responsibility. The default
+    census errors remain the report caller's responsibility. Malformed lead
+    collections contribute diagnostics to optional ``evidence_errors`` without
+    discarding other positive liveness evidence. The default
     sweep/adoption path and its narrower residency owners are unchanged.
     """
     store = queue.records if store is None else store
@@ -287,6 +306,7 @@ def live_claims(queue: pool.PoolQueue, *, store=None,
             live_roots={store.dir(state) for state in
                         (pool.record_store.READY, pool.record_store.CLAIMED)},
             plan_root=residency_plan.registry_root(queue),
+            errors=evidence_errors,
         )
 
     wanted: set[str] = set()
