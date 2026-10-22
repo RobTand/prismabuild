@@ -164,7 +164,7 @@ class EventWaitCapture:
     def __init__(self, args):
         self.args = args
         self.raw = {"schema": EWB_SCHEMA, "phase": args.phase, "roles": {}, "samples": [],
-                    "records": [], "tier_cycles": [], "limits_hit": [], "errors": [],
+                    "records": [], "tier_cycles": [], "tier_events": [], "limits_hit": [], "errors": [],
                     "x86_tags": args.x86_tag, "x86_hosts": args.x86_host,
                     "source_revision": args.source_revision,
                     "collector_sha256": raw_sha256(Path(__file__).read_bytes()),
@@ -185,9 +185,11 @@ class EventWaitCapture:
         self.watches = {}
         for namespace in EWB_NAMESPACES:
             self.watch(args.queue / namespace, namespace)
-        self.log_offset = args.tier_log.stat().st_size if args.tier_log else 0
-        self.log_identity = None
+        log_info = args.tier_log.stat() if args.tier_log else None
+        self.log_offset = log_info.st_size if log_info else 0
+        self.log_identity = (log_info.st_dev, log_info.st_ino) if log_info else None
         self.log_pending = b""
+        self.log_unread = False
 
     def limit(self, text):
         if text not in self.raw["limits_hit"]:
@@ -238,12 +240,17 @@ class EventWaitCapture:
         else:
             self.watches[wd] = namespace
 
+    def record_available(self):
+        if len(self.raw["records"]) + len(self.raw["tier_events"]) >= self.args.max_records:
+            self.limit("max_records")
+            return False
+        return True
+
     def retain(self, namespace, path, body):
         identity = (namespace, str(path))
         if self.latest.get(identity) == body:
             return
-        if len(self.raw["records"]) >= self.args.max_records:
-            self.limit("max_records")
+        if not self.record_available():
             return
         self.latest[identity] = body
         self.raw["records"].append({"namespace": namespace, "path": str(path), "body": body,
@@ -331,34 +338,52 @@ class EventWaitCapture:
             sample["roles"][name] = self.role_sample(role["pid"])
         self.raw["samples"].append(sample)
         self.diagnostics()
-        if self.args.tier_log:
-            info = self.args.tier_log.stat()
-            identity = (info.st_dev, info.st_ino)
-            if self.log_identity is not None and (identity != self.log_identity or info.st_size < self.log_offset):
-                self.limit("tier_log_rotated")
-                self.log_offset, self.log_pending = 0, b""
-            self.log_identity = identity
-            remaining = min(262144, self.args.max_bytes - self.bytes_read)
-            if remaining <= 0:
-                self.limit("max_bytes")
-                return
-            with self.args.tier_log.open("rb") as handle:
-                handle.seek(self.log_offset)
-                data = handle.read(remaining)
-                self.log_offset = handle.tell()
-            self.bytes_read += len(data)
-            lines = (self.log_pending + data).split(b"\n")
-            self.log_pending = lines.pop()
-            if len(self.log_pending) > 262144:
+        self.tier_sample()
+
+    def tier_sample(self):
+        """Tail the producer's ordered JSONL stream, not just cycle summaries."""
+        if not self.args.tier_log:
+            return
+        info = self.args.tier_log.stat()
+        identity = (info.st_dev, info.st_ino)
+        if self.log_identity is not None and (identity != self.log_identity or info.st_size < self.log_offset):
+            self.limit("tier_log_rotated")
+            self.log_offset, self.log_pending = 0, b""
+        self.log_identity = identity
+        remaining = min(262144, self.args.max_bytes - self.bytes_read)
+        if remaining <= 0:
+            self.limit("max_bytes")
+            return
+        with self.args.tier_log.open("rb") as handle:
+            handle.seek(self.log_offset)
+            data = handle.read(remaining)
+            self.log_offset = handle.tell()
+            self.log_unread = os.fstat(handle.fileno()).st_size > self.log_offset
+        self.bytes_read += len(data)
+        lines = (self.log_pending + data).split(b"\n")
+        self.log_pending = lines.pop()
+        if len(self.log_pending) > 262144:
+            self.limit("tier_log_line")
+            self.log_pending = b""
+        for line in lines:
+            if len(line) > 262144:
                 self.limit("tier_log_line")
-                self.log_pending = b""
-            for line in lines:
-                try:
-                    row = json.loads(line)
-                except (ValueError, UnicodeError):
-                    continue
-                if isinstance(row, dict) and row.get("event") == "tier-cycle":
-                    self.raw["tier_cycles"].append(row)
+                continue
+            try:
+                row = json.loads(line)
+            except (ValueError, UnicodeError):
+                self.limit("invalid_tier_log_json")
+                continue
+            if not isinstance(row, dict) or not isinstance(row.get("event"), str) or not row["event"]:
+                self.limit("invalid_tier_log_event")
+                continue
+            if not self.record_available():
+                continue
+            # _emit writes flat policy events beside tier_cycle_line's summary.
+            # Retain every event, including future policy names, in wire order.
+            self.raw["tier_events"].append(row)
+            if row["event"] == "tier-cycle":
+                self.raw["tier_cycles"].append(row)
 
     def run(self):
         self.raw.update(started_unix=time.time(), started_monotonic=time.monotonic())
@@ -402,6 +427,8 @@ class EventWaitCapture:
         for key in sorted(self.keys):
             self.observe_key(key)
         self.sample()
+        if self.log_pending or self.log_unread:
+            self.limit("tier_log_incomplete")
         self.raw.update(ended_unix=time.time(), duration_s=time.monotonic() - self.raw["started_monotonic"],
                         bytes_read=self.bytes_read, selected_keys=len(self.keys),
                         collector_cpu_s=time.process_time() - self.raw["collector_cpu_start_s"])
@@ -434,10 +461,22 @@ def ewb_trace(pid, seconds):
 
 
 def ewb_compare(left, right):
-    """Exact decision/accounting comparison; only top-level log time is volatile."""
-    normalized = lambda raw: [{k: v for k, v in row.items() if k != "unix"} for row in raw["tier_cycles"]]
+    """Exact ordered event/accounting comparison; only log emission time is volatile."""
+    unavailable = []
+    for name, raw in (("left", left), ("right", right)):
+        events = raw.get("tier_events", [])
+        if not any(row.get("event") != "tier-cycle" for row in events):
+            unavailable.append(f"{name}: no non-summary tier events (legacy or summary-only capture)")
+        if not raw.get("tier_cycles"):
+            unavailable.append(f"{name}: no tier-cycle accounting")
+        if raw.get("limits_hit") or raw.get("errors"):
+            unavailable.append(f"{name}: incomplete capture (limits or read/watch errors)")
+    normalized = lambda raw: [{k: v for k, v in row.items() if k != "unix"}
+                              for row in raw.get("tier_events", [])]
     a, b = normalized(left), normalized(right)
-    return {"equal": bool(a) and a == b, "left_cycles": len(a), "right_cycles": len(b),
+    return {"equal": not unavailable and a == b,
+            "left_cycles": len(left.get("tier_cycles", [])), "right_cycles": len(right.get("tier_cycles", [])),
+            "left_events": len(a), "right_events": len(b), "unavailable": unavailable,
             "normalization": "Only top-level unix; inputs must be an identical recorded/replayed experiment."}
 
 
@@ -459,14 +498,14 @@ def ewb_cli():
     capture.add_argument("--x86-host", action="append", default=[], help='Claimed hostname identifying otherwise untagged x86 rows.')
     capture.add_argument("--max-entries", type=int, default=512, help='Startup entry limit per ready/claimed directory.')
     capture.add_argument("--max-keys", type=int, default=2048, help='Maximum distinct selected action keys.')
-    capture.add_argument("--max-records", type=int, default=20000, help='Maximum retained record versions.')
+    capture.add_argument("--max-records", type=int, default=20000, help='Maximum retained queue record versions plus tier-log events.')
     capture.add_argument("--max-bytes", type=int, default=64 * 1024 * 1024, help='Total source-read byte budget.')
     capture.add_argument("--output", type=Path, required=True, help='New evidence JSON destination outside the queue.')
     analyze = commands.add_parser("analyze")
     analyze.add_argument("raw", type=Path, help='Retained raw baseline JSON.')
     compare = commands.add_parser("compare")
-    compare.add_argument("left", type=Path, help='First identical-input tier-cycle capture.')
-    compare.add_argument("right", type=Path, help='Second identical-input tier-cycle capture.')
+    compare.add_argument("left", type=Path, help='First identical-input tier-event capture (not summary-only).')
+    compare.add_argument("right", type=Path, help='Second identical-input tier-event capture (not summary-only).')
     trace = commands.add_parser("trace")
     trace.add_argument("--pid", type=int, required=True, help='Existing role PID to attach the optional tracer to.')
     trace.add_argument("--seconds", type=float, default=5, help='Separate trace duration in seconds, at most 10.')

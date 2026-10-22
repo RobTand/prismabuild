@@ -16,7 +16,7 @@ from maintenance import event_wait_baseline as baseline
 def ewb_evidence():
     return {"schema": baseline.EWB_SCHEMA, "started_unix": 100., "ended_unix": 200.,
             "duration_s": 100., "phase": "steady", "clock_ticks": 100,
-            "roles": {}, "samples": [], "records": [], "tier_cycles": [],
+            "roles": {}, "samples": [], "records": [], "tier_cycles": [], "tier_events": [],
             "limits_hit": [], "x86_tags": ["x86"], "x86_hosts": ["test-x86"]}
 
 
@@ -89,15 +89,65 @@ def test_ewb_proc_rates_do_not_join_pid_reuse(ewb_evidence):
     assert result["total_syscalls_per_min"] is None
 
 
-def test_ewb_parity_preserves_decisions_accounting_and_nested_times(ewb_evidence):
-    ewb_evidence["tier_cycles"] = [{"event": "tier-cycle", "unix": 123,
-                                   "decision": {"bytes": 7, "until_unix": 140}}]
+@pytest.fixture
+def ewb_tier_rows():
+    # Flat producer shapes from tier_cycle's RAM/window/eviction events, funding
+    # settlement and tier_cycle_line. _emit adds the top-level log timestamp.
+    return [
+        {"event": "ram-window-gated", "unix": 123., "consumer": "a" * 64,
+         "tier_id": "ram:test-x86", "reason": "output-not-ready", "permanent": False,
+         "need_gib": 8., "output_note": "", "verdict_since_unix": 123., "waited_s": 0.},
+        {"event": "window-gated", "unix": 123., "consumer": "a" * 64,
+         "tier_id": "stage:test-x86", "reason": "claim-order", "permanent": False,
+         "need_gib": 8., "output_note": "", "ahead": "b" * 64, "rank": 1,
+         "need_phase": "compile", "expected_landing_unix": 140.,
+         "expected_landing_basis": "claim-order",
+         "commitment": {"until_unix": 140.}},
+        {"event": "claim-order-evicted", "unix": 123., "consumer": "b" * 64,
+         "tier_id": "stage:test-x86", "mover": "c" * 64, "phase": "compile",
+         "chunk_index": 0, "stage_gib": 8., "seconds_until_needed": 120.,
+         "needed_gib": 8, "tokens_released": 8, "tokens_decharged": 8,
+         "declined": [], "live_pins": [], "errors": [], "for_consumer": "a" * 64},
+        {"event": "advance-handed-off", "unix": 123., "consumer": "a" * 64,
+         "tier_id": "stage:test-x86", "leg": "input", "mover": "d" * 64, "moved_gib": 8.},
+        {"event": "ram-window-mover-published", "unix": 123., "consumer": "a" * 64,
+         "phase": "compile", "tier_id": "ram:test-x86", "mover": "e" * 64, "chunk_index": 0},
+        {"event": "tier-cycle", "unix": 124., "host": "test-x86", "tiers": []},
+    ]
+
+
+def test_ewb_parity_ignores_only_top_level_emission_time(ewb_evidence, ewb_tier_rows):
+    ewb_evidence["tier_events"] = ewb_tier_rows
+    ewb_evidence["tier_cycles"] = [ewb_tier_rows[-1]]
     other = copy.deepcopy(ewb_evidence)
-    other["tier_cycles"][0]["unix"] = 200
+    for row in other["tier_events"]:
+        row["unix"] += 100
     assert baseline.ewb_compare(ewb_evidence, other)["equal"]
-    other["tier_cycles"][0]["decision"]["until_unix"] = 141
+    other["tier_events"][1]["commitment"]["until_unix"] += 1
     assert not baseline.ewb_compare(ewb_evidence, other)["equal"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_ewb_parity_rejects_summary_only_and_legacy_captures(ewb_evidence, legacy):
+    summary = {"event": "tier-cycle", "unix": 123., "tiers": []}
+    ewb_evidence["tier_cycles"] = [summary]
+    ewb_evidence["tier_events"] = [summary]
+    if legacy:
+        del ewb_evidence["tier_events"]
+    result = baseline.ewb_compare(ewb_evidence, ewb_evidence)
+    assert not result["equal"] and result["unavailable"]
     assert not baseline.ewb_compare({"tier_cycles": []}, {"tier_cycles": []})["equal"]
+
+
+@pytest.mark.parametrize("problem", ["limits_hit", "errors"])
+def test_ewb_parity_rejects_incomplete_captures(ewb_evidence, ewb_tier_rows, problem):
+    ewb_evidence["tier_cycles"] = [ewb_tier_rows[-1]]
+    ewb_evidence["tier_events"] = ewb_tier_rows
+    other = copy.deepcopy(ewb_evidence)
+    other[problem] = ["lost observation"]
+    for left, right in ((ewb_evidence, other), (other, ewb_evidence)):
+        result = baseline.ewb_compare(left, right)
+        assert not result["equal"] and result["unavailable"]
 
 
 @pytest.fixture
@@ -165,6 +215,143 @@ def test_ewb_capture_observes_atomic_publish_after_bootstrap(ewb_capture_args, m
     assert raw["startup_queue"]["ready"]["entries"] == 0
     assert raw["selected_keys"] == 1
     assert raw["records"][0]["body"]["action_key"] == "f" * 64
+
+
+@pytest.fixture
+def ewb_capture_log(ewb_capture_args, tmp_path):
+    def capture_rows(name, rows, suffix=""):
+        args = copy.copy(ewb_capture_args)
+        args.tier_log = tmp_path / f"{name}.jsonl"
+        args.tier_log.write_text("")
+        capture = baseline.EventWaitCapture(args)
+        with args.tier_log.open("a") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.write(suffix)
+        return capture.run()
+    return capture_rows
+
+
+@pytest.mark.parametrize("index,field,value", [
+    (0, "reason", "insufficient-tokens"), (0, "permanent", True), (0, "need_gib", 9.),
+    (1, "expected_landing_unix", 141.), (1, "tier_id", "stage:other"),
+    (2, "mover", "f" * 64), (2, "tokens_released", 7),
+    (3, "moved_gib", 7.), (4, "mover", "f" * 64),
+    (5, "tiers", [{"tier_id": "stage:test-x86", "free_gib": 7.}]),
+])
+def test_ewb_capture_compares_flat_runtime_decisions(ewb_capture_log, ewb_tier_rows, index, field, value):
+    left = ewb_capture_log("left", ewb_tier_rows)
+    changed = copy.deepcopy(ewb_tier_rows)
+    changed[index][field] = value
+    right = ewb_capture_log("right", changed)
+    assert left["tier_events"] == ewb_tier_rows
+    assert right["tier_events"] == changed
+    assert left["tier_cycles"] == [ewb_tier_rows[-1]]
+    result = baseline.ewb_compare(left, right)
+    assert not result["equal"] and not result["unavailable"]
+    assert result["left_events"] == result["right_events"] == len(ewb_tier_rows)
+
+
+def test_ewb_capture_compares_order_duplicates_and_future_events(ewb_capture_log, ewb_tier_rows):
+    # No consumer or known event-name allowlist is required for tier-level events.
+    rows = ewb_tier_rows + [{"event": "future-policy-result", "unix": 125., "need_gib": 8.}]
+    left = ewb_capture_log("left", rows)
+    same = ewb_capture_log("same", [{**row, "unix": 999.} for row in rows])
+    assert left["tier_events"] == rows
+    assert baseline.ewb_compare(left, same)["equal"]
+    variants = [rows[:-1], rows + [rows[-1]], list(reversed(rows))]
+    # Keep event order relative to summaries, not merely order within each kind.
+    variants.append([rows[-2]] + rows[:-2] + [rows[-1]])
+    for index, changed in enumerate(variants):
+        right = ewb_capture_log(f"variant-{index}", changed)
+        assert not baseline.ewb_compare(left, right)["equal"]
+
+
+def test_ewb_tier_events_share_the_queue_record_bound(ewb_capture_log, ewb_capture_args, ewb_tier_rows):
+    ewb_capture_args.max_records = 3
+    key = "a" * 64
+    (ewb_capture_args.queue / "ready" / f"{key}.json").write_text(json.dumps({
+        "action_key": key, "published_unix": 120.}))
+    raw = ewb_capture_log("bounded", [ewb_tier_rows[0], ewb_tier_rows[-1], ewb_tier_rows[1]])
+    assert len(raw["records"]) == 1 and len(raw["tier_events"]) == 2
+    assert "max_records" in raw["limits_hit"]
+    assert not baseline.ewb_compare(raw, raw)["equal"]
+
+
+@pytest.mark.parametrize("suffix,limit", [
+    ('{"event":"window-gated"}', "tier_log_incomplete"),
+    ('{"event":broken}\n', "invalid_tier_log_json"),
+    ('[]\n', "invalid_tier_log_event"),
+    ('{"event":null}\n', "invalid_tier_log_event"),
+])
+def test_ewb_incomplete_or_invalid_tier_stream_cannot_prove_parity(ewb_capture_log, ewb_tier_rows, suffix, limit):
+    raw = ewb_capture_log("invalid", ewb_tier_rows, suffix)
+    assert raw["tier_events"] == ewb_tier_rows
+    assert limit in raw["limits_hit"]
+    assert not baseline.ewb_compare(raw, raw)["equal"]
+
+
+def test_ewb_tier_stream_rejects_oversized_complete_line(ewb_capture_log, ewb_tier_rows):
+    suffix = json.dumps({"event": "window-gated", "reason": "x" * 300000}) + "\n"
+    raw = ewb_capture_log("oversized", ewb_tier_rows, suffix)
+    assert raw["tier_events"] == ewb_tier_rows
+    assert "tier_log_line" in raw["limits_hit"]
+    assert not baseline.ewb_compare(raw, raw)["equal"]
+
+
+def test_ewb_unread_tier_backlog_cannot_prove_parity(ewb_capture_args, ewb_capture_log, ewb_tier_rows):
+    ewb_capture_args.duration_s = .001
+    rows = ewb_tier_rows + [{"event": "window-gated", "reason": "x" * 200000}] * 5
+    raw = ewb_capture_log("backlog", rows)
+    assert len(raw["tier_events"]) < len(rows)
+    assert "tier_log_incomplete" in raw["limits_hit"]
+    assert not baseline.ewb_compare(raw, raw)["equal"]
+
+
+def test_ewb_compare_cli_uses_captured_event_stream(ewb_capture_log, ewb_tier_rows, tmp_path, monkeypatch, capsys):
+    left = ewb_capture_log("left", ewb_tier_rows)
+    changed = copy.deepcopy(ewb_tier_rows)
+    changed[0]["reason"] = "insufficient-tokens"
+    right = ewb_capture_log("right", changed)
+    paths = [tmp_path / "left.json", tmp_path / "right.json"]
+    for path, raw in zip(paths, (left, right)):
+        path.write_text(json.dumps(raw))
+    monkeypatch.setattr(sys, "argv", ["event_wait_baseline.py", "compare", *map(str, paths)])
+    baseline.ewb_cli()
+    result = json.loads(capsys.readouterr().out)
+    assert not result["equal"] and not result["unavailable"]
+
+
+def test_ewb_tier_stream_carries_partial_lines_between_samples(ewb_capture_args, tmp_path, ewb_tier_rows):
+    args = ewb_capture_args
+    args.tier_log = tmp_path / "tier.jsonl"
+    args.tier_log.write_text('{"event":"old-history"}\n')
+    capture = baseline.EventWaitCapture(args)
+    line = json.dumps(ewb_tier_rows[0])
+    with args.tier_log.open("a") as handle:
+        handle.write(line[:23])
+    capture.tier_sample()
+    assert capture.raw["tier_events"] == []
+    with args.tier_log.open("a") as handle:
+        handle.write(line[23:] + "\n" + json.dumps(ewb_tier_rows[-1]) + "\n")
+    raw = capture.run()
+    assert raw["tier_events"] == [ewb_tier_rows[0], ewb_tier_rows[-1]]
+    assert not raw["limits_hit"]
+    assert baseline.ewb_compare(raw, raw)["equal"]
+
+
+def test_ewb_tier_stream_rotation_is_not_parity_evidence(ewb_capture_args, tmp_path, ewb_tier_rows):
+    args = ewb_capture_args
+    args.tier_log = tmp_path / "tier.jsonl"
+    args.tier_log.write_text("")
+    capture = baseline.EventWaitCapture(args)
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text("".join(json.dumps(row) + "\n" for row in ewb_tier_rows))
+    replacement.replace(args.tier_log)
+    raw = capture.run()
+    assert raw["tier_events"] == ewb_tier_rows
+    assert "tier_log_rotated" in raw["limits_hit"]
+    assert not baseline.ewb_compare(raw, raw)["equal"]
 
 
 def test_ewb_nonregular_and_oversized_records_are_bounded(ewb_capture_args, tmp_path):

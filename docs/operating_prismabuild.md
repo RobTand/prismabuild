@@ -5782,9 +5782,10 @@ The collector lists only `ready/` and `claimed/`, once, at most 513 names each
 with the default 512-entry bound. Counts marked incomplete are lower bounds.
 Local inotify supplies subsequent keys, including terminal changes; historical
 `done/` and `failed/` are never enumerated. Defaults cap selected keys at 2,048,
-retained record versions at 20,000, total reads at 64 MiB, individual records at
-256 KiB, and linked immutable attempts at 16 per record. Reports retain every
-hit bound and watch/read failure. Such limits can censor the sample; increase
+retained queue record versions plus tier-log events at 20,000, total reads at
+64 MiB, individual records/log lines at 256 KiB, and linked immutable attempts
+at 16 per record. Reports retain every hit bound and watch/read failure. Such
+limits can censor the sample; increase
 explicit bounds for both arms or shorten the window. Tree counts supplied with
 `--tree-size` must include their source; unknown sizes remain unknown.
 
@@ -5815,7 +5816,28 @@ syscall counts. It cannot count all syscalls. For optional total syscall counts,
 run `trace --pid TIER_PID --seconds 5 --output EVIDENCE/trace.json` in a separate
 admitted action, away from latency collection. Attachment failures or missing
 `strace` are retained; the tool never invokes sudo. Measure tracing overhead
-with separate matched runs before using traced timings. `compare LEFT RIGHT`
-checks recorded/replayed `tier-cycle` decisions and accounting exactly, ignoring
-only the top-level log `unix` timestamp. It requires nonempty identical-input
-captures; unrelated live windows do not establish decision parity.
+with separate matched runs before using traced timings.
+
+For recorded-input decision comparison, supply `--tier-log` with the tier loop's
+stdout JSONL log. Capture begins at its current end, not at historical rows.
+The raw `tier_events` array retains **all named events in wire order**, including
+flat `ram-window-gated`, `window-gated`, eviction, funding and mover-publication
+events; those decisions are not nested in `tier-cycle`. Diagnostics, lifecycle
+events and cycle summaries are also kept, so new policy event names cannot be
+silently omitted. `tier_cycles` remains the summary-only view used by analysis.
+
+`compare LEFT RIGHT` checks the full recorded/replayed event stream and cycle
+accounting exactly, preserving event order, duplicates and every payload field.
+Only each event's top-level emission `unix` is ignored. Decision deadlines such
+as `expected_landing_unix`, nested times, and standing-verdict history
+(`verdict_since_unix`, `waited_s`) are **not** normalized; replay must control
+clocks and history as well as policy inputs. Both captures must include cycle
+accounting and non-summary events. Legacy/summary-only captures still support
+`analyze`, but cannot establish parity. Any hit bound, malformed/truncated log,
+rotation, or read/watch error also prevents a parity result: `equal: false` with
+nonempty `unavailable` means insufficient evidence, not a proven policy change.
+With complete evidence, `equal: false` means a recorded event/accounting
+mismatch. This is strict log equality, not an input-equivalence verifier or a
+policy-coverage certificate; the experiment must establish identical inputs and
+exercise the decisions of interest. Unrelated live windows do not establish
+decision parity.
