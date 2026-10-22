@@ -1152,7 +1152,8 @@ def test_a_producer_row_cannot_add_gpu_intent_to_a_sealed_cpu_job(
     work = _checkout(tmp_path)
     _queue(tmp_path)
     ns = _namespace_file(tmp_path)
-    target, cas = _seal(tmp_path, monkeypatch, work, "--d38-namespace", str(ns))
+    target, cas = _seal(tmp_path, monkeypatch, work, "--tag", "x86",
+                        "--d38-namespace", str(ns))
     if evidence == "receipt":
         key = _publish_receipt(tmp_path, cas, target)
         options = {"d38_receipt": key}
