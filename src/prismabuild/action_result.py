@@ -29,6 +29,7 @@ from __future__ import annotations
 from . import immutable_files
 
 import ast
+import codecs
 import math
 import re
 import time
@@ -597,6 +598,7 @@ class _EndingLogObserver:
         self.check_budget()
         self.tail = bytearray()
         self.line = bytearray()
+        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self.discarding_line = False
         self.announcements = []
         return self.feed
@@ -608,9 +610,14 @@ class _EndingLogObserver:
             del self.tail[:len(self.tail) - self.cap]
         if not self.scan:
             return
-        pieces = chunk.split(b"\n")
-        for index, piece in enumerate(pieces):
+        self.scan_text(self.decoder.decode(chunk))
+
+    def scan_text(self, text):
+        for text_piece in text.splitlines(keepends=True):
             self.check_budget()
+            complete = text_piece.endswith(("\n", "\r", "\v", "\f", "\x1c", "\x1d",
+                                            "\x1e", "\x85", "\u2028", "\u2029"))
+            piece = text_piece.encode("utf-8")
             if not self.discarding_line:
                 if len(self.line) + len(piece) <= self.line_cap:
                     self.line.extend(piece)
@@ -621,8 +628,13 @@ class _EndingLogObserver:
                         raise _EndingVerificationIncomplete("receipt candidate line exceeds the evidence cap")
                     self.line.clear()
                     self.discarding_line = True
-            if index < len(pieces) - 1:
+            if complete:
                 self.finish_line()
+
+    def finish(self):
+        if self.scan:
+            self.scan_text(self.decoder.decode(b"", final=True))
+            self.finish_line()
 
     def finish_line(self):
         if not self.discarding_line:
@@ -646,7 +658,7 @@ def _stream_ending_log(queue, record, selected, number, stream, cap, evidence_ca
     except (pb.PrismaBuildError, OSError) as exc:
         raise ActionResultError(f"pool attempt {stream} refused: {exc}") from exc
     observer.check_budget()
-    observer.finish_line()
+    observer.finish()
     raw = bytes(observer.tail)
     if descriptor["bytes"] > cap:
         descriptor.update(truncated=True, evidence={

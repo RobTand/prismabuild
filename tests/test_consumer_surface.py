@@ -698,3 +698,27 @@ def test_incomplete_stream_preserves_outcome_without_verification(consumer_world
     assert row["status"] == status
     assert row["result"]["verified"] is False
     assert "budget" in row["result"]["verification_error"]
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_stream_scanner_preserves_line_boundaries_across_utf8_chunks(separator, ambiguous):
+    import time
+    announcement = json.dumps({"receipt": {"receipt_sha256": "0" * 64}})
+    text = "x" * 1024 + separator + "\u2003" + announcement
+    if ambiguous:
+        text += separator + announcement
+    raw = text.encode("utf-8")
+    observer = action_result._EndingLogObserver(64, 256, time.monotonic() + 30, scan=True)
+    observer.start()
+    def scan():
+        for offset in range(0, len(raw), 3):
+            observer.feed(raw[offset:offset + 3])
+        observer.finish()
+    if ambiguous:
+        with pytest.raises(action_result.ActionResultError, match="ambiguous"):
+            scan()
+    else:
+        scan()
+        assert len(observer.announcements) == 1
+        assert len(observer.tail) == 64
