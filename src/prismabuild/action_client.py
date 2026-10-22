@@ -631,7 +631,7 @@ def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
     }
 
 
-def outcome_summary(q, outcome_path, outcome) -> dict:
+def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
     """One ending reduced to the fields a caller reports, after verification.
 
     The mutable terminal summary is state-machine output.  Where the record
@@ -641,6 +641,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     verifies every canonical path, digest, byte count and generation on the way
     through, and refuses a summary that disagrees with the attempt it adopted.
 
+    Consumer projection may defer attempt verification to the bounded streaming
+    ending reader with verify_attempts=False. It must not claim verification
+    from this summary alone. Legacy callers retain full verification here.
+
     ``transport`` defaults to the pull queue: the SLURM lane stamps its own
     records and the pool's predate the field.
     """
@@ -649,7 +653,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     detail = outcome.get("detail") or {}
     status = str(outcome.get("status"))
     adopted = None
-    if (
+    if verify_attempts and (
         "attempt_history" in outcome
         or "attempt_history_missing_before" in outcome
     ):
@@ -701,7 +705,9 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 or any(retained.get(field) != outcome.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
-        stopped = q.attempt_ending(retained)
+        stopped = (q.attempt_ending(retained) if verify_attempts else
+                   {**retained, "attempt": retained.get("attempts"),
+                    "disposition": pool.WITHDRAWN})
         if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
             raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
         for field in ("resource_scope_cleanup", "container_cleanup"):

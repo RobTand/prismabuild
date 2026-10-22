@@ -2173,21 +2173,33 @@ and rechecks the ending before returning. Default caps are 16 MiB per log,
 4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
 wraps that read in its isolated five-second observation budget.
 
-For logs above 16 MiB, the reader checks the canonical, stable, read-only file
-and declared full size, but reads only the last 16 MiB. Its descriptor retains
-`path`, `bytes` and `sha256` for the complete log and adds `truncated: true`
-and `evidence: {offset, bytes, sha256}` for the tail actually read. The full
-log digest is declared evidence, not a claim that the unread prefix was hashed.
-The tail must agree with the terminal's existing 64 KiB stream summary. Only
-complete lines in the tail are searched for receipt announcements; any present
-receipt is still verified against its execution receipt and payload, and a
-successful action still requires an announcement. `result.verified` covers the
-ending, bounded log evidence and any receipt, excluding the unread prefix.
-Truncation preserves the action's status, success flag and exit outcome,
-including failed actions that published receipts. It does not itself yield
-`unreadable`. Consumers needing every byte can read `result.stdout.path` or
-`result.stderr.path` on the shared filesystem and verify the full byte count
-and SHA-256 from that descriptor, using their own budget.
+Logs are streamed in 4 MiB chunks through the stable, read-only, no-follow
+file verifier. The full byte count and recorded digest are checked, and every
+stdout line is scanned for receipt announcements during that same pass. The
+consumer projection bypasses the legacy renderer's complete log expansion;
+legacy JSON and human rendering keep their existing verification path.
+
+The 16 MiB per-stream cap bounds retained evidence, independently of total log
+size. Oversized descriptors retain `path`, `bytes` and `sha256` for the fully
+hashed log and add `truncated: true` and `evidence: {offset, bytes, sha256}`
+for the retained tail. That tail must also agree with the terminal's existing
+64 KiB stream summary. Announcements are verified wherever they occur, and
+multiple announcements refuse. Line buffering is capped at the 4 MiB evidence
+budget; oversized non-JSON lines are discarded after classification. A line
+that could contain a receipt but exceeds that bound leaves verification
+incomplete. Consumers needing the full log can read `result.stdout.path` or
+`result.stderr.path` and check its full byte count and digest.
+
+Streaming has a cooperative four-second budget within `pbwait`'s isolated
+five-second observation budget. If either expires, or bounded announcement
+scanning cannot finish, the action's status, success flag and exit outcome
+remain intact; `result.verified` is false and `result.verification_error`
+explains the incomplete read. Null receipt and log descriptors in that result
+make no claim about evidence not fully verified. A complete read returns
+`verified: true` only after full log, receipt, payload, immutable attempt and
+terminal-summary verification. A proven digest, receipt or summary mismatch
+still yields `unreadable`/74. Filesystem syscalls can exceed the cooperative
+budget; the isolated observation bounds how long the CLI waits for them.
 
 A mismatch, missing evidence or exceeded non-log bound yields `unreadable`,
 never verified bytes. No bounded verified produced-output discovery exists,

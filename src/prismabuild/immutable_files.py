@@ -276,7 +276,6 @@ def _read_file(
     require_readonly: bool = False,
     max_bytes: int | None = None,
     replaced_leaf: bool = False,
-    tail_size: int | None = None,
 ) -> bytes:
     """Read one stable inode without following any pathname component.
 
@@ -284,8 +283,6 @@ def _read_file(
     resolution and FD.  No bytes from an unstable attempt are returned. When
     ``max_bytes`` is set, both the opening size and streamed byte count are
     bounded so a dishonest or racing size cannot cause unbounded allocation.
-    With tail_size, verify that full size and seek to the bounded suffix before
-    reading; the same inode and pathname stability checks still apply.
 
     ``replaced_leaf`` is for whole-record files their writer replaces with
     ``os.replace`` (#1017): a name that moved to a newer regular file during
@@ -310,7 +307,7 @@ def _read_file(
         return _read_stable_file(
             path, where=where, require_readonly=require_readonly,
             max_bytes=max_bytes,
-            replaced=False, tail_size=tail_size)
+            replaced=False)
     for reread in range(_REPLACED_RECORD_READ_ATTEMPTS):
         try:
             return _read_stable_file(
@@ -334,7 +331,6 @@ def _read_stable_file(
     require_readonly: bool,
     max_bytes: int | None,
     replaced: bool,
-    tail_size: int | None = None,
 ) -> bytes:
     """One :func:`_read_file` pass over its stable-read retries."""
 
@@ -346,28 +342,18 @@ def _read_stable_file(
                 raise CASTamperError(f"{where} is not a regular file: {path}")
             if require_readonly and before.st_mode & 0o222:
                 raise CASTamperError(f"{where} is writable: {path}")
-            if tail_size is not None:
-                assert max_bytes is not None
-                if before.st_size != tail_size:
-                    raise CASTamperError(f"{where} size differs from its address: {path}")
-                os.lseek(descriptor, max(0, tail_size - max_bytes), os.SEEK_SET)
-            elif max_bytes is not None and before.st_size > max_bytes:
+            if max_bytes is not None and before.st_size > max_bytes:
                 raise CASTamperError(f"{where} exceeds the byte bound: {path}")
             chunks: list[bytes] = []
             size = 0
             while True:
-                if tail_size is not None and size == max_bytes:
-                    break
-                chunk = os.read(descriptor, min(1024 * 1024, max_bytes - size)
-                                if tail_size is not None else 1024 * 1024)
+                chunk = os.read(descriptor, 1024 * 1024)
                 if not chunk:
                     break
                 size += len(chunk)
                 if max_bytes is not None and size > max_bytes:
                     raise CASTamperError(f"{where} exceeds the byte bound: {path}")
                 chunks.append(chunk)
-            if tail_size is not None and size != min(tail_size, max_bytes):
-                raise CASTamperError(f"{where} tail is incomplete: {path}")
             after = os.fstat(descriptor)
             if _stable_identity(before) != _stable_identity(after):
                 if substantive_identity(
@@ -424,17 +410,6 @@ def read_replaced_record(path: Path, *, where: str, max_bytes: int | None = None
 def read_immutable_file(path: Path, *, where: str, max_bytes: int | None = None) -> bytes:
     """Read stable bytes that must remain read-only."""
     return _read_file(path, where=where, max_bytes=max_bytes, require_readonly=True)
-
-
-def read_immutable_tail(path: Path, *, where: str, max_bytes: int,
-                        expected_size: int) -> bytes:
-    """Read at most max_bytes from a stable read-only file's declared EOF."""
-    if type(expected_size) is not int or expected_size < 0:
-        raise ActionContractError("immutable tail expected_size is invalid")
-    if type(max_bytes) is not int or max_bytes < 0:
-        raise ActionContractError("immutable tail max_bytes is invalid")
-    return _read_file(path, where=where, max_bytes=max_bytes,
-                      require_readonly=True, tail_size=expected_size)
 
 
 #: ``O_NONBLOCK`` on a regular-file open exists to keep a FIFO or a device from
@@ -651,11 +626,15 @@ def file_identity_nofollow(
     where: str,
     expected_sha256: str | None = None,
     expected_bytes: int | None = None,
+    require_readonly: bool = False,
+    observer_factory: Callable[[], Callable[[bytes], None]] | None = None,
 ) -> tuple[str, int, int]:
     """Hash one stable inode reached through a fresh held no-follow parent.
 
     Every retry reopens the full path and hashes from byte zero.  A wrong
     expected address is immediate tamper even when metadata is also unstable.
+    An optional observer consumes each chunk without retaining the whole file;
+    its factory starts fresh on every stable-read retry.
     """
 
     for attempt in range(_STABLE_FILE_READ_ATTEMPTS):
@@ -666,12 +645,21 @@ def file_identity_nofollow(
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode):
                 raise CASTamperError(f"{where} is not a regular file: {path}")
+            if require_readonly and before.st_mode & 0o222:
+                raise CASTamperError(f"{where} is writable: {path}")
+            if expected_bytes is not None and before.st_size != expected_bytes:
+                raise CASTamperError(f"{where} size differs from its address: {path}")
+            observe = observer_factory() if observer_factory is not None else None
             while True:
                 chunk = os.read(descriptor, 4 * 1024 * 1024)
                 if not chunk:
                     break
                 digest.update(chunk)
                 size += len(chunk)
+                if expected_bytes is not None and size > expected_bytes:
+                    raise CASTamperError(f"{where} grew beyond its address: {path}")
+                if observe is not None:
+                    observe(chunk)
             observed_digest = digest.hexdigest()
             if expected_bytes is not None and size != expected_bytes:
                 raise CASTamperError(

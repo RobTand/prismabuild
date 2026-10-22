@@ -366,9 +366,15 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
                   f"publication {ending.successor_published_unix!r}; no execution verdict"),
         )
     outcome_path, outcome = ending
-    rendered = action_client.bounded_outcome_render(
-        q, outcome_path, outcome, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
-        diagnose_conflicts=True)
+    if context is not None:
+        # The consumer's result reader authenticates the selected attempt below.
+        # Legacy rendering expands whole logs and must not precede that read.
+        rendered = {"summary": action_client.outcome_summary(
+            q, outcome_path, outcome, verify_attempts=False)}
+    else:
+        rendered = action_client.bounded_outcome_render(
+            q, outcome_path, outcome, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
+            diagnose_conflicts=True)
     diagnostic = rendered.get("integrity_error")
     if diagnostic is not None:
         return _row(
@@ -828,6 +834,8 @@ def consumer_ending_row(q, row, *, cas, context=None):
                     lambda: action_result.read_verified_ending_result(
                         q, row["action_key"], published_unix=published, attempt=number),
                     budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+            except (action_wait.OutcomeObservationTimedOut, action_wait.OutcomeReaderRetained) as exc:
+                result = action_result.unverified_ending_result(exc)
             except (action_result.ActionResultError, action_wait.OutcomeReadUnavailable,
                     OSError, pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
                 status, reason = "unreadable", str(exc)
