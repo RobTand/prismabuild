@@ -1,4 +1,5 @@
 """Descriptor waits preserve broker death, payload survival and in-process stop."""
+from contextlib import contextmanager
 import importlib.util
 import os
 from pathlib import Path
@@ -78,6 +79,33 @@ m.main()
 '''
 
 
+@contextmanager
+def _broker_directory():
+    with tempfile.TemporaryDirectory(prefix='pb1937-') as directory:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            # Keep sun_path short even for a long configured TMPDIR. Use this
+            # process's PID so the broker and surviving payload share the alias.
+            yield Path(f'/proc/{os.getpid()}/fd/{descriptor}')
+        finally:
+            os.close(descriptor)
+
+
+def test_broker_directory_uses_configured_storage_with_a_long_path(tmp_path, monkeypatch):
+    configured = tmp_path / ('long-' + 'x' * 120)
+    configured.mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(configured))
+    with _broker_directory() as folder:
+        backing = folder.resolve()
+        assert backing.parent == configured
+        assert len(os.fsencode(backing / 'broker.sock')) > 108
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(folder / 'broker.sock'))
+            assert (backing / 'broker.sock').is_socket()
+    assert not backing.exists()
+    assert not folder.exists()
+
+
 def _broker_probe_event(fd, expected):
     assert select.select([fd], [], [], 5)[0], 'broker probe event did not arrive'
     assert os.read(fd, len(expected)) == expected
@@ -89,7 +117,7 @@ def test_broker_sigterm_preserves_payload_completion_and_native_exit(mode):
     gate_r, gate_w = os.pipe()
     completed_r, completed_w = os.pipe()
     trigger_r, trigger_w = os.pipe()
-    with tempfile.TemporaryDirectory(prefix='pb1937-', dir='/home/rob/pbt17') as folder:
+    with _broker_directory() as folder:
         endpoint = str(Path(folder) / 'broker.sock')
         result = Path(folder) / 'result'
         process = subprocess.Popen([sys.executable, '-c', BROKER_MAIN_PROBE,
@@ -160,7 +188,7 @@ def test_broker_stop_writer_is_serialized_with_pipe_teardown(monkeypatch):
     replacement_r, replacement_w = os.pipe()
     native_write = os.write
     reused = None
-    with tempfile.TemporaryDirectory(prefix='pb1937-', dir='/home/rob/pbt17') as folder:
+    with _broker_directory() as folder:
         server = m.Server(str(Path(folder) / 'broker.sock'), m.Handler)
         actual_lock = getattr(server, 'stop_lock', threading.Lock())
 
