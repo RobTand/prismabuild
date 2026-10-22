@@ -1137,14 +1137,27 @@ changes and removal. `reservations` observes each host root, `free`, `minted`,
 host subscriber without any ready or terminal activity. Populated moved-in
 holders install watches before scanning. Traversal stops at holder contents;
 host adaptive mirrors, passes and denial topics require later slices.
-Hidden and unknown holder directories use the same enumeration as
-`HolderCensus` and each add one watch. Nameless events on `workers/` or
-`reservations/`, including permission recovery, advance the v2 reset marker
-so subscribers reread their host inputs.
+Hidden and unknown holder directories use the `HolderCensus` enumeration and
+each add one watch. Reconstruction also retains all symlinks for rejection
+before checking directory membership. Every immediate holder entry invalidates
+its host, including hidden unfinished files. Hidden free and minted token names
+also invalidate. In-place byte writes invalidate before the writer closes.
+Nameless events on `workers/` or `reservations/`, queue-root attributes and
+ancestor permission changes advance the v2 reset marker so subscribers reread
+their host inputs. Each lexical ancestor adds one watch without a scan;
+ancestor replacement or watch loss withdraws both host topics.
 
 Expected host directory shapes replaced by symlinks or non-directories remain
-incomplete. Unexplained nested watch loss withdraws the affected topic. Repair
-the watch limit or invalid tree, then reconstruct or restart the scratch/service
+incomplete. Symlinked offer files, CPU maps, tokens and holder metadata also
+withdraw coverage, even when their targets are currently absent or in-tree.
+Nonregular, unreadable or multiply linked byte-read leaves, noncanonical offer
+filenames, unknown nested token shapes such as `minted/dead`, and symlinked or unwatchable
+ancestors cannot establish complete host coverage. Offer, CPU-map and holder
+metadata files have inode watches as well as parent watches, so an external
+hard link added later cannot bypass invalidation. Name-only token inputs do
+not add inode watches. The bell checks shapes at reconstruction and on mutations
+without parsing contents. Unexplained nested watch loss withdraws the affected
+topic. Repair the watch limit or invalid tree, then reconstruct or restart the scratch/service
 generation before accepting coverage again. Normal parent-observed removal
 retains the parent watch. Moved-out trees lose their watches, so later writes
 outside the queue do not produce hints under the old host ID. Inspect the
@@ -1178,7 +1191,8 @@ claim p50 at most one second, p95 no worse than the measured poll baseline,
 fallback claims resuming within 60 seconds of bell outage, and authoritative
 records without lost or double claims. Connection/watch budgets must follow
 measured demand. The host adapters add one watch per existing offer root,
-reservation root, host, free/minted/held directory and holder. Measure private
+reservation root, host, free/minted/held directory and holder, plus each queue
+ancestor and each byte-read offer, map or metadata leaf. Measure private
 scratch demand with `tools/maintenance/prove_queue_bell_host_inputs.py` through
 published pbrun, using two CPUs, four GiB and one native thread. It binds an
 ephemeral private port, reports watch/connection/ring demand, and touches no live

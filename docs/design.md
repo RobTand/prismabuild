@@ -9718,9 +9718,13 @@ publishes holder names, token names, record contents or capacity verdicts.
 
 The reservation adapter watches each host root, `free`, `minted`, `held`, and
 each holder's immediate contents. Traversal stops at holders, four directories
-below the queue. Reconstruction and `HolderCensus` share the holder-directory
-enumeration, including hidden and unknown holder names. A holder that cannot
-be watched, including a symlink, prevents complete reservation coverage.
+below the queue. Reconstruction uses `HolderCensus`'s holder-directory
+enumeration, including hidden and unknown holder names, plus every symlink
+before the directory predicate. A dangling link or a link to a file can become
+a holder when its target changes. Every immediate holder entry invalidates its
+host, including hidden entries other than the two metadata names, because
+`CpuReservation.has_contents` reads all names. Hidden free and minted token
+names also invalidate their host.
 It covers legacy token writers, partial private acquisitions,
 rollback, commit rename, release without a terminal record, capacity/map
 replacement, and holder `.adaptive.json` and `.gpu.json` writes. The separate
@@ -9731,16 +9735,33 @@ the v2 reset marker before restoring it. Parent rename/delete invalidations
 remove the old subtree watches so moved-away inodes cannot retain a host ID.
 Rebinding an inode to a new relative name replaces its watch descriptor;
 buffered self-events for the old descriptor cannot remove the new binding.
-Nameless events on the workers or reservations root advance the v2 reset
-marker because they cannot identify which hosts became readable or changed.
+Nameless events on the workers or reservations root, and queue-root attribute
+changes, advance the v2 reset marker because they cannot identify which hosts
+became readable or changed. Ancestor directories have watches without scans,
+installed before queue reconstruction. Their permission changes reset v2;
+replacement, removal, move or watch loss withdraws both host topics until
+reconstruction. Symlinked or unwatchable ancestry cannot prove host coverage.
 These operations acquire no admission, transition or ledger locks and add no
 writer callbacks or discovery to those critical sections.
 
-Absent optional roots use the queue-root absence proof. A symlink or non-directory
-at an expected host directory shape makes `reservations` incomplete. Unexplained
-nested watch loss withdraws its host topic until reconstruction or restart;
-normal observed deletion uses its watched parent. Watch exhaustion fails the
-service with the topic already withdrawn. Unknown evidence never establishes
+Absent optional roots use the queue-root absence proof. Host inputs are checked
+both during reconstruction and on events, without reading record bodies.
+Symlinks at ledger directory, token, metadata, CPU-map or offer paths withdraw
+the affected host topic, including dangling links and in-tree links. Byte-read
+leaves require readable regular files with one link. Inode watches supplement
+their parent watches so creating an external hard link after reconstruction
+also withdraws coverage; parent watches alone miss that link-count change.
+Name-only token reads need no inode watch or file read permission.
+Noncanonical offer filenames, nonregular leaves and unknown nested token
+shapes, including `minted/dead`, also withdraw
+coverage. These uncommon shapes require bounded consumer polling rather than
+deeper traversal. Ordinary in-place writes invalidate on `IN_MODIFY`, before
+close, as well as close-write and attribute events. Outcome/v1 event masks
+retain their existing behavior. No admission predicate or accounting changes.
+Unexplained nested watch loss withdraws its host topic until reconstruction
+or restart; normal observed deletion uses its watched parent. Directory-watch
+exhaustion fails the service with the topic already withdrawn. Failed file or
+ancestor watches withdraw the affected host topics. Unknown evidence never establishes
 free capacity. Consumers still use the existing authoritative offer and ledger
 readers and their conservative evidence handling. Offers retain the recorded
 120-second expiry; expiry needs the consumer's existing deadline because time

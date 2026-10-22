@@ -102,13 +102,15 @@ class HolderCensus:
             yield self._identity(directory.name)
 
     @staticmethod
-    def directory_inputs(entries):
+    def directory_inputs(entries, *, include_symlinks=False):
         """All holder directories, including unknown and hidden names.
 
-        Bell reconstruction uses this same enumeration. Symlinked directories
-        are census inputs too; a watcher unable to cover one must say so.
+        Bell reconstruction also retains every symlink for rejection, even
+        before its target exists or becomes a directory. Admission keeps its
+        existing directory predicate and accounting.
         """
-        return (entry for entry in entries if entry.is_dir())
+        return (entry for entry in entries
+                if (include_symlinks and entry.is_symlink()) or entry.is_dir())
 
     @property
     def non_mirror_holders(self) -> Iterator[HolderIdentity]:

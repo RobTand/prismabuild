@@ -37,7 +37,10 @@ def prove_host_input_transport() -> int:
             before = client.now_v2(topics)
             legacy_cursor = client.now()
             initial_watches = len(service.watch.directories)
-            assert initial_watches == 20  # The original 18 plus two hidden holders.
+            ancestor_watches = len(service.watch.ancestor_names)
+            initial_file_watches = len(service.watch.file_watches)
+            assert initial_file_watches == 2
+            assert initial_watches == 20 + ancestor_watches + initial_file_watches
             for host in ("first.lab", "second.lab"):
                 assert Path(f"reservations/{host}/held/.legacy") in service.watch.directories.values()
             entered = threading.Event()
@@ -82,6 +85,8 @@ def prove_host_input_transport() -> int:
             assert all(not list((root / state).iterdir()) for state in ("ready", "done", "failed"))
             print(json.dumps(dict(proof="scratch-host-inputs", host=socket.gethostname(),
                 port=port, initial_watches=initial_watches,
+                ancestor_watches=ancestor_watches,
+                initial_file_watches=initial_file_watches,
                 hidden_holder_watches=2,
                 populated_watches=len(service.watch.directories),
                 concurrent_diagnostics=census["diagnostics"], ending_diagnostics=after["diagnostics"],
