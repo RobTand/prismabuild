@@ -49,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pbbell: singleton refused: {exc}", file=sys.stderr, flush=True)
         return role_session.ROLE_SINGLETON_HELD_EXIT
     except OSError as exc:
+        if isinstance(exc, queue_notifier.MissingQueueDirectory):
+            # Reconstruction found the same invalid required-root topology as
+            # startup. Use the supervisor's refusal backoff in either case.
+            print(f"pbbell: startup refused: {exc}", file=sys.stderr, flush=True)
+            return role_session.ROLE_SINGLETON_HELD_EXIT
         print(f"pbbell: {exc}", file=sys.stderr, flush=True)
         return 1
 

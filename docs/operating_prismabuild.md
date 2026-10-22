@@ -1179,6 +1179,55 @@ are served; overload returns 503 and clients use unavailable-callback backoff.
 Client connect, headers and body share the original patience. Repeated immediate
 empty/reset replies also use the capped backoff.
 
+Bell v2 is additive (#1939). Existing live pbwait/pbrun/pbtest clients continue
+using v1. Source inclusion does not activate v2 consumers. Before enabling one,
+query `/v2/now` with its exact `X-PrismaBuild-Queue` header and verify every
+required topic in `coverage.topics`. Preserve its `coverage.version` with the
+epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
+503. An old bell's 404 or a partial topic set requires degraded recovery.
+
+Initially, v2 covers only `ready`, `claimed`, `done`, `failed`, `withdrawn`,
+`deferred`, `intent`, `attempts` and `publication-endings`. IDs for those topics
+are lowercase 64-hex action keys. Later adapters declare their own bounded ID
+grammars. Wait filters accept at most 32 topic entries and 128 ID entries, with
+64-character topic and 128-character ID limits. Empty filters select all
+available topics or IDs. Unknown topics do not grant coverage. Invalid filters
+return 400. V1 filters and response bodies remain unchanged.
+
+V2 wait replies contain typed `{seq, topic, id}` hints. `reset: true` and its
+`reason` invalidate derived completeness on coverage change, partial coverage,
+restart, future cursor, ring loss, overflow or shutdown. Failed watch recovery
+never advertises complete coverage. Required roots are opened and watched
+explicitly without following links; missing or symlinked roots during startup or
+reconstruction exit 3 through the supervisor's refusal backoff. Coverage requires
+installed root watches. An absent optional namespace uses its watched parent as
+an absence proof; an existing symlink cannot use that proof. Lazy installation
+withdraws the affected topic and advances the v2 history-reset marker after
+scanning, so a descendant observed and deleted before watch installation cannot
+leave stale derived state. The coverage version carries this marker without
+clearing v1 event history or changing its sequence behavior.
+Coverage returns only after successful installation. Diagnostics report retained ring entries,
+resets, coverage changes, subscriptions, active/capped connections and watch
+count. Inspect these when diagnosing fallback or watch exhaustion. Healthy
+renewals produce no per-request logs and perform no namespace discovery.
+
+The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
+one-second connect deadline and absolute five-second server I/O budget retain
+their existing values. A healthy empty v2 renewal renews transport only. The
+single-request v2 client has no retry/discovery loop; subsequent consumer
+slices must provide stop-interruptible 0.25-to-five-second unavailable-service
+backoff, including repeated immediate resets/empty replies. Complete stream
+recovery or stop cancels that backoff. No placement or claim rule changes here.
+
+Publish each consumer slice in a separate generation only after all its bell
+topics are live. TL owns publication approval, pbpublish's four canary legs and
+the 30-minute gate watch. The #1881 baseline remains the comparison: event-to-
+claim p50 at most one second, p95 no worse than the measured poll baseline,
+fallback claims resuming within 60 seconds of bell outage, and authoritative
+records without lost or double claims. Connection/watch budgets must follow
+measured demand; v2 adds no watch tree in this slice. Roll back through
+`pbpublish rollback` to the previous accepted generation.
+
 The service is unauthenticated on the listed private addresses. Peers can see
 action keys, state-directory names, timing and cursors; they cannot read record
 bodies or logs, submit, withdraw or change work through the bell.

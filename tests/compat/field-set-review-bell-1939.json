@@ -1,0 +1,13 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/queue_bell_topics.py",
+      "owner": "Topic",
+      "unresolved": "False",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "Topic.required declares which original outcome directories must exist before the watcher serves coverage. This dataclass boolean is namespace configuration, not a closed durable record field set; preserve its source witness without claiming new record compatibility."
+  }
+]

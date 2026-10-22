@@ -9850,6 +9850,58 @@ long-poll at 300 seconds. Callers with longer patience renew the long-poll.
 Cursor acquisition before the record observation closes the read/wait race.
 Neither a notification nor its absence establishes any queue state.
 
+The additive v2 contract (#1939) uses the same ring, watches, connection cap,
+and queue-host addressing. `/v1/now` and `/v1/wait` retain their response bytes,
+filters and client policy. `/v2/now` returns `{epoch, seq, coverage, diagnostics}`.
+`coverage` contains a positive integer `version` and sorted `topics`. The version
+is scoped to the epoch and changes whenever coverage changes. Both v2 endpoints
+require the exact `X-PrismaBuild-Queue` header; a missing or wrong identity is
+HTTP 503. A cursor and coverage version must be captured before reading records.
+
+`/v2/wait` takes `since`, `coverage_version`, comma-separated `topics` and `ids`,
+and `timeout`. Empty filters select all declared topics or IDs. Events contain
+only `{seq, topic, id}`. This slice declares the nine existing outcome directory
+names as topics, each with a lowercase 64-hex action ID. The `Topic` declaration
+owns each topic's ID grammar and legacy projection. `OutcomeNamespaces` owns
+its bounded traversal and names-only mapping. Later mutation families must add
+a separate bounded adapter and an explicit topic declaration before advertising
+coverage. No worker, ledger, tier, residency or prewarm topic is covered here.
+Topic names are at most 64 characters; IDs are at most 128. A request admits at
+most 32 topic entries and 128 ID entries, including duplicates. Paths and
+noncanonical IDs are rejected with HTTP 400. Unknown syntactically valid topics
+remain unsupported and cannot establish complete coverage.
+
+Every v2 reply carries the coverage proof. A version mismatch, partial requested
+coverage, restart, future cursor, overflow, ring gap or shutdown returns
+`reset: true` with a `reason`, never a successful empty subscription. Startup
+advertises coverage only after watches and scans succeed. Every required root
+is opened without following links, watched and scanned explicitly, independent
+of root-directory listing membership. Missing or symlinked required roots refuse
+startup or reconstruction with exit 3. Coverage comes from installed root watches;
+an absent optional root uses the queue-root watch as its absence proof. Existing
+optional symlinks remain uncovered. Overflow withdraws coverage, clears previous
+root-watch proofs, and restores coverage only after reconstruction succeeds.
+A failed rebuild leaves coverage empty. Installing a lazy namespace whose name
+has no action ID withdraws its topic, installs watches and scans, advances the
+v2 history-reset marker, and restores coverage only on success. The coverage
+version is also this v2 reset marker; advancing it preserves v1 events and
+sequence behavior. It invalidates descendants observed and deleted before their
+watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
+retained events, subscriptions, resets, coverage changes, connections and local
+watch count. These are read-only observations, without per-renewal log traffic.
+
+The v2 client methods perform one bounded request. They positively check requested
+topics before accepting a cursor or successful wait. They introduce no consumer
+loop. A healthy empty renewal is transport only and must not trigger discovery.
+Later consumer slices own stop-interruptible unavailable-callback recovery at
+0.25 seconds doubling to at most five seconds, cancelled by stop or recovered
+complete coverage. Repeated immediate empty/reset replies use that same bounded
+backoff. Existing v1 wait policy remains unchanged. The 300-second renewal cap
+is a transport deadline, the one-second connect cap bounds an unavailable
+endpoint, and the five-second server I/O deadline bounds headers and delivery.
+Each request also obeys the caller's original absolute patience; disconnect and
+service shutdown cancel subscriptions immediately.
+
 A selector blocks on inotify, listener sockets and a shutdown socket. Each
 request selects its filtered notification socket and client connection, so a
 disconnect releases the subscription immediately. Matching events and lost

@@ -1,0 +1,28 @@
+{
+  "archive_sha256": "9ad05382ba748dc5ebf98f7782c156c9b413a1bc47ecfbe7eee183b5578dc815",
+  "commit": "8b2d47ff824e89aa60f83126d397bbd4207fe3d2",
+  "corpus": {
+    "src/prismabuild/queue_bell.py": {
+      "bytes": 5771,
+      "git_blob": "6c167bb09ae9d0148e14917540ff3af752d05dfb",
+      "sha256": "20c7e5112f7abd8756a1ec533622503a317b43fc9615f01d2b654d7298d99c4b"
+    },
+    "src/prismabuild/queue_bell_events.py": {
+      "bytes": 10243,
+      "git_blob": "cc34b3e08cf38ad871bd4a67c3d7aee15b4f590d",
+      "sha256": "59f6c766f5251cb1fb2187ca0bd355a798e1f1ea4ef610bb84b49e3d8118c61c"
+    },
+    "src/prismabuild/queue_bell_http.py": {
+      "bytes": 1043,
+      "git_blob": "1e2cfe64f174db28a6926fcded5e36bbbb5a7025",
+      "sha256": "6fe24cd8e0d4683a92846e2fddcf167f85834159777dfdc8e45714c0f46e9089"
+    },
+    "src/prismabuild/queue_notifier.py": {
+      "bytes": 8484,
+      "git_blob": "b191dcb43329013c65855a1fc2957695ea830f9f",
+      "sha256": "b6158d053f9009e45d62949fef260f45145bd532bdddc459b9dfb87f99c10798"
+    }
+  },
+  "description": "Unmodified #1894 v1 bell module closure for raw-wire and mixed-version tests. Captured with git show <commit>:<path>; test execution reads only this committed archive, never Git history. This test oracle is not a published runtime generation.",
+  "tree": "f15fca7ec778bb9e845eb521e6d67cdf7109b3f7"
+}
