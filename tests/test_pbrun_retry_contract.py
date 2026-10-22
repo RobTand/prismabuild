@@ -294,3 +294,33 @@ def test_new_submitter_refuses_an_old_pool_runtime_that_cannot_carry_the_tested_
     with pytest.raises(pool.PoolContractError, match="does not support tested_repository"):
         _submit(tmp_path, monkeypatch, work)
     assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+
+
+def test_interruption_scope_is_sealed_and_worker_failure_is_final(tmp_path, monkeypatch):
+    work, queue = _work_and_queue(tmp_path)
+    assert _submit(tmp_path, monkeypatch, work, "--retry-safe", "--max-attempts", "3",
+                   "--retry-scope", "interruption") == 75
+    ready = next(queue.records.dir(pool.READY).glob("*.json"))
+    item = json.loads(ready.read_text())
+    assert item["retry_scope"] == "interruption"
+    action = pool.pb.PrismaBuildCAS(item["cas_root"]).read_action_request(item["action_key"])
+    assert action["params"]["retry_policy"]["retry_scope"] == "interruption"
+    with pytest.raises(pool.PoolContractError, match="sealed retry policy"):
+        queue.publish(action_key=item["action_key"], cas_root=item["cas_root"],
+            checkout_snapshot=item["checkout_snapshot"], worker_script=item["worker_script"],
+            tags=item["tags"], resources=item["resources"], max_attempts=3, retry_safe=True)
+    result = queue.serve_once(tags=["sparky"], python=sys.executable, timeout_s=30.,
+                              capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
+    assert result["status"] == "failed"
+    terminal = json.loads(queue.records.item_path(pool.FAILED, item["action_key"]).read_text())
+    assert terminal["retry_scope"] == "interruption" and terminal["attempts"] == 1
+    assert queue.attempt_outcomes(terminal)[0]["disposition"] == pool.FAILED
+    assert not ready.exists()
+
+
+@pytest.mark.parametrize("scope,retry_safe", [("unknown", True), ("interruption", False)])
+def test_pool_refuses_invalid_interruption_policy(tmp_path, scope, retry_safe):
+    with pytest.raises(pool.PoolContractError):
+        pool.PoolQueue(tmp_path / "queue").publish(action_key="a" * 64, cas_root="/cas",
+            checkout_root="/co", worker_script="/worker.py", retry_safe=retry_safe,
+            retry_scope=scope)

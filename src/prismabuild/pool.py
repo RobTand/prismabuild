@@ -6535,6 +6535,7 @@ class PoolQueue:
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         retry_safe: bool | None = None,
+        retry_scope: str | None = None,
         container_owner: str | None = None,
         container_images: Sequence[str] | None = None,
         interpreter: str | None = None,
@@ -6697,6 +6698,9 @@ class PoolQueue:
             sealed_request_present = sealed_request is not None
             sealed_params = sealed_request["params"] if sealed_request is not None else {}
             assert isinstance(sealed_params, Mapping)
+            sealed_retry_scope = (sealed_params.get("retry_policy") or {}).get("retry_scope")
+            if sealed_request_present and retry_scope != sealed_retry_scope:
+                raise PoolContractError("retry_scope differs from the sealed retry policy")
             sealed_batch_raw = sealed_params.get("produced_output_batch")
             from . import movement_actions
             for forged in movement_actions.CAPACITY_ROLE_FIELDS:
@@ -6888,6 +6892,10 @@ class PoolQueue:
             raise PoolContractError("max_attempts must be a positive integer")
         if retry_safe is not None and type(retry_safe) is not bool:
             raise PoolContractError("retry_safe must be boolean or null")
+        if retry_scope not in (None, "interruption"):
+            raise PoolContractError("unknown retry_scope")
+        if retry_scope is not None and retry_safe is not True:
+            raise PoolContractError("retry_scope requires retry_safe=true")
         if retry_safe is False and max_attempts > 1:
             raise PoolContractError(
                 "max_attempts greater than 1 contradicts retry_safe=false"
@@ -7105,6 +7113,8 @@ class PoolQueue:
             # publisher can, and says so here.  Not claim-scoped: a requeue
             # of a movement node is still a movement node.
             item["recompute"] = True
+        if retry_scope is not None:
+            item["retry_scope"] = retry_scope
         if retry_safe is not None:
             item["retry_safe"] = retry_safe
         if container_owner is not None:
@@ -16277,6 +16287,7 @@ class PoolQueue:
                     or parent.get("attempts") != consumed - 1
                     or parent.get("max_attempts") != limit
                     or parent.get("retry_safe") is not True
+                    or parent.get("retry_scope") != record.get("retry_scope")
                     or parent.get("attempt_history_before_withdrawal")
                     or parent.get("attempt_history_missing_before_withdrawal", 0) != consumed - 1):
                 return False
@@ -16332,7 +16343,7 @@ class PoolQueue:
             "preempted_claim": dict(record),
             **addressing,
         }
-        for field in ("max_attempts", "retry_safe", "container_owner",
+        for field in ("max_attempts", "retry_safe", "retry_scope", "container_owner",
                       "container_images", "interpreter", "local_dependencies",
                       "dependency_queries", "tested_repository"):
             # ``tested_repository`` rides along because a requeue tests the
@@ -16577,7 +16588,7 @@ class PoolQueue:
             return pb._canonical_bytes({
                 field: record[field]
                 for field in (
-                    "action_key", "cas_root", "resources", "retry_safe",
+                    "action_key", "cas_root", "resources", "retry_safe", "retry_scope",
                     "attempts", "attempt_history_missing_before", "max_attempts",
                     "attempt_history", "supersedes_withdrawal",
                     "cpu_guest", "cpu_guest_retry", "tags", "needs_gpu",
@@ -19694,6 +19705,7 @@ class PoolQueue:
         status: str,
         disposition: str,
         detail: Mapping[str, object] | None,
+        worker_reported: bool = False,
     ) -> list[dict[str, object]]:
         """Publish one immutable outcome plus stdout/stderr, then link it.
 
@@ -19828,6 +19840,10 @@ class PoolQueue:
             "detail": details,
             "logs": logs,
         }
+        if record.get("retry_scope") is not None:
+            outcome["retry_scope"] = record["retry_scope"]
+            if worker_reported:
+                outcome["worker_reported"] = True
         if retry_stop is not None:
             outcome["output_retry_stop"] = retry_stop
         if (record.get("preempted_by") is not None
@@ -19945,6 +19961,7 @@ class PoolQueue:
             or type(terminal_limit) is not int
             or recorded_limit != terminal_limit
             or value.get("retry_safe") != record.get("retry_safe")
+            or value.get("retry_scope") != record.get("retry_scope")
             or published is None
             or published != terminal_published
         ):
@@ -21143,7 +21160,7 @@ class PoolQueue:
                     raise PoolContractError(
                         f"membership handoff for {key[:12]} is already "
                         "covered by an ordinary withdrawal decision")
-            for binding in ("retry_safe", "max_attempts"):
+            for binding in ("retry_safe", "retry_scope", "max_attempts"):
                 if snap.get(binding) != record.get(binding):
                     raise PoolContractError(
                         f"membership handoff for {key[:12]} differs from "
