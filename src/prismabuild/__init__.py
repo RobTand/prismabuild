@@ -14,10 +14,6 @@ from importlib import import_module as _import_module
 
 from . import progress  # noqa: F401
 from .progress import commit, report_action_progress
-from .attempt_archive import (
-    resolve_attempt_log, InvalidLogDescriptor, AttemptLogMissing,
-    AttemptLogIntegrityError, AttemptArchiveUnavailable,
-)
 
 __all__ = [
     "core", "progress", "residency_map", "commit", "report_action_progress",
@@ -32,6 +28,11 @@ def __getattr__(name: str):
         module = _import_module(f".{name}", __name__)
         globals()[name] = module
         return module
+    if name in ("resolve_attempt_log", "InvalidLogDescriptor", "AttemptLogMissing",
+                "AttemptLogIntegrityError", "AttemptArchiveUnavailable"):
+        value = getattr(_import_module(".attempt_archive", __name__), name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

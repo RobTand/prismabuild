@@ -295,35 +295,29 @@ def test_mcp_deadline_stops_the_archive_decoder(fleet, zstd_required, tmp_path, 
     record = fleet.finish()
     fleet.retire()
     codec = tmp_path / "zstd"
-    codec.write_text(f"#!{sys.executable}\nimport signal\nsignal.pause()\n")
+    pid_path = tmp_path / "decoder.pid"
+    codec.write_text(f"#!{sys.executable}\nimport os, signal\nfrom pathlib import Path\n"
+                     f"Path({str(pid_path)!r}).write_text(str(os.getpid()))\nsignal.pause()\n")
     codec.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    receiver, sender = os.pipe()
-    original = archive.subprocess.Popen
-    def announce(*args, **kwargs):
-        child = original(*args, **kwargs)
-        os.write(sender, str(child.pid).encode() + b"\n")
-        return child
-    monkeypatch.setattr(archive.subprocess, "Popen", announce)
     service = pbmcp.Session(queue_root=fleet.queue.root, cas_root=fleet.cas,
                             repo_link=fleet.queue.root.parent / "repo", deadline_s=10)
     service.deadline_s = 1
-    decoder = None
+    pidfd = None
     try:
         body = service.call("pb_log", {"key_prefix": record["action_key"]})
-        assert not body["complete"] and body["timed_out"]
-        assert select.select([receiver], [], [], 0)[0], "MCP never reached its decoder"
-        decoder = int(os.read(receiver, 64).splitlines()[0])
-        pidfd = os.pidfd_open(decoder)
+        assert not body["complete"] and body["timed_out"], {
+            field: body.get(field) for field in ("complete", "timed_out", "found", "reason")}
+        assert pid_path.exists(), "MCP never reached its decoder"
         try:
-            assert select.select([pidfd], [], [], 5)[0], "decoder outlived the cancelled reader"
-        finally:
-            os.close(pidfd)
+            pidfd = os.pidfd_open(int(pid_path.read_text()))
+        except ProcessLookupError:
+            return  # Already reaped after its reader died.
+        assert select.select([pidfd], [], [], 5)[0], "decoder outlived the cancelled reader"
     finally:
-        if decoder is not None:
+        if pidfd is not None:
             try:
-                os.kill(decoder, signal.SIGKILL)
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        os.close(receiver)
-        os.close(sender)
+            os.close(pidfd)
