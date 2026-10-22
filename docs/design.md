@@ -6190,7 +6190,7 @@ rows than a peer fits.
 
 These #1929 contracts describe source behavior. Runtime publication and the
 live guest/GPU canary proof remain separate acceptance steps. The scoped
-[source acceptance record](evidence/issue1929_guest_placement_acceptance_2026-10-21.json)
+[source acceptance record](evidence/issue1929_round2_acceptance_2026-10-21.json)
 keeps the requirement targets and remaining deployment/workload gaps explicit.
 
 Peer placement now owns one lazy offer snapshot and one advisory ledger

@@ -28,18 +28,20 @@
    "scoped_repair_1929": {
     "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -210,18 +212,20 @@
    "scoped_repair_1929": {
     "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -383,18 +387,20 @@
    "scoped_repair_1929": {
     "target": "Behavior attributed per (runtime_commit, generation_id).",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -639,18 +645,20 @@
    "scoped_repair_1929": {
     "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -831,18 +839,20 @@
    "scoped_repair_1929": {
     "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -1050,18 +1060,20 @@
    "scoped_repair_1929": {
     "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -1158,18 +1170,20 @@
    "scoped_repair_1929": {
     "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -1887,18 +1901,20 @@
    "scoped_repair_1929": {
     "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
@@ -2020,18 +2036,20 @@
    "scoped_repair_1929": {
     "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
     "implemented_source": {
-     "commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+     "commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
      "state": "component-implemented",
-     "scope": "Idle GPU portable CPU preference and existing preemption guest extension only."
+     "scope": "Idle GPU CPU guests with interruption-only shard retry, restored ordinary preemption, bounded guest retry liveness, useful collective drains and charged timed placement."
     },
     "validation": {
-     "state": "component-qualified",
-     "acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json",
-     "detail": "Both architectures: 916 passed, zero failures/skips; exact actions, logs and receipt readback are in the scoped record. Existing whole-requirement axes are unchanged."
+     "state": "component-qualified-with-baselines",
+     "acceptance_record": "docs/evidence/issue1929_round2_acceptance_2026-10-21.json",
+     "detail": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below.",
+     "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded"
     },
     "deployment": "not deployed; no runtime publication in this lane",
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
-    "remaining_scope": "No whole-requirement satisfaction, lease/crash or staged-read campaign claim."
+    "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
+    "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
    }
   },
   {
