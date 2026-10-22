@@ -314,7 +314,12 @@ def test_interruption_scope_is_sealed_and_worker_failure_is_final(tmp_path, monk
     assert result["status"] == "failed"
     terminal = json.loads(queue.records.item_path(pool.FAILED, item["action_key"]).read_text())
     assert terminal["retry_scope"] == "interruption" and terminal["attempts"] == 1
-    assert queue.attempt_outcomes(terminal)[0]["disposition"] == pool.FAILED
+    outcome = queue.attempt_outcomes(terminal)[0]
+    assert outcome["disposition"] == pool.FAILED
+    assert outcome["retry_scope"] == "interruption" and outcome["worker_reported"] is True
+    # Submission diagnostics and retry finality coexist in the immutable attempt.
+    assert "queue_publication" in item["phases"]
+    assert terminal["phases"] == outcome["phases"] == item["phases"]
     assert not ready.exists()
 
 

@@ -39,7 +39,7 @@ def _seal_fixture(sealed_fleet, capsys, *options):
     work, queue, store = sealed_fleet
     assert pbrun.main(_consumer_argv(work, "--seal-only", *options)) == 0
     record = _one_json_line(capsys.readouterr())
-    assert set(record) == {"schema", "action_key", "request_sha256", "transport"}
+    assert set(record) == {"schema", "action_key", "request_sha256", "transport", "phases"}
     assert record["schema"] == "prismabuild.sealed.v1"
     assert queue.ready_items() == []
     return record

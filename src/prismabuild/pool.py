@@ -223,6 +223,7 @@ from . import box_window
 from . import resource_scope
 from . import posix_lock
 from . import window_credit
+from .submission_timing import submission_phase_snapshot
 from . import publication_canary
 from . import local_scratch
 from . import filesystem_floor
@@ -7185,6 +7186,9 @@ class PoolQueue:
                 # host disappearing. The cap cannot become protected overflow.
                 item["cpu_guest_retry"] = True
         path = self.records.item_path(READY, action_key)
+        phases = submission_phase_snapshot()
+        if phases:
+            item["phases"] = phases
         self.records.replace_record_at(path, item)
         return path
 
@@ -19868,6 +19872,8 @@ class PoolQueue:
             outcome["retry_scope"] = record["retry_scope"]
             if worker_reported:
                 outcome["worker_reported"] = True
+        if "phases" in record:
+            outcome["phases"] = dict(record["phases"])
         if retry_stop is not None:
             outcome["output_retry_stop"] = retry_stop
         if (record.get("preempted_by") is not None
