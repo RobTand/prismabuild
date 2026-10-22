@@ -18,10 +18,12 @@ from prismabuild.runtime_paths import generation_root
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-root", type=Path,
-                        default=Path("/mnt/shared/prismabuild-fleet/pb-queue"))
+                        default=Path("/mnt/shared/prismabuild-fleet/pb-queue"),
+                        help="local queue directory to watch (default: %(default)s)")
     parser.add_argument("--listen", action="append",
                         help="bind address; repeat for each private link (default loopback)")
-    parser.add_argument("--port", type=int, default=queue_bell.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=queue_bell.DEFAULT_PORT,
+                        help="TCP port for every listen address (default: %(default)s)")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
