@@ -495,8 +495,10 @@ def test_bound_bell_serves_no_cursor_until_watches_and_scan_finish(bell_startup,
             assert bell_startup.servers
             connection.port = bell_startup.servers[0].server_address[1]
             connection.request("GET", "/v1/now")
+            connection.sock.setblocking(False)
             with pytest.raises(BlockingIOError):
-                connection.sock.recv(1, socket.MSG_DONTWAIT)
+                connection.sock.recv(1)
+            connection.sock.settimeout(2)
         return actual_tree(self, relative, *args)
 
     monkeypatch.setattr(queue_notifier.InotifyQueue, "_tree", connect_during_bell_scan)
