@@ -19341,6 +19341,18 @@ actual immutable generation designation and physical G-to-bridge rollback
 remain root deployment gates. This local designation changes no deployed
 pointer or setting and promises no permanent support for a pinned snapshot.
 
+Before a pytest session executes selected record-compatibility files, its
+collection-finish preflight runs the harness's exact bubblewrap PID/proc probe
+once. A nonzero probe with `Can't mount proc on /newroot/proc: Operation not
+permitted` stops the session with exit 78 and a named `bwrap_proc_mount`
+infrastructure refusal. The refusal records the host, exact probe argv/stderr,
+proc mounts, privilege/security status, namespace identities and limits, and a
+bounded sibling-scope listing. Other probe errors and ordinary test results do
+not trigger this classification. Collection-only and unrelated sessions do not
+probe. Successful preflight preserves the existing private PID/proc namespace,
+stable paths, source attestation and affinity checks. This detects the observed
+state-dependent #1889 failure, without claiming its host/kernel cause is fixed.
+
 Retained operations run in fresh `python -I -S` processes with closure/stdlib-only
 paths. Complete source closures, raw receipts, imported module paths/hashes and
 executing source/code are attested. Current and historical production writers
