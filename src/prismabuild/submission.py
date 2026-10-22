@@ -4785,7 +4785,16 @@ def seal_child(
     )
 
 
-@submission_phase("checkout_identity")
+def _time_checkout_preparation(function):
+    # The entrypoint's code object remains in its attested package source.
+    @functools.wraps(function)
+    def timed_preparation(*args, **kwargs):
+        with submission_phase("checkout_identity"):
+            return function(*args, **kwargs)
+    return timed_preparation
+
+
+@_time_checkout_preparation
 def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink = discard_display, deadline: float | None = None) -> dict[str, object]:
     """Resolve one submission against this box, and freeze what it says.
 

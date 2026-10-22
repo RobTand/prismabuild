@@ -22,6 +22,7 @@ CLIENT_EVENT_SCHEMA = 'prismabuild.client_event.v1'
 MAX_EVENT_BYTES = 1024
 MAX_CLIENT_EVENTS = 2
 MAX_SUBMISSION_PHASE_EVENTS = 256
+MAX_CLIENT_CHANNEL_BYTES = (MAX_CLIENT_EVENTS + MAX_SUBMISSION_PHASE_EVENTS) * MAX_EVENT_BYTES
 T = TypeVar('T')
 
 
@@ -363,7 +364,7 @@ class ClientEventDecoder:
         if self.problem is not None:
             return
         self.bytes_seen += len(raw)
-        if self.bytes_seen > (MAX_CLIENT_EVENTS + MAX_SUBMISSION_PHASE_EVENTS) * MAX_EVENT_BYTES:
+        if self.bytes_seen > MAX_CLIENT_CHANNEL_BYTES:
             self.problem = 'client channel exceeds its total byte limit'
             return
         self.pending += raw
@@ -513,7 +514,7 @@ class ClientProcess:
                 if not finishing and not select.select([self._read_fd], [], [], 0.05)[0]:
                     continue
                 try:
-                    allowance = MAX_CLIENT_EVENTS * MAX_EVENT_BYTES + 1 - self.decoder.bytes_seen
+                    allowance = MAX_CLIENT_CHANNEL_BYTES + 1 - self.decoder.bytes_seen
                     if allowance <= 0:
                         return
                     raw = os.read(self._read_fd, allowance)
