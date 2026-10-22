@@ -7158,7 +7158,16 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and every following `wedged` sample carry
+`probe.outstanding_pid`, `probe.child_state` and `probe.child_wchan`. State
+and wchan come from that child's `/proc` entry at each sample's own time;
+if it has disappeared before the read, both diagnostics are `?` (unknown).
+The log's `child=state:wchan` and Netdata's `stuck_child` label expose the
+pair for attribution (#1398), not health. Older records lacking diagnostics
+remain unhealthy when their status is `timed_out` or `wedged`; statuses,
+health decisions, chart dimensions and numeric values are unchanged.
+Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
