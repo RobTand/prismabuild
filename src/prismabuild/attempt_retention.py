@@ -380,16 +380,14 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                     _recheck_attempt_retirement_authority(queue.root, plan)
                     native.unlink_nofollow(path, where="retiring attempt log")
                     removed.append({"path": fact["path"], "bytes": fact["bytes"]})
-            except (native.CASTamperError, native.CASUnavailableError,
-                    archive.AttemptLogIntegrityError, archive.AttemptArchiveUnavailable) as exc:
+            except (OSError, native.CASTamperError, native.CASUnavailableError,
+                    archive.AttemptLogIntegrityError) as exc:
                 if isinstance(exc, OSError) and exc.errno == errno.EDQUOT:
                     raise
                 aborted = f"{type(exc).__name__}: {exc}"
                 skipped.append({"path": fact["path"], "reason": aborted})
                 break
-            except (OSError, ValueError) as exc:
-                if isinstance(exc, OSError) and exc.errno == errno.EDQUOT:
-                    raise
+            except ValueError as exc:
                 skipped.append({"path": fact["path"], "reason": f"{type(exc).__name__}: {exc}"})
         if aborted is not None:
             break

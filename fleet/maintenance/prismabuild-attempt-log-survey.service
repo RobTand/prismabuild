@@ -8,6 +8,6 @@ Environment=TMPDIR=/home/rob/pbt17
 Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
-# Read-only operator maintenance. No timer enables archive retirement.
+# Survey only. No timer enables archive retirement.
 ExecStart=/usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py --queue-root /mnt/shared/prismabuild-fleet/pb-queue --summary
 UMask=0077

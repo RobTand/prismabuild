@@ -246,7 +246,11 @@ def _attempt_archive_zstd(raw: bytes, *, decode: bool) -> bytes:
                     output.extend(part)
                     if len(output) > limit:
                         raise AttemptLogIntegrityError("attempt archive zstd output exceeds bound")
-            if child.wait(timeout=max(0, deadline - time.monotonic())) != 0:
+            try:
+                status = child.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as exc:
+                raise AttemptArchiveUnavailable("attempt archive zstd exit deadline expired") from exc
+            if status != 0:
                 raise AttemptLogIntegrityError("attempt archive zstd frame is corrupt")
             return bytes(output)
         finally:

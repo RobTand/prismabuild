@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import json
 import os
 from pathlib import Path
@@ -163,6 +164,56 @@ def test_corruption_stops_after_completed_prefix_and_files_receipt(fleet, zstd_r
     assert (fleet.queue.root / bad["path"]).exists()
     assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(later).values())
     assert archive.resolve_attempt_log(fleet.queue.root, fleet.descriptors(first)["stdout"])
+
+
+@pytest.mark.parametrize("failure", ["missing_chunk", "publication_io", "codec_exit"])
+def test_archive_io_failure_stops_remaining_batch_with_prefix_receipt(
+    fleet, zstd_required, monkeypatch, tmp_path, failure,
+):
+    first = fleet.finish("d" * 64)
+    later = fleet.finish("e" * 64)
+    logs = fleet.descriptors(first)
+    first_path = fleet.queue.root / logs["stdout"]["path"]
+    target = logs["stderr"]
+    publish, stream = archive._publish_attempt_log_archive, archive._stream_archived_attempt_log
+    calls = 0
+    def readback(config, fact, consume):
+        nonlocal calls
+        if fact == target:
+            calls += 1
+            if failure == "missing_chunk" and calls == 3:
+                manifest = archive._read_attempt_archive_manifest(config, fact)
+                sha = manifest["chunks"][0]["compressed_sha256"]
+                (fleet.root / "chunks" / sha[:2] / f"{sha}.zst").unlink()
+        return stream(config, fact, consume)
+    def prepare(queue_root, fact):
+        if fact == target and failure == "publication_io":
+            assert not first_path.exists()
+            raise OSError(errno.EIO, "simulated archive publication failure")
+        return publish(queue_root, fact)
+    monkeypatch.setattr(archive, "_publish_attempt_log_archive", prepare)
+    monkeypatch.setattr(archive, "_stream_archived_attempt_log", readback)
+    if failure == "codec_exit":
+        codec = tmp_path / "zstd"
+        codec.write_text(f"#!{sys.executable}\nimport os, signal\nos.close(1)\nsignal.pause()\n")
+        codec.chmod(0o755)
+        monkeypatch.setattr(archive, "LOG_CODEC_TIMEOUT_S", 2)
+        unlink = native.unlink_nofollow
+        def remove_then_stall(path, **kwargs):
+            unlink(path, **kwargs)
+            if path == first_path:
+                monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setattr(native, "unlink_nofollow", remove_then_stall)
+    with pytest.raises(retention.AttemptRetentionRefused, match="retirement stopped"):
+        retention.apply_attempt_log_retention(fleet.queue, fleet.plan())
+    receipt_path, = (fleet.queue.root / "gc-receipts").glob("attempt-logs-*.json")
+    receipt = json.loads(receipt_path.read_bytes())
+    assert receipt["aborted"] and len(receipt["removed"]) == 1
+    if failure == "codec_exit":
+        assert "exit deadline expired" in receipt["aborted"]
+    assert not first_path.exists()
+    assert (fleet.queue.root / target["path"]).exists()
+    assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(later).values())
 
 
 @pytest.mark.parametrize("field,value", [("schema", "foreign.schema"), ("status", "failed"),
