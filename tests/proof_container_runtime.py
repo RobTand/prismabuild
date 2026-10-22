@@ -1935,11 +1935,17 @@ def require_identity(observed, expected):
         raise ValueError('runtime ELF differs from actual kernel architecture')
 
 
+#: Deleted shared memory (multiprocessing heap arenas, memfds, System V segments) maps no runtime file (#1920).
+SHARED_MEMORY_MAPPINGS = ('/dev/shm/', '/memfd:', '/SYSV')
+
+
 def native_provider_paths(*, budget=None, probes=None):
     providers, seen = set(), set()
     for line in Path('/proc/self/maps').read_text().splitlines():
         parts = line.split(None, 5)
         if len(parts) != 6 or not parts[5].startswith('/'):
+            continue
+        if parts[5].endswith(' (deleted)') and parts[5].startswith(SHARED_MEMORY_MAPPINGS):
             continue
         path = Path(parts[5]).resolve()
         if str(path) in seen:

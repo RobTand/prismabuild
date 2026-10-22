@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import errno
 import json
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -70,6 +71,18 @@ def test_preload_genuinely_absent_file_allows_observation(tmp_path, monkeypatch)
     actual = runtime.observe_runtime()
     assert actual['executable']['path'] == runtime.sys.executable
     assert actual['version'] == list(runtime.sys.version_info[:3])
+
+
+def test_deleted_shared_memory_mappings_are_not_runtime_providers():
+    """A multiprocessing Value maps a deleted /dev/shm arena into this process for its life (#1920)."""
+
+    shared = multiprocessing.Value('i', 7)
+    mapped = [line.split(None, 5)[5] for line in Path('/proc/self/maps').read_text().splitlines()
+              if len(line.split(None, 5)) == 6]
+    assert any(name.startswith('/dev/shm/') and name.endswith(' (deleted)') for name in mapped)
+    providers = runtime.native_provider_paths()
+    assert not [path for path in providers if path.startswith('/dev/shm/')]
+    assert shared.value == 7
 
 
 @pytest.fixture
