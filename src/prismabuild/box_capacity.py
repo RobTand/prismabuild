@@ -300,6 +300,7 @@ def observe(
                         if all(nonnegative_float(value) is not None for value in values)
                         else None)
             detail.update({
+                "gpu_sampled_unix": gpu_sample["sampled_unix"],
                 "physical_gpus": len(devices),
                 "gpu_memory_domains": domains,
                 "gpu_memory_total_bytes": memory_sum("total"),

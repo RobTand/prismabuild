@@ -108,8 +108,9 @@ def action_proof(root, key, *, parent, snapshots):
             raise ValueError(f"{key}: stdout publication trailer differs from the validated receipt")
         if executable["path"] != action["task"]["argv"][0]:
             raise ValueError(f"{key}: attested executable differs from the sealed entry point")
-    outcome = pbtest_outcomes.parse(streams["stdout"])
-    completion = pbtest_outcomes.completion(streams["stdout"])
+    record_binding = pbtest_outcomes.record_binding_for_action(action)
+    outcome = pbtest_outcomes.parse(streams["stdout"], record_binding=record_binding)
+    completion = pbtest_outcomes.completion(streams["stdout"], record_binding=record_binding)
     native = None
     if outcome is not None:
         summary = pbtest_outcomes.pytest_summary(streams["stdout"].splitlines())

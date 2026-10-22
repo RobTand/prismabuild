@@ -104,6 +104,17 @@ def admitted_child(command, *, environment=None):
         **(os.environ if environment is None else environment), **shard_environment(command)}
 
 
+def recorded_shard_evidence(record):
+    """Synthetic current-producer evidence with an owned preflight binding."""
+    nonce = "1" * 64
+    # The admitted outer shard can supply an older importable recorder.
+    # Its preflight builder's original signature remains sufficient here.
+    preflight = json.loads(pbtest_outcomes.preflight_record(0, None)[
+        len(pbtest_outcomes.PREFLIGHT_PREFIX):])
+    return (pbtest_outcomes.PREFLIGHT_PREFIX + json.dumps({**preflight, "run_nonce": nonce}) + "\n"
+            + pbtest_outcomes.PREFIX + json.dumps({**record, "run_nonce": nonce}))
+
+
 def shard_output(passed: int = 1, skipped: int = 0, *, file: str = "tests/test_one.py",
                  duration: str = "0.01s", prefix: str = "") -> str:
     """A shard's stdout: ``prefix``, then a record that reconciles, then the summary."""
@@ -114,7 +125,7 @@ def shard_output(passed: int = 1, skipped: int = 0, *, file: str = "tests/test_o
     reports = [[nodeid, "call", "passed", None, None] for nodeid in nodeids[:passed]]
     reports += [[nodeid, "setup", "skipped", "fixture reason", f"{file}:1"]
                 for nodeid in nodeids[passed:]]
-    record = pbtest_outcomes.PREFIX + json.dumps({
+    record = recorded_shard_evidence({
         "schema": pbtest_outcomes.SCHEMA, "collect_only": False,
         "collected": nodeids, "reports": reports, "uncounted": [],
     })
@@ -139,7 +150,7 @@ def shard_output_for(command) -> str:
     if not files:
         return ONE_PASS
     nodeids = [f"{file}::test_one" for file in files]
-    record = pbtest_outcomes.PREFIX + json.dumps({
+    record = recorded_shard_evidence({
         "schema": pbtest_outcomes.SCHEMA, "collect_only": False,
         "collected": nodeids,
         "reports": [[nodeid, "call", "passed", None, None] for nodeid in nodeids],

@@ -138,8 +138,11 @@ def test_main_cached_identity_replays_only_its_configured_verified_result(tmp_pa
     internal = client.reported_submission(
         client.ClientReport(identity=events.identity, ending=events.ending))
     assert record["schema"] == "prismabuild.submission.v1"
-    assert {key: record[key] for key in internal if key != "schema"} == {
-        key: value for key, value in internal.items() if key != "schema"}
+    assert {key: record[key] for key in internal if key not in {"schema", "phases"}} == {
+        key: value for key, value in internal.items() if key not in {"schema", "phases"}}
+    assert set(record["phases"]) == {
+        "cas_read", "cas_write", "filesystem_floor", "acknowledgement_verify"}
+    assert all(seconds >= 0 for seconds in record["phases"].values())
     assert record["request_sha256"]
     assert client.read_cached_output(events.identity, events.ending) == client.CachedOutput(
         cas.result_path(receipt, action).read_text())
@@ -244,7 +247,8 @@ def test_private_descriptor_numbers_do_not_enter_the_sealed_action(tmp_path, mon
                 assert _run_pbrun(tmp_path, monkeypatch, work,
                     '--detach', '--client-events-fd', str(write_fd)) == 0
                 decoder = channel.ClientEventDecoder(queue_root=queue.root, cas_root=tmp_path / 'cas')
-                decoder.feed(os.read(read_fd, 2048))
+                while chunk := os.read(read_fd, channel.MAX_CLIENT_CHANNEL_BYTES):
+                    decoder.feed(chunk)
                 events = decoder.finish(0)
                 assert events.problem is None
                 identities.append(events.identity)
