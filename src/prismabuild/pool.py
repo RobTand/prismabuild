@@ -6038,13 +6038,16 @@ class PoolQueue:
         return skews
 
     def _matching_offers(
-        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]],
+        allow_unknown_interpreter: bool = False,
     ) -> list[Mapping[str, object]]:
         """The offers among ``live`` that could run ``item``.
 
         One matcher, several readers: "can this run at all", "on how many
         boxes", and "which boxes" are the same question asked three ways, and
         a second copy of the rule would be a way for the answers to disagree.
+        Only advisory CPU-host placement permits an unresolved interpreter;
+        actual placeability and claim capability checks stay positive-only.
         """
 
         required = item.get("tags") or []
@@ -6064,7 +6067,9 @@ class PoolQueue:
                     has_gpu=presence.gpu is capability_eligibility.Presence.PRESENT):
                 continue
             if isinstance(capability_eligibility.OfferCapabilities.from_offer(offer).check(
-                    requirements, clock=_now), capability_eligibility.CapabilityRefusal):
+                    requirements, clock=_now,
+                    allow_unknown_interpreter=allow_unknown_interpreter),
+                    capability_eligibility.CapabilityRefusal):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -15861,6 +15866,11 @@ class PoolQueue:
         (aarch64-only work tagged ``gb10``) has no CPU host to wait for and is
         spread across GPU hosts, subject to the same READY-GPU rule, by
         their own claims.
+
+        A portable row also waits for a live, otherwise matching CPU host's
+        UNKNOWN interpreter answer (#2014), regardless of capacity or previous
+        pass-on evidence. PRESENT resumes the fit/pass rules; ABSENT excludes
+        that host. Staleness or disappearance also ends this unresolved wait.
         """
 
         if not has_gpu or demand.get("gpu") or not demand:
@@ -15868,12 +15878,21 @@ class PoolQueue:
         if not isinstance(item.get("published_unix"), (int, float)):
             return None           # no denial could ever end the wait
         host = socket.gethostname()
-        for offer in self._matching_offers(item, live=placement.offers()):
+        for offer in self._matching_offers(item, live=placement.offers(),
+                allow_unknown_interpreter=self._portable_cpu_work(item)):
             remote_host = str(offer.get("host") or "")
             if (not remote_host or remote_host == host
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue
+            interpreter = item.get("interpreter")
+            if (isinstance(interpreter, str)
+                    and capability_eligibility.InterpreterAnswers.from_offer(offer).answer(interpreter)
+                    is capability_eligibility.Presence.UNKNOWN):
+                # Until this live peer answers, neither free capacity nor a
+                # previous denial proves the row needs a GPU host (#2014).
+                return {"host": remote_host, "interpreter": interpreter,
+                        "interpreter_presence": "unknown"}
             if require_fit and self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
             try:
@@ -17136,7 +17155,8 @@ class PoolQueue:
             item.get("cpu_guest_retry") is True or any(
                 capability_eligibility.HostPresence.from_offer(offer).gpu
                 is capability_eligibility.Presence.ABSENT
-                for offer in self._matching_offers(item, live=placement.offers())))
+                for offer in self._matching_offers(item, live=placement.offers(),
+                    allow_unknown_interpreter=True)))
         if not has_gpu:
             idle_peer = self._defer_to_idle_gpu_host(
                 item, reservation_demand, placement=placement, ready=ready)
@@ -17160,8 +17180,12 @@ class PoolQueue:
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
             **({"require_fit": False} if exhausted else {})))
         if cpu_host is not None:
+            reason = ("guest_retry_budget_exhausted" if exhausted
+                      else "deferred_for_unresolved_cpu_host"
+                      if cpu_host.get("interpreter_presence") == "unknown"
+                      else "deferred_for_cpu_only_host")
             return candidate_policy.CandidateDenial(
-                "guest_retry_budget_exhausted" if exhausted else "deferred_for_cpu_only_host", {
+                reason, {
                     "demand": demand, "reservation_demand": reservation_demand,
                     "cpu_host": cpu_host,
                 }, scan)

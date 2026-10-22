@@ -4118,10 +4118,15 @@ from before the field offers neither the tag nor the answers, so
 interpreter-naming work waits out a rolling publish rather than exiting 127
 on a box that cannot run it (fail closed, the #714 fence).
 
-**The inventory is a lookup, not a scan.** The worker's offer answers for
-exactly the absolute paths the ready items name — one `stat` per distinct
-path per poll — and publishes the present, executable ones as `interpreters`
-on the offer. No configured roots, no directory walk, and nothing anywhere
+**The inventory is a lookup, not a scan.** Each offer publication rechecks
+up to `INTERPRETER_INVENTORY_LIMIT` (32) recently requested interpreter paths
+and publishes executable ones as `interpreters`, with negative answers in
+`interpreters_absent` (#2014). The host-local `interpreter-inventory.json`
+stores names oldest first under the existing per-uid offer-publication lock.
+Sibling loops and empty READY polls retain those names. A request refreshes
+its position; new paths evict the oldest. Every publication re-stats each
+retained path, so no saved name preserves a stale positive or negative answer.
+No configured roots, no directory walk, and nothing anywhere
 names a project's venvs: PB core stays ignorant of PQ. An offer with no
 `interpreters` field is unknown, never capable, and matches no
 interpreter-naming item.
@@ -6394,6 +6399,20 @@ guest retry cap. Explicit hostname/class tags keep their existing placement.
 A CPU-only host never waits indefinitely for another host. Peer reads remain
 once per host per pass; #1262 yields charge that view so it cannot leave more
 rows than a peer fits.
+
+For portable CPU work, a LIVE CPU-only host that matches every other
+requirement but has an UNKNOWN interpreter answer also counts as a possible
+CPU host (#2014). An idle GPU host may admit the row as a proven restartable
+guest under the idle checks above. Otherwise it leaves the row READY with
+`deferred_for_unresolved_cpu_host`; its `cpu_host` evidence names the host,
+interpreter and `interpreter_presence: "unknown"`. This wait has no timer and
+grants no claim or reservation. It ends on interpreter evidence: PRESENT
+resumes #1262's fit and pass-on rules; ABSENT excludes the host. Capacity or
+an earlier denial cannot resolve an UNKNOWN interpreter. A stale or
+disappeared host also releases the wait. Tagged/pinned rows and GPU rows keep
+their existing placement. Actual capability enforcement still requires a
+locally executable interpreter, and ordinary offer matching still requires
+PRESENT. UNKNOWN relaxes only this advisory placement decision.
 
 These #1929 contracts describe source behavior. Runtime publication and the
 live guest/GPU canary proof remain separate acceptance steps. The scoped

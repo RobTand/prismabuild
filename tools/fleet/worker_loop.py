@@ -1453,12 +1453,6 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         # now, and an item that declares images is not placeable here without
         # it.
         observed_images, _image_snapshot, class_verdict = image_observation(inventory, class_policy)
-        # The interpreter answers (#1263): exactly the paths this poll's ready
-        # snapshot asks about, statted on this box.  One bounded set per poll;
-        # a snapshot that could not be read publishes nothing, which is the
-        # fail-closed answer rather than a guess.
-        interpreter_answers = capability_eligibility.observe_interpreters(
-            discovery.snapshot or [])
         dependency_answers = capability_eligibility.observe_dependencies(
             discovery.snapshot or [], python=args.python)
 
@@ -1466,17 +1460,17 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         # inputs and independent current device identity refresh outside the
         # admission lock. The publisher receives this poll's captured detail.
         observed_detail = scratch_observed_detail(observer, profile_inputs)
-        capabilities = capability_eligibility.OfferCapabilities(
-            images=capability_eligibility.ImageAnswers.from_observed(
-                observed_images, class_verdict),
-            interpreters=interpreter_answers, dependencies=dependency_answers)
+        image_answers = capability_eligibility.ImageAnswers.from_observed(
+            observed_images, class_verdict)
 
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
-                           capabilities=capabilities,
+                           image_answers=image_answers,
+                           dependency_answers=dependency_answers,
+                           requested=discovery.snapshot or [],
                            observed_detail=observed_detail):
             """The exact advisory record this poll offers the queue.
 
@@ -1487,6 +1481,15 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             one this poll computed.
             """
 
+            # The publisher holds this uid's host-local offer lock. Merge
+            # names there so sibling and empty polls cannot erase the last
+            # 32 requested paths; re-stat instead of saving positive answers.
+            interpreter_answers = capability_eligibility.observe_interpreters(
+                requested, inventory_path=(role_session.role_lock_directory()
+                                           / "interpreter-inventory.json"))
+            capabilities = capability_eligibility.OfferCapabilities(
+                images=image_answers, interpreters=interpreter_answers,
+                dependencies=dependency_answers)
             queue.announce(
                 host=host, tags=tags, has_gpu=has_gpu,
                 capacity=declared, observed_capacity=capacity,
