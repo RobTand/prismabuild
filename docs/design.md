@@ -16379,9 +16379,10 @@ An unreadable reference record refuses the pass, as do ledger/holder census
 failures, reader barriers and unsafe walks. An unavailable, malformed or invalid
 referenced manifest instead remains an explicit unresolved reference, never
 an empty read-set. The census retains the originating record and manifest
-digest alongside usable layouts and unresolved coverage. The receipt's
-`reference_refusals` names each unresolved record, digest, protected scope and
-reason.
+digest alongside usable layouts and unresolved coverage. When unresolved
+references are found, the receipt includes `reference_refusals`, naming each
+unresolved record, digest, protected scope and reason. The field is omitted
+when empty to preserve existing receipt bytes.
 
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The

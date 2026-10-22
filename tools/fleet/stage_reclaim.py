@@ -1061,13 +1061,14 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 receipt["movers_in_flight"] = list(verdict.movers_in_flight)
             return receipt
         attributed = set(verdict.paths)
-        receipt["reference_refusals"] = []
 
         def _include_references(census: _ReferenceCensus) -> None:
             attributed.update(census.protected_paths)
             for refusal in census.refusals:
-                if refusal not in receipt["reference_refusals"]:
-                    receipt["reference_refusals"].append(refusal)
+                # Preserve existing receipt bytes when no reference is unresolved.
+                refusals = receipt.setdefault("reference_refusals", [])
+                if refusal not in refusals:
+                    refusals.append(refusal)
 
         try:
             # Read, not used per file: the ledger names action keys,
