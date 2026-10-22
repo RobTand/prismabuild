@@ -544,8 +544,10 @@ def refused_process(monkeypatch, launches, message=PIN_REFUSAL, report=...):
             stdout.write(captured + "\n")
             stdout.flush()
             self.pid = 4242
-        def poll(self):
+        def wait(self):
             return self.returncode
+    # Completed doubles expose readable, owned descriptors in place of pidfds.
+    monkeypatch.setattr(mq.os, 'pidfd_open', lambda pid: os.open(os.devnull, os.O_RDONLY))
     def launch(command, **kwargs):
         if command[0] == 'git' or command[0] == sys.executable and command[1] == '-c':
             return original(command, **kwargs)

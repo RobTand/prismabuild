@@ -127,8 +127,12 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
         def __init__(self, returncode):
             self.returncode = returncode
 
-        def poll(self):
+        def wait(self):
             return self.returncode
+
+    # These completed clients need only an always-readable owned wait fd.
+    monkeypatch.setattr(mq.os, "pidfd_open",
+                        lambda pid: mq.os.open(mq.os.devnull, mq.os.O_RDONLY))
 
     def launch(command, **kwargs):
         if command[0] == "git":
@@ -183,3 +187,44 @@ def test_version_two_post_run_generation_evidence_is_not_reused(tmp_path):
     store.remember_baseline(legacy_key, ["tests/test_a.py"], ["tests/test_a.py::old"])
     assert store.baseline(legacy_key)
     assert not store.baseline(mq.baseline_key(cfg, "tree", runtime))
+
+
+@pytest.mark.parametrize("failure", ["open", "readiness", "reap", "heartbeat"])
+def test_pidfd_ownership_cleans_up_exceptional_exits(monkeypatch, failure):
+    opened, closed, waited = [], [], []
+
+    class Child:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def wait(self):
+            waited.append(self.pid)
+            if failure == "reap":
+                raise RuntimeError("reap")
+
+    def open_fd(pid):
+        if failure == "open" and pid == 2:
+            raise RuntimeError("open")
+        fd = 100 + pid
+        opened.append(fd)
+        return fd
+
+    class Poll:
+        def register(self, fd, events):
+            pass
+
+        def poll(self, timeout):
+            if failure == "readiness":
+                raise RuntimeError("readiness")
+            return [(101, mq.select.POLLIN)]
+
+    monkeypatch.setattr(mq.os, "pidfd_open", open_fd)
+    monkeypatch.setattr(mq.os, "close", closed.append)
+    monkeypatch.setattr(mq.select, "poll", Poll)
+    with pytest.raises(RuntimeError, match=failure):
+        with mq._child_pidfds([Child(1), Child(2)]) as pending:
+            mq._reap_ready(pending, mq.time.monotonic() + 5)
+            assert 101 not in pending
+            raise RuntimeError("heartbeat")
+    assert sorted(closed) == opened
+    assert waited == ([1] if failure in {"reap", "heartbeat"} else [])
