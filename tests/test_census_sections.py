@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import json
-import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
-import tarfile
+from history_inputs import materialize_sources
 import time
 from urllib.request import urlopen
 
@@ -331,19 +330,13 @@ print(json.dumps({"values": values, "schedules": schedules}))
 
 
 def test_original_fact_values_and_observable_capture_order_match(tmp_path):
-    repository = Path(pbmcp.__file__).parents[2]
+    repository = Path(__file__).resolve().parents[1]
     original = tmp_path / "original"
     original.mkdir()
-    raw = subprocess.check_output(["git", "-C", str(repository), "archive",
-                                   "8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7", "src", "tools/fleet"])
-    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-        archive.extractall(original, filter="data")
+    materialize_sources("8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7", original)
     strict_reference = tmp_path / "strict-reference"
     strict_reference.mkdir()
-    raw = subprocess.check_output(["git", "-C", str(repository), "archive",
-                                   "082f75ea50b2601c8681fe070a5a342e1b042702", "src", "tools/fleet"])
-    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-        archive.extractall(strict_reference, filter="data")
+    materialize_sources("082f75ea50b2601c8681fe070a5a342e1b042702", strict_reference)
     fleet = fixture.build_starved(tmp_path / "store")
     now = str(time.time())
     environment = {**os.environ, "PYTHONPATH": ""}

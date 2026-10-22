@@ -6,7 +6,7 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
-import subprocess
+from history_inputs import source_bytes
 import sys
 import tempfile
 
@@ -22,9 +22,7 @@ BASE = 'd2f92f5ff533489182dddaf286feb54afde6f34a'
 
 @pytest.fixture(scope='module')
 def original_records():
-    source = subprocess.check_output(
-        ['git', 'show', BASE + ':src/prismabuild/produced_output.py'],
-        cwd=Path(__file__).resolve().parents[1], text=True)
+    source = source_bytes(BASE, 'src/prismabuild/produced_output.py').decode('utf-8')
     tree = ast.parse(source)
     names = {'_read_commitments', '_write_commitments', '_class_sums'}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]

@@ -15,6 +15,8 @@ pbtest at -10.
 """
 from __future__ import annotations
 
+from history_inputs import source_bytes
+
 import hashlib
 import importlib.util
 import json
@@ -88,9 +90,7 @@ def _published_generation(store: Path, name: str, *,
             _CHECKOUT / "src/prismabuild/immutable_files.py")
     else:
         rel = "src/prismabuild/core.py"
-        original = subprocess.run(
-            ["git", "show", f"{PRE_SPLIT_COMMIT}:{rel}"], cwd=_CHECKOUT,
-            check=True, capture_output=True).stdout
+        original = source_bytes(PRE_SPLIT_COMMIT, rel)
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(original)

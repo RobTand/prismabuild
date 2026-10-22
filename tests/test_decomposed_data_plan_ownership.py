@@ -2,7 +2,7 @@
 import ast
 from copy import deepcopy
 from pathlib import Path
-import subprocess
+from history_inputs import source_bytes
 from types import SimpleNamespace
 
 import pytest
@@ -21,9 +21,7 @@ POLICY = {'task_data_manifest': {'residency_tier': 'tier', 'residency_ram': 'off
 def freeze_data_plan_control(request):
     if request.param == 'current':
         return pbcampaign.frozen_child_data_plans
-    source = subprocess.check_output(
-        ['git', 'show', ORIGINAL + ':tools/fleet/pbcampaign.py'],
-        cwd=Path(__file__).resolve().parents[1])
+    source = source_bytes(ORIGINAL, 'tools/fleet/pbcampaign.py')
     nodes = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)
              and node.name in {'_stored_document', 'frozen_child_data_plans'}]
     assert len(nodes) == 2

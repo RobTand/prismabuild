@@ -121,8 +121,8 @@ def test_installed_record_hash_and_result_match_main(tmp_path, monkeypatch, algo
 def test_trace_long_node_digest_and_bytes_match_main(monkeypatch):
     import contextlib
     outcomes = fleet_module("pbtest_outcomes")
-    source = subprocess.run(["git", "show", f"{MAIN}:tools/fleet/pbtest_outcomes.py"],
-                            cwd=ROOT, check=True, text=True, capture_output=True).stdout
+    from history_inputs import source_bytes
+    source = source_bytes(MAIN, "tools/fleet/pbtest_outcomes.py").decode("utf-8")
     trace = next(node for node in ast.walk(ast.parse(source))
                  if isinstance(node, ast.FunctionDef) and node.name == "trace")
     old_namespace = {"hashlib": hashlib, "json": json, "time": outcomes.time,
