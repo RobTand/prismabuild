@@ -1,5 +1,6 @@
 """Client recovery remembers abandoned readers after per-await cleanup."""
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,7 +52,7 @@ def test_refused_reader_is_counted_before_another_plain_failure(monkeypatch, sta
 
 @pytest.mark.parametrize('wait_s,expected_reads', [(0, 2), (1, 3)])
 def test_final_reread_and_reaping_cannot_erase_the_first_abandoned_reader(
-        monkeypatch, wait_s, expected_reads):
+        monkeypatch, tmp_path, wait_s, expected_reads):
     calls = []
 
     def bounded(*_args, abandoned, **_kwargs):
@@ -65,7 +66,8 @@ def test_final_reread_and_reaping_cannot_erase_the_first_abandoned_reader(
     monkeypatch.setattr(action_wait, 'wait_out_retained_readers',
                         lambda *_a, **_k: ([], 0.0))
     with action_wait.client_readers() as history:
-        assert action_client.report_pool_outcome(object(), 'a' * 64, wait_s=wait_s) == 74
+        queue = SimpleNamespace(records=SimpleNamespace(root=tmp_path))
+        assert action_client.report_pool_outcome(queue, 'a' * 64, wait_s=wait_s) == 74
         assert len(calls) == expected_reads
         assert history.snapshot().abandoned_count == 1
         assert history.snapshot().identities[0].pid == 123

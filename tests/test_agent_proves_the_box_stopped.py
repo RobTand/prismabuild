@@ -79,7 +79,7 @@ def test_both_proof_profiles_cover_the_supervised_work_and_storage_roles():
     from client_proof_bridge_fixture import INSTALLED_READER
     from supervise import LOOP_SCRIPT, ROLE_SCRIPTS
 
-    expected = {LOOP_SCRIPT, "worker.py", *ROLE_SCRIPTS.values()} - {"pbmetrics.py"}
+    expected = {LOOP_SCRIPT, "worker.py", *ROLE_SCRIPTS.values()} - {"pbmetrics.py", "pbbell.py"}
     assert park_proof.HOST_QUIESCENT == expected
     assert park_proof.MEMBER_LOOPS == expected
     observer = next(node for node in ast.walk(ast.parse(INSTALLED_READER))

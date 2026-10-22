@@ -1,0 +1,23 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/queue_notifier.py",
+      "owner": "BellRequest.do_GET",
+      "unresolved": "set(filter(None, query.get('keys', [''])[0].split(',')))",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "BellRequest.do_GET parses the comma-separated keys HTTP query parameter into a set of action keys used only to filter transient queue-change hints. Empty keys select all keys. These values are not durable record fields or a new closed record schema; retain the symbolic source expression without claiming wire compatibility coverage."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/queue_notifier.py",
+      "owner": "BellRequest.do_GET",
+      "unresolved": "dirs"
+    },
+    "count": 1,
+    "reason": "BellRequest.do_GET parses the comma-separated dirs HTTP query parameter and rejects values outside STATE_DIRS before filtering transient queue-change hints. The scanner records the symbolic dirs operand of that subset check. These are queue directory names, not durable record fields or a new closed record schema; retain this query-validation witness without claiming wire compatibility coverage."
+  }
+]

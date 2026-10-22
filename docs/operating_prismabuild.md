@@ -1063,6 +1063,48 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+Pool waits use the queue-host bell when available (#1894), without CLI changes.
+The waiter reads a cursor, checks the record, then long-polls for that key's
+outcome-input changes, including nested publication endings, withdrawals,
+attempts and cleanup updates in claimed/terminal records. Every reply causes
+a record recheck; bell messages
+are only hints. Restarts and lost history cause a reset and rescan. If the bell
+is unavailable, rechecks back off from 0.25 seconds to a five-second cap inside
+the original wait deadline. SLURM discovery still uses this backoff because its
+service cannot call back. Zero-patience probes contact no bell.
+
+The roster declares one `bell` role on dl380g10, supervised by
+`tools/fleet/supervise.py --ensure --systemd`. Publication and activation are
+operator steps; source inclusion alone does not establish a running service.
+It listens on TCP 9470 at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and
+192.168.1.107, declared in the roster. The Sparks and Celestia discover their
+address from their own `/mnt/shared` mount source. Inspect `pb-role-bell.log`
+alongside other supervised role logs.
+Clients also identify their queue path; a bell serving another queue returns
+unavailable, so scratch queues retain bounded fallback.
+`GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
+300 seconds; a restart changes epoch. An occupied port, unavailable listen
+address, or missing queue root or required state directory at startup exits 3
+with a named reason and uses the supervisor's existing refusal backoff.
+Listeners bind before watches and scanning; cursors are served only after
+startup completes. A lost state-directory watch after startup exits 1 for
+prompt restart. A published bell watches the active `repo` link and exits
+on retirement, including rollback to a generation without a bell role. Stop
+joins tracked request threads after waking their long-polls. Incomplete headers
+have an absolute five-second budget. At most 128 connections across all listeners
+are served; overload returns 503 and clients use unavailable-callback backoff.
+Client connect, headers and body share the original patience. Repeated immediate
+empty/reset replies also use the capped backoff.
+
+The service is unauthenticated on the listed private addresses. Peers can see
+action keys, state-directory names, timing and cursors; they cannot read record
+bodies or logs, submit, withdraw or change work through the bell.
+Host firewall rules must permit the submitting hosts to reach TCP 9470 at
+their queue mount sources before activation. PB does not install firewall
+configuration.
+This slice changes pbwait/pbrun pool waits only; worker, prewarm and tier-loop
+waits migrate in later PRs.
+
 By default `pbrun` waits. `--wait-s` bounds how long it waits and defaults to
 86400 seconds. It bounds only your patience: nothing is cancelled when it
 expires, and the job keeps running.
@@ -1072,7 +1114,7 @@ an isolated child with a five-second budget. The observation includes terminal
 rows, withdrawal/preemption lineage, and archived successor evidence; once an
 ending lands, immutable attempt and log verification gets one separate
 five-second budget before any result is printed. The parent retains the
-original `--wait-s` deadline across observations and does the polling sleep,
+original `--wait-s` deadline across observations and waits for queue hints,
 so a repeated preemption follows its exact generation without granting a fresh
 wait. `--wait-s 0` still makes one immediate bounded observation, and a
 timed-out read exits 74. A positive `--wait-s` never gives a read more time
