@@ -2,12 +2,13 @@
 import json
 import os
 from pathlib import Path
-import selectors
 import signal
 import subprocess
 import sys
 
 import pytest
+
+from role_wait_support import read_until_output, stop_role_child
 
 from prewarm_fixture import Fleet
 from test_prewarm_requires_known_receipts import KNOWN, REPOSITORY
@@ -117,22 +118,8 @@ raise SystemExit(code)
     return child, fleet, key
 
 
-def _finish(child):
-    if child.poll() is None:
-        child.kill()
-    child.communicate(timeout=5)
-
-
 def _boundary(child, needle=b'"event": "prewarm-runtime-unknown"'):
-    output = bytearray()
-    with selectors.DefaultSelector() as selector:
-        selector.register(child.stdout, selectors.EVENT_READ)
-        while needle not in output:
-            assert selector.select(5), bytes(output).decode(errors="replace")
-            chunk = os.read(child.stdout.fileno(), 65536)
-            assert chunk, bytes(output).decode(errors="replace")
-            output.extend(chunk)
-    return bytes(output)
+    return read_until_output(child, needle)
 
 
 def _assert_state(root, fleet, key, *, cycles, queue_opened, parked):
@@ -165,28 +152,29 @@ def test_atomic_repair_resumes_with_the_first_known_loaded_identity(tmp_path, un
         if unknown_side == "published":
             _replace(tmp_path / "loaded.json", {**KNOWN, "generation": "replacement"})
         _replace(tmp_path / f"{unknown_side}.json", KNOWN)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("unknown_side", ["loaded", "published"])
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
 def test_unknown_wait_is_interruptible(tmp_path, unknown_side, stop_signal):
+    # Only a stop can end this retry before the per-test alarm.
     child, fleet, key = _start(tmp_path, None if unknown_side == "loaded" else KNOWN,
-                              None if unknown_side == "published" else KNOWN, interval=3600)
+                              None if unknown_side == "published" else KNOWN, interval=1e9)
     try:
         prefix = _boundary(child)
         child.send_signal(stop_signal)
-        output = prefix + child.communicate(timeout=3)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=0, queue_opened=False, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("after_cycle", [False, True])
@@ -199,24 +187,24 @@ def test_unknown_publication_allows_only_the_actual_idle_park(tmp_path, after_cy
             prefix = _boundary(child, b"maintenance gate closed; storage cycle deferred")
             _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=1)
             child.send_signal(signal.SIGTERM)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (0 if after_cycle else 75), output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=int(after_cycle), queue_opened=after_cycle, parked=1)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
 def test_receipt_loss_does_not_undo_completed_read_or_accounting(tmp_path, stop_signal):
     child, fleet, key = _start(tmp_path, KNOWN, KNOWN, mode="lose-and-stop", stop_signal=stop_signal)
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 @pytest.mark.parametrize("once", [True, False])
@@ -227,20 +215,20 @@ def test_topology_return_cannot_authorize_work_after_publication_loss(tmp_path, 
         _assert_state(tmp_path, fleet, key, cycles=0, queue_opened=True, parked=0)
         if not once:
             _replace(tmp_path / "published.json", KNOWN)
-        output = prefix + child.communicate(timeout=10)[0]
+        output = prefix + child.communicate()[0]
         assert child.returncode == (75 if once else 0), output.decode(errors="replace")
         assert b"runtime moved" not in output
         _assert_state(tmp_path, fleet, key, cycles=int(not once), queue_opened=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)
 
 
 def test_known_drift_after_a_real_read_retires_before_a_second_cycle(tmp_path):
     child, fleet, key = _start(tmp_path, KNOWN, KNOWN, mode="move")
     try:
-        output = child.communicate(timeout=10)[0]
+        output = child.communicate()[0]
         assert child.returncode == 0, output.decode(errors="replace")
         assert b"runtime moved" in output
         _assert_state(tmp_path, fleet, key, cycles=1, queue_opened=True, parked=0)
     finally:
-        _finish(child)
+        stop_role_child(child)

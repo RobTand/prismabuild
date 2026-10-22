@@ -3600,7 +3600,7 @@ def _echo(path, stream, *, display: DisplaySink = discard_display) -> None:
 def withdraw_routed(
     prefixes, *, transport: str, reason: str = "", by: str = "",
     lane_root=None, queue_root=None, scancel: str = "scancel",
-    squeue: str = "squeue", queue=None,
+    squeue: str = "squeue", queue=None, on_withdrawal=None,
 store: FleetStore, display: DisplaySink = discard_display) -> int:
     """Send each prefix to the transport that recorded it.
 
@@ -3625,18 +3625,19 @@ store: FleetStore, display: DisplaySink = discard_display) -> int:
         rc = max(rc, withdraw_slurm_main(
             lane_prefixes, reason=reason, by=by, lane_root=lane_root,
             queue_root=queue_root, scancel=scancel, squeue=squeue,
-        store=store, display=display))
+        store=store, display=display, on_withdrawal=on_withdrawal))
     if pool_prefixes:
         if queue is None:
             root = store.queue_root if queue_root is None else Path(queue_root)
             queue = pool.PoolQueue(root)
-        rc = max(rc, withdraw_main(queue, pool_prefixes, reason=reason, by=by, store=store, display=display))
+        rc = max(rc, withdraw_main(queue, pool_prefixes, reason=reason, by=by, store=store, display=display,
+                                           on_withdrawal=on_withdrawal))
     return rc
 
 
 def withdraw_slurm_main(
     prefixes, *, reason: str = "", by: str = "", lane_root=None,
-    queue_root=None, scancel: str = "scancel", squeue: str = "squeue",
+    queue_root=None, scancel: str = "scancel", squeue: str = "squeue", on_withdrawal=None,
 store: FleetStore, display: DisplaySink = discard_display) -> int:
     """Cancel every job under each named action, refusing an ambiguous prefix.
 
@@ -3677,6 +3678,8 @@ store: FleetStore, display: DisplaySink = discard_display) -> int:
         if not found:
             emit_display(display, f"pbrun: no slurm submission matches {prefix!r}",
                   channel="stderr")
+            if on_withdrawal is not None:
+                on_withdrawal(str(prefix), None, False)
             rc = rc or 2
             continue
         if len(found) > 1:
@@ -3697,6 +3700,8 @@ store: FleetStore, display: DisplaySink = discard_display) -> int:
             rc = action_client.RECORD_WRITE_FAILED_EXIT
             continue
         if marker is None:
+            if on_withdrawal is not None:
+                on_withdrawal(key, None, False)
             emit_display(display, f"pbrun: {key[:12]} already has an outcome filed; "
                   f"nothing to withdraw", channel="stderr")
             continue
@@ -3706,6 +3711,8 @@ store: FleetStore, display: DisplaySink = discard_display) -> int:
                 accepted.append(target)
             else:
                 refused.append(target)
+        if on_withdrawal is not None:
+            on_withdrawal(key, record.get("state"), True)
         if accepted:
             try:
                 _stamp_scancel_accepted(queue, record)
@@ -3913,7 +3920,8 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     pool.record_store.RecordStore(queue_root).replace_lane_item_at(filed, record)
 
 
-def withdraw_main(q, prefixes, *, reason: str = "", by: str = "", store: FleetStore, display: DisplaySink = discard_display) -> int:
+def withdraw_main(q, prefixes, *, reason: str = "", by: str = "", store: FleetStore,
+                  display: DisplaySink = discard_display, on_withdrawal=None) -> int:
     """Withdraw each named action and say what happened to it.
 
     Takes the queue rather than building one, for the same reason
@@ -3935,9 +3943,13 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "", store: FleetSt
             result = q.withdraw(key, reason=reason, by=by)
         except Exception as exc:                                  # noqa: BLE001
             emit_display(display, f"pbrun: {exc}", channel="stderr")
+            if on_withdrawal is not None:
+                on_withdrawal(str(prefix), None, False)
             rc = 2
             continue
         status = str(result.get("status"))
+        if on_withdrawal is not None:
+            on_withdrawal(key, result.get("state"), status != "already_finished")
         if status == "already_finished":
             emit_display(display, f"pbrun: {key[:12]} had already finished "
                   f"({result.get('state')}); nothing to withdraw",
@@ -6495,7 +6507,7 @@ def _request_value_matches(value, expected) -> bool:
 
 def submit_request(request: SubmissionRequest, *, store: FleetStore,
            display: DisplaySink = discard_display, report=None,
-           publication_canary_intent=None, authorize_canary=None,
+           publication_canary_intent=None, authorize_canary=None, on_withdrawal=None,
            deadline: float | None = None,
            ) -> action_client.ClientReport | SubmissionRefused:
     """Own one complete submission and its C06 report/reader lifetime."""
@@ -6518,7 +6530,8 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
                     who = "unknown"
                 by = f"{who}@{socket.gethostname()}"
                 code = (withdraw_routed(request.withdraw, transport=request.transport,
-                            reason=request.reason, by=by, store=store, display=display)
+                            reason=request.reason, by=by, store=store, display=display,
+                            on_withdrawal=on_withdrawal)
                         if request.withdraw else release_declared_consumer(
                             *request.release_origin_consumer, reason=request.reason,
                             by=by, store=store, display=display))

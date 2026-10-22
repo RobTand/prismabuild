@@ -12,9 +12,8 @@ These cases run a real pytest in a child process, because the thing under
 test is what a shard's failure record looks like, and a shard is a pytest
 process. The child writes one test that sleeps past a small timeout; the
 assertions read the child's own report. An unbounded child would hang this
-suite the same way the shard hung, so every child here runs under a
-subprocess timeout that is deliberately larger than the timeout it is
-exercising.
+suite the same way the shard hung, so the outer test's bound still applies.
+The sleep controls also carry a longer subprocess timeout.
 
 ``PRISMABUILD_TEST_TIMEOUT_S`` is the knob the bound reads, spelled the same
 way here, in the plugin and in the shard ``pbtest.py`` builds, so the contract
@@ -59,7 +58,7 @@ _HANGING_TEST = textwrap.dedent(f"""
 
 def _run_child(child_root: Path, files: dict[str, str], *,
                timeout_env: str | None,
-               subprocess_timeout_s: float,
+               subprocess_timeout_s: float | None,
                workers: int = 0) -> subprocess.CompletedProcess:
     """Run a private pytest child and return its completed process.
 
@@ -206,3 +205,50 @@ def test_this_suites_own_session_runs_under_the_bound_plugin(
     assert hasattr(pytestconfig, "_prismabuild_test_bound"), (
         "the loaded plugin must have configured this session's bound"
     )
+
+
+@pytest.mark.parametrize("wait", ["select", "read", "output", "wait", "communicate", "run"])
+def test_event_wait_hangs_are_named_by_the_per_test_bound(tmp_path, wait):
+    """Every wait used by #1922 still fails when its event never arrives."""
+    source = '''
+import os, select, subprocess, sys
+
+def test_event_never_arrives():
+    if WAIT in ('select', 'read'):
+        reader, writer = os.pipe()
+        try:
+            if WAIT == 'select':
+                select.select([reader], [], [])
+            else:
+                os.read(reader, 1)
+        finally:
+            os.close(reader)
+            os.close(writer)
+    else:
+        command = [sys.executable, '-c', 'import signal; signal.pause()']
+        if WAIT == 'run':
+            subprocess.run(command, capture_output=True)
+        else:
+            child = subprocess.Popen(command, stdout=subprocess.PIPE)
+            try:
+                if WAIT == 'wait':
+                    child.wait()
+                elif WAIT == 'output':
+                    from role_wait_support import read_until_output
+                    read_until_output(child, b'ready')
+                else:
+                    child.communicate()
+            finally:
+                child.kill()
+                child.communicate()
+'''
+    proc = _run_child(
+        tmp_path / wait,
+        {"test_wait.py": (
+            f"import sys\nsys.path.insert(0, {str(REPO_SRC.parent / 'tests')!r})\n"
+            f"WAIT = {wait!r}\n" + textwrap.dedent(source))},
+        timeout_env=CHILD_TIMEOUT_S, subprocess_timeout_s=None,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "test_event_never_arrives exceeded the per-test bound" in proc.stderr
+    assert "1 failed" in proc.stdout

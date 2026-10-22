@@ -83,7 +83,7 @@ raise SystemExit(code)
         "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
     }
     child = subprocess.run([sys.executable, "-B", str(script)], env=environment,
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True)
     lines = []
     for line in child.stdout.splitlines():
         try:

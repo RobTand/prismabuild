@@ -121,6 +121,14 @@ def remaining_bound(*, bound_s: float, budget_s: float, elapsed_s: float) -> flo
     return min(bound_s, remaining)
 
 
+class _BoundExceeded(pytest.fail.Exception):
+    """A bound failure whose cause survives pytest's exception rendering."""
+
+    def __init__(self, message: str, *, budgeted: bool) -> None:
+        super().__init__(message, pytrace=False)
+        self.kind = "shard_budget_exhausted" if budgeted else "per_test_bound"
+
+
 class _Alarm:
     """One armed bound, disarmable without a late signal reaching the next.
 
@@ -162,7 +170,7 @@ class _Alarm:
         # summary that would otherwise carry the name is printed at the end of
         # a session that may be killed first.
         self._announce()
-        pytest.fail(self.message(), pytrace=False)
+        raise _BoundExceeded(self.message(), budgeted=self.budgeted)
 
     def _announce(self) -> None:
         """Put the node id on the session's real stderr, now.
@@ -208,10 +216,18 @@ def _bounded(item: pytest.Item, phase: str):
     started = getattr(item.config, "_prismabuild_session_start", None)
     budgeted = False
     if budget and started is not None:
+        now = time.monotonic()
+        if phase == "setup":
+            item._prismabuild_bound_start = {
+                "started_monotonic": now,
+                "budget_remaining_s": budget - (now - started),
+            }
         tightened = remaining_bound(
             bound_s=seconds, budget_s=budget,
-            elapsed_s=time.monotonic() - started)
-        budgeted = tightened != seconds
+            elapsed_s=now - started)
+        budgeted = tightened < seconds
+        if budgeted and not hasattr(item.config, "_prismabuild_first_tightened_test"):
+            item.config._prismabuild_first_tightened_test = item._prismabuild_bound_start
         seconds = tightened
     alarm = _Alarm(item.nodeid, phase, seconds,
                    item.config.pluginmanager.get_plugin("capturemanager"),
@@ -248,6 +264,18 @@ def pytest_report_header(config: pytest.Config) -> str | None:
         return (f"per-test bound {seconds:g}s requested but this platform has "
                 "no SIGALRM: tests run unbounded")
     return f"per-test bound {seconds:g}s per phase ({test_bound_contract.TIMEOUT_ENV})"
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    report = yield
+    if call.excinfo is not None and isinstance(call.excinfo.value, _BoundExceeded):
+        # Report attributes travel through xdist's existing serialization.
+        report.pbtest_bound_kind = call.excinfo.value.kind
+    first = getattr(item.config, "_prismabuild_first_tightened_test", None)
+    if first is not None:
+        report.pbtest_first_tightened_test = first
+    return report
 
 
 @pytest.hookimpl(wrapper=True)

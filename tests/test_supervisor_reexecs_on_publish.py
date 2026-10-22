@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -171,44 +170,49 @@ def test_inherited_flock_survives_a_real_exec_and_excludes_ensure(
     tmp_path, monkeypatch,
 ):
     claim = tmp_path / "supervisor.claim"
-    ready = tmp_path / "ready"
-    release = tmp_path / "release"
     monkeypatch.setattr(supervise, "CLAIM", claim)
     original = supervise._claim_handle(ensure=False)
     assert original is not None
     descriptor = original.fileno()
     os.set_inheritable(descriptor, True)
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
     child_code = f"""
-import os, sys, time
+import os, sys
 from pathlib import Path
 sys.path.insert(0, {str(TOOLS)!r})
 import supervise
 supervise.CLAIM = Path({str(claim)!r})
 handle = supervise._claim_handle(ensure=False)
-Path({str(ready)!r}).write_text('ready')
-while not Path({str(release)!r}).exists():
-    time.sleep(.01)
+os.write({ready_write}, b'ready')
+os.close({ready_write})
+assert os.read({release_read}, 1) == b'R'
+os.close({release_read})
 handle.close()
 """
     environment = {**os.environ,
                    supervise.INHERITED_CLAIM_FD_ENV: str(descriptor)}
     child = subprocess.Popen(
         [sys.executable, "-c", child_code], env=environment,
-        pass_fds=(descriptor,), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        pass_fds=(descriptor, ready_write, release_read),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True,
     )
     original.close()
-    deadline = time.monotonic() + 5
-    while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
-        time.sleep(.01)
-    if not ready.exists():
-        stdout, stderr = child.communicate(timeout=5)
-        pytest.fail(f"exec child did not adopt the lock: {stdout=} {stderr=}")
-
-    assert supervise._claim_handle(ensure=True) is None
-    release.write_text("release")
-    stdout, stderr = child.communicate(timeout=5)
-    assert child.returncode == 0, (stdout, stderr)
+    os.close(ready_write)
+    os.close(release_read)
+    try:
+        assert os.read(ready_read, 5) == b'ready'
+        assert supervise._claim_handle(ensure=True) is None
+        os.write(release_write, b'R')
+        stdout, stderr = child.communicate()
+        assert child.returncode == 0, (stdout, stderr)
+    finally:
+        os.close(ready_read)
+        os.close(release_write)
+        if child.poll() is None:
+            child.kill()
+        child.communicate()
     successor = supervise._claim_handle(ensure=False)
     assert successor is not None
     successor.close()
