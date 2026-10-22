@@ -478,10 +478,13 @@ def _nvidia_injection_intent(intent):
         except (csv.Error, StopIteration):
             continue
         drivers = [field.partition('=')[2] for field in fields if field.startswith('driver=')]
-        if len(drivers) <= 1:
-            requests.append({'Driver': drivers[0] if drivers else '', 'Capabilities': [['gpu']]})
-    return _gpu_runtime_policy().container_requests_nvidia({
-        'HostConfig': {'Runtime': intent.get('runtime'), 'DeviceRequests': requests}})
+        devices = [field.partition('=')[2].split(',') for field in fields if field.startswith('device=')]
+        if len(drivers) <= 1 and len(devices) <= 1:
+            requests.append({'Driver': drivers[0] if drivers else '',
+                             'DeviceIDs': devices[0] if devices else [], 'Capabilities': [['gpu']]})
+    # The action namespace supplies intent, never the broker's vendor proof.
+    return _gpu_runtime_policy().container_nvidia_intent({
+        'HostConfig': {'Runtime': intent.get('runtime'), 'DeviceRequests': requests}}) != 'none'
 
 
 def _reserved_cpuset(requested: str | None) -> str:

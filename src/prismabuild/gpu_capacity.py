@@ -470,6 +470,7 @@ RUNTIME_REASON = 'gpu_container_runtime_unready'
 RUNTIME_SCHEMA = 'prismabuild.gpu-container-runtime.v1'
 RUNTIME_GATE = Path('/run/prismabuild/gpu-container-runtime.json')
 RUNTIME_ENABLE = Path('/etc/prismabuild/gpu-container-runtime.enabled')
+NVIDIA_CONTROL_DEVICE = Path('/dev/nvidiactl')
 RUNTIME_PROBE_ENV = 'PRISMABUILD_GPU_RUNTIME_PROBE'
 RUNTIME_PROBE_LABEL = 'prismabuild.runtime-readiness'
 RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
@@ -605,21 +606,51 @@ def container_launch_outcome(container, *, cdi_sources, source_exists=_runtime_s
                                        cdi_sources=cdi_sources, source_exists=source_exists)
 
 
-def container_requests_nvidia(container):
-    """NVIDIA intent from inspect or parsed CLI requests, still host-verified.
-
-    Docker's --gpus defaults to an unspecified driver with gpu capabilities.
-    That candidate alone cannot prove an NVIDIA host fault.
-    """
+def container_nvidia_intent(container) -> Literal['none', 'candidate', 'nvidia']:
+    """Pure request intent; an unspecified GPU driver does not identify a vendor."""
     host = container.get('HostConfig', {})
     requests = host.get('DeviceRequests', []) or []
-    return (host.get('Runtime') == 'nvidia' or any(
+    # A generic GPU capability also describes AMD requests. An explicit other
+    # runtime cannot become NVIDIA intent through a device or diagnostic hint.
+    if host.get('Runtime') not in (None, '', 'runc', 'nvidia'):
+        return 'none'
+    if host.get('Runtime') == 'nvidia' or any(
         request.get('Driver') == 'nvidia'
         or request.get('Driver') == 'cdi' and any(
             str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []) or [])
-        or not request.get('Driver') and any(
+        for request in requests):
+        return 'nvidia'
+    if any(not request.get('Driver') and any(
             'gpu' in capabilities for capabilities in request.get('Capabilities', []) or [])
-        for request in requests))
+        for request in requests):
+        return 'candidate'
+    return 'none'
+
+
+def nvidia_host_present():
+    """Root's NVIDIA control device identifies the host; query exits do not.
+
+    Trust directory descriptors and the node's type, owner and device number,
+    without opening a driver or following a caller-replaceable symlink. NVIDIA
+    documents this control device as character 195:255, normally mode 0666:
+    https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification
+    """
+    try:
+        parent = _root_owned_directory_fd(NVIDIA_CONTROL_DEVICE.parent)
+        try:
+            info = os.stat(NVIDIA_CONTROL_DEVICE.name, dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+    except (OSError, ValueError):
+        return False
+    return (stat.S_ISCHR(info.st_mode) and info.st_uid == 0
+            and os.major(info.st_rdev) == 195 and os.minor(info.st_rdev) == 255)
+
+
+def container_requests_nvidia(container):
+    """Resolve a default-driver candidate using independent trusted host identity."""
+    intent = container_nvidia_intent(container)
+    return intent == 'nvidia' or intent == 'candidate' and nvidia_host_present()
 
 
 def nvidia_driver_failure():

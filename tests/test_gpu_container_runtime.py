@@ -94,6 +94,9 @@ def runtime_authority(tmp_path, monkeypatch):
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     backend = Backend()
     monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', lambda: None)
+    # NVIDIA launch fixtures model a root-provisioned control device separately
+    # from a failed query. Non-NVIDIA regressions override this evidence.
+    monkeypatch.setattr(gpu_capacity, 'nvidia_host_present', lambda: True)
     authority = broker.Authority(tmp_path / 'run/jobs', os.getuid(), backend, max_memory_bytes=1024**3)
     cdi = tmp_path / 'cdi'
     cdi.mkdir()

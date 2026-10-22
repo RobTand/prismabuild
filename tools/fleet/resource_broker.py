@@ -608,7 +608,7 @@ class GPUContainerRuntime:
         with self.lock:
             snapshot=evidence.get('inspect_snapshot')
             nvidia=(self.module.container_requests_nvidia(snapshot) if snapshot is not None
-                    else evidence['nvidia_injection'])
+                    else evidence['nvidia_injection'] and self.module.nvidia_host_present())
             outcome=self.module.never_started_runtime_error(evidence['error_hint'],nvidia=nvidia,
                                                             cdi_sources=self._mount_sources())
             return self._apply_launch_outcome(outcome,{},record,evidence=evidence)

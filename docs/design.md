@@ -20277,12 +20277,23 @@ only that the payload did not start. It cannot authenticate the caller's error
 text or prove why creation failed. The same independent host checks below apply
 to retained and auto-removed containers. An inspect snapshot, when available,
 also verifies the actual labels, parent and injection. Without a snapshot, the
-watch's parsed NVIDIA injection intent supplies that prerequisite.
+watch's parsed NVIDIA injection candidate must also pass the broker's host
+vendor check. A caller-supplied intent bit alone never verifies a vendor.
 Intent includes runtime `nvidia`, CDI `nvidia.com/gpu` devices, and Docker
 `--gpus` DeviceRequests with driver `nvidia`. An unspecified driver with `gpu`
-capabilities is a candidate requiring the same independent NVIDIA host check.
-Explicit other vendors do not qualify. The shim parses `--gpus` CSV fields
-before the image boundary and carries intent through AutoRemove, following
+capabilities is a candidate, not NVIDIA identity. Before a driver query can
+classify that candidate, the broker verifies `/dev/nvidiactl` as a root-owned
+character device with major 195 and minor 255. It walks trusted root-owned
+directory descriptors and stats the final node without following symlinks or
+opening the driver. Mode 0666 on the device itself is normal and accepted, as
+[NVIDIA's device-node instructions describe](https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification).
+This existing kernel device is a small independent signal; an installed binary
+or failed NVIDIA query cannot identify an NVIDIA host. Without that node,
+default-driver candidates and removed launches without inspect remain unverified.
+Explicit other-vendor runtimes do not qualify, even with NVIDIA device hints.
+Other device-request drivers supply no NVIDIA intent. The shim parses `--gpus`
+CSV fields, including `device=` IDs and quoted device lists, before the image
+boundary and carries candidate intent through AutoRemove, following
 [Docker's GPU option parser](https://github.com/docker/cli/blob/master/opts/gpus.go).
 The fence retains the stream basis, ID, ticket and the relevant identity, state
 and device fields of the optional snapshot. It does not publish container

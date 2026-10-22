@@ -5768,9 +5768,16 @@ Quoted entrypoints, arguments, labels and environment values cannot select a
 positive result. The retained `host_check` records the independent proof beside
 the diagnostic. A removed launch's `error_hint` remains caller-supplied.
 NVIDIA intent includes `--runtime=nvidia`, CDI NVIDIA devices and `--gpus`
-with an explicit NVIDIA driver. Default-driver GPU requests still need
-independent NVIDIA host evidence. Explicit other vendors do not qualify.
-The shim carries parsed `--gpus` intent even when AutoRemove prevents inspect.
+with an explicit NVIDIA driver or CDI NVIDIA `device=` IDs, including quoted
+lists. Default-driver GPU requests require separate vendor proof: the broker
+checks a root-owned `/dev/nvidiactl` character device with device number 195:255
+through trusted directory descriptors, without following symlinks or opening
+the driver. The node's normal mode 0666 is accepted. The NVIDIA query result
+never proves vendor identity. Without that node, default-driver candidates and
+removed launches without inspect remain unverified. Explicit other-vendor
+runtimes override NVIDIA request hints, and other request drivers supply no
+NVIDIA intent. The shim carries parsed candidate intent even when AutoRemove
+prevents inspect; the broker verifies the host independently.
 
 Read the root broker's durable
 `/var/lib/prismabuild-resource-broker/gpu-container-runtime.json` or its public
