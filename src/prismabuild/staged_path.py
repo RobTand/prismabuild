@@ -438,11 +438,26 @@ def _read_fragment(path: Path, memo: kept_reads.CensusMemo | None = None,
     return document
 
 
+def _bounded_level_children(io, directory: Path, tainted: list[str]):
+    """Classify lazily so later listing errors cannot hide earlier positives."""
+    for entry in reader_lease._census_entries(io, directory, tainted):
+        try:
+            if entry.is_symlink():
+                kind = "link"
+            elif entry.is_dir():
+                kind = "dir"
+            else:
+                kind = "other"
+        except Exception as exc:
+            kind = f"error: {exc}"
+        yield entry.name, kind
+
+
 def _census_fragment_directory(directory: Path, namespace: str, *,
                                direct: bool,
                                fragments: list[tuple[str, str, dict[str, object], bool]],
                                tainted: list[str],
-                               memo: kept_reads.CensusMemo | None = None) -> None:
+                               memo: kept_reads.CensusMemo | None = None, io=None) -> None:
     """Every valid fragment filed directly under one namespace directory.
 
     ``direct`` is true only for a namespace that is an immediate child of the
@@ -466,7 +481,9 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
         read: set[str] = set()
         taint_before = len(tainted)
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            entries = (reader_lease._census_entries(io, directory, tainted)
+                       if io is not None else
+                       sorted(os.scandir(directory), key=lambda entry: entry.name))
         except OSError as exc:
             tainted.append(f"{namespace}: {exc}")
             if index is not None:
@@ -481,7 +498,9 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
                         f"{namespace}/{entry.name}: symlink is not a fragment")
                     continue
                 is_file = entry.is_file()
-            except OSError as exc:
+            except Exception as exc:
+                if io is None and not isinstance(exc, OSError):
+                    raise
                 tainted.append(f"{namespace}/{entry.name}: {exc}")
                 continue
             if not is_file:
@@ -489,7 +508,17 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
                     f"{namespace}/{entry.name}: not a regular file")
                 continue
             read.add(entry.path)
-            document = _read_fragment(Path(entry.path), memo)
+            if io is None:
+                document = _read_fragment(Path(entry.path), memo)
+            else:
+                try:
+                    io.check()
+                    document = residency_map.validate_fragment(io.read_document(
+                        Path(entry.path),
+                        max_bytes=reader_lease.CENSUS_DOCUMENT_MAX_BYTES))
+                except Exception as exc:
+                    tainted.append(f"{namespace}/{entry.name}: {type(exc).__name__}: {exc}")
+                    continue
             if isinstance(document, str):
                 tainted.append(f"{namespace}/{entry.name}: {document}")
                 continue
@@ -508,6 +537,10 @@ def _census_fragment_directory(directory: Path, namespace: str, *,
                 tainted.append(
                     f"{namespace}/{entry.name}: fragment names another mover")
                 continue
+            if io is not None:
+                if not hasattr(io, "fragment_records"):
+                    io.fragment_records = {}
+                io.fragment_records[id(document)] = str(entry.path)
             found.append((mover, document))
             fragments.append((namespace, mover, document, direct))
         if index is not None:
@@ -528,7 +561,7 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                   fragments: list[tuple[str, str, dict[str, object], bool]],
                   tainted: list[str],
                   skip: frozenset[str] = frozenset(),
-                  memo: kept_reads.CensusMemo | None = None) -> None:
+                  memo: kept_reads.CensusMemo | None = None, io=None) -> None:
     """Classify one directory level of the fragment store.
 
     One rule for both layouts: reserved bookkeeping is skipped, a
@@ -555,8 +588,11 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
     index = memo if isinstance(memo, kept_reads.CensusIndex) else None
     with (index.levels.acquire(directory) if index is not None else nullcontext()) as capture:
         children = capture.value if capture is not None and capture.hit else None
+        if io is not None:
+            children = _bounded_level_children(io, directory, tainted)
         if children is not None:
-            index.kept += 1
+            if index is not None:
+                index.kept += 1
         else:
             try:
                 entries = sorted(os.scandir(directory),
@@ -614,17 +650,17 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
                     f"fragment namespace")
                 continue
             _census_level(Path(entry.path), direct=False, allow_nested=False,
-                          fragments=fragments, tainted=tainted, memo=memo)
+                          fragments=fragments, tainted=tainted, memo=memo, io=io)
             continue
         if not _namespace_shaped(namespace):
             tainted.append(f"{namespace}: unknown residency directory")
             continue
         _census_fragment_directory(Path(entry.path), namespace, direct=direct,
                                    fragments=fragments, tainted=tainted,
-                                   memo=memo)
+                                   memo=memo, io=io)
 
 
-def fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None,
+def fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None, *, io=None,
                      ) -> tuple[list[tuple[str, str, dict[str, object], bool]],
                                 list[str]]:
     """Every fragment under one residency root, and what cannot be read.
@@ -652,19 +688,34 @@ def fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None,
     that is not a directory, are taint -- never a silent skip, never a crash,
     never followed.  A caller that deletes treats taint as unknown ownership
     and retains.
+
+    Optional keyword-only ``io`` uses the same protocol as
+    :func:`reader_lease.live_for`: ``check()``, ``scandir(Path)`` as a
+    context manager of DirEntry-compatible entries, and
+    ``read_document(Path, *, max_bytes)`` returning decoded JSON. Reads
+    request at most ``reader_lease.CENSUS_DOCUMENT_MAX_BYTES`` (16 MiB).
+    The hook enforces byte limits and bounds its own blocking operations.
+    Traversal checks every iteration; hook and validation exceptions taint
+    without dropping earlier readable fragments. With ``io`` the memo is
+    ignored and traversal follows hook order. Validated fragments record their
+    exact paths in ``io.fragment_records[id(document)]``; the dictionary
+    is created if absent. The default path is unchanged.
     """
 
+    if io is not None:
+        # A report hook owns its reads and budget, never reuse stat-based memos.
+        memo = None
     fragments: list[tuple[str, str, dict[str, object], bool]] = []
     tainted: list[str] = []
     if root.name == output_contract.OUTPUT_FRAGMENTS_SUBDIR:
         _census_level(root, direct=True, allow_nested=False,
-                      fragments=fragments, tainted=tainted, memo=memo)
+                      fragments=fragments, tainted=tainted, memo=memo, io=io)
         _census_level(root.parent, direct=False, allow_nested=False,
                       fragments=fragments, tainted=tainted,
-                      skip=frozenset({root.name}), memo=memo)
+                      skip=frozenset({root.name}), memo=memo, io=io)
     else:
         _census_level(root, direct=True, allow_nested=True,
-                      fragments=fragments, tainted=tainted, memo=memo)
+                      fragments=fragments, tainted=tainted, memo=memo, io=io)
     return fragments, tainted
 
 

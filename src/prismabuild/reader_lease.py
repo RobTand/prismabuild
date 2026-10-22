@@ -762,8 +762,85 @@ def clear_retiring(root: str | Path, *, consumer_action_key: str,
 # Pin census (egress/reconcile read this, one walk, string intersection)
 # --------------------------------------------------------------------------
 
+# Report readers may lower this ceiling inside their I/O implementation.
+CENSUS_DOCUMENT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _census_entries(io, directory: Path, tainted: list[str], *, missing_ok=False):
+    """Stream checked DirEntries, retaining positives if a later step fails.
+
+    The injected scandir must be a context manager yielding an iterable of
+    os.DirEntry-compatible objects. Missing directories are clean only when
+    explicitly allowed, and never after iteration has begun.
+    """
+    opened = False
+    try:
+        io.check()
+        with io.scandir(directory) as entries:
+            opened = True
+            iterator = iter(entries)
+            while True:
+                io.check()  # also bounds traversal of irrelevant entries
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    break
+                io.check()
+                yield entry
+    except FileNotFoundError as exc:
+        if not missing_ok or opened:
+            tainted.append(f"{directory}: {exc}")
+    except Exception as exc:
+        tainted.append(f"{directory}: {type(exc).__name__}: {exc}")
+
+
+def _bounded_live_for(root: Path, wanted: set[str] | None, io
+                      ) -> tuple[dict[str, list[str]], list[str]]:
+    owners: dict[str, list[str]] = {}
+    tainted: list[str] = []
+    for consumer in _census_entries(io, root, tainted, missing_ok=True):
+        try:
+            if consumer.is_symlink():
+                tainted.append(f"{consumer.path}: symlink is not a lease namespace")
+                continue
+            if not consumer.is_dir(follow_symlinks=False):
+                continue
+        except Exception as exc:
+            tainted.append(f"{consumer.path}: {exc}")
+            continue
+        directory = root / consumer.name
+        for entry in _census_entries(io, directory, tainted, missing_ok=True):
+            try:
+                if entry.is_symlink():
+                    tainted.append(f"{entry.path}: symlink is not a lease record")
+                    continue
+                if not entry.is_file(follow_symlinks=False) or not entry.name.endswith(".json"):
+                    continue
+                if entry.name.endswith(".retiring.json") or entry.name.endswith(".tmp"):
+                    continue
+                if not entry.name.endswith(".lease.json"):
+                    tainted.append(f"{entry.path}: not a pin file")
+                    continue
+                io.check()
+                pin = validate_pin(io.read_document(
+                    Path(entry.path), max_bytes=CENSUS_DOCUMENT_MAX_BYTES))
+                # Keep every positively known owner even if a later check
+                # interrupts processing of this pin's remaining entries.
+                pin_id = str(pin["pin_id"])
+                for item in pin["entries"]:
+                    io.check()
+                    path = os.path.normpath(str(item["stage_path"]))
+                    if wanted is None or path in wanted:
+                        known = owners.setdefault(path, [])
+                        if pin_id not in known:
+                            known.append(pin_id)
+            except Exception as exc:
+                tainted.append(f"{entry.path}: {type(exc).__name__}: {exc}")
+    return owners, tainted
+
+
 def live_for(queue, wanted: set[str] | None, *, residency_root=None,
-             memo: dict[str, object] | None = None,
+             memo: dict[str, object] | None = None, io=None,
              ) -> tuple[dict[str, list[str]], list[str]]:
     """Which of ``wanted`` paths a live pin refs (``None``: all pinned paths).
 
@@ -779,9 +856,22 @@ def live_for(queue, wanted: set[str] | None, *, residency_root=None,
     taken under reuses that parse.  A pin gains a ref by an atomic rewrite,
     which is a new inode, so a new ref is never hidden.  A read that failed
     is never remembered.
+
+    Optional keyword-only ``io`` supplies ``check()`` (raise on exhausted
+    budget), ``scandir(Path)`` (an os.scandir-style context manager yielding
+    DirEntry-compatible objects), and ``read_document(Path, *, max_bytes)``
+    (bounded read and JSON decode, returning a Python document, not bytes).
+    Reads request at most ``CENSUS_DOCUMENT_MAX_BYTES`` (16 MiB); the hook
+    must enforce that ceiling and bound its own blocking operations. Checks
+    occur on every traversal iteration and before reads. Hook/validation
+    exceptions become taint while earlier positives survive. With ``io``,
+    memo is ignored and traversal order is the hook's order, not sorted.
+    Without ``io``, the existing strict read/cache behavior is unchanged.
     """
 
     root = leases_root(queue, residency_root)
+    if io is not None:
+        return _bounded_live_for(root, wanted, io)
     owners: dict[str, list[str]] = {}
     tainted: list[str] = []
     try:

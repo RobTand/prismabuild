@@ -1,0 +1,463 @@
+"""Read-only, byte-reconciled stage ownership reporting (#1973).
+
+The report is observational, not a deletion proof. Physical partitions count
+observed regular-file apparent bytes once; declaration totals may overlap.
+All records, payloads and CAS objects here are disposable local fixtures.
+"""
+from __future__ import annotations
+
+import builtins
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import core as pb, data_manifest, pool, reader_lease  # noqa: E402
+from prismabuild import residency_map, residency_plan, stage_marks, staged_path  # noqa: E402
+import stage_reclaim  # noqa: E402
+
+TIER = "prismabuild-stage:fixture"
+C1, C2, M1, M2 = (char * 64 for char in "abcd")
+PARTITIONS = {"owned", "source_only", "unattributed", "unknown"}
+
+
+@pytest.fixture()
+def fleet(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staged_path.register_stage_root(
+        queue, tier_id=TIER, stage_root=stage) == "registered"
+    return queue, stage
+
+
+def _file(stage, relative, size, *, source=False):
+    path = stage / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    if source:
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
+    return path
+
+
+def _fragment(queue, stage, target, *, consumer=C1, mover=M1, digest="e" * 64):
+    body = {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": digest,
+        "entries": {residency_map.residency_map_key(str(target), 0): {
+            "stage_path": str(target), "bytes": target.stat().st_size,
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "offset": 0}}}
+    root = queue.root / pool.record_store.RESIDENCY
+    residency_map.write_fragment(root, body)
+    return root / consumer / f"{mover}.json"
+
+
+def _report(fleet, **overrides):
+    # Assert the missing feature, rather than fail import/collection on a new API.
+    report = getattr(stage_reclaim, "ownership_report", None)
+    assert callable(report), "#1973 needs a supported read-only ownership_report"
+    queue, stage = fleet
+    args = dict(tier_id=TIER, stage_root=str(stage),
+                cas_root=str(queue.root.parent / "cas"),
+                max_files=1000, max_metadata_bytes=8 << 20, max_seconds=30.0)
+    args.update(overrides)
+    got = report(queue, **args)
+    assert got["read_only"] is True
+    assert got["deletion_authorized"] is False
+    return got
+
+
+def _rows(report):
+    rows = report["directories"]
+    assert len({row["name"] for row in rows}) == len(rows)
+    return {row["name"]: row for row in rows}
+
+
+def _reconciled(report):
+    totals = report["totals"]
+    assert set(totals["physical_bytes"]) == PARTITIONS
+    assert sum(totals["physical_bytes"].values()) == totals["observed"]["apparent_bytes"]
+    for row in report["directories"]:
+        assert set(row["physical_bytes"]) == PARTITIONS
+        assert sum(row["physical_bytes"].values()) == row["observed"]["apparent_bytes"]
+    for kind in PARTITIONS:
+        assert totals["physical_bytes"][kind] == sum(
+            row["physical_bytes"][kind] for row in report["directories"])
+
+
+def _manifest(queue, mount, relative, size):
+    source = mount / relative
+    body = {"schema": data_manifest.DATA_MANIFEST_SCHEMA_V1,
+            "produced_by": {}, "annotations": {}, "mount_prefix": str(mount),
+            "entry_count": 1, "total_bytes": size,
+            "entries": [{"path": str(source), "offset": 0,
+                         "bytes": size, "sha256": None}]}
+    raw = json.dumps(body, sort_keys=True).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    cas = pb.PrismaBuildCAS(queue.root.parent / "cas")
+    blob = cas.blob_path(digest)
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(raw)
+    return digest
+
+
+def _move(queue, stage, digest, *, mover=M1, consumer=C1, size=11, retired=False):
+    path = queue.records.move_path(mover)
+    body = {"schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": mover,
+            "consumer_action_key": consumer, "tier_id": TIER,
+            "manifest_sha256": digest, "stage_root": str(stage),
+            "range_start_bytes": 0, "range_end_bytes": size,
+            "range_bytes": size, "bytes_staged": size,
+            "entries_declared": 1, "entries_staged": 1, "complete": True}
+    if retired:
+        path = queue.root / pool.record_store.MOVERS_RETIRED / path.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body))
+    return path
+
+
+def test_mixed_owners_source_only_and_overlap_are_byte_reconciled(fleet):
+    queue, stage = fleet
+    shared = _file(stage, "mixed/shared", 11, source=True)
+    _file(stage, "mixed/loose", 7)
+    _file(stage, "source-only/data", 13, source=True)
+    (stage / "empty").mkdir()
+    refs = {_fragment(queue, stage, shared),
+            _fragment(queue, stage, shared, consumer=C2, mover=M2)}
+
+    got = _report(fleet)
+
+    assert got["complete"] is True
+    rows = _rows(got)
+    assert set(rows) == {"mixed", "source-only", "empty"}
+    mixed = rows["mixed"]
+    assert mixed["observed"]["apparent_bytes"] == 18
+    assert mixed["physical_bytes"] == dict(owned=11, source_only=0, unattributed=7, unknown=0)
+    assert {(r["consumer_action_key"], r["mover_action_key"])
+            for r in mixed["fragments"]} == {(C1, M1), (C2, M2)}
+    assert {r["record_path"] for r in mixed["fragments"]} == {str(p) for p in refs}
+    assert mixed["declarations"]["fragment_bytes"] == 22
+    assert mixed["declarations"]["source_mark_bytes"] == 11
+    assert mixed["declarations"]["source_mark_fragment_overlap_bytes"] == 11
+    assert rows["source-only"]["physical_bytes"]["source_only"] == 13
+    assert rows["empty"]["observed"]["apparent_bytes"] == 0
+    assert got["totals"]["observed"]["apparent_bytes"] == 31
+    assert got["totals"]["declarations"]["source_mark_bytes"] == 24
+    assert got["totals"]["declarations"]["source_mark_fragment_overlap_bytes"] == 11
+    _reconciled(got)
+
+
+def test_stale_declaration_is_still_owned_not_deletion_authority(fleet):
+    queue, stage = fleet
+    path = _file(stage, "old/data", 17)
+    ref = _fragment(queue, stage, path)
+    assert not queue.records.dir(pool.record_store.READY).joinpath(f"{C1}.json").exists()
+
+    got = _report(fleet)
+
+    row = _rows(got)["old"]
+    assert row["physical_bytes"]["owned"] == 17
+    assert row["physical_bytes"]["unattributed"] == 0
+    assert row["potentially_stale"] is True
+    assert row["fragments"][0]["record_path"] == str(ref)
+    assert ref.exists() and path.exists()
+
+
+def test_unreadable_attribution_preserves_known_owners_and_marks_unknown(fleet):
+    queue, stage = fleet
+    known = _file(stage, "known/data", 11)
+    _fragment(queue, stage, known)
+    _file(stage, "uncertain/data", 19, source=True)
+    bad = queue.root / pool.record_store.RESIDENCY / C2 / f"{M2}.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("{not readable JSON")
+
+    got = _report(fleet)
+
+    assert got["complete"] is False
+    assert str(bad) in json.dumps(got["errors"])
+    rows = _rows(got)
+    assert rows["known"]["physical_bytes"]["owned"] == 11
+    assert rows["uncertain"]["physical_bytes"]["unknown"] == 19
+    assert rows["uncertain"]["physical_bytes"]["source_only"] == 0
+    assert rows["uncertain"]["physical_bytes"]["unattributed"] == 0
+    _reconciled(got)
+
+
+def test_active_retired_moves_plan_and_holder_keep_exact_provenance(fleet):
+    queue, stage = fleet
+    mount = stage.parent / "originals"
+    mount.mkdir()
+    relative = "dataset/file"
+    digest = _manifest(queue, mount, relative, 11)
+    rel = staged_path.stage_relative(str(mount / relative), 0, 11, mount_prefix=str(mount))
+    target = _file(stage, rel, 11)
+    _fragment(queue, stage, target, digest=digest)
+    active = _move(queue, stage, digest)
+    retired = _move(queue, stage, digest, mover=M2, consumer=C2, retired=True)
+    ledger = queue.tier(TIER)
+    ledger.mint({"stage_gib": 1})
+    assert ledger.take(M1, {"stage_gib": 1})
+    def row(key, resources):
+        return dict(action_key=key, cas_root=str(queue.root.parent / "cas"),
+                    checkout_root=str(stage.parent / "checkout"), worker_script="worker.py",
+                    tags=["x86"], resources=resources)
+    mover_row = row(M1, {f"stage_gib@{TIER}": 1, "mem_gb": 1})
+    mover_row["residency"] = dict(schema=pool.RESIDENCY_SCHEMA_V1, tier_id=TIER,
+        manifest_sha256=digest, manifest_bytes=11, range_start_bytes=0, range_end_bytes=11)
+    plan = residency_plan.build_plan(consumer_action_key=C1, tier_id=TIER,
+        stage_root=str(stage), manifest_sha256=digest, manifest_bytes=11,
+        phases=[dict(name="phase-0", start_bytes=0, end_bytes=11,
+                     mover_row=mover_row, egress_row=row("f" * 64, {"mem_gb": 1}))])
+    residency_plan.freeze(queue, plan)
+    # Exact path is part of the persisted registry protocol, not a guessed owner.
+    plan_paths = list(residency_plan.registry_root(queue).glob(f"**/{C1}.json"))
+    assert len(plan_paths) == 1
+
+    got = _report(fleet)
+
+    assert got["complete"] is True
+    found = _rows(got)["dataset"]
+    assert {(r["record_path"], r["state"]) for r in found["movements"]} >= {
+        (str(active), "active"), (str(retired), "retired")}
+    assert any(r["record_path"] == str(plan_paths[0]) and r["consumer_action_key"] == C1
+               for r in found["plans"])
+    assert any(r["holder"] == M1 and r["holdings"]["stage_gib"] == 1
+               and r["record_path"] == str(ledger.paths.held / M1) for r in found["holders"])
+    for record in (active, retired, plan_paths[0]):
+        assert any(r["record_path"] == str(record) and r["manifest_sha256"] == digest
+                   and str(target) in r["paths"] for r in got["references"])
+    assert found["observed"]["apparent_bytes"] == 11  # not 4 declarations' bytes
+    _reconciled(got)
+
+
+@pytest.mark.parametrize("bounded", [True, False], ids=["mover-destination", "source-stage-unbounded"])
+def test_missing_manifest_reports_scoped_uncertainty_not_an_empty_read_set(fleet, bounded):
+    queue, stage = fleet
+    _file(stage, "uncertain/data", 11)
+    _file(stage, "unrelated/data", 17)
+    digest = "9" * 64
+    record = _move(queue, stage / "uncertain", digest)
+    if not bounded:
+        body = json.loads(record.read_text())
+        body["source_stage_root"] = str(stage / "uncertain")
+        record.write_text(json.dumps(body))
+
+    got = _report(fleet)
+
+    assert got["complete"] is False
+    refusal = next(r for r in got["unresolved_manifests"] if r["record_path"] == str(record))
+    assert refusal["manifest_sha256"] == digest and refusal["reason"]
+    assert str(stage / "uncertain" if bounded else stage) in refusal["scope"]
+    rows = _rows(got)
+    assert rows["uncertain"]["physical_bytes"]["unknown"] == 11
+    assert rows["unrelated"]["physical_bytes"]["unattributed" if bounded else "unknown"] == 17
+    _reconciled(got)
+
+
+def test_orphan_reader_lease_is_reported_without_a_fragment(fleet):
+    queue, stage = fleet
+    target = _file(stage, "pinned/data", 23)
+    root = queue.root / pool.record_store.RESIDENCY
+    key = residency_map.residency_map_key(str(stage.parent / "original"), 0)
+    entry = dict(stage_path=str(target), bytes=23, offset=0,
+                 sha256=hashlib.sha256(target.read_bytes()).hexdigest())
+    staged_path.publish_vouch(root, dict(
+        schema=residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        consumer_action_key=C1, mover_action_key=M1, tier_id=TIER,
+        stage_root=str(stage), manifest_sha256="e" * 64, entries={key: entry}),
+        generation=reader_lease.mint_generation(),
+        material_entries={key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
+    pin = reader_lease.acquire(queue, consumer_action_key=C1,
+        attempt={"nonce": "attempt-1", "scope_id": "scope-1"}, tier_id=TIER, epoch="",
+        span={"start_bytes": 0, "end_bytes": 23},
+        holder={"host": "fixture-host", "pid": 4242}, acquire_token="fixture-pin",
+        covers=[{"mover_action_key": M1, "manifest_sha256": "e" * 64}])
+    assert pin["ok"]
+    staged_path.withdraw_vouch(None, root, C1, M1, missing_ok=False)
+    leases = list(root.glob("leases/**/*.lease.json"))
+    assert len(leases) == 1
+
+    got = _report(fleet)
+
+    row = _rows(got)["pinned"]
+    assert row["physical_bytes"]["owned"] == 23
+    assert row["fragments"] == []
+    assert any(r["record_path"] == str(leases[0]) and r["consumer_action_key"] == C1
+               and r["pin_id"] and r["refs"][0]["holder"]["host"] == "fixture-host"
+               for r in row["readers"])
+    assert target.exists()
+
+
+def test_symlinks_are_not_followed_or_used_to_import_outside_owners(fleet):
+    queue, stage = fleet
+    inside = _file(stage, "safe/data", 5)
+    outside = stage.parent / "outside"
+    outside.mkdir()
+    external = _file(outside, "large", 12345)
+    (stage / "safe/file-link").symlink_to(external)
+    (stage / "safe/dir-link").symlink_to(outside, target_is_directory=True)
+    (stage / "outside-alias").symlink_to(outside, target_is_directory=True)
+    (stage / "safe/cycle").symlink_to(stage, target_is_directory=True)
+    ref = _fragment(queue, outside, external)
+    alias_ref = _fragment(queue, stage, stage / "safe/file-link", consumer=C2, mover=M2)
+
+    got = _report(fleet)
+
+    rows = _rows(got)
+    assert rows["safe"]["observed"]["apparent_bytes"] == inside.stat().st_size
+    assert rows["safe"]["physical_bytes"]["unattributed"] == 5
+    assert all(r["record_path"] not in {str(ref), str(alias_ref)}
+               for row in rows.values() for r in row["fragments"])
+    assert got["totals"]["observed"]["apparent_bytes"] == 5
+    assert "outside-alias" in json.dumps(got["excluded"])
+    assert "file-link" in json.dumps(got["excluded"])
+    _reconciled(got)
+
+
+def test_apparent_and_allocated_storage_have_explicit_accounting_basis(fleet):
+    _queue, stage = fleet
+    path = stage / "sparse/data"
+    path.parent.mkdir()
+    with path.open("wb") as stream:
+        stream.truncate(8 << 20)
+    info = path.stat()
+
+    got = _report(fleet)
+
+    observed = _rows(got)["sparse"]["observed"]
+    assert observed["basis"] == "regular_file_lstat"
+    assert observed["apparent_bytes"] == info.st_size
+    assert observed["allocated_bytes"] == info.st_blocks * 512
+    assert got["totals"]["observed"]["allocated_bytes"] == info.st_blocks * 512
+
+
+def test_file_budget_returns_all_directory_rows_and_partial_totals(fleet):
+    _queue, stage = fleet
+    for name in ("alpha", "beta", "gamma"):
+        _file(stage, f"{name}/data", 10)
+
+    got = _report(fleet, max_files=1)
+
+    assert got["complete"] is False
+    assert set(_rows(got)) == {"alpha", "beta", "gamma"}
+    assert got["scan"]["max_files"] == 1
+    assert got["scan"]["files_observed"] <= 1
+    assert got["scan"]["max_metadata_bytes"] == 8 << 20
+    assert got["scan"]["max_seconds"] == 30.0
+    assert 0 < got["totals"]["observed"]["apparent_bytes"] <= 10
+    assert any(row["complete"] is False for row in got["directories"])
+    assert "budget" in json.dumps(got["errors"]).lower()
+    _reconciled(got)
+
+
+def test_metadata_budget_is_unknown_attribution_not_unowned(fleet):
+    queue, stage = fleet
+    target = _file(stage, "dataset/data", 11)
+    _fragment(queue, stage, target)
+
+    got = _report(fleet, max_metadata_bytes=1)
+
+    assert got["complete"] is False
+    assert got["scan"]["metadata_bytes_read"] <= 1
+    assert got["scan"]["max_metadata_bytes"] == 1
+    assert "budget" in json.dumps(got["errors"]).lower()
+    assert got["totals"]["physical_bytes"]["unattributed"] == 0
+
+
+def test_expired_time_budget_returns_incomplete_without_unbounded_work(fleet):
+    queue, stage = fleet
+    target = _file(stage, "dataset/data", 11)
+    _fragment(queue, stage, target)
+
+    got = _report(fleet, max_seconds=0.0)
+
+    assert got["complete"] is False
+    assert got["scan"]["max_seconds"] == 0.0
+    assert got["scan"]["files_observed"] == 0
+    assert got["scan"]["metadata_bytes_read"] == 0
+    assert "budget" in json.dumps(got["errors"]).lower()
+
+
+def test_unreadable_directory_keeps_useful_report(fleet, monkeypatch):
+    _queue, stage = fleet
+    _file(stage, "blocked/data", 29)
+    _file(stage, "readable/data", 7)
+    real_scandir = os.scandir
+    def scandir(path):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == str(stage / "blocked"):
+            raise PermissionError("fixture denies stage directory")
+        return real_scandir(path)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    got = _report(fleet)
+
+    assert got["complete"] is False
+    rows = _rows(got)
+    assert rows["blocked"]["complete"] is False
+    assert rows["readable"]["observed"]["apparent_bytes"] == 7
+    assert "blocked" in json.dumps(got["errors"])
+
+
+def _snapshot(root):
+    result = {}
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        content = path.read_bytes() if stat.S_ISREG(info.st_mode) else None
+        attrs = {key: os.getxattr(path, key, follow_symlinks=False)
+                 for key in os.listxattr(path, follow_symlinks=False)}
+        result[str(path.relative_to(root))] = (info.st_mode, info.st_mtime_ns,
+                                               content, attrs)
+    return result
+
+
+def test_cli_report_is_read_only_and_never_hashes_payloads(fleet, monkeypatch, capsys):
+    queue, stage = fleet
+    target = _file(stage, "dataset/data", 31, source=True)
+    _fragment(queue, stage, target)
+    before = _snapshot(stage.parent)
+    real_digest = stage_reclaim.extent_digest
+    def digest(path, *args, **kwargs):
+        assert stage not in Path(path).parents, "report must not hash stage payloads"
+        return real_digest(path, *args, **kwargs)
+    def mutation(*args, **kwargs):
+        pytest.fail("report tried to file a queue movement record")
+    monkeypatch.setattr(stage_reclaim, "extent_digest", digest)
+    monkeypatch.setattr(pool.PoolQueue, "record_move", mutation)
+    monkeypatch.setenv(pb.ACTION_KEY_ENV, "f" * 64)
+    argv = ["--report", "--pool-root", str(queue.root), "--tier-id", TIER,
+            "--stage-root", str(stage)]
+    # A report does not need mount-prefix, originals, quarantine or an action key.
+    # Reading metadata/CAS manifests is allowed; opening payloads is not needed.
+    def guarded_open(real_open):
+        def opened(file, *args, **kwargs):
+            if isinstance(file, (str, bytes, os.PathLike)):
+                assert Path(os.fsdecode(file)) != target, "report opened a stage payload"
+            return real_open(file, *args, **kwargs)
+        return opened
+    with monkeypatch.context() as reads:
+        reads.setattr(builtins, "open", guarded_open(builtins.open))
+        reads.setattr(io, "open", guarded_open(io.open))
+        try:
+            code = stage_reclaim.main(argv)
+        except SystemExit as exc:
+            pytest.fail(f"supported --report mode must produce JSON (exit {exc.code})")
+    assert code == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got["read_only"] is True and got["deletion_authorized"] is False
+    assert _rows(got)["dataset"]["observed"]["apparent_bytes"] == 31
+    assert _snapshot(stage.parent) == before
+    # Never silently combine observational and mutating verbs.
+    with pytest.raises(SystemExit) as exc:
+        stage_reclaim.main(argv + ["--apply"])
+    assert exc.value.code == 2
+    assert _snapshot(stage.parent) == before
