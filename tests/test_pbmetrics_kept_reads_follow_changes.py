@@ -499,15 +499,21 @@ def test_the_exporter_serves_under_its_role_lock(tmp_path):
 
     class Server:
         def __init__(self, *args, **kwargs) -> None:
-            pass
+            self.reader, self.writer = os.pipe()
+            os.write(self.writer, b'x')
 
-        def handle_request(self) -> None:
+        def fileno(self) -> int:
+            return self.reader
+
+        def _handle_request_noblock(self) -> None:
+            os.read(self.reader, 1)
             held.append(role_session.role_singleton_holder(
                 Path(pbmetrics.__file__))[0])
             os.kill(os.getpid(), signal.SIGTERM)
 
         def server_close(self) -> None:
-            pass
+            os.close(self.reader)
+            os.close(self.writer)
 
     with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
             mock.patch.object(role_session, "read_maintenance_gate", return_value=None), \
