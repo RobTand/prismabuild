@@ -2206,6 +2206,17 @@ never verified bytes. No bounded verified produced-output discovery exists,
 so `outputs` is empty.
 The existing SDK exports, version and success-only guarantees are unchanged.
 
+The #1964 Core helper-pin change is qualified by six independently reproduced
+current runtime goldens (receipt, attestation and runtime, each in-process and
+script). The strict runtime adopter preserves all twelve historical rows byte
+exact and archives the superseded current goldens and capture metadata under
+`tests/compat/history-controls/superseded-runtime-0c20614e4325b088/`. The capture
+and adoption bind producer `bb2fba69f32c3775c3c0bbb00a1cf44357948de2`; their
+primary audits and exact commands are retained under
+`/mnt/shared/pbtl-probe-tmp/pb-lead-dl380/1964/round2/`. This qualifies corpus
+bytes and grants no runtime deployment credit.
+
+
 `pbrun --withdraw KEY --reason TEXT --json` returns
 `prismabuild.withdrawal.v1` with action key, prior state, withdrawal decision
 and reason. An optional result callback carries the actual withdrawal owner's
