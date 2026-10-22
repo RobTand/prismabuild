@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from functools import wraps
 import shutil
 import socket
 
@@ -38,27 +39,30 @@ def _seal_fixture(sealed_fleet, capsys, *options):
     work, queue, store = sealed_fleet
     assert pbrun.main(_consumer_argv(work, "--seal-only", *options)) == 0
     record = _one_json_line(capsys.readouterr())
-    assert set(record) == {"schema", "action_key", "request_sha256", "transport"}
+    assert set(record) == {"schema", "action_key", "request_sha256", "transport", "phases"}
     assert record["schema"] == "prismabuild.sealed.v1"
     assert queue.ready_items() == []
     return record
 
 
-def test_seal_then_publish_matches_direct_publication(sealed_fleet, monkeypatch, capsys):
+@pytest.mark.parametrize("retry_scope", [None, "interruption"])
+def test_seal_then_publish_matches_direct_publication(sealed_fleet, monkeypatch, capsys, retry_scope):
     work, queue, store = sealed_fleet
-    sealed = _seal_fixture(sealed_fleet, capsys, "--priority", "-7",
+    retry_flags = ["--retry-safe", "--retry-scope", retry_scope] if retry_scope else []
+    sealed = _seal_fixture(sealed_fleet, capsys, *retry_flags, "--priority", "-7",
         "--priority-reason", "consumer proof", "--env", "EXAMPLE=sealed")
     action = pb.PrismaBuildCAS(store.cas_root).read_action_request(sealed["action_key"])
     assert sealed["request_sha256"] == digest_primitives.raw_sha256(pb._canonical_file_bytes(action))
     publications = []
     publish = submission.pool.PoolQueue.publish
 
+    @wraps(publish)
     def observe_publication(self, **row):
         publications.append(row)
         return publish(self, **row)
 
     monkeypatch.setattr(submission.pool.PoolQueue, "publish", observe_publication)
-    assert pbrun.main(_consumer_argv(work, "--detach", "--priority", "-7",
+    assert pbrun.main(_consumer_argv(work, *retry_flags, "--detach", "--priority", "-7",
         "--priority-reason", "consumer proof", "--env", "EXAMPLE=sealed")) == 0
     direct = _one_json_line(capsys.readouterr())
     assert direct["schema"] == "prismabuild.submission.v1"
@@ -74,6 +78,8 @@ def test_seal_then_publish_matches_direct_publication(sealed_fleet, monkeypatch,
         generation=recovered["published_unix"])
     assert len(publications) == 2
     assert publications[0] == publications[1]
+    assert action["params"]["retry_policy"].get("retry_scope") == retry_scope
+    assert publications[-1].get("retry_scope") == retry_scope
 
 
 def test_publish_never_reprepares_and_attaches_idempotently(sealed_fleet, monkeypatch, capsys):

@@ -295,6 +295,67 @@ Both new verbs return 0 on success and 1 on refusal, with
 with their input ID and digest. Invalid usage exits 2. Attached publication
 returns the action's ending or the ordinary wait failure code.
 
+### Identify a slow submission (#1936)
+
+Successful seal and detached submission JSON includes `phases`, for example
+`{"checkout_identity": 0.4, "bundle_pack": 2.1, "cas_stage": 8.2,
+"cas_write": 1.3, "transition_lock_wait": 12.0, "queue_publication": 0.6}`.
+A phase appears only when reached. Durations are monotonic seconds, accumulated
+across repeated spans, with nested work excluded from its parent. A phase span
+lasting at least one second also prints `pbrun: submission phase NAME took Ns`
+on stderr. Phase values contain no command or environment data.
+
+`--publish-sealed KEY --detach` records this publication's `sealed_request_read`
+and `cas_input_verify`, then the ordinary CAS, offer, gate and publication phases.
+It does not repeat or report checkout preparation. The queue retains the
+publisher's `phases` through claim, immutable attempt and terminal publication.
+An attachment's response describes the attaching call; it does not overwrite
+the publisher's timing. READY samples immediately before its single ordinary
+write. It excludes that write, later readback, acknowledgement verification
+and floor cleanup; timing adds no READY write or fsync. The response and client
+phase-end events include completed publication and acknowledgement verification.
+`filesystem_floor` labels window entry and cleanup, including a disabled-mode
+read. `acknowledgement_verify` labels the detached response's CAS request check
+and refreshes its response sample. Snapshot `lock_wait` covers flock acquisition
+and retries, while owner-file I/O stays in `bundle_pack`. Diagnostic output
+failures do not interrupt submission or leak acquired locks.
+
+Exact supersession decisions keep their original five fields. Wait rows obtain
+timing from retained evidence for the original publication, never its successor.
+An unavailable diagnostic sample stays empty without changing the decision.
+
+Read the slowest recorded submission phase from an ending:
+
+```python
+row = endings_json["endings"][0]  # pbwait --endings --wait-s 0 KEY
+phases = row.get("phases", {})
+slow = max(phases, key=phases.get) if phases else None
+text = f"submission phase {slow}: {phases[slow]:.3f}s" if slow else "submission timing unavailable"
+```
+
+Legacy `pbwait --json` exposes the same field at `rows[0]["phases"]`.
+Records predating timing remain readable and expose an empty object.
+The schema IDs and shard verdict schema do not change.
+
+For an interrupted submit, drain `--client-events-fd FD` continuously. The
+writable FD must be a pipe. Accept `event: "phase"` alongside the unchanged
+`identity` and `ending` events. Each phase start is flushed before work:
+
+```json
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"started","seconds":null}
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"finished","seconds":12.0}
+```
+
+Keep a stack of started phases, removing its last entry on each finish. At a
+submit timeout, the stack's last entry names the current phase. Keep the last
+start separately when the stack is empty; it names the last work entered, not
+a current wait. Sum finished `seconds` by phase to find the slowest completed
+phase. A kill can prevent a finish event or submission record. The channel is
+bounded and nonblocking, so missing events are unavailable evidence. The PB
+channel decoder retains `last_phase` and completed `phases` without changing
+identity, ending or recovery interpretation; strict older event parsers need
+the additive phase variant before consuming a new client.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.
@@ -984,6 +1045,28 @@ preemption in its NOTE, and the withdrawal in the endings table reads
 `preempted by <key12>`; both carry `preempted_by` as a field in `--json`. The
 immutable withdrawal decision under
 `withdrawn/decisions/<key>/<generation>.json` carries it too.
+
+Idle-GPU hosts prefer restartable portable CPU rows (#1929). An idle GPU has
+no PB GPU reservation, a fresh trusted GPU sample with no foreign process,
+and no eligible READY GPU row. A vLLM serve counts as GPU use. CPU-only hosts
+record `deferred_for_idle_gpu_host` for at most 20 seconds, then claim normally.
+While the GPU is used or GPU work is pending, #1262 and #1526 still apply.
+Leave portable work untagged; hostname and architecture tags keep their meaning.
+
+GPU work may reclaim CPU guests across priority bands when the host's denial
+says `drain_resolves: true`, including adaptive CPU `host_pressure`. The normal
+preemption lock, withdrawal ladder and cleanup apply. The lowest priority,
+most recently started guest yields first, with one release completed before
+the next handoff. Pinned rows never yield as guests. Pool CPU pbtest shards now
+seal `retry_safe: true`, `retry_scope: "interruption"`, and `max_attempts: 3`.
+Worker-reported failures end on the first attempt; interruptions and lease loss
+may rerun within the budget. This also permits ordinary #364 preemption of
+retry-safe -10 shards, including pinned CPU shards. Each interruption consumes
+one launch. After two, an exhausted guest records `guest_retry_budget_exhausted`
+while a live matching CPU-only host has not passed on it, even if full.
+Otherwise it may run on a GPU host as a non-guest. Nonrestartable portable work
+keeps #1262's existing overflow behavior. Waiters follow the ordinary lineage below.
+This source behavior still needs publication and a live fleet canary.
 
 A submitter waiting on a preempted action is not told it was withdrawn. The
 requeue is a new generation, and a waiter names the generation it submitted, so
@@ -2504,14 +2587,16 @@ before its partial reservation was returned. The displayed age matters: this
 is not a fresh capacity check or a promise of immediate admission after a
 release. It names the first failing resource; CPU borrowing and GPU sharing
 retain their admission rules. Older workers may omit this optional detail.
-`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
+`deferred_for_preferred_cpu`, `deferred_for_cross_resource_placement`, and
+`deferred_for_idle_gpu_host` are
 bounded placement preferences, not refusals: they age nothing and expire on
-their own after 20 seconds, so treat neither as starvation.
+their own after 20 seconds, so treat none as starvation.
 `deferred_for_cpu_only_host` is not a refusal either, and has no timer (#1262):
 a GPU host left a CPU-only row to a matching host without a GPU that fits it
 now (`cpu_host` names that host, its free tokens, observed capacity and
 `yielding_s`). It ends when that host claims the row, or passes on it (any
-published denial of the row by that host other than `transition_busy`), or
+published denial of the row by that host other than `transition_busy` or
+`deferred_for_idle_gpu_host`), or
 stops fitting or goes stale; then the GPU host claims it as before. It ages
 nothing.
 `deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
@@ -2702,8 +2787,8 @@ a cause the next step cannot see (#351).
     refusal: check the age before treating it as the reason the box is idle
     now. `reservation_unavailable`, `adaptive_cpu_refused` and the bounded
     placement preferences (`deferred_for_preferred_cpu`,
-    `deferred_for_cross_resource_placement`, which expire on their own after
-    20 seconds) are different verdicts with different next moves.
+    `deferred_for_cross_resource_placement`, and `deferred_for_idle_gpu_host`,
+    which expire on their own after 20 seconds) are different verdicts with different next moves.
 *   **Is the box still announcing?** An expired worker offer means the box
     stopped reaching its announcement -- which is what a loop wedged in a
     queue read does, and since #16 a loop that cannot finish its discovery

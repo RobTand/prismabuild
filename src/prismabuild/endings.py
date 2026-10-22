@@ -368,9 +368,12 @@ def resolve_attempt(
         if succeeded:
             raise invalid("successful attempt cannot stop an output retry")
         validate_output_retry_stop(adopted["output_retry_stop"], adopted)
+    worker_failure_final = (adopted.get("retry_scope") == "interruption"
+                            and adopted.get("worker_reported") is True)
     expected = (
         WITHDRAWN if status == WITHDRAWN else
-        DONE if succeeded else FAILED if stopped or attempt >= max_attempts else "requeued"
+        DONE if succeeded else FAILED if (stopped or worker_failure_final
+                                         or attempt >= max_attempts) else "requeued"
     )
     if disposition != expected:
         raise invalid(

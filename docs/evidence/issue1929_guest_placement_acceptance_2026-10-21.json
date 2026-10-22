@@ -1,0 +1,420 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "ce0aabadf6286c667465559cff157993fd42616b",
+  "ledger_commit": "ce0aabadf6286c667465559cff157993fd42616b",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "ID-08",
+    "SM-01",
+    "INV-01",
+    "INV-08",
+    "INV-11",
+    "ACC-02",
+    "ACC-04"
+  ],
+  "source_commit": "bef8ad09ef68e362387ac4f8e714e23fe11822bc",
+  "review_status": "Prepared for PB lead review; no merge performed.",
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1929",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1929",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "INV-08",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "INV-11",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "ACC-02",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      },
+      {
+        "id": "ACC-04",
+        "actions": [
+          "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+          "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+          "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+          "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+          "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+          "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+          "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+          "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf"
+        ],
+        "outcome": "916 passed, 0 failed, 0 skipped per architecture; executed terminals, full log digests and matching receipt payloads read back. Component simulation only."
+      }
+    ],
+    "remaining_gaps": [
+      "All scoped IDs retain their existing whole-requirement axes. This validates idle placement, guest selection, withdrawal/requeue and waiter lineage in private queues only.",
+      "ID-08: this source is not published or deployed. Tests execute checked-out source under the existing ce0aabadf628-1792623714-ca6a675ef645 runtime.",
+      "SM-01 / INV-01 / INV-08 / ACC-02 / ACC-04: no new live containment, lease-crash, staged-reader or global lifecycle qualification. Successor READY publication retains the existing claimed-key execution guard and normal cleanup-before-release.",
+      "INV-11 / SC-01: live idle-Spark shard placement, GPU canary guest eviction and retries finishing elsewhere are still owed after runtime publication.",
+      "No full worker-attestation verification or power-loss durability proof is added."
+    ],
+    "note": "Only the #1929 component delta is qualified. No staged-only policy exception, deployment, campaign completion or performance claim."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "evidence": [
+    {
+      "run": "verified-x86",
+      "shard": 0,
+      "action_key": "5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f",
+      "summary": "165 passed, 28 warnings in 28.68s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f.json",
+      "status": "executed",
+      "host": "dl380g10",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "x86_64",
+      "reported_python": [
+        3,
+        14,
+        4
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/57/5728106008aec62384012ea18e6f1b9730d72a5812ac3c079176f1f23cb5b48f.json",
+        "path_source": "report",
+        "receipt_sha256": "827bbbafe45e280f6a611736321a11917d4d02048684adb0a2553483126fe59a",
+        "result_sha256": "3280ba55249c60428bdf0e761757783bd2939045ae22db346c1e775eb6996fa8",
+        "result_bytes": 109123,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-x86",
+      "shard": 1,
+      "action_key": "2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b",
+      "summary": "319 passed, 34 warnings in 51.92s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b.json",
+      "status": "executed",
+      "host": "dl380g10",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "x86_64",
+      "reported_python": [
+        3,
+        14,
+        4
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/2d/2d688103bfa39d3a46241da65efaf03ed20be736c00b36382cc953092bbc4c5b.json",
+        "path_source": "report",
+        "receipt_sha256": "bed0d9e734dede7c1c7bf1c99ed54f4650f753aff2769fe1026dd16a260cc65a",
+        "result_sha256": "92fc34eb2750f1db2d2bd5f39b8f5759f2ae0f0c12d49c96879ccabc79517c2e",
+        "result_bytes": 213026,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-x86",
+      "shard": 2,
+      "action_key": "261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d",
+      "summary": "235 passed, 4 warnings in 60.61s (0:01:00)",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d.json",
+      "status": "executed",
+      "host": "dl380g10",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "x86_64",
+      "reported_python": [
+        3,
+        14,
+        4
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/26/261a69295fdaf67c27b43d7b2b989c5e033699a3733da2f082254ef82ac31e9d.json",
+        "path_source": "report",
+        "receipt_sha256": "12fd29a43111463d4d32a5072dd4cc42ce3b48ffb4bc6c509fa73a06db60c9c2",
+        "result_sha256": "382c1ad05b0cc6326e43f06372a9fd81f5fa8732c2206fc58a144257df90b6eb",
+        "result_bytes": 131958,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-x86",
+      "shard": 3,
+      "action_key": "c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de",
+      "summary": "197 passed in 42.78s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de.json",
+      "status": "executed",
+      "host": "dl380g10",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "x86_64",
+      "reported_python": [
+        3,
+        14,
+        4
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/c6/c634467cf6515f416c7c356168b01453c7ce8499273ae838975f2a840097b1de.json",
+        "path_source": "report",
+        "receipt_sha256": "91b9ecc4b16a6e2431a15dff842a29b55beb9ccd984815c1f059570f4b109b18",
+        "result_sha256": "9d6cd143154892e43e056c40b92e0de36e4daa3bcaf3ef266f0229fcd85f9a85",
+        "result_bytes": 132698,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-arm",
+      "shard": 0,
+      "action_key": "c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f",
+      "summary": "165 passed, 28 warnings in 22.51s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f.json",
+      "status": "executed",
+      "host": "sparklina",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "aarch64",
+      "reported_python": [
+        3,
+        12,
+        3
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/c1/c1db81e5f61e6a1c0721caec0f28ccc1158c45a20ff4cb40f175a76e4548419f.json",
+        "path_source": "report",
+        "receipt_sha256": "e92c09786a1cd6b6db7a9cc88bd90e0fb095a104928f981bba335f2ae44d416f",
+        "result_sha256": "b5e7148df2a77cab7cfaa0680928ffefdd4fba070b5a1b769b2b0ae45fc16cb7",
+        "result_bytes": 109137,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-arm",
+      "shard": 1,
+      "action_key": "890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b",
+      "summary": "319 passed, 39 warnings in 32.15s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b.json",
+      "status": "executed",
+      "host": "sparklina",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "aarch64",
+      "reported_python": [
+        3,
+        12,
+        3
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/89/890f7bbde77ab510e6d85164a1a882e686ab00fc37c524000b4b518eb497ef8b.json",
+        "path_source": "report",
+        "receipt_sha256": "ac81162c3fdc17971c9dfc2b64713c211b7e98a700e11500a2862ef75d0e95b1",
+        "result_sha256": "68797e679a10d0e258df7af9f59d0a939536680624838de07aa5d6f0771afea5",
+        "result_bytes": 213037,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-arm",
+      "shard": 2,
+      "action_key": "b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6",
+      "summary": "235 passed, 4 warnings in 23.88s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6.json",
+      "status": "executed",
+      "host": "sparklina",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "aarch64",
+      "reported_python": [
+        3,
+        12,
+        3
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/b3/b3632a2b6d952453b207dd3cb711d5f82d52cc7074b157ce06db051b5c8ddbe6.json",
+        "path_source": "report",
+        "receipt_sha256": "44ccebb3769e139c3478be1484e543e1277797fbdfd872321b577c4d77bb9844",
+        "result_sha256": "503029418d9d3ad6545df92107cc7ce07b3734f49f0cfb7a536719e508c49f42",
+        "result_bytes": 131961,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    },
+    {
+      "run": "verified-arm",
+      "shard": 3,
+      "action_key": "1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf",
+      "summary": "197 passed in 24.51s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf.json",
+      "status": "executed",
+      "host": "sparklina",
+      "returncode": 0,
+      "log_digests_verified": true,
+      "reported_machine": "aarch64",
+      "reported_python": [
+        3,
+        12,
+        3
+      ],
+      "native_threads": {
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      },
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1e/1e5eb5b2b4d14679270d1e9c7cfa9b0bb6c8498d8cc8431320228fb6ee118abf.json",
+        "path_source": "report",
+        "receipt_sha256": "0b966afa065e95c581e5286e72dc6d833f28837a87b41fcf15bc2a1d6c03802d",
+        "result_sha256": "a48017e5373090f413982bac76d20523d35ae34441b4c5ca5493dabd39c3038f",
+        "result_bytes": 132713,
+        "key_and_execution_announcement_match": true,
+        "payload_digest_verified": true
+      }
+    }
+  ],
+  "persistence_assumption": "Readback proves recorded bytes were present and matched their recorded digests. It does not establish stable-storage or power-loss durability."
+}

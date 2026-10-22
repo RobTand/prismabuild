@@ -42,6 +42,10 @@ class RowPublication:
             "container_owner": str(variables[pool.CONTAINER_OWNER_ENV]),
             "checkout_snapshot": params["checkout_snapshot"],
         }
+        retry_scope = (params.get("retry_policy") or {}).get("retry_scope")
+        if retry_scope is not None:
+            # Never drop a sealed finality contract on a mixed runtime.
+            row["retry_scope"] = retry_scope
         priority_reason = self.priority_reason
         if priority_reason is not None:
             parameters = inspect.signature(queue.publish).parameters

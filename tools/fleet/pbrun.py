@@ -2,6 +2,7 @@
 """Parse and display a typed PrismaBuild submission."""
 from __future__ import annotations
 import argparse
+import contextlib
 from dataclasses import fields
 import math
 import json
@@ -17,6 +18,7 @@ from prismabuild.runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild.submission_frontend import render_submission, consumer_submission_display
+from prismabuild import submission_timing
 from prismabuild import action_edges, submission, sealed_submission, action_client, client_channel, core as pb, pool, fleet_roster
 from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
 from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
@@ -286,6 +288,8 @@ def argument_parser() -> argparse.ArgumentParser:
         help=("declare the whole command idempotent across failed attempts, "
               "including every external side effect"),
     )
+    ap.add_argument("--retry-scope", choices=("interruption",), default=None,
+                    help="retry interruptions and lease loss, but file worker failures immediately")
     ap.add_argument(
         "--max-attempts",
         type=int,
@@ -451,6 +455,8 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
 def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, report=None) -> int:
     report = report if report is not None else action_client.ClientReport()
     writer = None
+    pending_ending = None
+    timing_scope = contextlib.ExitStack()
     previous_observer = report.on_event
     try:
         parser = argument_parser()
@@ -463,10 +469,18 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             except client_channel.ClientProtocolError as exc:
                 raise SystemExit(f"pbrun: {exc}") from None
             def send(event):
-                writer.send(event)
+                nonlocal pending_ending
+                if isinstance(event, action_client.ClientEnding):
+                    pending_ending = event
+                else:
+                    writer.send(event)
                 if previous_observer is not None:
                     previous_observer(event)
             report.on_event = send
+        timings = submission_timing.SubmissionTimings(
+            on_phase=(writer.send if writer is not None else None),
+            on_slow=lambda line: print(line, file=sys.stderr, flush=True))
+        timing_scope.enter_context(timings.activate())
         json_options = {}
         withdrawal_rows = []
         if args.json:
@@ -539,8 +553,11 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
         print_consumer_refusal(exc, sealed=args.seal_only)
         return 1
     finally:
+        timing_scope.close()
         report.on_event = previous_observer
         if writer is not None:
+            if pending_ending is not None:
+                writer.send(pending_ending)
             writer.close()
 
 
@@ -551,7 +568,7 @@ def plain_detach(args) -> bool:
 
 def print_consumer_refusal(exc, *, sealed: bool) -> None:
     print(json.dumps(dict(schema=(sealed_submission.SEALED_SCHEMA if sealed
-        else sealed_submission.SUBMISSION_SCHEMA), refusal=dict(
+        else sealed_submission.SUBMISSION_SCHEMA), phases=submission_timing.submission_phase_snapshot(), refusal=dict(
         code=getattr(exc, "code", "submission_refused"),
         reason=getattr(exc, "reason", str(exc))))), flush=True)
 
