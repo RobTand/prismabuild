@@ -5758,11 +5758,19 @@ started, including native AutoRemove launches. Caller error text is a hint,
 never the fault evidence. The broker verifies NVIDIA injection and independently
 checks the host. For a CDI fault, it reads trusted root-owned specs at that time,
 finds the named mount source, and proves ENOENT on the host. For an NVIDIA
-initialization fault, its own bounded driver/NVML query must exit nonzero.
-Missing tools, timeout, unreadable specs and a successful query cannot fence.
+initialization fault, its own bounded driver/NVML query must return a documented
+hardware or driver fault: 8, 9, 10, 12, 14 or 15. Permission failure 4,
+unsupported function 13, invalid arguments, signals, unknown codes and ambiguous
+code 255 cannot fence. Missing tools, timeout, unreadable specs and a successful
+query cannot fence. Completed query status remains in `host_check` even when
+the outcome is `launch_error`.
 Quoted entrypoints, arguments, labels and environment values cannot select a
 positive result. The retained `host_check` records the independent proof beside
 the diagnostic. A removed launch's `error_hint` remains caller-supplied.
+NVIDIA intent includes `--runtime=nvidia`, CDI NVIDIA devices and `--gpus`
+with an explicit NVIDIA driver. Default-driver GPU requests still need
+independent NVIDIA host evidence. Explicit other vendors do not qualify.
+The shim carries parsed `--gpus` intent even when AutoRemove prevents inspect.
 
 Read the root broker's durable
 `/var/lib/prismabuild-resource-broker/gpu-container-runtime.json` or its public
@@ -5774,10 +5782,13 @@ checks this same mirror rather than keeping its own cooldown.
 
 PB blocks on inotify of local `/run/cdi`, which `/var/run/cdi` resolves to.
 Replacing `nvidia.yaml` atomically or recreating the directory requests one
-bounded readiness launch while the fence is latched. Restart revalidates a
-latched or unknown fence once. Overflow marks readiness unknown and revalidates
-once. Healthy startup leaves GPU admission open. NVIDIA's package hook owns CDI
-regeneration. PB never regenerates or edits it. After an event, PB
+bounded readiness launch while the fence is latched. The watcher checks the
+latch under the same authority lock as host observation. A repair consumed
+during the first fault check waits for latching and then requests one probe,
+without another event.
+Restart revalidates a latched or unknown fence once. Overflow marks readiness
+unknown and revalidates once. Healthy startup leaves GPU admission open.
+NVIDIA's package hook owns CDI regeneration. PB never regenerates or edits it. After an event, PB
 submits the exact pinned `/bin/true` CDI-injection probe described in
 [the design contract](design.md#host-gpu-container-runtime-fence-1895), through
 ordinary host-pinned PB admission as the worker UID. The tiny checkout is

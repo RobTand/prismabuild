@@ -116,8 +116,17 @@ def test_broker_host_fault_survives_failed_ending_and_charges_attempt(scoped, mo
     assert filed['detail']['termination_reason'] == outcome['termination_reason']
 
 
+@pytest.mark.parametrize('gpu_args,nvidia', [
+    ([], False),
+    (['--gpus', 'all'], True),
+    (['--gpus=driver=nvidia,count=all'], True),
+    (['--gpus', '"device=0,1",capabilities=utility'], True),
+    (['--gpus', 'driver=other,count=all'], False),
+    (['--gpus', 'driver=other', '--gpus', 'all'], True),
+    (['--entrypoint', '--gpus=all'], False),
+])
 @pytest.mark.parametrize('status', [0, 127])
-def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monkeypatch, status):
+def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monkeypatch, status, gpu_args, nvidia):
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     shim_path = Path(__file__).resolve().parents[1] / 'tools/fleet/docker'
     loader = importlib.machinery.SourceFileLoader('runtime_shim_test', str(shim_path))
@@ -142,8 +151,9 @@ def test_shim_preserves_native_auto_removal_and_binds_each_launch(tmp_path, monk
     monkeypatch.setattr(shim, '_run_relayed', launched)
     monkeypatch.setenv(shim.OWNER_ENV, 'a'*64)
     monkeypatch.setenv(shim.MARKER_ENV, str(tmp_path / 'marker'))
-    monkeypatch.setattr(sys, 'argv', ['docker', 'run', '--rm', '--cidfile', str(cidfile), 'image'])
+    monkeypatch.setattr(sys, 'argv', ['docker', 'run', '--rm', *gpu_args, '--cidfile', str(cidfile), 'image'])
     assert shim.main() == status
+    assert calls[1] == ('container_watch', {'ticket': 'b'*64, 'nvidia_injection': nvidia})
     assert calls[2] == ('container_outcome', {'ticket': 'b'*64, 'container_id': 'd'*64, 'daemon_stderr': ''})
     assert [op for op, _ in calls] == ['container_begin', 'container_watch', 'container_outcome', *(['container_end'] if status == 0 else [])]
 

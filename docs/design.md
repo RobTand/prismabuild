@@ -20278,6 +20278,12 @@ text or prove why creation failed. The same independent host checks below apply
 to retained and auto-removed containers. An inspect snapshot, when available,
 also verifies the actual labels, parent and injection. Without a snapshot, the
 watch's parsed NVIDIA injection intent supplies that prerequisite.
+Intent includes runtime `nvidia`, CDI `nvidia.com/gpu` devices, and Docker
+`--gpus` DeviceRequests with driver `nvidia`. An unspecified driver with `gpu`
+capabilities is a candidate requiring the same independent NVIDIA host check.
+Explicit other vendors do not qualify. The shim parses `--gpus` CSV fields
+before the image boundary and carries intent through AutoRemove, following
+[Docker's GPU option parser](https://github.com/docker/cli/blob/master/opts/gpus.go).
 The fence retains the stream basis, ID, ticket and the relevant identity, state
 and device fields of the optional snapshot. It does not publish container
 environment variables, arbitrary caller labels or payload arguments.
@@ -20297,12 +20303,16 @@ check selection. The text itself never proves a host fault:
   Only ENOENT proves absence. Unreadable specs or lookup errors grant no fault.
 - `nvidia_initialization_failed`: after an NVIDIA initialization diagnostic, the
   broker runs its own two-second `/usr/bin/nvidia-smi --query-gpu=uuid
-  --format=csv,noheader` driver/NVML check. Only that query's positive exit status proves
-  failure. A successful, unavailable, untrusted or timed-out check leaves
-  `launch_error`, even if the diagnostic claims a driver failure.
+  --format=csv,noheader` driver/NVML check. Positive evidence is restricted to
+  [NVIDIA's documented hardware and driver fault codes](https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value):
+  8, 9, 10, 12, 14 and 15. Permission failure 4, unsupported function 13,
+  invalid arguments, signals, unknown codes and ambiguous code 255 leave
+  `launch_error`. A successful, unavailable, untrusted or timed-out check also
+  leaves `launch_error`, even if the diagnostic claims a driver failure.
 
 The outcome and durable fence retain `host_check` separately from the diagnostic
 `daemon_error`. Removed-launch `error_hint` is explicitly caller-supplied.
+Completed query status is retained in `host_check`, including non-fault results.
 
 An unmatched requested GPU UUID, generic device error, invalid configuration,
 arbitrary bind mount and payload exit remain ordinary failures or unknown.
@@ -20336,9 +20346,13 @@ to that path. It watches the directory and its parent, so atomic replacement of
 `nvidia.yaml`, directory removal/recreation, and watch overflow are events.
 Restart revalidates once only when a durable fence is latched or unknown. A
 healthy startup does not latch or submit a probe. Overflow means unknown and
-requests one revalidation. An independent
-blocking event consumer submits probes through the published `pbrun.py` as the
-worker UID, using a dedicated tiny Git checkout under the user's PB scratch.
+requests one revalidation. The authority lock serializes the watcher's latch
+predicate with the complete host observation and latching decision. A CDI repair consumed during the first
+observation therefore requests one bounded readiness probe after that latch.
+An event completed before observation begins does not authorize recovery from
+a later fault. An independent blocking event consumer submits probes through
+the published `pbrun.py` as the worker UID, using a dedicated tiny Git checkout
+under the user's PB scratch.
 Queued superseded events coalesce. There is no cooldown or periodic readiness
 launch. PB never writes CDI or runs its generator; the NVIDIA package hook owns
 regeneration.

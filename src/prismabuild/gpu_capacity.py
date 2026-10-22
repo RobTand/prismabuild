@@ -606,12 +606,19 @@ def container_launch_outcome(container, *, cdi_sources, source_exists=_runtime_s
 
 
 def container_requests_nvidia(container):
-    """The same injection proof for inspect and removed-launch evidence."""
+    """NVIDIA intent from inspect or parsed CLI requests, still host-verified.
+
+    Docker's --gpus defaults to an unspecified driver with gpu capabilities.
+    That candidate alone cannot prove an NVIDIA host fault.
+    """
     host = container.get('HostConfig', {})
     requests = host.get('DeviceRequests', []) or []
     return (host.get('Runtime') == 'nvidia' or any(
-        request.get('Driver') == 'cdi' and any(
-            str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []))
+        request.get('Driver') == 'nvidia'
+        or request.get('Driver') == 'cdi' and any(
+            str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []) or [])
+        or not request.get('Driver') and any(
+            'gpu' in capabilities for capabilities in request.get('Capabilities', []) or [])
         for request in requests))
 
 
@@ -623,10 +630,14 @@ def nvidia_driver_failure():
         result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    if result.returncode > 0:
-        return {'kind': 'nvidia_driver_query_failed', 'command': command,
-                'returncode': result.returncode}
-    return None
+    # NVIDIA documents hardware/driver faults: power (8), driver absent (9),
+    # interrupts (10), NVML absent (12), infoROM corruption (14), lost GPU (15).
+    # https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value
+    # 255 also covers "other error", so cannot positively prove a driver fault.
+    fault = result.returncode in {8, 9, 10, 12, 14, 15}
+    kind = ('nvidia_driver_query_failed' if fault else
+            'nvidia_driver_query_succeeded' if result.returncode == 0 else 'nvidia_driver_query_unavailable')
+    return {'kind': kind, 'command': command, 'returncode': result.returncode}
 
 
 def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=_runtime_source_exists):
@@ -647,9 +658,10 @@ def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=_ru
             'failed to initialize nvml', 'nvml error: gpu is lost'))
         if host_cause and 'unknown device' not in nvidia_error[1]:
             check = nvidia_driver_failure()
-            if check is not None:
+            if check is not None and check['kind'] == 'nvidia_driver_query_failed':
                 return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096],
                                               host_check=check)
+            return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096], host_check=check)
     return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
 
 

@@ -600,16 +600,18 @@ class GPUContainerRuntime:
         except (OSError,ValueError,KeyError,TypeError):return set()
 
     def observe(self, container, record):
-        outcome=self.module.container_launch_outcome(container,cdi_sources=self._mount_sources())
-        return self._apply_launch_outcome(outcome,container,record)
+        with self.lock:
+            outcome=self.module.container_launch_outcome(container,cdi_sources=self._mount_sources())
+            return self._apply_launch_outcome(outcome,container,record)
 
     def observe_removed(self, evidence, record):
-        snapshot=evidence.get('inspect_snapshot')
-        nvidia=(self.module.container_requests_nvidia(snapshot) if snapshot is not None
-                else evidence['nvidia_injection'])
-        outcome=self.module.never_started_runtime_error(evidence['error_hint'],nvidia=nvidia,
-                                                        cdi_sources=self._mount_sources())
-        return self._apply_launch_outcome(outcome,{},record,evidence=evidence)
+        with self.lock:
+            snapshot=evidence.get('inspect_snapshot')
+            nvidia=(self.module.container_requests_nvidia(snapshot) if snapshot is not None
+                    else evidence['nvidia_injection'])
+            outcome=self.module.never_started_runtime_error(evidence['error_hint'],nvidia=nvidia,
+                                                            cdi_sources=self._mount_sources())
+            return self._apply_launch_outcome(outcome,{},record,evidence=evidence)
 
     def _apply_launch_outcome(self, outcome, container, record, *, evidence=None):
         if not self.module.runtime_fence_enabled():
@@ -647,13 +649,18 @@ class GPUContainerRuntime:
         try:
             with_watch=self.module.CDIChangeWatch(self.cdi_dir)
             try:
-                if self.module.runtime_fence_enabled() and self.state['latched']:
-                    submit(self.event('watch_restart'))
+                with self.lock:
+                    if self.module.runtime_fence_enabled() and self.state['latched']:
+                        submit(self.event('watch_restart'))
                 while True:
                     reason=with_watch.next_change(self.stop_read)
                     if reason is None:return
-                    if self.module.runtime_fence_enabled() and (self.state['latched'] or reason == 'watch_overflow'):
-                        submit(self.event(reason))
+                    # Observation reads CDI and latches under this same lock.
+                    # A consumed repair must wait for that decision before it
+                    # can be discarded. submit only queues; a consumer seals it.
+                    with self.lock:
+                        if self.module.runtime_fence_enabled() and (self.state['latched'] or reason == 'watch_overflow'):
+                            submit(self.event(reason))
             finally:with_watch.close()
         except Exception as exc:
             with self.lock:

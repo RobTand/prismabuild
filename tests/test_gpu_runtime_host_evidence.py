@@ -11,6 +11,9 @@ from test_gpu_runtime_daemon_events import LaunchEventDaemon
 from test_resource_broker import create, container_ticket
 
 __all__ = ['runtime_authority']
+_REAL_DRIVER_FAILURE = gpu_capacity.nvidia_driver_failure
+NVIDIA_ERROR = ('OCI runtime create failed: nvidia-container-cli: '
+                'initialization error: nvml error: driver not loaded')
 
 
 def test_disabled_cleanup_preserves_main_removal_arguments(monkeypatch):
@@ -179,7 +182,9 @@ def test_driver_verification_uses_its_own_bounded_query(tmp_path, monkeypatch, r
         return SimpleNamespace(returncode=9 if result == 'failed' else -9 if result == 'interrupted' else 0)
     monkeypatch.setattr(gpu_capacity.subprocess, 'run', host_query)
     check = gpu_capacity.nvidia_driver_failure()
-    assert (check is not None) is (result == 'failed')
+    assert (check is not None) is (result in {'success', 'failed', 'interrupted'})
+    if check is not None:
+        assert (check['kind'] == 'nvidia_driver_query_failed') is (result == 'failed')
     if result == 'untrusted':
         assert not calls
     else:
@@ -228,3 +233,88 @@ def test_untrusted_cdi_specs_cannot_supply_host_fault_evidence(
         'scope_id': record['scope_id'], 'ticket': ticket, 'container_id': row['Id']})
     assert reply['launch_outcome']['kind'] == 'launch_error'
     assert not runtime.state['latched']
+
+
+@pytest.mark.parametrize('removed', [False, True], ids=['retained', 'autoremove'])
+@pytest.mark.parametrize('status', [0, 2, 3, 4, 6, 8, 9, 10, 12, 13, 14, 15, 17, 255, -9])
+def test_only_documented_driver_faults_fence_and_all_query_statuses_are_retained(
+        runtime_authority, tmp_path, monkeypatch, removed, status):
+    broker, authority, backend, runtime = runtime_authority
+    _, record = create(authority)
+    ticket = container_ticket(authority, record, monkeypatch)
+    row = daemon_row(record, '' if removed else NVIDIA_ERROR)
+    row['Config']['Labels']['prismabuild.shim'] = ticket
+    binary = tmp_path / 'trusted-nvidia-smi'
+    binary.write_bytes(b'not executed')
+    monkeypatch.setattr(gpu_capacity, '_root_owned_regular_fd',
+                        lambda path: os.open(binary, os.O_RDONLY))
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', _REAL_DRIVER_FAILURE)
+    monkeypatch.setattr(gpu_capacity.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        returncode=status, stdout='', stderr='independent query diagnostic'))
+    daemon = None
+    try:
+        if removed:
+            daemon = LaunchEventDaemon(broker, backend, row, ticket,
+                                      removed=True, nvidia_injection=True)
+            authority.launch_watches[ticket] = daemon.watch
+            daemon.emit('create')
+            assert daemon.inspected.wait(5)
+            daemon.emit('destroy')
+        else:
+            backend.inspect_container = lambda cid: row
+        reply = authority.handle(os.getuid(), os.getpid(), {
+            'op': 'container_outcome', 'scope_id': record['scope_id'],
+            'ticket': ticket, 'container_id': row['Id'],
+            'daemon_stderr': 'docker: Error response from daemon: ' + NVIDIA_ERROR})
+        fault = status in {8, 9, 10, 12, 14, 15}
+        assert runtime.state['latched'] is fault, reply
+        outcome = reply['launch_outcome']
+        assert outcome['kind'] == ('host_fault' if fault else 'launch_error')
+        assert outcome['host_check']['returncode'] == status
+        if fault:
+            assert runtime.state['evidence']['host_check']['returncode'] == status
+    finally:
+        if daemon is not None:
+            daemon.close()
+
+
+@pytest.mark.parametrize('driver', ['', 'nvidia', 'other'])
+@pytest.mark.parametrize('status', [0, 4, 9])
+@pytest.mark.parametrize('removed', [False, True], ids=['retained', 'autoremove'])
+def test_gpus_device_requests_require_independent_nvidia_fault_evidence(
+        runtime_authority, monkeypatch, driver, status, removed):
+    broker, authority, backend, runtime = runtime_authority
+    _, record = create(authority)
+    ticket = container_ticket(authority, record, monkeypatch)
+    checks = []
+    def query():
+        checks.append(True)
+        return {'kind': 'nvidia_driver_query_failed' if status == 9
+                else 'nvidia_driver_query_unavailable', 'returncode': status}
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', query)
+    row = daemon_row(record, NVIDIA_ERROR)
+    row['HostConfig'].update(Runtime='runc', DeviceRequests=[{
+        'Driver': driver, 'Count': -1, 'DeviceIDs': None,
+        'Capabilities': [['gpu']], 'Options': {}}])
+    row['Config']['Labels']['prismabuild.shim'] = ticket
+    daemon = None
+    try:
+        if removed:
+            daemon = LaunchEventDaemon(broker, backend, row, ticket,
+                                      removed=True, nvidia_injection=driver in {'', 'nvidia'})
+            authority.launch_watches[ticket] = daemon.watch
+            daemon.emit('create')
+            assert daemon.inspected.wait(5)
+            daemon.emit('destroy')
+        else:
+            backend.inspect_container = lambda cid: row
+        reply = authority.handle(os.getuid(), os.getpid(), {
+            'op': 'container_outcome', 'scope_id': record['scope_id'],
+            'ticket': ticket, 'container_id': row['Id'],
+            'daemon_stderr': 'docker: Error response from daemon: ' + NVIDIA_ERROR})
+        fault = driver in {'', 'nvidia'} and status == 9
+        assert runtime.state['latched'] is fault, reply
+        assert checks == ([True] if driver in {'', 'nvidia'} else [])
+    finally:
+        if daemon is not None:
+            daemon.close()
