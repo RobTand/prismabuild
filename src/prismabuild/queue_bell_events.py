@@ -14,7 +14,7 @@ import time
 import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
-from .queue_bell_topics import OutcomeNamespaces, TOPICS
+from .queue_bell_topics import OutcomeNamespaces, WorkerOffers, HostReservations, TOPICS
 
 IN_ATTRIB = 0x00000004
 IN_CLOSE_WRITE = 0x00000008
@@ -192,13 +192,16 @@ class InotifyQueue:
         self.libc.inotify_init1.restype = ctypes.c_int
         self.libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
         self.libc.inotify_add_watch.restype = ctypes.c_int
+        self.libc.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+        self.libc.inotify_rm_watch.restype = ctypes.c_int
         self.fd = self.libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if self.fd < 0:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.directories = {}
         self.root_watches = {}
-        self.adapters = (OutcomeNamespaces(),)
+        self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations())
         self.absent_roots = set()
+        self.incomplete_topics = set()
         try:
             self._tree(Path())
             if self.live_link is not None:
@@ -235,6 +238,22 @@ class InotifyQueue:
             if hint is not None:
                 ring.append(*hint)
 
+    def _topics_at(self, relative):
+        return {topic.name for adapter in self.adapters for topic in adapter.topics
+                if relative.parts and relative.parts[0] == topic.directory}
+
+    def _host_topics_at(self, relative):
+        return {name for name in self._topics_at(relative) if not TOPICS[name].legacy}
+
+    def _drop_host_tree(self, relative):
+        # A parent rename/delete is the invalidation. Stop watching the old
+        # inode before it can move outside the queue or retain an old host ID.
+        for wd, path in list(self.directories.items()):
+            if path is not None and path.is_relative_to(relative):
+                self.libc.inotify_rm_watch(self.fd, wd)
+                self.directories.pop(wd, None)
+                self.root_watches.pop(path, None)
+
     @property
     def covered_topics(self):
         watched = {path for path, wd in self.root_watches.items()
@@ -245,7 +264,8 @@ class InotifyQueue:
         # Its creation withdraws that proof until installation has invalidated
         # observations made before its descendant watches existed.
         return tuple(topic.name for adapter in self.adapters for topic in adapter.topics
-                     if Path(topic.directory) in watched or topic.directory in self.absent_roots)
+                     if topic.name not in self.incomplete_topics
+                     and (Path(topic.directory) in watched or topic.directory in self.absent_roots))
 
     def _open_tree_directory(self, relative, parent_fd):
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -265,8 +285,8 @@ class InotifyQueue:
     def _tree(self, relative, ring=None, parent_fd=None):
         """Install first, then scan, including subtrees moved in fully populated.
 
-        Only the outcome namespaces are traversed, to depth three. Symlinks
-        and other queue trees are never followed. Optional roots are lazy.
+        Adapters bound each namespace's directory shape. Symlinks and other
+        queue trees are never followed. Optional roots are lazy.
         """
         path = self.root / relative
         descriptor = None
@@ -276,6 +296,7 @@ class InotifyQueue:
             # cannot redirect traversal through a symlink between those steps.
             if relative == Path():
                 self.root_watches.clear()  # An overflow may hide watch removal.
+                self.incomplete_topics.clear()
             self._add(Path(f"/proc/self/fd/{descriptor}"), relative)
             if relative == Path():
                 # Required roots cannot depend on their names appearing in a
@@ -286,9 +307,9 @@ class InotifyQueue:
             root_names = set()
             with os.scandir(descriptor) as entries:
                 for entry in entries:
-                    if entry.name.startswith("."):
-                        continue
                     child = relative / entry.name
+                    if entry.name.startswith(".") and not HostReservations.hidden_input(child):
+                        continue
                     if relative == Path():
                         if self._allowed(child):
                             root_names.add(entry.name)
@@ -296,8 +317,13 @@ class InotifyQueue:
                             continue  # Already watched and scanned explicitly.
                     if entry.is_dir(follow_symlinks=False) and self._allowed(child):
                         self._tree(child, ring, descriptor)
-                    elif ring is not None:
-                        self._hint(child, ring)
+                    else:
+                        if self._allowed(child):
+                            # A host/held/free shape replaced by a symlink or
+                            # non-directory is unknown, never an empty ledger.
+                            self.incomplete_topics.update(self._host_topics_at(child))
+                        if ring is not None:
+                            self._hint(child, ring)
             if relative == Path():
                 self.absent_roots = {topic.directory for adapter in self.adapters for topic in adapter.topics
                                      if not topic.required and topic.directory not in root_names}
@@ -328,6 +354,10 @@ class InotifyQueue:
                 # must leave v2 incomplete even while existing requests unwind.
                 ring.set_coverage(())
                 ring.reset()
+                # An overflow can hide a move out of the queue. Rebuild host
+                # coverage without retaining watches on those old inodes.
+                self._drop_host_tree(Path("workers"))
+                self._drop_host_tree(Path("reservations"))
                 self._tree(Path(), ring)  # Overflow may have hidden mkdir events.
                 ring.set_coverage(self.covered_topics)
                 continue
@@ -338,21 +368,43 @@ class InotifyQueue:
                 if mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED):
                     raise OSError("queue bell lost its generation watch")
                 continue  # The selector checks retirement after consuming events.
+            host_topics = self._host_topics_at(relative)
             if mask & IN_MOVE_SELF:
+                if host_topics:
+                    self.incomplete_topics.update(host_topics)
+                    ring.set_coverage(self.covered_topics)
+                    ring.reset_v2()
+                    self._drop_host_tree(relative)
+                    continue
                 raise OSError("queue bell watched directory moved")
             if mask & (IN_DELETE_SELF | IN_IGNORED):
                 self.directories.pop(wd, None)
+                if host_topics:
+                    # Normal deletion is covered by its watched parent. An
+                    # unexplained ignored watch cannot prove completeness.
+                    if not mask & IN_DELETE_SELF:
+                        self.incomplete_topics.update(host_topics)
+                    self._hint(relative, ring)
+                    ring.set_coverage(self.covered_topics)
+                    ring.reset_v2()
+                    continue
                 if relative == Path() or relative.as_posix() in REQUIRED_STATE_DIRS:
                     raise OSError("queue bell lost a state directory watch")
                 ring.reset()
                 ring.set_coverage(self.covered_topics)
                 continue
-            if not name or name.startswith("."):
+            if not name:
+                if host_topics and mask & IN_ATTRIB:
+                    self._hint(relative, ring)
                 continue
             child = relative / name
-            affected = {topic.name for adapter in self.adapters for topic in adapter.topics
-                        if child.parts[0] == topic.directory}
+            if name.startswith(".") and not HostReservations.hidden_input(child):
+                continue
+            affected = self._topics_at(child)
+            host_change = self._host_topics_at(child)
             root_change = relative == Path() and bool(affected)
+            if host_change and mask & IN_ISDIR and mask & (IN_DELETE | IN_MOVED_FROM):
+                self._drop_host_tree(child)
             if root_change and mask & (IN_DELETE | IN_MOVED_FROM):
                 if name in REQUIRED_STATE_DIRS:
                     raise OSError("queue bell lost a state directory watch")
@@ -365,7 +417,12 @@ class InotifyQueue:
             # observer saw and that vanished before watches were installed.
             # Withdraw coverage throughout installation, then reset history.
             keyless_change = ((installing and not any(adapter.hint(child) for adapter in self.adapters))
-                              or (root_change and mask & (IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM)))
+                              or (root_change and mask & (IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM))
+                              or (installing and bool(host_change)))
+            if (host_change and self._allowed(child) and not mask & IN_ISDIR
+                    and mask & (IN_CREATE | IN_MOVED_TO)):
+                self.incomplete_topics.update(host_change)
+                ring.set_coverage(self.covered_topics)
             if keyless_change:
                 ring.set_coverage(set(self.covered_topics) - affected)
             if installing:
