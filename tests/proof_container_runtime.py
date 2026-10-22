@@ -291,6 +291,22 @@ def runtime_stamp(info):
         'st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
 
 
+def runtime_customization_stamps_equal(before, after):
+    """Compare customization custody without treating ancestor entry churn as mutation.
+
+    Keep complete observations and validate both shapes before ignoring only a
+    directory's size and timestamps. All other runtime stability stays strict.
+    Ownership and symlink targets are compared by the callers alongside stamps.
+    """
+    if any(not isinstance(stamp, (list, tuple)) or len(stamp) != 6
+           or any(type(value) is not int for value in stamp)
+           for stamp in (before, after)):
+        return False
+    if stat.S_ISDIR(before[2]):
+        return tuple(before[:3]) == tuple(after[:3])
+    return tuple(before) == tuple(after)
+
+
 def runtime_charge(budget, *, members=0, regular_bytes=0):
     if budget is None:
         return
@@ -991,7 +1007,7 @@ def runtime_host_root_selection(captured):
                 raise ValueError('host customization absence probe has unsupported fields')
         else:
             if (set(probe) != {'path', 'entry', 'uid', 'before', 'after'}
-                    or probe['before'] != probe['after'] or len(probe['before']) != 6
+                    or not runtime_customization_stamps_equal(probe['before'], probe['after'])
                     or type(probe['uid']) is not int or probe['uid'] < 0):
                 raise ValueError('host customization selection lacks stable custody observations')
             mode = probe['before'][2]
@@ -1007,8 +1023,16 @@ def runtime_host_root_selection(captured):
         if (known is None and covered and entry is not None
                 or known is not None and (entry is None or any(known.get(name) != value for name, value in entry.items()))):
             raise ValueError('host customization observation differs from host inventory: ' + path)
-        if path in observed and observed[path] != probe:
-            raise ValueError('host customization component changed between observations: ' + path)
+        if path in observed:
+            previous = observed[path]
+            # Compare every non-stamp field exactly, including uid and link target.
+            stable_fields = lambda record: {key: value for key, value in record.items()
+                                            if key not in {'before', 'after'}}
+            if (stable_fields(previous) != stable_fields(probe)
+                    or entry is not None and any(
+                        not runtime_customization_stamps_equal(previous[field], probe[field])
+                        for field in ('before', 'after'))):
+                raise ValueError('host customization component changed between observations: ' + path)
         observed[path] = probe
     def lookup(path):
         probe = observed.get(path)
