@@ -394,12 +394,16 @@ def test_unreadable_directory_keeps_useful_report(fleet, monkeypatch):
     _file(stage, "readable/data", 7)
     real_scandir = os.scandir
     def scandir(path):
+        # rmtree uses caller-owned directory descriptors during cleanup.
+        if isinstance(path, int):
+            return real_scandir(path)
         if os.fspath(path) == str(stage / "blocked"):
             raise PermissionError("fixture denies stage directory")
         return real_scandir(path)
-    monkeypatch.setattr(os, "scandir", scandir)
 
-    got = _report(fleet)
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "scandir", scandir)
+        got = _report(fleet)
 
     assert got["complete"] is False
     rows = _rows(got)
