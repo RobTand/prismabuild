@@ -20623,3 +20623,186 @@ values are unavailable measurements, never evidence of no contention. Gate
 and hold chart samples remain suppressed for incomplete identity; mount, RPC
 and probe reporting continue. Deployment and executed qualification remain
 the release master's responsibility.
+
+## Attempt log archive and queue retention (#2023)
+
+`attempt_archive` owns verified live/archive log access. `attempt_retention`
+owns the bounded rollout gate and archive-before-unlink protocol;
+`PoolQueue.attempt_log_retention_eligibility` owns the queue eligibility question.
+`pb_gc` supplies explicit operator orchestration. This is source support, not a
+runtime activation or permission to retire live fleet evidence.
+
+The PB lead permits resolver-preserved supersession, dependency, withdrawal and
+storage references for this **logs-only** retirement. All attempt JSON,
+reconciliation sidecars, intent, broker attestations, done, failed and other
+records remain live at their existing addresses. Referenced log bytes remain
+byte-exact through the resolver. Foreign reference writers need no new fencing
+under this exception. Metadata follow-up #2025 must revisit strict reference
+fencing before removing referenced records. This exception grants no authority
+to remove a record or an actively owned log.
+
+### Public log resolver
+
+The package exports the exact API and exception classes below:
+
+```python
+from collections.abc import Mapping
+import os
+
+def resolve_attempt_log(
+    queue_root: os.PathLike[str] | str,
+    descriptor: Mapping[str, object],
+) -> bytes: ...
+```
+
+`InvalidLogDescriptor` means invalid canonical path, exact nonnegative integer
+`bytes`, or lowercase SHA256. Paths have the existing spelling
+`attempts/<key>/<generation>/<number:08d>.<stdout|stderr>.<sha256>.log`.
+Descriptor paths are bounded to 512 characters. `AttemptLogMissing` means both
+the live address and exact archive index are absent; its message names both.
+`AttemptLogIntegrityError` means bytes, size, mode, identity or archive metadata
+disagrees with its address. `AttemptArchiveUnavailable` means configured history
+cannot be verified or read. A missing configured store is unavailable history.
+A missing chunk behind a published index is unavailable, not an absent log.
+
+Live integrity failure never falls back. Only ENOENT triggers parent refresh
+and a bounded two-pass live/index crossover. Once a private consumer receives
+bytes, missing-path failures refuse instead of replaying a partial prefix.
+The private streaming verifier shares size/hash verification with MCP tails;
+MCP retains only the bounded suffix and returns it after full verification.
+`bytes_read`/`verified_bytes` report decoded verification bytes and
+`retained_bytes` reports the bounded suffix. Total verification I/O is
+proportional to the log size. The existing MCP
+`Call.read` boundary owns cancellation and the shared deadline. Full public
+reads allocate memory proportional to the requested log. `action_result` keeps
+its evidence cap before calling. Pool history and submission proof use the same
+resolver. JSON readers and directory enumeration retain their original meaning.
+
+### Configuration and archive format
+
+Queue configuration is `attempt-log-retention.json`, strict JSON capped at
+16 KiB, schema `prismabuild.attempt-log-retention.v1`. Required fields are
+`schema`, `queue_id`, `archive_root`, `store_id`, `dataset`, `dataset_guid`.
+`queue_id` and `store_id` are distinct operator-assigned 64-character lowercase
+hex identities. `archive_root` is an absolute canonical path outside the queue.
+Optional fields are `retention_days` and queue-relative `reader_gate`.
+`QUEUE_EVIDENCE_RETENTION_DAYS = 14` is the default. The hard minimum is 0.5 days.
+A shorter-than-default window requires the complete valid gate even in survey.
+Every apply requires the gate regardless of window.
+
+The proposed archive is
+`/mnt/shared/prismabuild-fleet/queue-evidence/v1/<queue-id>/` on PB-owned dataset
+`storage_pool/shared/pb-queue-evidence`. Its immutable `store.json` contains
+exactly `schema=prismabuild.attempt-log-store.v1`, `queue_root`, `queue_id`,
+`store_id`, `dataset`, `dataset_guid`. `queue_root` binds the canonical queue
+address. Apply rechecks the mounted ZFS source, GUID, mountpoint, effective
+`sync=standard` and zstd compression. Code never creates or modifies a dataset.
+
+| Address relative to archive root | Contents and bounds |
+|---|---|
+| `chunks/<sha-prefix>/<sha>.zst` | Compressed SHA256 address; decoded chunk at most 8 MiB, compressed at most 9 MiB; one compressor thread and bounded decoder memory |
+| `manifests/<sha-prefix>/<sha>.json` | Raw-byte SHA256 address, at most 1 MiB; schema `prismabuild.attempt-log-manifest.v1`, queue/store identities, exact `descriptor`, ordered `chunks` |
+| `index/<key-prefix>/<key>/<generation>/<descriptor-sha>.json` | Direct exact lookup, at most 4 KiB; schema `prismabuild.attempt-log-index.v1`, queue/store identities, `descriptor`, `manifest_sha256` |
+
+`descriptor-sha` is `digest_primitives.canonical_sha256` of the canonical
+`{path,bytes,sha256}` descriptor. Each chunk entry contains exactly `sha256`,
+`bytes`, `compressed_sha256`, `compressed_bytes`. The reader verifies every
+encoded and decoded address, then the complete log address. Empty logs use an
+empty chunk list. There is no extraction, whole-key tarball, global history
+checkpoint or archive expiration policy. Metadata over a bound retains the
+source. Native immutable publication fsyncs file and created ancestors, links
+atomically, fsyncs the parent, and verifies custody. Retries adopt verified prior
+indexes even when another collector chose a different valid segmentation.
+
+### Rollout verification and unlink authority
+
+The reader gate is operator-owned immutable JSON, capped at 256 KiB, schema
+`prismabuild.attempt-log-reader-gate.v1`. Gate/proof parents must be owned by root
+or the maintenance uid, without group/other write permission. The gate contains
+exact queue/store/root/config binding, `issued_unix`, `expires_unix`,
+`inventory_complete`, `inventory_attested_by`, `deferred_inventory_complete`,
+`members`, `generations`, and `approvals`. Its lifetime is at most 24 hours.
+The config binding is `canonical_sha256` of the complete config mapping.
+
+Each of at most 256 unique members has `id`, `role`, `generation`, and `evidence`
+with queue-relative `path`, `bytes`, `sha256`. The immutable evidence is at most
+16 KiB and shares the gate's operator directory. It has schema
+`prismabuild.attempt-log-reader-proof.v1`, matching `id`, `role`, `generation`,
+`capabilities` containing `attempt-log-resolver-v1`, and `verified_unix` within
+the gate interval. Required roles are `active_generation`, `rollback_generation`,
+`detached_client`, `mcp`, `tl_computation_runner`, `tl_test_runner`.
+`deferred_runtime` rows are additionally required for every unpublished deferred
+consumer; an automatically verified empty deferred set needs no invented row.
+
+Each of at most 128 PB generation entries has `generation`, `directory`,
+`commit`, `receipt_sha256`, `content_sha256`. The gate reads only these explicit
+addresses, verifies actual `RUNTIME_VERSION.json` through `GenerationReceipt`,
+and binds the receipt file map through its canonical digest. It verifies the
+receipt-covered `src/prismabuild/attempt_archive.py` source and its literal
+`ATTEMPT_LOG_RESOLVER_PROTOCOL = 1` through `SourceDeclarations`. Equal commits
+do not collapse distinct generation identities.
+
+Automatic checks freshly compare **every listed worker offer**, including
+draining offers, with `active_generation` members named `worker:<host>`.
+Each offer needs a fresh, non-future timestamp within the smaller of 300 seconds
+and the existing offer TTL, matching runtime commit, and exactly one
+`runtime-generation:<loaded_generation>` tag naming a qualified generation.
+Missing, mixed, stale or changed offers refuse. A bounded deferred census checks
+both frozen and pinned runtime identities against `deferred:<pending-id>` rows.
+It refuses unknown or omitted runtimes. No recursive runtime-directory scan runs.
+
+The operator must attest completeness of other active roles/processes, rollback,
+detached PB clients, MCP and both external TL runners, including outage reattach,
+recovery and old-reader exclusion. Worker offers do not prove every process's
+loaded generation. Source capability and evidence digests do not authenticate a
+signer or establish deployment. Qualification and approvals need established
+operator custody. `approvals` contains separate `pb_lead` and `tl_lead` entries,
+each with `by`, `reason`, `unix`, `config_sha256`, `inventory_sha256`. The inventory
+digest covers `members`, `generations`, both completeness fields and the named
+inventory attester. Changed inventory/config requires renewed approval.
+
+Eligibility requires one real terminal schema/status/generation, valid finish
+timestamps and terminal/attempt/log mtimes older than the window. All generations
+under an inactive key are considered, with at most 256 generations,
+256 attempt records, 512 live log descriptors and 16 MiB of attempt metadata
+per key. READY,
+CLAIMED, leases, variable claim/ready sidecars, pending finish, late finishers,
+new/unknown intents, containers and nonempty/uncertain resource or reader
+ownership retain every generation. Valid old claim intents persist after success
+and remain historical evidence. Empty leftover holder directories and reader
+retirement marks grant no active ownership. Unknown/oversized observations retain.
+
+Chunks and direct indexes are prepared and verified outside queue locks. Under
+the nonblocking per-key transition lock, apply compares terminal bytes and exact
+generation, rechecks eligibility, reads the archive back, verifies source
+size/hash/device/inode/mtime/ctime, and rechecks authority before **each** unlink.
+The plan binds the complete config digest and window. A changed store, window,
+gate, active reader or ownership state skips removal. Gate freshness is rechecked
+after lengthy verification. No recursive deletion runs. Durable receipts in
+`gc-receipts/attempt-logs-<digest>.json` report removed paths/bytes and skip reasons;
+the indexes authorize recovery when an interruption precedes the receipt.
+
+Surveys stream flat terminal names and keep a heap of at most 256 selected keys.
+The next page starts after the previous key and wraps after the last key, so old
+retained JSON cannot starve later keys or newly inserted earlier keys. The
+archive-owned `survey-cursor.json` is small mutable bookkeeping, schema
+`prismabuild.attempt-log-survey-cursor.v1`, with `queue_id` and `after_key`.
+A nonblocking cursor lock and expected-cursor comparison prevent stale collectors
+from overwriting a newer page. With no configured archive, callers carry the
+reported `next_cursor` through `--attempt-log-after`. Surveys report eligible and
+retained bytes, unknown retained-byte counts, oldest eligible time, reasons,
+archive health, gate state and continuation. The shipped hourly timer has no
+install target and requires an explicit survey-enable marker; it never applies.
+
+`filesystem_capacity.queue_space_diagnostic` adds quota-aware available-byte
+alerts to `pbstatus` and submission diagnostics. It warns below 16 GiB, reports
+critical below 4 GiB or at the existing inode floor, and reports unknown reads
+explicitly. It uses `statvfs.f_bavail`, which includes quotas exposed by the
+filesystem; it is not a reservation or a new admission refusal.
+
+At 0.89 GiB/hour, 14 days produces about 299 GiB before metadata and pinned
+evidence, which cannot fit an 80 GiB quota. A qualified 24-hour window produces
+about 21 GiB of logs and can fit only if metadata, active/pinned evidence and
+headroom leave enough room. All JSON remains live, so this change does not bound
+whole-queue growth. A tiny copied sample measured 19.2576% log bytes; it is not a
+fleet log-fraction estimate or a capacity guarantee.

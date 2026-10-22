@@ -4446,6 +4446,83 @@ merges `movers-retired/`, and keep it off until one such sweep has been
 observed to fold with the store. A sweep without the flag reports the
 candidates and retires none of them.
 
+## Survey and retire attempt logs (#2023)
+
+Deploy archive-aware PB readers and both TL runners before enabling retirement.
+Include active and rollback generations, draining workers, detached clients,
+MCP, frozen/pinned deferred runtimes and recovery readers. Obtain explicit TL
+lead go and PB lead approval for the exact inventory/config. Source support
+alone does not authorize live archive work. Follow the schema and custody
+requirements in [the attempt archive contract](design.md#attempt-log-archive-and-queue-retention-2023).
+
+Have the lead provision PB-owned `storage_pool/shared/pb-queue-evidence` at
+`/mnt/shared/prismabuild-fleet/queue-evidence`. Set the **child** dataset's
+effective `sync=standard` and `compression=zstd`; do not change its parent.
+Record its GUID and actual mountpoint. Create the queue-specific `v1/<queue-id>`
+directory and immutable `store.json` binding its queue, store, dataset and GUID.
+The GC tool does not provision a dataset. Apply must run where local ZFS and
+mount observations can verify the synchronous backing dataset.
+
+Install queue `attempt-log-retention.json` with the exact schema and explicit
+archive path. Leave `retention_days` absent for the 14-day default. To request a
+shorter window, first qualify the complete reader gate; never set less than
+0.5 days. A short-window survey also refuses a missing/invalid gate. Put the
+gate and member proofs in an operator-owned directory without group/other write
+permission, and publish those files read-only. Bind actual generation receipts,
+receipt-covered resolver source, inventory digest and config digest. Keep the
+external/process completeness attestations and both approvals within 24 hours.
+Current worker offers and deferred identities are automatically rechecked.
+
+Run the initial survey with an explicit queue root:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py \
+  --queue-root QUEUE --summary
+```
+
+Inspect eligible/retained bytes, unknown sizes, skip reasons, archive health,
+reader gate and cursor. The report is a bounded page, not a whole-queue byte
+estimate. A configured archive stores the continuation cursor outside the queue;
+retained keys cannot starve later pages. Without a configured archive, pass the
+reported key with `--attempt-log-after KEY` on the next survey. The end wraps to
+new keys inserted earlier in lexical order. Queue receipts remain live.
+
+After both approvals and the full reader gate verify, apply the logs-only pass:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pb_gc.py \
+  --queue-root QUEUE --summary --apply --all-lock-takers-verify \
+  --retire-attempt-logs
+```
+
+Inspect terminal exit status and `gc-receipts/attempt-logs-*.json`, including
+skips. A process interruption may leave valid archive entries and live duplicate
+logs, or an already covered deletion prefix. Rerun to adopt verified publications.
+An unavailable or misbound archive refuses; never remove an index or assume a
+missing store is empty history. Verify actual resolver delivery after rollout.
+
+This flag runs the logs-only pass and skips the legacy metadata sweep.
+Only immutable stdout/stderr payloads retire. All attempt JSON, reconciliation,
+intent, broker proof, done/failed and other records remain live. The PB lead
+allows resolver-preserved references for this release, so foreign dependency,
+supersession and storage references do not require new writer fencing. Active
+ownership still retains every generation. Metadata follow-up #2025 must revisit
+strict reference fencing before removing any referenced records.
+
+The hourly `prismabuild-attempt-log-survey.timer` ships without an install target.
+Its service also requires `%h/.config/prismabuild/attempt-log-survey-enabled`.
+Install/enable it only after reviewing the queue configuration. It runs surveys
+and cannot enable apply. No maintenance timer grants live retirement approval.
+
+Use `pbstatus`'s `queue_space` observation to watch available bytes and inodes.
+Warnings start below 16 GiB, critical below 4 GiB or the inode floor. Submission
+prints the same report without introducing a new admission refusal. If the
+filesystem does not expose its quota through `statvfs`, monitor that quota
+separately. Fourteen days at 0.89 GiB/hour is about 299 GiB and does not fit 80G.
+Twenty-four hours is about 21 GiB, plus retained metadata, active evidence and
+headroom. Measure those components before choosing a qualified shorter window;
+this release does not bound metadata growth.
+
 ## Read the spool retirements
 
 A killed or withdrawn producer's host spool is retired by the worker loops on

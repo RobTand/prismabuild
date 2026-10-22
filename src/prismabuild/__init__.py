@@ -14,9 +14,15 @@ from importlib import import_module as _import_module
 
 from . import progress  # noqa: F401
 from .progress import commit, report_action_progress
+from .attempt_archive import (
+    resolve_attempt_log, InvalidLogDescriptor, AttemptLogMissing,
+    AttemptLogIntegrityError, AttemptArchiveUnavailable,
+)
 
 __all__ = [
     "core", "progress", "residency_map", "commit", "report_action_progress",
+    "resolve_attempt_log", "InvalidLogDescriptor", "AttemptLogMissing",
+    "AttemptLogIntegrityError", "AttemptArchiveUnavailable",
 ]
 __version__ = "0.1.0"
 

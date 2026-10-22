@@ -27,6 +27,10 @@ carry no hard NFS deadline.
 from __future__ import annotations
 
 from . import immutable_files
+from .attempt_archive import (
+    resolve_attempt_log, InvalidLogDescriptor, AttemptLogMissing,
+    AttemptLogIntegrityError, AttemptArchiveUnavailable,
+)
 
 import ast
 import math
@@ -560,9 +564,11 @@ def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap
     log_path = queue.records.attempt_log_path(record, number, stream, declared_sha)
     if metadata.get("path") != str(log_path.relative_to(queue.root)):
         raise ActionResultError(f"the selected attempt {stream} link is not canonical")
-    raw = _read_bounded(
-        log_path, where=f"pool attempt {stream}", max_bytes=log_cap,
-        require_readonly=True)
+    try:
+        raw = resolve_attempt_log(queue.root, metadata)
+    except (InvalidLogDescriptor, AttemptLogMissing,
+            AttemptLogIntegrityError, AttemptArchiveUnavailable) as exc:
+        raise ActionResultError(f"the selected attempt {stream} could not be verified: {exc}") from exc
     if len(raw) != declared_bytes or pb.raw_sha256(raw) != declared_sha:
         raise ActionResultError(f"the selected attempt {stream} differs from its address")
 
