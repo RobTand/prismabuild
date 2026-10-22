@@ -2166,6 +2166,62 @@ an accepted decision prevents later test output from inventing runtime refusal.
 The coordinator records interpreter-absent refusal directly from eligibility.
 Human output is presentation and cannot control either refusal or progress.
 
+The recorder also creates a fresh 256-bit `run_nonce` inside each shard
+invocation before importing pytest (#1842). Its first preflight decision,
+completion and outcome records carry that additive field. The coordinator
+declares `record_binding: 1` in each raw observation and report row because
+it seals this recorder version into the shard program. This invocation-owned
+metadata selects bound reading, including when reports are replayed by gates
+or consumed for duration history. The same declaration is sealed into
+`PRISMABUILD_PBTEST_RECORD_BINDING=1` in the action environment, reserved from
+caller overrides. Receipt-only readers select the mode from that validated
+action's environment. This stable sealed declaration changes every shard's
+cache key once after the client update, so cached shards rerun once. The
+execution-local random nonce is unsealed and causes no further per-run misses.
+Stdout never selects the binding mode.
+With binding declared, the reader accepts only records with the nonce from
+the first preflight decision. Unbound, foreign and malformed marker lines
+are ignored and introduce no completion problem. A missing or unsupported
+binding cannot fall back to legacy evidence inside a declared bound run.
+
+Only private emission closures attach the nonce to record copies. Population,
+reports, counts and the snapshotted collect-only flag stay in closure-private
+state. The registered adapter exposes pytest event hooks with no state or
+record/emission helper methods. A private dispatch monitor, installed through
+pluggy's public `add_hookcall_monitoring` API during recorder registration and
+before conftests load, owns the phase flags. It tracks complete hook dispatches,
+not generator advancement: sessionstart must return before collection starts;
+the population is snapshotted only after real collection returns; and final
+emission requires the real test-loop dispatch to return or raise. Lifecycle
+events must belong directly to this invocation's command and recorded session.
+The registered lifecycle adapters cannot authorize these transitions. The
+monitor also records each completed test-report dispatch, so abandoning a
+direct adapter generator cannot suppress a real failure. Other report and
+worker-population adapters accept the matching dispatched argument objects only
+once per dispatch, so direct calls cannot fabricate or duplicate them.
+Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
+final-teardown completion still survives blocked exit hooks, including xdist
+workers that prevent the controller's test loop from returning.
+A duplicated, non-inheritable stdout descriptor is captured before pytest runs;
+replacing the terminal writer cannot intercept bound records. The emission
+closure refuses any PID other than the one that minted the nonce, including
+a fork-without-exec child calling inherited recorder hooks.
+The nonce never enters argv or `os.environ`, so fresh nested recorders mint
+independent nonces. In a declared bound run, printed or nested markers cannot
+be accepted, nor can direct calls to recorder hooks outside pytest's real event
+order. Deliberate in-process tampering with closures, pluggy internals or file
+descriptors remains possible because tests run in the harness's process. This
+is not a security boundary. TrustLadder's control for that is reviewing
+agent-written tests.
+
+Without a `record_binding` declaration, a new reader preserves main's legacy
+last-marker behavior exactly, including streams with no outer preflight and
+a nested new preflight. That nested decision cannot enable bound mode.
+Old readers accept new records because the nonce and report declaration are
+additive; they retain their original susceptibility until upgraded. Existing
+receipts stay readable and the verdict schema remains exactly
+`prismabuild.pbtest_shard_verdict.v1`. No existing schema ID changes.
+
 `--json PATH` retains its list report and atomically writes the companion
 `PATH.progress.json` using `prismabuild.pbtest_progress.v1`. Each invocation has
 a UUID, configured launch entrypoint and actual producer generation. Producer
@@ -2365,7 +2421,8 @@ means no change to request bytes or existing action keys. Before preparation
 or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
 and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
 OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
-PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+PRISMABUILD_SHARD_BUDGET_S, PRISMABUILD_PBTEST_RECORD_BINDING, PYTHONPATH and
+PYTEST_ADDOPTS. These keys remain
 reserved when the run's options leave one unset; a caller cannot bypass
 pbtest's resource, deadline or pytest configuration through the environment.
 
