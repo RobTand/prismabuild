@@ -18,6 +18,7 @@ from .queue_bell_events import (
     EventRing, InotifyQueue, MissingQueueDirectory, DEFAULT_RING_SIZE, EVENT_HEADER, IN_Q_OVERFLOW,
 )
 from .queue_bell_http import DeadlineInput
+from .queue_bell_topics import TopicFilters
 
 REQUEST_TIMEOUT_S = 5.0
 MAX_CONNECTIONS = 128
@@ -117,7 +118,33 @@ class BellRequest(BaseHTTPRequestHandler):
             return
         target = urlsplit(self.path)
         try:
-            if target.path == "/v1/now":
+            if target.path in ("/v2/now", "/v2/wait"):
+                if queue != self.server.queue_root:
+                    self.send_error(503, "v2 requires queue identity")
+                    return
+                if target.path == "/v2/now":
+                    reply = self.server.ring.now_v2()
+                else:
+                    query = parse_qs(target.query, keep_blank_values=True, max_num_fields=6)
+                    if any(len(values) != 1 for values in query.values()):
+                        raise ValueError("duplicate bell query field")
+                    since = Cursor.parse(query["since"][0])
+                    version = int(query["coverage_version"][0])
+                    timeout = float(query["timeout"][0])
+                    if version < 1 or not math.isfinite(timeout) or timeout < 0:
+                        raise ValueError("invalid bell version or timeout")
+                    topics, ids = TopicFilters.parse(query.get("topics", [""])[0],
+                                                    query.get("ids", [""])[0])
+                    reply = self.server.ring.wait_v2(since, topics, ids,
+                        min(timeout, MAX_WAIT_S), version, self.connection)
+                    if reply is None:
+                        return
+                with self.server.workers.lock:
+                    reply["diagnostics"].update(
+                        connections=len(self.server.workers.active),
+                        connection_capacity=self.server.workers.capacity,
+                        watches=len(self.server.watch.directories))
+            elif target.path == "/v1/now":
                 reply = self.server.ring.now()
             elif target.path == "/v1/wait":
                 query = parse_qs(target.query, keep_blank_values=True, max_num_fields=4)
@@ -176,6 +203,9 @@ class BellService:
             # Connections may queue, but no cursor is served until __enter__,
             # after watch-before-scan coverage is installed for every directory.
             self.watch = InotifyQueue(root, generation=generation)
+            self.ring.set_coverage(self.watch.covered_topics)
+            for server in self.servers:
+                server.watch = self.watch
             self.reader, self.writer = socket.socketpair()
         except BaseException:
             for server in self.servers:
