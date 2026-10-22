@@ -18449,8 +18449,14 @@ profile receipt, runtime deployment, cache authorization or a speedup claim.
 The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
 Runner inventory, runtime selection, history balancing, retry merging and shared
 outcome reducer. Its stricter full-suite mode rejects collect-only and deselected
-outcome records. It waits for child process exit directly, without changing the
-merge queue's tick or heartbeat loop. Gate state uses the existing single-writer
+outcome records. It waits for child process exit directly with `process.wait()`.
+Ordinary merge-queue runs instead block on owned child pidfds with `poll`,
+using the time remaining to the next monotonic heartbeat deadline as the timeout.
+Ready children are reaped once and their pidfds removed and closed; notifications
+do not restart the heartbeat interval. Progress snapshots and status writes remain
+heartbeat-driven, while report reduction and `ended` events retain the all-children
+barrier and launch order. Exceptional exits also close remaining pidfds.
+Gate state uses the existing single-writer
 lock and history fields under the config's `state_dir`; invocation reports and
 logs live under `gates/`. Exclusions retain their configured reasons.
 `prismabuild.mergeq_gate.v1` pins pass/fail/no_verdict with exits 0/1/125,
