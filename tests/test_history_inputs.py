@@ -113,6 +113,13 @@ class _HistoryBindings(ast.NodeVisitor):
             if node.func.attr in {'append', 'extend', 'insert', 'pop', 'remove', 'clear', 'sort', 'reverse',
                                   'update', 'setdefault', 'popitem', '__setitem__', '__delitem__', '__ior__'}:
                 self.invalidate(node.func.value)
+                # Unbound dict mutators receive the container as their first
+                # argument. Keep receiver invalidation too if dict is shadowed.
+                if (isinstance(node.func.value, ast.Name) and node.func.value.id == 'dict'
+                        and node.args and node.func.attr in {
+                            'update', 'setdefault', 'pop', 'popitem', 'clear',
+                            '__setitem__', '__delitem__', '__ior__'}):
+                    self.invalidate(node.args[0])
         self.generic_visit(node)
 
     def visit_ExceptHandler(self, node):
@@ -1314,6 +1321,12 @@ def test_history_guard_loop_contexts(source, finding):
     'alias = env\nalias.update({"GIT_DIR":"/other/.git"})',
     'alias = env\nalias["GIT_DIR"] = "/other/.git"',
     'alias.update({"GIT_DIR":"/other/.git"})',
+    'dict.update(env, {"GIT_DIR":"/other/.git", "GIT_WORK_TREE":"/other"})',
+    'dict.setdefault(env, "GIT_DIR", "/other/.git")',
+    'dict.__setitem__(env, "GIT_WORK_TREE", "/other")',
+    'dict.__ior__(env, {"GIT_DIR":"/other/.git"})',
+    'dict.update(alias, {"GIT_DIR":"/other/.git"})',
+    'dict = env\ndict.update({"GIT_DIR":"/other/.git"})',
 ])
 def test_history_guard_captured_head_rejects_environment_mutation(assignment, mutation):
     source = (assignment + '\n'
@@ -1327,6 +1340,26 @@ def test_history_guard_captured_head_accepts_unmutated_environment_alias(assignm
     source = (assignment + '\n'
               'head=subprocess.check_output(["git","rev-parse","HEAD"],env=env,text=True).strip()\n'
               'subprocess.run(["git","show",head],env=alias)')
+    assert not history_read_sites(source)
+
+
+def test_history_guard_captured_head_rejects_direct_dict_repository_switch():
+    source = ('env = {}\n'
+              'head = subprocess.check_output(["git", "rev-parse", "HEAD"], '
+              'cwd="/a", env=env, text=True).strip()\n'
+              'dict.update(env, {"GIT_DIR": "/b/.git", "GIT_WORK_TREE": "/b"})\n'
+              'subprocess.run(["git", "show", head + ":file"], cwd="/a", env=env)')
+    assert [(line, verb) for line, verb, _ in history_read_sites(source)] == [(4, 'show')]
+
+
+@pytest.mark.parametrize("mutation", [
+    'other.update({"GIT_DIR":"/other/.git"})',
+    'dict.update(other, {"GIT_DIR":"/other/.git", "GIT_WORK_TREE":"/other"})',
+])
+def test_history_guard_captured_head_accepts_independent_dictionary_mutation(mutation):
+    source = ('env = {}\nother = {}\n'
+              'head=subprocess.check_output(["git","rev-parse","HEAD"],env=env,text=True).strip()\n'
+              + mutation + '\nsubprocess.run(["git","show",head],env=env)')
     assert not history_read_sites(source)
 
 
