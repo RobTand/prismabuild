@@ -1186,9 +1186,11 @@ required topic in `coverage.topics`. Preserve its `coverage.version` with the
 epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
 503. An old bell's 404 or a partial topic set requires degraded recovery.
 
-Initially, v2 covers only `ready`, `claimed`, `done`, `failed`, `withdrawn`,
-`deferred`, `intent`, `attempts` and `publication-endings`. IDs for those topics
-are lowercase 64-hex action keys. Later adapters declare their own bounded ID
+V2 covers `ready`, `claimed`, `done`, `failed`, `withdrawn`, `deferred`, `intent`,
+`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940).
+Outcome IDs are lowercase 64-hex action keys. Host IDs preserve the exact store
+spelling, including dots, with at most 128 ASCII letters, digits, dots,
+underscores or hyphens and a leading letter or digit. Later adapters declare their own bounded ID
 grammars. Wait filters accept at most 32 topic entries and 128 ID entries, with
 64-character topic and 128-character ID limits. Empty filters select all
 available topics or IDs. Unknown topics do not grant coverage. Invalid filters
@@ -1211,6 +1213,52 @@ resets, coverage changes, subscriptions, active/capped connections and watch
 count. Inspect these when diagnosing fallback or watch exhaustion. Healthy
 renewals produce no per-request logs and perform no namespace discovery.
 
+`workers` observes `workers/<host>.json` replacement, in-place writes, metadata
+changes and removal. `reservations` observes each host root, `free`, `minted`,
+`held`, and immediate holder contents, including hidden `.adaptive.json` and
+`.gpu.json` metadata. Private acquisitions, rollback and release can wake a
+host subscriber without any ready or terminal activity. Populated moved-in
+holders install watches before scanning. Traversal stops at holder contents;
+host adaptive mirrors, passes and denial topics require later slices.
+Hidden and unknown holder directories use the `HolderCensus` enumeration and
+each add one watch. Reconstruction also retains all symlinks for rejection
+before checking directory membership. Every immediate holder entry invalidates
+its host, including hidden unfinished files. Hidden free and minted token names
+also invalidate. In-place byte writes invalidate before the writer closes.
+Nameless events on `workers/` or `reservations/`, queue-root attributes and
+ancestor permission changes advance the v2 reset marker so subscribers reread
+their host inputs. Each lexical ancestor adds one watch without a scan;
+ancestor replacement or watch loss withdraws both host topics.
+
+Expected host directory shapes replaced by symlinks or non-directories remain
+incomplete. Symlinked offer files, CPU maps, tokens and holder metadata also
+withdraw coverage, even when their targets are currently absent or in-tree.
+Nonregular, unreadable or multiply linked byte-read leaves, noncanonical offer
+filenames, unknown nested token shapes such as `minted/dead`, and symlinked or unwatchable
+ancestors cannot establish complete host coverage. Offer, CPU-map and holder
+metadata files have inode watches as well as parent watches, so an external
+hard link added later cannot bypass invalidation. Name-only token inputs do
+not add inode watches. The bell checks shapes at reconstruction and on mutations
+without parsing contents. Unexplained nested watch loss withdraws the affected
+topic. Repair the watch limit or invalid tree, then reconstruct or restart the scratch/service
+generation before accepting coverage again. Normal parent-observed removal
+retains the parent watch. Moved-out trees lose their watches, so later writes
+outside the queue do not produce hints under the old host ID. Inspect the
+existing coverage-change, reset and watch counters for these boundaries.
+An inode rebound to a different name gets a new watch descriptor, so stale
+self-events cannot discard its replacement watch during reconstruction.
+
+Hints grant no free capacity. Keep the existing confirmed offer/ledger reads.
+`DirtyHostInputs` is available to later consumers to retain unknown host IDs,
+retry NFS visibility from 50 ms to one second within the original read budget,
+and expose `read_attempts` and `visibility_retries`. Confirmation or stop cancels
+the retry; exhaustion keeps the ID dirty and reports `Unavailable`. Duplicate
+hints do not extend the budget. A hint received during confirmation keeps its
+new generation dirty until another read confirms it within that same deadline.
+Run these reads outside admission and transition
+locks. The recorded offer expiry remains 120 seconds and is a separate consumer
+deadline. This source slice activates no consumer and adds no periodic discovery.
+
 The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
 one-second connect deadline and absolute five-second server I/O budget retain
 their existing values. A healthy empty v2 renewal renews transport only. The
@@ -1225,7 +1273,13 @@ the 30-minute gate watch. The #1881 baseline remains the comparison: event-to-
 claim p50 at most one second, p95 no worse than the measured poll baseline,
 fallback claims resuming within 60 seconds of bell outage, and authoritative
 records without lost or double claims. Connection/watch budgets must follow
-measured demand; v2 adds no watch tree in this slice. Roll back through
+measured demand. The host adapters add one watch per existing offer root,
+reservation root, host, free/minted/held directory and holder, plus each queue
+ancestor and each byte-read offer, map or metadata leaf. Measure private
+scratch demand with `tools/maintenance/prove_queue_bell_host_inputs.py` through
+published pbrun, using two CPUs, four GiB and one native thread. It binds an
+ephemeral private port, reports watch/connection/ring demand, and touches no live
+bell. Roll back through
 `pbpublish rollback` to the previous accepted generation.
 
 The service is unauthenticated on the listed private addresses. Peers can see
@@ -5918,3 +5972,102 @@ Then resume the pending publisher command for convergence and canary verificatio
 The helper itself never opens the gate. Qualified runtime identities are copied
 from verified root receipts into the plan and checked before host preparation;
 changing the plan's runtime list is not a qualification route.
+
+## Capture an event-wait before/after pair (#1881)
+
+Take the **before** on the current runtime before publishing any event-wait
+change. `tools/maintenance/event_wait_baseline.py` is a checkout-only operator
+tool, intentionally outside `publish_runtime.py`'s runtime script allowlist.
+It changes no queue, admission, or role behavior. TL schedules the full baseline
+and matched-load after window; a short smoke is only collector validation.
+
+Run the collector through the published client on the queue's local host.
+Replace the uppercase arguments with current role PIDs and paths. Keep the same
+bounds, load, duration, architecture filters, and sampling cadence for both arms.
+Use disk-backed evidence storage, outside the runtime and queue.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd CHECKOUT --tag QUEUE_HOST --cpus 1 --demand mem_gb=1 \
+  --priority -10 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 \
+  --env OPENBLAS_NUM_THREADS=1 --timeout-s 420 -- \
+  /home/rob/venvs/pb-cpu/bin/python3.14 \
+  tools/maintenance/event_wait_baseline.py collect \
+  --queue QUEUE --role tier=TIER_PID --role prewarm=PREWARM_PID \
+  --role worker=WORKER_PID --denials CLAIM_DENIALS_JSON --tier-log TIER_LOG \
+  --x86-host X86_HOST --source-revision SOURCE_COMMIT --phase steady \
+  --duration-s 300 --sample-s 1 --load-note 'matched workload and cache state' \
+  --tree-size 'stage=COUNT:SOURCE' --output EVIDENCE/before.json
+```
+
+This observes the running fleet under its existing load. It does not reserve a
+quiet benchmark window or establish a speedup. Use `--measurement` for isolated
+wall-time experiments; that isolation suppresses concurrent claims and cannot
+represent loaded claim latency. Retain the PB terminal record, log, CAS receipt,
+printed summary, and raw JSON in the evidence handoff. Change `before.json` to
+`after.json` for the second arm. Run the same tool's `analyze RAW.json` through
+PB to recompute nearest-rank p50/p95/p99 from the retained observations.
+
+The collector lists only `ready/` and `claimed/`, once, at most 513 names each
+with the default 512-entry bound. Counts marked incomplete are lower bounds.
+Local inotify supplies subsequent keys, including terminal changes; historical
+`done/` and `failed/` are never enumerated. Defaults cap selected keys at 2,048,
+retained queue record versions plus tier-log events at 20,000, total reads at
+64 MiB, individual records/log lines at 256 KiB, and linked immutable attempts
+at 16 per record. Reports retain every hit bound and watch/read failure. Such
+limits can censor the sample; increase
+explicit bounds for both arms or shorten the window. Tree counts supplied with
+`--tree-size` must include their source; unknown sizes remain unknown.
+
+Latency uses `(action_key, published_unix, attempt)`. It reports first-attempt
+publication-to-claim separately from retries, backlog and unclaimed/censored
+publications, without assigning missing claims zero latency. Hosts/tags select
+x86 evidence explicitly. Cross-host wall clocks must be synchronized; the tool
+records that assumption, rejects negative latencies, and does not verify NTP.
+Monotonic deltas determine process rates. Cgroup counters are raw scope context
+and may include several roles; do not add them to per-process counters.
+
+The drain report measures first explicit drain-relevant refusal to eligibility
+in the same host/publication/attempt episode, only when refusal count one was
+observed. `worker_loop` waits at most one second with a nonempty queue;
+`drain_policy` ordinarily becomes eligible at `passes + 1 >= 3`. Real scans and
+shared refusal counters affect the elapsed window. Latest-only diagnostics can
+omit observations, especially early adaptive refusals. Left/right censoring
+remains explicit and no configured interval is reported as a measured window.
+Measurement/GPU shortcuts can already be eligible at the first observation.
+
+Capture cold start in a separate `--phase cold-start` window scheduled around
+an independently authorized role start. Compare it with unchanged steady state.
+The tool records role command/generation paths, uptime, local load and its own
+CPU/read overhead; its phase label does not restart roles or flush caches.
+
+`/proc/PID/io` supplies physical `read_bytes`, logical `rchar`, and read/write
+syscall counts. It cannot count all syscalls. For optional total syscall counts,
+run `trace --pid TIER_PID --seconds 5 --output EVIDENCE/trace.json` in a separate
+admitted action, away from latency collection. Attachment failures or missing
+`strace` are retained; the tool never invokes sudo. Measure tracing overhead
+with separate matched runs before using traced timings.
+
+For recorded-input decision comparison, supply `--tier-log` with the tier loop's
+stdout JSONL log. Capture begins at its current end, not at historical rows.
+The raw `tier_events` array retains **all named events in wire order**, including
+flat `ram-window-gated`, `window-gated`, eviction, funding and mover-publication
+events; those decisions are not nested in `tier-cycle`. Diagnostics, lifecycle
+events and cycle summaries are also kept, so new policy event names cannot be
+silently omitted. `tier_cycles` remains the summary-only view used by analysis.
+
+`compare LEFT RIGHT` checks the full recorded/replayed event stream and cycle
+accounting exactly, preserving event order, duplicates and every payload field.
+Only each event's top-level emission `unix` is ignored. Decision deadlines such
+as `expected_landing_unix`, nested times, and standing-verdict history
+(`verdict_since_unix`, `waited_s`) are **not** normalized; replay must control
+clocks and history as well as policy inputs. Both captures must include cycle
+accounting and non-summary events. Legacy/summary-only captures still support
+`analyze`, but cannot establish parity. Any hit bound, malformed/truncated log,
+rotation, or read/watch error also prevents a parity result: `equal: false` with
+nonempty `unavailable` means insufficient evidence, not a proven policy change.
+With complete evidence, `equal: false` means a recorded event/accounting
+mismatch. This is strict log equality, not an input-equivalence verifier or a
+policy-coverage certificate; the experiment must establish identical inputs and
+exercise the decisions of interest. Unrelated live windows do not establish
+decision parity.

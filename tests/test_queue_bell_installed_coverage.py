@@ -141,10 +141,14 @@ def test_keyless_withdrawal_subtree_invalidates_an_observed_deletion(tmp_path, m
     original = queue_bell_events.InotifyQueue.consume
 
     def pause_keyless_install(self, data, ring):
-        pending.set()
-        assert release.wait(3)
+        from queue_bell_test_packets import contains_installation
+        installing = contains_installation(self, data, Path("withdrawn"), "decisions")
+        if installing:
+            pending.set()
+            assert release.wait(3)
         original(self, data, ring)
-        consumed.set()
+        if installing:
+            consumed.set()
 
     monkeypatch.setattr(queue_bell_events.InotifyQueue, "consume", pause_keyless_install)
     with queue_notifier.BellService(root, [("127.0.0.1", 0)]) as service:

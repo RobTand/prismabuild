@@ -94,7 +94,7 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
             raise affinity
         return set(affinity)
 
-    with tempfile.TemporaryDirectory(prefix="pb-affinity-", dir="/home/rob/tmp") as scratch:
+    with tempfile.TemporaryDirectory(prefix="pb-affinity-") as scratch:
         private = Path(scratch)
         for name in ("loaded.json", "published.json"):
             (private / name).write_text(json.dumps({"commit": "audit", "generation": "test"}))

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from history_inputs import source_bytes
+import subprocess
 import sys
 import tempfile
 
@@ -33,6 +34,15 @@ def original_records():
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  BASE + '/produced_output.py', 'exec'), namespace)
     return namespace
+
+
+def test_original_records_load_without_git_history(monkeypatch):
+    def refuse_subprocess(*args, **kwargs):
+        raise AssertionError('original records must load from committed fixtures')
+    monkeypatch.setattr(subprocess, 'Popen', refuse_subprocess)
+    records = original_records.__wrapped__()
+    for name in ('_read_commitments', '_write_commitments', '_class_sums'):
+        assert records[name].__code__.co_filename == BASE + '/produced_output.py'
 
 
 def test_construction_preserves_the_path_and_performs_no_read():
@@ -174,4 +184,3 @@ def test_the_admitted_interpreter_reports_its_actual_identity(capsys):
     with capsys.disabled():
         print("c13-interpreter: " + json.dumps(identity), flush=True)
     assert tuple(identity["version_info"][:2]) in ((3, 12), (3, 14))
-    assert identity["tmpdir"] == "/home/rob/pbt17"
