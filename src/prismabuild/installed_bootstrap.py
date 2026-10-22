@@ -174,7 +174,9 @@ def verify_qualification(assessment, *, checkout, fleet_root):
         if gate.closure_stamp_only(changed, snapshot.get('subdirectory') or '.'):
             raise WindowError('bootstrap qualification source differs from final release')
         log = cas.result_path(receipt, action).read_text(errors='strict')
-        record = outcomes.parse(log)
+        binding_reader = getattr(outcomes, 'record_binding_for_action', None)
+        binding = binding_reader(action) if binding_reader is not None else None
+        record = outcomes.parse(log, **({'record_binding': binding} if binding is not None else {}))
         if not record or record.get('collect_only') or record.get('deselected'):
             raise WindowError('missing complete bootstrap qualification outcomes')
         nodes = record['collected']

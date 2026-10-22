@@ -53,6 +53,14 @@ TRACE_SCHEMA = "prismabuild.pbtest_trace.v1"
 TRACE_NODEID_MAX_BYTES = 4096
 COMPLETION_PREFIX = "pbtest-completion: "
 COMPLETION_SCHEMA = "prismabuild.pbtest_completion.v1"
+RECORD_BINDING_VERSION = 1
+RECORD_BINDING_ENV = "PRISMABUILD_PBTEST_RECORD_BINDING"
+
+
+def record_binding_for_action(action):
+    """Producer declaration from the validated action, never its stdout."""
+    value = action["environment"]["variables"].get(RECORD_BINDING_ENV)
+    return RECORD_BINDING_VERSION if value == str(RECORD_BINDING_VERSION) else value
 
 # xdist forwards selected IDs but neither successful collection reports nor
 # pytest_deselected to its controller. This tiny worker plugin returns only
@@ -226,7 +234,7 @@ def skip_location(report, start: Path | None = None) -> str | None:
 REPORT_FIELDS = ("nodeid", "when", "category", "reason", "location")
 
 
-def parse(output: str) -> dict | None:
+def parse(output: str, *, record_binding: int | None = None) -> dict | None:
     """The last outcome record in a shard's output, or ``None``.
 
     ``None`` means the shard printed no final outcomes. Exit hooks can block
@@ -234,20 +242,26 @@ def parse(output: str) -> dict | None:
     separate record and cannot replace final outcomes.
     """
 
-    return _parse_record(output, PREFIX, SCHEMA)
+    return _parse_record(output, PREFIX, SCHEMA, record_binding=record_binding)
 
 
-def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
-    record = next(_record_candidates(output, prefix), None)
+def _parse_record(output: str, prefix: str, schema: str, *,
+                  record_binding: int | None = None) -> dict | None:
+    record = next(_record_candidates(output, prefix, record_binding=record_binding), None)
     return record if isinstance(record, dict) and record.get("schema") == schema else None
 
 
-def _record_candidates(output: str, prefix: str):
-    # The first preflight precedes pytest and cannot be replaced by captured
-    # test output. No nonce means an old shard, whose unbound records remain
-    # readable during rollout. Bound records from nested new shards do not.
-    decision, _ = _preflight(output)
-    run_nonce = decision.get("run_nonce") if decision is not None else None
+def _record_candidates(output: str, prefix: str, *, record_binding: int | None = None):
+    # Only invocation-owned metadata can select bound mode. In legacy mode,
+    # retain the original last-marker behavior even with nested preflights.
+    run_nonce = None
+    if record_binding is not None:
+        if type(record_binding) is not int or record_binding != RECORD_BINDING_VERSION:
+            return
+        decision, _ = _preflight(output)
+        run_nonce = decision.get("run_nonce") if decision is not None else None
+        if not isinstance(run_nonce, str) or re.fullmatch(r"[0-9a-f]{64}", run_nonce) is None:
+            return
     for line in reversed((output or "").splitlines()):
         if not line.startswith(prefix):
             continue
@@ -255,17 +269,16 @@ def _record_candidates(output: str, prefix: str):
             record = json.loads(line[len(prefix):])
         except ValueError:
             record = None
-        if isinstance(record, dict):
-            if record.get("run_nonce") != run_nonce:
-                continue
-        elif run_nonce is not None:
+        if record_binding is not None and (
+                not isinstance(record, dict) or record.get("run_nonce") != run_nonce):
             continue
         yield record
 
 
-def completion(output: str) -> dict:
+def completion(output: str, *, record_binding: int | None = None) -> dict:
     """Verify selected-test completion, not final outcomes or process exit."""
-    return _completion_evidence(_parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA))
+    return _completion_evidence(_parse_record(
+        output, COMPLETION_PREFIX, COMPLETION_SCHEMA, record_binding=record_binding))
 
 
 def _completion_evidence(record: dict | None) -> dict:
@@ -489,8 +502,6 @@ def _preflight(output):
             refusal = value["runtime_refusal"]
             if (value.get("schema") == PREFLIGHT_SCHEMA and type(code) is int
                     and code >= 0 and value.get("status") == ("refused" if code else "accepted")
-                    and ("run_nonce" not in value or isinstance(value["run_nonce"], str)
-                         and re.fullmatch(r"[0-9a-f]{64}", value["run_nonce"]))
                     and (refusal is None or code > 0 and _valid_runtime_refusal(refusal))):
                 return value, None
         except (ValueError, KeyError, TypeError):
@@ -596,13 +607,19 @@ def _judge_row(row, index):
         problem("report_invalid", "invalid shard observation")
         return verdict
     verdict["shard"] = row.get("shard", index)
+    record_binding = row.get("record_binding")
+    if record_binding is not None and (
+            type(record_binding) is not int or record_binding != RECORD_BINDING_VERSION):
+        problem("record_binding_invalid", "unsupported shard record binding")
+        return verdict
     output = row["output"]
     summary = pytest_summary(output.splitlines())
-    verdict.update(summary=summary, ran=bool(summary), completion=completion(output))
+    verdict.update(summary=summary, ran=bool(summary),
+                   completion=completion(output, record_binding=record_binding))
     decision, preflight_problem = _preflight(output)
     if preflight_problem:
         problem("preflight_invalid", preflight_problem)
-    record = parse(output)
+    record = parse(output, record_binding=record_binding)
     if record is None:
         problem("outcomes_missing", "no outcome record: the shard's tests cannot be matched against its collection")
         if summary:
@@ -651,7 +668,8 @@ def _judge_row(row, index):
         verdict["coverage"] = ("collection_only" if record.get("collect_only") else
                                "executed" if verdict["collected"] else "excluded")
     complete = verdict["completion"]
-    if any(True for _ in _record_candidates(output, COMPLETION_PREFIX)):
+    if any(True for _ in _record_candidates(output, COMPLETION_PREFIX,
+                                           record_binding=record_binding)):
         for message in complete["problems"]:
             if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
                 continue
@@ -736,7 +754,7 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
     if required_nodes is not None:
         expected = sorted(required_nodes)
         selected = sorted(n for s in shards for n in s["collected"])
-        records = [parse(row["output"]) for row in rows
+        records = [parse(row["output"], record_binding=row.get("record_binding")) for row in rows
                    if isinstance(row, dict) and isinstance(row.get("output"), str)]
         records = [r for r in records if _valid_record(r)]
         reports = [r for record in records if record for r in record.get("reports", [])]
@@ -773,6 +791,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
     # Execution-local, never sealed into argv or placed in os.environ. Nested
     # pytest invocations get their own nonce, even with identical source/env.
     run_nonce = secrets.token_hex(32)
+    recorder_pid = os.getpid()
     refused, refusal = (0, None) if preflight is None else preflight()
     print(preflight_record(refused, refusal, run_nonce=run_nonce), flush=True)
     if refused:
@@ -783,6 +802,26 @@ def main(argv: list[str] | None = None, *, preflight=None,
         # ``python -m pytest`` leaves pytest's own ``__main__`` in argv[0]; a
         # test that re-reads it sees the same thing under this program.
         sys.argv[0] = str(Path(pytest.__file__).with_name("__main__.py"))
+
+    def emit_line(config, line):
+        # Keep bound bytes out of the registered recorder's methods/state.
+        # The terminal stream bypasses capture, including on interrupted exit.
+        terminal = config.pluginmanager.getplugin("terminalreporter")
+        if terminal is not None:
+            terminal.write("\n" + line + "\n", flush=True)
+        else:
+            capture = config.pluginmanager.getplugin("capturemanager")
+            with (capture.global_and_fixture_disabled()
+                  if capture is not None else nullcontext()):
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+
+    def emit_bound(config, prefix, record):
+        # A fork without exec inherits the closure, but never its authority.
+        if os.getpid() != recorder_pid:
+            return
+        emit_line(config, prefix + json.dumps(
+            {**record, "run_nonce": run_nonce}, separators=(",", ":")))
 
     class OutcomeRecorder:
         def __init__(self) -> None:
@@ -826,20 +865,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.emit(line)
 
         def emit(self, line: str) -> None:
-            # The terminal writer owns the stream outside pytest's capture.
-            # Direct stdout writes can be captured with the dying test and
-            # never reach the pool log. Flush each record explicitly.
-            terminal = self.config.pluginmanager.getplugin("terminalreporter")
-            if terminal is not None:
-                # Another hook may just have printed a progress dot. Start
-                # our own line rather than depending on its cursor state.
-                terminal.write("\n" + line + "\n", flush=True)
-            else:
-                capture = self.config.pluginmanager.getplugin("capturemanager")
-                with (capture.global_and_fixture_disabled()
-                      if capture is not None else nullcontext()):
-                    sys.stdout.write(line + "\n")
-                    sys.stdout.flush()
+            emit_line(self.config, line)
 
         def emit_completion(self, *, session_finished: bool = False) -> None:
             if self.completion_written:
@@ -857,7 +883,6 @@ def main(argv: list[str] | None = None, *, preflight=None,
                             for ids in self.worker_collections.values()))
             record = {
                 "schema": COMPLETION_SCHEMA,
-                "run_nonce": run_nonce,
                 "collection_complete": collection_complete,
                 "collect_only": bool(self.config.getoption("collectonly", False)),
                 "collection_errors": any(row[1:3] == ["collect", "error"]
@@ -869,9 +894,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     {row[0] for row in self.reports if row[1] != "collect"}
                     | {row[0] for row in self.uncounted}),
             }
-            line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
             if session_finished or _completion_evidence(record)["status"] == "complete":
-                self.emit(line)
+                emit_bound(self.config, COMPLETION_PREFIX, record)
                 self.completion_written = True
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -1006,7 +1030,6 @@ def main(argv: list[str] | None = None, *, preflight=None,
             config = self.config
             record = {
                 "schema": SCHEMA,
-                "run_nonce": run_nonce,
                 "rootdir_relative": (os.path.relpath(config.rootpath,
                     config.invocation_params.dir) if config is not None else "."),
                 "collect_only": bool(config is not None
@@ -1048,15 +1071,16 @@ def main(argv: list[str] | None = None, *, preflight=None,
             return PREFIX + json.dumps(record, separators=(",", ":"))
 
         def pytest_terminal_summary(self, terminalreporter) -> None:
-            terminalreporter.write_line(self.record())
+            self.record()
+            emit_bound(self.config, PREFIX, self.last_record)
             self.written = True
 
         def pytest_unconfigure(self, config) -> None:
             # Without the terminal plugin there is no summary hook; the
             # record still has to reach the shard's stdout.
             if not self.written:
-                sys.stdout.write(self.record() + "\n")
-                sys.stdout.flush()
+                self.record()
+                emit_bound(config, PREFIX, self.last_record)
                 self.written = True
 
     arguments = list(sys.argv[1:] if argv is None else argv)

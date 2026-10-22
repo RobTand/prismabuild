@@ -19,7 +19,7 @@ def native(tmp_path_factory):
                           cwd=checkout, capture_output=True, text=True, timeout=30)
     assert done.returncode == 0, done.stdout + done.stderr
     return {'shard': 0, 'files': ['tests/test_one.py'], 'returncode': 0,
-            'timed_out': False, 'output': done.stdout + done.stderr}
+            'record_binding': 1, 'timed_out': False, 'output': done.stdout + done.stderr}
 
 
 def rewrite(row, prefix, change):

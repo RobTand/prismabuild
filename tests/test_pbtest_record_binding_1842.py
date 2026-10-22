@@ -60,7 +60,7 @@ def test_forged_and_nested_records_preserve_real_failures(tmp_path, late_markers
     assert run.stdout.count(outcomes.COMPLETION_PREFIX) >= 3, run.stdout
     verdict = outcomes.judge_shards([
         {"files": ["test_outer.py"], "output": run.stdout,
-         "returncode": run.returncode}], requested_files=["test_outer.py"])
+         "record_binding": 1, "returncode": run.returncode}], requested_files=["test_outer.py"])
     assert verdict["unobserved_files"] == [], verdict
     shard = verdict["shards"][0]
     assert shard["schema"] == "prismabuild.pbtest_shard_verdict.v1"
@@ -86,9 +86,10 @@ def bound_shard_output(tmp_path_factory):
     return run.stdout
 
 
-def binding_verdict(output):
+def binding_verdict(output, *, record_binding=1):
     return outcomes.judge_shards([
-        {"files": ["test_one.py"], "output": output, "returncode": 0}],
+        {"files": ["test_one.py"], "output": output,
+         "record_binding": record_binding, "returncode": 0}],
         requested_files=["test_one.py"])
 
 
@@ -127,14 +128,16 @@ def test_new_reader_accepts_legacy_shards(bound_shard_output, preflight_present)
             line = prefix + json.dumps(record)
         lines.append(line)
     legacy = "\n".join(lines) + "\n"
-    # A nested new recorder cannot replace the old shard's unbound evidence.
+    # Include the nested preflight before the legacy producer's own final
+    # records. With no declaration, keep main's last-marker behavior exactly.
     nested_records = "\n".join(line for line in bound_shard_output.splitlines()
-                               if line.startswith((outcomes.PREFIX, outcomes.COMPLETION_PREFIX)))
-    assert binding_verdict(legacy + nested_records)["green"]
-    assert outcomes.completion(legacy + nested_records)["status"] == "complete"
+                               if line.startswith((outcomes.PREFIX, outcomes.COMPLETION_PREFIX,
+                                                   outcomes.PREFLIGHT_PREFIX)))
+    assert binding_verdict(nested_records + "\n" + legacy, record_binding=None)["green"]
+    assert outcomes.completion(nested_records + "\n" + legacy)["status"] == "complete"
 
 
-def test_old_reader_accepts_new_shard_records(bound_shard_output):
+def test_old_reader_accepts_new_shard_records(bound_shard_output, tmp_path):
     root = Path(__file__).resolve().parents[1]
     source = subprocess.check_output([
         "git", "show", "e7d49ad28712683547a42bebe9fd26ccea61178f:tools/fleet/pbtest_outcomes.py"],
@@ -147,3 +150,13 @@ def test_old_reader_accepts_new_shard_records(bound_shard_output):
     assert verdict["green"], verdict
     assert verdict["shards"][0]["completion"]["status"] == "complete"
     assert verdict["shards"][0]["schema"] == "prismabuild.pbtest_shard_verdict.v1"
+    from test_pbmergeq import mq
+
+    report = tmp_path / "new-producer-report.json"
+    report.write_text(json.dumps([{
+        "files": ["test_one.py"], "output": bound_shard_output,
+        "record_binding": 1, "returncode": 0}]))
+    result = mq.Runner.read_result(
+        types.SimpleNamespace(outcomes=old_reader, full_suite=True),
+        report, ["test_one.py"], log=tmp_path / "client.log", returncode=0)
+    assert not result.failed and not result.inconclusive and not result.suite_refusal

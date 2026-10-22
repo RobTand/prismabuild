@@ -2097,22 +2097,35 @@ Human output is presentation and cannot control either refusal or progress.
 
 The recorder also creates a fresh 256-bit `run_nonce` inside each shard
 invocation before importing pytest (#1842). Its first preflight decision,
-completion and outcome records carry that additive field. The reader selects
-records with the nonce from the first preflight decision and ignores other
-marker lines, including malformed or unbound test output. Ignored completion
-markers introduce no completion problem. Nested recorders mint their own nonce.
-The nonce stays in the recorder's local state, never in argv or `os.environ`,
-so subprocesses cannot inherit it and it does not change action cache keys.
-The preflight must precede all test execution; a test cannot choose a later
-preflight to replace this binding. This isolates printed output and inherited
-environments, not deliberately hostile code inspecting the recorder's memory.
+completion and outcome records carry that additive field. The coordinator
+declares `record_binding: 1` in each raw observation and report row because
+it seals this recorder version into the shard program. This invocation-owned
+metadata selects bound reading, including when reports are replayed by gates
+or consumed for duration history. The same declaration is sealed into
+`PRISMABUILD_PBTEST_RECORD_BINDING=1` in the action environment, reserved from
+caller overrides. Receipt-only readers select the mode from that validated
+action's environment. Stdout never selects the binding mode.
+With binding declared, the reader accepts only records with the nonce from
+the first preflight decision. Unbound, foreign and malformed marker lines
+are ignored and introduce no completion problem. A missing or unsupported
+binding cannot fall back to legacy evidence inside a declared bound run.
 
-A new reader keeps the legacy unbound-record path when the first preflight
-has no nonce or historical output has no preflight. That path ignores bound
-records from nested new recorders, but cannot authenticate legacy unbound
-markers. Old readers accept new records because nonce fields are additive;
-they retain their original susceptibility until upgraded. Existing receipts
-stay readable and the verdict schema remains exactly
+Only a private emission closure attaches the nonce to record copies. The
+registered plugin's methods, attributes and return values hold unbound data,
+so calling `record()` through pytest's plugin registry cannot obtain it.
+The emission closure refuses any PID other than the one that minted the
+nonce, including a fork-without-exec child calling inherited recorder hooks.
+The nonce never enters argv or `os.environ`, so fresh nested recorders mint
+independent nonces without changing action cache keys. This binding is
+accidental-forgery-proof and raises the bar for deliberate forgery. It is not
+a security boundary: closure or process-memory introspection can bypass it.
+
+Without a `record_binding` declaration, a new reader preserves main's legacy
+last-marker behavior exactly, including streams with no outer preflight and
+a nested new preflight. That nested decision cannot enable bound mode.
+Old readers accept new records because the nonce and report declaration are
+additive; they retain their original susceptibility until upgraded. Existing
+receipts stay readable and the verdict schema remains exactly
 `prismabuild.pbtest_shard_verdict.v1`. No existing schema ID changes.
 
 `--json PATH` retains its list report and atomically writes the companion
@@ -2314,7 +2327,8 @@ means no change to request bytes or existing action keys. Before preparation
 or publication, pbtest refuses missing `=`, empty keys, NUL, duplicate keys
 and any key it owns: TMPDIR, OMP_NUM_THREADS, MKL_NUM_THREADS,
 OPENBLAS_NUM_THREADS, TORCH_NUM_THREADS, PRISMABUILD_TEST_TIMEOUT_S,
-PRISMABUILD_SHARD_BUDGET_S, PYTHONPATH and PYTEST_ADDOPTS. These keys remain
+PRISMABUILD_SHARD_BUDGET_S, PRISMABUILD_PBTEST_RECORD_BINDING, PYTHONPATH and
+PYTEST_ADDOPTS. These keys remain
 reserved when the run's options leave one unset; a caller cannot bypass
 pbtest's resource, deadline or pytest configuration through the environment.
 
