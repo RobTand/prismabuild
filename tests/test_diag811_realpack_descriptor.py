@@ -28,6 +28,7 @@ def harness():
 
 def git(*arguments):
     # This fixture runs only inside its admitted PB pytest action.
+    # pb-history-ok: Uses only objects created by this temporary pack-containment fixture.
     result = subprocess.run(
         ["git", "-c", "pack.threads=1", "-c", "gc.auto=0", *map(str, arguments)],
         check=True, capture_output=True, text=True,
@@ -60,6 +61,7 @@ def test_real_pack_fallback_materializes_the_verified_commit(
     git("-C", original, "commit", "-q", "-m", "pack fixture")
     commit = git("-C", original, "rev-parse", "HEAD")
     bundle = tmp_path / "source.bundle"
+    # pb-history-ok: Uses only objects created by this temporary pack-containment fixture.
     git("-C", original, "bundle", "create", bundle, "HEAD")
     framing = harness.parse_bundle(bundle)
     entry = tmp_path / "entry"
@@ -106,6 +108,7 @@ def test_real_pack_fallback_materializes_the_verified_commit(
             assert failure.value.errno == errno.EBADF
     assert mutated == ([] if selected is None else [selected])
     git("index-pack", "--verify", objects / pack.name)
+    # pb-history-ok: Uses only objects created by this temporary pack-containment fixture.
     git("-C", private, "checkout", "-q", "--detach", commit)
     assert git("-C", private, "rev-parse", "HEAD") == commit
     assert (private / "payload.txt").read_bytes() == payload

@@ -12,7 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
+from history_inputs import source_bytes
 
 import pytest
 
@@ -20,7 +20,6 @@ REPO = Path(__file__).resolve().parents[1]
 BROKER = REPO / 'tools/fleet/resource_broker.py'
 CLIENT = REPO / 'tools/fleet/upgrade_client.py'
 #: The merge this change branches from, whose broker predates drain holders.
-#: The PB Git snapshot carries it, as the legacy client upgrade test relies on.
 BEFORE_HOLDERS = '1c10a68'
 
 
@@ -54,8 +53,7 @@ def authority(state_dir, module=broker_module):
 
 def before_holders(tmp_path):
     """The real broker as it shipped before drains had holders."""
-    source = subprocess.check_output(
-        ['git', 'show', BEFORE_HOLDERS + ':tools/fleet/resource_broker.py'], cwd=REPO)
+    source = source_bytes(BEFORE_HOLDERS, 'tools/fleet/resource_broker.py')
     path = tmp_path / 'resource_broker_before_holders.py'
     path.write_bytes(source)
     return load('resource_broker_before_holders', path)

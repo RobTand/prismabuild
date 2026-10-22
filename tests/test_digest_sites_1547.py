@@ -7,7 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import subprocess
+from history_inputs import source_bytes
 import sys
 from types import SimpleNamespace
 
@@ -20,8 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main_definitions(path, names, *, revision=MAIN, **bindings):
-    source = subprocess.run(["git", "show", f"{revision}:{path}"], cwd=ROOT,
-                            check=True, text=True, capture_output=True).stdout
+    source = source_bytes(revision, path).decode("utf-8")
     tree = ast.parse(source)
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
              and node.name in names]
@@ -34,9 +33,7 @@ def main_definitions(path, names, *, revision=MAIN, **bindings):
 
 
 def historical_core(tmp_path):
-    source = subprocess.run(
-        ["git", "show", f"{MAIN}:src/prismabuild/core.py"], cwd=ROOT,
-        check=True, text=True, capture_output=True).stdout
+    source = source_bytes(MAIN, "src/prismabuild/core.py").decode("utf-8")
     imports = [node for node in ast.walk(ast.parse(source))
                if isinstance(node, ast.ImportFrom)]
     assert all(node.level == 0 for node in imports)

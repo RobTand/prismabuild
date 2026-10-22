@@ -2,7 +2,7 @@
 from dataclasses import replace
 from pathlib import Path
 import shutil
-import subprocess
+from history_inputs import source_bytes
 import threading
 import types
 
@@ -19,8 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(scope="module")
 def original_submission():
-    source = subprocess.check_output([
-        "git", "-C", str(ROOT), "show", BASE + ":src/prismabuild/submission.py"])
+    source = source_bytes(BASE, "src/prismabuild/submission.py")
     module = types.ModuleType("prismabuild._c21_original_submission")
     module.__file__ = str(ROOT / "src/prismabuild/submission.py")
     exec(compile(source, BASE + ":submission.py", "exec"), module.__dict__)

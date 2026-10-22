@@ -151,6 +151,7 @@ class Origin:
         git("commit", "-q", "-m", "base", cwd=self.work)
 
     def pr(self, number: int, files: dict[str, str]) -> str:
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         git("checkout", "-q", "-b", f"pr{number}", "main", cwd=self.work)
         for name, text in files.items():
             (self.work / name).parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +159,9 @@ class Origin:
         git("add", "-A", cwd=self.work)
         git("commit", "-q", "-m", f"pr {number}", cwd=self.work)
         sha = git("rev-parse", "HEAD", cwd=self.work)
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         git("update-ref", f"refs/pull/{number}/head", sha, cwd=self.work)
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         git("checkout", "-q", "main", cwd=self.work)
         return sha
 
@@ -174,6 +177,7 @@ class FakeGitHub(mq.GitHub):
         self.origin, self.calls, self.merged = origin, [], []
 
     def pr(self, number):
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         sha = git("rev-parse", f"refs/pull/{number}/head", cwd=self.origin.work)
         return {"number": number, "state": "MERGED" if number in self.merged else "OPEN",
                 "isDraft": False, "isCrossRepository": False,
@@ -356,12 +360,16 @@ def test_merge_mode_merges_in_order_only_while_main_is_the_tested_base(tmp_path)
 def test_selected_head_is_fetched_when_github_pull_ref_lags(tmp_path, monkeypatch):
     queue, origin, github, runner = make_queue(tmp_path)
     stale = origin.pr(1, {"one.txt": "old\n"})
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "pr1", cwd=origin.work)
     (origin.work / "one.txt").write_text("new\n")
     git("commit", "-q", "-am", "branch advanced before pull ref", cwd=origin.work)
     selected = git("rev-parse", "HEAD", cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "main", cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     assert git("rev-parse", "refs/pull/1/head", cwd=origin.work) == stale
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     assert git("rev-parse", "pr1", cwd=origin.work) == selected
     advertised = github.pr
     monkeypatch.setattr(github, "pr",
@@ -385,6 +393,7 @@ def test_unfetchable_or_noncommit_selected_head_is_an_explicit_error(
     queue, origin, github, runner = make_queue(tmp_path)
     origin.pr(1, {"one.txt": "old\n"})
     selected = (SHA if object_kind == "missing" else
+                # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
                 git("rev-parse", "main:base.txt", cwd=origin.work))
     advertised = github.pr
     monkeypatch.setattr(github, "pr",
@@ -402,12 +411,15 @@ def test_unfetchable_or_noncommit_selected_head_is_an_explicit_error(
 def test_changed_fetched_ref_is_rejected_before_composition(tmp_path, monkeypatch):
     queue, origin, github, runner = make_queue(tmp_path)
     selected = origin.pr(1, {"one.txt": "new\n"})
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     base = git("rev-parse", "main", cwd=origin.work)
     original_git = queue.mirror.git
 
     def fetch_then_change_ref(*args, **kwargs):
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         result = original_git(*args, **kwargs)
         if args[0] == "fetch":
+            # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
             original_git("update-ref", "refs/mq/pr/1", base)
         return result
 
@@ -592,12 +604,15 @@ def known_red_descendant(tmp_path):
     queue, origin, github, runner = make_queue(tmp_path)
     origin.pr(1, {"one.txt": "1\n"})
     bad = origin.pr(2, {"fail-2": "tests/test_b.py::broken\n"})
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "-b", "pr3", bad, cwd=origin.work)
     (origin.work / "three.txt").write_text("3\n")
     git("add", "-A", cwd=origin.work)
     git("commit", "-q", "-m", "descendant", cwd=origin.work)
     descendant = git("rev-parse", "HEAD", cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("update-ref", "refs/pull/3/head", descendant, cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "main", cwd=origin.work)
 
     original = queue.run_batch(entries(1, 2, 3))
@@ -620,12 +635,15 @@ def test_a_descendant_carrying_the_known_red_tree_is_held_without_retesting(tmp_
 
     # A corrected descendant still contains the historical culprit commit.
     # Its changed source must be admitted for fresh qualification.
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "pr3", cwd=origin.work)
     (origin.work / "fail-2").write_text("")
     git("add", "-A", cwd=origin.work)
     git("commit", "-q", "-m", "fix failure", cwd=origin.work)
     fixed = git("rev-parse", "HEAD", cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("update-ref", "refs/pull/3/head", fixed, cwd=origin.work)
+    # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
     git("checkout", "-q", "main", cwd=origin.work)
     queue.store.add(3, fixed, front=False)
     queue.store.save()
@@ -676,6 +694,7 @@ def test_an_untrusted_retained_view_is_rebuilt_before_suppressing_work(tmp_path,
     elif damage == "untracked":
         (view / "tests/test_added.py").write_text("")
     else:
+        # pb-history-ok: Builds and inspects branches and pull refs created by the temporary fake-origin fixture.
         git("checkout", "-q", "--detach", held["base"], cwd=view)
     rebuilt = queue.tick()
     assert rebuilt is not None and rebuilt["id"] != held["id"]
