@@ -30,26 +30,48 @@ ACTION_KEY = "ab12" * 16
 NONCE = "cd34" * 8
 
 
+SOCKET_SUFFIX = Path("pb-xxxxxxxx/pytest/popen-gw0") / ("test_" + "x" * 25 + "0") / "service.sock"
+
+
 @pytest.fixture
 def short_scratch():
-    suffix = Path("pb-xxxxxxxx/pytest/popen-gw0") / ("test_" + "x" * 25 + "0") / "service.sock"
-    refusals = []
-    # Only socket scratch uses a standard short temp base if the run's is too long.
-    for parent in dict.fromkeys([tempfile.gettempdir(), "/tmp", "/var/tmp"]):
-        try:
-            directory = tempfile.TemporaryDirectory(prefix="s-", dir=parent)
-        except OSError as exc:
-            refusals.append(f"{parent}: {exc}")
-            continue
-        with directory as name:
-            scratch = Path(name)
-            size = len(os.fsencode(scratch / suffix))
-            if size > 100:
-                refusals.append(f"{scratch}: socket path needs {size} bytes, limit 100")
-                continue
+    # The directory and its short alias both belong to this run's TMPDIR.
+    with tempfile.TemporaryDirectory(prefix="s-", dir=os.environ["TMPDIR"]) as name:
+        scratch = Path(name)
+        size = len(os.fsencode(scratch / SOCKET_SUFFIX))
+        if size <= 100:
             yield scratch
             return
-    pytest.skip("no short writable socket scratch: " + "; ".join(refusals))
+        descriptor = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            alias = Path(f"/proc/self/fd/{descriptor}")
+            alias_size = len(os.fsencode(alias / SOCKET_SUFFIX))
+            if alias.is_dir() and alias_size <= 100:
+                yield alias
+                return
+            pytest.skip(
+                f"no short run-owned socket scratch: base {scratch} "
+                f"({len(os.fsencode(scratch))} bytes), socket path {size} bytes; "
+                f"alias base {alias} ({len(os.fsencode(alias))} bytes), "
+                f"socket path {alias_size} bytes, limit 100")
+        finally:
+            os.close(descriptor)
+
+
+def test_socket_scratch_stays_inside_the_runs_tmpdir(short_scratch):
+    root = Path(os.environ["TMPDIR"]).resolve()
+    assert short_scratch.resolve().is_relative_to(root), (
+        f"socket scratch {short_scratch} is outside run TMPDIR {root}")
+
+
+def test_socket_fixture_preserves_tempfile_cache():
+    before = tempfile.tempdir
+    fixture = short_scratch.__wrapped__()
+    try:
+        next(fixture)
+    finally:
+        fixture.close()
+    assert tempfile.tempdir == before
 
 
 def _checkout(parent: Path, body: str) -> Path:
@@ -210,6 +232,15 @@ def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worke
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
 def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, short_scratch):
+    # The shard prefix preserves the alias, but pytest resolves --basetemp
+    # before deriving tmp_path, so a real shard must fit the resolved base.
+    resolved = short_scratch.resolve()
+    size = len(os.fsencode(resolved / SOCKET_SUFFIX))
+    if size > 100:
+        pytest.skip(
+            f"pytest resolves socket scratch to {resolved} "
+            f"(base {len(os.fsencode(resolved))} bytes), "
+            f"socket path {size} bytes, limit 100")
     checkout = _checkout(tmp_path, "assert True")
     (checkout / "tests" / "test_one.py").write_text(
         "import json, os, socket\n"
