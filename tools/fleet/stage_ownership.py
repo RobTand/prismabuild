@@ -112,9 +112,9 @@ class _IO:
             return None, str(exc)
 
 
-def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
-            max_files, max_metadata_bytes, max_seconds, reference_census,
-            source_mark):
+def collect_stage_ownership(queue, *, tier_id, stage_root, cas_root, residency_root,
+                            max_files, max_metadata_bytes, max_seconds,
+                            reference_census, source_mark):
     for name, value in [('max_files', max_files),
                         ('max_metadata_bytes', max_metadata_bytes),
                         ('max_seconds', max_seconds)]:

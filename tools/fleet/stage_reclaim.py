@@ -1662,12 +1662,12 @@ def ownership_report(queue, *, tier_id, stage_root, cas_root=None,
                      residency_root=None, max_files=100000,
                      max_metadata_bytes=64 << 20, max_seconds=30):
     """Return bounded observational evidence, never permission to delete."""
-    from stage_ownership import collect
-    return collect(queue, tier_id=tier_id, stage_root=stage_root,
-                   cas_root=cas_root, residency_root=residency_root,
-                   max_files=max_files, max_metadata_bytes=max_metadata_bytes,
-                   max_seconds=max_seconds, reference_census=_reference_census,
-                   source_mark=_report_source_mark)
+    from stage_ownership import collect_stage_ownership
+    return collect_stage_ownership(queue, tier_id=tier_id, stage_root=stage_root,
+                                   cas_root=cas_root, residency_root=residency_root,
+                                   max_files=max_files, max_metadata_bytes=max_metadata_bytes,
+                                   max_seconds=max_seconds, reference_census=_reference_census,
+                                   source_mark=_report_source_mark)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1727,9 +1727,15 @@ def main(argv: list[str] | None = None) -> int:
                              "reclaiming")
     parser.add_argument("--report", action="store_true",
                         help="read-only bounded ownership evidence as JSON; never deletion authority")
-    parser.add_argument("--max-files", type=int, default=100000)
-    parser.add_argument("--max-metadata-bytes", type=int, default=64 << 20)
-    parser.add_argument("--max-seconds", type=float, default=30)
+    parser.add_argument("--max-files", type=int, default=100000,
+                        help="maximum payload regular-file observations in --report "
+                             "(default 100000)")
+    parser.add_argument("--max-metadata-bytes", type=int, default=64 << 20,
+                        help="maximum metadata content bytes read in --report "
+                             "(default 67108864)")
+    parser.add_argument("--max-seconds", type=float, default=30,
+                        help="cooperative elapsed-time budget for --report in seconds, "
+                             "checked between filesystem operations (default 30)")
     args = parser.parse_args(argv)
     if args.report:
         if args.apply or args.restore:
@@ -1741,7 +1747,7 @@ def main(argv: list[str] | None = None) -> int:
             cas_root=args.cas_root, residency_root=args.residency_root,
             max_files=args.max_files, max_metadata_bytes=args.max_metadata_bytes,
             max_seconds=args.max_seconds)
-        print(json.dumps(report, sort_keys=True))
+        print(pb.sorted_json(report))
         return 0
     if args.mount_prefix is None:
         parser.error("--mount-prefix is required except with --report")
