@@ -171,6 +171,16 @@ The synchronous and detached frontends, campaign window and canary import that
 owner directly. `pbrun` no longer exports those internal wait helpers. The
 generic reader mechanism and persistent scope-owned protocol are unchanged.
 The synchronous and detached wait loops share `action_wait.await_action`.
+For pool endings, that loop observes records before any optional queue bell
+I/O (#1894). After an inconclusive observation it initializes a cursor, then
+confirms the records before long-polling, covering publication during cursor
+initialization. Every hint, reset and empty timeout supplies the next cursor
+and leads directly to another authoritative record read, without a new cursor
+request spending the remaining patience. All reads keep the original deadline;
+an expired positive synchronous wait starts no read, even after bell I/O.
+Zero-patience probes do no bell I/O.
+SLURM discovery and an unavailable bell retain capped recheck backoff because
+those services cannot call back. Existing reader-error recovery is unchanged.
 The synchronous and detached profiles preserve deadline clipping, the final
 synchronous reread and immediate detached preemption handoff at expiry.
 Attachment reads remain strict outside an active synchronous await. Immutable
@@ -5060,6 +5070,8 @@ competing `signal.set_wakeup_fd` user, including an asyncio event loop, must not
 run inside that context. Native notifications wake the wait before deferred
 Python signal dispatch; only the selected Python handlers request a stop.
 Unrelated notifications are drained without shortening the monotonic timeout.
+`StopRequest.fileno()` exposes its pipe to the role's descriptor selector.
+A selector consumer drains unrelated native notifications with `wait(0)`.
 Each `StopRequest` supports one waiter, the role's main loop. Other threads may
 observe or request its stop. Forked readers detach the inherited native wakeup
 registration, and the inherited request cannot write to or close its parent's
@@ -9669,19 +9681,131 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Queue change hints on the queue host (#1894)
+
+`pbbell.py` is the supervised `bell` observer role on dl380g10 only. It watches
+ready, claimed, done, failed, withdrawn, deferred, intent, attempts and
+publication-endings with libc inotify through ctypes. The queue is local ZFS
+there; NFS-client writes also generate local notifications. Creation, close-write,
+hard-link publication, removal and both rename directions become hints. Nested
+`withdrawn/decisions/<key>`, `withdrawn/superseded`, `attempts/<key>/<generation>`
+and `publication-endings/<key>` paths map back to the action key. Scope cleanup
+updates `claimed/<key>.json`; final scope/container cleanup appears in terminal,
+withdrawal and attempt records. Waiters subscribe to all these outcome inputs.
+Lease/progress/log writes do not wake them. The bell reads names, never record
+bytes, and neither claims nor mutates work. Workers, prewarm and tier-loop
+waits are outside this first slice.
+
+Watches precede each directory scan, including directories created or moved in
+with existing contents. The root watch discovers lazy namespaces. Startup still
+refuses missing original state directories. Traversal is confined to these
+namespaces, at most three directories deep, without following symlinks. Kernel
+overflow invalidates cursors and rebuilds namespace coverage before serving
+further events. Directory-watch loss resets history or stops service when
+coverage cannot be maintained.
+
+The role takes the standard host-local singleton lock. The supervisor owns
+ordinary generation retirement as it does for metrics. The bell also watches
+the fleet directory containing the active `repo` link and exits when its loaded
+generation is retired. This covers rollback to a supervisor that predates the
+bell role, with no retirement timer. It binds HTTP/1.1 on TCP 9470
+at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and 192.168.1.107, with one
+shared event stream. The roster declares the addresses submitting hosts use
+as their `/mnt/shared` mount sources, including Celestia's private LAN route.
+`queue_bell.Client` uses the longest covering mount's NFS source address from
+local `/proc/self/mountinfo`, or loopback on a local filesystem. No queue
+lookup or hostname guess is required to discover the endpoint. Only numeric
+IPv4 or IPv6 literals are accepted; hostname mount sources use fallback.
+The client sends its queue path in `X-PrismaBuild-Queue`. A different queue
+path receives HTTP 503 and uses fallback, so scratch queues sharing the mount
+source cannot wait on the production queue's stream. This is routing only;
+unqualified read-only health queries still work.
+
+`GET /v1/now` returns `{epoch, seq}`. The epoch is a random UUID per start;
+sequence numbers increase for the life of that epoch. `GET /v1/wait` takes
+`since=EPOCH:SEQ`, comma-separated `dirs` and `keys`, and `timeout` in seconds.
+Empty filters match everything. It returns matching `{seq, dir, key}` events,
+`events: []` at the deadline, or `reset: true` for an epoch mismatch, future
+cursor, kernel overflow or lost ring history. All responses carry the current
+epoch and sequence. The ring retains 4096 events; `MAX_WAIT_S` caps each
+long-poll at 300 seconds. Callers with longer patience renew the long-poll.
+Cursor acquisition before the record observation closes the read/wait race.
+Neither a notification nor its absence establishes any queue state.
+
+A selector blocks on inotify, listener sockets and a shutdown socket. Each
+request selects its filtered notification socket and client connection, so a
+disconnect releases the subscription immediately. Matching events and lost
+cursors wake subscribers. Each event compares at most 128 active filters;
+only those woken scan the bounded ring. A shared 128-connection cap covers all
+listeners, including incomplete requests; overload receives HTTP 503, typed
+Unavailable by the client. Request headers have one absolute five-second
+read budget, re-armed before every recv. Each connection serves one request.
+SIGTERM/INT wake long-polls, close listeners and explicitly join every tracked
+non-daemon request thread. Header and response I/O remain bounded at shutdown.
+The role posts no park marker while serving and owns no admitted work. All
+listeners bind before watches and scanning, so bind refusals scan no queue.
+The selector starts only after watch-before-scan coverage is installed; queued
+connections cannot obtain a cursor before startup completes. Partial construction
+closes every listener and any installed watches. An occupied port, unavailable
+listen address, or explicitly missing queue root or required state directory
+during startup refuses with a named reason and the standard singleton exit 3
+so supervisor backoff applies. Runtime failures, including required watch loss,
+exit 1 for prompt restart.
+
+Client request preparation, connect, headers and body consume one monotonic
+deadline. Expired or zero budgets raise typed Unavailable before any I/O.
+Connection establishment uses one numeric-address socket with its timeout
+clipped to the remaining budget, without DNS or multiple-address retries. Buffered
+HTTP reads re-arm the remaining timeout before every recv, preventing a
+trickling peer from extending patience. Long-poll delivery allowance comes
+from that same budget. Repeated immediate resets or empty replies enter the
+named unavailable-callback backoff, 0.25 seconds doubling to five seconds,
+clipped to the original deadline.
+
+The private listeners are unauthenticated. A reachable peer can observe action
+keys, state-directory names, event timing and cursor/reset metadata. It cannot
+read record bodies, logs or CAS bytes, submit, cancel or mutate work through
+this service. Connection caps bound its concurrent request cost; this is not
+a confidentiality boundary. This source change adds no deployment evidence or
+new satisfaction claim to the staged-read ledger, including ID-08.
+
+This describes source behavior, not fleet activation. The lead publishes and
+activates the new role after review. No firewall change is performed by PB.
+
+### Broker listener completion (#1937)
+
+The resource broker listener selects its socket and a stop pipe without a
+shutdown tick. In-process `Server.shutdown()` wakes that listener. Stop-pipe
+writers and teardown share a lock, so no late write reaches a closed or reused
+descriptor. Run handlers block only on the client socket and child pidfd.
+Client EOF and unexpected protocol data retain their existing authenticated
+scope-stop behavior. Listener shutdown does not cancel in-flight requests.
+
+Broker restart behavior is unchanged: main installs no signal handlers and
+request threads remain daemon threads. Default SIGTERM ends the broker and
+closes control channels without stopping contained payloads. Launchers report
+broker EOF as exit 125; surviving payloads may complete and publish receipts.
+Explicit reconciliation still requires the existing exact-attempt cleanup,
+receipt and termination checks described above. SIGINT retains main's existing
+exception and monitor cleanup path. Startup and request framing retain their
+10-second bounds; process termination retains its 15-second waits.
+`ResourceMonitor` retains its independent 1-second sampler. No background loop
+is added by the listener change.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 The continuous exporter keeps serving under a closed or missing maintenance
-gate and posts no marker while serving. Metrics is the sole observer role.
+gate and posts no marker while serving. Metrics and bell are observer roles.
 It does not read runtime receipts or retire itself on generation drift. The
 supervisor owns its generation retirement and drift record, then respawns an
 exporter from the active generation. A direct exporter whose loaded receipt is
 unknown keeps serving until explicitly stopped, as it did before this change.
 
-SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
-the listener closes before any park proof, and the exporter joins every request
-thread it started. `ThreadingHTTPServer` uses daemon request threads, so
-`handle_request()` returning does not establish request completion.
+SIGTERM and SIGINT request stop through the shared `StopRequest`. The metrics
+listener selects its HTTP socket and the stop descriptor without a timeout.
+At a stop boundary the listener closes before any park proof, and the exporter
+joins every request thread it started. `ThreadingHTTPServer` uses daemon request
+threads, so listener exit does not establish request completion.
 
 The shutdown grace is 10 seconds in total, starting when accepts stop. This is
 a new stop-only bound, using the same operational patience as pbstatus's default
@@ -19102,7 +19226,7 @@ profile preserves zero-patience final rereads, remaining-budget observations,
 separate verification budgets and delivered-snapshot acceptance. The detached
 profile always makes its first bounded read and follows exact preemption
 handoffs at expiry. Both use the owner clock at call time. Its `await_ending`
-adapter now clamps a positive wait's last sleep to the deadline; the only
+adapter bounds each positive wait by its original deadline; the only
 production caller requests zero patience. Own-child waitpid remains the reap
 authority. Persistent scoped readers retain their separate durable protocol.
 

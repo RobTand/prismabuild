@@ -18,6 +18,7 @@ import pwd
 import re
 import secrets
 import select
+import selectors
 import socket
 import socketserver
 import stat
@@ -1364,7 +1365,7 @@ class Handler(socketserver.BaseRequestHandler):
                 exit_fd=os.pidfd_open(process.pid)
                 try:
                     while process.poll() is None:
-                        ready=select.select([self.request,exit_fd],[],[],1)[0]
+                        ready=select.select([self.request,exit_fd],[],[])[0]
                         if self.request in ready:
                             extra=self.request.recv(1)
                             # Both EOF and unexpected in-flight protocol data
@@ -1395,6 +1396,51 @@ class Handler(socketserver.BaseRequestHandler):
 
 class Server(socketserver.ThreadingUnixStreamServer):
     daemon_threads=True
+
+    def __init__(self,*args,**kwargs):
+        self.stop_lock=threading.Lock()
+        self.stop_read,self.stop_write=os.pipe2(os.O_CLOEXEC|os.O_NONBLOCK)
+        self.stopping=False;self.stop_closed=False;self.serve_done=threading.Event()
+        try:super().__init__(*args,**kwargs)
+        except BaseException:
+            if not self.stop_closed:
+                os.close(self.stop_read);os.close(self.stop_write)
+            raise
+
+    def request_stop(self):
+        with self.stop_lock:
+            self.stopping=True
+            if self.stop_closed:return
+            try:os.write(self.stop_write,b'x')
+            except BlockingIOError:pass
+
+    def serve_forever(self,poll_interval=None):
+        # Retain socketserver's call signature; shutdown is a descriptor event.
+        self.serve_done.clear()
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(self,selectors.EVENT_READ)
+                selector.register(self.stop_read,selectors.EVENT_READ)
+                while not self.stopping:
+                    ready=selector.select()
+                    if self.stopping:break
+                    for key,_ in ready:
+                        if key.fileobj is self:self._handle_request_noblock()
+        finally:
+            self.serve_done.set()
+
+    def shutdown(self):
+        self.request_stop()
+        self.serve_done.wait()
+
+    def server_close(self):
+        self.request_stop()
+        try:super().server_close()
+        finally:
+            with self.stop_lock:
+                if not self.stop_closed:
+                    self.stop_closed=True
+                    os.close(self.stop_read);os.close(self.stop_write)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1455,7 +1501,7 @@ def main():
         authority.health_check=monitor.healthy
         monitor.start()
         print('PrismaBuild resource broker ready',flush=True)
-        try:server.serve_forever(poll_interval=0.5)
+        try:server.serve_forever()
         finally:monitor.close()
 
 if __name__=='__main__':main()

@@ -14,7 +14,7 @@ import socket
 # to this reader's loaded tree. Older generations are conservatively unknown.
 # Do not enumerate the shared generation store while holding host admission.
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = frozenset(('worker_loop.py', 'tier_loop.py', 'prewarm_loop.py', 'pbmetrics.py'))
+SCRIPTS = frozenset(('worker_loop.py', 'tier_loop.py', 'prewarm_loop.py', 'pbmetrics.py', 'pbbell.py'))
 OWNERSHIP_ENV = 'PRISMABUILD_SUPERVISED_WORKER'
 PF_KTHREAD = 0x00200000  # Linux include/linux/sched.h, stat field 9.
 

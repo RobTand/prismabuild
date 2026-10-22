@@ -122,7 +122,7 @@ FLEET_SCRIPTS = (
     # neither dl380g10 nor sparklina has a checkout to run it from.
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
-    "pbstatus.py", "pbmetrics.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    "pbstatus.py", "pbmetrics.py", "pbbell.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
     # pbsnapshot.py runs inside an action: a client that hashes its own
     # source asks it which files in the pbrun checkout PrismaBuild generated.
     # It has to be the executing generation's copy, found by published path.
@@ -210,6 +210,9 @@ STANDALONE_PACKAGE_SOURCES = {
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("prove_queue_bell.py",
+     "the #1894 scratch-queue NFS and private-link proof runs from a submitted "
+     "checkout through pbrun, not from an installed runtime"),
     ("gate_1730_probe.py",
      "the #1730 fixed-arm storage probe runs from a submitted checkout through "
      "pbrun; it records one measurement and is not an operator command"),

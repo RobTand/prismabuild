@@ -31,7 +31,8 @@ from proof_container_runtime import (
     runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
     runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
-    runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
+    runtime_customization_selection, runtime_customization_stamps_equal,
+    runtime_search_directory_mode, runtime_loader_edges,
     runtime_candidate_name_index, runtime_elf_seed_spellings,
     require_runtime_loader_observations, require_modern_loader_diagnostics,
     runtime_hwcaps_spellings,
@@ -180,7 +181,8 @@ def capture_host_customizations(stdlib, selected_paths, budget, *, physical=Path
         else:
             raise ValueError('unsupported host customization component: ' + path)
         after = location.lstat()
-        if runtime_stamp(before) != runtime_stamp(after) or before.st_uid != after.st_uid:
+        if (not runtime_customization_stamps_equal(runtime_stamp(before), runtime_stamp(after))
+                or before.st_uid != after.st_uid):
             raise ValueError('host customization component changed during selection: ' + path)
         probes.append(dict(path=path, entry=entry, uid=before.st_uid,
             before=list(runtime_stamp(before)), after=list(runtime_stamp(after))))
