@@ -171,10 +171,14 @@ The synchronous and detached frontends, campaign window and canary import that
 owner directly. `pbrun` no longer exports those internal wait helpers. The
 generic reader mechanism and persistent scope-owned protocol are unchanged.
 The synchronous and detached wait loops share `action_wait.await_action`.
-For pool endings, that loop reads the queue bell cursor before each record
-observation and long-polls from that cursor after an inconclusive observation
-(#1894). Every hint, reset and empty timeout leads to another authoritative
-record read with the original deadline. Zero-patience probes do no bell I/O.
+For pool endings, that loop observes records before any optional queue bell
+I/O (#1894). After an inconclusive observation it initializes a cursor, then
+confirms the records before long-polling, covering publication during cursor
+initialization. Every hint, reset and empty timeout supplies the next cursor
+and leads directly to another authoritative record read, without a new cursor
+request spending the remaining patience. All reads keep the original deadline;
+an expired positive synchronous wait starts no read, even after bell I/O.
+Zero-patience probes do no bell I/O.
 SLURM discovery and an unavailable bell retain capped recheck backoff because
 those services cannot call back. Existing reader-error recovery is unchanged.
 The synchronous and detached profiles preserve deadline clipping, the final

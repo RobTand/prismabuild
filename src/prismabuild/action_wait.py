@@ -476,6 +476,7 @@ def await_action(
     diagnostic = None
     fallback_s = min(0.25, POLL_S)
     unusable_replies = 0
+    cursor = None
 
     def fail(fault, count, ending, retained=(), waited_s=0.0):
         return Unavailable(fault, count, ending, retained, waited_s, had_patience)
@@ -521,22 +522,6 @@ def await_action(
                 budget_s = min(OUTCOME_READ_TIMEOUT_S, remaining)
             else:
                 budget_s = OUTCOME_READ_TIMEOUT_S
-            # Capture before observing, so a rename between the read and the
-            # long-poll remains in the ring. A bell reply never decides an ending.
-            cursor = None
-            if bell is not None and not isinstance(patience, ProbeOnce):
-                remaining = remaining_s()
-                if remaining > 0:
-                    try:
-                        cursor = bell.now(budget_s=remaining)
-                    except queue_bell.Unavailable:
-                        pass
-            if profile is AwaitProfile.SYNCHRONOUS and not isinstance(patience, ProbeOnce):
-                # Bell connection time belongs to the same original patience.
-                budget_s = min(budget_s, remaining_s())
-                if budget_s <= 0:
-                    return (fail(unavailable, count, WaitEnd.DEADLINE)
-                            if unavailable is not None else PatienceExpired(state.generation, diagnostic))
             result = poll(budget_s)
             first = False
             if isinstance(result, (Ready, Unreadable)):
@@ -577,10 +562,21 @@ def await_action(
                 return PatienceExpired(state.generation, diagnostic)
             if result.handoff:
                 continue
-            if cursor is not None and use_bell():
+            if bell is not None and use_bell():
                 try:
+                    if cursor is None:
+                        # Optional cursor I/O must not precede the first record
+                        # read. Confirm after initialization: a publication
+                        # between that read and now() is behind the new cursor.
+                        cursor = bell.now(budget_s=remaining_s())
+                        continue
                     started_wait = clock.monotonic()
                     reply = bell.wait(cursor, queue_bell.TERMINAL_DIRS, (bell_key,), remaining_s())
+                    # Each reply supplies the cursor for the next observation
+                    # and wait, including resets and empty timeouts. Reread
+                    # directly on wake; another now() could spend the last of
+                    # the caller's patience before that authoritative read.
+                    cursor = queue_bell.Cursor.parse(f"{reply['epoch']}:{reply['seq']}")
                     if not reply.get("events") and clock.monotonic() - started_wait < 0.25:
                         unusable_replies += 1
                         if unusable_replies > 1:
