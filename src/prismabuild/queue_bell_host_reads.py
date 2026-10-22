@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import threading
 import time
 
 from .queue_bell import Unavailable
@@ -21,6 +22,7 @@ class _HostVisibility:
     deadline: float
     retry_at: float
     delay: float = 0.05
+    generation: int = 0
 
 
 class DirtyHostInputs:
@@ -28,12 +30,14 @@ class DirtyHostInputs:
 
     def __init__(self):
         self._pending: dict[tuple[str, str], _HostVisibility] = {}
+        self._lock = threading.Lock()
         self.read_attempts = 0
         self.visibility_retries = 0
 
     @property
     def dirty(self):
-        return set(self._pending)
+        with self._lock:
+            return set(self._pending)
 
     def invalidate(self, topic: str, host: str, *, deadline: float):
         if topic not in ("workers", "reservations") or not TOPICS[topic].accepts_id(host):
@@ -41,10 +45,13 @@ class DirtyHostInputs:
         if not math.isfinite(deadline):
             raise ValueError("host input visibility needs a finite deadline")
         key = topic, host
-        if key in self._pending:
-            self._pending[key].deadline = min(self._pending[key].deadline, deadline)
-        else:
-            self._pending[key] = _HostVisibility(deadline, time.monotonic())
+        with self._lock:
+            if key in self._pending:
+                pending = self._pending[key]
+                pending.deadline = min(pending.deadline, deadline)
+                pending.generation += 1
+            else:
+                self._pending[key] = _HostVisibility(deadline, time.monotonic())
 
     def confirm(self, read, *, stop):
         """Retry unknown visibility without advancing the original read budget.
@@ -53,30 +60,43 @@ class DirtyHostInputs:
         clipped to the original deadline, cancelled by confirmation or stop.
         Expiry keeps the ID dirty and reports degraded source availability.
         """
-        while self._pending:
+        while True:
+            with self._lock:
+                keys = tuple(self._pending)
+            if not keys:
+                return
             if stop.is_set():
                 raise Unavailable("host input visibility stopped")
-            for key, pending in tuple(self._pending.items()):
-                now = time.monotonic()
-                if now >= pending.deadline:
-                    raise Unavailable("host input visibility budget exhausted")
-                if now < pending.retry_at:
-                    continue
-                self.read_attempts += 1
+            for key in keys:
+                with self._lock:
+                    pending = self._pending[key]
+                    now = time.monotonic()
+                    if now >= pending.deadline:
+                        raise Unavailable("host input visibility budget exhausted")
+                    if now < pending.retry_at:
+                        continue
+                    generation, deadline = pending.generation, pending.deadline
+                    self.read_attempts += 1
                 try:
-                    confirmed = read(*key, pending.deadline)
+                    confirmed = read(*key, deadline)
                 except OSError:
                     confirmed = False
-                now = time.monotonic()
-                if now >= pending.deadline:
-                    raise Unavailable("host input visibility budget exhausted")
-                if confirmed is True:
-                    self._pending.pop(key)
-                else:
-                    self.visibility_retries += 1
-                    pending.retry_at = now + pending.delay
-                    pending.delay = min(1.0, pending.delay * 2)
-            if self._pending:
+                with self._lock:
+                    now = time.monotonic()
+                    if now >= pending.deadline:
+                        raise Unavailable("host input visibility budget exhausted")
+                    if confirmed is True and pending.generation == generation:
+                        self._pending.pop(key)
+                    elif confirmed is True:
+                        # A newer hint needs its own read within the same budget.
+                        pending.retry_at = now
+                    else:
+                        self.visibility_retries += 1
+                        pending.retry_at = now + pending.delay
+                        pending.delay = min(1.0, pending.delay * 2)
+            with self._lock:
+                if not self._pending:
+                    return
                 wake = min(min(item.retry_at, item.deadline) for item in self._pending.values())
-                if stop.wait(max(0.0, wake - time.monotonic())):
-                    raise Unavailable("host input visibility stopped")
+            if stop.wait(max(0.0, wake - time.monotonic())):
+                raise Unavailable("host input visibility stopped")

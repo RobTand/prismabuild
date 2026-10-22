@@ -9718,7 +9718,10 @@ publishes holder names, token names, record contents or capacity verdicts.
 
 The reservation adapter watches each host root, `free`, `minted`, `held`, and
 each holder's immediate contents. Traversal stops at holders, four directories
-below the queue. It covers legacy token writers, partial private acquisitions,
+below the queue. Reconstruction and `HolderCensus` share the holder-directory
+enumeration, including hidden and unknown holder names. A holder that cannot
+be watched, including a symlink, prevents complete reservation coverage.
+It covers legacy token writers, partial private acquisitions,
 rollback, commit rename, release without a terminal record, capacity/map
 replacement, and holder `.adaptive.json` and `.gpu.json` writes. The separate
 host `adaptive` subtree belongs to slice 2b. Each directory is watched before
@@ -9726,6 +9729,10 @@ reconstruction; concurrent kernel events remain buffered for replay. Lazy and
 populated moved-in holders withdraw coverage during installation and advance
 the v2 reset marker before restoring it. Parent rename/delete invalidations
 remove the old subtree watches so moved-away inodes cannot retain a host ID.
+Rebinding an inode to a new relative name replaces its watch descriptor;
+buffered self-events for the old descriptor cannot remove the new binding.
+Nameless events on the workers or reservations root advance the v2 reset
+marker because they cannot identify which hosts became readable or changed.
 These operations acquire no admission, transition or ledger locks and add no
 writer callbacks or discovery to those critical sections.
 
@@ -9746,6 +9753,9 @@ Its NFS-visibility retry starts at 50 ms, doubles to one second, and stays
 inside the original absolute read/discovery budget. Duplicate hints cannot
 extend that budget. Confirmation or stop cancels recovery. Expiry raises
 `Unavailable` with the ID still dirty; it does not infer free capacity.
+Invalidation and confirmation synchronize a per-ID generation. A confirmed
+read clears only the generation it observed; a hint received during that read
+requires another read within the same original deadline.
 Counters expose read attempts and visibility retries without renewal logs.
 Callers must use their existing bounded reader outside admission and transition
 locks. This adapter helper does not activate any worker wait loop. Later consumer

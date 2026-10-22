@@ -118,12 +118,13 @@ def test_partial_acquisition_rollback_and_release_need_no_terminal(host_feed):
     assert all(not list((feed.root / state).iterdir()) for state in ("ready", "done", "failed"))
 
 
-def test_populated_moved_in_holder_gets_watched_before_reconstruction(host_feed, tmp_path):
+@pytest.mark.parametrize("holder_name", ["legacy-holder", ".legacy"])
+def test_populated_moved_in_holder_gets_watched_before_reconstruction(host_feed, tmp_path, holder_name):
     feed = host_feed
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     (incoming / "cpu-0").touch()
-    holder = feed.base / "held" / "legacy-holder"
+    holder = feed.base / "held" / holder_name
     host_input_events(feed, "reservations", lambda: incoming.rename(holder))
     assert holder.relative_to(feed.root) in feed.watch.directories.values()
     host_input_events(feed, "reservations", lambda: (holder / "cpu-0").unlink())
@@ -222,9 +223,10 @@ def test_host_adapter_is_bounded_and_keeps_adaptive_out_of_this_slice():
 
 
 @pytest.mark.parametrize("metadata", [".adaptive.json", ".gpu.json"])
-def test_hidden_holder_metadata_changes_invalidate_capacity(host_feed, metadata):
+@pytest.mark.parametrize("holder_name", ["legacy", ".legacy"])
+def test_hidden_holder_metadata_changes_invalidate_capacity(host_feed, metadata, holder_name):
     feed = host_feed
-    holder = feed.base / "held" / "legacy"
+    holder = feed.base / "held" / holder_name
     host_input_events(feed, "reservations", holder.mkdir)
     host_input_events(feed, "reservations", lambda: (holder / metadata).write_text("unknown"))
 
@@ -256,7 +258,8 @@ def test_nfs_visibility_keeps_dirty_host_and_original_budget(monkeypatch, confir
         attempts.append((topic, host, deadline))
         assert pending.dirty == {("reservations", "worker.lab")}
         # Another hint must not restart the original read/discovery budget.
-        pending.invalidate(topic, host, deadline=100.0)
+        if confirm_after is None or len(attempts) < confirm_after:
+            pending.invalidate(topic, host, deadline=100.0)
         return confirm_after is not None and len(attempts) >= confirm_after
 
     class VisibilityStop:

@@ -1137,6 +1137,10 @@ changes and removal. `reservations` observes each host root, `free`, `minted`,
 host subscriber without any ready or terminal activity. Populated moved-in
 holders install watches before scanning. Traversal stops at holder contents;
 host adaptive mirrors, passes and denial topics require later slices.
+Hidden and unknown holder directories use the same enumeration as
+`HolderCensus` and each add one watch. Nameless events on `workers/` or
+`reservations/`, including permission recovery, advance the v2 reset marker
+so subscribers reread their host inputs.
 
 Expected host directory shapes replaced by symlinks or non-directories remain
 incomplete. Unexplained nested watch loss withdraws the affected topic. Repair
@@ -1145,13 +1149,17 @@ generation before accepting coverage again. Normal parent-observed removal
 retains the parent watch. Moved-out trees lose their watches, so later writes
 outside the queue do not produce hints under the old host ID. Inspect the
 existing coverage-change, reset and watch counters for these boundaries.
+An inode rebound to a different name gets a new watch descriptor, so stale
+self-events cannot discard its replacement watch during reconstruction.
 
 Hints grant no free capacity. Keep the existing confirmed offer/ledger reads.
 `DirtyHostInputs` is available to later consumers to retain unknown host IDs,
 retry NFS visibility from 50 ms to one second within the original read budget,
 and expose `read_attempts` and `visibility_retries`. Confirmation or stop cancels
 the retry; exhaustion keeps the ID dirty and reports `Unavailable`. Duplicate
-hints do not extend the budget. Run these reads outside admission and transition
+hints do not extend the budget. A hint received during confirmation keeps its
+new generation dirty until another read confirms it within that same deadline.
+Run these reads outside admission and transition
 locks. The recorded offer expiry remains 120 seconds and is a separate consumer
 deadline. This source slice activates no consumer and adds no periodic discovery.
 

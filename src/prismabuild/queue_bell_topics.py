@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from .holder_census import CPU_METADATA, GPU_METADATA
+from .holder_census import CPU_METADATA, GPU_METADATA, HolderCensus
 
 MAX_TOPIC_FILTERS = 32
 MAX_ID_FILTERS = 128
@@ -111,8 +111,15 @@ class HostReservations:
     @staticmethod
     def hidden_input(relative: Path) -> bool:
         parts = relative.parts
-        return (len(parts) == 5 and parts[0] == "reservations" and parts[2] == "held"
-                and parts[4] in (CPU_METADATA, GPU_METADATA))
+        return (len(parts) in (4, 5) and parts[0] == "reservations" and parts[2] == "held"
+                and (len(parts) == 4 or parts[4] in (CPU_METADATA, GPU_METADATA)))
+
+    @staticmethod
+    def reconstruction_inputs(relative: Path, entries):
+        parts = relative.parts
+        if len(parts) == 3 and parts[0] == "reservations" and parts[2] == "held":
+            return HolderCensus.directory_inputs(entries)
+        return entries
 
     @staticmethod
     def allows(relative: Path) -> bool:
@@ -125,7 +132,7 @@ class HostReservations:
             return False
         return (len(parts) == 2
                 or (len(parts) == 3 and parts[2] in HostReservations.token_directories)
-                or (len(parts) == 4 and parts[2] == "held" and not parts[3].startswith(".")))
+                or (len(parts) == 4 and parts[2] == "held"))
 
     @staticmethod
     def hint(relative: Path) -> tuple[str, str] | None:

@@ -26,6 +26,9 @@ def prove_host_input_transport() -> int:
         for host in ("first.lab", "second.lab"):
             for directory in ("free", "held", "minted"):
                 (root / "reservations" / host / directory).mkdir(parents=True)
+            hidden = root / "reservations" / host / "held" / ".legacy"
+            hidden.mkdir()
+            (hidden / ".adaptive.json").write_text("unparsed legacy metadata")
         with queue_notifier.BellService(root, [("127.0.0.1", 0)]) as service:
             port = service.servers[0].server_address[1]
             assert port != queue_bell.DEFAULT_PORT
@@ -34,6 +37,9 @@ def prove_host_input_transport() -> int:
             before = client.now_v2(topics)
             legacy_cursor = client.now()
             initial_watches = len(service.watch.directories)
+            assert initial_watches == 20  # The original 18 plus two hidden holders.
+            for host in ("first.lab", "second.lab"):
+                assert Path(f"reservations/{host}/held/.legacy") in service.watch.directories.values()
             entered = threading.Event()
             original = service.ring.wait_v2
 
@@ -76,6 +82,7 @@ def prove_host_input_transport() -> int:
             assert all(not list((root / state).iterdir()) for state in ("ready", "done", "failed"))
             print(json.dumps(dict(proof="scratch-host-inputs", host=socket.gethostname(),
                 port=port, initial_watches=initial_watches,
+                hidden_holder_watches=2,
                 populated_watches=len(service.watch.directories),
                 concurrent_diagnostics=census["diagnostics"], ending_diagnostics=after["diagnostics"],
                 covered_topics=after["coverage"]["topics"],

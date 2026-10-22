@@ -225,6 +225,15 @@ class InotifyQueue:
         wd = self.libc.inotify_add_watch(self.fd, os.fsencode(watch_path), mask)
         if wd < 0:
             raise OSError(ctypes.get_errno(), str(path))
+        if wd in self.directories and self.directories[wd] != relative:
+            # The inode moved during reconstruction. Retire its old descriptor
+            # so buffered self-events cannot remove the new name's binding.
+            previous = self.directories.pop(wd)
+            self.root_watches.pop(previous, None)
+            self.libc.inotify_rm_watch(self.fd, wd)
+            wd = self.libc.inotify_add_watch(self.fd, os.fsencode(watch_path), mask)
+            if wd < 0:
+                raise OSError(ctypes.get_errno(), str(path))
         self.directories[wd] = relative
         if relative is not None and len(relative.parts) <= 1:
             self.root_watches[relative] = wd
@@ -306,7 +315,7 @@ class InotifyQueue:
                     self._tree(Path(directory), ring, descriptor)
             root_names = set()
             with os.scandir(descriptor) as entries:
-                for entry in entries:
+                for entry in HostReservations.reconstruction_inputs(relative, entries):
                     child = relative / entry.name
                     if entry.name.startswith(".") and not HostReservations.hidden_input(child):
                         continue
@@ -394,8 +403,11 @@ class InotifyQueue:
                 ring.set_coverage(self.covered_topics)
                 continue
             if not name:
-                if host_topics and mask & IN_ATTRIB:
-                    self._hint(relative, ring)
+                if host_topics:
+                    if len(relative.parts) == 1:
+                        ring.reset_v2()
+                    elif mask & IN_ATTRIB:
+                        self._hint(relative, ring)
                 continue
             child = relative / name
             if name.startswith(".") and not HostReservations.hidden_input(child):
