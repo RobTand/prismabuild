@@ -141,6 +141,8 @@ def refusal_mode(
     """
 
     reason = decision.get("reason") if isinstance(decision, Mapping) else None
+    if reason == "unified_gpu_memory_budget":
+        return "exclusive", False
     if source == "adaptive_gpu_refused":
         foreign = decision.get("foreign_processes") if isinstance(decision, Mapping) else None
         if foreign:

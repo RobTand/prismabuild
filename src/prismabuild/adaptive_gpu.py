@@ -24,10 +24,10 @@ import statistics
 import time
 import uuid
 
-from . import adaptive_cpu
+from . import adaptive_cpu, gpu_sample_facts
 from .gpu_sample_facts import (GpuSampleFacts, device_identity, is_nonnegative_number,
                                memory_counters)
-from .holder_census import GPU_METADATA, HolderCensus
+from .holder_census import GPU_METADATA, HolderCensus, HolderKind
 
 METADATA = GPU_METADATA
 SAMPLE_PATH = Path('/run/prismabuild/gpu-capacity.json')
@@ -355,6 +355,163 @@ def memory_budget_bytes(value):
         raise ValueError('GPU budget must represent between 1 and 9223372036854775807 bytes')
     return result
 
+#: Placement tags and host classes whose memory domain is unified (#1661).
+#: A GPU cap larger than ``mem_gb`` is legal on discrete hosts, where VRAM
+#: is a separate reservation, so submission-time subset checks must only
+#: fire for these placements. Admission enforces the same rule per device.
+UNIFIED_PLACEMENTS = frozenset({"gb10"})
+
+
+def unified_placement(tags=None, host_class=None) -> bool:
+    """Whether a placement targets a unified-memory host (#1661)."""
+    if host_class is not None and str(host_class) in UNIFIED_PLACEMENTS:
+        return True
+    try:
+        names = {str(tag) for tag in (tags or [])}
+    except TypeError:
+        return False
+    return not names.isdisjoint(UNIFIED_PLACEMENTS)
+
+
+def _sample_external_unified_gib(sample) -> tuple[int, int, bool]:
+    """Ceiled GiB of foreign GPU bytes in one broker sample.
+
+    Zero, with a clear unknown flag, when the sample is missing or stale:
+    without fresh broker evidence nothing is proven to subtract, and
+    ordinary token admission stays authoritative.
+    """
+    if not isinstance(sample, Mapping):
+        return 0, 0, False
+    facts = GpuSampleFacts(sample)
+    timestamp = facts.timestamp
+    inventory = facts.single_device_inventory(
+        fresh=bool(timestamp and timestamp.finite_nonnegative
+                   and timestamp.within(time.time(), MAX_SAMPLE_AGE_S)))
+    if inventory is None:
+        return 0, 0, False
+    total, unknown = gpu_sample_facts.external_unified_gpu_bytes(
+        [inventory.device], inventory.foreign_processes)
+    return math.ceil(total / GIB), total, unknown
+
+
+def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float, float]:
+    """Unified DRAM this host commits, with each holder charged once (#1661).
+
+    The GPU cap is a subset of ``mem_gb``, not an extra charge: each holder
+    counts its held ``mem_gb`` tokens a single time. The walk covers every
+    holder dir, claimed or still acquiring, RAM-fill mirrors included: a fill
+    holds host ``mem_gb`` tokens from the same unified pool. The per-holder
+    list still reports each declared shared-system GPU cap, so a refusal can
+    name the caps that block the candidate. The return is the per-holder
+    list, the committed total, the held GPU-cap total, the held host-memory
+    total, and the RAM-fill memory total.
+    """
+    caps: list[dict[str, object]] = []
+    committed = 0.0
+    cap_total = 0.0
+    ram_mem = 0.0
+    try:
+        held_mem = float(ledger.held().get("mem_gb", 0))
+    except (OSError, ValueError):
+        held_mem = 0.0
+    census = ledger.holder_census()
+    try:
+        entries = list(census.holders)
+    except (FileNotFoundError, NotADirectoryError):
+        return [], 0.0, 0.0, held_mem, 0.0
+    for holder in entries:
+        try:
+            mem_tokens = float(ledger.holder_tokens(holder.name).get("mem_gb", 0))
+        except (OSError, ValueError):
+            mem_tokens = 0.0
+        if holder.kind is HolderKind.HOST_MEMORY_MIRROR:
+            ram_mem += mem_tokens
+            committed += mem_tokens
+            caps.append({"action_key": holder.name, "gpu_cap_gib": 0.0,
+                         "mem_gb": mem_tokens, "charge_gib": mem_tokens})
+            continue
+        cap_gib = 0.0
+        meta = census.gpu_record(holder.name).fields
+        if meta.get("memory_domain") == "shared_system":
+            budget = meta.get("gpu_memory_budget_bytes")
+            if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+                cap_gib = float(budget) / float(GIB)
+        committed += mem_tokens
+        cap_total += cap_gib
+        caps.append({"action_key": holder.name, "gpu_cap_gib": cap_gib,
+                     "mem_gb": mem_tokens, "charge_gib": mem_tokens})
+    return caps, committed, cap_total, held_mem, ram_mem
+
+
+def unified_memory_verdict(ledger, demand, budget, *, sample=None,
+                           observed_external_gib=0) -> dict[str, object] | None:
+    """The unified-memory refusal for one candidate, or ``None`` to admit.
+
+    Each holder and the candidate charge ``mem_gb`` once: the GPU cap is a
+    subset of that reservation, never a second charge (#1661). ``sample`` is
+    the fresh broker snapshot the caller already holds; its foreign GPU
+    bytes on shared-system devices count against the same offer, because the
+    kernel memory reading does not reliably show driver-held unified
+    allocations. Attributed GPU bytes never count here: their host share is
+    inside the holder's ``mem_gb`` charge. ``observed_external_gib`` is the
+    foreign GiB the node offer already subtracted: the verdict charges only
+    the growth beyond it, so observation and admission never charge the same
+    bytes twice. A missing or stale sample only withholds the external term.
+    An unreadable ledger census refuses nothing here: the token path reports
+    that shortage itself.
+    """
+    held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
+        ledger)
+    external_gib, external_bytes, external_unknown = _sample_external_unified_gib(
+        sample)
+    try:
+        baseline = float(observed_external_gib or 0)
+    except (TypeError, ValueError):
+        baseline = 0.0
+    baseline = math.ceil(max(0.0, baseline))
+    charged_external_gib = max(0, external_gib - baseline)
+    try:
+        census = ledger.capacity_census()
+    except (AttributeError, OSError, ValueError):
+        census = None
+    if census is None:
+        try:
+            offer_gib = float(ledger.capacity().get("mem_gb", 0))
+        except (OSError, ValueError):
+            return None
+    else:
+        counts, unreadable = census
+        if unreadable:
+            return None
+        try:
+            offer_gib = float(counts.get("mem_gb", 0))
+        except (TypeError, ValueError):
+            return None
+    candidate_mem = demand.get("mem_gb", 0)
+    candidate_mem = float(candidate_mem) if type(candidate_mem) in (int, float) else 0.0
+    candidate = candidate_mem
+    if committed + candidate + charged_external_gib <= offer_gib:
+        return None
+    cap_gib = 0.0
+    if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+        cap_gib = float(budget) / float(GIB)
+    return {"reason": "unified_gpu_memory_budget",
+            "requested_mem_gb": candidate_mem,
+            "requested_budget_bytes": budget,
+            "requested_budget_gib": cap_gib,
+            "held_gpu_caps": held_caps,
+            "held_gpu_cap_total_gib": held_total,
+            "held_mem_gb": held_mem,
+            "held_ram_mem_gb": ram_mem,
+            "committed_gib": committed,
+            "external_gpu_bytes": external_bytes,
+            "external_gpu_gib": external_gib,
+            "external_baseline_gib": baseline,
+            "external_charged_gib": charged_external_gib,
+            "external_gpu_unknown": external_unknown,
+            "candidate_charge_gib": candidate,
+            "mem_offer_gib": offer_gib}
+
 
 def _power_estimate(rows):
     values = [row['power_w'] for row in rows]
@@ -512,7 +669,8 @@ class Controller:
             return self._sampler()
         return trusted_sample()
 
-    def decision(self, item, demand, *, contract=None):
+    def decision(self, item, demand, *, contract=None, observed_external_gib=0,
+                 reservation_demand=None):
         """Decide under admission; callers may pre-read the sealed contract."""
         self.last_decision = {"reason": "not_evaluated"}
         if not demand.get('gpu'):
@@ -645,6 +803,22 @@ class Controller:
                               limited=limited,
                               sw_cap_idle_exception=sw_cap_exception,
                               **({'baseline': idle} if measurement else {}))
+            if device.get("memory_domain") == "shared_system":
+                mem_bytes = (demand.get("mem_gb", 0) * GIB
+                             if type(demand.get("mem_gb", 0)) in (int, float) else 0)
+                if (type(budget) in (int, float) and math.isfinite(budget)
+                        and budget > 0 and budget > mem_bytes):
+                    # The GPU cap is a subset of ``mem_gb`` on unified
+                    # memory (#1661). Discrete VRAM stays independent.
+                    return refuse("unified_gpu_cap_exceeds_mem",
+                                  requested_budget_bytes=budget,
+                                  requested_budget_gib=float(budget) / float(GIB),
+                                  requested_mem_gb=demand.get("mem_gb", 0))
+                # The fit verdict runs after sharing arbitration below
+                # (#1661): a candidate that cannot share refuses quietly
+                # there, exactly as before this gate existed. Only a settled
+                # sharer reaches the memory check, and only its refusal
+                # preempts at the pool, so gang reclamation keeps its election.
             if device.get('memory_domain') == 'discrete':
                 memory = memory_counters(device)
                 if memory is None:
@@ -684,6 +858,20 @@ class Controller:
                         or record['sampled_unix'] < meta['admitted_unix']
                         or sample['sampled_unix'] < meta['admitted_unix'] + SETTLE_S):
                     return refuse("holder_telemetry_unavailable", holder=holder.name)
+        if device.get("memory_domain") == "shared_system":
+            # Last fit check before admission (#1661). Sharing arbitration
+            # above already refused unsettled candidates without preemption;
+            # the GPU cap stays a subset of ``mem_gb`` here, never a second
+            # charge, and attributed bytes never count twice.
+            if type(budget) in (int, float) and math.isfinite(budget) and budget > 0:
+                verdict = unified_memory_verdict(
+                    self.ledger, reservation_demand if reservation_demand is not None else demand,
+                    budget, sample=sample,
+                    observed_external_gib=observed_external_gib)
+                if verdict is not None:
+                    host_gib = float(sample.get("host_total_bytes", 0)) / float(GIB)
+                    return refuse(verdict.pop("reason"),
+                                  host_total_gib=host_gib, **verdict)
         self.last_decision = {"reason": "admitted", "sample": sample,
                                 "power_reference_w": reference,
                                 "power_reference_scope": reference_scope,

@@ -199,7 +199,11 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     if drain:
         fresh = denial(gpu)
         assert not fresh["reason"].startswith("residency_"), fresh
-        assert fresh["reason"].startswith("reservation_unavailable"), fresh
+        assert fresh["reason"] == "adaptive_gpu_refused_withholding"
+        memory = fresh["evidence"]["decision"]
+        assert memory["reason"] == "unified_gpu_memory_budget"
+        assert memory["held_mem_gb"] == 24
+        assert memory["candidate_charge_gib"] == 104
         later = publish("portable-cpu-after-residency", priority=1,
                         cpu=1, gpu=0, mem_gb=3, tags=["gb10"])
         assert claim() is None

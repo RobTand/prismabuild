@@ -134,7 +134,13 @@ def fleet(tmp_path, monkeypatch):
                 gpu = adaptive_gpu.Controller(active.ledger(host), sampler=gpu_sampler)
                 with cpu.locked():
                     permission = gpu.decision(record, record["resources"])
-                assert permission is not None and permission["probe"] is True, gpu.last_decision
+                if record["resources"]["mem_gb"] > active.ledger(host).available().get("mem_gb", 0):
+                    # This asks about another copy beside the admitted holder.
+                    # A sharing probe cannot spend memory the host does not have.
+                    assert permission is None
+                    assert gpu.last_decision["reason"] == "unified_gpu_memory_budget"
+                else:
+                    assert permission is not None and permission["probe"] is True, gpu.last_decision
         return None if result is None else result["action_key"]
 
     def denial(key, host="sparklina"):

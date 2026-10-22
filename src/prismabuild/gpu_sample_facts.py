@@ -282,3 +282,38 @@ def framebuffer_device(device: Mapping[str, object], *, start_unix: float,
             or free > total or used > total or free + used != total):
         return None
     return FramebufferDevice(identity, name, total, free, used)
+
+
+def external_unified_gpu_bytes(devices, foreign_processes) -> tuple[int, bool]:
+    """Foreign GPU bytes on shared-system devices, and an unknown flag.
+
+    Only processes the broker attributes to nobody count. Bytes the pool's
+    own jobs hold sit inside their ``mem_gb`` reservation (#1661), so this
+    function never counts them: that subtraction belongs to the holder, and
+    a second one here would charge the box twice. Discrete devices never
+    count: their VRAM is not host DRAM. The flag is true when a
+    shared-system foreign process reports no usable byte count.
+    """
+    total = 0
+    unknown = False
+    devices = [device for device in (devices or []) if isinstance(device, Mapping)]
+    by_uuid = {device.get("uuid"): device for device in devices}
+    all_shared = bool(devices) and all(
+        device.get("memory_domain") == "shared_system" for device in devices)
+    for process in (foreign_processes or []):
+        if not isinstance(process, Mapping):
+            unknown = True
+            continue
+        device = by_uuid.get(process.get("gpu_uuid"))
+        if device is not None:
+            shared = device.get("memory_domain") == "shared_system"
+        else:
+            shared = all_shared
+        if not shared:
+            continue
+        used = process.get("used_bytes")
+        if type(used) is int and used >= 0:
+            total += used
+        else:
+            unknown = True
+    return total, unknown
