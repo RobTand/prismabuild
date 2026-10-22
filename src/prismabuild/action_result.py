@@ -163,11 +163,12 @@ def _decode_json(raw: bytes, *, where: str) -> object:
         raise ActionResultError(f"{where} is not strict JSON: {exc}") from exc
 
 
-def _select_terminal(queue, key, published, number, evidence_cap):
+def _select_terminal(queue, key, published, number, evidence_cap, *, successful=True):
     """Capture the terminal slots once and resolve the requested generation.
 
-    Returns ``(record, generation, attempt_path)`` for the selected successful
-    generation, or refuses.  The capture is bounded and the resolution is
+    Returns ``(record, generation, attempt_path)`` for the selected ending,
+    or refuses. The SDK reader retains the default success-only gate.
+    The capture is bounded and the resolution is
     derived from that same capture, so a census and a resolution can never
     order one record and report another.
     """
@@ -184,7 +185,9 @@ def _select_terminal(queue, key, published, number, evidence_cap):
         states = ", ".join(str(entry["state"]) for entry in unreadable)
         raise ActionResultError(
             f"terminal evidence for {key[:12]} is present but unreadable: {states}")
-    if ending["state"] != _pool.record_store.DONE or ending["ambiguous"]:
+    if (ending["state"] not in ({_pool.record_store.DONE} if successful else
+                               {_pool.record_store.DONE, _pool.record_store.FAILED, _pool.record_store.WITHDRAWN})
+            or ending["ambiguous"]):
         raise ActionResultError(
             f"{key[:12]} does not have an unambiguous done ending "
             f"(state={ending['state']!r}, ambiguous={ending['ambiguous']})")
@@ -196,9 +199,15 @@ def _select_terminal(queue, key, published, number, evidence_cap):
             f"{published!r}")
     if record.get("action_key") != key:
         raise ActionResultError("the terminal record names another action key")
-    if record.get("status") not in {"executed", "cache_hit"}:
+    if successful and record.get("status") not in {"executed", "cache_hit"}:
         raise ActionResultError(
             f"the terminal status is not a success: {record.get('status')!r}")
+    if not successful and record.get("status") == "withdrawn":
+        record = record.get("withdrawn_attempt") or record
+        if (not isinstance(record, Mapping) or record.get("action_key") != key
+                or record.get("status") != "withdrawn"
+                or _checked_publication_unix(record.get("published_unix")) != published):
+            raise ActionResultError("withdrawn attempt differs from its decision identity")
     attempts = record.get("attempts")
     if type(attempts) is not int or attempts != number:
         raise ActionResultError(
@@ -230,6 +239,16 @@ def _read_selected_attempt(queue, path, evidence_cap):
     return value
 
 
+def _bind_ending_attempt(queue, record, attempt_record, *, key, number):
+    try:
+        queue._bind_linked_attempt(
+            record, attempt_record, attempt=number, where=f"{key[:12]} attempt {number}")
+    except (_pool.PoolError, pb.PrismaBuildError) as exc:
+        raise ActionResultError(f"pool attempt outcome refused: {exc}") from exc
+    if attempt_record.get("status") != record.get("status"):
+        raise ActionResultError("pool attempt status differs from the terminal")
+
+
 def _bind_attempt(
     queue,
     record: Mapping[str, object],
@@ -247,13 +266,7 @@ def _bind_attempt(
     preemption context included (#1446).
     """
 
-    try:
-        queue._bind_linked_attempt(
-            record, attempt_record, attempt=number, where=f"{key[:12]} attempt {number}")
-    except (_pool.PoolError, pb.PrismaBuildError) as exc:
-        raise ActionResultError(f"pool attempt outcome refused: {exc}") from exc
-    if attempt_record.get("status") != record.get("status"):
-        raise ActionResultError("pool attempt status differs from the terminal")
+    _bind_ending_attempt(queue, record, attempt_record, key=key, number=number)
     if attempt_record.get("disposition") != _pool.record_store.DONE:
         raise ActionResultError("pool attempt disposition is not done")
     if attempt_record.get("status") not in {"executed", "cache_hit"}:
@@ -283,6 +296,14 @@ def decode_result_announcement(stdout: bytes) -> Mapping[str, object]:
     file.
     """
 
+    found = _ending_announcements(stdout)
+    if len(found) != 1:
+        raise ActionResultError(
+            f"expected exactly one result announcement, found {len(found)}")
+    return found[0]
+
+
+def _ending_announcements(stdout):
     text = stdout.decode("utf-8", errors="replace")
     found: list[Mapping[str, object]] = []
     for line in text.splitlines():
@@ -304,10 +325,7 @@ def decode_result_announcement(stdout: bytes) -> Mapping[str, object]:
             and isinstance(receipt.get("receipt_sha256"), str)
         ):
             found.append(value)
-    if len(found) != 1:
-        raise ActionResultError(
-            f"expected exactly one result announcement, found {len(found)}")
-    return found[0]
+    return found
 
 
 def _read_declared_input(
@@ -522,6 +540,116 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
     }
 
 
+def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap):
+    logs = attempt_record.get("logs")
+    metadata = logs.get(stream) if isinstance(logs, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        raise ActionResultError(f"the selected attempt has no {stream} log")
+    declared_bytes = metadata.get("bytes")
+    declared_sha = metadata.get("sha256")
+    if type(declared_bytes) is not int or declared_bytes < 0:
+        raise ActionResultError(f"the selected attempt {stream} size is invalid")
+    if (
+        not isinstance(declared_sha, str)
+        or len(declared_sha) != 64
+        or any(character not in "0123456789abcdef" for character in declared_sha)
+    ):
+        raise ActionResultError(f"the selected attempt {stream} digest is invalid")
+    if declared_bytes > log_cap:
+        raise ActionResultError(f"the selected attempt {stream} exceeds the evidence cap")
+    log_path = queue.records.attempt_log_path(record, number, stream, declared_sha)
+    if metadata.get("path") != str(log_path.relative_to(queue.root)):
+        raise ActionResultError(f"the selected attempt {stream} link is not canonical")
+    raw = _read_bounded(
+        log_path, where=f"pool attempt {stream}", max_bytes=log_cap,
+        require_readonly=True)
+    if len(raw) != declared_bytes or pb.raw_sha256(raw) != declared_sha:
+        raise ActionResultError(f"the selected attempt {stream} differs from its address")
+
+    return {"path": str(log_path), "bytes": declared_bytes, "sha256": declared_sha}, raw
+
+
+def read_verified_ending_result(
+    queue, action_key: str, *, published_unix: float, attempt: int,
+    max_log_bytes: int = 16 * 1024 * 1024,
+    max_evidence_bytes: int = 4 * 1024 * 1024,
+    max_result_bytes: int = 64 * 1024 * 1024,
+) -> dict[str, object]:
+    """Verify the selected ending's logs, including a failed worker (#1892).
+
+    This sibling makes no success claim and does not relax the SDK reader.
+    Only the selected attempt is read. Logs, evidence and a receipt's payload
+    each have an explicit byte cap. Produced-output discovery has no bounded
+    verified reader yet, so outputs is empty. Paths are point-in-time evidence.
+    """
+    key = _checked_action_key(action_key)
+    published = _checked_publication_unix(published_unix)
+    number = _checked_positive_int(attempt, "attempt")
+    log_cap = _checked_nonnegative_int(max_log_bytes, "max_log_bytes")
+    evidence_cap = _checked_positive_int(max_evidence_bytes, "max_evidence_bytes")
+    result_cap = _checked_nonnegative_int(max_result_bytes, "max_result_bytes")
+    record, generation, path = _select_terminal(
+        queue, key, published, number, evidence_cap, successful=False)
+    selected = _read_selected_attempt(queue, path, evidence_cap)
+    _bind_ending_attempt(queue, record, selected, key=key, number=number)
+    expected = (_pool.record_store.DONE if record["status"] in {"executed", "cache_hit"}
+                else _pool.record_store.WITHDRAWN if record["status"] == "withdrawn"
+                else _pool.record_store.FAILED)
+    if selected.get("disposition") != expected:
+        raise ActionResultError("pool attempt disposition differs from the ending")
+    stdout, raw = _verified_attempt_log(
+        queue, record, selected, number, "stdout", log_cap)
+    stderr = None
+    expanded = {**selected, "stdout": raw.decode("utf-8")}
+    if "stderr" in selected.get("logs", {}):
+        stderr, stderr_raw = _verified_attempt_log(
+            queue, record, selected, number, "stderr", log_cap)
+        expanded["stderr"] = stderr_raw.decode("utf-8")
+    adopted = endings.resolve_attempt(
+        [expanded], invalid=ActionResultError,
+        validate_output_retry_stop=queue._validate_output_retry_stop)
+    for field in ("status", "finished_unix", "finished_host", "detail"):
+        if adopted[field] != record.get(field):
+            raise ActionResultError(f"pool attempt {field} differs from the terminal")
+    announcements = _ending_announcements(raw)
+    if len(announcements) > 1:
+        raise ActionResultError("the selected attempt has ambiguous receipts")
+    receipt_sha256 = None
+    if announcements:
+        cas_root = record.get("cas_root")
+        if not isinstance(cas_root, str) or not cas_root:
+            raise ActionResultError("the terminal record names no CAS root")
+        cas = pb.PrismaBuildCAS(cas_root)
+        request = _decode_json(_read_bounded(
+            cas.root / "requests" / key[:2] / f"{key}.json",
+            where="PrismaBuild action request", max_bytes=evidence_cap,
+            require_readonly=True), where="PrismaBuild action request")
+        try:
+            action = pb.validate_action(request)
+            if action["action_key"] != key:
+                raise ActionResultError("sealed action request names another action key")
+            announced = announcements[0]["receipt"]
+            receipt, _ = cas.read_execution_result(
+                action, announced["receipt_sha256"], max_result_bytes=result_cap,
+                max_receipt_bytes=evidence_cap)
+            if dict(announced) != receipt:
+                raise ActionResultError("announced receipt differs from execution receipt")
+            receipt_sha256 = receipt["receipt_sha256"]
+        except (pb.PrismaBuildError, OSError) as exc:
+            raise ActionResultError(f"execution receipt refused: {exc}") from exc
+    elif record["status"] in {"executed", "cache_hit"}:
+        raise ActionResultError("the successful attempt announced no execution receipt")
+    rechecked, new_generation, new_path = _select_terminal(
+        queue, key, published, number, evidence_cap, successful=False)
+    reselected = _read_selected_attempt(queue, new_path, evidence_cap)
+    _bind_ending_attempt(queue, rechecked, reselected, key=key, number=number)
+    if (rechecked != record or new_generation != generation or new_path != path
+            or reselected != selected):
+        raise ActionResultError("the selected ending changed while its logs were read")
+    return {"verified": True, "receipt_sha256": receipt_sha256,
+            "stdout": stdout, "stderr": stderr, "outputs": []}
+
+
 def read_verified_action_result(
     queue,
     action_key: str,
@@ -596,30 +724,8 @@ def read_verified_action_result(
     # The worker's own result announcement, from this attempt's immutable
     # stdout log only.  The log's declared size and digest are checked by the
     # bounded stable read's caller below before the announcement is parsed.
-    logs = attempt_record.get("logs")
-    stdout_meta = logs.get("stdout") if isinstance(logs, Mapping) else None
-    if not isinstance(stdout_meta, Mapping):
-        raise ActionResultError("the selected attempt has no stdout log")
-    declared_bytes = stdout_meta.get("bytes")
-    declared_sha = stdout_meta.get("sha256")
-    if type(declared_bytes) is not int or declared_bytes < 0:
-        raise ActionResultError("the selected attempt stdout size is invalid")
-    if (
-        not isinstance(declared_sha, str)
-        or len(declared_sha) != 64
-        or any(character not in "0123456789abcdef" for character in declared_sha)
-    ):
-        raise ActionResultError("the selected attempt stdout digest is invalid")
-    if declared_bytes > evidence_cap:
-        raise ActionResultError("the selected attempt stdout exceeds the evidence cap")
-    stdout_path = queue.records.attempt_log_path(record, number, "stdout", declared_sha)
-    if stdout_meta.get("path") != str(stdout_path.relative_to(queue.root)):
-        raise ActionResultError("the selected attempt stdout link is not canonical")
-    stdout = _read_bounded(
-        stdout_path, where="pool attempt stdout", max_bytes=evidence_cap,
-        require_readonly=True)
-    if len(stdout) != declared_bytes or pb.raw_sha256(stdout) != declared_sha:
-        raise ActionResultError("the selected attempt stdout differs from its address")
+    _stdout_metadata, stdout = _verified_attempt_log(
+        queue, record, attempt_record, number, "stdout", evidence_cap)
 
     announcement = decode_result_announcement(stdout)
     announced_receipt = announcement.get("receipt")
@@ -777,5 +883,6 @@ __all__ = [
     "MAX_SELECTED_INPUTS",
     "ActionResultError",
     "read_verified_action_result",
+    "read_verified_ending_result",
     "bind_standard_capture_command",
 ]

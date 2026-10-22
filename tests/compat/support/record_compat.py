@@ -25,6 +25,7 @@ from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable
 from prismabuild.digest_primitives import canonical_sha256
 from compat_references import module_paths, generation_reference, absence_module_paths
+from compat_namespace_probe import BWRAP_NAMESPACE_ARGS
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
@@ -329,7 +330,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
             raise RuntimeError("stable-path writer fixture requires qualified bubblewrap; no fallback")
         store.mkdir(parents=True, exist_ok=True)
         stable = Path("/opt/prismabuild-compat")
-        namespace = [bwrap, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/opt",
+        namespace = [bwrap, *BWRAP_NAMESPACE_ARGS, "--tmpfs", "/opt",
                      "--ro-bind", str(root), str(stable / "generation"),
                      "--ro-bind", str(driver), str(stable / "driver"),
                      "--bind", str(store), str(stable / "store")]
