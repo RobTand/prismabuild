@@ -15,6 +15,7 @@ cycle. ``restore`` copies a run back with its marks.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import argparse
 import json
 import os
@@ -643,15 +644,28 @@ def _valid_run_id(run_id: str) -> bool:
             and "\\" not in run_id and "\x00" not in run_id)
 
 
+@dataclass
+class _ReferenceCensus:
+    paths: set[str] = field(default_factory=set)
+    references: list[dict[str, object]] = field(default_factory=list)
+    refusals: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def protected_paths(self) -> set[str]:
+        return self.paths | {str(path) for refusal in self.refusals
+                             for path in refusal["scope"]}
+
+
 def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                       cas_root: str | Path | None,
-                      residency_root: str | Path | None) -> set[str]:
+                      residency_root: str | Path | None) -> _ReferenceCensus:
     """Resolve receipts, plans, consumers and orphan leases under the lock.
 
     Fragments and reader pins have their existing strict census. This census
     adds records that can name bytes without a surviving fragment.
     """
-    named: set[str] = set()
+    census = _ReferenceCensus()
+    named = census.paths
     roots = (stage, stage.resolve(strict=True))
     layouts: dict[tuple[str, str], tuple[str, list[dict[str, object]]]] = {}
 
@@ -667,10 +681,10 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             if any(root in path.parents for root in roots):
                 named.add(str(path))
 
-    def manifests(value, own_cas):
+    def manifests(value, own_cas, origin, bound=None):
         if isinstance(value, list):
             for item in value:
-                manifests(item, own_cas)
+                manifests(item, own_cas, origin)
             return
         if not isinstance(value, dict):
             return
@@ -681,42 +695,73 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             if isinstance(input_ref, dict):
                 digest = input_ref.get("sha256")
         if digest is not None:
-            if (not isinstance(digest, str) or len(digest) != 64
-                    or any(char not in "0123456789abcdef" for char in digest)):
-                raise ValueError("reference names an invalid manifest digest")
-            key = (own_cas, digest)
-            if key not in layouts:
-                blob = pb.PrismaBuildCAS(Path(own_cas)).blob_path(digest)
-                proof = extent_digest(blob)
-                if proof is None or proof[0] != digest:
-                    raise ValueError(f"reference manifest {digest} is unreadable")
-                layout = staged_path.manifest_layout_for(own_cas, digest)
-                if layout is None:
-                    raise ValueError(f"reference manifest {digest} is invalid")
-                layouts[key] = layout
-            prefix, entries = layouts[key]
-            start = value.get("range_start_bytes", 0)
-            end = value.get("range_end_bytes",
-                            sum(int(entry["bytes"]) for entry in entries))
-            if (staged_path.bounded_int(start) is None
-                    or staged_path.bounded_int(end) is None or end < start):
-                raise ValueError("reference names an invalid extent")
-            for entry in manifest_layout.entries_between(entries, start, end):
-                relative = staged_path.stage_relative(
-                    str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
-                    mount_prefix=prefix)
-                named.update(str(root / relative) for root in roots)
+            provenance = {"record_path": str(origin), "manifest_sha256": digest}
+            try:
+                if (not isinstance(digest, str) or len(digest) != 64
+                        or any(char not in "0123456789abcdef" for char in digest)):
+                    raise ValueError("reference names an invalid manifest digest")
+                key = (own_cas, digest)
+                if key not in layouts:
+                    blob = pb.PrismaBuildCAS(Path(own_cas)).blob_path(digest)
+                    proof = extent_digest(blob)
+                    if proof is None or proof[0] != digest:
+                        raise ValueError(f"reference manifest {digest} is unreadable")
+                    layout = staged_path.manifest_layout_for(own_cas, digest)
+                    if layout is None:
+                        raise ValueError(f"reference manifest {digest} is invalid")
+                    layouts[key] = layout
+                prefix, entries = layouts[key]
+                start = value.get("range_start_bytes", 0)
+                end = value.get("range_end_bytes",
+                                sum(int(entry["bytes"]) for entry in entries))
+                if (staged_path.bounded_int(start) is None
+                        or staged_path.bounded_int(end) is None or end < start):
+                    raise ValueError("reference names an invalid extent")
+                paths = set()
+                for entry in manifest_layout.entries_between(entries, start, end):
+                    relative = staged_path.stage_relative(
+                        str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
+                        mount_prefix=prefix)
+                    paths.update(str(root / relative) for root in roots)
+                named.update(paths)
+                census.references.append({**provenance, "paths": sorted(paths)})
+            except (OSError, ValueError, TypeError, KeyError,
+                    pool.PoolContractError, pb.PrismaBuildError) as exc:
+                # Layout uncertainty is never an empty read-set. Only an
+                # input mover's own destination contract supplies a bound;
+                # neither positive hints nor a consumer tier can supply one.
+                scope = bound if bound is not None else roots
+                census.refusals.append({
+                    **provenance, "scope": sorted({str(root) for root in scope}),
+                    "reason": str(exc) or type(exc).__name__,
+                })
         for item in value.values():
             if isinstance(item, (dict, list)):
-                manifests(item, own_cas)
+                # A parent mover's destination says nothing about nested
+                # documents' source-read obligations.
+                manifests(item, own_cas, origin)
 
-    def record(path):
+    def mover_bound(value):
+        if (value.get("schema") != pool.POOL_MOVE_SCHEMA_V1
+                or "ram_root" in value or "source_stage_root" in value):
+            return None
+        root = value.get("stage_root")
+        if (not isinstance(root, str) or not root.startswith("/")
+                or ".." in Path(root).parts):
+            return None
+        try:
+            path = Path(root)
+            return (path, path.resolve())
+        except (OSError, ValueError, RuntimeError):
+            return None
+
+    def record(path, *, mover=False):
         value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
         if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
             raise ValueError(f"{path}: reference record is unreadable")
         direct(value)
         own_cas = str(cas_root or value.get("cas_root") or queue.root.parent / "cas")
-        manifests(value, own_cas)
+        manifests(value, own_cas, path, mover_bound(value) if mover else None)
         return value, own_cas
 
     def tree(root):
@@ -739,7 +784,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
     for root in (queue.root / pool.record_store.MOVERS, queue.root / pool.record_store.MOVERS_RETIRED,
                  residency_plan.registry_root(queue)):
         for path in tree(root):
-            record(path)
+            record(path, mover=root != residency_plan.registry_root(queue))
     for path in tree(Path(residency_root or queue.root / pool.record_store.RESIDENCY)):
         value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
         if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
@@ -755,7 +800,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             if request is None:
                 raise ValueError(f"{path}: {why}")
             direct(request)
-            manifests(request.get("params"), own_cas)
+            manifests(request.get("params"), own_cas, path)
     ledger = queue.tier(tier_id)
     for key in ledger.holders():
         if not ledger.holdings(key).get('stage_gib', 0):
@@ -766,11 +811,12 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
         )
         if isinstance(receipt, dict):
             direct(receipt)
-            manifests(receipt, str(cas_root or queue.root.parent / "cas"))
+            manifests(receipt, str(cas_root or queue.root.parent / "cas"),
+                      queue.records.move_path(key), mover_bound(receipt))
             if receipt.get("manifest_sha256") or receipt.get("entries"):
                 continue
         raise ValueError(f"{key}: held stage scope is unreadable")
-    return named
+    return census
 
 
 def _proof_current(pair: dict[str, object], stage: Path) -> None:
@@ -1015,6 +1061,14 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 receipt["movers_in_flight"] = list(verdict.movers_in_flight)
             return receipt
         attributed = set(verdict.paths)
+        receipt["reference_refusals"] = []
+
+        def _include_references(census: _ReferenceCensus) -> None:
+            attributed.update(census.protected_paths)
+            for refusal in census.refusals:
+                if refusal not in receipt["reference_refusals"]:
+                    receipt["reference_refusals"].append(refusal)
+
         try:
             # Read, not used per file: the ledger names action keys,
             # never paths, so it cannot attribute a copy. The read
@@ -1027,9 +1081,9 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             receipt["errors"] = [f"ledger_unreadable: {exc}"]
             return receipt
         try:
-            attributed |= _reference_census(
+            _include_references(_reference_census(
                 queue, stage=stage, tier_id=tier_id, cas_root=cas_root,
-                residency_root=residency_root)
+                residency_root=residency_root))
         except (OSError, pool.PoolContractError, pb.PrismaBuildError,
                 ValueError, TypeError) as exc:
             receipt["skipped"] = "reference_census_unreadable"
@@ -1244,7 +1298,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                 fresh = _reference_census(
                     queue, stage=stage, tier_id=tier_id, cas_root=cas_root,
                     residency_root=residency_root)
-                attributed.update(fresh)
+                _include_references(fresh)
                 if (_named(rel) or staged_path.movers_in_flight(
                         queue, tier_id=tier_id)):
                     raise ValueError("reference changed")
