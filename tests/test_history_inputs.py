@@ -626,8 +626,7 @@ class _HistoryGuard:
         suppressed, errors = set(), set()
         # Compound statements span other statements; only the smallest owning
         # statement can own a trailing comment. AST columns are UTF-8 bytes.
-        statements = [node for node in ast.walk(self.tree) if isinstance(node, ast.stmt)
-                      and not hasattr(node, 'body')]
+        statements = {node for node in ast.walk(self.tree) if isinstance(node, ast.stmt)}
         owners = {}
         for launch in launches:
             parent = self.parents.get(launch)
@@ -1021,6 +1020,23 @@ def test_history_guard_pragma_precision(source, bad_lines, pragma_lines):
     sites = history_read_sites(source)
     assert sorted(line for line, verb, _ in sites if verb != 'pragma') == bad_lines
     assert sorted(line for line, verb, _ in sites if verb == 'pragma') == pragma_lines
+
+
+@pytest.mark.parametrize("header", [
+    'if subprocess.run(["git","show","fixture:file"]):',
+    'for line in subprocess.check_output(["git","show","fixture:file"]):',
+    'with subprocess.Popen(["git","show","fixture:file"]) as child:',
+])
+def test_history_guard_pragma_on_compound_statement_header(header):
+    source = header + '  # pb-history-ok: Reads fixture-created repository objects.\n pass'
+    assert not history_read_sites(source)
+
+
+def test_history_guard_pragma_on_non_git_header_is_stale():
+    source = ('if ready:  # pb-history-ok: Reads fixture-created repository objects.\n'
+              ' subprocess.run(["git","show","deadbeef:file"])')
+    sites = history_read_sites(source)
+    assert [(line, verb) for line, verb, _ in sites] == [(1, 'pragma'), (2, 'show')]
 
 
 @pytest.mark.parametrize("capture, use, finding", [
