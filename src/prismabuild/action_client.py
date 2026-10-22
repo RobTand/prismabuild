@@ -305,6 +305,8 @@ class ClientReport:
 
 
 #: Public detach records can be read by another published runtime generation.
+from .submission_timing import submission_phase_snapshot
+
 DETACH_SCHEMA_V1 = 'prismaquant.prismabuild.pbrun_detach.v1'
 
 
@@ -331,7 +333,7 @@ def detached_submission_record(
     the ending of a run that finished last week."""
     queue = Path(queue_root)
     return dict(schema=DETACH_SCHEMA_V1, action_key=str(key), transport=str(transport),
-        status=str(status), published_unix=published_unix,
+        status=str(status), published_unix=published_unix, phases=submission_phase_snapshot(),
         job_id=str(job_id) if job_id is not None else None,
         submission=str(submission) if submission is not None else None,
         done=str(queue / pool.DONE / f'{key}.json'),
@@ -827,7 +829,9 @@ def await_pool_outcome(
             observe, generation=generation, patience=patience,
             profile=action_wait.AwaitProfile.SYNCHRONOUS,
             tool='pbrun', subject=f'pool outcome for {key[:12]}',
-            notice=notice if notice is not None else lambda _event: None)
+            notice=notice if notice is not None else lambda _event: None,
+            bell=(None if isinstance(patience, action_wait.ProbeOnce)
+                  else action_wait.queue_bell.Client(q.records.root)), bell_key=key)
         ending = ClientEnding(_pool_client_verdict(key, result), history.snapshot())
     return PoolClientOutcome(key, result, ending, host)
 

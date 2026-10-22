@@ -295,6 +295,67 @@ Both new verbs return 0 on success and 1 on refusal, with
 with their input ID and digest. Invalid usage exits 2. Attached publication
 returns the action's ending or the ordinary wait failure code.
 
+### Identify a slow submission (#1936)
+
+Successful seal and detached submission JSON includes `phases`, for example
+`{"checkout_identity": 0.4, "bundle_pack": 2.1, "cas_stage": 8.2,
+"cas_write": 1.3, "transition_lock_wait": 12.0, "queue_publication": 0.6}`.
+A phase appears only when reached. Durations are monotonic seconds, accumulated
+across repeated spans, with nested work excluded from its parent. A phase span
+lasting at least one second also prints `pbrun: submission phase NAME took Ns`
+on stderr. Phase values contain no command or environment data.
+
+`--publish-sealed KEY --detach` records this publication's `sealed_request_read`
+and `cas_input_verify`, then the ordinary CAS, offer, gate and publication phases.
+It does not repeat or report checkout preparation. The queue retains the
+publisher's `phases` through claim, immutable attempt and terminal publication.
+An attachment's response describes the attaching call; it does not overwrite
+the publisher's timing. READY samples immediately before its single ordinary
+write. It excludes that write, later readback, acknowledgement verification
+and floor cleanup; timing adds no READY write or fsync. The response and client
+phase-end events include completed publication and acknowledgement verification.
+`filesystem_floor` labels window entry and cleanup, including a disabled-mode
+read. `acknowledgement_verify` labels the detached response's CAS request check
+and refreshes its response sample. Snapshot `lock_wait` covers flock acquisition
+and retries, while owner-file I/O stays in `bundle_pack`. Diagnostic output
+failures do not interrupt submission or leak acquired locks.
+
+Exact supersession decisions keep their original five fields. Wait rows obtain
+timing from retained evidence for the original publication, never its successor.
+An unavailable diagnostic sample stays empty without changing the decision.
+
+Read the slowest recorded submission phase from an ending:
+
+```python
+row = endings_json["endings"][0]  # pbwait --endings --wait-s 0 KEY
+phases = row.get("phases", {})
+slow = max(phases, key=phases.get) if phases else None
+text = f"submission phase {slow}: {phases[slow]:.3f}s" if slow else "submission timing unavailable"
+```
+
+Legacy `pbwait --json` exposes the same field at `rows[0]["phases"]`.
+Records predating timing remain readable and expose an empty object.
+The schema IDs and shard verdict schema do not change.
+
+For an interrupted submit, drain `--client-events-fd FD` continuously. The
+writable FD must be a pipe. Accept `event: "phase"` alongside the unchanged
+`identity` and `ending` events. Each phase start is flushed before work:
+
+```json
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"started","seconds":null}
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"finished","seconds":12.0}
+```
+
+Keep a stack of started phases, removing its last entry on each finish. At a
+submit timeout, the stack's last entry names the current phase. Keep the last
+start separately when the stack is empty; it names the last work entered, not
+a current wait. Sum finished `seconds` by phase to find the slowest completed
+phase. A kill can prevent a finish event or submission record. The channel is
+bounded and nonblocking, so missing events are unavailable evidence. The PB
+channel decoder retains `last_phase` and completed `phases` without changing
+identity, ending or recovery interpretation; strict older event parsers need
+the additive phase variant before consuming a new client.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.
@@ -985,6 +1046,28 @@ preemption in its NOTE, and the withdrawal in the endings table reads
 immutable withdrawal decision under
 `withdrawn/decisions/<key>/<generation>.json` carries it too.
 
+Idle-GPU hosts prefer restartable portable CPU rows (#1929). An idle GPU has
+no PB GPU reservation, a fresh trusted GPU sample with no foreign process,
+and no eligible READY GPU row. A vLLM serve counts as GPU use. CPU-only hosts
+record `deferred_for_idle_gpu_host` for at most 20 seconds, then claim normally.
+While the GPU is used or GPU work is pending, #1262 and #1526 still apply.
+Leave portable work untagged; hostname and architecture tags keep their meaning.
+
+GPU work may reclaim CPU guests across priority bands when the host's denial
+says `drain_resolves: true`, including adaptive CPU `host_pressure`. The normal
+preemption lock, withdrawal ladder and cleanup apply. The lowest priority,
+most recently started guest yields first, with one release completed before
+the next handoff. Pinned rows never yield as guests. Pool CPU pbtest shards now
+seal `retry_safe: true`, `retry_scope: "interruption"`, and `max_attempts: 3`.
+Worker-reported failures end on the first attempt; interruptions and lease loss
+may rerun within the budget. This also permits ordinary #364 preemption of
+retry-safe -10 shards, including pinned CPU shards. Each interruption consumes
+one launch. After two, an exhausted guest records `guest_retry_budget_exhausted`
+while a live matching CPU-only host has not passed on it, even if full.
+Otherwise it may run on a GPU host as a non-guest. Nonrestartable portable work
+keeps #1262's existing overflow behavior. Waiters follow the ordinary lineage below.
+This source behavior still needs publication and a live fleet canary.
+
 A submitter waiting on a preempted action is not told it was withdrawn. The
 requeue is a new generation, and a waiter names the generation it submitted, so
 `pbrun` follows a cancellation stamped `preempted_by` to the generation the
@@ -1063,6 +1146,97 @@ native threads per process; admission cannot infer those needs from argv.
 
 ## Wait, detach, and give up
 
+Pool waits use the queue-host bell when available (#1894), without CLI changes.
+The waiter reads a cursor, checks the record, then long-polls for that key's
+outcome-input changes, including nested publication endings, withdrawals,
+attempts and cleanup updates in claimed/terminal records. Every reply causes
+a record recheck; bell messages
+are only hints. Restarts and lost history cause a reset and rescan. If the bell
+is unavailable, rechecks back off from 0.25 seconds to a five-second cap inside
+the original wait deadline. SLURM discovery still uses this backoff because its
+service cannot call back. Zero-patience probes contact no bell.
+
+The roster declares one `bell` role on dl380g10, supervised by
+`tools/fleet/supervise.py --ensure --systemd`. Publication and activation are
+operator steps; source inclusion alone does not establish a running service.
+It listens on TCP 9470 at exactly 127.0.0.1, 10.100.98.3, 10.100.99.3 and
+192.168.1.107, declared in the roster. The Sparks and Celestia discover their
+address from their own `/mnt/shared` mount source. Inspect `pb-role-bell.log`
+alongside other supervised role logs.
+Clients also identify their queue path; a bell serving another queue returns
+unavailable, so scratch queues retain bounded fallback.
+`GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
+300 seconds; a restart changes epoch. An occupied port, unavailable listen
+address, or missing queue root or required state directory at startup exits 3
+with a named reason and uses the supervisor's existing refusal backoff.
+Listeners bind before watches and scanning; cursors are served only after
+startup completes. A lost state-directory watch after startup exits 1 for
+prompt restart. A published bell watches the active `repo` link and exits
+on retirement, including rollback to a generation without a bell role. Stop
+joins tracked request threads after waking their long-polls. Incomplete headers
+have an absolute five-second budget. At most 128 connections across all listeners
+are served; overload returns 503 and clients use unavailable-callback backoff.
+Client connect, headers and body share the original patience. Repeated immediate
+empty/reset replies also use the capped backoff.
+
+Bell v2 is additive (#1939). Existing live pbwait/pbrun/pbtest clients continue
+using v1. Source inclusion does not activate v2 consumers. Before enabling one,
+query `/v2/now` with its exact `X-PrismaBuild-Queue` header and verify every
+required topic in `coverage.topics`. Preserve its `coverage.version` with the
+epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
+503. An old bell's 404 or a partial topic set requires degraded recovery.
+
+Initially, v2 covers only `ready`, `claimed`, `done`, `failed`, `withdrawn`,
+`deferred`, `intent`, `attempts` and `publication-endings`. IDs for those topics
+are lowercase 64-hex action keys. Later adapters declare their own bounded ID
+grammars. Wait filters accept at most 32 topic entries and 128 ID entries, with
+64-character topic and 128-character ID limits. Empty filters select all
+available topics or IDs. Unknown topics do not grant coverage. Invalid filters
+return 400. V1 filters and response bodies remain unchanged.
+
+V2 wait replies contain typed `{seq, topic, id}` hints. `reset: true` and its
+`reason` invalidate derived completeness on coverage change, partial coverage,
+restart, future cursor, ring loss, overflow or shutdown. Failed watch recovery
+never advertises complete coverage. Required roots are opened and watched
+explicitly without following links; missing or symlinked roots during startup or
+reconstruction exit 3 through the supervisor's refusal backoff. Coverage requires
+installed root watches. An absent optional namespace uses its watched parent as
+an absence proof; an existing symlink cannot use that proof. Lazy installation
+withdraws the affected topic and advances the v2 history-reset marker after
+scanning, so a descendant observed and deleted before watch installation cannot
+leave stale derived state. The coverage version carries this marker without
+clearing v1 event history or changing its sequence behavior.
+Coverage returns only after successful installation. Diagnostics report retained ring entries,
+resets, coverage changes, subscriptions, active/capped connections and watch
+count. Inspect these when diagnosing fallback or watch exhaustion. Healthy
+renewals produce no per-request logs and perform no namespace discovery.
+
+The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
+one-second connect deadline and absolute five-second server I/O budget retain
+their existing values. A healthy empty v2 renewal renews transport only. The
+single-request v2 client has no retry/discovery loop; subsequent consumer
+slices must provide stop-interruptible 0.25-to-five-second unavailable-service
+backoff, including repeated immediate resets/empty replies. Complete stream
+recovery or stop cancels that backoff. No placement or claim rule changes here.
+
+Publish each consumer slice in a separate generation only after all its bell
+topics are live. TL owns publication approval, pbpublish's four canary legs and
+the 30-minute gate watch. The #1881 baseline remains the comparison: event-to-
+claim p50 at most one second, p95 no worse than the measured poll baseline,
+fallback claims resuming within 60 seconds of bell outage, and authoritative
+records without lost or double claims. Connection/watch budgets must follow
+measured demand; v2 adds no watch tree in this slice. Roll back through
+`pbpublish rollback` to the previous accepted generation.
+
+The service is unauthenticated on the listed private addresses. Peers can see
+action keys, state-directory names, timing and cursors; they cannot read record
+bodies or logs, submit, withdraw or change work through the bell.
+Host firewall rules must permit the submitting hosts to reach TCP 9470 at
+their queue mount sources before activation. PB does not install firewall
+configuration.
+This slice changes pbwait/pbrun pool waits only; worker, prewarm and tier-loop
+waits migrate in later PRs.
+
 By default `pbrun` waits. `--wait-s` bounds how long it waits and defaults to
 86400 seconds. It bounds only your patience: nothing is cancelled when it
 expires, and the job keeps running.
@@ -1072,7 +1246,7 @@ an isolated child with a five-second budget. The observation includes terminal
 rows, withdrawal/preemption lineage, and archived successor evidence; once an
 ending lands, immutable attempt and log verification gets one separate
 five-second budget before any result is printed. The parent retains the
-original `--wait-s` deadline across observations and does the polling sleep,
+original `--wait-s` deadline across observations and waits for queue hints,
 so a repeated preemption follows its exact generation without granting a fresh
 wait. `--wait-s 0` still makes one immediate bounded observation, and a
 timed-out read exits 74. A positive `--wait-s` never gives a read more time
@@ -2413,14 +2587,16 @@ before its partial reservation was returned. The displayed age matters: this
 is not a fresh capacity check or a promise of immediate admission after a
 release. It names the first failing resource; CPU borrowing and GPU sharing
 retain their admission rules. Older workers may omit this optional detail.
-`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
+`deferred_for_preferred_cpu`, `deferred_for_cross_resource_placement`, and
+`deferred_for_idle_gpu_host` are
 bounded placement preferences, not refusals: they age nothing and expire on
-their own after 20 seconds, so treat neither as starvation.
+their own after 20 seconds, so treat none as starvation.
 `deferred_for_cpu_only_host` is not a refusal either, and has no timer (#1262):
 a GPU host left a CPU-only row to a matching host without a GPU that fits it
 now (`cpu_host` names that host, its free tokens, observed capacity and
 `yielding_s`). It ends when that host claims the row, or passes on it (any
-published denial of the row by that host other than `transition_busy`), or
+published denial of the row by that host other than `transition_busy` or
+`deferred_for_idle_gpu_host`), or
 stops fitting or goes stale; then the GPU host claims it as before. It ages
 nothing.
 `deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
@@ -2611,8 +2787,8 @@ a cause the next step cannot see (#351).
     refusal: check the age before treating it as the reason the box is idle
     now. `reservation_unavailable`, `adaptive_cpu_refused` and the bounded
     placement preferences (`deferred_for_preferred_cpu`,
-    `deferred_for_cross_resource_placement`, which expire on their own after
-    20 seconds) are different verdicts with different next moves.
+    `deferred_for_cross_resource_placement`, and `deferred_for_idle_gpu_host`,
+    which expire on their own after 20 seconds) are different verdicts with different next moves.
 *   **Is the box still announcing?** An expired worker offer means the box
     stopped reaching its announcement -- which is what a loop wedged in a
     queue read does, and since #16 a loop that cannot finish its discovery
@@ -5810,6 +5986,13 @@ startup refusal with no offers. Unchanged offer heartbeats do not retry.
 Only success for the latest event clears; a stale probe cannot reopen a newer
 fence.
 
+Pending GPU measurement and gang elections on the fenced host temporarily
+stop blocking readiness and CPU work. Running holders and ambiguous reservation
+evidence remain protected. Elections are retained and regain their blocking
+authority when the fence clears. Every enabled broker watches CDI's parent
+directory from startup, including hosts that initially have neither CDI state
+nor the NVIDIA control device.
+
 The fixture tests exercise fake Docker state and temporary local inotify
 watches. They establish no live runtime repair, real GPU container launch,
 power-loss durability or installed-generation convergence. Deployment and its
@@ -6143,3 +6326,102 @@ owned drain. Preserve the failed fence evidence outside live state, even if the
 prior generation ignores it. Stop the private daemon and unmount its scratch CDI
 only after attempts and workers have settled. Never run these isolation teardown
 commands on the production fleet.
+
+## Capture an event-wait before/after pair (#1881)
+
+Take the **before** on the current runtime before publishing any event-wait
+change. `tools/maintenance/event_wait_baseline.py` is a checkout-only operator
+tool, intentionally outside `publish_runtime.py`'s runtime script allowlist.
+It changes no queue, admission, or role behavior. TL schedules the full baseline
+and matched-load after window; a short smoke is only collector validation.
+
+Run the collector through the published client on the queue's local host.
+Replace the uppercase arguments with current role PIDs and paths. Keep the same
+bounds, load, duration, architecture filters, and sampling cadence for both arms.
+Use disk-backed evidence storage, outside the runtime and queue.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd CHECKOUT --tag QUEUE_HOST --cpus 1 --demand mem_gb=1 \
+  --priority -10 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 \
+  --env OPENBLAS_NUM_THREADS=1 --timeout-s 420 -- \
+  /home/rob/venvs/pb-cpu/bin/python3.14 \
+  tools/maintenance/event_wait_baseline.py collect \
+  --queue QUEUE --role tier=TIER_PID --role prewarm=PREWARM_PID \
+  --role worker=WORKER_PID --denials CLAIM_DENIALS_JSON --tier-log TIER_LOG \
+  --x86-host X86_HOST --source-revision SOURCE_COMMIT --phase steady \
+  --duration-s 300 --sample-s 1 --load-note 'matched workload and cache state' \
+  --tree-size 'stage=COUNT:SOURCE' --output EVIDENCE/before.json
+```
+
+This observes the running fleet under its existing load. It does not reserve a
+quiet benchmark window or establish a speedup. Use `--measurement` for isolated
+wall-time experiments; that isolation suppresses concurrent claims and cannot
+represent loaded claim latency. Retain the PB terminal record, log, CAS receipt,
+printed summary, and raw JSON in the evidence handoff. Change `before.json` to
+`after.json` for the second arm. Run the same tool's `analyze RAW.json` through
+PB to recompute nearest-rank p50/p95/p99 from the retained observations.
+
+The collector lists only `ready/` and `claimed/`, once, at most 513 names each
+with the default 512-entry bound. Counts marked incomplete are lower bounds.
+Local inotify supplies subsequent keys, including terminal changes; historical
+`done/` and `failed/` are never enumerated. Defaults cap selected keys at 2,048,
+retained queue record versions plus tier-log events at 20,000, total reads at
+64 MiB, individual records/log lines at 256 KiB, and linked immutable attempts
+at 16 per record. Reports retain every hit bound and watch/read failure. Such
+limits can censor the sample; increase
+explicit bounds for both arms or shorten the window. Tree counts supplied with
+`--tree-size` must include their source; unknown sizes remain unknown.
+
+Latency uses `(action_key, published_unix, attempt)`. It reports first-attempt
+publication-to-claim separately from retries, backlog and unclaimed/censored
+publications, without assigning missing claims zero latency. Hosts/tags select
+x86 evidence explicitly. Cross-host wall clocks must be synchronized; the tool
+records that assumption, rejects negative latencies, and does not verify NTP.
+Monotonic deltas determine process rates. Cgroup counters are raw scope context
+and may include several roles; do not add them to per-process counters.
+
+The drain report measures first explicit drain-relevant refusal to eligibility
+in the same host/publication/attempt episode, only when refusal count one was
+observed. `worker_loop` waits at most one second with a nonempty queue;
+`drain_policy` ordinarily becomes eligible at `passes + 1 >= 3`. Real scans and
+shared refusal counters affect the elapsed window. Latest-only diagnostics can
+omit observations, especially early adaptive refusals. Left/right censoring
+remains explicit and no configured interval is reported as a measured window.
+Measurement/GPU shortcuts can already be eligible at the first observation.
+
+Capture cold start in a separate `--phase cold-start` window scheduled around
+an independently authorized role start. Compare it with unchanged steady state.
+The tool records role command/generation paths, uptime, local load and its own
+CPU/read overhead; its phase label does not restart roles or flush caches.
+
+`/proc/PID/io` supplies physical `read_bytes`, logical `rchar`, and read/write
+syscall counts. It cannot count all syscalls. For optional total syscall counts,
+run `trace --pid TIER_PID --seconds 5 --output EVIDENCE/trace.json` in a separate
+admitted action, away from latency collection. Attachment failures or missing
+`strace` are retained; the tool never invokes sudo. Measure tracing overhead
+with separate matched runs before using traced timings.
+
+For recorded-input decision comparison, supply `--tier-log` with the tier loop's
+stdout JSONL log. Capture begins at its current end, not at historical rows.
+The raw `tier_events` array retains **all named events in wire order**, including
+flat `ram-window-gated`, `window-gated`, eviction, funding and mover-publication
+events; those decisions are not nested in `tier-cycle`. Diagnostics, lifecycle
+events and cycle summaries are also kept, so new policy event names cannot be
+silently omitted. `tier_cycles` remains the summary-only view used by analysis.
+
+`compare LEFT RIGHT` checks the full recorded/replayed event stream and cycle
+accounting exactly, preserving event order, duplicates and every payload field.
+Only each event's top-level emission `unix` is ignored. Decision deadlines such
+as `expected_landing_unix`, nested times, and standing-verdict history
+(`verdict_since_unix`, `waited_s`) are **not** normalized; replay must control
+clocks and history as well as policy inputs. Both captures must include cycle
+accounting and non-summary events. Legacy/summary-only captures still support
+`analyze`, but cannot establish parity. Any hit bound, malformed/truncated log,
+rotation, or read/watch error also prevents a parity result: `equal: false` with
+nonempty `unavailable` means insufficient evidence, not a proven policy change.
+With complete evidence, `equal: false` means a recorded event/accounting
+mismatch. This is strict log equality, not an input-equivalence verifier or a
+policy-coverage certificate; the experiment must establish identical inputs and
+exercise the decisions of interest. Unrelated live windows do not establish
+decision parity.

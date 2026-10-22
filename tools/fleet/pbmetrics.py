@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import socket
 import sys
@@ -1388,7 +1389,7 @@ def _serve(args: argparse.Namespace, *, refused: int) -> int:
 
 
 def _serve_requests(args: argparse.Namespace, *, refused: int,
-                    stop: threading.Event) -> int:
+                    stop) -> int:
     from prismabuild import role_session
 
     class CompletingServer(ThreadingHTTPServer):
@@ -1439,10 +1440,19 @@ def _serve_requests(args: argparse.Namespace, *, refused: int,
         _refusal_record("port-in-use", args, refused, holder_pid=holder,
                         holder_argv=argv)
         return refused
-    server.timeout = 0.1
     try:
-        while not stop.is_set():
-            server.handle_request()
+        with selectors.DefaultSelector() as selector:
+            selector.register(server, selectors.EVENT_READ)
+            selector.register(stop, selectors.EVENT_READ)
+            while not stop.is_set():
+                ready = selector.select()
+                if any(key.fileobj is stop for key, _ in ready):
+                    stop.wait(0)  # Drain native notifications for unrelated signals.
+                if stop.is_set():
+                    break
+                for key, _ in ready:
+                    if key.fileobj is server:
+                        server._handle_request_noblock()
     finally:
         server.server_close()
     completed = server.join_requests()

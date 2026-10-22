@@ -17,6 +17,7 @@ from prismabuild import submission
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,7 +77,7 @@ def test_a_wait_whose_deadline_passed_before_the_first_read_starts_none(
     clock = FakeClock(jumps={1: 2.0})
     budgets = _observe(monkeypatch, clock)
 
-    code = submit_core.action_client.report_pool_outcome(object(), KEY, wait_s=1.0)
+    code = submit_core.action_client.report_pool_outcome(_Queue(), KEY, wait_s=1.0)
     expired_at = 1002.0
 
     assert code == submit_core.action_client.GAVE_UP_EXIT
@@ -102,7 +103,7 @@ def test_no_read_gets_more_than_the_caller_has_left(
     clock = FakeClock(jumps={1: late_s})
     budgets = _observe(monkeypatch, clock)
 
-    assert submit_core.action_client.report_pool_outcome(object(), KEY, wait_s=wait_s) == submit_core.action_client.GAVE_UP_EXIT
+    assert submit_core.action_client.report_pool_outcome(_Queue(), KEY, wait_s=wait_s) == submit_core.action_client.GAVE_UP_EXIT
     assert budgets == pytest.approx(expected)
 
 
@@ -124,6 +125,7 @@ def _released(monkeypatch, clock: FakeClock) -> list[dict]:
 
 class _Queue:
     root = Path("/nonexistent-queue")
+    records = SimpleNamespace(root=root)
 
 
 def test_a_release_read_after_the_deadline_is_not_turned_into_a_probe(

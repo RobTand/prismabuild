@@ -1,0 +1,668 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "ce0aabadf6286c667465559cff157993fd42616b",
+  "ledger_commit": "2f8befb618fb846477b0f671ea62684155af7ded",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "ID-08",
+    "SM-01",
+    "INV-01",
+    "INV-08",
+    "INV-11",
+    "ACC-02",
+    "ACC-04"
+  ],
+  "source_commit": "73eeb59b7b2af624afd87df580a1f16a83c4a69a",
+  "review_status": "Round 2 prepared for PB lead review; no PR opened or merge performed.",
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1929",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1929",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "INV-08",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "INV-11",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "ACC-02",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      },
+      {
+        "id": "ACC-04",
+        "actions": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455",
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565",
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31",
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "outcome": "Requested 284-file selection ran on x86/python3.14 and ARM/python3.12. Scope-spy fixture corrected and its full file plus mandatory checks passed in both lanes; production src/tools trees unchanged after the broad runs. Main-proven TMPDIR and x86 xdist failures remain separate; 18 privileged map_files checks skipped per architecture. Exact counts/keys and readback are recorded below."
+      }
+    ],
+    "remaining_gaps": [
+      "No whole-requirement satisfaction is claimed; original ledger axes and target obligations are unchanged.",
+      "Runtime not published or deployed by this builder; worker convergence and published-runtime guest/GPU canary remain with the lead.",
+      "18 privileged native map_files checks per architecture remain unverified.",
+      "No live crash/recovery, staged-only campaign, performance or power-loss durability proof."
+    ],
+    "note": "Component source qualification only. The final broad source is 73eeb59b7b2af624afd87df580a1f16a83c4a69a; later test-only spy correction is 2f8befb618fb846477b0f671ea62684155af7ded."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "evidence": {
+    "runs": [
+      {
+        "run": "red-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/red-x86.json tests/test_gpu_evicts_cpu_guests.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/red-x86.sh",
+        "keys": [
+          "2e780354aa98fdf57cd1372402f698dc790ae5211a0cd8e520cb47031d285d31"
+        ],
+        "counts": {
+          "passed": 20,
+          "failed": 2,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "target-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 2 --max-clients 2 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/target-x86.json tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_pbrun_retry_contract.py tests/test_pool_attempt_history.py tests/test_local_scratch_measured_placement.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/target-x86.sh",
+        "keys": [
+          "dbcb674f5d38e4dbef37c8700b5dc7641c96cf05138a47c34aec8813e00cee9a",
+          "e0a768913a6ccc96c949fe25b47216a95f36316d6d7cfff7d1d104a412c018c5"
+        ],
+        "counts": {
+          "passed": 153,
+          "failed": 3,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "fixed-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 2 --max-clients 2 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/fixed-x86.json tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_pbrun_retry_contract.py tests/test_pool_attempt_history.py tests/test_local_scratch_measured_placement.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/fixed-x86.sh",
+        "keys": [
+          "6b59178de914da4ea606f3289c23faaf39babc835552b878a1da6de705cb8943",
+          "5d6595b2066780beea9e1fb03768ee202122b57244934d59e65e794ad93ce319"
+        ],
+        "counts": {
+          "passed": 156,
+          "failed": 2,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "suite-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 12 --max-clients 2 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/suite-x86.json tests/test_817_root_archive_review.py tests/test_a_chunk_never_cuts_a_manifest_entry.py tests/test_a_completed_own_copy_is_not_another_claimant.py tests/test_a_consumer_stages_only_to_its_refill_horizon.py tests/test_a_dead_producers_batches_and_paths_are_released.py tests/test_a_dead_producers_held_mover_is_retired.py tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py tests/test_a_divergent_ram_name_is_arbitrated_by_its_owners.py tests/test_a_divergent_staged_copy_never_loops_its_mover.py tests/test_a_drained_box_finishes_its_pending_claim_1403.py tests/test_a_failed_movers_partial_stays_under_its_reader.py tests/test_a_finished_copy_returns_the_rate_it_reserved.py tests/test_a_fixed_roster_derives_one_deterministic_exact_cover.py tests/test_a_hold_by_an_unknown_attempt_is_named.py tests/test_a_measurement_admits_its_own_spool_exports.py tests/test_a_measurement_consumers_movers_are_ordinary_movement_work.py tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py tests/test_a_mover_seals_a_movement_environment.py tests/test_a_movers_retries_and_determinism_are_its_own.py tests/test_a_produced_mover_seals_the_producers_checkout_snapshot.py tests/test_a_promotion_handoff_defers_its_source_retirement.py tests/test_a_range_decision_takes_its_censuses_once.py tests/test_a_rate_only_claim_is_not_a_copy.py tests/test_a_republished_key_keeps_one_terminal.py tests/test_a_restarted_promotion_adopts_its_own_copies.py tests/test_a_resubmitted_key_answers_by_generation.py tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py tests/test_a_stalled_mover_ends_no_progress.py tests/test_a_terminal_lead_is_named_in_the_denial.py tests/test_a_wedged_egress_ends_no_progress.py tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py tests/test_admitted_queue_fixture.py tests/test_an_arbitration_rereads_only_what_moved.py tests/test_an_egress_census_before_the_lock_decides_nothing.py tests/test_an_egress_declares_the_cpu_it_owns.py tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py tests/test_an_unreadable_terminal_directory_is_not_an_empty_one.py tests/test_an_unreadable_withdrawn_directory_is_not_an_empty_one.py tests/test_an_unverifiable_attempt_link_does_not_stop_the_reaper.py tests/test_audit_shared_cache_capacity_credit.py tests/test_batch_ledger_ownership.py tests/test_box_prune_1542.py tests/test_box_prune_race_1542.py tests/test_canary_foreign_load_exemption.py tests/test_canary_leg3_staged_read.py tests/test_checkout_recovery_1465.py tests/test_claim_arbitration_histories.py tests/test_claim_progresses_while_a_sibling_stalls.py tests/test_claim_requires_admission_1419.py tests/test_claimed_consumers_drain_a_tier_in_admission_order.py tests/test_cleanup_gate_covers_the_no_scope_path.py tests/test_cleanup_gate_fails_closed_and_visibly.py tests/test_consumed_origin_retirement.py tests/test_contained_deadline_profile.py tests/test_dead_owner_fragment_blocks_then_retires.py tests/test_dead_partial_done_owner_retires.py tests/test_decomposed_common_policies.py tests/test_decomposed_data_plan_ownership.py tests/test_deferred_action_edges.py tests/test_design_doc_line_references.py tests/test_duplication_baseline.py tests/test_fleet_membership_busy_resign.py tests/test_fleet_membership_join_resign.py tests/test_fleet_submit.py tests/test_fullstack_claim_retry_primitives.py tests/test_gang_demand_fence_claims_1579.py tests/test_gang_fence_backfill.py tests/test_gang_reservation_1517.py tests/test_gang_residency_members.py tests/test_gang_teardown_1517.py tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_lifecycle_claim_boundaries.py tests/test_lifecycle_facts.py tests/test_lifecycle_histories.py tests/test_lifecycle_real_scope.py tests/test_lifecycle_recovery_crashes.py tests/test_lifecycle_review_repairs.py tests/test_lifecycle_terminal_retirement_proof.py tests/test_local_resident_lifecycle.py tests/test_local_resident_locking.py tests/test_local_resident_stage2.py tests/test_local_scratch_host_kind.py tests/test_local_scratch_measured_placement.py tests/test_logical_task_data_manifests.py tests/test_manifest_rows_gain_residency_plans.py tests/test_measurement_drains_gpu_backfill.py tests/test_measurement_reservation_backfill_1419.py tests/test_measurement_reservation_undeclared_incumbent_1419.py tests/test_membership_handoff_carrier.py tests/test_membership_retry_continues_frozen_window.py tests/test_membership_retry_preserves_staged_action.py tests/test_missing_produced_input_terminal.py tests/test_n_consumers_of_one_range_share_one_copy.py tests/test_pbcampaign.py tests/test_pbgang_member_options_1517.py tests/test_pbmcp_movers.py tests/test_pbmcp_preemption.py tests/test_pbmcp_read_only.py tests/test_pbmcp_reader_lifecycle.py tests/test_pbmcp_receipts.py tests/test_pbmcp_tools.py tests/test_pbmcp_withdrawn_attempt_history.py tests/test_pbmergeq.py tests/test_pbrun_bounded_pool_wait.py tests/test_pbrun_cache_hit.py tests/test_pbrun_client_events.py tests/test_pbrun_container_lifecycle.py tests/test_pbrun_declared_memory.py tests/test_pbrun_declares_container_images.py tests/test_pbrun_exit_vocabulary.py tests/test_pbrun_host_class.py tests/test_pbrun_lost_claim_attribution.py tests/test_pbrun_outcome_verify_stale_lookup.py tests/test_pbrun_placement.py tests/test_pbrun_recovers_overwritten_generation.py tests/test_pbrun_residency_stage_submission.py tests/test_pbrun_retry_contract.py tests/test_pbrun_sealed_publication.py tests/test_pbrun_slurm_partition.py tests/test_pbrun_slurm_read_failure_headline.py tests/test_pbrun_slurm_record_write_failure.py tests/test_pbrun_spool_host_window.py tests/test_pbrun_supersession_after_preparation_1585.py tests/test_pbrun_withdrawal_reads_the_directory.py tests/test_pbstatus.py tests/test_pbtest.py tests/test_pbtest_attempt_temp_1542.py tests/test_pbtest_attempt_temp_expiry.py tests/test_pbtest_balances_shards_by_measured_duration.py tests/test_pbtest_bounds_every_test_it_shards.py tests/test_pbtest_bounds_resident_clients_1348.py tests/test_pbtest_capability_claim_eligibility.py tests/test_pbtest_capability_cohorts.py tests/test_pbtest_collection_owner_shard.py tests/test_pbtest_cpu_shards_declare_their_bound.py tests/test_pbtest_dependency_pins.py tests/test_pbtest_digest_owner_shard_1553.py tests/test_pbtest_empty_capability_union_1495.py tests/test_pbtest_exit_completion_1530.py tests/test_pbtest_fleet_data_needs_a_manifest.py tests/test_pbtest_gpu_options.py tests/test_pbtest_gpu_shards_declare_their_bound.py tests/test_pbtest_honours_collect_ignore_1304.py tests/test_pbtest_identifies_its_checkout_once.py tests/test_pbtest_incomplete_summary_1365.py tests/test_pbtest_interrupted_trace_1455.py tests/test_pbtest_native_directory_collection_1458.py tests/test_pbtest_outcomes_load_is_lazy_1554.py tests/test_pbtest_plan_only.py tests/test_pbtest_prints_its_action_keys.py tests/test_pbtest_program_fits_one_argument.py tests/test_pbtest_publishes_its_own_shards.py tests/test_pbtest_reconciles_outcomes.py tests/test_pbtest_records_skip_reasons.py tests/test_pbtest_recovers_unobserved.py tests/test_pbtest_reports_whether_pytest_ran.py tests/test_pbtest_requested_paths.py tests/test_pbtest_reserves_disk_metadata.py tests/test_pbtest_reserves_its_threads.py tests/test_pbtest_retries_an_offer_discovery_timeout.py tests/test_pbtest_sealed_basetemp_1469.py tests/test_pbtest_seals_interpreter_1462.py tests/test_pbtest_seals_its_shard_deadline.py tests/test_pbtest_streams_pbrun_lines.py tests/test_pbtest_tmp_retention_option_1535.py tests/test_pbtest_trace_pinned_procfs_reader_1550.py tests/test_pbtest_unobserved_outcome.py tests/test_pbtest_verdict_c26_vectors.py tests/test_pbtest_worker_threads_1192.py tests/test_pbtest_workers.py tests/test_pbtest_xdist_shared_skip_1220.py tests/test_pbwait.py tests/test_pbwait_bounded_observation.py tests/test_pbwait_summary_conflict.py tests/test_placement_prefers_resident_copy.py tests/test_pool.py tests/test_pool_ambiguous_holder_recovery.py tests/test_pool_attempt_history.py tests/test_pool_broker_disconnect.py tests/test_pool_claim_race_names_the_winner.py tests/test_pool_entomb_refusal.py tests/test_pool_finish_cleanup_retry.py tests/test_pool_finish_lost_race.py tests/test_pool_finish_tombstone.py tests/test_pool_holder_contradiction.py tests/test_pool_late_finisher.py tests/test_pool_late_scope.py tests/test_pool_maintenance.py tests/test_pool_placement_census.py tests/test_pool_preempts_a_background_holder.py tests/test_pool_publication_endings.py tests/test_pool_ready_late_finisher.py tests/test_pool_reaper_claim_identity.py tests/test_pool_reaper_lease_identity.py tests/test_pool_reaper_rereads_finish_pending.py tests/test_pool_releases_tokens_on_the_holder.py tests/test_pool_requeue_preserves_newer_generation.py tests/test_pool_requeue_shape.py tests/test_pool_requeue_staging_cleanup.py tests/test_pool_reset_record_rewrite.py tests/test_pool_reset_refusal.py tests/test_pool_reset_transport.py tests/test_pool_resource_scope.py tests/test_pool_retry_own_pending_finishes_1403.py tests/test_pool_unstarted_claim_is_released.py tests/test_pool_unstarted_late_finish.py tests/test_pool_withdraw.py tests/test_pool_withdraw_after_a_retry.py tests/test_pool_withdraw_detail.py tests/test_pool_withdraw_names_the_holder.py tests/test_pool_withdraw_successor_identity.py tests/test_pool_withdrawn_retention_1533.py tests/test_preemption_handoff_admission.py tests/test_preemption_is_visible_to_readers.py tests/test_preemption_review_boundaries.py tests/test_prelaunch_admission_1594.py tests/test_prelaunch_holder_audit_1594.py tests/test_prelaunch_tier_publish_1594.py tests/test_prepaid_writer_integration.py tests/test_produced_output_admission.py tests/test_produced_output_lifecycle.py tests/test_produced_output_lifecycle_r2.py tests/test_produced_output_scope.py tests/test_produced_output_tier_host_egress.py tests/test_publication_cached_absence_review.py tests/test_publication_canary_slot.py tests/test_publication_successor_review.py tests/test_publish_refuses_a_live_key.py tests/test_r6_tier_mutation_exclusion.py tests/test_readers_name_the_holder.py tests/test_ready_gpu_refusal_releases_cpu_admission.py tests/test_reaper_notes_the_fill_borrow_end.py tests/test_recompute_attempt_receipts.py tests/test_residency_is_derived_and_gates_admission.py tests/test_resident_sets_status.py tests/test_resumed_retry_authority.py tests/test_retained_worker_proxy.py tests/test_sample_profile.py tests/test_scratch_declaration_record.py tests/test_slurm_cache_hit_never_replaces_an_execution.py tests/test_slurm_lane.py tests/test_slurm_lane_sweeper.py tests/test_slurm_liveness.py tests/test_slurm_outcome_generation_order.py tests/test_slurm_outcome_records.py tests/test_slurm_submit_timeout.py tests/test_slurm_wait_outages.py tests/test_slurm_withdraw_siblings.py tests/test_slurm_withdrawal_generation.py tests/test_spent_output_retry_disposition.py tests/test_stage_stranded_funding_rolls_back_1555.py tests/test_stale_material_done_owner_retires.py tests/test_stale_mention_co_owner_cache.py tests/test_stale_mentions_partial_prune.py tests/test_submission_git_deadline_1888.py tests/test_submission_ownership_c14.py tests/test_submission_review_boundaries.py tests/test_terminal_stdout_is_bounded.py tests/test_tested_repository.py tests/test_the_arbitration_holds_through_main.py tests/test_the_handoff_owns_its_caller_boundaries.py tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py tests/test_the_reader_plan_measures_and_fails_open.py tests/test_the_sealed_ram_leg_is_chunked_per_phase.py tests/test_the_sealed_stage_leg_is_chunked_per_phase.py tests/test_the_submitted_window_pins_the_bytes_it_stages.py tests/test_the_window_publishes_only_what_the_stage_can_hold.py tests/test_tier_admission_is_off_by_default.py tests/test_uncharged_dead_owners_give_room_under_pressure.py tests/test_verified_action_result.py tests/test_withdraw_end_to_end.py tests/test_withdraw_generation.py tests/test_withdrawal_retires_the_plan_it_minted.py tests/test_withdrawn_and_receiptless_owners_are_retired.py tests/test_worker_disk_metadata_admission.py tests/test_worker_guards_read_their_own_records_by_name.py tests/test_worker_loop_cooperative_shutdown.py tests/test_worker_loop_reloads_unversioned.py tests/test_worker_loop_requires_known_receipts.py tests/test_worker_one_shot_obeys_the_stops.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/suite-x86.sh",
+        "keys": [
+          "549c6b355e57ef166bb9b4621448dd2b1f457dba4e3bac9efe75cf842c8f193d",
+          "afba2cdd5bd2aac19c0a96f3677bf8ecf24a2034f8f4059bed25fcdf3297a9a6",
+          "419a50a9bc6b95d26d62c3ec0bf1c0f9df31e0cdc8d9ae434c8b3a7571469e72",
+          "e572fef6e711bf7d00e733065f3c684d3899920e57b246b03ec8abaf6cbf0e5a",
+          "75115835f1f9e73e2c8c793690a4f86ae8728aef15a5931e97c59a5fe10c0c74",
+          "a67e4c770c2907420a9faccf4edac64adff238906bde97b31cf24cdc86e16c3f",
+          "8ac456a8e0503d850af2b5053010cb528f6f95da8be7bf6ed76d3e6e214cb3bf",
+          "c6d433ff7e7c0d5921fca85d404f8147d7dc0a5b1e9f8eb23a869f9318e2ea83",
+          "6b4a0da5946ae1783101ce839e2d6786564ec5a23ed63f4efcef4461d84e5c31",
+          "bae1b6ea13d3e877ba5cecb1291804be1bac586b49730e785ad8073538322683",
+          "2ac84e6e431ae23c162e1bb7dcae8c016984b699138fab953c3753ea048d5c12",
+          "66ab62002f6fbb04dc9a7bb853753c58a1ec71e39ccfceaf73fa7811047c7062"
+        ],
+        "counts": {
+          "passed": 4417,
+          "failed": 28,
+          "skipped": 18
+        }
+      },
+      {
+        "run": "suite-arm",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.12 --shards 12 --max-clients 2 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/suite-arm.json tests/test_817_root_archive_review.py tests/test_a_chunk_never_cuts_a_manifest_entry.py tests/test_a_completed_own_copy_is_not_another_claimant.py tests/test_a_consumer_stages_only_to_its_refill_horizon.py tests/test_a_dead_producers_batches_and_paths_are_released.py tests/test_a_dead_producers_held_mover_is_retired.py tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py tests/test_a_divergent_ram_name_is_arbitrated_by_its_owners.py tests/test_a_divergent_staged_copy_never_loops_its_mover.py tests/test_a_drained_box_finishes_its_pending_claim_1403.py tests/test_a_failed_movers_partial_stays_under_its_reader.py tests/test_a_finished_copy_returns_the_rate_it_reserved.py tests/test_a_fixed_roster_derives_one_deterministic_exact_cover.py tests/test_a_hold_by_an_unknown_attempt_is_named.py tests/test_a_measurement_admits_its_own_spool_exports.py tests/test_a_measurement_consumers_movers_are_ordinary_movement_work.py tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py tests/test_a_mover_seals_a_movement_environment.py tests/test_a_movers_retries_and_determinism_are_its_own.py tests/test_a_produced_mover_seals_the_producers_checkout_snapshot.py tests/test_a_promotion_handoff_defers_its_source_retirement.py tests/test_a_range_decision_takes_its_censuses_once.py tests/test_a_rate_only_claim_is_not_a_copy.py tests/test_a_republished_key_keeps_one_terminal.py tests/test_a_restarted_promotion_adopts_its_own_copies.py tests/test_a_resubmitted_key_answers_by_generation.py tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py tests/test_a_stalled_mover_ends_no_progress.py tests/test_a_terminal_lead_is_named_in_the_denial.py tests/test_a_wedged_egress_ends_no_progress.py tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py tests/test_admitted_queue_fixture.py tests/test_an_arbitration_rereads_only_what_moved.py tests/test_an_egress_census_before_the_lock_decides_nothing.py tests/test_an_egress_declares_the_cpu_it_owns.py tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py tests/test_an_unreadable_terminal_directory_is_not_an_empty_one.py tests/test_an_unreadable_withdrawn_directory_is_not_an_empty_one.py tests/test_an_unverifiable_attempt_link_does_not_stop_the_reaper.py tests/test_audit_shared_cache_capacity_credit.py tests/test_batch_ledger_ownership.py tests/test_box_prune_1542.py tests/test_box_prune_race_1542.py tests/test_canary_foreign_load_exemption.py tests/test_canary_leg3_staged_read.py tests/test_checkout_recovery_1465.py tests/test_claim_arbitration_histories.py tests/test_claim_progresses_while_a_sibling_stalls.py tests/test_claim_requires_admission_1419.py tests/test_claimed_consumers_drain_a_tier_in_admission_order.py tests/test_cleanup_gate_covers_the_no_scope_path.py tests/test_cleanup_gate_fails_closed_and_visibly.py tests/test_consumed_origin_retirement.py tests/test_contained_deadline_profile.py tests/test_dead_owner_fragment_blocks_then_retires.py tests/test_dead_partial_done_owner_retires.py tests/test_decomposed_common_policies.py tests/test_decomposed_data_plan_ownership.py tests/test_deferred_action_edges.py tests/test_design_doc_line_references.py tests/test_duplication_baseline.py tests/test_fleet_membership_busy_resign.py tests/test_fleet_membership_join_resign.py tests/test_fleet_submit.py tests/test_fullstack_claim_retry_primitives.py tests/test_gang_demand_fence_claims_1579.py tests/test_gang_fence_backfill.py tests/test_gang_reservation_1517.py tests/test_gang_residency_members.py tests/test_gang_teardown_1517.py tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_lifecycle_claim_boundaries.py tests/test_lifecycle_facts.py tests/test_lifecycle_histories.py tests/test_lifecycle_real_scope.py tests/test_lifecycle_recovery_crashes.py tests/test_lifecycle_review_repairs.py tests/test_lifecycle_terminal_retirement_proof.py tests/test_local_resident_lifecycle.py tests/test_local_resident_locking.py tests/test_local_resident_stage2.py tests/test_local_scratch_host_kind.py tests/test_local_scratch_measured_placement.py tests/test_logical_task_data_manifests.py tests/test_manifest_rows_gain_residency_plans.py tests/test_measurement_drains_gpu_backfill.py tests/test_measurement_reservation_backfill_1419.py tests/test_measurement_reservation_undeclared_incumbent_1419.py tests/test_membership_handoff_carrier.py tests/test_membership_retry_continues_frozen_window.py tests/test_membership_retry_preserves_staged_action.py tests/test_missing_produced_input_terminal.py tests/test_n_consumers_of_one_range_share_one_copy.py tests/test_pbcampaign.py tests/test_pbgang_member_options_1517.py tests/test_pbmcp_movers.py tests/test_pbmcp_preemption.py tests/test_pbmcp_read_only.py tests/test_pbmcp_reader_lifecycle.py tests/test_pbmcp_receipts.py tests/test_pbmcp_tools.py tests/test_pbmcp_withdrawn_attempt_history.py tests/test_pbmergeq.py tests/test_pbrun_bounded_pool_wait.py tests/test_pbrun_cache_hit.py tests/test_pbrun_client_events.py tests/test_pbrun_container_lifecycle.py tests/test_pbrun_declared_memory.py tests/test_pbrun_declares_container_images.py tests/test_pbrun_exit_vocabulary.py tests/test_pbrun_host_class.py tests/test_pbrun_lost_claim_attribution.py tests/test_pbrun_outcome_verify_stale_lookup.py tests/test_pbrun_placement.py tests/test_pbrun_recovers_overwritten_generation.py tests/test_pbrun_residency_stage_submission.py tests/test_pbrun_retry_contract.py tests/test_pbrun_sealed_publication.py tests/test_pbrun_slurm_partition.py tests/test_pbrun_slurm_read_failure_headline.py tests/test_pbrun_slurm_record_write_failure.py tests/test_pbrun_spool_host_window.py tests/test_pbrun_supersession_after_preparation_1585.py tests/test_pbrun_withdrawal_reads_the_directory.py tests/test_pbstatus.py tests/test_pbtest.py tests/test_pbtest_attempt_temp_1542.py tests/test_pbtest_attempt_temp_expiry.py tests/test_pbtest_balances_shards_by_measured_duration.py tests/test_pbtest_bounds_every_test_it_shards.py tests/test_pbtest_bounds_resident_clients_1348.py tests/test_pbtest_capability_claim_eligibility.py tests/test_pbtest_capability_cohorts.py tests/test_pbtest_collection_owner_shard.py tests/test_pbtest_cpu_shards_declare_their_bound.py tests/test_pbtest_dependency_pins.py tests/test_pbtest_digest_owner_shard_1553.py tests/test_pbtest_empty_capability_union_1495.py tests/test_pbtest_exit_completion_1530.py tests/test_pbtest_fleet_data_needs_a_manifest.py tests/test_pbtest_gpu_options.py tests/test_pbtest_gpu_shards_declare_their_bound.py tests/test_pbtest_honours_collect_ignore_1304.py tests/test_pbtest_identifies_its_checkout_once.py tests/test_pbtest_incomplete_summary_1365.py tests/test_pbtest_interrupted_trace_1455.py tests/test_pbtest_native_directory_collection_1458.py tests/test_pbtest_outcomes_load_is_lazy_1554.py tests/test_pbtest_plan_only.py tests/test_pbtest_prints_its_action_keys.py tests/test_pbtest_program_fits_one_argument.py tests/test_pbtest_publishes_its_own_shards.py tests/test_pbtest_reconciles_outcomes.py tests/test_pbtest_records_skip_reasons.py tests/test_pbtest_recovers_unobserved.py tests/test_pbtest_reports_whether_pytest_ran.py tests/test_pbtest_requested_paths.py tests/test_pbtest_reserves_disk_metadata.py tests/test_pbtest_reserves_its_threads.py tests/test_pbtest_retries_an_offer_discovery_timeout.py tests/test_pbtest_sealed_basetemp_1469.py tests/test_pbtest_seals_interpreter_1462.py tests/test_pbtest_seals_its_shard_deadline.py tests/test_pbtest_streams_pbrun_lines.py tests/test_pbtest_tmp_retention_option_1535.py tests/test_pbtest_trace_pinned_procfs_reader_1550.py tests/test_pbtest_unobserved_outcome.py tests/test_pbtest_verdict_c26_vectors.py tests/test_pbtest_worker_threads_1192.py tests/test_pbtest_workers.py tests/test_pbtest_xdist_shared_skip_1220.py tests/test_pbwait.py tests/test_pbwait_bounded_observation.py tests/test_pbwait_summary_conflict.py tests/test_placement_prefers_resident_copy.py tests/test_pool.py tests/test_pool_ambiguous_holder_recovery.py tests/test_pool_attempt_history.py tests/test_pool_broker_disconnect.py tests/test_pool_claim_race_names_the_winner.py tests/test_pool_entomb_refusal.py tests/test_pool_finish_cleanup_retry.py tests/test_pool_finish_lost_race.py tests/test_pool_finish_tombstone.py tests/test_pool_holder_contradiction.py tests/test_pool_late_finisher.py tests/test_pool_late_scope.py tests/test_pool_maintenance.py tests/test_pool_placement_census.py tests/test_pool_preempts_a_background_holder.py tests/test_pool_publication_endings.py tests/test_pool_ready_late_finisher.py tests/test_pool_reaper_claim_identity.py tests/test_pool_reaper_lease_identity.py tests/test_pool_reaper_rereads_finish_pending.py tests/test_pool_releases_tokens_on_the_holder.py tests/test_pool_requeue_preserves_newer_generation.py tests/test_pool_requeue_shape.py tests/test_pool_requeue_staging_cleanup.py tests/test_pool_reset_record_rewrite.py tests/test_pool_reset_refusal.py tests/test_pool_reset_transport.py tests/test_pool_resource_scope.py tests/test_pool_retry_own_pending_finishes_1403.py tests/test_pool_unstarted_claim_is_released.py tests/test_pool_unstarted_late_finish.py tests/test_pool_withdraw.py tests/test_pool_withdraw_after_a_retry.py tests/test_pool_withdraw_detail.py tests/test_pool_withdraw_names_the_holder.py tests/test_pool_withdraw_successor_identity.py tests/test_pool_withdrawn_retention_1533.py tests/test_preemption_handoff_admission.py tests/test_preemption_is_visible_to_readers.py tests/test_preemption_review_boundaries.py tests/test_prelaunch_admission_1594.py tests/test_prelaunch_holder_audit_1594.py tests/test_prelaunch_tier_publish_1594.py tests/test_prepaid_writer_integration.py tests/test_produced_output_admission.py tests/test_produced_output_lifecycle.py tests/test_produced_output_lifecycle_r2.py tests/test_produced_output_scope.py tests/test_produced_output_tier_host_egress.py tests/test_publication_cached_absence_review.py tests/test_publication_canary_slot.py tests/test_publication_successor_review.py tests/test_publish_refuses_a_live_key.py tests/test_r6_tier_mutation_exclusion.py tests/test_readers_name_the_holder.py tests/test_ready_gpu_refusal_releases_cpu_admission.py tests/test_reaper_notes_the_fill_borrow_end.py tests/test_recompute_attempt_receipts.py tests/test_residency_is_derived_and_gates_admission.py tests/test_resident_sets_status.py tests/test_resumed_retry_authority.py tests/test_retained_worker_proxy.py tests/test_sample_profile.py tests/test_scratch_declaration_record.py tests/test_slurm_cache_hit_never_replaces_an_execution.py tests/test_slurm_lane.py tests/test_slurm_lane_sweeper.py tests/test_slurm_liveness.py tests/test_slurm_outcome_generation_order.py tests/test_slurm_outcome_records.py tests/test_slurm_submit_timeout.py tests/test_slurm_wait_outages.py tests/test_slurm_withdraw_siblings.py tests/test_slurm_withdrawal_generation.py tests/test_spent_output_retry_disposition.py tests/test_stage_stranded_funding_rolls_back_1555.py tests/test_stale_material_done_owner_retires.py tests/test_stale_mention_co_owner_cache.py tests/test_stale_mentions_partial_prune.py tests/test_submission_git_deadline_1888.py tests/test_submission_ownership_c14.py tests/test_submission_review_boundaries.py tests/test_terminal_stdout_is_bounded.py tests/test_tested_repository.py tests/test_the_arbitration_holds_through_main.py tests/test_the_handoff_owns_its_caller_boundaries.py tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py tests/test_the_reader_plan_measures_and_fails_open.py tests/test_the_sealed_ram_leg_is_chunked_per_phase.py tests/test_the_sealed_stage_leg_is_chunked_per_phase.py tests/test_the_submitted_window_pins_the_bytes_it_stages.py tests/test_the_window_publishes_only_what_the_stage_can_hold.py tests/test_tier_admission_is_off_by_default.py tests/test_uncharged_dead_owners_give_room_under_pressure.py tests/test_verified_action_result.py tests/test_withdraw_end_to_end.py tests/test_withdraw_generation.py tests/test_withdrawal_retires_the_plan_it_minted.py tests/test_withdrawn_and_receiptless_owners_are_retired.py tests/test_worker_disk_metadata_admission.py tests/test_worker_guards_read_their_own_records_by_name.py tests/test_worker_loop_cooperative_shutdown.py tests/test_worker_loop_reloads_unversioned.py tests/test_worker_loop_requires_known_receipts.py tests/test_worker_one_shot_obeys_the_stops.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/suite-arm.sh",
+        "keys": [
+          "f070f7b4ae017bf75d36e5585ba4788b99d82b0739ed83a988d8254406d59059",
+          "5b177cb5a4cb564354e53531a640b7478302d2e58732b799000bd74a83906a1b",
+          "d9c52b4dc7c20c8f08e22c268b05ae5a2d4f70819d5fe7fa6715978171627f3c",
+          "97ff9ecad1986aad7c805eb7c1cee44b5c4b6f0445371bb391edb67bee7eaca5",
+          "435e6fb8cf41e0d3eb48cde5617fbb5241add37374c5640db744c742a8bf3f49",
+          "a96652614dc738a6edd5b1bdfadc3216e7d55cad4a693e46d2fabb161c30ff68",
+          "fa0cb17ad54a07b9716aae930805ae57af8a19c84aac27dea3cc62467d522f0d",
+          "360388303f5ec5f5df8c28dc675c39ddc3097931158a13bfe0498e40365c6b6e",
+          "2db754a2f4e3daca85abe88689c96c3ef65b10407572d66c6b31a2c731c3e1c7",
+          "f60b432cbf9f1336b8f265b914d30a0633081f4a3278f2a999c9432c81c99769",
+          "15a3a46ffeb9182cc2c894ccb08f44db7f11730c946a1a7e8b9b6bb6090b4ddf",
+          "c11642e5ebf8c879b915dcfe4f09b7bbb4ddbb4782113d460cf5c710feac90d0"
+        ],
+        "counts": {
+          "passed": 4408,
+          "failed": 37,
+          "skipped": 18
+        }
+      },
+      {
+        "run": "main-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/tmp/pb1929-r2-main --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/main-x86.json tests/test_batch_ledger_ownership.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/main-x86.sh",
+        "keys": [
+          "6999b1594dd3c4fc2f1bf204d4be6138944a054bad0fef1f2e476decda4f77f7"
+        ],
+        "counts": {
+          "passed": 18,
+          "failed": 1,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "main-arm",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/tmp/pb1929-r2-main --python /home/rob/venvs/pb-cpu/bin/python3.12 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/main-arm.json tests/test_batch_ledger_ownership.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/main-arm.sh",
+        "keys": [
+          "0f1e1df0667062b855d26200ed110e2a71084ed79cef2be032a7c5c2055b7823"
+        ],
+        "counts": {
+          "passed": 18,
+          "failed": 1,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "main-exit-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/tmp/pb1929-r2-main --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/main-exit-x86.json tests/test_pbtest_exit_completion_1530.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/main-exit-x86.sh",
+        "keys": [
+          "8755a8e65df2a91c8767f570e4f951ba9d63fff9c77e4383aaacf0fc091ec2b2"
+        ],
+        "counts": {
+          "passed": 30,
+          "failed": 1,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "final-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 12 --max-clients 3 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/final-x86.json tests/test_817_root_archive_review.py tests/test_a_chunk_never_cuts_a_manifest_entry.py tests/test_a_completed_own_copy_is_not_another_claimant.py tests/test_a_consumer_stages_only_to_its_refill_horizon.py tests/test_a_dead_producers_batches_and_paths_are_released.py tests/test_a_dead_producers_held_mover_is_retired.py tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py tests/test_a_divergent_ram_name_is_arbitrated_by_its_owners.py tests/test_a_divergent_staged_copy_never_loops_its_mover.py tests/test_a_drained_box_finishes_its_pending_claim_1403.py tests/test_a_failed_movers_partial_stays_under_its_reader.py tests/test_a_finished_copy_returns_the_rate_it_reserved.py tests/test_a_fixed_roster_derives_one_deterministic_exact_cover.py tests/test_a_hold_by_an_unknown_attempt_is_named.py tests/test_a_measurement_admits_its_own_spool_exports.py tests/test_a_measurement_consumers_movers_are_ordinary_movement_work.py tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py tests/test_a_mover_seals_a_movement_environment.py tests/test_a_movers_retries_and_determinism_are_its_own.py tests/test_a_produced_mover_seals_the_producers_checkout_snapshot.py tests/test_a_promotion_handoff_defers_its_source_retirement.py tests/test_a_range_decision_takes_its_censuses_once.py tests/test_a_rate_only_claim_is_not_a_copy.py tests/test_a_republished_key_keeps_one_terminal.py tests/test_a_restarted_promotion_adopts_its_own_copies.py tests/test_a_resubmitted_key_answers_by_generation.py tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py tests/test_a_stalled_mover_ends_no_progress.py tests/test_a_terminal_lead_is_named_in_the_denial.py tests/test_a_wedged_egress_ends_no_progress.py tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py tests/test_admitted_queue_fixture.py tests/test_an_arbitration_rereads_only_what_moved.py tests/test_an_egress_census_before_the_lock_decides_nothing.py tests/test_an_egress_declares_the_cpu_it_owns.py tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py tests/test_an_unreadable_terminal_directory_is_not_an_empty_one.py tests/test_an_unreadable_withdrawn_directory_is_not_an_empty_one.py tests/test_an_unverifiable_attempt_link_does_not_stop_the_reaper.py tests/test_audit_shared_cache_capacity_credit.py tests/test_batch_ledger_ownership.py tests/test_box_prune_1542.py tests/test_box_prune_race_1542.py tests/test_canary_foreign_load_exemption.py tests/test_canary_leg3_staged_read.py tests/test_checkout_recovery_1465.py tests/test_claim_arbitration_histories.py tests/test_claim_progresses_while_a_sibling_stalls.py tests/test_claim_requires_admission_1419.py tests/test_claimed_consumers_drain_a_tier_in_admission_order.py tests/test_cleanup_gate_covers_the_no_scope_path.py tests/test_cleanup_gate_fails_closed_and_visibly.py tests/test_consumed_origin_retirement.py tests/test_contained_deadline_profile.py tests/test_dead_owner_fragment_blocks_then_retires.py tests/test_dead_partial_done_owner_retires.py tests/test_decomposed_common_policies.py tests/test_decomposed_data_plan_ownership.py tests/test_deferred_action_edges.py tests/test_design_doc_line_references.py tests/test_duplication_baseline.py tests/test_fleet_membership_busy_resign.py tests/test_fleet_membership_join_resign.py tests/test_fleet_submit.py tests/test_fullstack_claim_retry_primitives.py tests/test_gang_demand_fence_claims_1579.py tests/test_gang_fence_backfill.py tests/test_gang_reservation_1517.py tests/test_gang_residency_members.py tests/test_gang_teardown_1517.py tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_lifecycle_claim_boundaries.py tests/test_lifecycle_facts.py tests/test_lifecycle_histories.py tests/test_lifecycle_real_scope.py tests/test_lifecycle_recovery_crashes.py tests/test_lifecycle_review_repairs.py tests/test_lifecycle_terminal_retirement_proof.py tests/test_local_resident_lifecycle.py tests/test_local_resident_locking.py tests/test_local_resident_stage2.py tests/test_local_scratch_host_kind.py tests/test_local_scratch_measured_placement.py tests/test_logical_task_data_manifests.py tests/test_manifest_rows_gain_residency_plans.py tests/test_measurement_drains_gpu_backfill.py tests/test_measurement_reservation_backfill_1419.py tests/test_measurement_reservation_undeclared_incumbent_1419.py tests/test_membership_handoff_carrier.py tests/test_membership_retry_continues_frozen_window.py tests/test_membership_retry_preserves_staged_action.py tests/test_missing_produced_input_terminal.py tests/test_n_consumers_of_one_range_share_one_copy.py tests/test_pbcampaign.py tests/test_pbgang_member_options_1517.py tests/test_pbmcp_movers.py tests/test_pbmcp_preemption.py tests/test_pbmcp_read_only.py tests/test_pbmcp_reader_lifecycle.py tests/test_pbmcp_receipts.py tests/test_pbmcp_tools.py tests/test_pbmcp_withdrawn_attempt_history.py tests/test_pbmergeq.py tests/test_pbrun_bounded_pool_wait.py tests/test_pbrun_cache_hit.py tests/test_pbrun_client_events.py tests/test_pbrun_container_lifecycle.py tests/test_pbrun_declared_memory.py tests/test_pbrun_declares_container_images.py tests/test_pbrun_exit_vocabulary.py tests/test_pbrun_host_class.py tests/test_pbrun_lost_claim_attribution.py tests/test_pbrun_outcome_verify_stale_lookup.py tests/test_pbrun_placement.py tests/test_pbrun_recovers_overwritten_generation.py tests/test_pbrun_residency_stage_submission.py tests/test_pbrun_retry_contract.py tests/test_pbrun_sealed_publication.py tests/test_pbrun_slurm_partition.py tests/test_pbrun_slurm_read_failure_headline.py tests/test_pbrun_slurm_record_write_failure.py tests/test_pbrun_spool_host_window.py tests/test_pbrun_supersession_after_preparation_1585.py tests/test_pbrun_withdrawal_reads_the_directory.py tests/test_pbstatus.py tests/test_pbtest.py tests/test_pbtest_attempt_temp_1542.py tests/test_pbtest_attempt_temp_expiry.py tests/test_pbtest_balances_shards_by_measured_duration.py tests/test_pbtest_bounds_every_test_it_shards.py tests/test_pbtest_bounds_resident_clients_1348.py tests/test_pbtest_capability_claim_eligibility.py tests/test_pbtest_capability_cohorts.py tests/test_pbtest_collection_owner_shard.py tests/test_pbtest_cpu_shards_declare_their_bound.py tests/test_pbtest_dependency_pins.py tests/test_pbtest_digest_owner_shard_1553.py tests/test_pbtest_empty_capability_union_1495.py tests/test_pbtest_exit_completion_1530.py tests/test_pbtest_fleet_data_needs_a_manifest.py tests/test_pbtest_gpu_options.py tests/test_pbtest_gpu_shards_declare_their_bound.py tests/test_pbtest_honours_collect_ignore_1304.py tests/test_pbtest_identifies_its_checkout_once.py tests/test_pbtest_incomplete_summary_1365.py tests/test_pbtest_interrupted_trace_1455.py tests/test_pbtest_native_directory_collection_1458.py tests/test_pbtest_outcomes_load_is_lazy_1554.py tests/test_pbtest_plan_only.py tests/test_pbtest_prints_its_action_keys.py tests/test_pbtest_program_fits_one_argument.py tests/test_pbtest_publishes_its_own_shards.py tests/test_pbtest_reconciles_outcomes.py tests/test_pbtest_records_skip_reasons.py tests/test_pbtest_recovers_unobserved.py tests/test_pbtest_reports_whether_pytest_ran.py tests/test_pbtest_requested_paths.py tests/test_pbtest_reserves_disk_metadata.py tests/test_pbtest_reserves_its_threads.py tests/test_pbtest_retries_an_offer_discovery_timeout.py tests/test_pbtest_sealed_basetemp_1469.py tests/test_pbtest_seals_interpreter_1462.py tests/test_pbtest_seals_its_shard_deadline.py tests/test_pbtest_streams_pbrun_lines.py tests/test_pbtest_tmp_retention_option_1535.py tests/test_pbtest_trace_pinned_procfs_reader_1550.py tests/test_pbtest_unobserved_outcome.py tests/test_pbtest_verdict_c26_vectors.py tests/test_pbtest_worker_threads_1192.py tests/test_pbtest_workers.py tests/test_pbtest_xdist_shared_skip_1220.py tests/test_pbwait.py tests/test_pbwait_bounded_observation.py tests/test_pbwait_summary_conflict.py tests/test_placement_prefers_resident_copy.py tests/test_pool.py tests/test_pool_ambiguous_holder_recovery.py tests/test_pool_attempt_history.py tests/test_pool_broker_disconnect.py tests/test_pool_claim_race_names_the_winner.py tests/test_pool_entomb_refusal.py tests/test_pool_finish_cleanup_retry.py tests/test_pool_finish_lost_race.py tests/test_pool_finish_tombstone.py tests/test_pool_holder_contradiction.py tests/test_pool_late_finisher.py tests/test_pool_late_scope.py tests/test_pool_maintenance.py tests/test_pool_placement_census.py tests/test_pool_preempts_a_background_holder.py tests/test_pool_publication_endings.py tests/test_pool_ready_late_finisher.py tests/test_pool_reaper_claim_identity.py tests/test_pool_reaper_lease_identity.py tests/test_pool_reaper_rereads_finish_pending.py tests/test_pool_releases_tokens_on_the_holder.py tests/test_pool_requeue_preserves_newer_generation.py tests/test_pool_requeue_shape.py tests/test_pool_requeue_staging_cleanup.py tests/test_pool_reset_record_rewrite.py tests/test_pool_reset_refusal.py tests/test_pool_reset_transport.py tests/test_pool_resource_scope.py tests/test_pool_retry_own_pending_finishes_1403.py tests/test_pool_unstarted_claim_is_released.py tests/test_pool_unstarted_late_finish.py tests/test_pool_withdraw.py tests/test_pool_withdraw_after_a_retry.py tests/test_pool_withdraw_detail.py tests/test_pool_withdraw_names_the_holder.py tests/test_pool_withdraw_successor_identity.py tests/test_pool_withdrawn_retention_1533.py tests/test_preemption_handoff_admission.py tests/test_preemption_is_visible_to_readers.py tests/test_preemption_review_boundaries.py tests/test_prelaunch_admission_1594.py tests/test_prelaunch_holder_audit_1594.py tests/test_prelaunch_tier_publish_1594.py tests/test_prepaid_writer_integration.py tests/test_produced_output_admission.py tests/test_produced_output_lifecycle.py tests/test_produced_output_lifecycle_r2.py tests/test_produced_output_scope.py tests/test_produced_output_tier_host_egress.py tests/test_publication_cached_absence_review.py tests/test_publication_canary_slot.py tests/test_publication_successor_review.py tests/test_publish_refuses_a_live_key.py tests/test_r6_tier_mutation_exclusion.py tests/test_readers_name_the_holder.py tests/test_ready_gpu_refusal_releases_cpu_admission.py tests/test_reaper_notes_the_fill_borrow_end.py tests/test_recompute_attempt_receipts.py tests/test_residency_is_derived_and_gates_admission.py tests/test_resident_sets_status.py tests/test_resumed_retry_authority.py tests/test_retained_worker_proxy.py tests/test_sample_profile.py tests/test_scratch_declaration_record.py tests/test_slurm_cache_hit_never_replaces_an_execution.py tests/test_slurm_lane.py tests/test_slurm_lane_sweeper.py tests/test_slurm_liveness.py tests/test_slurm_outcome_generation_order.py tests/test_slurm_outcome_records.py tests/test_slurm_submit_timeout.py tests/test_slurm_wait_outages.py tests/test_slurm_withdraw_siblings.py tests/test_slurm_withdrawal_generation.py tests/test_spent_output_retry_disposition.py tests/test_stage_stranded_funding_rolls_back_1555.py tests/test_stale_material_done_owner_retires.py tests/test_stale_mention_co_owner_cache.py tests/test_stale_mentions_partial_prune.py tests/test_submission_git_deadline_1888.py tests/test_submission_ownership_c14.py tests/test_submission_review_boundaries.py tests/test_terminal_stdout_is_bounded.py tests/test_tested_repository.py tests/test_the_arbitration_holds_through_main.py tests/test_the_handoff_owns_its_caller_boundaries.py tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py tests/test_the_reader_plan_measures_and_fails_open.py tests/test_the_sealed_ram_leg_is_chunked_per_phase.py tests/test_the_sealed_stage_leg_is_chunked_per_phase.py tests/test_the_submitted_window_pins_the_bytes_it_stages.py tests/test_the_window_publishes_only_what_the_stage_can_hold.py tests/test_tier_admission_is_off_by_default.py tests/test_uncharged_dead_owners_give_room_under_pressure.py tests/test_verified_action_result.py tests/test_withdraw_end_to_end.py tests/test_withdraw_generation.py tests/test_withdrawal_retires_the_plan_it_minted.py tests/test_withdrawn_and_receiptless_owners_are_retired.py tests/test_worker_disk_metadata_admission.py tests/test_worker_guards_read_their_own_records_by_name.py tests/test_worker_loop_cooperative_shutdown.py tests/test_worker_loop_reloads_unversioned.py tests/test_worker_loop_requires_known_receipts.py tests/test_worker_one_shot_obeys_the_stops.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/final-x86.sh",
+        "keys": [
+          "c8ee718e292359fbe3de607061fb6513f05d092c372ed80ab761778f7b7491c4",
+          "434d1ca88547ea7769e06388deb141ffecefede57d11a4ec0deb7346331dafed",
+          "fa36fcd44bad04ba40ef4ac32ab690e87db7174053eb1e3ba945f6e019251527",
+          "41876219d7583f7ef002c6f9c8d43ba4a491e42b0e1b0574da6ca61cf33187f8",
+          "2c73de08db93c59c576de79fc6cec487fd57a142e164bceb1e0dc20d9ac9aa34",
+          "00a99d5dd695e3dcf09b6bf27fb706c2c7e02224c58d556f6fef1a0f89eae5c3",
+          "308643905d903c86151f9f29b093b52748204c80d4e5f8c6dc64c4b2a9b670a3",
+          "aeaeff628ad5e8e78614a6d7f42f406ec52e35fdad95fb8138df895d64f77dac",
+          "f2bd766a9dc3f983ad5535135ffee12d43c97a39086ef0e08229e1c7dfef601a",
+          "659ba081a9a6a91469d17fdd0c7ca2a095f0296693137b3528ed34f555731276",
+          "cee3e0fc63d69201304be30b6df39c884b910c51ab3db9ea491660bb9fc89c78",
+          "a57f2c39a8a08789a6375d2670a093d8e19d3272c630c0489af2fd40dafef455"
+        ],
+        "counts": {
+          "passed": 4447,
+          "failed": 3,
+          "skipped": 18
+        }
+      },
+      {
+        "run": "final-arm",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.12 --shards 12 --max-clients 3 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/final-arm.json tests/test_817_root_archive_review.py tests/test_a_chunk_never_cuts_a_manifest_entry.py tests/test_a_completed_own_copy_is_not_another_claimant.py tests/test_a_consumer_stages_only_to_its_refill_horizon.py tests/test_a_dead_producers_batches_and_paths_are_released.py tests/test_a_dead_producers_held_mover_is_retired.py tests/test_a_decomposed_child_is_an_ordinary_sealed_action.py tests/test_a_divergent_ram_name_is_arbitrated_by_its_owners.py tests/test_a_divergent_staged_copy_never_loops_its_mover.py tests/test_a_drained_box_finishes_its_pending_claim_1403.py tests/test_a_failed_movers_partial_stays_under_its_reader.py tests/test_a_finished_copy_returns_the_rate_it_reserved.py tests/test_a_fixed_roster_derives_one_deterministic_exact_cover.py tests/test_a_hold_by_an_unknown_attempt_is_named.py tests/test_a_measurement_admits_its_own_spool_exports.py tests/test_a_measurement_consumers_movers_are_ordinary_movement_work.py tests/test_a_mover_is_sealed_at_one_copys_measured_rate.py tests/test_a_mover_seals_a_movement_environment.py tests/test_a_movers_retries_and_determinism_are_its_own.py tests/test_a_produced_mover_seals_the_producers_checkout_snapshot.py tests/test_a_promotion_handoff_defers_its_source_retirement.py tests/test_a_range_decision_takes_its_censuses_once.py tests/test_a_rate_only_claim_is_not_a_copy.py tests/test_a_republished_key_keeps_one_terminal.py tests/test_a_restarted_promotion_adopts_its_own_copies.py tests/test_a_resubmitted_key_answers_by_generation.py tests/test_a_retry_reclaims_its_dead_attempts_prewrite.py tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py tests/test_a_stalled_mover_ends_no_progress.py tests/test_a_terminal_lead_is_named_in_the_denial.py tests/test_a_wedged_egress_ends_no_progress.py tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py tests/test_admitted_queue_fixture.py tests/test_an_arbitration_rereads_only_what_moved.py tests/test_an_egress_census_before_the_lock_decides_nothing.py tests/test_an_egress_declares_the_cpu_it_owns.py tests/test_an_egress_holds_the_stage_lock_only_for_its_act.py tests/test_an_unproven_ending_is_refused_terminally_at_its_bound.py tests/test_an_unreadable_terminal_directory_is_not_an_empty_one.py tests/test_an_unreadable_withdrawn_directory_is_not_an_empty_one.py tests/test_an_unverifiable_attempt_link_does_not_stop_the_reaper.py tests/test_audit_shared_cache_capacity_credit.py tests/test_batch_ledger_ownership.py tests/test_box_prune_1542.py tests/test_box_prune_race_1542.py tests/test_canary_foreign_load_exemption.py tests/test_canary_leg3_staged_read.py tests/test_checkout_recovery_1465.py tests/test_claim_arbitration_histories.py tests/test_claim_progresses_while_a_sibling_stalls.py tests/test_claim_requires_admission_1419.py tests/test_claimed_consumers_drain_a_tier_in_admission_order.py tests/test_cleanup_gate_covers_the_no_scope_path.py tests/test_cleanup_gate_fails_closed_and_visibly.py tests/test_consumed_origin_retirement.py tests/test_contained_deadline_profile.py tests/test_dead_owner_fragment_blocks_then_retires.py tests/test_dead_partial_done_owner_retires.py tests/test_decomposed_common_policies.py tests/test_decomposed_data_plan_ownership.py tests/test_deferred_action_edges.py tests/test_design_doc_line_references.py tests/test_duplication_baseline.py tests/test_fleet_membership_busy_resign.py tests/test_fleet_membership_join_resign.py tests/test_fleet_submit.py tests/test_fullstack_claim_retry_primitives.py tests/test_gang_demand_fence_claims_1579.py tests/test_gang_fence_backfill.py tests/test_gang_reservation_1517.py tests/test_gang_residency_members.py tests/test_gang_teardown_1517.py tests/test_gpu_evicts_cpu_guests.py tests/test_idle_gpu_cpu_guests.py tests/test_lifecycle_claim_boundaries.py tests/test_lifecycle_facts.py tests/test_lifecycle_histories.py tests/test_lifecycle_real_scope.py tests/test_lifecycle_recovery_crashes.py tests/test_lifecycle_review_repairs.py tests/test_lifecycle_terminal_retirement_proof.py tests/test_local_resident_lifecycle.py tests/test_local_resident_locking.py tests/test_local_resident_stage2.py tests/test_local_scratch_host_kind.py tests/test_local_scratch_measured_placement.py tests/test_logical_task_data_manifests.py tests/test_manifest_rows_gain_residency_plans.py tests/test_measurement_drains_gpu_backfill.py tests/test_measurement_reservation_backfill_1419.py tests/test_measurement_reservation_undeclared_incumbent_1419.py tests/test_membership_handoff_carrier.py tests/test_membership_retry_continues_frozen_window.py tests/test_membership_retry_preserves_staged_action.py tests/test_missing_produced_input_terminal.py tests/test_n_consumers_of_one_range_share_one_copy.py tests/test_pbcampaign.py tests/test_pbgang_member_options_1517.py tests/test_pbmcp_movers.py tests/test_pbmcp_preemption.py tests/test_pbmcp_read_only.py tests/test_pbmcp_reader_lifecycle.py tests/test_pbmcp_receipts.py tests/test_pbmcp_tools.py tests/test_pbmcp_withdrawn_attempt_history.py tests/test_pbmergeq.py tests/test_pbrun_bounded_pool_wait.py tests/test_pbrun_cache_hit.py tests/test_pbrun_client_events.py tests/test_pbrun_container_lifecycle.py tests/test_pbrun_declared_memory.py tests/test_pbrun_declares_container_images.py tests/test_pbrun_exit_vocabulary.py tests/test_pbrun_host_class.py tests/test_pbrun_lost_claim_attribution.py tests/test_pbrun_outcome_verify_stale_lookup.py tests/test_pbrun_placement.py tests/test_pbrun_recovers_overwritten_generation.py tests/test_pbrun_residency_stage_submission.py tests/test_pbrun_retry_contract.py tests/test_pbrun_sealed_publication.py tests/test_pbrun_slurm_partition.py tests/test_pbrun_slurm_read_failure_headline.py tests/test_pbrun_slurm_record_write_failure.py tests/test_pbrun_spool_host_window.py tests/test_pbrun_supersession_after_preparation_1585.py tests/test_pbrun_withdrawal_reads_the_directory.py tests/test_pbstatus.py tests/test_pbtest.py tests/test_pbtest_attempt_temp_1542.py tests/test_pbtest_attempt_temp_expiry.py tests/test_pbtest_balances_shards_by_measured_duration.py tests/test_pbtest_bounds_every_test_it_shards.py tests/test_pbtest_bounds_resident_clients_1348.py tests/test_pbtest_capability_claim_eligibility.py tests/test_pbtest_capability_cohorts.py tests/test_pbtest_collection_owner_shard.py tests/test_pbtest_cpu_shards_declare_their_bound.py tests/test_pbtest_dependency_pins.py tests/test_pbtest_digest_owner_shard_1553.py tests/test_pbtest_empty_capability_union_1495.py tests/test_pbtest_exit_completion_1530.py tests/test_pbtest_fleet_data_needs_a_manifest.py tests/test_pbtest_gpu_options.py tests/test_pbtest_gpu_shards_declare_their_bound.py tests/test_pbtest_honours_collect_ignore_1304.py tests/test_pbtest_identifies_its_checkout_once.py tests/test_pbtest_incomplete_summary_1365.py tests/test_pbtest_interrupted_trace_1455.py tests/test_pbtest_native_directory_collection_1458.py tests/test_pbtest_outcomes_load_is_lazy_1554.py tests/test_pbtest_plan_only.py tests/test_pbtest_prints_its_action_keys.py tests/test_pbtest_program_fits_one_argument.py tests/test_pbtest_publishes_its_own_shards.py tests/test_pbtest_reconciles_outcomes.py tests/test_pbtest_records_skip_reasons.py tests/test_pbtest_recovers_unobserved.py tests/test_pbtest_reports_whether_pytest_ran.py tests/test_pbtest_requested_paths.py tests/test_pbtest_reserves_disk_metadata.py tests/test_pbtest_reserves_its_threads.py tests/test_pbtest_retries_an_offer_discovery_timeout.py tests/test_pbtest_sealed_basetemp_1469.py tests/test_pbtest_seals_interpreter_1462.py tests/test_pbtest_seals_its_shard_deadline.py tests/test_pbtest_streams_pbrun_lines.py tests/test_pbtest_tmp_retention_option_1535.py tests/test_pbtest_trace_pinned_procfs_reader_1550.py tests/test_pbtest_unobserved_outcome.py tests/test_pbtest_verdict_c26_vectors.py tests/test_pbtest_worker_threads_1192.py tests/test_pbtest_workers.py tests/test_pbtest_xdist_shared_skip_1220.py tests/test_pbwait.py tests/test_pbwait_bounded_observation.py tests/test_pbwait_summary_conflict.py tests/test_placement_prefers_resident_copy.py tests/test_pool.py tests/test_pool_ambiguous_holder_recovery.py tests/test_pool_attempt_history.py tests/test_pool_broker_disconnect.py tests/test_pool_claim_race_names_the_winner.py tests/test_pool_entomb_refusal.py tests/test_pool_finish_cleanup_retry.py tests/test_pool_finish_lost_race.py tests/test_pool_finish_tombstone.py tests/test_pool_holder_contradiction.py tests/test_pool_late_finisher.py tests/test_pool_late_scope.py tests/test_pool_maintenance.py tests/test_pool_placement_census.py tests/test_pool_preempts_a_background_holder.py tests/test_pool_publication_endings.py tests/test_pool_ready_late_finisher.py tests/test_pool_reaper_claim_identity.py tests/test_pool_reaper_lease_identity.py tests/test_pool_reaper_rereads_finish_pending.py tests/test_pool_releases_tokens_on_the_holder.py tests/test_pool_requeue_preserves_newer_generation.py tests/test_pool_requeue_shape.py tests/test_pool_requeue_staging_cleanup.py tests/test_pool_reset_record_rewrite.py tests/test_pool_reset_refusal.py tests/test_pool_reset_transport.py tests/test_pool_resource_scope.py tests/test_pool_retry_own_pending_finishes_1403.py tests/test_pool_unstarted_claim_is_released.py tests/test_pool_unstarted_late_finish.py tests/test_pool_withdraw.py tests/test_pool_withdraw_after_a_retry.py tests/test_pool_withdraw_detail.py tests/test_pool_withdraw_names_the_holder.py tests/test_pool_withdraw_successor_identity.py tests/test_pool_withdrawn_retention_1533.py tests/test_preemption_handoff_admission.py tests/test_preemption_is_visible_to_readers.py tests/test_preemption_review_boundaries.py tests/test_prelaunch_admission_1594.py tests/test_prelaunch_holder_audit_1594.py tests/test_prelaunch_tier_publish_1594.py tests/test_prepaid_writer_integration.py tests/test_produced_output_admission.py tests/test_produced_output_lifecycle.py tests/test_produced_output_lifecycle_r2.py tests/test_produced_output_scope.py tests/test_produced_output_tier_host_egress.py tests/test_publication_cached_absence_review.py tests/test_publication_canary_slot.py tests/test_publication_successor_review.py tests/test_publish_refuses_a_live_key.py tests/test_r6_tier_mutation_exclusion.py tests/test_readers_name_the_holder.py tests/test_ready_gpu_refusal_releases_cpu_admission.py tests/test_reaper_notes_the_fill_borrow_end.py tests/test_recompute_attempt_receipts.py tests/test_residency_is_derived_and_gates_admission.py tests/test_resident_sets_status.py tests/test_resumed_retry_authority.py tests/test_retained_worker_proxy.py tests/test_sample_profile.py tests/test_scratch_declaration_record.py tests/test_slurm_cache_hit_never_replaces_an_execution.py tests/test_slurm_lane.py tests/test_slurm_lane_sweeper.py tests/test_slurm_liveness.py tests/test_slurm_outcome_generation_order.py tests/test_slurm_outcome_records.py tests/test_slurm_submit_timeout.py tests/test_slurm_wait_outages.py tests/test_slurm_withdraw_siblings.py tests/test_slurm_withdrawal_generation.py tests/test_spent_output_retry_disposition.py tests/test_stage_stranded_funding_rolls_back_1555.py tests/test_stale_material_done_owner_retires.py tests/test_stale_mention_co_owner_cache.py tests/test_stale_mentions_partial_prune.py tests/test_submission_git_deadline_1888.py tests/test_submission_ownership_c14.py tests/test_submission_review_boundaries.py tests/test_terminal_stdout_is_bounded.py tests/test_tested_repository.py tests/test_the_arbitration_holds_through_main.py tests/test_the_handoff_owns_its_caller_boundaries.py tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py tests/test_the_reader_plan_measures_and_fails_open.py tests/test_the_sealed_ram_leg_is_chunked_per_phase.py tests/test_the_sealed_stage_leg_is_chunked_per_phase.py tests/test_the_submitted_window_pins_the_bytes_it_stages.py tests/test_the_window_publishes_only_what_the_stage_can_hold.py tests/test_tier_admission_is_off_by_default.py tests/test_uncharged_dead_owners_give_room_under_pressure.py tests/test_verified_action_result.py tests/test_withdraw_end_to_end.py tests/test_withdraw_generation.py tests/test_withdrawal_retires_the_plan_it_minted.py tests/test_withdrawn_and_receiptless_owners_are_retired.py tests/test_worker_disk_metadata_admission.py tests/test_worker_guards_read_their_own_records_by_name.py tests/test_worker_loop_cooperative_shutdown.py tests/test_worker_loop_reloads_unversioned.py tests/test_worker_loop_requires_known_receipts.py tests/test_worker_one_shot_obeys_the_stops.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/final-arm.sh",
+        "keys": [
+          "e371e337fb747622dec30db795980049767ac8bb0a57a0ce3e8bf86642688c1b",
+          "3c7a66452fe8ae57e8af9896c99e8049cafeb4c23a2bcfa40e6ee12dfdd5e395",
+          "4e568239f0d052d9bee6cb85b323ae097bd725bf106c8ee4da3b241f1b607948",
+          "90b26edead86c0e52fa2063a6d10a3e5e142800f07d750c587c375d46026e8ea",
+          "75c4adc8538e7aa9568bbafa3600db96503d1e2763aaecc21b70c0c7c370b5d4",
+          "f3ae8acc19feeb394416a35a2fb1f14244e6283deb98e49c109c39b22314f732",
+          "54c4028561ff5758f5d92a02df0f3c22ddb8c8d751c81d660ba84b692e30dbb3",
+          "e193da1ebc47bc331fb39e2e0b8b7ad2b1104b28859c68aecfab3e5eae83b1bf",
+          "8c17a3e4fef37f01824f14489b31aea6fb3d94c51fe2a1cd0bd9496200def601",
+          "a39f13ca783dcc35d21784d81646f0dcd6baee5dbb19f7ba18443d588c1cc8c3",
+          "bfe0619aa31f40db3f5f21833977c8b203a36db0bcf9ed8313f7340d42c34aa5",
+          "7d0551774a55033f24d3c25de32102f48aa1c105562f873d5680c24e2d093565"
+        ],
+        "counts": {
+          "passed": 4448,
+          "failed": 2,
+          "skipped": 18
+        }
+      },
+      {
+        "run": "spy-x86",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.14 --tag x86 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/spy-x86.json tests/test_pbrun_sealed_publication.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/spy-x86.sh",
+        "keys": [
+          "0509b649826221c006add24112c2407a0c1b3b643204a2587127456d6b8dad31"
+        ],
+        "counts": {
+          "passed": 32,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "run": "spy-arm",
+        "command": "python3 /mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py --checkout /home/rob/.t3/worktrees/prismabuild/t3-c9f4cf10 --python /home/rob/venvs/pb-cpu/bin/python3.12 --shards 1 --max-clients 1 --threads-per-shard 1 --cpus-per-shard 2 --mem-gb 4 --priority -10 --timeout-s 1800 --json /home/rob/tmp/pb1929-r2-evidence/spy-arm.json tests/test_pbrun_sealed_publication.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py",
+        "command_file": "/home/rob/tmp/pb1929-r2-evidence/spy-arm.sh",
+        "keys": [
+          "3f9fff93b12d6f41ce2ef98f3920cae8ecb0858618815f9b6f2b18fcbd5297b0"
+        ],
+        "counts": {
+          "passed": 32,
+          "failed": 0,
+          "skipped": 0
+        }
+      }
+    ],
+    "failures": {
+      "red-x86": [
+        "tests/test_gpu_evicts_cpu_guests.py::test_foreground_gpu_keeps_ordinary_pinned_background_preemption",
+        "tests/test_gpu_evicts_cpu_guests.py::test_pbtest_shaped_worker_failure_is_terminal_on_first_attempt"
+      ],
+      "target-x86": [
+        "tests/test_gpu_evicts_cpu_guests.py::test_two_evictions_end_guest_eligibility_even_with_larger_budget[passed]",
+        "tests/test_gpu_evicts_cpu_guests.py::test_pbtest_shaped_worker_failure_is_terminal_on_first_attempt",
+        "tests/test_pbrun_retry_contract.py::test_interruption_scope_is_sealed_and_worker_failure_is_final"
+      ],
+      "fixed-x86": [
+        "tests/test_gpu_evicts_cpu_guests.py::test_pbtest_shaped_worker_failure_is_terminal_on_first_attempt",
+        "tests/test_pbrun_retry_contract.py::test_interruption_scope_is_sealed_and_worker_failure_is_final"
+      ],
+      "suite-x86": [
+        "tests/test_deferred_action_edges.py::test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes",
+        "tests/test_deferred_action_edges.py::test_a_released_consumer_receives_its_manifest_path_and_digest",
+        "tests/test_deferred_action_edges.py::test_a_consumer_detects_a_manifest_changed_after_its_release",
+        "tests/test_deferred_action_edges.py::test_a_failed_producer_never_releases_its_consumer",
+        "tests/test_deferred_action_edges.py::test_a_chain_resolves_a_deferred_producer_through_its_release",
+        "tests/test_deferred_action_edges.py::test_a_superseded_producer_releases_its_consumer_under_the_new_key",
+        "tests/test_deferred_action_edges.py::test_a_superseded_pending_id_is_never_released_and_a_loop_refuses",
+        "tests/test_deferred_action_edges.py::test_an_unreleased_consumer_holds_the_batch_its_producer_committed",
+        "tests/test_deferred_action_edges.py::test_a_cache_hit_producer_is_read_from_the_attempt_that_committed",
+        "tests/test_deferred_action_edges.py::test_a_pinned_release_resumes_as_pinned_after_a_crash",
+        "tests/test_deferred_action_edges.py::test_a_release_published_before_a_crash_records_that_generation",
+        "tests/test_deferred_action_edges.py::test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it",
+        "tests/test_deferred_action_edges.py::test_a_publish_keeps_the_generation_an_unreleased_consumer_froze",
+        "tests/test_deferred_action_edges.py::test_a_loop_that_is_not_the_published_generation_releases_nothing",
+        "tests/test_deferred_action_edges.py::test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows",
+        "tests/test_deferred_action_edges.py::test_a_malformed_record_is_reported_once_and_kept",
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity",
+        "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_generated_request_and_published_row_bind_the_same_interpreter",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_environment_values_are_sealed_as_values_not_interpreter_arguments",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_untagged_generated_row_matches_all_and_only_capable_architectures",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_explicit_architecture_constraint_survives_the_interpreter_requirement",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[answers0-absent0-present]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[answers1-absent1-absent]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[None-absent2-unknown]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_legacy_worker_cannot_claim_the_generated_naming_row",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_interpreter_removed_after_publication_is_refused_at_claim",
+        "tests/test_pbtest_exit_completion_1530.py::test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang[xdist]"
+      ],
+      "suite-arm": [
+        "tests/test_deferred_action_edges.py::test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes",
+        "tests/test_deferred_action_edges.py::test_a_released_consumer_receives_its_manifest_path_and_digest",
+        "tests/test_deferred_action_edges.py::test_a_consumer_detects_a_manifest_changed_after_its_release",
+        "tests/test_deferred_action_edges.py::test_a_failed_producer_never_releases_its_consumer",
+        "tests/test_deferred_action_edges.py::test_a_chain_resolves_a_deferred_producer_through_its_release",
+        "tests/test_deferred_action_edges.py::test_a_superseded_producer_releases_its_consumer_under_the_new_key",
+        "tests/test_deferred_action_edges.py::test_a_superseded_pending_id_is_never_released_and_a_loop_refuses",
+        "tests/test_deferred_action_edges.py::test_an_unreleased_consumer_holds_the_batch_its_producer_committed",
+        "tests/test_deferred_action_edges.py::test_a_cache_hit_producer_is_read_from_the_attempt_that_committed",
+        "tests/test_deferred_action_edges.py::test_a_pinned_release_resumes_as_pinned_after_a_crash",
+        "tests/test_deferred_action_edges.py::test_a_release_published_before_a_crash_records_that_generation",
+        "tests/test_deferred_action_edges.py::test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it",
+        "tests/test_deferred_action_edges.py::test_a_publish_keeps_the_generation_an_unreleased_consumer_froze",
+        "tests/test_deferred_action_edges.py::test_a_loop_that_is_not_the_published_generation_releases_nothing",
+        "tests/test_deferred_action_edges.py::test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows",
+        "tests/test_deferred_action_edges.py::test_a_malformed_record_is_reported_once_and_kept",
+        "tests/test_pbrun_sealed_publication.py::test_seal_then_publish_matches_direct_publication",
+        "tests/test_pbrun_sealed_publication.py::test_publish_never_reprepares_and_attaches_idempotently",
+        "tests/test_pbrun_sealed_publication.py::test_a_verified_result_is_a_cache_hit",
+        "tests/test_pbrun_sealed_publication.py::test_publication_rechecks_ordinary_gates",
+        "tests/test_pbrun_sealed_publication.py::test_publication_rechecks_worker_offers",
+        "tests/test_pbrun_sealed_publication.py::test_staged_seal_files_no_window_until_publication",
+        "tests/test_pbrun_sealed_publication.py::test_attached_publish_passes_wait_budget",
+        "tests/test_pbrun_sealed_publication.py::test_existing_cas_requests_do_not_require_new_context",
+        "tests/test_pbrun_sealed_publication.py::test_publication_keeps_the_interpreter_verdict",
+        "tests/test_pbrun_sealed_publication.py::test_sealed_transport_survives_publication_defaults",
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity",
+        "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_generated_request_and_published_row_bind_the_same_interpreter",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_environment_values_are_sealed_as_values_not_interpreter_arguments",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_untagged_generated_row_matches_all_and_only_capable_architectures",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_explicit_architecture_constraint_survives_the_interpreter_requirement",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[answers0-absent0-present]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[answers1-absent1-absent]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_published_request_keeps_the_existing_three_state_path_verdict[None-absent2-unknown]",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_legacy_worker_cannot_claim_the_generated_naming_row",
+        "tests/test_pbtest_seals_interpreter_1462.py::test_interpreter_removed_after_publication_is_refused_at_claim"
+      ],
+      "main-x86": [
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity"
+      ],
+      "main-arm": [
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity"
+      ],
+      "main-exit-x86": [
+        "tests/test_pbtest_exit_completion_1530.py::test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang[xdist]"
+      ],
+      "final-x86": [
+        "tests/test_pbrun_sealed_publication.py::test_seal_then_publish_matches_direct_publication[interruption]",
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity",
+        "tests/test_pbtest_exit_completion_1530.py::test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang[xdist]"
+      ],
+      "final-arm": [
+        "tests/test_pbrun_sealed_publication.py::test_seal_then_publish_matches_direct_publication[interruption]",
+        "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity"
+      ],
+      "spy-x86": [],
+      "spy-arm": []
+    },
+    "baseline_commit": "ce0aabadf6286c667465559cff157993fd42616b",
+    "baselines": {
+      "tests/test_batch_ledger_ownership.py::test_the_admitted_interpreter_reports_its_actual_identity": {
+        "x86": [
+          "6999b1594dd3c4fc2f1bf204d4be6138944a054bad0fef1f2e476decda4f77f7"
+        ],
+        "arm": [
+          "0f1e1df0667062b855d26200ed110e2a71084ed79cef2be032a7c5c2055b7823"
+        ]
+      },
+      "tests/test_pbtest_exit_completion_1530.py::test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang[xdist]": {
+        "x86": [
+          "8755a8e65df2a91c8767f570e4f951ba9d63fff9c77e4383aaacf0fc091ec2b2"
+        ]
+      }
+    },
+    "readback": {
+      "artifact": "/home/rob/tmp/pb1929-r2-evidence/record-audit.json",
+      "terminal_log_pairs": 58,
+      "matching_receipted_payloads": 40,
+      "checks": "Exact indexed terminals; full stdout/stderr digests and bytes; reported architecture/interpreter/native threads; receipt key and execution announcement; CAS payload digest/bytes.",
+      "full_attestation": false,
+      "power_loss_proof": false
+    },
+    "production_tree_unchanged_after_broad_runs": true
+  },
+  "persistence_assumption": "Readback proves recorded bytes were present and matched their recorded digests. It does not establish stable-storage or power-loss durability.",
+  "test_commit": "2f8befb618fb846477b0f671ea62684155af7ded",
+  "supersedes_scoped_acceptance": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+}

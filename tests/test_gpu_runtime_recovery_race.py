@@ -84,3 +84,45 @@ def test_cdi_repair_during_first_fault_check_requests_one_readiness_probe(
     runtime.thread.join()
     assert tokens == [runtime.state['probe_token']]
     assert runtime.state['probe_event']['reason'] == 'cdi_changed'
+
+
+def test_enabled_start_without_nvidia_or_cdi_watches_a_later_driver_repair(
+        runtime_authority, monkeypatch):
+    from pathlib import Path
+    _, _, _, runtime = runtime_authority
+    (runtime.cdi_dir / 'nvidia.yaml').unlink()
+    runtime.cdi_dir.rmdir()
+    exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: False if str(path) == '/dev/nvidiactl' else exists(path))
+    monkeypatch.setattr(gpu_capacity, 'nvidia_host_present', lambda: False)
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', lambda: {
+        'kind': 'nvidia_driver_query_failed', 'returncode': 9})
+    watching = threading.Event()
+    submitted = threading.Event()
+    tokens = []
+
+    class ObservedWatch(_REAL_WATCH):
+        def next_change(self, stop_fd):
+            watching.set()
+            return super().next_change(stop_fd)
+
+    monkeypatch.setattr(gpu_capacity, 'CDIChangeWatch', ObservedWatch)
+
+    def submit(token):
+        tokens.append(token)
+        submitted.set()
+
+    runtime.start(submit)
+    if runtime.thread is not None:
+        assert watching.wait(5)
+    assert not runtime.state['latched']
+    row = {'HostConfig': {'Runtime': 'nvidia'}, 'State': {
+        'StartedAt': '0001-01-01T00:00:00Z', 'Running': False, 'ExitCode': 127,
+        'Error': 'OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded'}}
+    outcome = runtime.observe(row, {'action_key': 'a' * 64, 'nonce': 'attempt', 'scope_id': 'scope'})
+    assert outcome.kind == 'host_fault'
+    assert runtime.state['latched'] and runtime.state['subtype'] == 'nvidia_initialization_failed'
+    runtime.cdi_dir.mkdir()
+    assert submitted.wait(5), 'CDI creation after a driver-absent fault did not authorize recovery'
+    assert tokens == [runtime.state['probe_token']]
+    assert runtime.state['probe_event']['reason'] == 'cdi_changed'

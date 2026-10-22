@@ -17,14 +17,20 @@ from prismabuild import pool, produced_output as po
 import test_prepaid_writer_integration as output_fixture
 from test_write_only_produced_output import _descriptor, _prewrite, _queue, _template
 
-BASE = 'd2f92f5ff533489182dddaf286feb54afde6f34a'
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tests/compat/support'))
+from record_compat import retained
+
+# These three functions are verbatim-identical to the former d2f92f5ff533
+# baseline. Reuse its already-retained source, not the checkout's Git history.
+ORIGINAL_GENERATION = 'a17477b2b206-1791745175-65dffa700dfb'
 
 
 @pytest.fixture(scope='module')
 def original_records():
-    source = subprocess.check_output(
-        ['git', 'show', BASE + ':src/prismabuild/produced_output.py'],
-        cwd=Path(__file__).resolve().parents[1], text=True)
+    with retained() as generations:
+        _, root, _ = next(row for row in generations if row[0] == ORIGINAL_GENERATION)
+        source = (root / 'src/prismabuild/produced_output.py').read_text()
     tree = ast.parse(source)
     names = {'_read_commitments', '_write_commitments', '_class_sums'}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -33,8 +39,17 @@ def original_records():
                      ProducedOutputError=oc.ProducedOutputError,
                      _check_class_bytes=oc.output_class_bytes)
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
-                 BASE + '/produced_output.py', 'exec'), namespace)
+                 ORIGINAL_GENERATION + '/produced_output.py', 'exec'), namespace)
     return namespace
+
+
+def test_original_records_load_without_git_history(monkeypatch):
+    def refuse_subprocess(*args, **kwargs):
+        raise AssertionError('original records must load from committed fixtures')
+    monkeypatch.setattr(subprocess, 'Popen', refuse_subprocess)
+    records = original_records.__wrapped__()
+    for name in ('_read_commitments', '_write_commitments', '_class_sums'):
+        assert records[name].__code__.co_filename == ORIGINAL_GENERATION + '/produced_output.py'
 
 
 def test_construction_preserves_the_path_and_performs_no_read():
@@ -176,4 +191,3 @@ def test_the_admitted_interpreter_reports_its_actual_identity(capsys):
     with capsys.disabled():
         print("c13-interpreter: " + json.dumps(identity), flush=True)
     assert tuple(identity["version_info"][:2]) in ((3, 12), (3, 14))
-    assert identity["tmpdir"] == "/home/rob/pbt17"

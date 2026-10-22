@@ -1,5 +1,6 @@
 """Optional runtime paths must distinguish absence from unknown metadata."""
 from contextlib import contextmanager
+import copy
 import errno
 import json
 import multiprocessing
@@ -221,3 +222,134 @@ def test_host_customization_file_root_selection(tmp_path, monkeypatch, name, sta
         else:
             assert str(target) not in roots
         assert actual.get('customization_roots', []) == []
+
+
+@pytest.fixture
+def customization_custody_tree(tmp_path):
+    ancestor = tmp_path / 'shared-scratch'
+    stdlib, native, venv = ancestor / 'stdlib', ancestor / 'native', ancestor / 'venv'
+    for path in (stdlib, native, venv / 'bin'):
+        path.mkdir(parents=True)
+    executable, configuration = ancestor / 'python', venv / 'pyvenv.cfg'
+    executable.write_bytes(b'fixture interpreter')
+    configuration.write_bytes(b'home = fixture\n')
+    target = stdlib / 'customization.py'
+    target.write_bytes(b'CUSTOMIZATION = True\n')
+    for name in ('sitecustomize.py', 'usercustomize.py'):
+        (stdlib / name).symlink_to(target)
+    selected = [stdlib, native, executable, venv / 'bin', configuration]
+
+    def checkpoint(roots, probes):
+        return dict(stdlib=str(stdlib), native_library_roots=[str(native)], providers={},
+            observation=dict(executable=dict(path=str(venv / 'bin' / 'python'),
+                resolved_path=str(executable)), prefix=str(venv)),
+            roots=capture.captured_roots('host', selected, None),
+            customization_roots=roots, customization_probes=probes)
+
+    return ancestor, stdlib, target, selected, checkpoint
+
+
+@pytest.mark.parametrize('boundary', ['within-probe', 'between-probes'])
+def test_customization_ancestor_churn_and_file_replacement(customization_custody_tree, monkeypatch, boundary):
+    ancestor, stdlib, target, selected, checkpoint = customization_custody_tree
+    original_lstat = Path.lstat
+    calls, mutations = 0, []
+    triggers = (2, 4) if boundary == 'within-probe' else (3, 5)
+    sibling = ancestor / 'unrelated-shard'
+
+    def churn(path, *args, **kwargs):
+        nonlocal calls
+        if path == ancestor:
+            calls += 1
+            if calls in triggers:
+                before = original_lstat(path)
+                if not mutations:
+                    sibling.mkdir()
+                else:
+                    sibling.rmdir()
+                # Force an observable metadata delta even on coarse-clock filesystems.
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+                after = original_lstat(path)
+                assert runtime.runtime_stamp(before)[:3] == runtime.runtime_stamp(after)[:3]
+                assert before.st_uid == after.st_uid
+                assert runtime.runtime_stamp(before) != runtime.runtime_stamp(after)
+                mutations.append(calls)
+        return original_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'lstat', churn)
+        roots, probes = capture.capture_host_customizations(stdlib, selected, None)
+    assert mutations == list(triggers) and not sibling.exists()
+    assert runtime.runtime_host_root_selection(checkpoint(roots, probes)) == []
+
+    # Same bytes and length, but a different inode: directory tolerance must not
+    # also make customization file replacement acceptable at either boundary.
+    replacement = ancestor / 'replacement.py'
+    replacement.write_bytes(target.read_bytes())
+    assert replacement.stat().st_ino != target.stat().st_ino
+    calls, replacements = 0, []
+
+    def replace_file(path, *args, **kwargs):
+        nonlocal calls
+        if path == target:
+            calls += 1
+            if calls == (2 if boundary == 'within-probe' else 3):
+                os.replace(replacement, target)
+                replacements.append(calls)
+        return original_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'lstat', replace_file)
+        with pytest.raises(ValueError, match='host customization.*(changed|stable custody)'):
+            roots, probes = capture.capture_host_customizations(stdlib, selected, None)
+            runtime.runtime_host_root_selection(checkpoint(roots, probes))
+    assert len(replacements) == 1
+
+
+@pytest.mark.parametrize('boundary', ['within-probe', 'between-probes'])
+def test_customization_replay_directory_stamp_policy(customization_custody_tree, boundary):
+    ancestor, stdlib, _, selected, checkpoint = customization_custody_tree
+    roots, probes = capture.capture_host_customizations(stdlib, selected, None)
+    captured = checkpoint(roots, probes)
+    assert runtime.runtime_host_root_selection(captured) == []
+    directory_probes = [probe for probe in captured['customization_probes']
+                        if probe['path'] == str(ancestor)]
+    assert len(directory_probes) >= 2
+    for probe in directory_probes[1:]:
+        for stamp in (('after',) if boundary == 'within-probe' else ('before', 'after')):
+            for field in (3, 4, 5):
+                probe[stamp][field] += 100
+    assert runtime.runtime_host_root_selection(captured) == []
+
+    # Relax only volatile directory metadata, not identity, mode, or ownership.
+    for field in (0, 1, 2, 'uid'):
+        forged = copy.deepcopy(captured)
+        probe = next(probe for probe in reversed(forged['customization_probes'])
+                     if probe['path'] == str(ancestor))
+        if field == 'uid':
+            probe['uid'] += 1
+        else:
+            probe['after'][field] ^= 1
+            if boundary == 'between-probes':
+                probe['before'][field] ^= 1
+        with pytest.raises(ValueError, match='host customization'):
+            runtime.runtime_host_root_selection(forged)
+
+    forged = copy.deepcopy(captured)
+    probe = next(probe for probe in forged['customization_probes']
+                 if probe['path'] == str(ancestor))
+    probe['after'] = probe['after'][:3]
+    with pytest.raises(ValueError, match='host customization'):
+        runtime.runtime_host_root_selection(forged)
+
+    # Regular files and symlinks still need all six fields, not just identity.
+    for kind in ('file', 'symlink'):
+        for field in (3, 4, 5):
+            forged = copy.deepcopy(captured)
+            probe = next(probe for probe in reversed(forged['customization_probes'])
+                         if probe['entry'] is not None and probe['entry']['kind'] == kind)
+            probe['after'][field] += 1
+            if boundary == 'between-probes':
+                probe['before'][field] += 1
+            with pytest.raises(ValueError, match='host customization'):
+                runtime.runtime_host_root_selection(forged)

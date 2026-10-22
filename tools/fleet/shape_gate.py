@@ -1244,12 +1244,13 @@ def resolve_action_key(queue_root: Path, key: str) -> tuple[str, Path]:
 _OUTCOMES_PATH = Path(__file__).parent.resolve() / "pbtest_outcomes.py"
 
 
-def judge_gate_log(log: str, *, where: str) -> None:
+def judge_gate_log(log: str, *, where: str, action=None) -> None:
     spec = importlib.util.spec_from_file_location(__name__ + "_outcomes", _OUTCOMES_PATH)
     outcomes = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(outcomes)
     files = [REFERENCE_TEST.split("::", 1)[0]]
     verdict = outcomes.judge_shards([{"shard": 0, "files": files,
+        "record_binding": outcomes.record_binding_for_action(action) if action is not None else None,
         "returncode": 0, "output": log, "timed_out": False}],
         requested_files=files, required_nodes=reference_nodes())
     if not verdict["green"]:
@@ -1346,7 +1347,7 @@ def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
         raise ShapeGateFailure("receipt_refused",
                                f"{key[:12]} has no verified CAS receipt")
     log = cas.result_path(receipt, action).read_text(errors="replace")
-    judge_gate_log(log, where=key[:12])
+    judge_gate_log(log, where=key[:12], action=action)
     return {"verdict": "passed", "action_key": key,
             "tables": sorted(REFERENCE_TABLES),
             "finished_host": done.get("finished_host"),

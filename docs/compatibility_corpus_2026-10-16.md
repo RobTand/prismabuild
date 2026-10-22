@@ -42,9 +42,12 @@ projections, 16 retired APIs, one rejected retired schema and 37 test/history
 references. The original card's 225 IDs, 15 newer versions and roughly 30 closed
 modules were historical estimates, not acceptance targets.
 
-`tests/compat/field_sets.json` pins 292 resolved field sets and 221 symbolic
-field expressions across 51 production modules. Symbolic expressions stay
-visible. The scanner also reports 2,086 serialization sites across all scopes and six
+`tests/compat/field_sets.json` pins 312 resolved field sets and 257 symbolic
+field expressions across 114 source files. The bell query review in
+`tests/compat/field-set-review-bell-1894.json` accounts for two symbolic HTTP
+query filters, not durable record fields. Regenerate this inventory with
+`tools/maintenance/refresh_compat_field_sets.py` after reviewing every delta.
+Symbolic expressions stay visible. The scanner also reports 2,086 serialization sites across all scopes and six
 dynamic schema constructors. All six dynamic schema sites have exact source-hash,
 owner, line and field reviews. Unreviewed or stale dynamic sites fail the gate.
 Discovery alone does not qualify their runtime paths.

@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Generic, Protocol, TypeVar
 
-from . import _bounded_reader as _reader, core as pb, endings, pool, record_store
+from . import _bounded_reader as _reader, core as pb, endings, pool, queue_bell, record_store
 from .digest_primitives import sorted_json
 
 POLL_S = 5.0
@@ -441,6 +441,8 @@ def await_action(
     *, generation: float | None, patience: WaitUntil | ProbeOnce,
     profile: AwaitProfile, tool: str, subject: str,
     notice: Callable[[RetryNotice[T] | FinalReadNotice[T]], None],
+    bell: queue_bell.Client | None = None, bell_key: str = "",
+    use_bell: Callable[[], bool] = lambda: True,
 ) -> Ready[T] | Unavailable[T] | Unreadable | PatienceExpired:
     """Await one identity with its original patience and one reader lifetime.
 
@@ -472,6 +474,9 @@ def await_action(
     deadline = patience.deadline
     had_patience = deadline > clock.monotonic()
     diagnostic = None
+    fallback_s = min(0.25, POLL_S)
+    unusable_replies = 0
+    cursor = None
 
     def fail(fault, count, ending, retained=(), waited_s=0.0):
         return Unavailable(fault, count, ending, retained, waited_s, had_patience)
@@ -557,7 +562,36 @@ def await_action(
                 return PatienceExpired(state.generation, diagnostic)
             if result.handoff:
                 continue
-            clock.sleep(max(0.0, min(POLL_S, deadline - clock.monotonic())))
+            if bell is not None and use_bell():
+                try:
+                    if cursor is None:
+                        # Optional cursor I/O must not precede the first record
+                        # read. Confirm after initialization: a publication
+                        # between that read and now() is behind the new cursor.
+                        cursor = bell.now(budget_s=remaining_s())
+                        continue
+                    started_wait = clock.monotonic()
+                    reply = bell.wait(cursor, queue_bell.TERMINAL_DIRS, (bell_key,), remaining_s())
+                    # Each reply supplies the cursor for the next observation
+                    # and wait, including resets and empty timeouts. Reread
+                    # directly on wake; another now() could spend the last of
+                    # the caller's patience before that authoritative read.
+                    cursor = queue_bell.Cursor.parse(f"{reply['epoch']}:{reply['seq']}")
+                    if not reply.get("events") and clock.monotonic() - started_wait < 0.25:
+                        unusable_replies += 1
+                        if unusable_replies > 1:
+                            raise queue_bell.Unavailable("repeated immediate empty/reset replies")
+                    else:
+                        unusable_replies = 0
+                        fallback_s = min(0.25, POLL_S)
+                    continue
+                except queue_bell.Unavailable:
+                    pass
+            # Unavailable-callback backoff: an unreachable or repeatedly unusable
+            # bell, or SLURM submission discovery, is a service
+            # that cannot call back. Recheck with bounded backoff up to POLL_S.
+            clock.sleep(max(0.0, min(fallback_s, remaining_s())))
+            fallback_s = min(fallback_s * 2, POLL_S)
 
 
 def terminal_record(
@@ -721,7 +755,7 @@ def await_ending(
     result = await_action(
         observe, generation=generation, patience=WaitUntil(deadline),
         profile=AwaitProfile.DETACHED, tool='pbrun', subject=key[:12],
-        notice=lambda _event: None)
+        notice=lambda _event: None, bell=queue_bell.Client(q.records.root), bell_key=key)
     if isinstance(result, Ready):
         return result.value
     if isinstance(result, Unreadable):

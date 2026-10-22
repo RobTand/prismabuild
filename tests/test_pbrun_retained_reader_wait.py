@@ -214,7 +214,7 @@ def test_a_retained_reader_is_its_own_exception_and_still_unavailable() -> None:
     assert exc.retained == [{"section": "test", "pid": 1, "starttime_ticks": 2, "since_unix": 1.0}]
 
 
-def test_a_retained_wait_uses_its_clock_above_real_monotonic(monkeypatch, capsys):
+def test_a_retained_wait_uses_its_clock_above_real_monotonic(tmp_path, monkeypatch, capsys):
     class Clock:
         now = 10**12
 
@@ -245,7 +245,7 @@ def test_a_retained_wait_uses_its_clock_above_real_monotonic(monkeypatch, capsys
     monkeypatch.setattr(owner._reader, '_reap_within', held)
     monkeypatch.setattr(submit_core.action_client, 'bounded_outcome_observation', observation)
 
-    assert submit_core.action_client.report_pool_outcome(object(), KEY, wait_s=2.0) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
+    assert submit_core.action_client.report_pool_outcome(Queue(tmp_path / 'queue'), KEY, wait_s=2.0) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert len(calls) == 1
     assert clock.now - 10**12 == pytest.approx(2.0, abs=0.0001)
     assert reaped and all(event == (4242, 0) for event in reaped)
