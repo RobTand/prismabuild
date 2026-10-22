@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -45,7 +46,7 @@ from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import action_client  # noqa: E402
+from prismabuild import action_result, action_client  # noqa: E402
 from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
@@ -350,8 +351,13 @@ def _job_id(found) -> str:
     return str(submission.get("job_id") or "-")
 
 
-def _from_ending(q, ending: endings.ObservedEnding) -> dict:
+def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
+    if context is not None:
+        context.clear()
     if isinstance(ending, endings.PublicationSupersession):
+        if context is not None:
+            context.update({"claimed": ending.record.get("claimed_unix") is not None,
+                            "published_unix": ending.published_unix})
         return _row(
             ending.action_key, "superseded", transport="pool",
             published_unix=ending.published_unix,
@@ -374,6 +380,27 @@ def _from_ending(q, ending: endings.ObservedEnding) -> dict:
         )
     summary = rendered["summary"]
     scheduler = summary["detail"].get("slurm") or {}
+    if context is not None:
+        context.update({
+            "published_unix": outcome.get("published_unix"),
+            "attempt": (outcome.get("withdrawn_attempt") or outcome).get("attempts"),
+            "started_unix": outcome.get("claimed_unix"),
+            "ended_unix": outcome.get("finished_unix"),
+            "reason": summary.get("reason") or summary["detail"].get("error")
+                      or summary["detail"].get("message"),
+            "result_ended": summary["status"] != "withdrawn" or summary["withdrawn_attempt"] is not None,
+            "withdrawn_from": outcome.get("withdrawn_from"),
+            "claimed": (outcome.get("claimed_unix") is not None
+                        or bool(summary["claimed_host"]) or outcome.get("withdrawn_from") == "claimed"),
+            "scope_required": any(outcome.get(field) is not None
+                                  for field in ("resource_scope", "resource_scope_intent")),
+            "containers_required": outcome.get("container_owner") is not None,
+            "resource_profile": summary.get("resource_profile"),
+            "profile": summary.get("profile"),
+        })
+        for field in ("resource_scope_cleanup", "container_cleanup"):
+            value = summary[field]
+            context[field] = value if value is not None else summary["detail"].get(field)
     return _row(
         summary["action_key"] or "",
         summary["status"],
@@ -411,6 +438,8 @@ def wait_one(
     generation: float | None = None,
     lane_root=None,
     queue_root=None,
+    consumer=False,
+    until="ended",
     **lane_commands,
 ) -> dict:
     """Await one row with the detached profile and its shared absolute deadline."""
@@ -419,6 +448,11 @@ def wait_one(
         lambda text: print(f"pbwait: {text}", file=sys.stderr, flush=True))
     context = {"generation": generation, "found": None, "action": None,
                "receipt_published": False, "handoff": False}
+    ending_context = {} if consumer else None
+
+    def present(row):
+        return consumer_ending_row(q, row, cas=cas, context=ending_context) if consumer else row
+
     def waiting_row():
         found = context['found']
         return _row(key, 'waiting', transport=found[0] if found else '-', job=_job_id(found))
@@ -428,19 +462,24 @@ def wait_one(
         try:
             row = _look_once_checked(
                 q, key, cas=cas, remaining_s=remaining_s, budget_s=budget_s,
-                state=context, lane_root=lane_root, queue_root=queue_root, **lane_commands)
+                state=context, lane_root=lane_root, queue_root=queue_root,
+                ending_context=ending_context, **lane_commands)
         except (action_wait.OutcomeObservationTimedOut, action_wait.OutcomeReaderRetained) as exc:
             return action_wait.ReadFault(exc, context['generation'], diagnostic=waiting_row())
         except (action_wait.UnreadableTerminal, action_wait.OutcomeReadUnavailable,
                 pool.PoolContractError, OSError, slurm_lane.SlurmLaneError) as exc:
             return action_wait.Ready(
-                _observation_error_row(key, exc, waiting=waiting_row()), context['generation'])
+                present(_observation_error_row(key, exc, waiting=waiting_row())), context['generation'])
         selected = context['generation']
         if row is not None:
+            row = present(row)
+            if consumer and until == "cleaned" and row["status"] != "unreadable" \
+                    and not row["diagnostics"]["cleanup"]["complete"]:
+                return action_wait.Pending(selected, diagnostic=row)
             return action_wait.Ready(row, selected)
         handoff = context['handoff']
         context['handoff'] = False
-        return action_wait.Pending(selected, handoff, waiting_row())
+        return action_wait.Pending(selected, handoff, present(waiting_row()))
 
     def notice(event):
         reaped = ('the reader has exited and was reaped, '
@@ -458,7 +497,7 @@ def wait_one(
     if isinstance(result, action_wait.Ready):
         return result.value
     if isinstance(result, action_wait.Unreadable):
-        return _row(key, 'unreadable', note=str(result.error))
+        return present(_row(key, 'unreadable', note=str(result.error)))
     if isinstance(result, action_wait.Unavailable):
         waiting = result.fault.diagnostic
         if waiting is None:
@@ -485,8 +524,8 @@ def wait_one(
                 f"{row['note']}; still unavailable when the wait ended after "
                 f"{result.count} consecutive unavailable read(s). The "
                 "action may still be running or may already have landed"))
-        return row
-    return result.diagnostic if result.diagnostic is not None else _row(key, 'waiting')
+        return present(row)
+    return result.diagnostic if result.diagnostic is not None else present(_row(key, 'waiting'))
 
 
 def _observation_error_row(key, exc, *, waiting):
@@ -517,6 +556,7 @@ def _look_once_checked(
     state=None,
     lane_root=None,
     queue_root=None,
+    ending_context=None,
     **lane_commands,
 ):
     """One pass of ``wait_one``, or ``None`` when there is nothing yet.
@@ -550,7 +590,7 @@ def _look_once_checked(
                  and found[1] == generation)
 
     if landed is not None:
-        return _from_ending(q, landed)
+        return _from_ending(q, landed, context=ending_context)
     if unreadable is not None:
         if slurm_run and action is not None:
             # The lane owns recovery of its own missing/corrupt terminal
@@ -566,7 +606,7 @@ def _look_once_checked(
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_ending(q, landed)
+                return _from_ending(q, landed, context=ending_context)
         return _row(
             key, "unreadable", transport=found[0] if found else "-",
             job=_job_id(found), note=f"{unreadable[1]}: {unreadable[0]}",
@@ -593,7 +633,7 @@ def _look_once_checked(
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_ending(q, landed)
+                return _from_ending(q, landed, context=ending_context)
         # Nothing outstanding, or nothing that could file: the work is done
         # and was memoized.  Which transport delivered it does not enter into
         # it, which is the property the CAS exists to give.
@@ -623,7 +663,7 @@ def _look_once_checked(
         if state is not None:
             state["generation"] = generation
         if landed is not None:
-            return _from_ending(q, landed)
+            return _from_ending(q, landed, context=ending_context)
         return _row(key, "waiting", transport="slurm",
                     job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
@@ -746,14 +786,119 @@ def verdict(rows) -> int:
     return 0
 
 
+def consumer_ending_row(q, row, *, cas, context=None):
+    """Project one observed row onto the versioned consumer contract (#1892)."""
+    context = context or {}
+    status = row["status"]
+    if status in {"record_error", "unreadable"}:
+        status = "unreadable"
+    elif status not in {"executed", "cache_hit", "failed", "withdrawn",
+                        "superseded", "waiting", "refused"}:
+        status = "failed"
+    diagnostics = {key: value for key, value in row.items()
+                   if key not in {"action_key", "status", "succeeded"}}
+    diagnostics.update({key: context.get(key) for key in ("resource_profile", "profile")})
+    cleanup = context.get("resource_scope_cleanup", row.get("resource_scope_cleanup"))
+    containers = context.get("container_cleanup", row.get("container_cleanup"))
+    no_attempt = not context.get("claimed") and status in {
+        "cache_hit", "withdrawn", "superseded", "refused", "failed"}
+    scope_complete = (cleanup.get("complete") is True if cleanup is not None
+                      else not context.get("scope_required", True))
+    # Normal-finish invariant: PoolQueue._cleanup_payload_containers in
+    # src/prismabuild/pool.py:15010 refuses incomplete container cleanup before
+    # filing resource_scope_cleanup at :15097 and :15100. Its Docker cleaner
+    # removes then re-lists containers at :15280 and :15281. Pinned by
+    # test_scope_cleanup_is_persisted_only_after_containers_are_removed.
+    # An explicit container record always requires complete is True.
+    containers_complete = (containers.get("complete") is True if containers is not None
+                           else (cleanup is not None and cleanup.get("complete") is True)
+                           or not context.get("containers_required", True) or no_attempt)
+    diagnostics["cleanup"] = {
+        "complete": bool(containers_complete and (no_attempt or (
+            scope_complete and (status != "withdrawn" or context.get("result_ended", True))))),
+        "resource_scope": cleanup, "containers": containers,
+    }
+    result = None
+    reason = context.get("reason") or row.get("note")
+    number = context.get("attempt")
+    published = context.get("published_unix", row.get("published_unix"))
+    if status in {"executed", "cache_hit", "failed", "withdrawn", "refused"}:
+        if type(number) is int and number > 0 and context.get("result_ended", True):
+            try:
+                result = action_wait.read_observation(
+                    "pbwait verified ending result",
+                    lambda: action_result.read_verified_ending_result(
+                        q, row["action_key"], published_unix=published, attempt=number),
+                    budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+            except (action_result.ActionResultError, action_wait.OutcomeReadUnavailable,
+                    OSError, pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
+                status, reason = "unreadable", str(exc)
+        elif status == "executed" or (status == "failed" and number != 0):
+            status, reason = "unreadable", "execution ending has no immutable attempt evidence"
+    if status == "waiting":
+        # A zero-patience result still distinguishes an unknown full key from
+        # recorded work. Keep these filesystem reads inside the bounded child.
+        def recorded_wait():
+            found = outstanding(q, row["action_key"])
+            return {"known": found is not None or recorded_action(cas, row["action_key"]) is not None,
+                    "published_unix": found[1] if found else None}
+        try:
+            recorded = action_wait.read_observation(
+                "pbwait recorded key", recorded_wait,
+                budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+            published = recorded["published_unix"]
+            if not recorded["known"]:
+                raise _misnamed(f"pbwait: nothing recorded matches {row['action_key']!r}")
+        except (action_wait.OutcomeReadUnavailable, OSError) as exc:
+            status, reason = "unreadable", str(exc)
+    generation = None
+    if published is not None:
+        try:
+            generation = q.records.attempt_generation({
+                "action_key": row["action_key"], "published_unix": published})
+        except pool.PoolError as exc:
+            status, reason = "unreadable", str(exc)
+    action_exit = row.get("action_returncode")
+    if type(action_exit) is not int:
+        action_exit = 0 if status in {"executed", "cache_hit"} else None
+    signal = row.get("action_signal")
+    if type(signal) is not int:
+        signal = None
+    if status in {"failed", "withdrawn", "refused", "unreadable"} and not reason:
+        reason = f"action ended {status}"
+    return {
+        "action_key": row["action_key"], "status": status,
+        "succeeded": status in {"executed", "cache_hit"},
+        "exit_code": action_exit, "signal": signal,
+        "host": None if row.get("host") == "-" else row.get("host"),
+        "attempt": number,
+        "publication": {"published_unix": published, "generation": generation},
+        "started_unix": context.get("started_unix"), "ended_unix": context.get("ended_unix"),
+        "reason": str(reason) if reason is not None else None,
+        "result": result, "diagnostics": diagnostics,
+    }
+
+
+def consumer_endings_verdict(rows):
+    """Stable JSON exits, independent of historical human CLI exits."""
+    if any(row["status"] == "unreadable" for row in rows):
+        return action_client.RECORD_WRITE_FAILED_EXIT
+    return verdict(rows)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Wait for submitted PrismaBuild actions and report them."
     )
     ap.add_argument("--wait-s", type=float, default=86400.0,
                     help="how long to wait for ALL of them, not for each")
-    ap.add_argument("--json", action="store_true",
+    output = ap.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true",
                     help="emit ordered per-key rows, including read-only integrity diagnostics")
+    output.add_argument("--endings", action="store_true",
+                        help="emit prismabuild.endings.v1 with verified attempt results")
+    ap.add_argument("--until", choices=("ended", "cleaned"),
+                    help="ending or verified cleanup boundary (default ended; requires --endings)")
     ap.add_argument("keys", nargs="+", metavar="KEY",
                     help="action key, or a prefix of one already recorded")
     ap.add_argument("--reconcile-pool", action="store_true",
@@ -764,7 +909,14 @@ def main(argv=None) -> int:
                     help="final attempt number; required with --reconcile-pool")
     args = ap.parse_args(argv)
 
+    if args.until is not None and not args.endings:
+        ap.error("--until requires --endings")
+    if args.endings and (not math.isfinite(args.wait_s) or args.wait_s < 0):
+        ap.error("--wait-s must be finite and non-negative")
+
     if args.reconcile_pool:
+        if args.endings:
+            ap.error("--reconcile-pool cannot combine with --endings")
         if len(args.keys) != 1 or args.generation is None or args.attempt is None:
             ap.error("--reconcile-pool requires one KEY, --generation and --attempt")
     elif args.generation is not None or args.attempt is not None:
@@ -783,7 +935,21 @@ def main(argv=None) -> int:
             return 1
         print(json.dumps(result, sort_keys=True))
         return 0
-    rows = wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s)
+    options = {"consumer": True, "until": args.until or "ended"} if args.endings else {}
+    rows = wait_for_keys(queue, keys, cas=cas, wait_s=args.wait_s, **options)
+    if args.endings:
+        by_key = {row["action_key"]: row for row in rows}
+        ordered = [by_key[key] for key in keys]
+        complete = all(row["status"] not in {"waiting", "unreadable"}
+                       and (args.until != "cleaned" or row["diagnostics"]["cleanup"]["complete"])
+                       for row in ordered)
+        print(json.dumps({"schema": "prismabuild.endings.v1",
+                          "complete": complete,
+                          "endings": ordered}, sort_keys=True))
+        if args.until == "cleaned" and not complete and not any(
+                row["status"] == "unreadable" for row in ordered):
+            return GAVE_UP_EXIT
+        return consumer_endings_verdict(ordered)
     print(json.dumps(rows, sort_keys=True) if args.json else render(rows))
     return verdict(rows)
 

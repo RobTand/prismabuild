@@ -116,6 +116,7 @@ if _TEST_HELPERS not in sys.path:
 # Shared by the gang tests, whichever module imports ``gang_fleet``: a host that
 # holds the protected copy of the generation it runs (#1579, #1659).
 from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
+from record_compat_namespace import RecordCompatNamespacePreflight  # noqa: E402
 
 #: The mount the fleet executes against. The environment override exists so
 #: the guard itself can be exercised against a scratch store.
@@ -282,6 +283,8 @@ def _live_store_audit(event: str, args: tuple) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    if not config.pluginmanager.hasplugin("record-compat-namespace-preflight"):
+        config.pluginmanager.register(RecordCompatNamespacePreflight(), "record-compat-namespace-preflight")
     config.addinivalue_line(
         "markers",
         "live_store(reason): the test reads the fleet's live store on purpose; "
@@ -1121,7 +1124,7 @@ def action_common(
 def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
     import pbrun
     from prismabuild import submission
-    from submission_support import patch_store
+    from submission_support import repoint_stores
     from prismabuild.submission_types import FleetStore
     root = tmp_path / "fleet"
     store = FleetStore(root, pbrun.RUNTIME_ROOT,
@@ -1135,13 +1138,4 @@ def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_c
         return FleetStore(root, store.runtime_root, store.roster_path,
                           runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
     monkeypatch.setattr(submission_frontend, "store_for", fixture_store)
-    from types import ModuleType
-    modules = list(sys.modules.values())
-    nested = [value for module in modules if module is not None
-              for value in vars(module).values() if isinstance(value, ModuleType)]
-    for module in {id(value): value for value in [*modules, *nested] if value is not None}.values():
-        filename = getattr(module, "__file__", "") or ""
-        if Path(filename).parent.name == "fleet" and hasattr(module, "configured_store"):
-            monkeypatch.setattr(module, "configured_store", lambda: store)
-        if getattr(module, "store_for", None) is not None:
-            monkeypatch.setattr(module, "store_for", fixture_store)
+    repoint_stores(monkeypatch, configured_store=lambda: store, store_for=fixture_store)

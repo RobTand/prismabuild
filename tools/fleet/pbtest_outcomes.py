@@ -30,6 +30,7 @@ delivers every worker's reports.
 from __future__ import annotations
 
 import json
+import math
 from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
@@ -528,6 +529,27 @@ def _valid_record(record):
         if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != size
                 or any(not isinstance(v, str) for v in row[:3]) for row in rows):
             return False
+    if "bound_failures" in record:
+        failures = record["bound_failures"]
+        failed_phases = {(r[0], r[1]) for r in record.get("reports", [])
+                         if r[2] in ("failed", "error")}
+        if not isinstance(failures, list):
+            return False
+        seen = set()
+        for failure in failures:
+            if (not isinstance(failure, dict)
+                    or not isinstance(failure.get("nodeid"), str)
+                    or failure.get("when") not in ("setup", "call", "teardown")
+                    or failure.get("kind") not in ("per_test_bound", "shard_budget_exhausted")):
+                return False
+            phase = (failure["nodeid"], failure["when"])
+            if phase not in failed_phases or phase in seen:
+                return False
+            seen.add(phase)
+    if "first_tightened_test_budget_remaining_s" in record:
+        remaining = record["first_tightened_test_budget_remaining_s"]
+        if type(remaining) not in (int, float) or not math.isfinite(remaining):
+            return False
     return True
 
 
@@ -536,7 +558,8 @@ def _judge_row(row, index):
     if not isinstance(files, list) or any(not isinstance(f, str) or not f for f in files):
         files = []
     verdict = {"schema": VERDICT_SCHEMA, "shard": index, "green": False,
-               "failing_nodes": [], "unobserved_files": [], "problems": [],
+               "failing_nodes": [], "bound_failures": None,
+               "unobserved_files": [], "problems": [],
                "runtime_refusal": None, "reconciliation": None, "collected": [],
                "coverage": "unknown", "summary": "", "ran": False, "skipped": None,
                "completion": {"status": "unknown", "problems": ["no valid test completion record"]}}
@@ -570,6 +593,10 @@ def _judge_row(row, index):
     if not summary:
         problem("summary_missing", "no pytest terminal summary")
     if record is not None:
+        verdict["bound_failures"] = record.get("bound_failures")
+        if "first_tightened_test_budget_remaining_s" in record:
+            verdict["first_tightened_test_budget_remaining_s"] = record[
+                "first_tightened_test_budget_remaining_s"]
         verdict["collected"] = record.get("collected", [])
         verdict["skipped"] = recorded_skips(record)
         reports = [dict(zip(REPORT_FIELDS, r)) for r in record.get("reports", [])]
@@ -742,6 +769,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
             # controller's deduplicated reports (#1220).
             self.collect_seen: list[str] = []
             self.reports: list[list] = []
+            self.bound_failures: list[dict] = []
+            self.first_tightened_test: dict | None = None
             self.uncounted: list[list] = []
             self.file_durations: dict[str, float] = {}
             self.written = False
@@ -890,6 +919,12 @@ def main(argv: list[str] | None = None, *, preflight=None,
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
             yield
+            first = getattr(report, "pbtest_first_tightened_test", None)
+            if first is not None and (self.first_tightened_test is None
+                    or first["started_monotonic"] < self.first_tightened_test["started_monotonic"]):
+                # xdist can deliver reports out of start order. All workers
+                # share this host's monotonic clock; compare starts, not arrivals.
+                self.first_tightened_test = first
             self.trace("phase", report.nodeid, when=report.when,
                        outcome=report.outcome,
                        worker=getattr(report, "worker_id", None),
@@ -930,6 +965,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
                         reason = str(report.wasxfail or "") or None
                     self.reports.append([report.nodeid, report.when, category,
                                          reason, location])
+                    kind = getattr(report, "pbtest_bound_kind", None)
+                    if kind is not None and category in ("failed", "error"):
+                        self.bound_failures.append({
+                            "nodeid": report.nodeid, "when": report.when, "kind": kind})
             if report.when == "teardown":
                 if report.nodeid in self.teardown_finished:
                     self.duplicate_teardown = True
@@ -949,6 +988,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 "deselected": self.deselected,
                 "collect_seen": sorted(set(self.collect_seen)),
                 "reports": self.reports,
+                "bound_failures": self.bound_failures,
                 "uncounted": self.uncounted,
                 # Each file's summed phase seconds, to the millisecond:
                 # the packing model a later run reads (#1246).  Additive,
@@ -957,6 +997,9 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     name: round(seconds, 3)
                     for name, seconds in self.file_durations.items()},
             }
+            if self.first_tightened_test is not None:
+                record["first_tightened_test_budget_remaining_s"] = self.first_tightened_test[
+                    "budget_remaining_s"]
             if collection_spec is not None:
                 view = None
                 error = None

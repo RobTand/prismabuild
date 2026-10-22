@@ -1,20 +1,20 @@
 """Review regressions for an un-reapable reader's externally visible lifetime.
 
 Written by the independent review of PR #358 (codex-nfs-review) and copied here
-unchanged apart from this note, because the tests that catch a defect belong
-next to the code that had it.  The three are the review's own reproductions:
+because the tests that catch a defect belong next to the code that had it.
+The three are the review's own reproductions:
 an abandoned reader must not hold the caller's captured output, must not hold
 the caller's unrelated ``flock``, and a census that could not be read must not
 be reported as a complete one.
 """
 import fcntl
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -24,16 +24,46 @@ from prismabuild import census as fleet_census
 import pbstatus
 
 
+class _ReaderExpiresWhenBlocked:
+    """Expire after the child isolates its FDs and enters the blocked read."""
+
+    bounded = True
+
+    def __init__(self):
+        self.entered = multiprocessing.get_context("fork").Event()
+        self.before_spawn = True
+
+    def remaining(self):
+        if self.before_spawn:
+            self.before_spawn = False
+            return 1e9
+        self.entered.wait()
+        return 0.0
+
+    def read(self, *args, **kwargs):
+        self.entered.set()
+        signal.pause()
+
+
 def test_abandoned_reader_releases_captured_stdout_and_stderr():
     # Model failed SIGKILL delivery, without inducing a live kernel/NFS fault.
     # The process group belongs only to this test and is always cleaned up.
     program = '''
-import os,sys,time
+import os,sys
 sys.path.insert(0, 'tools/fleet')
+sys.path.insert(0, 'tests')
+from test_pbstatus_review_boundaries import _ReaderExpiresWhenBlocked
 from prismabuild import census as fleet_census
 import pbstatus
+deadline = _ReaderExpiresWhenBlocked()
+pbstatus.Deadline = lambda _seconds: deadline
 pbstatus.wedged_peers = lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None}
-fleet_census.action_rows = lambda root, *, reader=None: time.sleep(4)
+# The preliminary local peer census does not spend the injected pool deadline.
+bounded = pbstatus.bounded
+pbstatus.bounded = lambda section, read, **kwargs: (
+    {'status': 'ok', 'value': read()} if section == 'wedged-peers'
+    else bounded(section, read, **kwargs))
+fleet_census.action_rows = deadline.read
 pbstatus.os.kill = lambda pid, sig: None
 raise SystemExit(pbstatus.main(['--transport', 'pool', '--json', '--timeout-s', '0.05']))
 '''
@@ -41,10 +71,9 @@ raise SystemExit(pbstatus.main(['--transport', 'pool', '--json', '--timeout-s', 
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          text=True, start_new_session=True)
     try:
-        try:
-            out, err = p.communicate(timeout=1.5)
-        except subprocess.TimeoutExpired:
-            pytest.fail(f'parent rc={p.poll()}, but its abandoned child still holds captured output pipes')
+        # The reader stays blocked until cleanup. Leaked pipes therefore hang
+        # until the per-test alarm, even if the parent exited successfully.
+        out, err = p.communicate()
         assert p.returncode == 3
         assert json.loads(out)['abandoned_children']
     finally:
@@ -52,7 +81,7 @@ raise SystemExit(pbstatus.main(['--transport', 'pool', '--json', '--timeout-s', 
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        p.communicate(timeout=3)
+        p.communicate()
 
 
 def test_abandoned_reader_does_not_retain_unrelated_flock(tmp_path, monkeypatch):
@@ -62,9 +91,10 @@ def test_abandoned_reader_does_not_retain_unrelated_flock(tmp_path, monkeypatch)
     actual_kill = os.kill
     abandoned = []
     monkeypatch.setattr(pbstatus.os, 'kill', lambda pid, sig: None)
+    deadline = _ReaderExpiresWhenBlocked()
     try:
-        result = pbstatus.bounded('pool', lambda: time.sleep(4),
-                                  deadline=pbstatus.Deadline(0.05), abandoned=abandoned)
+        result = pbstatus.bounded('pool', deadline.read,
+                                  deadline=deadline, abandoned=abandoned)
         assert result['status'] == 'timed_out' and abandoned
         os.close(fd)
         fd = None
