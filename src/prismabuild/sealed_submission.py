@@ -6,6 +6,7 @@ from pathlib import Path
 from . import core as pb, digest_primitives, immutable_files, submission
 from .submission_types import FleetStore, SubmissionRequest, SubmissionRefused
 from .submission_frontend import SUBMISSION_SCHEMA_V1
+from .submission_timing import submission_phase, submission_phase_snapshot
 
 SEALED_SCHEMA = "prismabuild.sealed.v1"
 SUBMISSION_SCHEMA = SUBMISSION_SCHEMA_V1
@@ -50,15 +51,17 @@ def seal_consumer_request(request: SubmissionRequest, *, store: FleetStore, disp
             checkout_identity=template["checkout_identity"])
         context_path = sealed_context_path(store, action["action_key"])
         raw = pb._canonical_file_bytes(context)
-        immutable_files.publish_immutable(context_path, raw)
-        if immutable_files.read_immutable_file(context_path, where="sealed publication") != raw:
-            raise SealedSubmissionRefused("sealed_publication_conflict",
-                "this key already retains different publication options; "
-                "reuse the original options")
+        with submission_phase("cas_write"):
+            immutable_files.publish_immutable(context_path, raw)
+            if immutable_files.read_immutable_file(context_path, where="sealed publication") != raw:
+                raise SealedSubmissionRefused("sealed_publication_conflict",
+                    "this key already retains different publication options; "
+                    "reuse the original options")
     return dict(schema=SEALED_SCHEMA, action_key=action["action_key"],
-        request_sha256=request_sha, transport=request.transport)
+        request_sha256=request_sha, transport=request.transport, phases=submission_phase_snapshot())
 
 
+@submission_phase("sealed_request_read")
 def load_consumer_seal(key: str, *, store: FleetStore, detach: bool, wait_s: float,
                        transport: str):
     """Verify the request and every declared input without inspecting a checkout."""
@@ -84,12 +87,13 @@ def load_consumer_seal(key: str, *, store: FleetStore, detach: bool, wait_s: flo
     except (KeyError, TypeError, ValueError, pb.PrismaBuildError) as exc:
         raise SealedSubmissionRefused("invalid_sealed_request", str(exc)) from None
     cas = pb.PrismaBuildCAS(store.cas_root)
-    for entry in action["inputs"]:
-        try:
-            cas.input_path(entry)
-        except (OSError, pb.PrismaBuildError) as exc:
-            raise SealedSubmissionRefused("sealed_input_unavailable",
-                f"sealed input {entry['id']} ({entry['sha256']}) unavailable: {exc}") from None
+    with submission_phase("cas_input_verify"):
+        for entry in action["inputs"]:
+            try:
+                cas.input_path(entry)
+            except (OSError, pb.PrismaBuildError) as exc:
+                raise SealedSubmissionRefused("sealed_input_unavailable",
+                    f"sealed input {entry['id']} ({entry['sha256']}) unavailable: {exc}") from None
     request_sha = digest_primitives.raw_sha256(raw)
     context_path = sealed_context_path(store, key)
     try:
@@ -147,7 +151,8 @@ def publish_consumer_seal(key: str, *, store: FleetStore, detach: bool, wait_s: 
                           transport: str, display, report):
     action, template, request, path = load_consumer_seal(key, store=store,
         detach=detach, wait_s=wait_s, transport=transport)
-    submission.require_reachable_runtime(action["params"]["placement"]["required_tags"],
-        hostname=submission.socket.gethostname(), runtime_root=store.runtime_root)
+    with submission_phase("sealed_request_read"):
+        submission.require_reachable_runtime(action["params"]["placement"]["required_tags"],
+            hostname=submission.socket.gethostname(), runtime_root=store.runtime_root)
     return submission.submit_action(action, template=template, request=request,
         store=store, request_path=path, display=display, report=report)

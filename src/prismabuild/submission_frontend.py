@@ -23,6 +23,7 @@ def consumer_submission_display(store: FleetStore, *, render=render_submission):
     import json
     from . import action_client, core as pb
     from .digest_primitives import raw_sha256
+    from .submission_timing import submission_phase, submission_phase_snapshot
 
     def display(event: Display) -> None:
         if event.channel == "stdout":
@@ -32,14 +33,16 @@ def consumer_submission_display(store: FleetStore, *, render=render_submission):
                 value = None
             if (isinstance(value, dict) and value.get("schema") == action_client.DETACH_SCHEMA_V1
                     and value.get("action_key") is not None):
-                action = pb.PrismaBuildCAS(store.cas_root).read_action_request(value["action_key"])
-                if action is None:
-                    raise ValueError("submission acknowledgement has no verified sealed request")
+                with submission_phase("acknowledgement_verify"):
+                    action = pb.PrismaBuildCAS(store.cas_root).read_action_request(value["action_key"])
+                    if action is None:
+                        raise ValueError("submission acknowledgement has no verified sealed request")
+                    request_sha256 = raw_sha256(pb._canonical_file_bytes(action))
                 generation = value.get("published_unix")
                 # ``status`` keeps the detach vocabulary (submitted, attached,
                 # cache_hit): TrustLadder's live_runs accepts exactly those.
                 value.update(schema=SUBMISSION_SCHEMA_V1,
-                    request_sha256=raw_sha256(pb._canonical_file_bytes(action)),
+                    request_sha256=request_sha256, phases=submission_phase_snapshot(),
                     publication=dict(published_unix=generation, generation=generation))
                 event = replace(event, text=json.dumps(value))
         render(event)
