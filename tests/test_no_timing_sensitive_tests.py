@@ -167,7 +167,8 @@ _TIMING_MARKERS = ("sleep", "timeout", "pb-timing-ok")
 _TRIVIA = r"(?:\s|#[^\n]*(?:\n|$))*"
 _ARGUMENT_PREFIX = r"(?:\s|#[^\n]*(?:\n|$)|[()+-])*"
 _NUMBER_PREFIX = r"(?:[0-9]|\.[0-9])"
-_METHOD_PREFIXES = {kind: rf"\.{_TRIVIA}{kind}{_TRIVIA}\(" for kind in TIMING_METHODS}
+# Closing parentheses may separate the method from its call: (event.wait)(1).
+_METHOD_PREFIXES = {kind: rf"\.{_TRIVIA}{kind}(?:{_TRIVIA}\))*{_TRIVIA}\(" for kind in TIMING_METHODS}
 _POSITIONAL_SUBJECTS = re.compile("|".join((
     _METHOD_PREFIXES["wait"],
     _METHOD_PREFIXES["join"] + _ARGUMENT_PREFIX + _NUMBER_PREFIX,
@@ -549,6 +550,11 @@ def example(value=queue.get(True, 5)):
         assert timing_source_needs_ast(expression)
         assert scan_timing_source(expression) == {
             TimingIdentity("tests/snippet.py", "<module>", "wait"): 1}
+    for expression, kind in (("(event.wait)(delay)", "wait"), ("(thread.join)(5)", "join"),
+                             ("((q.get) )(True, 5)", "get")):
+        assert timing_source_needs_ast(expression), expression
+        assert scan_timing_source(expression) == {
+            TimingIdentity("tests/snippet.py", "<module>", kind): 1}
 
 
 def test_empty_or_stale_pragmas_fail():
