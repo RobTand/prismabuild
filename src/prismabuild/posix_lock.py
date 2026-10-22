@@ -54,7 +54,7 @@ import stat
 import struct
 import threading
 
-from .submission_timing import submission_phase
+from .core import _SUBMISSION_TIMINGS, submission_phase
 
 
 _threads = {}
@@ -217,9 +217,13 @@ def held(path: Path, *, blocking: bool = True,
     key = str(path)
     with _registry:
         mutex = _threads.setdefault(key, threading.RLock())
-    phase = "transition_lock_wait" if path.parent.name == "transition-locks" else "lock_wait"
-    with submission_phase(phase):
+    timings = _SUBMISSION_TIMINGS.get()
+    if timings is None:
         acquired_mutex = mutex.acquire(blocking=blocking)
+    else:
+        phase = "transition_lock_wait" if path.parent.name == "transition-locks" else "lock_wait"
+        with submission_phase(phase):
+            acquired_mutex = mutex.acquire(blocking=blocking)
     if not acquired_mutex:
         if busy is not None:
             busy.update(holder="thread", holder_pid=os.getpid())
@@ -240,8 +244,11 @@ def held(path: Path, *, blocking: bool = True,
             # whether the inode is a safe lock file and whether it was retired.
             descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             try:
-                with submission_phase(phase):
+                if timings is None:
                     _lockf(descriptor, blocking)
+                else:
+                    with submission_phase(phase):
+                        _lockf(descriptor, blocking)
             except OSError as exc:
                 if not blocking and exc.errno in (errno.EACCES, errno.EAGAIN):
                     if busy is not None:

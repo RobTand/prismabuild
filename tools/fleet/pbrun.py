@@ -453,6 +453,7 @@ def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Na
 def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, report=None) -> int:
     report = report if report is not None else action_client.ClientReport()
     writer = None
+    pending_ending = None
     timing_scope = contextlib.ExitStack()
     previous_observer = report.on_event
     try:
@@ -466,7 +467,11 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             except client_channel.ClientProtocolError as exc:
                 raise SystemExit(f"pbrun: {exc}") from None
             def send(event):
-                writer.send(event)
+                nonlocal pending_ending
+                if isinstance(event, action_client.ClientEnding):
+                    pending_ending = event
+                else:
+                    writer.send(event)
                 if previous_observer is not None:
                     previous_observer(event)
             report.on_event = send
@@ -549,6 +554,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
         timing_scope.close()
         report.on_event = previous_observer
         if writer is not None:
+            if pending_ending is not None:
+                writer.send(pending_ending)
             writer.close()
 
 

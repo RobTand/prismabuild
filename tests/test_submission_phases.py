@@ -243,3 +243,36 @@ def test_timing_refresh_failure_does_not_refuse_published_work(sealed_fleet, mon
     assert published["status"] == "submitted"
     ready = json.loads(submission.Path(published["submission"]).read_text())
     assert "queue_publication" in ready["phases"]
+
+
+def test_worker_locks_bypass_client_timing_when_no_observer_is_active(tmp_path, monkeypatch):
+    def unwanted_client_timing(*args, **kwargs):
+        pytest.fail("worker lock entered client timing without a submitter")
+    monkeypatch.setattr(posix_lock, "submission_phase", unwanted_client_timing)
+    with posix_lock.held(tmp_path / "transition-locks" / "worker.lock") as acquired:
+        assert acquired
+
+
+def test_cleanup_phases_precede_the_one_client_ending(sealed_fleet, monkeypatch, capsys):
+    from contextlib import contextmanager
+    work, queue, store = sealed_fleet
+    original = submission.write_window
+    @contextmanager
+    def window_with_lock_cleanup(*args, **kwargs):
+        with original(*args, **kwargs):
+            try:
+                yield
+            finally:
+                with submission_timing.submission_phase("lock_wait"):
+                    pass
+    monkeypatch.setattr(submission, "write_window", window_with_lock_cleanup)
+    read_fd, write_fd = os.pipe()
+    try:
+        assert pbrun.main(_consumer_argv(work, "--detach", "--client-events-fd", str(write_fd))) == 0
+        raw = os.read(read_fd, 65536)
+    finally:
+        os.close(read_fd)
+    decoder = client_channel.ClientEventDecoder(queue_root=store.queue_root, cas_root=store.cas_root)
+    decoder.feed(raw)
+    assert decoder.finish(0).problem is None
+    assert json.loads(raw.splitlines()[-1])["event"] == "ending"

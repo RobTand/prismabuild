@@ -1896,8 +1896,10 @@ measures `sealed_request_read` and `cas_input_verify` instead of preparing Git.
 The common publication tail measures `cas_read`, `offer_read`, `d38_gate` and
 `queue_publication` when reached. `transition_lock_wait` measures the per-key
 thread mutex and POSIX lock acquisitions. Other POSIX acquisitions and the CAS
-staging-owner flock use `lock_wait`. A span closes on refusal too. A completed
-span taking at least one second prints one line on stderr.
+staging-owner flock use `lock_wait`. With no submitter observer, worker POSIX
+lock acquisitions bypass timing contexts and phase-name resolution entirely.
+A span closes on refusal too. A completed span taking at least one second
+prints one line on stderr.
 
 The publisher copies `phases` to READY under its existing transition lock. It
 samples again after the ordinary READY write and persists that snapshot before
@@ -1916,8 +1918,9 @@ ignore the additive field, and current readers accept its absence.
 The existing private client channel adds `event: "phase"` under
 `prismabuild.client_event.v1`, with `phase`, `state` and `seconds`. A `started`
 event has null seconds and precedes the operation; `finished` has that span's
-exclusive duration, including when it raised. Identity and ending event fields,
-ordering, exit verification and recovery rules are unchanged. The decoder accepts
+exclusive duration, including when it raised. The CLI sends its single ending
+after submission cleanup so no phase follows it. Identity and ending event
+fields, ordering, exit verification and recovery rules are unchanged. The decoder accepts
 old streams and keeps phase events separate from the two control events. Phase
 traffic is bounded to 256 events, each at most 1024 bytes; the pipe stays
 nonblocking and best effort. Phase events never authorize recovery. Strict
