@@ -21,8 +21,9 @@ Everything else is admitted exactly as before.
 Fixture concessions: the producer's request is sealed and filed in a real
 CAS by the produced-output fixtures, it is claimed through the real adaptive
 path on sparklina's live CPU map, and its exports are published by the real
-``ProducedSpool.submit_group``.  Only the CPU sample and the producer's live
-telemetry are stated.
+``ProducedSpool.submit_group``.  The CPU sample and the producer's live
+telemetry are stated, and spool filesystem qualification is isolated from the
+runner's scratch filesystem in the producer fixture.
 """
 from __future__ import annotations
 from prismabuild import batch_ledger as bl
@@ -140,6 +141,10 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     bl.declare_instance(queue.root, instance)
     assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     fx._announce_tier(queue, tmp_path / "stage")
+    # Allowance accounting does not depend on filesystem qualification: tmp_path
+    # may be on tmpfs.  Keep real spool operations, and restore the guard after
+    # each test via its monkeypatch fixture.
+    monkeypatch.setattr(ps, "_local_disk", lambda path: None)
     spool = ps.ProducedSpool(queue, instance, template, cas_root=cas_root,
                              root=tmp_path / "local", max_bytes=256)
     return spool, cas
