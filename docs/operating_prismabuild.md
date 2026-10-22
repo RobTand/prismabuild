@@ -4455,6 +4455,30 @@ lead go and PB lead approval for the exact inventory/config. Source support
 alone does not authorize live archive work. Follow the schema and custody
 requirements in [the attempt archive contract](design.md#attempt-log-archive-and-queue-retention-2023).
 
+External readers use `prismabuild.resolve_attempt_log(queue_root, descriptor) -> bytes`.
+Its typed signature is:
+
+```python
+def resolve_attempt_log(queue_root: os.PathLike[str] | str, descriptor: Mapping[str, object]) -> bytes
+```
+
+Pass the terminal or attempt's `{path, bytes, sha256}` descriptor unchanged.
+The function returns verified live or archived bytes. A corrupt live file never
+falls back to archived bytes. The public call allocates memory proportional to
+the log; MCP uses the private streaming verifier to retain only its bounded tail.
+
+Import the resolver and these exception classes directly from `prismabuild`:
+
+| Exception | Meaning |
+|---|---|
+| `InvalidLogDescriptor` | The path, exact nonnegative integer byte count or lowercase SHA256 is invalid. |
+| `AttemptLogMissing` | Both the live address and exact archive index are absent. |
+| `AttemptLogIntegrityError` | Bytes, size, mode, identity or archive metadata disagree with their address. |
+| `AttemptArchiveUnavailable` | Configured storage cannot be verified or read, or its codec cannot complete. |
+
+A missing configured store or missing payload behind an index is unavailable
+history. Do not treat these errors as an empty log or shorter attempt history.
+
 Have the lead provision PB-owned `storage_pool/shared/pb-queue-evidence` at
 `/mnt/shared/prismabuild-fleet/queue-evidence`. Set the **child** dataset's
 effective `sync=standard` and `compression=zstd`; do not change its parent.

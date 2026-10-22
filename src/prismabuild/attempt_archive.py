@@ -276,7 +276,10 @@ def _read_attempt_archive_manifest(config: Mapping, fact: Mapping) -> dict:
     raw = native.read_immutable_file(path, where="attempt archive manifest", max_bytes=MAX_LOG_MANIFEST_BYTES)
     if digests.raw_sha256(raw) != sha:
         raise AttemptLogIntegrityError("attempt archive manifest digest differs")
-    manifest = digests.decode_strict_json(raw, where="attempt archive manifest")
+    try:
+        manifest = digests.decode_strict_json(raw, where="attempt archive manifest")
+    except digests.ActionContractError as exc:
+        raise AttemptLogIntegrityError(str(exc)) from exc
     if (not isinstance(manifest, dict)
             or set(manifest) != {"schema", "queue_id", "store_id", "descriptor", "chunks"}
             or manifest.get("schema") != ARCHIVE_MANIFEST_SCHEMA

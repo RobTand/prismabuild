@@ -216,6 +216,30 @@ def test_archive_io_failure_stops_remaining_batch_with_prefix_receipt(
     assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(later).values())
 
 
+@pytest.mark.parametrize("raw", [b"{malformed", b"\xff", b'{"chunks":[],"chunks":[]}'])
+def test_malformed_content_addressed_manifest_aborts_after_prefix(fleet, zstd_required, raw):
+    first = fleet.finish("d" * 64)
+    later = fleet.finish("e" * 64)
+    logs = fleet.descriptors(first)
+    target = logs["stderr"]
+    archive._publish_attempt_log_archive(fleet.queue.root, target)
+    index_path = archive._attempt_archive_index_path(fleet.config, target)
+    index = json.loads(index_path.read_bytes())
+    sha = digests.raw_sha256(raw)
+    native.publish_immutable(fleet.root / "manifests" / sha[:2] / f"{sha}.json", raw)
+    index_path.unlink()
+    native.publish_immutable(index_path, digests._canonical_bytes({**index, "manifest_sha256": sha}))
+    with pytest.raises(archive.AttemptLogIntegrityError):
+        archive._read_attempt_archive_manifest(fleet.config, target)
+    with pytest.raises(retention.AttemptRetentionRefused, match="retirement stopped"):
+        retention.apply_attempt_log_retention(fleet.queue, fleet.plan())
+    receipt_path, = (fleet.queue.root / "gc-receipts").glob("attempt-logs-*.json")
+    receipt = json.loads(receipt_path.read_bytes())
+    assert "AttemptLogIntegrityError" in receipt["aborted"] and len(receipt["removed"]) == 1
+    assert (fleet.queue.root / target["path"]).exists()
+    assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(later).values())
+
+
 @pytest.mark.parametrize("field,value", [("schema", "foreign.schema"), ("status", "failed"),
                                          ("published_unix", True), ("finished_unix", True)])
 def test_terminal_requires_real_schema_status_and_generation(fleet, field, value):

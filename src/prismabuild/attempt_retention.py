@@ -380,15 +380,15 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                     _recheck_attempt_retirement_authority(queue.root, plan)
                     native.unlink_nofollow(path, where="retiring attempt log")
                     removed.append({"path": fact["path"], "bytes": fact["bytes"]})
-            except (OSError, native.CASTamperError, native.CASUnavailableError,
+            except AttemptRetentionRefused as exc:
+                skipped.append({"path": fact["path"], "reason": f"{type(exc).__name__}: {exc}"})
+            except (OSError, ValueError, native.CASTamperError, native.CASUnavailableError,
                     archive.AttemptLogIntegrityError) as exc:
                 if isinstance(exc, OSError) and exc.errno == errno.EDQUOT:
                     raise
                 aborted = f"{type(exc).__name__}: {exc}"
                 skipped.append({"path": fact["path"], "reason": aborted})
                 break
-            except ValueError as exc:
-                skipped.append({"path": fact["path"], "reason": f"{type(exc).__name__}: {exc}"})
         if aborted is not None:
             break
     receipt = dict(schema="prismabuild.attempt-log-retirement-receipt.v1", queue_root=str(queue.root),
