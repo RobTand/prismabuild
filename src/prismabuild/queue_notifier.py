@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .queue_bell import Cursor, MAX_WAIT_S, STATE_DIRS
 from .queue_bell_events import (
-    EventRing, InotifyQueue, DEFAULT_RING_SIZE, EVENT_HEADER, IN_Q_OVERFLOW,
+    EventRing, InotifyQueue, MissingQueueDirectory, DEFAULT_RING_SIZE, EVENT_HEADER, IN_Q_OVERFLOW,
 )
 from .queue_bell_http import DeadlineInput
 
@@ -166,18 +166,22 @@ class BellService:
                  max_connections: int = MAX_CONNECTIONS, generation: Path | None = None):
         self.ring = EventRing(ring_size)
         self.workers = RequestWorkers(max_connections)
-        self.watch = InotifyQueue(root, generation=generation)
+        self.watch = None
         self.servers = []
         self.error: BaseException | None = None
         self.on_exit = on_exit
         try:
             for address in addresses:
                 self.servers.append(BellHTTPServer(address, self.ring, root, self.workers))
+            # Connections may queue, but no cursor is served until __enter__,
+            # after watch-before-scan coverage is installed for every directory.
+            self.watch = InotifyQueue(root, generation=generation)
             self.reader, self.writer = socket.socketpair()
         except BaseException:
             for server in self.servers:
                 server.server_close()
-            self.watch.close()
+            if self.watch is not None:
+                self.watch.close()
             raise
         self.thread = threading.Thread(target=self._listen, name="queue-bell")
 

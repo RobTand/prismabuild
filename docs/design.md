@@ -9660,9 +9660,15 @@ Unavailable by the client. Request headers have one absolute five-second
 read budget, re-armed before every recv. Each connection serves one request.
 SIGTERM/INT wake long-polls, close listeners and explicitly join every tracked
 non-daemon request thread. Header and response I/O remain bounded at shutdown.
-The role posts no park marker while serving and owns no admitted work. Binding
-an occupied port refuses with the standard singleton exit so supervisor
-backoff applies.
+The role posts no park marker while serving and owns no admitted work. All
+listeners bind before watches and scanning, so bind refusals scan no queue.
+The selector starts only after watch-before-scan coverage is installed; queued
+connections cannot obtain a cursor before startup completes. Partial construction
+closes every listener and any installed watches. An occupied port, unavailable
+listen address, or explicitly missing queue root or required state directory
+during startup refuses with a named reason and the standard singleton exit 3
+so supervisor backoff applies. Runtime failures, including required watch loss,
+exit 1 for prompt restart.
 
 Client request preparation, connect, headers and body consume one monotonic
 deadline. Expired or zero budgets raise typed Unavailable before any I/O.

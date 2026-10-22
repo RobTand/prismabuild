@@ -1083,9 +1083,12 @@ alongside other supervised role logs.
 Clients also identify their queue path; a bell serving another queue returns
 unavailable, so scratch queues retain bounded fallback.
 `GET /v1/now` is a read-only health/cursor query. Long-polls are capped at
-300 seconds; a restart changes epoch. An occupied port exits 3 and uses the
-supervisor's existing refusal backoff. A lost state-directory watch exits
-nonzero for restart. A published bell watches the active `repo` link and exits
+300 seconds; a restart changes epoch. An occupied port, unavailable listen
+address, or missing queue root or required state directory at startup exits 3
+with a named reason and uses the supervisor's existing refusal backoff.
+Listeners bind before watches and scanning; cursors are served only after
+startup completes. A lost state-directory watch after startup exits 1 for
+prompt restart. A published bell watches the active `repo` link and exits
 on retirement, including rollback to a generation without a bell role. Stop
 joins tracked request threads after waking their long-polls. Incomplete headers
 have an absolute five-second budget. At most 128 connections across all listeners

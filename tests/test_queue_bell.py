@@ -1,5 +1,6 @@
 """Real local inotify, HTTP and waiter boundaries, never a live queue (#1894)."""
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import http.client
 import json
 import os
@@ -357,6 +358,158 @@ def test_entrypoint_refuses_a_second_role_without_touching_queue(tmp_path, monke
     monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "locks")
     with role_session.role_singleton(Path(pbbell.__file__)):
         assert pbbell.main(["--queue-root", str(tmp_path / "absent")]) == 3
+
+
+@pytest.fixture
+def bell_startup(tmp_path, monkeypatch):
+    import pbbell
+    from prismabuild import role_session
+
+    root = tmp_path / "queue"
+    for directory in queue_bell.STATE_DIRS:
+        (root / directory).mkdir(parents=True)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "locks")
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    servers = []
+    actual_server = queue_notifier.BellHTTPServer
+
+    def remember_bell_listener(*args):
+        server = actual_server(*args)
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(queue_notifier, "BellHTTPServer", remember_bell_listener)
+    yield SimpleNamespace(root=root, servers=servers,
+        run=lambda *args: pbbell.main([
+            "--queue-root", str(root), "--port", str(port), *args]))
+    assert all(server.socket.fileno() == -1 for server in servers)
+
+
+@pytest.mark.parametrize("bind_error,expected", [
+    (errno.EADDRNOTAVAIL, 3), (errno.EACCES, 1),
+])
+def test_startup_bind_failure_closes_partial_listeners_without_scanning(
+        bell_startup, monkeypatch, capsys, bind_error, expected):
+    scans = []
+    actual_tree = queue_notifier.InotifyQueue._tree
+    actual_bind = socket.socket.bind
+
+    def record_bell_scan(self, *args):
+        scans.append(args)
+        return actual_tree(self, *args)
+
+    def refuse_unavailable_bell_address(self, address):
+        if address[0] == "192.0.2.1":
+            raise OSError(bind_error, "test listen address")
+        return actual_bind(self, address)
+
+    monkeypatch.setattr(queue_notifier.InotifyQueue, "_tree", record_bell_scan)
+    monkeypatch.setattr(socket.socket, "bind", refuse_unavailable_bell_address)
+    assert bell_startup.run("--listen", "127.0.0.1", "--listen", "192.0.2.1") == expected
+    assert len(bell_startup.servers) == 1
+    assert scans == []
+    errors = capsys.readouterr().err.splitlines()
+    assert len(errors) == 1
+    if expected == 3:
+        assert "startup refused" in errors[0]
+
+
+def test_occupied_bell_port_still_refuses_without_scanning(bell_startup, monkeypatch, capsys):
+    def forbid_occupied_port_scan(*args, **kwargs):
+        pytest.fail("occupied port scanned the queue")
+
+    monkeypatch.setattr(queue_notifier, "InotifyQueue", forbid_occupied_port_scan)
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        assert bell_startup.run("--port", str(occupied.getsockname()[1])) == 3
+    assert "startup refused" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("missing", [".", *queue_bell.REQUIRED_STATE_DIRS])
+@pytest.mark.parametrize("during_scan", [False, True])
+def test_missing_required_bell_directory_refuses_at_startup(
+        bell_startup, monkeypatch, capsys, missing, during_scan):
+    import shutil
+
+    path = bell_startup.root / missing
+    if during_scan:
+        actual_tree = queue_notifier.InotifyQueue._tree
+
+        def remove_before_bell_scan(self, relative, *args):
+            if relative == Path(missing):
+                shutil.rmtree(path)
+            return actual_tree(self, relative, *args)
+
+        monkeypatch.setattr(queue_notifier.InotifyQueue, "_tree", remove_before_bell_scan)
+    else:
+        shutil.rmtree(path)
+    assert bell_startup.run() == 3
+    errors = capsys.readouterr().err.splitlines()
+    assert len(errors) == 1
+    assert "startup refused" in errors[0]
+    assert "required queue directory missing" in errors[0]
+    assert str(path) in errors[0]
+
+
+def test_missing_generation_watch_is_not_a_queue_startup_refusal(bell_startup, monkeypatch,
+                                                               tmp_path, capsys):
+    import pbbell
+
+    generation = tmp_path / "absent-fleet" / "runtime-generations" / "current"
+    monkeypatch.setattr(pbbell, "generation_root", lambda _: generation)
+    assert bell_startup.run() == 1
+    assert "startup refused" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("runtime_errno", [None, errno.EADDRNOTAVAIL, errno.EADDRINUSE])
+def test_runtime_watch_failure_keeps_prompt_restart(bell_startup, monkeypatch, capsys,
+                                                  runtime_errno):
+    actual_enter = queue_notifier.BellService.__enter__
+
+    def lose_serving_bell_watch(self):
+        result = actual_enter(self)
+        (bell_startup.root / "ready").rmdir()
+        return result
+
+    if runtime_errno is not None:
+        def fail_serving_bell_read(*args):
+            raise OSError(runtime_errno, "runtime watch read")
+
+        monkeypatch.setattr(queue_notifier.InotifyQueue, "consume", fail_serving_bell_read)
+    monkeypatch.setattr(queue_notifier.BellService, "__enter__", lose_serving_bell_watch)
+    assert bell_startup.run() == 1
+    errors = capsys.readouterr().err
+    assert "watch" in errors
+    assert "startup refused" not in errors
+
+
+def test_bound_bell_serves_no_cursor_until_watches_and_scan_finish(bell_startup, monkeypatch):
+    actual_tree = queue_notifier.InotifyQueue._tree
+    connection = http.client.HTTPConnection("127.0.0.1", 1, timeout=2)
+
+    def connect_during_bell_scan(self, relative, *args):
+        if relative == Path():
+            assert bell_startup.servers
+            connection.port = bell_startup.servers[0].server_address[1]
+            connection.request("GET", "/v1/now")
+            with pytest.raises(BlockingIOError):
+                connection.sock.recv(1, socket.MSG_DONTWAIT)
+        return actual_tree(self, relative, *args)
+
+    monkeypatch.setattr(queue_notifier.InotifyQueue, "_tree", connect_during_bell_scan)
+    try:
+        with queue_notifier.BellService(bell_startup.root, [("127.0.0.1", 0)]) as service:
+            cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(
+                **json.loads(connection.getresponse().read())))
+            _rename_bell_record(bell_startup.root)
+            client = queue_bell.Client(bell_startup.root, host="127.0.0.1",
+                                      port=service.servers[0].server_address[1])
+            assert client.wait(cursor, ("done",), (KEY,), 2)["events"]
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize("relative", [

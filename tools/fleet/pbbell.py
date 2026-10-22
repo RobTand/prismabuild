@@ -31,8 +31,16 @@ def main(argv: list[str] | None = None) -> int:
                 addresses = [(host, args.port) for host in (args.listen or ["127.0.0.1"])]
                 loaded = generation_root(_ENTRYPOINT)
                 generation = loaded if loaded.parent.name == "runtime-generations" else None
-                with queue_notifier.BellService(args.queue_root, addresses,
-                        on_exit=stop.set, generation=generation):
+                try:
+                    service = queue_notifier.BellService(args.queue_root, addresses,
+                        on_exit=stop.set, generation=generation)
+                except OSError as exc:
+                    if not (isinstance(exc, queue_notifier.MissingQueueDirectory)
+                            or exc.errno in (errno.EADDRINUSE, errno.EADDRNOTAVAIL)):
+                        raise
+                    print(f"pbbell: startup refused: {exc}", file=sys.stderr, flush=True)
+                    return role_session.ROLE_SINGLETON_HELD_EXIT
+                with service:
                     stop.wait()
         return 0
     except (role_session.RoleLockHeld, role_session.RoleLockUnavailable) as exc:
@@ -40,8 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         return role_session.ROLE_SINGLETON_HELD_EXIT
     except OSError as exc:
         print(f"pbbell: {exc}", file=sys.stderr, flush=True)
-        return (role_session.ROLE_SINGLETON_HELD_EXIT
-                if exc.errno == errno.EADDRINUSE else 1)
+        return 1
 
 
 if __name__ == "__main__":

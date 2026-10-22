@@ -31,6 +31,10 @@ EVENT_HEADER = struct.Struct("iIII")
 DEFAULT_RING_SIZE = 4096
 
 
+class MissingQueueDirectory(OSError):
+    """A required queue directory is absent, rather than an incidental file."""
+
+
 class EventRing:
     def __init__(self, capacity: int = DEFAULT_RING_SIZE):
         if capacity < 1:
@@ -130,9 +134,9 @@ class InotifyQueue:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.directories = {}
         try:
-            for directory in REQUIRED_STATE_DIRS:
-                if not (root / directory).is_dir():
-                    raise FileNotFoundError(root / directory)
+            for path in (root, *(root / directory for directory in REQUIRED_STATE_DIRS)):
+                if not path.is_dir():
+                    raise MissingQueueDirectory(f"required queue directory missing: {path}")
             self._tree(Path())
             if self.live_link is not None:
                 self._add(self.live_link.parent, None)
@@ -201,10 +205,10 @@ class InotifyQueue:
                         self._tree(child, ring)
                     elif ring is not None:
                         self._hint(child, ring)
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             # A removed child is already covered by its parent's delete event.
             if relative == Path() or relative.as_posix() in REQUIRED_STATE_DIRS:
-                raise
+                raise MissingQueueDirectory(f"required queue directory missing: {path}") from exc
 
     def close(self) -> None:
         os.close(self.fd)
