@@ -1124,7 +1124,7 @@ def action_common(
 def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
     import pbrun
     from prismabuild import submission
-    from submission_support import patch_store
+    from submission_support import repoint_stores
     from prismabuild.submission_types import FleetStore
     root = tmp_path / "fleet"
     store = FleetStore(root, pbrun.RUNTIME_ROOT,
@@ -1138,13 +1138,4 @@ def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_c
         return FleetStore(root, store.runtime_root, store.roster_path,
                           runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
     monkeypatch.setattr(submission_frontend, "store_for", fixture_store)
-    from types import ModuleType
-    modules = list(sys.modules.values())
-    nested = [value for module in modules if module is not None
-              for value in vars(module).values() if isinstance(value, ModuleType)]
-    for module in {id(value): value for value in [*modules, *nested] if value is not None}.values():
-        filename = getattr(module, "__file__", "") or ""
-        if Path(filename).parent.name == "fleet" and hasattr(module, "configured_store"):
-            monkeypatch.setattr(module, "configured_store", lambda: store)
-        if getattr(module, "store_for", None) is not None:
-            monkeypatch.setattr(module, "store_for", fixture_store)
+    repoint_stores(monkeypatch, configured_store=lambda: store, store_for=fixture_store)
