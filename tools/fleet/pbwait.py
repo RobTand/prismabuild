@@ -355,13 +355,29 @@ def _from_ending(q, ending: endings.ObservedEnding, *, context=None) -> dict:
     if context is not None:
         context.clear()
     if isinstance(ending, endings.PublicationSupersession):
+        def retained_publication_phases():
+            sources = (q.records.attempt_documents(ending.action_key, generation=ending.published_unix),
+                       q.records.superseded_records(ending.action_key, fresh=True))
+            for records in sources:
+                for _, record in records:
+                    if (isinstance(record, dict)
+                            and record.get("action_key") == ending.action_key
+                            and endings.publication_generation(record.get("published_unix")) == ending.published_unix
+                            and isinstance(record.get("phases"), dict)):
+                        return record["phases"]
+            return {}
+        try:
+            phases = action_wait.read_observation("publication timing", retained_publication_phases,
+                budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+        except (action_wait.OutcomeReadUnavailable, OSError, pool.PoolContractError):
+            phases = {}
         if context is not None:
             context.update({"claimed": ending.record.get("claimed_unix") is not None,
                             "published_unix": ending.published_unix})
         return _row(
             ending.action_key, "superseded", transport="pool",
             published_unix=ending.published_unix,
-            phases=ending.record.get("phases", {}),
+            phases=phases,
             superseded_by_published_unix=ending.successor_published_unix,
             note=(f"publication {ending.published_unix!r} superseded by "
                   f"publication {ending.successor_published_unix!r}; no execution verdict"),

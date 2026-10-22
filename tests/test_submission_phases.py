@@ -57,10 +57,11 @@ def test_phase_events_survive_a_refused_publication(sealed_fleet, monkeypatch, c
     finally:
         os.close(read_fd)
     phases = [event for event in events if event["event"] == "phase"]
-    assert phases[-2]["phase"] == phases[-1]["phase"] == "d38_gate"
-    assert phases[-2]["state"] == "started"
+    gate = [event for event in phases if event["phase"] == "d38_gate"]
+    assert [event["state"] for event in gate] == ["started", "finished"]
+    assert gate[-1]["seconds"] >= 0
+    assert phases[-1]["phase"] == "filesystem_floor"
     assert phases[-1]["state"] == "finished"
-    assert phases[-1]["seconds"] >= 0
     assert events[-1]["event"] == "ending"
     assert queue.ready_items() == []
 
@@ -227,17 +228,16 @@ def test_diagnostic_event_budget_preserves_the_control_channel(sealed_fleet, mon
         os.close(read_fd)
 
 
-def test_timing_refresh_failure_does_not_refuse_published_work(sealed_fleet, monkeypatch, capsys):
+def test_timing_sample_uses_only_the_ordinary_ready_write(sealed_fleet, monkeypatch, capsys):
     work, queue, store = sealed_fleet
     original = submission.pool.PoolQueue(store.queue_root).records.__class__.replace_record_at
     writes = []
-    def refuse_timing_refresh(self, path, record):
+    def forbid_timing_refresh(self, path, record):
         if path.parent.name == "ready":
             writes.append(record)
-            if len(writes) == 2:
-                raise OSError("timing metadata unavailable")
+            assert len(writes) == 1, "timing must not add another READY write"
         return original(self, path, record)
-    monkeypatch.setattr(queue.records.__class__, "replace_record_at", refuse_timing_refresh)
+    monkeypatch.setattr(queue.records.__class__, "replace_record_at", forbid_timing_refresh)
     assert pbrun.main(_consumer_argv(work, "--detach")) == 0
     published = _one_json_line(capsys.readouterr())
     assert published["status"] == "submitted"

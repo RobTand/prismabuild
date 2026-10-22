@@ -5808,8 +5808,6 @@ class PoolQueue:
         payload = {"schema": PUBLICATION_SUPERSEDED_SCHEMA_V1, "status": "superseded",
                    "action_key": key, "published_unix": generation,
                    "successor": dict(successor)}
-        if "phases" in record:
-            payload["phases"] = dict(record["phases"])
         self.decode_publication_supersession(path, payload)
         self.records.file_publication_ending_at(path, payload)
         published = self.publication_ending(key, generation=generation)
@@ -7176,17 +7174,6 @@ class PoolQueue:
         if phases:
             item["phases"] = phases
         self.records.replace_record_at(path, item)
-        if phases:
-            # Still under the transition lock: no claimant can observe the
-            # preliminary timing. Include the READY write, then persist the
-            # diagnostic snapshot. Its own final write is outside the sample.
-            item["phases"] = submission_phase_snapshot()
-            try:
-                self.records.replace_record_at(path, item)
-            except OSError:
-                # Diagnostics cannot turn an already published row into a
-                # refused submission. The earlier sample remains valid.
-                pass
         return path
 
     #: Everything that describes the claim that has just ended.  A ready item

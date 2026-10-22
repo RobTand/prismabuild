@@ -1894,21 +1894,31 @@ CAS staging includes private staging setup, copy, hashing and cleanup; CAS write
 include blob/request publication and readback. CAS-only `--publish-sealed`
 measures `sealed_request_read` and `cas_input_verify` instead of preparing Git.
 The common publication tail measures `cas_read`, `offer_read`, `d38_gate` and
-`queue_publication` when reached. `transition_lock_wait` measures the per-key
+`queue_publication` when reached. `filesystem_floor` measures entry and cleanup
+of the filesystem floor window, including the mode read when disabled.
+`acknowledgement_verify` measures the detached acknowledgement's CAS request
+read and verification; its completed duration refreshes the response's sample.
+`transition_lock_wait` measures the per-key
 thread mutex and POSIX lock acquisitions. Other POSIX acquisitions and the CAS
-staging-owner flock use `lock_wait`. With no submitter observer, worker POSIX
+staging-owner flock use `lock_wait`. Snapshot owner timing covers only flock
+acquisition and its bounded retries; owner-file I/O stays in `bundle_pack`.
+With no submitter observer, worker POSIX
 lock acquisitions bypass timing contexts and phase-name resolution entirely.
 A span closes on refusal too. A completed span taking at least one second
 prints one line on stderr.
+Diagnostic callback failures do not interrupt submission. Acquired mutexes and
+kernel locks are protected before timing finalization can run.
 
-The publisher copies `phases` to READY under its existing transition lock. It
-samples again after the ordinary READY write and persists that snapshot before
-releasing the lock, so the claimant retains the write's cost. The final timing
-metadata write and post-publication readback are outside that record's sample;
-the detached response and phase-end event include the completed publication
-span. A failed timing refresh retains the earlier sample and does not refuse
-already published work. Claimed rows, immutable attempts, terminal records and exact publication
-supersessions retain the publisher's sample. Attachments and cache hits report
+The publisher samples `phases` immediately before the single ordinary READY
+write under its existing transition lock. The READY write, later readback,
+acknowledgement verification and floor cleanup are outside that persisted
+sample. Timing adds no READY replacement or fsync. Responses and phase-end
+events include completed publication and acknowledgement verification.
+Claimed rows, immutable attempts and terminal records retain the publisher's
+sample. Exact publication supersession keeps its original five-field contract;
+`pbwait` obtains that publication's timing from retained original-generation
+evidence through a bounded read. Missing timing never borrows the successor's
+sample or changes the supersession verdict. Attachments and cache hits report
 this invocation's timings without replacing the earlier publisher's sample.
 `pbwait --endings` rows and legacy `pbwait --json` rows expose `phases`; missing
 legacy timing is `{}`, never a measured zero. Existing schema IDs, including

@@ -218,23 +218,24 @@ def held(path: Path, *, blocking: bool = True,
     with _registry:
         mutex = _threads.setdefault(key, threading.RLock())
     timings = _SUBMISSION_TIMINGS.get()
-    if timings is None:
-        acquired_mutex = mutex.acquire(blocking=blocking)
-    else:
-        phase = "transition_lock_wait" if path.parent.name == "transition-locks" else "lock_wait"
-        with submission_phase(phase):
-            acquired_mutex = mutex.acquire(blocking=blocking)
-    if not acquired_mutex:
-        if busy is not None:
-            busy.update(holder="thread", holder_pid=os.getpid())
-        yield False
-        return
+    acquired_mutex = False
     descriptor = None
     acquired = False
-    owners = getattr(_owned, "paths", None)
-    if owners is None:
-        owners = _owned.paths = set()
     try:
+        if timings is None:
+            acquired_mutex = mutex.acquire(blocking=blocking)
+        else:
+            phase = "transition_lock_wait" if path.parent.name == "transition-locks" else "lock_wait"
+            with submission_phase(phase):
+                acquired_mutex = mutex.acquire(blocking=blocking)
+        if not acquired_mutex:
+            if busy is not None:
+                busy.update(holder="thread", holder_pid=os.getpid())
+            yield False
+            return
+        owners = getattr(_owned, "paths", None)
+        if owners is None:
+            owners = _owned.paths = set()
         if key in owners:
             yield True
             return
@@ -246,9 +247,11 @@ def held(path: Path, *, blocking: bool = True,
             try:
                 if timings is None:
                     _lockf(descriptor, blocking)
+                    acquired = True
                 else:
                     with submission_phase(phase):
                         _lockf(descriptor, blocking)
+                        acquired = True
             except OSError as exc:
                 if not blocking and exc.errno in (errno.EACCES, errno.EAGAIN):
                     if busy is not None:
@@ -259,7 +262,6 @@ def held(path: Path, *, blocking: bool = True,
                     yield False
                     return
                 raise
-            acquired = True
             if not _retired(descriptor, path):
                 break
             acquired = False
@@ -285,7 +287,8 @@ def held(path: Path, *, blocking: bool = True,
                 if descriptor is not None:
                     os.close(descriptor)
             finally:
-                mutex.release()
+                if acquired_mutex:
+                    mutex.release()
 
 
 def retire(path: Path) -> str:

@@ -818,8 +818,8 @@ def owned_snapshot_directory():
         held = os.open(temporary.name, os.O_RDONLY | os.O_DIRECTORY
                        | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
         try:
-            with submission_phase("lock_wait"):
-                lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME)
+            lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME,
+                acquisition=submission_phase("lock_wait"))
         finally:
             os.close(held)
         try:
@@ -6927,11 +6927,18 @@ def preparation(request: SubmissionRequest, *, store: FleetStore,
 @contextlib.contextmanager
 def write_window(request: SubmissionRequest, *, store: FleetStore):
     try:
-        with filesystem_floor.operation(store.queue_root, label="pbrun",
-                used_paths=[request.cwd or os.getcwd(), store.cas_root,
-                            store.queue_root, tempfile.gettempdir()],
-                growth_gib=({store.cas_root: request.filesystem_growth_gib}
-                            if request.transport == "pool" else {})):
+        with contextlib.ExitStack() as stack:
+            with submission_phase("filesystem_floor"):
+                stack.enter_context(filesystem_floor.operation(store.queue_root, label="pbrun",
+                    used_paths=[request.cwd or os.getcwd(), store.cas_root,
+                                store.queue_root, tempfile.gettempdir()],
+                    growth_gib=({store.cas_root: request.filesystem_growth_gib}
+                                if request.transport == "pool" else {})))
+            exit_window = stack.pop_all().__exit__
+            def finish_floor(*exc):
+                with submission_phase("filesystem_floor"):
+                    return exit_window(*exc)
+            stack.push(finish_floor)
             yield
     except filesystem_floor.FloorRefused as exc:
         raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "

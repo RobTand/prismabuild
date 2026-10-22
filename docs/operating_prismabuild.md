@@ -310,9 +310,19 @@ and `cas_input_verify`, then the ordinary CAS, offer, gate and publication phase
 It does not repeat or report checkout preparation. The queue retains the
 publisher's `phases` through claim, immutable attempt and terminal publication.
 An attachment's response describes the attaching call; it does not overwrite
-the publisher's timing. The READY sample includes the ordinary READY write and
-excludes its own final metadata write and subsequent readback. The response
-and client phase-end event measure through publication return.
+the publisher's timing. READY samples immediately before its single ordinary
+write. It excludes that write, later readback, acknowledgement verification
+and floor cleanup; timing adds no READY write or fsync. The response and client
+phase-end events include completed publication and acknowledgement verification.
+`filesystem_floor` labels window entry and cleanup, including a disabled-mode
+read. `acknowledgement_verify` labels the detached response's CAS request check
+and refreshes its response sample. Snapshot `lock_wait` covers flock acquisition
+and retries, while owner-file I/O stays in `bundle_pack`. Diagnostic output
+failures do not interrupt submission or leak acquired locks.
+
+Exact supersession decisions keep their original five fields. Wait rows obtain
+timing from retained evidence for the original publication, never its successor.
+An unavailable diagnostic sample stays empty without changing the decision.
 
 Read the slowest recorded submission phase from an ending:
 

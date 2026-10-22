@@ -140,7 +140,8 @@ def test_main_cached_identity_replays_only_its_configured_verified_result(tmp_pa
     assert record["schema"] == "prismabuild.submission.v1"
     assert {key: record[key] for key in internal if key not in {"schema", "phases"}} == {
         key: value for key, value in internal.items() if key not in {"schema", "phases"}}
-    assert set(record["phases"]) == {"cas_read", "cas_write"}
+    assert set(record["phases"]) == {
+        "cas_read", "cas_write", "filesystem_floor", "acknowledgement_verify"}
     assert all(seconds >= 0 for seconds in record["phases"].values())
     assert record["request_sha256"]
     assert client.read_cached_output(events.identity, events.ending) == client.CachedOutput(

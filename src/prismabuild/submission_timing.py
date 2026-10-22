@@ -10,7 +10,8 @@ from .core import _SUBMISSION_TIMINGS, submission_phase, submission_phase_snapsh
 SUBMISSION_PHASE_NAMES = frozenset({
     "checkout_identity", "bundle_pack", "cas_stage", "cas_write", "offer_read",
     "d38_gate", "queue_publication", "transition_lock_wait", "lock_wait",
-    "sealed_request_read", "cas_input_verify", "cas_read",
+    "sealed_request_read", "cas_input_verify", "cas_read", "filesystem_floor",
+    "acknowledgement_verify",
 })
 SLOW_SUBMISSION_PHASE_S = 1.0
 
@@ -36,6 +37,13 @@ class SubmissionTimings:
             result[name] = result.get(name, 0.0) + time.monotonic() - started
         return result
 
+    def _diagnostic(self, callback, value):
+        try:
+            if callback is not None:
+                callback(value)
+        except Exception:
+            pass
+
     @contextmanager
     def activate(self):
         token = _SUBMISSION_TIMINGS.set(self)
@@ -57,8 +65,7 @@ class SubmissionTimings:
             self.durations[parent] += now - started
         previous = self.durations.setdefault(name, 0.0)
         self.stack.append([name, now])
-        if self.on_phase is not None:
-            self.on_phase(SubmissionPhaseEvent(name, "started"))
+        self._diagnostic(self.on_phase, SubmissionPhaseEvent(name, "started"))
         try:
             yield
         finally:
@@ -68,7 +75,7 @@ class SubmissionTimings:
             if self.stack:
                 self.stack[-1][1] = now
             seconds = self.durations[name] - previous
-            if self.on_phase is not None:
-                self.on_phase(SubmissionPhaseEvent(name, "finished", seconds))
+            self._diagnostic(self.on_phase, SubmissionPhaseEvent(name, "finished", seconds))
             if seconds >= SLOW_SUBMISSION_PHASE_S and self.on_slow is not None:
-                self.on_slow(f"pbrun: submission phase {name} took {seconds:.3f}s")
+                self._diagnostic(self.on_slow,
+                    f"pbrun: submission phase {name} took {seconds:.3f}s")
