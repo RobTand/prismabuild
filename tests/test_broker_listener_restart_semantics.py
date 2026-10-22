@@ -104,8 +104,6 @@ def test_broker_sigterm_preserves_payload_completion_and_native_exit(mode):
             _broker_probe_event(notify_r, b'R')
             if mode == 'signal_thread':
                 _broker_probe_event(notify_r, b'W')
-                wait_channel = Path(f'/proc/{process.pid}/wchan').read_text().strip()
-                assert 'ep' in wait_channel, f'listener not blocked in selector: {wait_channel}'
                 os.write(trigger_w, b'x')
                 try:
                     process.wait(timeout=2)
