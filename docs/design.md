@@ -2116,16 +2116,23 @@ binding cannot fall back to legacy evidence inside a declared bound run.
 Only private emission closures attach the nonce to record copies. Population,
 reports, counts and the snapshotted collect-only flag stay in closure-private
 state. The registered adapter exposes pytest event hooks with no state or
-record/emission helper methods. Final outcomes follow pytest's session-finish
-hooks, before exit cleanup; early completion still survives blocked exit hooks.
+record/emission helper methods. Private phase flags accept a population only
+after the recorder's outer collection wrapper resumes from its yield, and
+session-finish emission only after its outer test-loop wrapper returns or
+raises. Both require
+the recorded session's identity. Final outcomes precede exit cleanup, including
+KeyboardInterrupt; early completion still survives blocked exit hooks.
 A duplicated, non-inheritable stdout descriptor is captured before pytest runs;
 replacing the terminal writer cannot intercept bound records. The emission
 closure refuses any PID other than the one that minted the nonce, including
 a fork-without-exec child calling inherited recorder hooks.
 The nonce never enters argv or `os.environ`, so fresh nested recorders mint
-independent nonces. This binding is accidental-forgery-proof and raises the
-bar for deliberate forgery: forging requires closure or memory introspection.
-It is not a security boundary.
+independent nonces. In a declared bound run, printed or nested markers cannot
+be accepted, nor can direct calls to recorder hooks outside pytest's real event
+order. Deliberate in-process tampering with closures, pluggy internals or file
+descriptors remains possible because tests run in the harness's process. This
+is not a security boundary. TrustLadder's control for that is reviewing
+agent-written tests.
 
 Without a `record_binding` declaration, a new reader preserves main's legacy
 last-marker behavior exactly, including streams with no outer preflight and

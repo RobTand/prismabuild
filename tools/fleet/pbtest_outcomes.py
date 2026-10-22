@@ -825,7 +825,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.config = None
             self.session = None
             self.collect_only = False
+            self.collection_started = False
             self.collection_finished = False
+            self.runtestloop_started = False
+            self.runtestloop_finished = False
             self.collected: list[str] | None = None
             self.deselected: list[str] = []
             # Modules whose collection failed or skipped, as every xdist
@@ -952,9 +955,10 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_sessionfinish(self, session, exitstatus):
-            # A direct registry call during a test is not session completion.
-            # Pytest drains its setup stack before dispatching this hook.
-            if session is not state.session or session._setupstate.stack:
+            # Only the outer test loop can authorize final emission, including
+            # when it unwinds through KeyboardInterrupt. Test-visible pytest
+            # state cannot establish this boundary.
+            if session is not state.session or not state.runtestloop_finished:
                 yield
                 return
             emit_completion(session_finished=True)
@@ -966,9 +970,35 @@ def main(argv: list[str] | None = None, *, preflight=None,
         def pytest_runtest_logstart(self, nodeid, location) -> None:
             trace("start", nodeid)
 
-        @pytest.hookimpl(tryfirst=True)
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_collection(self, session):
-            if collection_spec is not None:
+            if session is not state.session or state.collection_started:
+                yield
+                return
+            state.collection_started = True
+            try:
+                yield
+            finally:
+                # The controller's population arrives from xdist workers.
+                if not state.expected_workers:
+                    state.collected = [item.nodeid for item in session.items]
+                state.collection_finished = True
+
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+        def pytest_runtestloop(self, session):
+            if (session is not state.session or not state.collection_finished
+                    or state.runtestloop_started):
+                yield
+                return
+            state.runtestloop_started = True
+            try:
+                yield
+            finally:
+                state.runtestloop_finished = True
+
+        @pytest.hookimpl(specname="pytest_collection", tryfirst=True)
+        def pytest_collection_ignore_named(self, session):
+            if session is not state.session or collection_spec is not None:
                 return None
             # pytest never asks its ignore rules about a path named on the
             # command line, and pbtest names every file (#1304).  Drop the
@@ -984,15 +1014,14 @@ def main(argv: list[str] | None = None, *, preflight=None,
             if not session.config.args:
                 # Every named file is ignored: collect nothing rather than
                 # widen an empty argument list to the whole suite.
-                state.collected = []
                 session.testscollected = 0
                 return True
             return None
 
         def pytest_collection_finish(self, session) -> None:
-            if not state.collection_finished:
-                state.collected = [item.nodeid for item in session.items]
-                state.collection_finished = True
+            # Only our collection wrapper snapshots after dispatch returns.
+            # Direct registry calls, including during collection, are ignored.
+            pass
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_setupnodes(self, config, specs) -> None:
