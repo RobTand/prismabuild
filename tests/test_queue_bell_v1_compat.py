@@ -1,16 +1,18 @@
-"""Raw v1 bytes and both client/service versions against #1894's Git source."""
+"""Raw v1 bytes and both client/service versions against archived #1894 source."""
 import http.client
 import importlib
+from io import BytesIO
 import json
 from pathlib import Path
-import subprocess
 import sys
+import tarfile
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from prismabuild import queue_bell, queue_notifier
+from prismabuild.digest_primitives import raw_sha256
 
 BASE_BELL_REVISION = "8b2d47ff824e89aa60f83126d397bbd4207fe3d2"
 V1_EPOCH = "a" * 32
@@ -23,11 +25,29 @@ def base_bell_modules(tmp_path_factory):
     package = parent / "bell_base_1894"
     package.mkdir()
     (package / "__init__.py").write_text("")
-    checkout = Path(__file__).resolve().parents[1]
-    for name in ("queue_bell", "queue_bell_events", "queue_bell_http", "queue_notifier"):
-        source = subprocess.check_output(["git", "-C", str(checkout), "show",
-            f"{BASE_BELL_REVISION}:src/prismabuild/{name}.py"])
-        (package / f"{name}.py").write_bytes(source)
+    fixture = Path(__file__).resolve().parent / "fixtures/queue-bell-v1-8b2d47ff.tar.gz"
+    metadata = json.loads(fixture.with_suffix(".json").read_bytes())
+    modules = ("queue_bell", "queue_bell_events", "queue_bell_http", "queue_notifier")
+    sources = {f"src/prismabuild/{name}.py" for name in modules}
+    assert metadata["commit"] == BASE_BELL_REVISION
+    assert set(metadata["corpus"]) == sources
+    packed = fixture.read_bytes()
+    assert raw_sha256(packed) == metadata["archive_sha256"]
+    # Keep historical bytes out of source inventories and import only the exact
+    # verified closure. No Git history, extraction paths or current-code fallback.
+    with tarfile.open(fileobj=BytesIO(packed), mode="r:gz") as archive:
+        members = archive.getmembers()
+        assert sorted(member.name for member in members) == sorted(sources)
+        assert all(member.isfile() for member in members)
+        for name in modules:
+            path = f"src/prismabuild/{name}.py"
+            expected = metadata["corpus"][path]
+            assert archive.getmember(path).size == expected["bytes"]
+            with archive.extractfile(path) as stream:
+                source = stream.read(expected["bytes"] + 1)
+            assert len(source) == expected["bytes"]
+            assert raw_sha256(source) == expected["sha256"]
+            (package / f"{name}.py").write_bytes(source)
     sys.path.insert(0, str(parent))
     try:
         yield SimpleNamespace(client=importlib.import_module("bell_base_1894.queue_bell"),
