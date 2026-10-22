@@ -366,8 +366,7 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                     config = archive._check_attempt_archive_store(queue.root, for_apply=True)
                     archive._stream_archived_attempt_log(config, fact, lambda raw: None)
                     path = queue.root / fact["path"]
-                    # Native custody verifies the full source immediately before
-                    # descriptor-relative unlink; the key lock excludes its owner.
+                    # Observe ownership again after this preliminary digest.
                     native.file_identity_nofollow(path, where="retiring attempt log",
                         expected_sha256=fact["sha256"], expected_bytes=fact["bytes"])
                     _recheck_attempt_retirement_authority(queue.root, plan)
@@ -377,8 +376,17 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                     current, reason = queue.attempt_log_retention_eligibility(key, cutoff=plan["cutoff"])
                     if (current is None or reason or current["terminal_sha256"] != candidate["terminal_sha256"]):
                         raise AttemptRetentionRefused(reason or "terminal changed before unlink")
-                    _recheck_attempt_retirement_authority(queue.root, plan)
-                    native.unlink_nofollow(path, where="retiring attempt log")
+                    expires = _recheck_attempt_retirement_authority(queue.root, plan)
+                    try:
+                        native.file_identity_nofollow(path, where="retiring attempt log",
+                            expected_sha256=fact["sha256"], expected_bytes=fact["bytes"])
+                        if time.time() >= expires:
+                            raise AttemptRetentionRefused("reader gate expired before unlink")
+                        native.unlink_nofollow(path, where="retiring attempt log",
+                            expected_identity=candidate["source_identities"][fact["path"]],
+                            expected_bytes=fact["bytes"])
+                    except native.CASTamperError as exc:
+                        raise AttemptRetentionRefused("attempt log source changed before unlink") from exc
                     removed.append({"path": fact["path"], "bytes": fact["bytes"]})
             except AttemptRetentionRefused as exc:
                 skipped.append({"path": fact["path"], "reason": f"{type(exc).__name__}: {exc}"})
@@ -498,8 +506,9 @@ def _verify_current_attempt_readers(queue_root: Path, members: list, generations
         raise AttemptRetentionRefused("worker offers expired during inventory verification")
 
 
-def _attempt_retention_source_identity(info: os.stat_result) -> list[int]:
-    return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode]
+def _attempt_retention_source_identity(info: os.stat_result) -> dict[str, int]:
+    return {field: getattr(info, field) for field in (
+        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")}
 
 
 def _attempt_retention_active_owner_refusal(queue, key: str, *, record: Mapping, cutoff: float) -> str:
@@ -611,11 +620,12 @@ def checkpoint_attempt_log_survey(queue_root: Path, plan: Mapping) -> bool:
     return True
 
 
-def _recheck_attempt_retirement_authority(queue_root: Path, plan: Mapping) -> None:
+def _recheck_attempt_retirement_authority(queue_root: Path, plan: Mapping) -> float:
     config, days, gate = _attempt_retention_settings(queue_root, now=time.time(), applying=True)
     if (digests.canonical_sha256(config) != plan.get("config_sha256")
             or days != plan.get("retention_days") or not gate["verified"]):
         raise AttemptRetentionRefused("attempt retirement config/store/window changed after survey")
+    return gate["expires_unix"]
 
 
 def _count_attempt_retention_bytes(queue_root: Path, key: str) -> int | None:

@@ -685,17 +685,34 @@ def file_identity_nofollow(
     raise AssertionError("stable file identity retry loop did not return or raise")
 
 
-def unlink_nofollow(path: Path, *, where: str) -> None:
-    """Unlink a leaf only through its current no-follow parent directory."""
+def unlink_nofollow(path: Path, *, where: str,
+                    expected_identity: Mapping[str, int] | None = None,
+                    expected_bytes: int | None = None) -> None:
+    """Unlink through one held parent, optionally guarding the verified leaf.
+
+    The guarded form compares the caller's surveyed stat fields and descriptor
+    size immediately before unlinkat, without reopening the parent by name.
+    """
 
     try:
         directory_fd = open_directory_nofollow(path.parent, where=f"{where} parent")
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
+        if expected_identity is not None or expected_bytes is not None:
+            raise ReplacedRecordError(f"{where} source changed before unlink: {path}") from exc
         return
     try:
         try:
+            if expected_identity is not None or expected_bytes is not None:
+                observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(observed.st_mode)
+                        or any(getattr(observed, field) != value
+                               for field, value in (expected_identity or {}).items())
+                        or (expected_bytes is not None and observed.st_size != expected_bytes)):
+                    raise ReplacedRecordError(f"{where} source changed before unlink: {path}")
             os.unlink(path.name, dir_fd=directory_fd)
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            if expected_identity is not None or expected_bytes is not None:
+                raise ReplacedRecordError(f"{where} source changed before unlink: {path}") from exc
             return
         os.fsync(directory_fd)
         assert_directory_identity(

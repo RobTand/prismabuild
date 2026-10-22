@@ -20780,6 +20780,13 @@ Chunks and direct indexes are prepared and verified outside queue locks. Under
 the nonblocking per-key transition lock, apply compares terminal bytes and exact
 generation, rechecks eligibility, reads the archive back, verifies source
 size/hash/device/inode/mtime/ctime, and rechecks authority before **each** unlink.
+After the preliminary digest, the final eligibility and full authority checks
+finish before the final source digest. The no-follow unlink boundary then holds
+one parent directory fd, compares the leaf's no-follow stat with the surveyed
+device, inode, size, mtime, ctime and mode and the descriptor's byte count, and
+immediately unlinks through that same fd. A missing or changed source is retained
+and reported as changed, never recorded as removed. The gate expiry is checked
+locally after the final digest; no slow authority census intervenes before unlink.
 The plan binds the complete config digest and window. A changed store, window,
 gate, active reader or ownership state skips removal. Gate freshness is rechecked
 after lengthy verification. No recursive deletion runs. Durable receipts in

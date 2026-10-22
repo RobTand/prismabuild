@@ -187,25 +187,35 @@ def test_source_replacement_after_verification_before_unlink_is_retained(fleet, 
     record = fleet.finish()
     fact = fleet.descriptors(record)["stdout"]
     path = fleet.queue.root / fact["path"]
-    original = native.unlink_nofollow
+    original, open_parent = native.unlink_nofollow, native.open_directory_nofollow
     before = path.stat()
     changed = False
+    unlinking = False
     held = os.open(path, os.O_RDONLY)
-    def replace_before_unlink(target, **kwargs):
+    def replace_after_parent_open(target, **kwargs):
         nonlocal changed
-        if target == path and not changed:
+        descriptor = open_parent(target, **kwargs)
+        if unlinking and target == path.parent and not changed:
             changed = True
-            target.unlink()
+            path.unlink()
             raw = b"X" * fact["bytes"]
             if replacement == "symlink":
                 other = path.with_suffix(".replacement")
                 native.publish_immutable(other, raw)
-                target.symlink_to(other)
+                path.symlink_to(other)
             else:
-                native.publish_immutable(target, raw)
-                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
-        return original(target, **kwargs)
-    monkeypatch.setattr(native, "unlink_nofollow", replace_before_unlink)
+                native.publish_immutable(path, raw)
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return descriptor
+    def unlink(target, **kwargs):
+        nonlocal unlinking
+        unlinking = target == path
+        try:
+            return original(target, **kwargs)
+        finally:
+            unlinking = False
+    monkeypatch.setattr(native, "open_directory_nofollow", replace_after_parent_open)
+    monkeypatch.setattr(native, "unlink_nofollow", unlink)
     try:
         result = fleet.retire()
     finally:
