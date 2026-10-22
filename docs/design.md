@@ -9881,12 +9881,13 @@ HTTP 503. A cursor and coverage version must be captured before reading records.
 
 `/v2/wait` takes `since`, `coverage_version`, comma-separated `topics` and `ids`,
 and `timeout`. Empty filters select all declared topics or IDs. Events contain
-only `{seq, topic, id}`. This slice declares the nine existing outcome directory
-names as topics, each with a lowercase 64-hex action ID. The `Topic` declaration
+only `{seq, topic, id}`. The nine existing outcome directory names are topics,
+each with a lowercase 64-hex action ID. The `Topic` declaration
 owns each topic's ID grammar and legacy projection. `OutcomeNamespaces` owns
 its bounded traversal and names-only mapping. Later mutation families must add
 a separate bounded adapter and an explicit topic declaration before advertising
-coverage. No worker, ledger, tier, residency or prewarm topic is covered here.
+coverage. The host adapters below add `workers` and `reservations`. Tier,
+residency, adaptive mirrors, passes, denials and prewarm remain uncovered.
 Topic names are at most 64 characters; IDs are at most 128. A request admits at
 most 32 topic entries and 128 ID entries, including duplicates. Paths and
 noncanonical IDs are rejected with HTTP 400. Unknown syntactically valid topics
@@ -9922,6 +9923,80 @@ is a transport deadline, the one-second connect cap bounds an unavailable
 endpoint, and the five-second server I/O deadline bounds headers and delivery.
 Each request also obeys the caller's original absolute patience; disconnect and
 service shutdown cancel subscriptions immediately.
+
+Slice 2a (#1940) adds names-only `WorkerOffers` and `HostReservations` adapters.
+`workers/<host>.json` maps to topic `workers` and the exact filename host,
+including dots. `reservations/<host>` maps to topic `reservations` and that
+same host ID. Host IDs contain at most 128 ASCII letters, digits, dots,
+underscores or hyphens and start with a letter or digit. The bell never
+publishes holder names, token names, record contents or capacity verdicts.
+
+The reservation adapter watches each host root, `free`, `minted`, `held`, and
+each holder's immediate contents. Traversal stops at holders, four directories
+below the queue. Reconstruction uses `HolderCensus`'s holder-directory
+enumeration, including hidden and unknown holder names, plus every symlink
+before the directory predicate. A dangling link or a link to a file can become
+a holder when its target changes. Every immediate holder entry invalidates its
+host, including hidden entries other than the two metadata names, because
+`CpuReservation.has_contents` reads all names. Hidden free and minted token
+names also invalidate their host.
+It covers legacy token writers, partial private acquisitions,
+rollback, commit rename, release without a terminal record, capacity/map
+replacement, and holder `.adaptive.json` and `.gpu.json` writes. The separate
+host `adaptive` subtree belongs to slice 2b. Each directory is watched before
+reconstruction; concurrent kernel events remain buffered for replay. Lazy and
+populated moved-in holders withdraw coverage during installation and advance
+the v2 reset marker before restoring it. Parent rename/delete invalidations
+remove the old subtree watches so moved-away inodes cannot retain a host ID.
+Rebinding an inode to a new relative name replaces its watch descriptor;
+buffered self-events for the old descriptor cannot remove the new binding.
+Nameless events on the workers or reservations root, and queue-root attribute
+changes, advance the v2 reset marker because they cannot identify which hosts
+became readable or changed. Ancestor directories have watches without scans,
+installed before queue reconstruction. Their permission changes reset v2;
+replacement, removal, move or watch loss withdraws both host topics until
+reconstruction. Symlinked or unwatchable ancestry cannot prove host coverage.
+These operations acquire no admission, transition or ledger locks and add no
+writer callbacks or discovery to those critical sections.
+
+Absent optional roots use the queue-root absence proof. Host inputs are checked
+both during reconstruction and on events, without reading record bodies.
+Symlinks at ledger directory, token, metadata, CPU-map or offer paths withdraw
+the affected host topic, including dangling links and in-tree links. Byte-read
+leaves require readable regular files with one link. Inode watches supplement
+their parent watches so creating an external hard link after reconstruction
+also withdraws coverage; parent watches alone miss that link-count change.
+Name-only token reads need no inode watch or file read permission.
+Noncanonical offer filenames, nonregular leaves and unknown nested token
+shapes, including `minted/dead`, also withdraw
+coverage. These uncommon shapes require bounded consumer polling rather than
+deeper traversal. Ordinary in-place writes invalidate on `IN_MODIFY`, before
+close, as well as close-write and attribute events. Outcome/v1 event masks
+retain their existing behavior. No admission predicate or accounting changes.
+Unexplained nested watch loss withdraws its host topic until reconstruction
+or restart; normal observed deletion uses its watched parent. Directory-watch
+exhaustion fails the service with the topic already withdrawn. Failed file or
+ancestor watches withdraw the affected host topics. Unknown evidence never establishes
+free capacity. Consumers still use the existing authoritative offer and ledger
+readers and their conservative evidence handling. Offers retain the recorded
+120-second expiry; expiry needs the consumer's existing deadline because time
+alone emits no inotify event.
+
+`queue_bell_host_reads.DirtyHostInputs` retains a host invalidation independently
+of the transport cursor until a bounded confirmed reader returns `True`.
+Unconfirmed absence, unchanged evidence and read errors keep the ID dirty.
+Its NFS-visibility retry starts at 50 ms, doubles to one second, and stays
+inside the original absolute read/discovery budget. Duplicate hints cannot
+extend that budget. Confirmation or stop cancels recovery. Expiry raises
+`Unavailable` with the ID still dirty; it does not infer free capacity.
+Invalidation and confirmation synchronize a per-ID generation. A confirmed
+read clears only the generation it observed; a hint received during that read
+requires another read within the same original deadline.
+Counters expose read attempts and visibility retries without renewal logs.
+Callers must use their existing bounded reader outside admission and transition
+locks. This adapter helper does not activate any worker wait loop. Later consumer
+slices own the separate 0.25-to-five-second unavailable-bell recovery, cancelled
+by stop or recovered complete coverage. This slice adds no recurring timer.
 
 A selector blocks on inotify, listener sockets and a shutdown socket. Each
 request selects its filtered notification socket and client connection, so a

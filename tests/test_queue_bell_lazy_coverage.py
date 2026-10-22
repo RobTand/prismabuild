@@ -4,6 +4,7 @@ import shutil
 import threading
 
 from prismabuild import queue_bell, queue_bell_events, queue_notifier
+from queue_bell_test_packets import contains_installation
 
 
 def test_populated_lazy_root_loses_observed_deletion(tmp_path, monkeypatch):
@@ -22,13 +23,15 @@ def test_populated_lazy_root_loses_observed_deletion(tmp_path, monkeypatch):
     first_packet = [True]
 
     def pause_before_install(self, data, ring):
-        if first_packet[0]:
+        installing = contains_installation(self, data, Path(), "attempts")
+        if first_packet[0] and installing:
             first_packet[0] = False
             pending_install.set()
             if not release_install.wait(3):
                 raise AssertionError("probe failed to release lazy installation")
         original(self, data, ring)
-        consumed.set()
+        if installing:
+            consumed.set()
 
     monkeypatch.setattr(queue_bell_events.InotifyQueue, "consume", pause_before_install)
     with queue_notifier.BellService(root, [("127.0.0.1", 0)]) as service:
