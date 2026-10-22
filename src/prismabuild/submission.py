@@ -5674,7 +5674,8 @@ def register_deferred(prepared: Mapping[str, object],
         edges=edges, template=record_template(template), cas_root=cas.root,
         static_manifest=static_input,
         publication={name: getattr(args, name)
-                     for name in _DEFERRED_PUBLICATION_ARGS})
+                     for name in _DEFERRED_PUBLICATION_ARGS
+                     if name != "retry_scope" or args.retry_scope is not None})
     try:
         pending_id, path = action_edges.file_deferred(q.root, body)
     except action_edges.ActionEdgeError as exc:
@@ -6480,10 +6481,10 @@ def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRe
 
 def _request_value_matches(value, expected) -> bool:
     from types import UnionType
-    from typing import Literal, get_args, get_origin
+    from typing import Literal, Union, get_args, get_origin
     origin = get_origin(expected)
     args = get_args(expected)
-    if origin is UnionType:
+    if origin in (UnionType, Union):
         return any(_request_value_matches(value, member) for member in args)
     if origin is Literal:
         return value in args

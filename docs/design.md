@@ -1048,7 +1048,8 @@ The ordinary preemption path selects guests under admission and holds the same
 host-local `.preemption` lock through withdrawal and retry publication.
 An eligible GPU row may reclaim guests across priority bands when its refusal
 has `drain_resolves: true`, including adaptive CPU `host_pressure`. Token
-shortages use the same path. Foreign or invalid-device refusals reclaim nothing.
+shortages use the same path. The guest rule reclaims nothing for foreign or
+invalid-device refusals.
 Lowest priority yields first, then the most recently started claim. Several
 guests may be needed: all eligible guest tokens must cover a token gap before
 the first withdrawal, and each handoff waits for normal cleanup before selecting

@@ -67,7 +67,8 @@ def guest_fleet(tmp_path, monkeypatch):
     return GuestFleet(tmp_path, monkeypatch)
 
 
-def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet):
+@pytest.mark.parametrize("retry_status", ["executed", "failed"])
+def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet, retry_status):
     fleet = guest_fleet
     key = fleet.publish("a", cpu=8, priority=20, retry_scope="interruption")
     guest = fleet.claim()
@@ -89,9 +90,10 @@ def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet):
     fleet.queue.ledger("cpuhost").release("f" * 64)
     taken = fleet.claim("cpuhost")
     assert taken["action_key"] == key and not taken.get("cpu_guest")
-    fleet.finish(taken)
+    fleet.queue.finish(key, status=retry_status,
+        detail={"returncode": 0 if retry_status == "executed" else 1}, claim_snapshot=taken)
     ending = await_ending(fleet.queue, key, wait_s=0, generation=guest["published_unix"])
-    assert ending[1]["status"] == "executed"
+    assert ending[1]["status"] == retry_status and ending[1]["attempts"] == 2
     assert ending[1]["published_unix"] == taken["published_unix"]
     fleet.finish(gpu_claim)
 

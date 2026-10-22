@@ -324,3 +324,9 @@ def test_pool_refuses_invalid_interruption_policy(tmp_path, scope, retry_safe):
         pool.PoolQueue(tmp_path / "queue").publish(action_key="a" * 64, cas_root="/cas",
             checkout_root="/co", worker_script="/worker.py", retry_safe=retry_safe,
             retry_scope=scope)
+
+
+@pytest.mark.parametrize("scope", [None, "interruption"])
+def test_typed_request_preserves_optional_retry_scope(scope):
+    request = submit_core.request_from_mapping({"retry_scope": scope})
+    assert request.retry_scope == scope
