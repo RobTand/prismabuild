@@ -1877,6 +1877,54 @@ hit reports null publication identity because the caller published no generation
 Named refusals distinguish missing requests, invalid seals and unavailable CAS
 inputs. Source support for these verbs does not establish fleet deployment.
 
+### Submission phase diagnostics (#1936)
+
+Submission timing is invocation-local diagnostic metadata, outside the sealed
+request, action key, publication identity and shard verdict. Durations use
+`time.monotonic()` in seconds. Nested work pauses its parent, so lock waits
+are separate from I/O. Repeated spans accumulate under their fixed phase name.
+No phase contains arguments, environment values, paths or refusal details.
+
+`phases` is an additive object mapping phase names to nonnegative seconds on
+`prismabuild.submission.v1` and `prismabuild.sealed.v1`, including named refusals.
+Plain submission, seal-only and `--as-sealed-by` measure `checkout_identity`,
+`bundle_pack`, `cas_stage` and `cas_write`. Checkout identity includes preparation
+and Git checks; bundle packing includes the private snapshot index and pack.
+CAS staging includes private staging setup, copy, hashing and cleanup; CAS writes
+include blob/request publication and readback. CAS-only `--publish-sealed`
+measures `sealed_request_read` and `cas_input_verify` instead of preparing Git.
+The common publication tail measures `cas_read`, `offer_read`, `d38_gate` and
+`queue_publication` when reached. `transition_lock_wait` measures the per-key
+thread mutex and POSIX lock acquisitions. Other POSIX acquisitions and the CAS
+staging-owner flock use `lock_wait`. A span closes on refusal too. A completed
+span taking at least one second prints one line on stderr.
+
+The publisher copies `phases` to READY under its existing transition lock. It
+samples again after the ordinary READY write and persists that snapshot before
+releasing the lock, so the claimant retains the write's cost. The final timing
+metadata write and post-publication readback are outside that record's sample;
+the detached response and phase-end event include the completed publication
+span. A failed timing refresh retains the earlier sample and does not refuse
+already published work. Claimed rows, immutable attempts, terminal records and exact publication
+supersessions retain the publisher's sample. Attachments and cache hits report
+this invocation's timings without replacing the earlier publisher's sample.
+`pbwait --endings` rows and legacy `pbwait --json` rows expose `phases`; missing
+legacy timing is `{}`, never a measured zero. Existing schema IDs, including
+`prismabuild.pbtest_shard_verdict.v1`, are unchanged. Retained record readers
+ignore the additive field, and current readers accept its absence.
+
+The existing private client channel adds `event: "phase"` under
+`prismabuild.client_event.v1`, with `phase`, `state` and `seconds`. A `started`
+event has null seconds and precedes the operation; `finished` has that span's
+exclusive duration, including when it raised. Identity and ending event fields,
+ordering, exit verification and recovery rules are unchanged. The decoder accepts
+old streams and keeps phase events separate from the two control events. Phase
+traffic is bounded to 256 events, each at most 1024 bytes; the pipe stays
+nonblocking and best effort. Phase events never authorize recovery. Strict
+consumers must recognize this additive event variant before reading a new
+client's stream. A killed client can leave a start without an end or identity;
+that identifies entered work, not successful sealing or publication.
+
 PrismaBuild stands alone: it imports no client, and a client reaches it only
 through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 `pbcampaign`), the progress helper (`prismabuild.progress`), and the client SDK,

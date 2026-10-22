@@ -295,6 +295,57 @@ Both new verbs return 0 on success and 1 on refusal, with
 with their input ID and digest. Invalid usage exits 2. Attached publication
 returns the action's ending or the ordinary wait failure code.
 
+### Identify a slow submission (#1936)
+
+Successful seal and detached submission JSON includes `phases`, for example
+`{"checkout_identity": 0.4, "bundle_pack": 2.1, "cas_stage": 8.2,
+"cas_write": 1.3, "transition_lock_wait": 12.0, "queue_publication": 0.6}`.
+A phase appears only when reached. Durations are monotonic seconds, accumulated
+across repeated spans, with nested work excluded from its parent. A phase span
+lasting at least one second also prints `pbrun: submission phase NAME took Ns`
+on stderr. Phase values contain no command or environment data.
+
+`--publish-sealed KEY --detach` records this publication's `sealed_request_read`
+and `cas_input_verify`, then the ordinary CAS, offer, gate and publication phases.
+It does not repeat or report checkout preparation. The queue retains the
+publisher's `phases` through claim, immutable attempt and terminal publication.
+An attachment's response describes the attaching call; it does not overwrite
+the publisher's timing. The READY sample includes the ordinary READY write and
+excludes its own final metadata write and subsequent readback. The response
+and client phase-end event measure through publication return.
+
+Read the slowest recorded submission phase from an ending:
+
+```python
+row = endings_json["endings"][0]  # pbwait --endings --wait-s 0 KEY
+phases = row.get("phases", {})
+slow = max(phases, key=phases.get) if phases else None
+text = f"submission phase {slow}: {phases[slow]:.3f}s" if slow else "submission timing unavailable"
+```
+
+Legacy `pbwait --json` exposes the same field at `rows[0]["phases"]`.
+Records predating timing remain readable and expose an empty object.
+The schema IDs and shard verdict schema do not change.
+
+For an interrupted submit, drain `--client-events-fd FD` continuously. The
+writable FD must be a pipe. Accept `event: "phase"` alongside the unchanged
+`identity` and `ending` events. Each phase start is flushed before work:
+
+```json
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"started","seconds":null}
+{"schema":"prismabuild.client_event.v1","event":"phase","phase":"transition_lock_wait","state":"finished","seconds":12.0}
+```
+
+Keep a stack of started phases, removing its last entry on each finish. At a
+submit timeout, the stack's last entry names the current phase. Keep the last
+start separately when the stack is empty; it names the last work entered, not
+a current wait. Sum finished `seconds` by phase to find the slowest completed
+phase. A kill can prevent a finish event or submission record. The channel is
+bounded and nonblocking, so missing events are unavailable evidence. The PB
+channel decoder retains `last_phase` and completed `phases` without changing
+identity, ending or recovery interpretation; strict older event parsers need
+the additive phase variant before consuming a new client.
+
 ### Placement vocabulary
 
 These flags say what the action needs and where it may run.

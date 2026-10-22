@@ -15,11 +15,13 @@ import threading
 from typing import TypeVar, assert_never
 
 from . import action_client as client, action_wait, core as pb
+from .submission_timing import SubmissionPhaseEvent, SUBMISSION_PHASE_NAMES
 from .digest_primitives import compact_ascii_json_bytes, decode_strict_json
 
 CLIENT_EVENT_SCHEMA = 'prismabuild.client_event.v1'
 MAX_EVENT_BYTES = 1024
 MAX_CLIENT_EVENTS = 2
+MAX_SUBMISSION_PHASE_EVENTS = 256
 T = TypeVar('T')
 
 
@@ -149,10 +151,14 @@ def _ending_event(ending: client.ClientEnding, identity: client.ClientIdentity |
     assert_never(verdict)
 
 
-def encode_client_event(event: client.ClientIdentity | client.ClientEnding, *,
+def encode_client_event(event: client.ClientIdentity | client.ClientEnding | SubmissionPhaseEvent, *,
                         identity: client.ClientIdentity | None = None) -> bytes:
-    record = (_ending_event(event, identity) if isinstance(event, client.ClientEnding)
-              else _identity_event(event))
+    if isinstance(event, SubmissionPhaseEvent):
+        record = dict(schema=CLIENT_EVENT_SCHEMA, event='phase', phase=event.phase,
+                      state=event.state, seconds=event.seconds)
+    else:
+        record = (_ending_event(event, identity) if isinstance(event, client.ClientEnding)
+                  else _identity_event(event))
     while True:
         raw = compact_ascii_json_bytes(record) + b'\n'
         if len(raw) <= MAX_EVENT_BYTES:
@@ -296,13 +302,25 @@ def _parse_ending(record: dict, identity: client.ClientIdentity | None) -> clien
 
 def parse_client_event(raw: bytes, *, queue_root: Path, cas_root: Path,
                        identity: client.ClientIdentity | None = None
-                       ) -> client.ClientIdentity | client.ClientEnding:
+                       ) -> client.ClientIdentity | client.ClientEnding | SubmissionPhaseEvent:
     if len(raw) > MAX_EVENT_BYTES or not raw.endswith(b'\n') or raw.count(b'\n') != 1:
         raise ClientProtocolError('invalid client event framing')
     try:
         record = decode_strict_json(raw, where='client event')
         if not isinstance(record, dict) or record.get('schema') != CLIENT_EVENT_SCHEMA:
             raise ClientProtocolError('unknown client event schema')
+        if record.get('event') == 'phase':
+            _event_fields(record, {'schema', 'event', 'phase', 'state', 'seconds'})
+            name, state = record['phase'], _event_text(record['state'])
+            if not isinstance(name, str) or name not in SUBMISSION_PHASE_NAMES:
+                raise ClientProtocolError('unknown submission phase')
+            if state not in {'started', 'finished'}:
+                raise ClientProtocolError('invalid submission phase state')
+            seconds = _event_optional(record['seconds'], _event_generation)
+            if ((state == 'started' and seconds is not None)
+                    or (state == 'finished' and (seconds is None or seconds < 0))):
+                raise ClientProtocolError('invalid submission phase duration')
+            return SubmissionPhaseEvent(name, state, seconds)
         if record.get('event') == 'identity':
             return _parse_identity(record, queue_root=queue_root, cas_root=cas_root)
         if record.get('event') == 'ending':
@@ -337,23 +355,37 @@ class ClientEventDecoder:
         self.bytes_seen = 0
         self.events = 0
         self.on_identity = on_identity
+        self.phase_events = 0
+        self.last_phase = None
+        self.phases = {}
 
     def feed(self, raw: bytes) -> None:
         if self.problem is not None:
             return
         self.bytes_seen += len(raw)
-        if self.bytes_seen > MAX_CLIENT_EVENTS * MAX_EVENT_BYTES:
+        if self.bytes_seen > (MAX_CLIENT_EVENTS + MAX_SUBMISSION_PHASE_EVENTS) * MAX_EVENT_BYTES:
             self.problem = 'client channel exceeds its total byte limit'
             return
         self.pending += raw
         try:
             while b'\n' in self.pending:
                 record, self.pending = self.pending.split(b'\n', 1)
+                event = parse_client_event(record + b'\n', identity=self.identity,
+                                           queue_root=self.queue_root, cas_root=self.cas_root)
+                if isinstance(event, SubmissionPhaseEvent):
+                    if self.ending is not None:
+                        raise ClientProtocolError('submission phase after client ending')
+                    self.phase_events += 1
+                    if self.phase_events > MAX_SUBMISSION_PHASE_EVENTS:
+                        raise ClientProtocolError('too many submission phase events')
+                    if event.state == 'started':
+                        self.last_phase = event.phase
+                    else:
+                        self.phases[event.phase] = self.phases.get(event.phase, 0.0) + event.seconds
+                    continue
                 self.events += 1
                 if self.events > MAX_CLIENT_EVENTS:
                     raise ClientProtocolError('too many client events')
-                event = parse_client_event(record + b'\n', identity=self.identity,
-                                           queue_root=self.queue_root, cas_root=self.cas_root)
                 if isinstance(event, client.ClientEnding):
                     if self.ending is not None:
                         raise ClientProtocolError('duplicate client ending')
@@ -405,23 +437,32 @@ class ClientEventWriter:
         self.fd = fd
         self.identity = expected_identity
         self.events = 0
+        self.phase_events = 0
         self.complete = True
 
-    def send(self, event: client.ClientIdentity | client.ClientEnding) -> None:
+    def send(self, event: client.ClientIdentity | client.ClientEnding | SubmissionPhaseEvent) -> None:
         if self.fd is None:
             return
         try:
-            if self.events >= MAX_CLIENT_EVENTS:
+            phase = isinstance(event, SubmissionPhaseEvent)
+            if phase and self.phase_events >= MAX_SUBMISSION_PHASE_EVENTS:
+                self.complete = False
+                return
+            if not phase and self.events >= MAX_CLIENT_EVENTS:
                 raise ClientProtocolError('too many client events')
             raw = encode_client_event(event, identity=self.identity)
             if os.write(self.fd, raw) != len(raw):
                 raise ClientProtocolError('incomplete client event write')
-            self.events += 1
-            if not isinstance(event, client.ClientEnding):
-                self.identity = event
+            if phase:
+                self.phase_events += 1
+            else:
+                self.events += 1
+                if not isinstance(event, client.ClientEnding):
+                    self.identity = event
         except (OSError, ValueError, pb.PrismaBuildError):
             self.complete = False
-            self.close()
+            if not phase:
+                self.close()
 
     def close(self) -> None:
         if self.fd is not None:
