@@ -37,8 +37,9 @@ def _open_pbtest_registry(*, create: bool = False) -> int:
 def register_pbtest_root(root_fd: int, *, basetemp: bool = False) -> None:
     """Register the already-open root before an attempt becomes visible.
 
-    symlink creation publishes a complete entry atomically, so concurrent
-    attempts need no second owner lock or startup/expiry serialization.
+    Atomic replacement publishes a complete entry, so concurrent attempts
+    need no second owner lock or startup/expiry serialization. Refreshing
+    its target also handles an inode reused after an old root was removed.
     The attempt's existing lock remains the only deletion authority.
     """
     info = os.fstat(root_fd)
@@ -52,14 +53,17 @@ def register_pbtest_root(root_fd: int, *, basetemp: bool = False) -> None:
         raise ValueError("pbtest root identity changed before registration")
     entry = f"{'basetemp' if basetemp else 'tmpdir'}-{info.st_dev}-{info.st_ino}"
     registry = _open_pbtest_registry(create=True)
+    temporary = f".{entry}.{os.urandom(8).hex()}"
     try:
-        try:
-            os.symlink(root, entry, dir_fd=registry)
-        except FileExistsError:
-            if os.readlink(entry, dir_fd=registry) != root:
-                raise ValueError("pbtest root registration changed") from None
+        os.symlink(root, temporary, dir_fd=registry)
+        os.replace(temporary, entry, src_dir_fd=registry, dst_dir_fd=registry)
     finally:
-        os.close(registry)
+        try:
+            os.unlink(temporary, dir_fd=registry)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(registry)
 
 
 def sweep_pbtest_roots(reap) -> list[tuple[str, list[str], str | None]]:

@@ -506,8 +506,8 @@ def _isolate_pbtest_scratch_registry(module, root: Path, assign) -> None:
         # Carried programs execute in another interpreter. Repoint their
         # registry too, without adding an action-controlled runtime override.
         assign(module, "ROOTS_PROGRAM", module.ROOTS_PROGRAM +
-               '\n_pb_temp_roots["REGISTRY"] = __import__("pathlib").Path(' +
-               repr(str(root / "pbtest-scratch-roots")) + ')\n')
+               '\n_pb_temp_roots.update(REGISTRY=__import__("pathlib").Path(' +
+               repr(str(root / "pbtest-scratch-roots")) + '))\n')
 
 
 @pytest.fixture(autouse=True)

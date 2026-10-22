@@ -18,8 +18,8 @@ def registry(tmp_path, monkeypatch):
     path = tmp_path / "registry"
     monkeypatch.setattr(roots, "REGISTRY", path)
     monkeypatch.setattr(pbtest, "ROOTS_PROGRAM", pbtest.ROOTS_PROGRAM +
-                       '\n_pb_temp_roots["REGISTRY"] = __import__("pathlib").Path(' +
-                       repr(str(path)) + ')\n')
+                       '\n_pb_temp_roots.update(REGISTRY=__import__("pathlib").Path(' +
+                       repr(str(path)) + '))\n')
     return path
 
 
@@ -165,6 +165,22 @@ def test_registration_is_idempotent_and_each_layout_is_separate(registry, tmp_pa
     finally:
         os.close(descriptor)
     assert len(list(registry.iterdir())) == 2
+
+
+def test_registration_refreshes_a_stale_inode_reference(registry, tmp_path):
+    registry.mkdir(mode=0o700)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    info = scratch.stat()
+    entry = registry / f"tmpdir-{info.st_dev}-{info.st_ino}"
+    entry.symlink_to(tmp_path / "removed-root")
+    descriptor = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        roots.register_pbtest_root(descriptor)
+    finally:
+        os.close(descriptor)
+    assert entry.readlink() == scratch
+    assert list(registry.iterdir()) == [entry]
 
 
 def test_unknown_and_unmarked_entries_are_preserved_and_root_count_is_bounded(
