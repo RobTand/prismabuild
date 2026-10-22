@@ -174,3 +174,75 @@ def test_the_census_names_only_worker_logs_and_the_next_slot_is_unused(logs):
                  "pb-worker-07.log", "pb-worker-3.log.gz"):
         (logs / name).write_text("evidence\n")
     assert supervise._worker_log_census() == [2, 19]
+
+
+def test_owning_supervisor_expires_scratch_without_another_attempt(logs, tmp_path, monkeypatch):
+    import re
+    from prismabuild import owned_tree
+
+    scratch = tmp_path / "scratch"
+    attempt = scratch / "pb-deadbeef"
+    attempt.mkdir(parents=True)
+    parent = os.open(scratch, os.O_RDONLY | os.O_DIRECTORY)
+    held = os.open(attempt, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        lock = owned_tree.take_owner_lock(held, owned_tree.LOCK_NAME)
+        owned_tree.start_retention(lock)
+        os.close(lock)
+        then = time.time() - owned_tree.RETENTION_S - 60
+        os.utime(attempt / owned_tree.LOCK_NAME, (then, then))
+
+        def sweep():
+            owned_tree.reap_dead_trees(parent, re.compile("pb-[a-z0-9_]{8}"))
+
+        monkeypatch.setattr(supervise, "_sweep_pbtest_scratch", sweep, raising=False)
+        _cycle(monkeypatch, ["--loops", "1"], [])
+        assert not attempt.exists(), "idle scratch needs an owning supervisor pass"
+    finally:
+        os.close(held)
+        os.close(parent)
+
+
+def test_scratch_sweep_runs_at_startup_and_hourly_under_custody(logs, monkeypatch):
+    moments = iter([0, 3599, 3600, 7199, 7200])
+    now = [next(moments)]
+    calls = []
+    monkeypatch.setattr(supervise, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(supervise, "_sweep_pbtest_scratch", lambda: calls.append(now[0]))
+
+    def next_cycle(seconds):
+        if seconds < supervise.BUSY_INTERVAL_S:
+            return
+        try:
+            now[0] = next(moments)
+        except StopIteration:
+            raise CycleComplete from None
+
+    monkeypatch.setattr(supervise.time, "sleep", next_cycle)
+    _cycle(monkeypatch, ["--loops", "1"], [])
+    assert calls == [0, 3600, 7200]
+
+
+@pytest.mark.parametrize("mode", ["once", "contender", "maintenance"])
+def test_scratch_sweep_requires_a_regular_owning_supervisor(logs, tmp_path, monkeypatch, mode):
+    calls = []
+    monkeypatch.setattr(supervise, "_sweep_pbtest_scratch", lambda: calls.append(True))
+    args = ["--once"]
+    if mode == "contender":
+        args = ["--ensure"]
+        monkeypatch.setattr(supervise, "_claim_handle", lambda **_: None)
+    elif mode == "maintenance":
+        args = ["--cycle-stale", "--once"]
+        monkeypatch.setattr(supervise, "_current_root", lambda: tmp_path / "absent")
+        monkeypatch.setattr(supervise, "cycle_stale", lambda _: [])
+    _cycle(monkeypatch, args, [])
+    assert calls == []
+
+
+def test_scratch_registry_failure_does_not_end_supervision(logs, monkeypatch, capsys):
+    def unavailable(_reap):
+        raise OSError("registry unavailable")
+
+    monkeypatch.setattr(supervise.pbtest_scratch_roots, "sweep_pbtest_roots", unavailable)
+    _cycle(monkeypatch, ["--loops", "1"], [])
+    assert "pbtest scratch expiry skipped: registry unavailable" in capsys.readouterr().out
