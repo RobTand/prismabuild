@@ -16,7 +16,8 @@ on the mount.
 Two guards run on every test, and a third is opt-in:
 
 *   ``_off_the_live_store`` repoints every such default at the test's own
-    ``tmp_path`` before each test. It cannot reach a default bound at function
+    ``tmp_path`` before each test, including the GPU reader's captured sample
+    path. It cannot reach other defaults bound at function
     definition, such as ``PoolQueue(root=DEFAULT_POOL_ROOT)``, so a test that
     calls one of those without a root still gets the live path.
 *   An audit hook (``sys.addaudithook``, installed in ``pytest_configure``)
@@ -476,6 +477,7 @@ LIVE_DEFAULTS = (
     # what ``adaptive_cpu`` writes, and a guard that moved only one would have
     # the probe measuring a directory nothing writes to.
     ("prismabuild.adaptive_cpu", "BOX_STATE_ROOT", "box-state"),
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
     ("mount_latency", "ADMISSION_LOCK_DIR", "box-state"),
     # Host-local and persistent beside the checkouts; a suite that wrote here
     # would leave a file per test in the directory the fleet's loops read.
@@ -540,6 +542,11 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         if isinstance(getattr(module, attr), str):
             replacement = str(replacement)
         monkeypatch.setattr(module, attr, replacement)
+    # trusted_sample captures SAMPLE_PATH at definition; moving the module
+    # attribute alone leaves implicit observations reading the live broker.
+    from prismabuild import adaptive_gpu
+    monkeypatch.setattr(adaptive_gpu.trusted_sample, "__defaults__",
+                        (adaptive_gpu.SAMPLE_PATH,))
     yield
 
 

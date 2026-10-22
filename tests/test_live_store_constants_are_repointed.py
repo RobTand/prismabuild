@@ -93,6 +93,10 @@ ENV_BACKED: dict[tuple[str, str], str] = {
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH"): (
+        "broker snapshot under /run; repointed so implicit capacity observations "
+        "cannot depend on the live host's GPU memory domain or physical budget"
+    ),
     ("supervise", "SYSTEMD_UNIT"): (
         "user service file under the home directory; repointed so tests do not "
         "depend on or modify the installed supervisor service"
