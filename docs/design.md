@@ -6235,7 +6235,10 @@ the #1526 rule above. Exempt vLLM serving counts as foreign GPU use. Raw power
 or utilization alone never establishes idle. The offer retains the broker's
 `gpu_sampled_unix` separately from its observation timestamp, so a renewed offer
 cannot renew an old GPU sample. Missing or old-generation evidence grants no
-idle preference. Admission still decides actual resource fit.
+idle preference. The initial cheap idle check precedes restartability proof
+reads; after those blocking reads, the original sample must still be fresh
+before a CPU host yields or a GPU host bypasses #1262. Expired evidence grants
+neither preference. Admission still decides actual resource fit.
 
 For such a guest, the GPU host bypasses #1262. A host without a GPU gives a
 matching idle GPU host that fits the whole CPU/memory demand on its current
@@ -6285,10 +6288,12 @@ becomes an expiry condition. Clock reads retain their original conditional
 positions and the Unix clock resolves the current pool clock on each read.
 
 All three timer rules consult capacity remaining after earlier CPU-host or scratch
-yields in the pass. They do not charge capacity for their own yields.
+yields in the pass. Preferred-CPU and cross-resource timer rules do not charge
+capacity for their own yields; idle-GPU yields charge the advisory peer view.
 This avoids a second timer wait after another rule has already left a peer
-as much work as it fits; timer-only yields can still name more rows than the
-peer fits. These are advisory placement decisions, not peer reservations.
+as much work as it fits; preferred-CPU and cross-resource timer yields can
+still name more rows than the peer fits. These are advisory placement
+decisions, not peer reservations.
 
 Reusing the first advisory observation deliberately changes observation
 timing: a peer ledger or offer replacement after that read is ordinarily observed on the

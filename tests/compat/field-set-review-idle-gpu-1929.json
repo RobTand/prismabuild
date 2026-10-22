@@ -1,0 +1,61 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "binding": "_CLAIM_SCOPED_FIELDS",
+      "owner": "PoolQueue",
+      "path": "src/prismabuild/pool.py",
+      "unresolved": "('gang_backfill', 'gang_backfill_release', 'gang_backfill_preemption', 'claimed_by', 'claimed_unix', 'claimed_host', 'reserved_on', 'passes', 'gpu_admission', 'cpu_allocation', 'tier_reservations', 'tier_funding', 'residency_verdict', 'container_cleanup_pending', 'container_cleanup_checked_unix', 'container_cleanup_attempts', 'container_cleanup_first_failed_unix', 'stop_pending', 'resource_scope', 'resource_scope_cleanup', 'finish_pending', 'resource_scope_intent', 'scratch_declaration_record', scratch_lifetime.SCRATCH_LIFETIME_FIELD, local_scratch.PLACEMENT)"
+    },
+    "count": 1,
+    "reason": "Replace the pre-#1929 claim projection pin with the same tuple plus cpu_guest. This removes only the old inventory witness; all existing claim-scoped fields and unresolved scratch constants remain unchanged."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "binding": "_OPTIONAL_PUBLICATION_KEYS",
+      "fields": [
+        "d38_exception",
+        "d38_receipt",
+        "priority_reason",
+        "residency_prefetch_depth_gib",
+        "residency_read_mb_s",
+        "residency_share"
+      ],
+      "owner": "<module>",
+      "path": "src/prismabuild/action_edges.py"
+    },
+    "count": 1,
+    "reason": "Replace the prior optional deferred-publication key pin with the same set plus retry_scope for #1929 interruption-only retries. No existing optional field is removed from the publication contract."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue",
+      "unresolved": "('cpu_guest', 'gang_backfill', 'gang_backfill_release', 'gang_backfill_preemption', 'claimed_by', 'claimed_unix', 'claimed_host', 'reserved_on', 'passes', 'gpu_admission', 'cpu_allocation', 'tier_reservations', 'tier_funding', 'residency_verdict', 'container_cleanup_pending', 'container_cleanup_checked_unix', 'container_cleanup_attempts', 'container_cleanup_first_failed_unix', 'stop_pending', 'resource_scope', 'resource_scope_cleanup', 'finish_pending', 'resource_scope_intent', 'scratch_declaration_record', scratch_lifetime.SCRATCH_LIFETIME_FIELD, local_scratch.PLACEMENT)",
+      "binding": "_CLAIM_SCOPED_FIELDS"
+    },
+    "count": 1,
+    "reason": "#1929 marks restartable portable CPU claims on GPU hosts with cpu_guest. PoolQueue._shape_as_ready_item strips this claim-scoped marker from the next publication, so an old claim cannot grant guest status to a retry. The symbolic tuple retains both existing scratch constants; this inventory pin is not an old-client compatibility proof."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/action_edges.py",
+      "owner": "<module>",
+      "fields": [
+        "d38_exception",
+        "d38_receipt",
+        "priority_reason",
+        "residency_prefetch_depth_gib",
+        "residency_read_mb_s",
+        "residency_share",
+        "retry_scope"
+      ],
+      "binding": "_OPTIONAL_PUBLICATION_KEYS"
+    },
+    "count": 1,
+    "reason": "#1929 adds optional retry_scope to deferred action publication so interruption-only retry permission survives dependency deferral and remains bound to the sealed action. Existing keys are retained and omitted scope preserves the previous retry policy. This field-set pin records the reviewed writer/reader allowlist change, not qualification of old clients."
+  }
+]

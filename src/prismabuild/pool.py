@@ -15938,6 +15938,9 @@ class PoolQueue:
             # Ordinary CPU-only hosts retain their existing proof-read boundary.
             if not self._guest_restartable(item):
                 return None
+            # CAS and withdrawal proof reads may outlive this GPU sample.
+            if not self._idle_gpu_offer(offer):
+                continue
             generation = (str(item["action_key"]), repr(item.get("published_unix")))
             if placement.timer_expired(_peer_placement.TimedPreference.IDLE_GPU_HOST, generation):
                 return None
@@ -17134,6 +17137,8 @@ class PoolQueue:
         # Most busy-host #1262 deferrals need no sealed CAS/lineage proof.
         restartable = (self._guest_restartable(item)
                        if idle_here or guest_retry else False)
+        # Recheck the original sample after the blocking restartability proof.
+        idle_here = idle_here and self._idle_gpu_offer(local_offer)
         exhausted = guest_retry and not restartable
         cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
