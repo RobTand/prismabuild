@@ -10,6 +10,7 @@ import time
 class TimedPreference(Enum):
     PREFERRED_CPU = "preferred_cpu"
     CROSS_RESOURCE = "cross_resource"
+    IDLE_GPU_HOST = "idle_gpu_host"
 
 
 class PlacementHistory:

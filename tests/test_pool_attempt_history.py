@@ -110,11 +110,16 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
     assert "attempt 1/2" in shown.err and "attempt 2/2" in shown.err
 
 
+@pytest.mark.parametrize("retry_scope", [None, "interruption"])
 def test_lease_loss_is_an_attempt_with_immutable_empty_logs(
-    queue: pool.PoolQueue,
+    queue: pool.PoolQueue, retry_scope,
 ) -> None:
     """A dead claimant consumed an attempt even though it returned no pipes."""
 
+    if retry_scope is not None:
+        queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
+                      worker_script="/worker.py", max_attempts=2, retry_safe=True,
+                      retry_scope=retry_scope)
     assert queue.claim(owner="dead-box:1") is not None
     lease = json.loads(queue.records.lease_path(KEY).read_text(encoding="utf-8"))
     lease["heartbeat_unix"] = 0.0
@@ -363,3 +368,16 @@ def test_terminal_attempt_count_cannot_outlive_its_history_links(
     monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     with pytest.raises(pool.PoolContractError, match="attempt count"):
         submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)
+
+
+def test_interruption_scope_preserves_lease_recovery_with_resource_failure(queue, monkeypatch):
+    queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
+                  worker_script="/worker.py", max_attempts=3, retry_safe=True,
+                  retry_scope="interruption")
+    assert queue.claim(owner="dead-box:1") is not None
+    monkeypatch.setattr(queue, "_resource_failure", lambda telemetry: "memory_limit")
+    assert queue.reap_stale(timeout_s=-1.) == [KEY]
+    retry = json.loads(queue.records.item_path(pool.READY, KEY).read_text())
+    assert retry["attempts"] == 1 and retry["retry_scope"] == "interruption"
+    outcome = queue.attempt_outcomes(retry)[0]
+    assert outcome["status"] == "failed" and outcome["disposition"] == "requeued"

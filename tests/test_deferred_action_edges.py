@@ -200,8 +200,9 @@ def _request(tmp_path: Path, key: str) -> dict:
 # -- acceptance ----------------------------------------------------------------
 
 
+@pytest.mark.parametrize("retry_scope", [None, "interruption"])
 def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, retry_scope) -> None:
     """Filed first, released after the commit, staged from the committed bytes."""
 
     queue, work = _env(tmp_path, monkeypatch)
@@ -212,12 +213,14 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
 
     detach = _submit(work, monkeypatch, capsys,
                      "--after", f"{producer}:{template['template_id']}",
-                     "--residency", "stage", "--priority-reason", "producer gate")
+                     "--residency", "stage", "--priority-reason", "producer gate",
+                     *(["--retry-safe", "--retry-scope", retry_scope] if retry_scope else []))
     pending = detach["pending_id"]
     assert detach["status"] == "deferred" and detach["action_key"] is None
     deferred = ae.read_deferred(queue.root, pending)
     assert deferred is not None
     assert deferred["publication"]["priority_reason"] == "producer gate"
+    assert deferred["publication"].get("retry_scope") == retry_scope
     assert {row.stem for row in queue.records.dir(pool.record_store.READY).glob("*.json")} == {
         producer}, "nothing is queued for the consumer yet"
 
@@ -245,6 +248,9 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     assert json.loads(
         queue.records.item_path(pool.record_store.READY, key).read_text(),
     )["priority_reason"] == "producer gate"
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
+    assert ready.get("retry_scope") == retry_scope
+    assert _request(tmp_path, key)["params"]["retry_policy"].get("retry_scope") == retry_scope
     assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
     assert (bl._consumers_dir(queue.root, instance, "b1")

@@ -23,6 +23,7 @@ import pytest
 
 from pbtest_shard_output import ShardProcess, admitted_child  # noqa: E402
 from pbtest_shard_output import pbrun_client  # noqa: E402
+from pbtest_shard_output import recorded_shard_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -219,7 +220,7 @@ def test_skips_without_a_record_are_named_as_unrecorded(tmp_path, monkeypatch, c
 
 
 def test_a_record_that_disagrees_with_the_summary_is_named(tmp_path, monkeypatch, capsys):
-    record = outcomes.PREFIX + json.dumps({
+    record = recorded_shard_evidence({
         "schema": outcomes.SCHEMA, "collect_only": False,
         "collected": ["tests/test_one.py::test_one"],
         "reports": [["tests/test_one.py::test_one", "setup", "skipped", "why", None]],
