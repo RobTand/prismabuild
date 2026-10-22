@@ -266,6 +266,7 @@ def test_linked_worktree_reports_its_main_repository(tmp_path):
             capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
     linked = tmp_path / "linked"
+    # pb-history-ok: Creates temporary clones and linked worktrees to test repository identity.
     done = subprocess.run(
         ["git", "-C", str(main), "worktree", "add", str(linked)],
         capture_output=True, text=True)
@@ -289,11 +290,13 @@ def test_worktree_of_a_bare_origin_names_the_bare_stem(tmp_path):
             ["git", "-C", str(src), *args],
             capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
+    # pb-history-ok: Creates temporary clones and linked worktrees to test repository identity.
     done = subprocess.run(
         ["git", "clone", "-q", "--bare", str(src), str(tmp_path / "blue.git")],
         capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     wt = tmp_path / "wt-blue"
+    # pb-history-ok: Creates temporary clones and linked worktrees to test repository identity.
     done = subprocess.run(
         ["git", "--git-dir", str(tmp_path / "blue.git"),
          "worktree", "add", str(wt), "main"],
