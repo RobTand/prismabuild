@@ -13,6 +13,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,28 @@ SPEC.loader.exec_module(pbtest)
 
 ACTION_KEY = "ab12" * 16
 NONCE = "cd34" * 8
+
+
+@pytest.fixture
+def short_scratch():
+    suffix = Path("pb-xxxxxxxx/pytest/popen-gw0") / ("test_" + "x" * 25 + "0") / "service.sock"
+    refusals = []
+    # Only socket scratch uses a standard short temp base if the run's is too long.
+    for parent in dict.fromkeys([tempfile.gettempdir(), "/tmp", "/var/tmp"]):
+        try:
+            directory = tempfile.TemporaryDirectory(prefix="s-", dir=parent)
+        except OSError as exc:
+            refusals.append(f"{parent}: {exc}")
+            continue
+        with directory as name:
+            scratch = Path(name)
+            size = len(os.fsencode(scratch / suffix))
+            if size > 100:
+                refusals.append(f"{scratch}: socket path needs {size} bytes, limit 100")
+                continue
+            yield scratch
+            return
+    pytest.skip("no short writable socket scratch: " + "; ".join(refusals))
 
 
 def _checkout(parent: Path, body: str) -> Path:
@@ -164,9 +187,9 @@ def test_attempt_namespaces_do_not_overlap_without_a_launcher_nonce(tmp_path, mo
 
 
 @pytest.mark.parametrize("worker", [None, "popen-gw0"])
-def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worker):
+def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worker, short_scratch):
     program = pbtest.shard_entry(sys.executable, tmp_path, collection=True)[2]
-    monkeypatch.setenv("TMPDIR", "/home/rob/tmp")
+    monkeypatch.setenv("TMPDIR", str(short_scratch))
     monkeypatch.setenv("PRISMABUILD_ACTION_KEY", uuid.uuid4().hex * 2)
     monkeypatch.setenv("PRISMABUILD_ACTION_NONCE", uuid.uuid4().hex)
     monkeypatch.setattr(sys, "argv", ["-c", "{}", "-q", "tests/test_one.py"])
@@ -186,19 +209,19 @@ def test_default_shard_socket_path_fits_linux_limit(tmp_path, monkeypatch, worke
 
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
-def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers):
+def test_real_shard_binds_socket_and_cleans_its_base_temp(tmp_path, workers, short_scratch):
     checkout = _checkout(tmp_path, "assert True")
     (checkout / "tests" / "test_one.py").write_text(
         "import json, os, socket\n"
         "from pathlib import Path\n"
         "def test_xxxxxxxxxxxxxxxxxxxxxxxxx(tmp_path):\n"
         "    path = tmp_path / 'service.sock'\n"
-        "    assert os.environ['TMPDIR'] == '/home/rob/tmp'\n"
+        f"    assert os.environ['TMPDIR'] == {str(short_scratch)!r}\n"
         "    assert len(os.fsencode(path)) <= 100, str(path)\n"
         "    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:\n"
         "        server.bind(str(path))\n"
         "    Path('socket-path.json').write_text(json.dumps(str(path)))\n")
-    result = _run(checkout, Path("/home/rob/tmp"), workers)
+    result = _run(checkout, short_scratch, workers)
     assert result.returncode == 0, result.stdout + result.stderr
     path = Path(json.loads((checkout / "socket-path.json").read_text()))
     base = path.parent.parent.parent if workers > 1 else path.parent.parent

@@ -176,4 +176,3 @@ def test_the_admitted_interpreter_reports_its_actual_identity(capsys):
     with capsys.disabled():
         print("c13-interpreter: " + json.dumps(identity), flush=True)
     assert tuple(identity["version_info"][:2]) in ((3, 12), (3, 14))
-    assert identity["tmpdir"] == "/home/rob/pbt17"
