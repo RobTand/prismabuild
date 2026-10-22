@@ -60,6 +60,7 @@ def test_tick_reaps_children_from_previous_process_image(tmp_path, exit_before_e
         os.close(live_read)
         # The exec'd interpreter does not inherit pytest's module repointing.
         supervise.CLAIM = Path({str(tmp_path / 'claim')!r})
+        supervise.pbtest_scratch_roots.REGISTRY = Path({str(tmp_path / 'scratch-registry')!r})
         supervise.SYSTEMD_UNIT = Path({str(tmp_path / 'absent.service')!r})
         supervise.ensure_roles = lambda *a, **k: []
         # The role pass and its health census are outside this tick's subject;

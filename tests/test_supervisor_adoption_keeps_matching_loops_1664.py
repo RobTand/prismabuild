@@ -48,6 +48,10 @@ def _private_checkout(tmp_path: Path) -> Path:
     fleet = tmp_path / "fleet"
     # Each exec loads these private paths from its published source owners.
     replacements = {
+        "src/prismabuild/pbtest_scratch_roots.py": {
+            'REGISTRY: Path | None = None':
+                f"REGISTRY: Path | None = Path({str(tmp_path / 'scratch-registry')!r})",
+        },
         "tools/fleet/supervise.py": {
             'MIRROR = Path("/mnt/shared/prismabuild-fleet")':
                 f"MIRROR = Path({str(fleet)!r})",

@@ -2642,7 +2642,7 @@ the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
 `pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
 directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
 directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+24-hour retention clock; a later attempt or owning worker supervisor then removes it.
 A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
 under its root, and exit 0 also removes the key directory it empties. The
 sealed root and `TMPDIR` themselves are never removed or changed.
@@ -2836,6 +2836,26 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
+`pbtest_scratch_roots` registers the worker's opened pbtest root before its
+attempt directory becomes visible (#1710). The executing uid's passwd home,
+independent of sealed `HOME`, holds the private mode-0700 registry
+`.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
+`<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
+to the root's real absolute path. Registration refuses an unsafe registry or
+changed root before creating scratch. Both layouts keep the existing owner
+locks and namespace shapes; registration adds no second attempt custody.
+
+The supervisor holding the box claim sweeps at startup and hourly on its
+existing supervision cycles. `--once`, one-shot stale cycling, and a competing
+supervisor do not sweep. A pass selects at most 64 registered roots in random
+order, verifies their device and inode, refuses symlinked or missing roots,
+and delegates each layout to `owned_tree.reap_dead_trees` with its existing
+per-call bounds. Failures are reported and leave supervision running. The
+supervisor can therefore expire idle scratch without another pbtest run.
+Unregistered roots and unmarked legacy attempts remain outside automatic
+expiry. This source contract does not establish deployment or a first-pass
+space-freed measurement on real scratch.
+
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
   or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
@@ -2853,7 +2873,8 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
   pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), each new checkout reaps its checkout root, and each pbrun
+  sealed root), as does the owning supervisor for registered pbtest roots.
+  Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an
   attempt or a claim, and nothing starves. Reaping never fails the work that

@@ -85,6 +85,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
+from prismabuild import owned_tree, pbtest_scratch_roots  # noqa: E402
 from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
@@ -2027,6 +2028,18 @@ def _wait_for_shutdown() -> None:
             time.sleep(1)
 
 
+def _sweep_pbtest_scratch() -> None:
+    try:
+        reports = pbtest_scratch_roots.sweep_pbtest_roots(owned_tree.reap_dead_trees)
+        for entry, removed, error in reports:
+            if error is not None:
+                print(f"pbtest scratch expiry skipped {entry}: {error}", flush=True)
+            elif removed:
+                print(f"pbtest scratch expiry {entry}: removed {len(removed)} tree(s)", flush=True)
+    except (OSError, ValueError) as exc:
+        print(f"pbtest scratch expiry skipped: {exc}", flush=True)
+
+
 def main() -> int:
     stopping = False
 
@@ -2106,6 +2119,7 @@ def _run_supervisor(stop_requested) -> int:
     # across the dip, so neither a stop nor a respawn follows it. A
     # steady low count still shrinks, one tick later at most.
     busiest_recent_claims = 0
+    next_scratch_sweep = 0.0
     # The last health state named per role pid, so a steady stopped role is
     # reported once rather than every tick (#709).
     role_health_seen: dict[int, str] = {}
@@ -2132,6 +2146,9 @@ def _run_supervisor(stop_requested) -> int:
             print(f"[{host}] reaped {reaped} exited child process(es)", flush=True)
         if not args.once and _reexec_if_published(loaded_generation, handle):
             return 0                       # reached only under an exec test double
+        if not args.once and _monotonic() >= next_scratch_sweep:
+            _sweep_pbtest_scratch()
+            next_scratch_sweep = _monotonic() + pbtest_scratch_roots.SWEEP_INTERVAL_S
         target, loop_args = declared_shape(
             host, args.loops, (target, loop_args))
         if stop_requested():
