@@ -2116,12 +2116,21 @@ binding cannot fall back to legacy evidence inside a declared bound run.
 Only private emission closures attach the nonce to record copies. Population,
 reports, counts and the snapshotted collect-only flag stay in closure-private
 state. The registered adapter exposes pytest event hooks with no state or
-record/emission helper methods. Private phase flags accept a population only
-after the recorder's outer collection wrapper resumes from its yield, and
-session-finish emission only after its outer test-loop wrapper returns or
-raises. Both require
-the recorded session's identity. Final outcomes precede exit cleanup, including
-KeyboardInterrupt; early completion still survives blocked exit hooks.
+record/emission helper methods. A private dispatch monitor, installed through
+pluggy's public `add_hookcall_monitoring` API during recorder registration and
+before conftests load, owns the phase flags. It tracks complete hook dispatches,
+not generator advancement: sessionstart must return before collection starts;
+the population is snapshotted only after real collection returns; and final
+emission requires the real test-loop dispatch to return or raise. Lifecycle
+events must belong directly to this invocation's command and recorded session.
+The registered lifecycle adapters cannot authorize these transitions. The
+monitor also records each completed test-report dispatch, so abandoning a
+direct adapter generator cannot suppress a real failure. Other report and
+worker-population adapters accept the matching dispatched argument objects only
+once per dispatch, so direct calls cannot fabricate or duplicate them.
+Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
+final-teardown completion still survives blocked exit hooks, including xdist
+workers that prevent the controller's test loop from returning.
 A duplicated, non-inheritable stdout descriptor is captured before pytest runs;
 replacing the terminal writer cannot intercept bound records. The emission
 closure refuses any PID other than the one that minted the nonce, including

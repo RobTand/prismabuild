@@ -824,6 +824,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
         def __init__(self) -> None:
             self.config = None
             self.session = None
+            self.sessionstart_finished = False
+            self.sessionfinish_started = False
             self.collect_only = False
             self.collection_started = False
             self.collection_finished = False
@@ -939,66 +941,122 @@ def main(argv: list[str] | None = None, *, preflight=None,
             record["file_selection_error"] = error
         return record
 
+    # The public dispatch monitor, installed before conftests load, owns phase
+    # authority. Advancing a registered hook's generator is not evidence that
+    # pytest dispatched (let alone completed) collection or the test loop.
+    hook_calls = []
+    monitored_manager = None
+    command_call = None
+
+    def before_hook(name, implementations, kwargs):
+        nonlocal command_call
+        parent = hook_calls[-1] if hook_calls else None
+        call = {"name": name, "kwargs": dict(kwargs), "phase": False, "consumed": False}
+        hook_calls.append(call)
+        if (name == "pytest_cmdline_main" and parent is None and command_call is None
+                and kwargs["config"].pluginmanager is monitored_manager):
+            command_call = call
+        # Lifecycle events belong directly to this invocation's command, not
+        # to an intervening hook such as sessionstart or collection_finish.
+        if parent is not command_call or command_call is None:
+            return
+        if name == "pytest_configure" and state.config is None:
+            state.config = kwargs["config"]
+            state.collect_only = bool(state.config.getoption("collectonly", False))
+        session = kwargs.get("session")
+        if (name == "pytest_sessionstart" and state.session is None
+                and session.config is state.config):
+            state.session = session
+            call["phase"] = True
+        elif session is not None and session is state.session:
+            if (name == "pytest_collection" and state.sessionstart_finished
+                    and not state.collection_started):
+                state.collection_started = True
+                call["phase"] = True
+            elif (name == "pytest_runtestloop" and state.collection_finished
+                    and not state.runtestloop_started):
+                state.runtestloop_started = True
+                call["phase"] = True
+            elif (name == "pytest_sessionfinish" and state.runtestloop_finished
+                    and not state.sessionfinish_started):
+                state.sessionfinish_started = True
+                call["phase"] = True
+                emit_completion(session_finished=True)
+
+    def after_hook(result, name, implementations, kwargs):
+        call = hook_calls.pop()
+        if name == "pytest_runtest_logreport":
+            record_test_report(call["kwargs"]["report"])
+        if not call["phase"]:
+            return
+        if name == "pytest_sessionstart":
+            state.sessionstart_finished = result.excinfo is None
+        elif name == "pytest_collection":
+            # The controller's population arrives from xdist workers. Snapshot
+            # local items only after the whole real collection dispatch returns.
+            if not state.expected_workers:
+                state.collected = [item.nodeid for item in state.session.items]
+            state.collection_finished = result.excinfo is None
+        elif name == "pytest_runtestloop":
+            # KeyboardInterrupt must still allow outcomes before unconfigure.
+            state.runtestloop_finished = True
+        elif name == "pytest_sessionfinish":
+            state.last_record = outcome_record()
+            emit_bound(PREFIX, state.last_record)
+            state.written = True
+
+    def accept_hook(name, **arguments):
+        if not hook_calls:
+            return False
+        call = hook_calls[-1]
+        if (call["name"] != name or call["consumed"]
+                or any(call["kwargs"].get(key) is not value
+                       for key, value in arguments.items())):
+            return False
+        # These synchronous adapters consume each dispatched argument once;
+        # fabricated arguments and direct calls from other hooks have no claim.
+        call["consumed"] = True
+        return True
+
     class OutcomeRecorder:
         # Only pytest event adapters are registered. State and emission helpers
         # are reachable only by inspecting their closures, never via attributes.
         __slots__ = ()
 
+        def pytest_plugin_registered(self, plugin, plugin_name, manager) -> None:
+            nonlocal monitored_manager
+            if plugin is self and monitored_manager is None:
+                monitored_manager = manager
+                manager.add_hookcall_monitoring(before_hook, after_hook)
+
+        # Keep the lifecycle adapter surface, but it has no authority. Only
+        # the private monitor can observe real dispatch entry and return.
         def pytest_configure(self, config) -> None:
-            if state.config is None:
-                state.config = config
-                state.collect_only = bool(config.getoption("collectonly", False))
+            pass
 
         def pytest_sessionstart(self, session) -> None:
-            if state.session is None:
-                state.session = session
+            pass
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_sessionfinish(self, session, exitstatus):
-            # Only the outer test loop can authorize final emission, including
-            # when it unwinds through KeyboardInterrupt. Test-visible pytest
-            # state cannot establish this boundary.
-            if session is not state.session or not state.runtestloop_finished:
-                yield
-                return
-            emit_completion(session_finished=True)
             yield
-            state.last_record = outcome_record()
-            emit_bound(PREFIX, state.last_record)
-            state.written = True
 
         def pytest_runtest_logstart(self, nodeid, location) -> None:
             trace("start", nodeid)
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_collection(self, session):
-            if session is not state.session or state.collection_started:
-                yield
-                return
-            state.collection_started = True
-            try:
-                yield
-            finally:
-                # The controller's population arrives from xdist workers.
-                if not state.expected_workers:
-                    state.collected = [item.nodeid for item in session.items]
-                state.collection_finished = True
+            yield
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_runtestloop(self, session):
-            if (session is not state.session or not state.collection_finished
-                    or state.runtestloop_started):
-                yield
-                return
-            state.runtestloop_started = True
-            try:
-                yield
-            finally:
-                state.runtestloop_finished = True
+            yield
 
         @pytest.hookimpl(specname="pytest_collection", tryfirst=True)
         def pytest_collection_ignore_named(self, session):
-            if session is not state.session or collection_spec is not None:
+            if (not hook_calls or not hook_calls[-1]["phase"]
+                    or not accept_hook("pytest_collection", session=session)
+                    or collection_spec is not None):
                 return None
             # pytest never asks its ignore rules about a path named on the
             # command line, and pbtest names every file (#1304).  Drop the
@@ -1019,19 +1077,23 @@ def main(argv: list[str] | None = None, *, preflight=None,
             return None
 
         def pytest_collection_finish(self, session) -> None:
-            # Only our collection wrapper snapshots after dispatch returns.
+            # Only the dispatch monitor snapshots after collection returns.
             # Direct registry calls, including during collection, are ignored.
             pass
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_setupnodes(self, config, specs) -> None:
-            state.expected_workers = len(specs)
+            if accept_hook("pytest_xdist_setupnodes", config=config, specs=specs):
+                state.expected_workers = len(specs)
 
         def pytest_deselected(self, items) -> None:
-            state.deselected.extend(item.nodeid for item in items)
+            if accept_hook("pytest_deselected", items=items):
+                state.deselected.extend(item.nodeid for item in items)
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_node_collection_finished(self, node, ids) -> None:
+            if not accept_hook("pytest_xdist_node_collection_finished", node=node, ids=ids):
+                return
             # The xdist controller collects nothing itself; every worker
             # collects the whole population and reports its IDs here.
             if state.collected is None:
@@ -1040,6 +1102,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_testnodedown(self, node, error) -> None:
+            if not accept_hook("pytest_testnodedown", node=node, error=error):
+                return
             output = getattr(node, "workeroutput", None)
             if isinstance(output, dict):
                 state.deselected.extend(output.get("pbtest_deselected") or ())
@@ -1048,6 +1112,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
                     state.selection_views.append(output.get("pbtest_file_selection"))
 
         def pytest_collectreport(self, report) -> None:
+            if not accept_hook("pytest_collectreport", report=report):
+                return
             if report.failed:
                 state.reports.append([report.nodeid, "collect", "error", None, None])
             elif report.skipped:
@@ -1057,64 +1123,68 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
+            # The monitor records the real dispatch even if a direct caller
+            # advances and then abandons this generator.
             yield
-            first = getattr(report, "pbtest_first_tightened_test", None)
-            if first is not None and (state.first_tightened_test is None
-                    or first["started_monotonic"] < state.first_tightened_test["started_monotonic"]):
-                # xdist can deliver reports out of start order. All workers
-                # share this host's monotonic clock; compare starts, not arrivals.
-                state.first_tightened_test = first
-            trace("phase", report.nodeid, when=report.when,
-                  outcome=report.outcome,
-                  worker=getattr(report, "worker_id", None),
-                  resources=getattr(report, "pbtest_resources", None))
-            # Every phase consumes wall time, counted or not: a passing
-            # setup or teardown never reaches the summary line, but the
-            # file still paid its seconds, and the packing model (#1246)
-            # must charge them.  Summed by repository-relative file, so a
-            # later run can key the same file out of its own history.
-            try:
-                duration = float(getattr(report, "duration", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                duration = 0.0
-            if duration > 0:
-                config = state.config
-                rootdir = ""
-                if config is not None:
-                    try:
-                        rootdir = os.path.relpath(
-                            config.rootpath, config.invocation_params.dir)
-                    except Exception:
-                        rootdir = ""
-                name = source_file(report.nodeid, rootdir)
-                state.file_durations[name] = (
-                    state.file_durations.get(name, 0.0) + duration)
-            status = state.config.hook.pytest_report_teststatus(
-                report=report, config=state.config)
-            category = status[0] if status else ""
-            if category:
-                if not getattr(report, "count_towards_summary", True):
-                    # Uncounted reports still establish that the test ran.
-                    state.uncounted.append([report.nodeid, report.when, category])
-                else:
-                    reason = location = None
-                    if category == "skipped":
-                        reason = skip_reason(report)
-                        location = skip_location(report, state.config.invocation_params.dir)
-                    elif hasattr(report, "wasxfail"):
-                        reason = str(report.wasxfail or "") or None
-                    state.reports.append([report.nodeid, report.when, category,
-                                         reason, location])
-                    kind = getattr(report, "pbtest_bound_kind", None)
-                    if kind is not None and category in ("failed", "error"):
-                        state.bound_failures.append({
-                            "nodeid": report.nodeid, "when": report.when, "kind": kind})
-            if report.when == "teardown":
-                if report.nodeid in state.teardown_finished:
-                    state.duplicate_teardown = True
-                state.teardown_finished.add(report.nodeid)
-                # xdist can wait for a worker's exit before sessionfinish.
-                emit_completion()
+
+    def record_test_report(report):
+        first = getattr(report, "pbtest_first_tightened_test", None)
+        if first is not None and (state.first_tightened_test is None
+                or first["started_monotonic"] < state.first_tightened_test["started_monotonic"]):
+            # xdist can deliver reports out of start order. All workers
+            # share this host's monotonic clock; compare starts, not arrivals.
+            state.first_tightened_test = first
+        trace("phase", report.nodeid, when=report.when,
+              outcome=report.outcome,
+              worker=getattr(report, "worker_id", None),
+              resources=getattr(report, "pbtest_resources", None))
+        # Every phase consumes wall time, counted or not: a passing
+        # setup or teardown never reaches the summary line, but the
+        # file still paid its seconds, and the packing model (#1246)
+        # must charge them.  Summed by repository-relative file, so a
+        # later run can key the same file out of its own history.
+        try:
+            duration = float(getattr(report, "duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration > 0:
+            config = state.config
+            rootdir = ""
+            if config is not None:
+                try:
+                    rootdir = os.path.relpath(
+                        config.rootpath, config.invocation_params.dir)
+                except Exception:
+                    rootdir = ""
+            name = source_file(report.nodeid, rootdir)
+            state.file_durations[name] = (
+                state.file_durations.get(name, 0.0) + duration)
+        status = state.config.hook.pytest_report_teststatus(
+            report=report, config=state.config)
+        category = status[0] if status else ""
+        if category:
+            if not getattr(report, "count_towards_summary", True):
+                # Uncounted reports still establish that the test ran.
+                state.uncounted.append([report.nodeid, report.when, category])
+            else:
+                reason = location = None
+                if category == "skipped":
+                    reason = skip_reason(report)
+                    location = skip_location(report, state.config.invocation_params.dir)
+                elif hasattr(report, "wasxfail"):
+                    reason = str(report.wasxfail or "") or None
+                state.reports.append([report.nodeid, report.when, category,
+                                     reason, location])
+                kind = getattr(report, "pbtest_bound_kind", None)
+                if kind is not None and category in ("failed", "error"):
+                    state.bound_failures.append({
+                        "nodeid": report.nodeid, "when": report.when, "kind": kind})
+        if report.when == "teardown":
+            if report.nodeid in state.teardown_finished:
+                state.duplicate_teardown = True
+            state.teardown_finished.add(report.nodeid)
+            # xdist can wait for a worker's exit before sessionfinish.
+            emit_completion()
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     trace_enabled = TRACE_OPTION in arguments

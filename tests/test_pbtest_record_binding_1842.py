@@ -1,6 +1,7 @@
 """Test output and nested recorders cannot supply the enclosing shard's records."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -137,13 +138,23 @@ def test_new_reader_accepts_legacy_shards(bound_shard_output, preflight_present)
     assert outcomes.completion(nested_records + "\n" + legacy)["status"] == "complete"
 
 
-def test_old_reader_accepts_new_shard_records(bound_shard_output, tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    source = subprocess.check_output([
-        "git", "show", "e7d49ad28712683547a42bebe9fd26ccea61178f:tools/fleet/pbtest_outcomes.py"],
-        cwd=root, text=True)
-    old_reader = types.ModuleType("pbtest_reader_before_1842")
-    exec(compile(source, "<pbtest reader before 1842>", "exec"), old_reader.__dict__)
+@pytest.fixture(scope="module")
+def legacy_reader_before_1842():
+    """Load the pinned historical reader without requiring Git history."""
+    path = (Path(__file__).resolve().parent / "fixtures" /
+            "pbtest-reader-before-1842" / "pbtest_outcomes.py")
+    source = path.read_bytes()
+    assert len(source) == 53715
+    assert hashlib.sha256(source).hexdigest() == (
+        "495db65c9c29a565e65a5c03ed5e0406500cf48e801678ef66528a64d5ca9291")
+    reader = types.ModuleType("pbtest_reader_before_1842")
+    exec(compile(source, str(path), "exec"), reader.__dict__)
+    return reader
+
+
+def test_old_reader_accepts_new_shard_records(
+        bound_shard_output, tmp_path, legacy_reader_before_1842):
+    old_reader = legacy_reader_before_1842
     verdict = old_reader.judge_shards([
         {"files": ["test_one.py"], "output": bound_shard_output, "returncode": 0}],
         requested_files=["test_one.py"])

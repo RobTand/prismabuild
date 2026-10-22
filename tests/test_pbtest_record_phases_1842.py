@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from test_pbtest_reconciles_outcomes import outcomes, pbtest
 
 
@@ -79,6 +81,122 @@ def pytest_collection_finish(session):
 ''')
     expect_two_real_failures(run, verdict)
 
+
+SESSIONSTART_FORGERY = '''
+import os
+import pytest
+from _pytest.reports import TestReport
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    recorder = next(p for p in session.config.pluginmanager.get_plugins()
+                    if type(p).__name__ == "OutcomeRecorder")
+    collection = recorder.pytest_collection(session)
+    next(collection)
+    session.perform_collect()
+    next(collection, None)
+    loop = recorder.pytest_runtestloop(session)
+    next(loop)
+    next(loop, None)
+    for item in session.items:
+        for when in ("call", "teardown"):
+            report = TestReport(item.nodeid, item.location, {}, "passed", None, when)
+            reporting = recorder.pytest_runtest_logreport(report)
+            next(reporting)
+            next(reporting, None)
+    finish = recorder.pytest_sessionfinish(session, 0)
+    next(finish)
+    next(finish, None)
+    print("1 passed in 0.01s", flush=True)
+    EXIT
+'''
+
+
+@pytest.mark.parametrize("order", ["tryfirst", "trylast"])
+def test_sessionstart_cannot_authorize_never_executed_tests(tmp_path, order):
+    run, _, verdict = run_suite(tmp_path, 'def test_failure():\n    assert False\n',
+        conftest=SESSIONSTART_FORGERY.replace("trylast", order).replace("EXIT", "os._exit(0)"))
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert not verdict["green"], verdict
+    assert verdict["shards"][0]["coverage"] != "executed", verdict
+    assert outcomes.completion(run.stdout, record_binding=1)["status"] == "unknown", run.stdout
+    assert outcomes.COMPLETION_PREFIX not in run.stdout, run.stdout
+    assert outcomes.parse(run.stdout, record_binding=1) is None, run.stdout
+
+
+def test_sessionstart_direct_calls_do_not_poison_real_execution(tmp_path):
+    # trylast permits perform_collect after pytest initializes its fixtures.
+    run, _, verdict = run_suite(tmp_path, 'def test_failure():\n    assert False\n',
+        conftest=SESSIONSTART_FORGERY.replace("EXIT", "pass"))
+    assert run.returncode == 1 and "1 failed" in run.stdout, run.stdout + run.stderr
+    assert verdict["shards"][0]["coverage"] == "executed", verdict
+    assert verdict["shards"][0]["completion"]["status"] == "complete", verdict
+    assert verdict["failing_nodes"] == ["test_one.py::test_failure"], verdict
+
+
+def test_direct_reports_during_real_dispatch_cannot_forge_or_duplicate(tmp_path):
+    run, _, verdict = run_suite(tmp_path, THREE.replace("FORGE", "pass"), conftest='''
+import pytest
+from _pytest.reports import TestReport
+
+def pytest_sessionstart(session):
+    global recorder
+    recorder = next(p for p in session.config.pluginmanager.get_plugins()
+                    if type(p).__name__ == "OutcomeRecorder")
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_logreport(report):
+    for supplied in (TestReport(report.nodeid, report.location, {}, "passed", None,
+                               report.when), report):
+        direct = recorder.pytest_runtest_logreport(supplied)
+        next(direct)
+        next(direct, None)
+    yield
+''')
+    expect_two_real_failures(run, verdict)
+    assert verdict["shards"][0]["completion"]["status"] == "complete", verdict
+    assert {problem["code"] for problem in verdict["shards"][0]["problems"]} == {
+        "client_exit", "test_failure"}, verdict
+    record = outcomes.parse(run.stdout, record_binding=1)
+    assert len(record["reports"]) == 3, record
+    assert [report[2] for report in record["reports"]] == ["passed", "failed", "failed"]
+
+
+def test_abandoned_direct_report_generator_cannot_hide_failure(tmp_path):
+    run, _, verdict = run_suite(tmp_path, '''import pytest
+
+@pytest.fixture
+def cleanup():
+    yield
+    pytest.skip("teardown skip does not erase the call failure")
+
+def test_failure(cleanup):
+    assert False
+''', conftest='''import os
+import pytest
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_logreport(report):
+    if report.when == "call" and report.failed:
+        direct = recorder.pytest_runtest_logreport(report)
+        next(direct)
+        direct.close()
+    yield
+
+def pytest_sessionstart(session):
+    global recorder
+    recorder = next(p for p in session.config.pluginmanager.get_plugins()
+                    if type(p).__name__ == "OutcomeRecorder")
+
+def pytest_unconfigure(config):
+    print("1 skipped in 0.01s", flush=True)
+    os._exit(0)
+''')
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert not verdict["green"], verdict
+    assert verdict["failing_nodes"] == ["test_one.py::test_failure"], verdict
+    record = outcomes.parse(run.stdout, record_binding=1)
+    assert [report[2] for report in record["reports"]] == ["failed", "skipped"], record
 
 
 def test_keyboard_interrupt_emits_outcomes_before_exit_cleanup(tmp_path):

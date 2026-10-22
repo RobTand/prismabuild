@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
-import types
 
 import pytest
 
 from test_pbtest_reconciles_outcomes import outcomes, pbtest
-from test_pbtest_record_binding_1842 import bound_shard_output
+from test_pbtest_record_binding_1842 import bound_shard_output, legacy_reader_before_1842
 
 
 REGISTRY_FORGERY = '''\
@@ -113,7 +111,8 @@ def test_forked_recorder_hooks_cannot_emit_bound_records(tmp_path):
 
 
 @pytest.mark.parametrize("nested_nonce", ["f" * 64, "not-a-binding", None])
-def test_legacy_without_preflight_survives_nested_new_preflight(tmp_path, nested_nonce):
+def test_legacy_without_preflight_survives_nested_new_preflight(
+        tmp_path, nested_nonce, legacy_reader_before_1842):
     run = privacy_shard(tmp_path, "def test_pass():\n    pass\n")
     assert run.returncode == 0, run.stdout + run.stderr
     legacy, nested = [], []
@@ -134,13 +133,8 @@ def test_legacy_without_preflight_survives_nested_new_preflight(tmp_path, nested
         legacy.append(line)
     output = "\n".join([*nested, *legacy]) + "\n"
     row = {"files": ["test_one.py"], "output": output, "returncode": 0}
-    root = Path(__file__).resolve().parents[1]
-    source = subprocess.check_output([
-        "git", "show", "e7d49ad28712683547a42bebe9fd26ccea61178f:tools/fleet/pbtest_outcomes.py"],
-        cwd=root, text=True)
-    old = types.ModuleType("legacy_reader_before_1842")
-    exec(compile(source, "<main reader before 1842>", "exec"), old.__dict__)
-    expected = old.judge_shards([row], requested_files=["test_one.py"])
+    expected = legacy_reader_before_1842.judge_shards(
+        [row], requested_files=["test_one.py"])
     assert expected["green"], expected
     actual = outcomes.judge_shards([row], requested_files=["test_one.py"])
     assert actual == expected, actual
