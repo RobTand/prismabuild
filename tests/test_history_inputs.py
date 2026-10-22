@@ -518,7 +518,7 @@ class _HistoryBindings(ast.NodeVisitor):
 
 
 class _HistoryGuard:
-    LAUNCHERS = {'run', 'call', 'check_call', 'check_output', 'Popen',
+    LAUNCHERS = {'run', 'call', 'check_call', 'check_output', 'Popen', 'getoutput', 'getstatusoutput',
                  'system', 'popen', 'execl', 'execle', 'execlp', 'execlpe',
                  'execv', 'execve', 'execvp', 'execvpe', 'posix_spawn', 'posix_spawnp'}
     WRAPPERS = {'git', '_git', '_git_entry', 'lifecycle_audit_git'}
@@ -898,6 +898,8 @@ def test_history_guard_checks_pinned_git_wrappers():
     'subprocess.Popen("git archive deadbeef", shell=True)',
     'os.system("git show deadbeef:file")',
     'os.popen("git show deadbeef:file")',
+    'subprocess.getoutput("git show deadbeef:file")',
+    'subprocess.getstatusoutput("git show deadbeef:file")',
     'os.execv("git", ["git", "show", "deadbeef:file"])',
     'os.execv("git", ["disguise", "show", "deadbeef:file"])',
     'subprocess.run(["disguise", "show", "deadbeef:file"], executable="git")',
