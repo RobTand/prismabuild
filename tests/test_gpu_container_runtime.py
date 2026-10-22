@@ -29,7 +29,9 @@ def test_recorded_missing_cdi_source_is_a_never_started_host_fault(evidence):
     'OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded: unknown',
     'OCI runtime create failed: nvidia-container-runtime: initialization error: failed to initialize NVML',
 ])
-def test_nvidia_runtime_initialization_is_a_host_fault(error):
+def test_nvidia_runtime_initialization_is_a_host_fault(error, monkeypatch):
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', lambda: {
+        'kind': 'nvidia_driver_query_failed', 'returncode': 9})
     outcome = gpu_capacity.container_launch_outcome(launch_row(error), cdi_sources=set())
     assert outcome.kind == 'host_fault'
     assert outcome.subtype == 'nvidia_initialization_failed'
@@ -52,24 +54,46 @@ def test_payload_and_unproven_launch_errors_do_not_fence(change, expected):
     assert outcome.subtype is None
 
 
-def test_cdi_spec_reader_accepts_generated_yaml_and_json_without_rewriting(tmp_path):
-    yaml = tmp_path / 'nvidia.yaml'
+def test_cdi_spec_reader_accepts_generated_yaml_and_json_without_rewriting(tmp_path, monkeypatch):
+    root_owned_cdi_files(tmp_path, monkeypatch)
+    directory = tmp_path / 'cdi'
+    directory.mkdir()
+    yaml = directory / 'nvidia.yaml'
     yaml.write_text(f'kind: nvidia.com/gpu\ncontainerEdits:\n  mounts:\n    - hostPath: {MISSING}\n')
-    (tmp_path / 'other.json').write_text(json.dumps({'devices': [{'containerEdits': {
+    (directory / 'other.json').write_text(json.dumps({'devices': [{'containerEdits': {
         'mounts': [{'hostPath': '/some/device/library'}]}}]}))
     before = yaml.read_bytes()
-    assert gpu_capacity.cdi_mount_sources(tmp_path) == {MISSING, '/some/device/library'}
+    assert gpu_capacity.cdi_mount_sources(directory) == {MISSING, '/some/device/library'}
     assert yaml.read_bytes() == before
+
+
+def root_owned_cdi_files(tmp_path, monkeypatch):
+    """Temporary specs simulate root ownership; the reader still opens real fds."""
+    import os
+    cdi = tmp_path / 'cdi'
+    original = os.fstat
+    def cdi_metadata(fd):
+        info = original(fd)
+        path = Path(os.readlink(f'/proc/self/fd/{fd}'))
+        if path in cdi.parents or path == cdi or path.parent == cdi:
+            values = list(info)
+            values[4] = 0
+            values[0] &= ~0o022
+            return os.stat_result(values)
+        return info
+    monkeypatch.setattr(os, 'fstat', cdi_metadata)
 
 
 @pytest.fixture
 def runtime_authority(tmp_path, monkeypatch):
+    root_owned_cdi_files(tmp_path, monkeypatch)
     import os
     from functools import partial
     from test_resource_broker import module, Backend
     broker = module()
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True)
     backend = Backend()
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', lambda: None)
     authority = broker.Authority(tmp_path / 'run/jobs', os.getuid(), backend, max_memory_bytes=1024**3)
     cdi = tmp_path / 'cdi'
     cdi.mkdir()

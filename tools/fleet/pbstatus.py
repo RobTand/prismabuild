@@ -637,7 +637,10 @@ def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
              else f"{float(n['timeout_ceiling_s']):g}s",
              n.get('capacity'), n.get('observed_capacity'),
              ', '.join(f"{k}: {v['state']}" for k, v in n.get('admission', {}).items()),
-             n.get('reason') or ((n.get('observed_detail') or {}).get('gpu_capacity_error')))
+             n.get('reason') or (
+                 'gpu_container_runtime_unready'
+                 if (n.get('observed_detail') or {}).get('gpu_capacity_error') == 'gpu_container_runtime_unready'
+                 else None))
             for n in nodes))
 
 

@@ -3109,7 +3109,7 @@ def _docker_remove_containers(container_ids: list[str]) -> list[str]:
     if not container_ids:
         return []
     result = subprocess.run(
-        [DOCKER, "rm", "-f", "-v", *container_ids],
+        [DOCKER, "rm", "-f", *container_ids],
         capture_output=True,
         text=True,
         timeout=30,

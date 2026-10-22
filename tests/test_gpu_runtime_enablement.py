@@ -170,19 +170,15 @@ def test_host_opt_in_requires_exact_root_owned_regular_file(tmp_path, monkeypatc
         if symlink:
             flag.rename(tmp_path / 'target')
             flag.symlink_to(tmp_path / 'target')
-    from pathlib import Path
-    original_stat = Path.stat
-    def parent_info(path, *args, **kwargs):
-        actual = original_stat(path, *args, **kwargs)
-        values = list(actual)
-        if path in flag.parents: values[0], values[4] = 0o40755, 0
-        return os.stat_result(values)
-    monkeypatch.setattr(Path, 'stat', parent_info)
+    import stat
     original = os.fstat
     def info(fd):
         actual = original(fd)
         values = list(actual)
-        values[4] = uid
+        if stat.S_ISDIR(actual.st_mode):
+            values[0], values[4] = 0o40755, 0
+        else:
+            values[4] = uid
         return os.stat_result(values)
     monkeypatch.setattr(os, 'fstat', info)
     monkeypatch.setenv('PRISMABUILD_GPU_RUNTIME_FENCE', 'enabled')

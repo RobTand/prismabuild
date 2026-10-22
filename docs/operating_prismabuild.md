@@ -5753,6 +5753,17 @@ consumes its attempt and its ending names
 `host_fault: gpu_container_runtime_unready/<subtype>`. Automatic retry without
 charging an attempt remains future #1895 work.
 
+A create/destroy stream without start/die proves only that the payload never
+started, including native AutoRemove launches. Caller error text is a hint,
+never the fault evidence. The broker verifies NVIDIA injection and independently
+checks the host. For a CDI fault, it reads trusted root-owned specs at that time,
+finds the named mount source, and proves ENOENT on the host. For an NVIDIA
+initialization fault, its own bounded driver/NVML query must exit nonzero.
+Missing tools, timeout, unreadable specs and a successful query cannot fence.
+Quoted entrypoints, arguments, labels and environment values cannot select a
+positive result. The retained `host_check` records the independent proof beside
+the diagnostic. A removed launch's `error_hint` remains caller-supplied.
+
 Read the root broker's durable
 `/var/lib/prismabuild-resource-broker/gpu-container-runtime.json` or its public
 local `/run/prismabuild/gpu-container-runtime.json` mirror for the subtype,
@@ -5791,7 +5802,9 @@ The shim preserves native Docker `--rm`. Launch classification binds the
 per-launch ticket label as well as the scope, so a rejected reused `--cidfile`
 cannot borrow another container's error or remove it. The readiness probe omits
 `--rm` so the broker can inspect its successful terminal state. Ordinary scope
-cleanup removes that container and its anonymous volumes. A second broker must
+cleanup removes that container with main's `docker rm -f`, preserving anonymous
+volumes. Both scope cleanup and shim stop cleanup keep these arguments in both
+opt-in states. A second broker must
 acquire the local lifetime lock before loading or publishing GPU fence state.
 
 The round-2 live proof stops at the root prerequisite. An admitted sparky payload
@@ -5811,6 +5824,8 @@ standalone shim's module are root-installed; workers ship that implementation in
 their generation. The file must be root-owned, regular, not group/other writable,
 and contain exactly `enabled\n`; its ancestors must be root-owned and not
 writable by others. Missing, malformed, unreadable or symlinked means off.
+The reader opens every ancestor from `/` with directory descriptors and
+`O_NOFOLLOW`, then opens the final file relative to the verified parent.
 Environment overrides are unsupported. This persistent file belongs to the host
 operator, outside the published runtime and outside the retained fence record.
 

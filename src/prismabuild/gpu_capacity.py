@@ -476,6 +476,47 @@ RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
                        '5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a')
 
 
+def _root_owned_directory_fd(path):
+    """Walk from / without following symlinks or trusting lexical stat results."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('host policy path must be absolute without traversal')
+    fd = None
+    try:
+        for name in path.parts:
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=fd)
+            if fd is not None:
+                os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('host policy directory is writable outside root')
+        return fd
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+
+
+def _root_owned_regular_fd(path):
+    path = Path(path)
+    parent = _root_owned_directory_fd(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('host policy file is not root-owned and regular')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def runtime_fence_enabled():
     """One root-owned host opt-in, shared by installed clients and workers.
 
@@ -483,16 +524,9 @@ def runtime_fence_enabled():
     No environment variable may enable host admission policy.
     """
     try:
-        for parent in RUNTIME_ENABLE.parents:
-            info = parent.stat()
-            if info.st_uid != 0 or info.st_mode & 0o022:
-                return False
-        fd = os.open(RUNTIME_ENABLE, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
-        with os.fdopen(fd, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            return (stat.S_ISREG(info.st_mode) and info.st_uid == 0
-                    and not info.st_mode & 0o022 and stream.read(16) == b'enabled\n')
-    except OSError:
+        with os.fdopen(_root_owned_regular_fd(RUNTIME_ENABLE), 'rb') as stream:
+            return stream.read(16) == b'enabled\n'
+    except (OSError, ValueError):
         return False
 
 
@@ -534,12 +568,24 @@ class ContainerLaunchOutcome(NamedTuple):
     subtype: str | None = None
     daemon_error: str = ''
     payload_returncode: int | None = None
+    host_check: dict | None = None
 
     def as_record(self):
         return self._asdict()
 
 
-def container_launch_outcome(container, *, cdi_sources, source_exists=os.path.exists):
+def _runtime_source_exists(path):
+    """Only ENOENT proves absence; permission and lookup errors stay unknown."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        pass
+    return True
+
+
+def container_launch_outcome(container, *, cdi_sources, source_exists=_runtime_source_exists):
     """Classify daemon inspect state only. Callers must verify container ownership.
 
     Exit 127 and OCI text alone prove nothing. A nonzero StartedAt means the
@@ -569,23 +615,41 @@ def container_requests_nvidia(container):
         for request in requests))
 
 
-def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=os.path.exists):
-    """Classify only after the broker proves this launch never ran a payload."""
-    lower = error.lower()
-    if 'oci runtime create failed' in lower:
-        missing = re.search(r'failed to fulfil mount request: open (/[\S]+): no such file or directory', error)
-        if missing and nvidia and missing[1] in cdi_sources and not source_exists(missing[1]):
-            return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096])
+def nvidia_driver_failure():
+    """A broker-owned bounded NVML query; unavailable checks are not failures."""
+    command = [NVIDIA_SMI, '--query-gpu=uuid', '--format=csv,noheader']
+    try:
+        os.close(_root_owned_regular_fd(NVIDIA_SMI))
+        result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode > 0:
+        return {'kind': 'nvidia_driver_query_failed', 'command': command,
+                'returncode': result.returncode}
+    return None
+
+
+def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=_runtime_source_exists):
+    """Error text selects a check. Only independent host evidence can fence."""
+    # Docker/runc quote payload-controlled entrypoints, args, labels and env.
+    # No text inside those fields may select a host check, even on a broken host.
+    hint = re.sub(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`[^`]*`", ' ', error)
+    lower = hint.lower()
+    if nvidia and 'oci runtime create failed' in lower:
+        missing = re.search(r'failed to fulfil mount request: open (/[^\s]+): no such file or directory', hint)
+        if missing and missing[1] in cdi_sources and not source_exists(missing[1]):
+            return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096],
+                host_check={'kind': 'cdi_mount_missing', 'host_path': missing[1]})
         nvidia_error = re.search(
             r'nvidia-container-(?:cli|runtime): (?:initialization|device) error: ([^\n]+)', lower)
-        # The first NVIDIA cause must itself name a host failure. A requested
-        # identifier echoed by "unknown device" is application configuration,
-        # even when that identifier imitates an NVML diagnostic.
         host_cause = nvidia_error and nvidia_error[1].startswith((
             'nvml error: driver not loaded', 'nvml error: driver/library version mismatch',
             'failed to initialize nvml', 'nvml error: gpu is lost'))
         if host_cause and 'unknown device' not in nvidia_error[1]:
-            return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096])
+            check = nvidia_driver_failure()
+            if check is not None:
+                return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096],
+                                              host_check=check)
     return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
 
 
@@ -596,7 +660,8 @@ def cdi_mount_sources(directory):
         if path.suffix not in {'.json', '.yaml', '.yml'}:
             continue
         # A partial/unreadable spec grants no positive classification.
-        raw = path.read_text()
+        with os.fdopen(_root_owned_regular_fd(path), 'r') as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
         if len(raw) > 4 * 1024 * 1024:
             raise ValueError('CDI spec exceeds accepted size')
         if path.suffix == '.json':

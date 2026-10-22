@@ -135,6 +135,9 @@ def test_payload_exit_and_spoofed_daemon_error_never_fence(code, oom):
 @pytest.mark.parametrize('error', [ERRORS[0]['daemon_error'],
     'OCI runtime create failed: nvidia-container-cli: initialization error: nvml error: driver not loaded'])
 def test_fast_auto_remove_before_inspection_still_classifies_exact_launch(runtime_authority, monkeypatch, history, error):
+    # A diagnostic alone cannot fence. Simulate the broker's independent query.
+    monkeypatch.setattr(gpu_capacity, 'nvidia_driver_failure', lambda: {
+        'kind': 'nvidia_driver_query_failed', 'returncode': 9})
     import os
     from test_resource_broker import create, container_ticket
     broker, authority, backend, runtime = runtime_authority

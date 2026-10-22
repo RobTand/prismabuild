@@ -815,7 +815,7 @@ class _Stop:
         the client already sent can still complete at the daemon, and a removed
         container cannot start.
         """
-        code, _, _ = self.call(["rm", "-f", "-v", cid])
+        code, _, _ = self.call(["rm", "-f", cid])
         return code == 0
 
 

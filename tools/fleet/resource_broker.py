@@ -358,7 +358,9 @@ class DockerLaunchWatch:
                     'State':{key:self.row.get('State',{}).get(key) for key in ('StartedAt','Running','Error','ExitCode')},
                     'HostConfig':{key:self.row.get('HostConfig',{}).get(key)
                                   for key in ('CgroupParent','DeviceRequests','Runtime')}}
-            return {'daemon_error':error[:4096], 'container_id':cid, 'ticket':self.ticket,
+            # This caller hint is not authenticated by the stream or its prefix.
+            # observe_removed must independently verify any selected host fault.
+            return {'error_hint':error[:4096], 'container_id':cid, 'ticket':self.ticket,
                     'nvidia_injection':self.nvidia_injection, 'inspect_snapshot':snapshot,
                     'basis':'daemon_create_destroy_without_start_or_die'}
 
@@ -574,7 +576,7 @@ class GPUContainerRuntime:
         with self.lock:
             evidence={'action_key':record['action_key'],'attempt':record['nonce'],
                       'scope_id':record['scope_id'],'daemon_error':outcome.daemon_error,
-                      'unix_time':time.time(),'boot_id':self.boot_id}
+                      'unix_time':time.time(),'boot_id':self.boot_id,'host_check':outcome.host_check}
             self.state={'schema':self.module.RUNTIME_SCHEMA,'latched':True,
                         'reason':self.module.RUNTIME_REASON,'subtype':outcome.subtype,'evidence':evidence}
             if launch_evidence is not None:self.state['launch_evidence']=launch_evidence
@@ -605,7 +607,7 @@ class GPUContainerRuntime:
         snapshot=evidence.get('inspect_snapshot')
         nvidia=(self.module.container_requests_nvidia(snapshot) if snapshot is not None
                 else evidence['nvidia_injection'])
-        outcome=self.module.never_started_runtime_error(evidence['daemon_error'],nvidia=nvidia,
+        outcome=self.module.never_started_runtime_error(evidence['error_hint'],nvidia=nvidia,
                                                         cdi_sources=self._mount_sources())
         return self._apply_launch_outcome(outcome,{},record,evidence=evidence)
 
@@ -1575,7 +1577,7 @@ class Authority:
                     if outcome.kind=='host_fault':
                         record['host_fault']={'reason':runtime.module.RUNTIME_REASON,
                             'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
-                            'action_key':record['action_key'],'attempt':record['nonce'],
+                            'host_check':outcome.host_check,'action_key':record['action_key'],'attempt':record['nonce'],
                             'unix_time':time.time(),'boot_id':runtime.boot_id}
                         _atomic(self.state_dir/(scope+'.json'),record)
                     return {'ok':True,'launch_outcome':outcome.as_record()}

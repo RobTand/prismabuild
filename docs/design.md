@@ -20236,7 +20236,9 @@ without charging an attempt remains proposed work for #1895.
 
 The fence is **default off**. Every new worker and the root-installed broker and
 shim read the same host-local `/etc/prismabuild/gpu-container-runtime.enabled`
-file through `gpu_capacity.runtime_fence_enabled`. Only the exact bytes
+file through `gpu_capacity.runtime_fence_enabled`. The reader walks from `/` with
+`O_DIRECTORY|O_NOFOLLOW`, validates each directory descriptor, and opens the
+final file with `openat` and `O_NOFOLLOW` relative to the verified parent. Only the exact bytes
 `enabled\n` in a root-owned regular file with no group/other write access enable
 it. All ancestors must also be root-owned and not group/other writable. Symlinks,
 absence, invalid bytes and read errors mean off. Environment variables cannot
@@ -20262,18 +20264,20 @@ An old caller cidfile cannot identify a second launch. The active socket is
 checked before authority initialization, including when an older broker has no
 lifetime lock. Native Docker AutoRemove
 stays enabled, including foreground name reuse and detached removal. Scope
-cleanup uses `docker rm -f -v` to reclaim anonymous volumes as well.
+cleanup uses main's `docker rm -f`, preserving anonymous volumes. The shim's
+stop cleanup uses the same arguments, whether the opt-in is on or off.
+Readiness containers use ordinary cleanup and do not grant volume-deletion authority.
 
 Retained containers use daemon inspect state. A nonzero `StartedAt` proves that
 the payload started. For native AutoRemove, the broker opens a launch-filtered
 live daemon event stream before the shim launches Docker. This launch's unique
 ticket and scope label bind the create event to the broker intent. The destroy
 event must arrive with no start or die event. That complete daemon stream proves
-this CLI's stderr cannot be payload output even when AutoRemove beats every
-inspect attempt. The existing narrow host-fault classifier consumes that error;
-CDI mount failures additionally require NVIDIA injection in the shim's parsed
-launch intent and a missing source named by the local CDI spec. An inspect
-snapshot, when available, also verifies the actual labels, parent and injection.
+only that the payload did not start. It cannot authenticate the caller's error
+text or prove why creation failed. The same independent host checks below apply
+to retained and auto-removed containers. An inspect snapshot, when available,
+also verifies the actual labels, parent and injection. Without a snapshot, the
+watch's parsed NVIDIA injection intent supplies that prerequisite.
 The fence retains the stream basis, ID, ticket and the relevant identity, state
 and device fields of the optional snapshot. It does not publish container
 environment variables, arbitrary caller labels or payload arguments.
@@ -20283,13 +20287,22 @@ or an excessive event count return unknown. The initial `since` replay bridges
 Docker's HTTP-header/subscription boundary; its bounded history cannot establish
 no start if create itself was lost.
 
-Only a proven never-started OCI create failure can identify either:
+For a proven never-started launch requesting NVIDIA injection, daemon or client
+error text can select a host check. Quoted payload fields are removed before
+check selection. The text itself never proves a host fault:
 
-- `cdi_mount_missing`: NVIDIA injection requested a missing mount source that
-  appears as a `hostPath` in the local CDI specification;
-- `nvidia_initialization_failed`: an NVIDIA initialization/device error naming
-  a proven host cause, such as NVML driver not loaded, driver/library version
-  mismatch, failed NVML initialization or GPU lost.
+- `cdi_mount_missing`: at verification time, the broker reads root-owned regular
+  CDI specs through trusted directory descriptors and proves that the error's
+  named `hostPath` is a mount source in those specs and is missing on the host.
+  Only ENOENT proves absence. Unreadable specs or lookup errors grant no fault.
+- `nvidia_initialization_failed`: after an NVIDIA initialization diagnostic, the
+  broker runs its own two-second `/usr/bin/nvidia-smi --query-gpu=uuid
+  --format=csv,noheader` driver/NVML check. Only that query's positive exit status proves
+  failure. A successful, unavailable, untrusted or timed-out check leaves
+  `launch_error`, even if the diagnostic claims a driver failure.
+
+The outcome and durable fence retain `host_check` separately from the diagnostic
+`daemon_error`. Removed-launch `error_hint` is explicitly caller-supplied.
 
 An unmatched requested GPU UUID, generic device error, invalid configuration,
 arbitrary bind mount and payload exit remain ordinary failures or unknown.
