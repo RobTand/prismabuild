@@ -389,23 +389,28 @@ def test_expired_time_budget_returns_incomplete_without_unbounded_work(fleet):
 
 
 def test_unreadable_directory_keeps_useful_report(fleet, monkeypatch):
+    import shutil
+
     _queue, stage = fleet
     _file(stage, "blocked/data", 29)
     _file(stage, "readable/data", 7)
     real_scandir = os.scandir
-    def scandir(path):
-        if os.fspath(path) == str(stage / "blocked"):
+    blocked = stage / "blocked"
+    def scandir(path=".", *args, **kwargs):
+        if isinstance(path, (str, bytes, os.PathLike)) and os.fspath(path) == os.fspath(blocked):
             raise PermissionError("fixture denies stage directory")
-        return real_scandir(path)
-    monkeypatch.setattr(os, "scandir", scandir)
+        return real_scandir(path, *args, **kwargs)
 
-    got = _report(fleet)
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "scandir", scandir)
+        got = _report(fleet)
 
     assert got["complete"] is False
     rows = _rows(got)
     assert rows["blocked"]["complete"] is False
     assert rows["readable"]["observed"]["apparent_bytes"] == 7
     assert "blocked" in json.dumps(got["errors"])
+    shutil.rmtree(stage)
 
 
 def _snapshot(root):

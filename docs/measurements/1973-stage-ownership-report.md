@@ -1,5 +1,8 @@
 # #1973 fixture verification
 
+The attempts below are historical. The authorized salvage at the end supersedes
+the earlier acceptance-fixture restriction and blocker status.
+
 No live stage inventory or reclaim was performed. The incident's 271.4-GiB
 figure was not remeasured. See [report semantics](../stage_ownership_report.md).
 
@@ -129,3 +132,76 @@ application repair under these constraints; acceptance-owner correction under
 result or completed acceptance. No full-suite or live-stage check was performed.
 
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"397c1cf849410c1fec01a6f4b3b63c5eb170057b0cbe92de848269e758b936f0","size":2536}},"operation":"310058f583bc89b2a035e9c7fc19847fa708b2e48ef76d31a4f7a061293dbac2","receipt":"d42dabdb5058aad63d305d56e71aaee1e7d70ca1ceae345222d2788d4026fead"}]
+
+
+## Authorized salvage of TrustLadder W2
+
+The PB lead explicitly authorized the acceptance-fixture correction in
+[#1973's repair instructions](https://github.com/RobTand/prismabuild/issues/1973#issuecomment-6345458641)
+and [the scope authorization](https://github.com/RobTand/prismabuild/issues/1973#issuecomment-6346269662).
+The earlier restriction on editing that fake is superseded by those comments.
+
+The salvage preserves the TrustLadder W2 maker's production implementation and
+merges `origin/main` at `c0521b8ed6abeb38b30188e85e5ad7cb670c7be8` without
+conflicts. Only `test_unreadable_directory_keeps_useful_report` changes: its
+fake accepts the no-argument default and forwards untargeted arguments,
+including integer descriptors, to the captured real `os.scandir`. A
+`monkeypatch.context()` limits the patch to `_report(fleet)`. The test removes
+the stage with `shutil.rmtree` after its unchanged assertions, exercising the
+fd-based walk after restoration.
+
+Before the fix, a fresh published-client PB run on the original `25cbbaa2e445`
+head reproduced **1 passed, 13 deselected, 1 teardown error; exit 1** on x86
+Python 3.14. Action:
+`d66cf4042959c15a304af9c91cce7e604d5514f83b31e6c16e7f487a2689b1c1`.
+The traceback is the reported `os.fspath(int)` TypeError at line 397.
+
+The full W2 diff was read against current main. The required integration
+checks exposed four W2 findings on both x86 and ARM:
+
+- `test_wire_inventory.py` finds an unpinned closed field set in
+  `stage_ownership.collect`.
+- `test_fleet_tool_flags_have_help.py` finds no help text for `--max-files`,
+  `--max-metadata-bytes`, and `--max-seconds`.
+- `test_duplication_baseline.py` finds the duplicate module-level helper name
+  `collect` and a new sorted-JSON site in `stage_reclaim.main`.
+
+These broader repairs were not applied under the fixture-only salvage scope.
+No golden or `field_sets.json` was hand-edited. W2 does not change persisted
+record writers, so the conditional record-compatibility suite was not run.
+Full-suite and live-stage qualification remain outside this validation.
+
+The merged fixture repair passes all **14 acceptance and 14 supplemental
+cases on each architecture**, including the unreadable-directory test and its
+in-test descriptor-based `shutil.rmtree`. Each 18-file run finishes with
+**377 passed, 4 failed; exit 1**, with 15 successful shards and three failed
+integration-check shards. No tests skipped. O6 is resolved; the complete
+integration gate is not green.
+
+All PB clients used the published `tools/fleet/pbtest.py`, ran in the foreground,
+and set both client `TMPDIR` and worker `--tmpdir` to `/home/rob/pbt17`.
+Each shard reserved two CPUs and 4 GiB, with one native thread per worker.
+The x86 lane used Python 3.14 and `--tag x86`; the ARM lane used Python 3.12
+without a host tag. Terminal records and immutable log sizes/digests were
+verified, along with all 36 success receipts and their result blobs through
+`PrismaBuildCAS.lookup`. Failed actions have no success receipts.
+
+Exact commands, per-shard action keys, counts, and audited receipt references
+are retained under `/mnt/shared/pbtl-probe-tmp/pb-lead-dl380/1973/` in
+`commands.txt`, `green-x86.json`, `green-arm.json`, and
+`audit-validation.jsonl`. PR preparation remains in that evidence directory.
+
+
+Pristine `origin/main` at `c0521b8ed6` passes the same three failing files on
+both lanes: **108 passed; exit 0** per lane. Thus the four integration findings
+are W2 additions, not current-main failures. Main x86 action prefixes are
+`b221c1d957d6`, `23680758f89a`, and `278c518855f9`; full keys and ARM baseline
+keys are retained in `main-x86.json`, `main-arm.json`, and
+`validation-summary.txt` beside the commands. Baseline terminal records,
+immutable logs, and all six success receipts were verified. The temporary
+pristine-main worktree is removed after verification.
+
+No prohibited credential, `~/.codex`, or `~/.claude` path was read, and there
+was no client or worker TMPDIR deviation or EDQUOT. The salvage changes only
+the authorized acceptance function and these verification notes beyond the
+clean merge of current main. No PR is opened and no runtime is published.
