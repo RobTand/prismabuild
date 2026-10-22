@@ -1647,6 +1647,9 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 ready=discovery.snapshot, observed_images=claim_images,
                 observed_external_gib=(
                     observer.last_offer_external_gib if observer is not None else 0),
+                observed_unified_memory_unknown=bool(
+                    observer is not None and observer.last is not None
+                    and observer.last.detail.get("external_unified_gpu_unknown")),
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),
                 # Re-checked under the per-key transition lock just before

@@ -7278,6 +7278,12 @@ zero memory immediately, bypassing its smoothing window. Admission returns
 next fresh sample. Existing holders retain their tokens and are not preempted
 for this unknown external load. Discrete VRAM remains independent.
 
+The worker carries this observation into the claim pass as
+`observed_unified_memory_unknown`. After free memory tokens retire, the early
+capacity denial names `unified_gpu_memory_unknown` rather than
+`never_fits_capacity`. Claim-denial records and the existing `pbstatus`
+projection preserve that transient cause without granting admission credit.
+
 CPU-only candidates face the same gate on a GPU host, with the held caps
 identified from ledger metadata when GPU telemetry is absent or stale. A
 missing or stale sample only withholds the external term. New GPU claims

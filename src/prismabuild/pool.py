@@ -5538,6 +5538,7 @@ class _ClaimScan:
     container_inventory: Mapping[str, object] | None
     admission_open: Callable[[], bool] | None
     observed_external_gib: int
+    observed_unified_memory_unknown: bool
     withdrawn: Container[str]
     released: Container[str]
     placement: _peer_placement.PlacementPass
@@ -16083,6 +16084,7 @@ class PoolQueue:
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
         observed_external_gib: int = 0,
+        observed_unified_memory_unknown: bool = False,
         cpu_sampler: Callable[[], dict[str, object]] | None = None,
         gpu_sampler: Callable[[], Mapping[str, object] | None] | None = None,
     ) -> dict[str, object] | None:
@@ -16090,6 +16092,9 @@ class PoolQueue:
 
         ``observed_external_gib`` is the foreign unified GPU memory already
         subtracted by the capacity observer. Admission charges only fresh growth.
+
+        ``observed_unified_memory_unknown`` preserves the observer's reason
+        for zero memory after free tokens retire. It grants no capacity.
 
         ``admission_open`` is an optional caller-owned fence (a worker resign
         drain): ``_claim`` re-checks it under the per-key transition lock
@@ -16149,7 +16154,8 @@ class PoolQueue:
                                    container_class_policy=container_class_policy,
                                    container_inventory=container_inventory,
                                    admission_open=admission_open,
-                               observed_external_gib=observed_external_gib)
+                                   observed_external_gib=observed_external_gib,
+                                   observed_unified_memory_unknown=observed_unified_memory_unknown)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -16172,7 +16178,8 @@ class PoolQueue:
                                container_class_policy=container_class_policy,
                                container_inventory=container_inventory,
                                admission_open=admission_open,
-                               observed_external_gib=observed_external_gib)
+                               observed_external_gib=observed_external_gib,
+                               observed_unified_memory_unknown=observed_unified_memory_unknown)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
             return None
@@ -17124,6 +17131,7 @@ class PoolQueue:
         placement: _peer_placement.PlacementPass,
         ready: Sequence[Mapping[str, object]],
         ready_gpu: Mapping[str, object] | None,
+        observed_unified_memory_unknown: bool,
     ) -> _HostClaimRequest | candidate_policy.CandidateDenial | candidate_policy.ScanOrder:
         item = candidate.item
         demand = candidate.demand.host
@@ -17134,7 +17142,13 @@ class PoolQueue:
         dependent_owner = candidate.dependent_owner
         scratch_evidence = scratch_boundary = None
         if candidate_policy.never_fits(reservation_demand, total):
-            return candidate_policy.CandidateDenial("never_fits_capacity", {
+            # The observer offered zero memory because residency is unknown,
+            # not because this host can never run the row (#1661).
+            reason = ("unified_gpu_memory_unknown"
+                      if observed_unified_memory_unknown
+                      and reservation_demand.get("mem_gb", 0) > total.get("mem_gb", 0)
+                      else "never_fits_capacity")
+            return candidate_policy.CandidateDenial(reason, {
                 "capacity_total": total, "demand": demand,
                 "reservation_demand": reservation_demand,
             }, scan)
@@ -18589,6 +18603,7 @@ class PoolQueue:
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
         observed_external_gib: int = 0,
+        observed_unified_memory_unknown: bool = False,
     ) -> _ClaimScan:
         """Prepare the ordered ready scan and its existing pass-lived views."""
 
@@ -18715,6 +18730,7 @@ class PoolQueue:
             container_inventory=container_inventory,
             admission_open=admission_open,
             observed_external_gib=observed_external_gib,
+            observed_unified_memory_unknown=observed_unified_memory_unknown,
             withdrawn=withdrawn,
             released=released,
             placement=placement,
@@ -18886,6 +18902,7 @@ class PoolQueue:
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
         observed_external_gib: int = 0,
+        observed_unified_memory_unknown: bool = False,
     ) -> dict[str, object] | None:
         """Drive one ordered scan through T, canonical M/H, commit and publication."""
         scan_pass = self._start_claim_scan(
@@ -18893,7 +18910,8 @@ class PoolQueue:
             cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
             ready=ready, observed_images=observed_images,
             container_class_policy=container_class_policy, container_inventory=container_inventory,
-            admission_open=admission_open, observed_external_gib=observed_external_gib)
+            admission_open=admission_open, observed_external_gib=observed_external_gib,
+            observed_unified_memory_unknown=observed_unified_memory_unknown)
         order = candidate_policy.ScanOrder()
         preempted = False
         for item in scan_pass.ready:
@@ -18930,7 +18948,8 @@ class PoolQueue:
                             qualified, order, total=scan_pass.total, has_gpu=scan_pass.has_gpu,
                             controller=scan_pass.controller, gpu_controller=scan_pass.gpu_controller,
                             placement=scan_pass.placement, ready=scan_pass.ready,
-                            ready_gpu=scan_pass.ready_gpu)
+                            ready_gpu=scan_pass.ready_gpu,
+                            observed_unified_memory_unknown=scan_pass.observed_unified_memory_unknown)
                         if isinstance(prepared, candidate_policy.CandidateDenial):
                             order = prepared.order_before
                             if prepared.evidence is None:
@@ -22369,6 +22388,7 @@ class PoolQueue:
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
         observed_external_gib: int = 0,
+        observed_unified_memory_unknown: bool = False,
         on_sweep: Callable[[], object] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
@@ -22405,7 +22425,8 @@ class PoolQueue:
                           ready=ready, observed_images=observed_images,
                           container_class_policy=container_class_policy,
                           container_inventory=container_inventory,
-                          admission_open=admission_open, observed_external_gib=observed_external_gib)
+                          admission_open=admission_open, observed_external_gib=observed_external_gib,
+                          observed_unified_memory_unknown=observed_unified_memory_unknown)
         if item is None:
             return None
         key = str(item["action_key"])
