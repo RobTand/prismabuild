@@ -261,7 +261,7 @@ def test_awaited_batch_cli_parses_the_sealed_declaration(tmp_path):
 ])
 def test_awaited_batch_cli_refuses_malformed_declarations(declared, message):
     with pytest.raises(SystemExit, match=message):
-        pbrun.parse_args([
+        pbrun.main([
             "--progress-phase", "run=60", "--awaited-batch", declared,
             "--", "true",
         ])
@@ -274,16 +274,23 @@ def test_stall_s_is_refused_on_the_slurm_lane():
     submission.require_stall_scope(stall_s=None, transport="slurm")
 
 
-def test_default_activity_completes_past_the_old_budget_on_a_fake_clock(tmp_path):
+@pytest.mark.parametrize("source", ["stdout", "stderr", "cpu"])
+def test_default_activity_completes_past_the_old_budget_on_a_fake_clock(tmp_path, monkeypatch, source):
     from test_progress_keeps_a_working_action_alive import _virtual_execution
 
     def script(child):
         for count in range(1, 9):
-            child.stdout += "durable unit\n"
+            if source == "stdout":
+                child.stdout += "durable unit\n"
+            elif source == "stderr":
+                child.stderr += "durable unit\n"
             yield count * 1000.0
 
     with _virtual_execution(tmp_path, script, policy=None, ceiling=7200.0,
                             heartbeat_s=1000.0) as child:
+        if source == "cpu":
+            monkeypatch.setattr(pool, "_observe_child", lambda *args, **kwargs: {
+                "cpu_seconds": child.now})
         outcome = child.execute()
         assert child.stopped_at is None
         assert child.now == 8000.0
@@ -315,3 +322,40 @@ def test_stall_allowance_changes_action_identity_and_refuses_semantic_policy(tmp
     first = pb.seal_action(body)
     body["params"][pb.STALL_ALLOWANCE_PARAM] = 120.0
     assert pb.seal_action(body)["action_key"] != first["action_key"]
+
+
+def test_an_explicit_budget_ends_default_activity_at_its_fake_clock_limit(tmp_path):
+    from test_progress_keeps_a_working_action_alive import _virtual_execution
+
+    def script(child):
+        for tick in range(1, 10):
+            child.stdout += "working\n"
+            yield float(tick)
+
+    with _virtual_execution(tmp_path, script, policy=None, ceiling=10.0,
+                            timeout_s=2.0, heartbeat_s=1.0) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 2.0
+    assert outcome["termination_reason"] == "execution_deadline"
+    assert outcome["progress_observation"]["accepted_count"] == 2
+
+
+def test_d30_ends_default_activity_on_the_fake_clock(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from test_progress_keeps_a_working_action_alive import _virtual_execution, _running_until
+
+    stopped = []
+    scope = SimpleNamespace(
+        wrap_argv=lambda argv, **kwargs: argv,
+        terminate_owned=stopped.append)
+    with _virtual_execution(tmp_path, _running_until(0.1), policy=None,
+                            ceiling=10.0) as child:
+        monkeypatch.setattr(child.queue, "_start_resource_scope", lambda item: scope)
+        monkeypatch.setattr(child.queue, "_sample_resource_scope", lambda scope: {
+            "oom_local": 1})
+        outcome = child.queue.execute(child.item, containment=True,
+                                      timeout_s=10.0, heartbeat_s=0.1)
+        assert child.stopped_at == 0.1
+    assert stopped == ["memory_limit_oom"]
+    assert outcome["status"] == "failed"
+    assert outcome["termination_reason"] == "memory_limit_oom"
