@@ -9,6 +9,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -29,6 +30,14 @@ ARCHIVE_STORE_SCHEMA = "prismabuild.attempt-log-store.v1"
 ARCHIVE_INDEX_SCHEMA = "prismabuild.attempt-log-index.v1"
 ARCHIVE_MANIFEST_SCHEMA = "prismabuild.attempt-log-manifest.v1"
 ATTEMPT_LOG_ARCHIVE_DATASET = "storage_pool/shared/pb-queue-evidence"
+_ATTEMPT_CODEC_EXEC = """\
+import ctypes, os, signal, sys
+if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), 'cannot bind archive codec to reader lifetime')
+if os.getppid() != int(sys.argv[1]):
+    os._exit(1)
+os.execvp(sys.argv[2], sys.argv[2:])
+"""
 _ARCHIVE_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ARCHIVE_LOG_PATH = re.compile(
     r"attempts/([0-9a-f]{64})/([0-9a-f]{64})/"
@@ -217,7 +226,10 @@ def _attempt_archive_zstd(raw: bytes, *, decode: bool) -> bytes:
     with tempfile.TemporaryFile() as source:
         source.write(raw)
         source.seek(0)
-        child = subprocess.Popen(arguments, stdin=source, stdout=subprocess.PIPE,
+        # Set Linux parent-death custody in a fresh interpreter before exec,
+        # avoiding preexec_fn in threaded callers. MCP can SIGKILL its reader.
+        child = subprocess.Popen([sys.executable, "-c", _ATTEMPT_CODEC_EXEC,
+                                  str(os.getpid()), *arguments], stdin=source, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
         try:
             deadline = time.monotonic() + LOG_CODEC_TIMEOUT_S

@@ -346,7 +346,7 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
     _config, days, _gate = _attempt_retention_settings(queue.root, now=time.time(), applying=True)
     if digests.canonical_sha256(_config) != plan.get("config_sha256") or days != plan.get("retention_days"):
         raise AttemptRetentionRefused("attempt log retention configuration changed after survey")
-    removed, skipped = [], []
+    removed, skipped, aborted = [], [], None
     for candidate in plan["candidates"]:
         key = candidate["key"]
         for fact in candidate["logs"]:
@@ -380,16 +380,27 @@ def apply_attempt_log_retention(queue, plan: Mapping) -> dict:
                     _recheck_attempt_retirement_authority(queue.root, plan)
                     native.unlink_nofollow(path, where="retiring attempt log")
                     removed.append({"path": fact["path"], "bytes": fact["bytes"]})
-            except (OSError, ValueError, native.CASTamperError, native.CASUnavailableError,
-                    archive.AttemptLogIntegrityError) as exc:
+            except (native.CASTamperError, native.CASUnavailableError,
+                    archive.AttemptLogIntegrityError, archive.AttemptArchiveUnavailable) as exc:
+                if isinstance(exc, OSError) and exc.errno == errno.EDQUOT:
+                    raise
+                aborted = f"{type(exc).__name__}: {exc}"
+                skipped.append({"path": fact["path"], "reason": aborted})
+                break
+            except (OSError, ValueError) as exc:
                 if isinstance(exc, OSError) and exc.errno == errno.EDQUOT:
                     raise
                 skipped.append({"path": fact["path"], "reason": f"{type(exc).__name__}: {exc}"})
+        if aborted is not None:
+            break
     receipt = dict(schema="prismabuild.attempt-log-retirement-receipt.v1", queue_root=str(queue.root),
-                   unix=time.time(), retention_days=days, removed=removed, skipped=skipped)
+                   unix=time.time(), retention_days=days, removed=removed, skipped=skipped,
+                   aborted=aborted)
     raw = digests._canonical_bytes(receipt)
     destination = queue.root / "gc-receipts" / f"attempt-logs-{digests.raw_sha256(raw)}.json"
     native.publish_immutable(destination, raw)
+    if aborted is not None:
+        raise AttemptRetentionRefused(f"archive retirement stopped: {aborted}; receipt={destination.name}")
     return receipt
 
 
@@ -507,8 +518,12 @@ def _attempt_retention_active_owner_refusal(queue, key: str, *, record: Mapping,
             return "new or unknown claim intent ownership"
         # Successful claims deliberately retain intent. This old valid marker
         # predates the verified terminal and is preserved as historical JSON.
-    if not native.confirmed_metadata_absence(queue.root / "container-owners" / f"{key}.used"):
-        return "container ownership present"
+    owner = record.get("container_owner")
+    if owner is not None:
+        if not isinstance(owner, str) or not archive._ARCHIVE_HEX.fullmatch(owner):
+            return "unknown container ownership identity"
+        if not native.confirmed_metadata_absence(queue.container_marker(owner)):
+            return "container ownership present"
     for path in _retention_directory_entries(queue.root / "residency" / "leases" / key):
         if path.name.endswith((".retiring.json", ".tmp")):
             continue

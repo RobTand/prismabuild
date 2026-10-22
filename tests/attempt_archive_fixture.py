@@ -108,12 +108,14 @@ class AttemptArchiveFixture:
             value["state"] = state
         native.write_bytes_atomic(self.queue.root / "workers/test-host.json", digests._canonical_bytes(value))
 
-    def finish(self, key="e" * 64, *, stdout="stdout evidence\n", stderr="stderr evidence\n", status="executed"):
+    def finish(self, key="e" * 64, *, stdout="stdout evidence\n", stderr="stderr evidence\n", status="executed",
+               container_owner=None):
         self.counter += 1
         with self.monkeypatch.context() as clock:
             clock.setattr(pool, "_now", lambda: self.old + self.counter)
             self.writer.publish(action_key=key, cas_root=str(self.cas), checkout_root=str(self.checkout),
-                                worker_script=str(self.worker_script), max_attempts=1)
+                                worker_script=str(self.worker_script), max_attempts=1,
+                                container_owner=container_owner)
             assert self.writer.claim() is not None
             path = self.writer.finish(key, status=status, detail=dict(
                 returncode=0 if status == "executed" else 23, stdout=stdout, stderr=stderr))

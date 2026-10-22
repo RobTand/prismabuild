@@ -123,6 +123,48 @@ def test_old_intent_empty_holder_and_reader_retirement_mark_are_historical(fleet
     assert fleet.queue.records.item_path("intent", key).exists()
 
 
+def test_container_marker_uses_recorded_owner_and_is_rechecked(fleet, zstd_required, monkeypatch):
+    owner = "7" * 64
+    record = fleet.finish(container_owner=owner)
+    marker = fleet.queue.container_marker(owner)
+    native.publish_immutable(marker, b"used")
+    assert fleet.plan()["retained_keys"] == {"container ownership present": 1}
+    marker.unlink()
+    plan = fleet.plan()
+    assert plan["candidates"]
+    publish = archive._publish_attempt_log_archive
+    def publish_then_own(*args):
+        result = publish(*args)
+        native.publish_immutable(marker, b"used")
+        return result
+    monkeypatch.setattr(archive, "_publish_attempt_log_archive", publish_then_own)
+    result = retention.apply_attempt_log_retention(fleet.queue, plan)
+    assert not result["removed"] and result["skipped"]
+    assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(record).values())
+
+
+def test_corruption_stops_after_completed_prefix_and_files_receipt(fleet, zstd_required):
+    first = fleet.finish("d" * 64)
+    later = fleet.finish("e" * 64)
+    bad = fleet.descriptors(first)["stderr"]
+    archive._publish_attempt_log_archive(fleet.queue.root, bad)
+    manifest = archive._read_attempt_archive_manifest(fleet.config, bad)
+    sha = manifest["chunks"][0]["compressed_sha256"]
+    chunk = fleet.root / "chunks" / sha[:2] / f"{sha}.zst"
+    chunk.chmod(0o644)
+    chunk.write_bytes(b"corrupt")
+    chunk.chmod(0o444)
+    with pytest.raises(retention.AttemptRetentionRefused, match="retirement stopped"):
+        retention.apply_attempt_log_retention(fleet.queue, fleet.plan())
+    receipt_paths = list((fleet.queue.root / "gc-receipts").glob("attempt-logs-*.json"))
+    assert len(receipt_paths) == 1
+    receipt = json.loads(receipt_paths[0].read_bytes())
+    assert receipt["aborted"] and len(receipt["removed"]) == 1
+    assert (fleet.queue.root / bad["path"]).exists()
+    assert all((fleet.queue.root / fact["path"]).exists() for fact in fleet.descriptors(later).values())
+    assert archive.resolve_attempt_log(fleet.queue.root, fleet.descriptors(first)["stdout"])
+
+
 @pytest.mark.parametrize("field,value", [("schema", "foreign.schema"), ("status", "failed"),
                                          ("published_unix", True), ("finished_unix", True)])
 def test_terminal_requires_real_schema_status_and_generation(fleet, field, value):

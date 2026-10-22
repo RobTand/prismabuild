@@ -20677,6 +20677,9 @@ proportional to the log size. The existing MCP
 reads allocate memory proportional to the requested log. `action_result` keeps
 its evidence cap before calling. Pool history and submission proof use the same
 resolver. JSON readers and directory enumeration retain their original meaning.
+The codec's pipe reads and process exit share a 30-second deadline. A fresh
+interpreter sets Linux parent-death SIGKILL before exec, then checks its parent
+identity, so cancellation of an MCP reader also stops its decoder.
 
 ### Configuration and archive format
 
@@ -20782,6 +20785,8 @@ gate, active reader or ownership state skips removal. Gate freshness is rechecke
 after lengthy verification. No recursive deletion runs. Durable receipts in
 `gc-receipts/attempt-logs-<digest>.json` report removed paths/bytes and skip reasons;
 the indexes authorize recovery when an interruption precedes the receipt.
+Archive corruption or unavailable custody stops the remaining batch, files a
+receipt for the completed prefix with `aborted`, and returns a refusal.
 
 Surveys stream flat terminal names and keep a heap of at most 256 selected keys.
 The next page starts after the previous key and wraps after the last key, so old

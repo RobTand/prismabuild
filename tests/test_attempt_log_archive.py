@@ -285,3 +285,45 @@ def test_codec_deadline_cancels_a_process_that_never_writes(tmp_path, monkeypatc
     with pytest.raises(AttemptArchiveUnavailable, match="deadline expired"):
         archive._attempt_archive_zstd(b"input", decode=False)
     assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_mcp_deadline_stops_the_archive_decoder(fleet, zstd_required, tmp_path, monkeypatch):
+    import os
+    import select
+    import signal
+    import pbmcp
+    record = fleet.finish()
+    fleet.retire()
+    codec = tmp_path / "zstd"
+    codec.write_text(f"#!{sys.executable}\nimport signal\nsignal.pause()\n")
+    codec.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    receiver, sender = os.pipe()
+    original = archive.subprocess.Popen
+    def announce(*args, **kwargs):
+        child = original(*args, **kwargs)
+        os.write(sender, str(child.pid).encode() + b"\n")
+        return child
+    monkeypatch.setattr(archive.subprocess, "Popen", announce)
+    service = pbmcp.Session(queue_root=fleet.queue.root, cas_root=fleet.cas,
+                            repo_link=fleet.queue.root.parent / "repo", deadline_s=10)
+    service.deadline_s = 1
+    decoder = None
+    try:
+        body = service.call("pb_log", {"key_prefix": record["action_key"]})
+        assert not body["complete"] and body["timed_out"]
+        assert select.select([receiver], [], [], 0)[0], "MCP never reached its decoder"
+        decoder = int(os.read(receiver, 64).splitlines()[0])
+        pidfd = os.pidfd_open(decoder)
+        try:
+            assert select.select([pidfd], [], [], 5)[0], "decoder outlived the cancelled reader"
+        finally:
+            os.close(pidfd)
+    finally:
+        if decoder is not None:
+            try:
+                os.kill(decoder, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.close(receiver)
+        os.close(sender)
