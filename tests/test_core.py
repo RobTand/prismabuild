@@ -2987,7 +2987,7 @@ def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
     payload = cas.result_path(receipt, action)
     payload.chmod(0o644)
     payload.write_bytes(b"tampered")
-    with pytest.raises(pb.CASTamperError, match="payload content differs"):
+    with pytest.raises(pb.CASTamperError, match="payload (?:content|size) differs"):
         cas.lookup(action)
 
     # Restore the content and then alter the immutable receipt's bytes.
