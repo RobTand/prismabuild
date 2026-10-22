@@ -2426,6 +2426,42 @@ def timeout_ceiling_notice(
     return "\n".join(lines)
 
 
+def stall_watch_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    stall_s: float | None,
+    requested_timeout_s: float | None,
+) -> str:
+    """Say what ends a no-policy action: a stall, never elapsed time (#1707)."""
+
+    allowance = (pool.DEFAULT_STALL_ALLOWANCE_S if stall_s is None
+                 else float(stall_s))
+    basis = (f"--stall-s {allowance:g}s" if stall_s is not None
+             else f"default {allowance:g}s (one LONG-JOB interval)")
+    lines = [
+        "pbrun: stall watch: this action declares no progress phases, so it "
+        f"ends on output and CPU silence past {basis}"
+        + (" with no total-duration limit."
+           if requested_timeout_s is None else
+           f" or on its explicit payload execution budget of "
+           f"{requested_timeout_s:g}s, whichever comes first."),
+    ]
+    ceilings = queue.placement_timeout_ceilings(intent)
+    for host in sorted(ceilings):
+        ceiling = ceilings.get(host)
+        if ceiling is None:
+            lines.append(
+                f"pbrun: {host} announces no phase-grace ceiling; "
+                "its effective stall allowance is unknown until execution.")
+        elif ceiling < allowance:
+            lines.append(
+                f"pbrun: {host} limits the stall allowance to {ceiling:g}s "
+                f"(requested {allowance:g}s); an explicit payload "
+                "execution budget is unchanged.")
+    return "\n".join(lines)
+
+
 def pin_notice(
     queue,
     intent,
@@ -2900,6 +2936,16 @@ def require_awaited_batch_scope(
             "--awaited-batch requires pool transport: the stall watchdog is "
             "the pull-queue worker's, and the SLURM lane can only enforce a "
             "total duration")
+
+
+def require_stall_scope(*, stall_s: float | None, transport: str) -> None:
+    """Refuse an explicit stall allowance where nothing enforces it."""
+
+    if stall_s is not None and transport != "pool":
+        raise ValueError(
+            "--stall-s requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration (--timeout-s becomes --time).")
 
 
 def require_host_class_scope(
@@ -4125,6 +4171,7 @@ def freeze_template(
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
     progress: Mapping[str, object] | None,
+    stall_allowance_s: float | None = None,
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
     container_image_refs: Sequence[str] = (),
@@ -4446,6 +4493,8 @@ def freeze_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if stall_allowance_s is not None:
+        params[pb.STALL_ALLOWANCE_PARAM] = pb.validate_stall_allowance(stall_allowance_s)
     if gang is not None:
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
@@ -5195,6 +5244,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
         progress=progress_policy,
+        stall_allowance_s=args.stall_s,
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
         container_image_refs=images,
@@ -5508,6 +5558,10 @@ display: DisplaySink = discard_display) -> None:
         queue, intent, requested=args.timeout_s if progress_policy is None else None)
     if ceiling_notice:
         emit_display(display, ceiling_notice, channel="stderr", flush=True)
+    if progress_policy is None:
+        emit_display(display, stall_watch_notice(
+            queue, intent, stall_s=args.stall_s, requested_timeout_s=args.timeout_s),
+            channel="stderr", flush=True)
 
 
 def interpreter_submission_verdict(queue, intent: Mapping[str, object]):
@@ -6659,6 +6713,14 @@ def validate_request(request: SubmissionRequest) -> None:
     if request.timeout_s is not None and (
             not math.isfinite(request.timeout_s) or request.timeout_s <= 0):
         raise SubmissionRefused("pbrun: --timeout-s must be a positive finite number")
+    if request.stall_s is not None:
+        try:
+            pb.validate_stall_allowance(request.stall_s, where="--stall-s")
+            require_stall_scope(stall_s=request.stall_s, transport=request.transport)
+        except (pb.ActionContractError, ValueError) as exc:
+            raise SubmissionRefused(str(exc)) from None
+        if request.progress_policy is not None:
+            raise SubmissionRefused("pbrun: --stall-s cannot combine with --progress-phase")
 
 
 def producer_publication_row(action, *, args: SubmissionRequest,

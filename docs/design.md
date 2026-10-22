@@ -592,7 +592,7 @@ constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
 `execution_timeout_s` ends inside it, is transient; a bounded holder past that
 line is long; a holder past its own sealed end is overdue, which outranks age,
 since a holder that outlived what it declared is no evidence of a drain (#939);
-a progress-governed holder with no total timeout is unbounded;
+a progress- or stall-governed holder with no total timeout is unbounded;
 a raw ledger holder with no readable claim is judged by the waiting item's own
 first-denial clock, as every holder was before #924. The age half of
 "transient" is a presumption, not a declaration: a young deadline-governed
@@ -4023,7 +4023,7 @@ An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
 positive finite number of seconds. Its value participates in the action key.
 The pool reads and validates this value from the CAS request, not the mutable
 queue record, and applies the shorter of it and the worker's timeout ceiling.
-Without the field, existing actions retain the worker ceiling. The pool starts
+Without the field, actions have no total execution deadline (#1707). The pool starts
 its monotonic budget immediately before launcher spawn, after checkout
 materialization, withdrawal checks, scope preparation and status-file cleanup.
 Those prelaunch operations and queue waiting do not consume it. After launch,
@@ -4339,6 +4339,30 @@ the kill. A failure to read it is filed as
 `dependents_error` beside the kill and never replaces the kill's own record.
 
 ### Progress-bounded execution
+
+Without semantic phases, `ActivityWatch` supervises output and containment CPU
+activity. New stdout/stderr bytes or a rising CPU total restart quiet. The
+allowance defaults to 1800 seconds, one ceod LONG-JOB insight interval,
+half the former pytest ceiling and one quarter of the former worker ceiling.
+`pbrun --stall-s` seals a positive finite `params.stall_allowance_s`; the worker
+ceiling clamps it, including the default. The outcome reports requested,
+effective and ceiling values and whether the allowance was clamped. A default
+action may run indefinitely while active. Missing CPU evidence grants no renewal.
+This is an activity fallback, not proof of committed work.
+
+A semantic policy keeps `ProgressWatch` as the owner of accepted counters,
+phase grants, final stall checks and verified dependency-wait credits. Output
+and CPU activity never renew its allowance. `--stall-s` cannot combine with
+semantic phases and is refused on SLURM. Existing explicit execution budgets,
+D30 containment, withdrawal and bounded termination retain their precedence.
+Both watchers use the execution clock and refund only measured checkpoint I/O.
+An expired allowance ends `timeout` with `termination_reason: no_progress`;
+an explicit budget ends `timeout` with `termination_reason: execution_deadline`.
+Leases and endings carry activity totals or semantic phase/counter observations;
+`pbstatus` displays these with age and quiet time. A sealed action without a
+total budget is unbounded for advisory incumbent classification. Legacy holders
+without a request retain their advisory age classification. None of these
+payload policies proves an admission-to-resource-release bound (#1429).
 
 An action may declare, in `params.progress`
 (`prismabuild.action_progress_policy.v1`), an ordered closed list of phases

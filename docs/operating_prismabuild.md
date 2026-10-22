@@ -1655,7 +1655,7 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
 `--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
-budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+budget, SLURM receives no `--time` and the pool supervises progress stalls.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the
@@ -1732,7 +1732,8 @@ the dependent GLM calibration capture (issue #385); it does not reserve more
 memory or bypass admission. Specify the action's own deadline, and check the
 live worker offer before submitting long work. After runtime publication,
 supervisors replace only idle workers, so an already running attempt keeps
-its original ceiling. Omitting an action deadline inherits the worker ceiling.
+its original ceiling. Omitting an action deadline leaves total time unbounded;
+the worker ceiling clamps its quiet allowance instead.
 
 When a `--timeout-s` you asked for does expire, the worker takes the action's
 whole process group down before it reports the timeout: SIGTERM, a grace
@@ -6071,3 +6072,17 @@ mismatch. This is strict log equality, not an input-equivalence verifier or a
 policy-coverage certificate; the experiment must establish identical inputs and
 exercise the decisions of interest. Unrelated live windows do not establish
 decision parity.
+
+
+### Default activity supervision (#1707)
+
+Pool payloads without an explicit execution budget run while making progress.
+For work without semantic phases, the activity watch renews on output or a
+rising containment CPU total. Its default quiet allowance is 1800 seconds,
+one ceod LONG-JOB interval. Set `pbrun --stall-s SECONDS` for another allowance;
+the worker ceiling clamps it and receipts report that clamp. Semantic phases
+keep their committed-counter rules and cannot combine with `--stall-s`.
+Explicit budgets, D30 containment and withdrawal keep their existing behavior.
+`pbstatus` shows age, phase, accepted counters and quiet time; activity rows
+also show output bytes and CPU seconds. A source merge does not deploy this
+new default to fleet workers.
