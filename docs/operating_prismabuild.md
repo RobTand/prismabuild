@@ -1114,7 +1114,16 @@ return 400. V1 filters and response bodies remain unchanged.
 V2 wait replies contain typed `{seq, topic, id}` hints. `reset: true` and its
 `reason` invalidate derived completeness on coverage change, partial coverage,
 restart, future cursor, ring loss, overflow or shutdown. Failed watch recovery
-never advertises complete coverage. Diagnostics report retained ring entries,
+never advertises complete coverage. Required roots are opened and watched
+explicitly without following links; missing or symlinked roots during startup or
+reconstruction exit 3 through the supervisor's refusal backoff. Coverage requires
+installed root watches. An absent optional namespace uses its watched parent as
+an absence proof; an existing symlink cannot use that proof. Lazy installation
+withdraws the affected topic and advances the v2 history-reset marker after
+scanning, so a descendant observed and deleted before watch installation cannot
+leave stale derived state. The coverage version carries this marker without
+clearing v1 event history or changing its sequence behavior.
+Coverage returns only after successful installation. Diagnostics report retained ring entries,
 resets, coverage changes, subscriptions, active/capped connections and watch
 count. Inspect these when diagnosing fallback or watch exhaustion. Healthy
 renewals produce no per-request logs and perform no namespace discovery.

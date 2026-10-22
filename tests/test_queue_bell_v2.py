@@ -35,7 +35,7 @@ def _v2_poll(bell, before, **overrides):
     return _v2_get(bell, "/v2/wait", **query)
 
 
-def test_v2_declares_only_existing_outcomes_and_v1_is_byte_compatible(bell):
+def test_v2_declares_only_existing_outcomes_and_projects_v1_events(bell):
     before = _v2_get(bell, "/v2/now")
     assert before["coverage"]["version"] >= 1
     assert before["coverage"]["topics"] == sorted(queue_bell.STATE_DIRS)

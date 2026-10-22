@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 import ctypes
+import errno
 import os
 from pathlib import Path
 import select
@@ -84,6 +85,13 @@ class EventRing:
             self.seq += 1
             self.floor = self.seq
             self.events.clear()
+            self._wake()
+
+    def reset_v2(self) -> None:
+        """Invalidate v2 history through its coverage marker, preserving v1 events."""
+        with self.condition:
+            self.coverage_version += 1
+            self.reset_count += 1
             self._wake()
 
     def close(self) -> None:
@@ -188,11 +196,10 @@ class InotifyQueue:
         if self.fd < 0:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.directories = {}
+        self.root_watches = {}
         self.adapters = (OutcomeNamespaces(),)
+        self.absent_roots = set()
         try:
-            for path in (root, *(root / directory for directory in REQUIRED_STATE_DIRS)):
-                if not path.is_dir():
-                    raise MissingQueueDirectory(f"required queue directory missing: {path}")
             self._tree(Path())
             if self.live_link is not None:
                 self._add(self.live_link.parent, None)
@@ -216,6 +223,8 @@ class InotifyQueue:
         if wd < 0:
             raise OSError(ctypes.get_errno(), str(path))
         self.directories[wd] = relative
+        if relative is not None and len(relative.parts) <= 1:
+            self.root_watches[relative] = wd
 
     def _allowed(self, relative):
         return any(adapter.allows(relative) for adapter in self.adapters)
@@ -228,7 +237,15 @@ class InotifyQueue:
 
     @property
     def covered_topics(self):
-        return tuple(topic.name for adapter in self.adapters for topic in adapter.topics)
+        watched = {path for path, wd in self.root_watches.items()
+                   if wd in self.directories and self.directories[wd] == path}
+        if Path() not in watched:
+            return ()
+        # An absent optional root is covered by the installed queue-root watch.
+        # Its creation withdraws that proof until installation has invalidated
+        # observations made before its descendant watches existed.
+        return tuple(topic.name for adapter in self.adapters for topic in adapter.topics
+                     if Path(topic.directory) in watched or topic.directory in self.absent_roots)
 
     def _open_tree_directory(self, relative, parent_fd):
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -257,20 +274,41 @@ class InotifyQueue:
             descriptor = self._open_tree_directory(relative, parent_fd)
             # The watch and scan bind the same inode. A renamed/replaced path
             # cannot redirect traversal through a symlink between those steps.
+            if relative == Path():
+                self.root_watches.clear()  # An overflow may hide watch removal.
             self._add(Path(f"/proc/self/fd/{descriptor}"), relative)
+            if relative == Path():
+                # Required roots cannot depend on their names appearing in a
+                # directory listing. Open each without following links, then
+                # watch and scan it before any coverage can be published.
+                for directory in REQUIRED_STATE_DIRS:
+                    self._tree(Path(directory), ring, descriptor)
+            root_names = set()
             with os.scandir(descriptor) as entries:
                 for entry in entries:
                     if entry.name.startswith("."):
                         continue
                     child = relative / entry.name
+                    if relative == Path():
+                        if self._allowed(child):
+                            root_names.add(entry.name)
+                        if entry.name in REQUIRED_STATE_DIRS:
+                            continue  # Already watched and scanned explicitly.
                     if entry.is_dir(follow_symlinks=False) and self._allowed(child):
                         self._tree(child, ring, descriptor)
                     elif ring is not None:
                         self._hint(child, ring)
-        except FileNotFoundError as exc:
-            # A removed child is already covered by its parent's delete event.
-            if relative == Path() or relative.as_posix() in REQUIRED_STATE_DIRS:
-                raise MissingQueueDirectory(f"required queue directory missing: {path}") from exc
+            if relative == Path():
+                self.absent_roots = {topic.directory for adapter in self.adapters for topic in adapter.topics
+                                     if not topic.required and topic.directory not in root_names}
+        except OSError as exc:
+            if (relative == Path() or relative.as_posix() in REQUIRED_STATE_DIRS
+                    ) and exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                raise MissingQueueDirectory(f"required queue directory missing or not a directory: {path}") from exc
+            # A removed child is covered by its parent's hint, or by the reset
+            # after installing a namespace whose name has no action identifier.
+            if exc.errno != errno.ENOENT:
+                raise
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -307,10 +345,32 @@ class InotifyQueue:
                 if relative == Path() or relative.as_posix() in REQUIRED_STATE_DIRS:
                     raise OSError("queue bell lost a state directory watch")
                 ring.reset()
+                ring.set_coverage(self.covered_topics)
                 continue
             if not name or name.startswith("."):
                 continue
             child = relative / name
-            if mask & IN_ISDIR and mask & (IN_CREATE | IN_MOVED_TO) and self._allowed(child):
+            affected = {topic.name for adapter in self.adapters for topic in adapter.topics
+                        if child.parts[0] == topic.directory}
+            root_change = relative == Path() and bool(affected)
+            if root_change and mask & (IN_DELETE | IN_MOVED_FROM):
+                if name in REQUIRED_STATE_DIRS:
+                    raise OSError("queue bell lost a state directory watch")
+                self.absent_roots.add(name)
+            if root_change and mask & (IN_CREATE | IN_MOVED_TO):
+                self.absent_roots.discard(name)
+            installing = (mask & IN_ISDIR and mask & (IN_CREATE | IN_MOVED_TO)
+                          and self._allowed(child))
+            # A keyless namespace name cannot invalidate a descendant that an
+            # observer saw and that vanished before watches were installed.
+            # Withdraw coverage throughout installation, then reset history.
+            keyless_change = ((installing and not any(adapter.hint(child) for adapter in self.adapters))
+                              or (root_change and mask & (IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM)))
+            if keyless_change:
+                ring.set_coverage(set(self.covered_topics) - affected)
+            if installing:
                 self._tree(child, ring)
+            if keyless_change:
+                ring.reset_v2()
+                ring.set_coverage(self.covered_topics)
             self._hint(child, ring)

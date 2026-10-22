@@ -9680,9 +9680,19 @@ remain unsupported and cannot establish complete coverage.
 Every v2 reply carries the coverage proof. A version mismatch, partial requested
 coverage, restart, future cursor, overflow, ring gap or shutdown returns
 `reset: true` with a `reason`, never a successful empty subscription. Startup
-advertises coverage only after watches and scans succeed. Overflow withdraws
-coverage before reconstruction and restores it only after every watch succeeds;
-a failed rebuild leaves coverage empty. Request diagnostics expose ring size,
+advertises coverage only after watches and scans succeed. Every required root
+is opened without following links, watched and scanned explicitly, independent
+of root-directory listing membership. Missing or symlinked required roots refuse
+startup or reconstruction with exit 3. Coverage comes from installed root watches;
+an absent optional root uses the queue-root watch as its absence proof. Existing
+optional symlinks remain uncovered. Overflow withdraws coverage, clears previous
+root-watch proofs, and restores coverage only after reconstruction succeeds.
+A failed rebuild leaves coverage empty. Installing a lazy namespace whose name
+has no action ID withdraws its topic, installs watches and scans, advances the
+v2 history-reset marker, and restores coverage only on success. The coverage
+version is also this v2 reset marker; advancing it preserves v1 events and
+sequence behavior. It invalidates descendants observed and deleted before their
+watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
 
