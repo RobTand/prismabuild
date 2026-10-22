@@ -4342,8 +4342,13 @@ the kill. A failure to read it is filed as
 
 Without semantic phases, `ActivityWatch` supervises output and containment CPU
 activity. New stdout/stderr bytes or a rising CPU total restart quiet. The
-allowance defaults to 1800 seconds, one ceod LONG-JOB insight interval,
-half the former pytest ceiling and one quarter of the former worker ceiling.
+allowance defaults to 7200 seconds, the former worker execution ceiling, so
+quiet work cannot stall earlier than that former limit by default. Docker image
+loads and pulls can advance in the daemon outside the attempt's containment
+while the client emits no output and uses no CPU. GPU activity, I/O byte
+counters and progress-file changes also do not renew this watch. Only new
+stdout/stderr bytes and rising containment CPU count. For quiet work, choose
+`--stall-s`, a semantic phase allowance, or periodic output.
 `pbrun --stall-s` seals a positive finite `params.stall_allowance_s`; the worker
 ceiling clamps it, including the default. The outcome reports requested,
 effective and ceiling values and whether the allowance was clamped. A default

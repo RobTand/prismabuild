@@ -365,13 +365,13 @@ LEASE_TIMEOUT_S = 300.0
 
 #: How long an action without a progress policy may go without observable
 #: activity before the worker ends it as a stall (#1707). The default is
-#: 1800 s: one ceod LONG-JOB insight interval (prisma-exec 9988e35), half the
-#: old 3600 s pytest ceiling and a quarter of the 7200 s worker ceiling, so
-#: a hung payload stops sooner than before while steady work runs unbounded.
+#: 7200 s, the former worker execution ceiling. Quiet daemon-side image
+#: loads and pulls may advance outside containment without observable client
+#: CPU or output; the default must not end them earlier than that ceiling.
 #: The submitter sets it with ``pbrun --stall-s`` (sealed
 #: ``stall_allowance_s``); the worker ceiling clamps it like a phase grace,
 #: never in silence, and the receipt reports both numbers.
-DEFAULT_STALL_ALLOWANCE_S = 1800.0
+DEFAULT_STALL_ALLOWANCE_S = 7200.0
 
 # How long the timeout path gives the launcher's process group to go down.
 # The launcher does not just exit when signalled: it relays the signal into the

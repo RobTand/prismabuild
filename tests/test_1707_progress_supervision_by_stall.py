@@ -123,11 +123,11 @@ def test_the_submitter_sets_the_allowance_and_the_ceiling_clamps_it(tmp_path):
     assert clamped.as_record()["stall_allowance_s"] == 0.4
 
 
-def test_the_default_allowance_is_one_long_job_interval(tmp_path):
+def test_the_default_allowance_matches_the_former_worker_ceiling(tmp_path):
     _, item = _claimed(tmp_path, source=CHATTY, seconds=1)
     stalled = pool.default_stall(item, 7200.0)
     assert stalled.requested is None
-    assert stalled.effective == pool.DEFAULT_STALL_ALLOWANCE_S == 1800.0
+    assert stalled.effective == pool.DEFAULT_STALL_ALLOWANCE_S == 7200.0
     assert stalled.clamped is False
 
 

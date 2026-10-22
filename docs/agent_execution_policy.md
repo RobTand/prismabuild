@@ -60,8 +60,8 @@ and for nonrestartable portable work. Leave portable work untagged.
 
 Pool actions without an explicit `execution_timeout_s` have no total-duration
 limit (#1707). Without semantic phases the worker watches output and containment
-CPU activity, ending a silence past 1800 seconds by default. That is one ceod
-LONG-JOB insight interval. `pbrun --stall-s` seals another positive allowance;
+CPU activity, ending a silence past 7200 seconds by default, the former worker
+execution ceiling. `pbrun --stall-s` seals another positive allowance;
 it cannot combine with progress phases and is refused on SLURM. The worker
 ceiling clamps the activity allowance and explicit no-policy execution budgets.
 Existing explicit-budget behavior is preserved for semantic policies. Receipts

@@ -6078,8 +6078,14 @@ decision parity.
 
 Pool payloads without an explicit execution budget run while making progress.
 For work without semantic phases, the activity watch renews on output or a
-rising containment CPU total. Its default quiet allowance is 1800 seconds,
-one ceod LONG-JOB interval. Set `pbrun --stall-s SECONDS` for another allowance;
+rising containment CPU total. Its default quiet allowance is 7200 seconds,
+the former worker execution ceiling, so quiet work is not stopped earlier by
+default. A Docker image load or pull may advance in the daemon outside the
+attempt's containment while the client CPU and output stay flat. GPU activity,
+I/O byte counters and progress-file changes do not renew the allowance; only
+new stdout/stderr bytes and rising containment CPU count. For quiet work, use
+`--stall-s`, a semantic phase allowance, or periodic output.
+Set `pbrun --stall-s SECONDS` for a shorter or longer allowance;
 the worker ceiling clamps it and receipts report that clamp. Semantic phases
 keep their committed-counter rules and cannot combine with `--stall-s`.
 Explicit budgets, D30 containment and withdrawal keep their existing behavior.

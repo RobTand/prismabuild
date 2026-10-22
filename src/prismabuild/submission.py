@@ -2438,7 +2438,7 @@ def stall_watch_notice(
     allowance = (pool.DEFAULT_STALL_ALLOWANCE_S if stall_s is None
                  else float(stall_s))
     basis = (f"--stall-s {allowance:g}s" if stall_s is not None
-             else f"default {allowance:g}s (one LONG-JOB interval)")
+             else f"default {allowance:g}s (former worker ceiling)")
     lines = [
         "pbrun: stall watch: this action declares no progress phases, so it "
         f"ends on output and CPU silence past {basis}"
