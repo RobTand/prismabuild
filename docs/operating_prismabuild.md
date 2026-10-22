@@ -1046,6 +1046,28 @@ preemption in its NOTE, and the withdrawal in the endings table reads
 immutable withdrawal decision under
 `withdrawn/decisions/<key>/<generation>.json` carries it too.
 
+Idle-GPU hosts prefer restartable portable CPU rows (#1929). An idle GPU has
+no PB GPU reservation, a fresh trusted GPU sample with no foreign process,
+and no eligible READY GPU row. A vLLM serve counts as GPU use. CPU-only hosts
+record `deferred_for_idle_gpu_host` for at most 20 seconds, then claim normally.
+While the GPU is used or GPU work is pending, #1262 and #1526 still apply.
+Leave portable work untagged; hostname and architecture tags keep their meaning.
+
+GPU work may reclaim CPU guests across priority bands when the host's denial
+says `drain_resolves: true`, including adaptive CPU `host_pressure`. The normal
+preemption lock, withdrawal ladder and cleanup apply. The lowest priority,
+most recently started guest yields first, with one release completed before
+the next handoff. Pinned rows never yield as guests. Pool CPU pbtest shards now
+seal `retry_safe: true`, `retry_scope: "interruption"`, and `max_attempts: 3`.
+Worker-reported failures end on the first attempt; interruptions and lease loss
+may rerun within the budget. This also permits ordinary #364 preemption of
+retry-safe -10 shards, including pinned CPU shards. Each interruption consumes
+one launch. After two, an exhausted guest records `guest_retry_budget_exhausted`
+while a live matching CPU-only host has not passed on it, even if full.
+Otherwise it may run on a GPU host as a non-guest. Nonrestartable portable work
+keeps #1262's existing overflow behavior. Waiters follow the ordinary lineage below.
+This source behavior still needs publication and a live fleet canary.
+
 A submitter waiting on a preempted action is not told it was withdrawn. The
 requeue is a new generation, and a waiter names the generation it submitted, so
 `pbrun` follows a cancellation stamped `preempted_by` to the generation the
@@ -2516,14 +2538,16 @@ before its partial reservation was returned. The displayed age matters: this
 is not a fresh capacity check or a promise of immediate admission after a
 release. It names the first failing resource; CPU borrowing and GPU sharing
 retain their admission rules. Older workers may omit this optional detail.
-`deferred_for_preferred_cpu` and `deferred_for_cross_resource_placement` are
+`deferred_for_preferred_cpu`, `deferred_for_cross_resource_placement`, and
+`deferred_for_idle_gpu_host` are
 bounded placement preferences, not refusals: they age nothing and expire on
-their own after 20 seconds, so treat neither as starvation.
+their own after 20 seconds, so treat none as starvation.
 `deferred_for_cpu_only_host` is not a refusal either, and has no timer (#1262):
 a GPU host left a CPU-only row to a matching host without a GPU that fits it
 now (`cpu_host` names that host, its free tokens, observed capacity and
 `yielding_s`). It ends when that host claims the row, or passes on it (any
-published denial of the row by that host other than `transition_busy`), or
+published denial of the row by that host other than `transition_busy` or
+`deferred_for_idle_gpu_host`), or
 stops fitting or goes stale; then the GPU host claims it as before. It ages
 nothing.
 `deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
@@ -2714,8 +2738,8 @@ a cause the next step cannot see (#351).
     refusal: check the age before treating it as the reason the box is idle
     now. `reservation_unavailable`, `adaptive_cpu_refused` and the bounded
     placement preferences (`deferred_for_preferred_cpu`,
-    `deferred_for_cross_resource_placement`, which expire on their own after
-    20 seconds) are different verdicts with different next moves.
+    `deferred_for_cross_resource_placement`, and `deferred_for_idle_gpu_host`,
+    which expire on their own after 20 seconds) are different verdicts with different next moves.
 *   **Is the box still announcing?** An expired worker offer means the box
     stopped reaching its announcement -- which is what a loop wedged in a
     queue read does, and since #16 a loop that cannot finish its discovery

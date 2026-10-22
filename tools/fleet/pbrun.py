@@ -288,6 +288,8 @@ def argument_parser() -> argparse.ArgumentParser:
         help=("declare the whole command idempotent across failed attempts, "
               "including every external side effect"),
     )
+    ap.add_argument("--retry-scope", choices=("interruption",), default=None,
+                    help="retry interruptions and lease loss, but file worker failures immediately")
     ap.add_argument(
         "--max-attempts",
         type=int,
