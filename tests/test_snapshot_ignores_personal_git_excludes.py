@@ -107,7 +107,7 @@ def test_a_global_exclude_file_does_not_change_the_sealed_tree(
     excludes = tmp_path / "personal-excludes"
     excludes.write_text("notes.txt\n")
     assert _git(
-        checkout, "config", "core.excludesFile", str(excludes)
+        checkout, "config", "--", "core.excludesFile", str(excludes)
     ).returncode == 0
     excluded_tree, excluded_roster = _seal(
         checkout, stamp_name, tmp_path / "cas-excluded"

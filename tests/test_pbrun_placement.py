@@ -1227,7 +1227,7 @@ def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
 ) -> None:
     checkout = _git_checkout(tmp_path)
     for key, value in configuration.items():
-        assert _git(checkout, "config", key, value).returncode == 0
+        assert _git(checkout, "config", "--", key, value).returncode == 0
     original = (checkout / ".git" / "config").read_bytes()
     def cannot_pack(*args, **kwargs):
         raise AssertionError("partial source must refuse before bundle packing")
@@ -1247,7 +1247,7 @@ def test_false_promisor_without_a_filter_keeps_a_complete_source_eligible(
     tmp_path: Path, value: str,
 ) -> None:
     checkout = _git_checkout(tmp_path)
-    assert _git(checkout, "config", "remote.origin.promisor", value).returncode == 0
+    assert _git(checkout, "config", "--", "remote.origin.promisor", value).returncode == 0
     submit_core.require_complete_history(checkout)
     snapshot = submit_core.snapshot_checkout(
         checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),

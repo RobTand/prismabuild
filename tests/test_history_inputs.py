@@ -79,15 +79,40 @@ class _HistoryBindings(ast.NodeVisitor):
         if node.value is not None:
             self.visit(node.value)
 
+    def invalidate(self, node, seen=frozenset()):
+        """Mutation also invalidates simple aliases of the same container."""
+        if not isinstance(node, ast.Name):
+            return
+        scope = self.scopes.get(node, self.scope)
+        owner, _ = scope.lookup(node.id)
+        key = (owner, node.id)
+        if key in seen:
+            return
+        definitions = list(owner.bindings.get(node.id, []))
+        for value in definitions:
+            if isinstance(value, ast.Name):
+                self.invalidate(value, seen | {key})
+        # Chained assignments (env = alias = {}) share the defining AST,
+        # rather than binding one name to another name.
+        for name, values in list(owner.bindings.items()):
+            if name == node.id or any(value is definition for value in values
+                                      for definition in definitions if definition is not None):
+                owner.bind(name, None)
+
     def visit_Subscript(self, node):
-        if isinstance(node.ctx, (ast.Store, ast.Del)) and isinstance(node.value, ast.Name):
-            self.scope.bind(node.value.id, None)
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.invalidate(node.value)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node):
+        self.invalidate(node.target)
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-            if node.func.attr in {'append', 'extend', 'insert', 'pop', 'remove', 'clear', 'sort', 'reverse'}:
-                self.scope.bind(node.func.value.id, None)
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in {'append', 'extend', 'insert', 'pop', 'remove', 'clear', 'sort', 'reverse',
+                                  'update', 'setdefault', 'popitem', '__setitem__', '__delitem__', '__ior__'}:
+                self.invalidate(node.func.value)
         self.generic_visit(node)
 
     def visit_ExceptHandler(self, node):
@@ -98,6 +123,13 @@ class _HistoryBindings(ast.NodeVisitor):
     def visit_MatchAs(self, node):
         if node.name:
             self.scope.bind(node.name, None)
+        self.generic_visit(node)
+
+    visit_MatchStar = visit_MatchAs
+
+    def visit_MatchMapping(self, node):
+        if node.rest:
+            self.scope.bind(node.rest, None)
         self.generic_visit(node)
 
     def visit_Import(self, node):
@@ -387,14 +419,17 @@ class _HistoryGuard:
 
     def contexts(self, node):
         loops = []
-        parent = self.parents.get(node)
+        child, parent = node, self.parents.get(node)
         while parent is not None:
-            if isinstance(parent, ast.For) and isinstance(parent.target, ast.Name):
+            if (isinstance(parent, ast.For) and isinstance(parent.target, ast.Name)
+                    and child in parent.body):
+                scope = self.lexical.scopes[parent]
+                # Iteration values apply only in the body, not the iterable or
+                # else suite, and cannot prove a target with other bindings.
                 values = self.sequence(parent.iter)
-                if values is not None:
-                    scope = self.lexical.scopes[parent]
+                if values is not None and len(scope.bindings.get(parent.target.id, [])) == 1:
                     loops.append([((scope, parent.target.id), value) for value in values])
-            parent = self.parents.get(parent)
+            child, parent = parent, self.parents.get(parent)
         # Unsupported or excessive combinations keep their unresolved values.
         if not loops or any(len(values) > 32 for values in loops):
             return [{}]
@@ -577,12 +612,50 @@ class _HistoryGuard:
                 return False
         return True
 
+    def inspect_setup_source(self, verb, operands, repo, launch):
+        # Keys, values, pathspecs and --file paths are data. These setup verbs
+        # can also select objects; unknown options/abbreviations fail closed.
+        source, flags, values = {
+            'config': ('--blob',
+                       {'--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool',
+                        '--add', '--replace-all', '--unset', '--unset-all', '--rename-section', '--remove-section',
+                        '--list', '-l', '--edit', '-e', '--null', '-z', '--name-only', '--show-origin', '--show-scope',
+                        '--bool', '--int', '--bool-or-int', '--path', '--expiry-date', '--no-type', '--fixed-value',
+                        '--includes', '--no-includes', '--system', '--global', '--local', '--worktree'},
+                       {'--file', '-f', '--type', '--default', '--comment', '--value', '--url'}),
+            'ls-files': ('--with-tree',
+                         {'--cached', '-c', '--deleted', '-d', '--modified', '-m', '--others', '-o',
+                          '--ignored', '-i', '--stage', '-s', '--unmerged', '-u', '--killed', '-k',
+                          '--directory', '--no-empty-directory', '--error-unmatch', '--exclude-standard',
+                          '--full-name', '--recurse-submodules', '--abbrev', '--debug', '--deduplicate',
+                          '--sparse', '--eol', '-z', '-t', '-v', '-f', '--resolve-undo'},
+                         {'--exclude', '-x', '--exclude-from', '-X', '--exclude-per-directory', '--format'}),
+            'check-attr': ('--source', {'--all', '-a', '--cached', '--stdin', '-z'}, set()),
+        }[verb]
+        while operands:
+            operand = operands.pop(0)
+            if operand == '--':
+                return []
+            option, separator, value = operand.partition('=')
+            if option == source or option in values:
+                if not separator:
+                    if not operands:
+                        return ['missing option value']
+                    value = operands.pop(0)
+                if option == source and not self.safe_revision(value, repo, launch):
+                    return [value]
+            elif '?' in operand or (operand.startswith('-') and operand not in flags):
+                return [operand]
+        return []
+
     def inspect(self, argv, repo, launch):
         if not argv:
             return []
         verb, *operands = argv
-        if verb in {'init', 'config', 'add', 'status', 'ls-files', 'clean', 'rm', 'mv',
-                    'check-ignore', 'check-attr', 'hash-object', 'write-tree',
+        if verb in {'config', 'ls-files', 'check-attr'}:
+            return self.inspect_setup_source(verb, operands, repo, launch)
+        if verb in {'init', 'add', 'status', 'clean', 'rm', 'mv',
+                    'check-ignore', 'hash-object', 'write-tree',
                     'index-pack', 'count-objects', 'gc'}:
             return []
         if verb == 'commit':
@@ -1157,6 +1230,104 @@ def test_history_guard_resolves_repository_aliases(use, finding):
               'head=subprocess.check_output(["git","-C",root,"rev-parse","HEAD"]).strip()\n'
               f'subprocess.run(["git","-C",{use},"diff",head])')
     assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("arguments, finding", [
+    ('["--blob", "main:config", "section.key"]', True),
+    ('["--blob=main:config", "section.key"]', True),
+    ('["--get", "section.key", "--blob", "main:config"]', True),
+    ('["get", "--blob=main:config", "section.key"]', True),
+    ('["--blob", revision, "section.key"]', True),
+    ('["--blob", "HEAD~1:config", "section.key"]', True),
+    ('["--blob", "HEAD:config", "--blob=main:config", "section.key"]', True),
+    ('["--blob"]', True),
+    ('["--blo=main:config", "section.key"]', True),
+    ('[option, "main:config", "section.key"]', True),
+    ('[*options, "section.key"]', True),
+    ('["--blob", "HEAD:config", "section.key"]', False),
+    ('["--blob=HEAD:config", "--get", "section.key"]', False),
+    ('["get", "--blob=HEAD:config", "section.key"]', False),
+    ('["--file", "main:config", "--get", "section.key"]', False),
+    ('["--file", path, "--get", "section.key"]', False),
+    ('["--file=" + path, "--get", "section.key"]', False),
+    ('["--", key, value]', False),
+    ('["--bool", "--get", "section.key"]', False),
+    ('["section.key", "main:config"]', False),
+    ('["--", "section.key", "--blob=main:config"]', False),
+])
+def test_history_guard_config_object_sources(arguments, finding):
+    source = f'subprocess.run(["git", "config", *{arguments}])'
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("verb, option, tail", [
+    ('ls-files', '--with-tree', ['--stage', 'file']),
+    ('check-attr', '--source', ['filter', '--', 'file']),
+])
+@pytest.mark.parametrize("revision, finding", [('main', True), ('HEAD~1', True), ('HEAD', False)])
+@pytest.mark.parametrize("attached", [False, True])
+def test_history_guard_setup_tree_sources(verb, option, tail, revision, finding, attached):
+    arguments = [option + '=' + revision] if attached else [option, revision]
+    source = f'subprocess.run({["git", verb, *arguments, *tail]!r})'
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("verb, arguments", [
+    ('config', '["--blob", head + ":config", "section.key"]'),
+    ('ls-files', '["--with-tree", head, "file"]'),
+    ('check-attr', '["--source", head, "filter", "--", "file"]'),
+])
+@pytest.mark.parametrize("cwd, finding", [('"/fixture"', False), ('"/other"', True)])
+def test_history_guard_setup_sources_captured_head(verb, arguments, cwd, finding):
+    source = ('head=subprocess.check_output(["git","rev-parse","HEAD"],cwd="/fixture").strip()\n'
+              f'subprocess.run(["git", {verb!r}, *{arguments}],cwd={cwd})')
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("source, finding", [
+    ('for unused in []:\n pass\nelse:\n subprocess.run(["git","show","main:file"])', True),
+    ('for unused in ["HEAD"]:\n pass\nelse:\n subprocess.run(["git","show","main:file"])', True),
+    ('for unused in []:\n pass\nelse:\n if ready:\n  subprocess.run(["git","show","main:file"])', True),
+    ('for revision in ["HEAD"]:\n pass\nelse:\n subprocess.run(["git","show",revision + ":file"])', True),
+    ('for revision in ["HEAD"]:\n revision="main"\n subprocess.run(["git","show",revision + ":file"])', True),
+    ('for revision in ["HEAD"]:\n revision += "~1"\n subprocess.run(["git","show",revision + ":file"])', True),
+    ('for revision in ["HEAD"]:\n for revision in ["main"]:\n  subprocess.run(["git","show",revision + ":file"])', True),
+    ('for revision in ["HEAD", "main"]:\n subprocess.run(["git","show",revision + ":file"])', True),
+    ('for revisions in [("HEAD",)]:\n match ["main:file"]:\n  case [*revisions]:\n   subprocess.run(["git","show",*revisions])', True),
+    ('for revision in ["HEAD"]:\n match {"main:file":1}:\n  case {**revision}:\n   subprocess.run(["git","show",*revision])', True),
+    ('for revision in []:\n pass\nelse:\n subprocess.run(["git","show","HEAD:file"])', False),
+    ('for revision in ["HEAD"]:\n subprocess.run(["git","show",revision + ":file"])', False),
+    ('for revision in ["HEAD"]:\n for path in ["file", "other"]:\n  subprocess.run(["git","show",revision + ":" + path])', False),
+    ('for revision in ["HEAD"]:\n for unused in []:\n  pass\n else:\n  subprocess.run(["git","show",revision + ":file"])', False),
+])
+def test_history_guard_loop_contexts(source, finding):
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("assignment", ['env={}\nalias=env', 'env=alias={}'])
+@pytest.mark.parametrize("mutation", [
+    'env.update({"GIT_DIR":"/other/.git", "GIT_WORK_TREE":"/other"})',
+    'env.setdefault("GIT_DIR", "/other/.git")',
+    'env.__setitem__("GIT_WORK_TREE", "/other")',
+    'env |= {"GIT_DIR":"/other/.git"}',
+    'env["GIT_WORK_TREE"] = "/other"',
+    'alias = env\nalias.update({"GIT_DIR":"/other/.git"})',
+    'alias = env\nalias["GIT_DIR"] = "/other/.git"',
+    'alias.update({"GIT_DIR":"/other/.git"})',
+])
+def test_history_guard_captured_head_rejects_environment_mutation(assignment, mutation):
+    source = (assignment + '\n'
+              'head=subprocess.check_output(["git","rev-parse","HEAD"],env=env,text=True).strip()\n'
+              + mutation + '\nsubprocess.run(["git","show",head],env=env)')
+    assert history_read_sites(source)
+
+
+@pytest.mark.parametrize("assignment", ['env={"LANG":"C"}\nalias=env', 'env=alias={"LANG":"C"}'])
+def test_history_guard_captured_head_accepts_unmutated_environment_alias(assignment):
+    source = (assignment + '\n'
+              'head=subprocess.check_output(["git","rev-parse","HEAD"],env=env,text=True).strip()\n'
+              'subprocess.run(["git","show",head],env=alias)')
+    assert not history_read_sites(source)
 
 
 def test_every_committed_history_input_has_a_verified_blob():
