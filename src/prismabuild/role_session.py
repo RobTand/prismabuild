@@ -53,6 +53,10 @@ class StopRequest:
     def is_set(self) -> bool:
         return self._requested
 
+    def fileno(self) -> int:
+        """Expose the stop pipe for the role's descriptor wait."""
+        return self._read_fd
+
     def set(self) -> None:
         if os.getpid() != self._pid:
             return

@@ -5009,6 +5009,8 @@ competing `signal.set_wakeup_fd` user, including an asyncio event loop, must not
 run inside that context. Native notifications wake the wait before deferred
 Python signal dispatch; only the selected Python handlers request a stop.
 Unrelated notifications are drained without shortening the monotonic timeout.
+`StopRequest.fileno()` exposes its pipe to the role's descriptor selector.
+A selector consumer drains unrelated native notifications with `wait(0)`.
 Each `StopRequest` supports one waiter, the role's main loop. Other threads may
 observe or request its stop. Forked readers detach the inherited native wakeup
 registration, and the inherited request cannot write to or close its parent's
@@ -9593,6 +9595,19 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Broker listener completion (#1937)
+
+The resource broker selects its listener and a sticky stop pipe without a
+shutdown tick. SIGTERM, SIGINT and `Server.shutdown()` write that same pipe.
+Run handlers block on the client socket, child pidfd and stop pipe. A disconnect,
+unexpected client data or broker stop requests token-authenticated termination
+of that exact attempt. Child exit wakes the pidfd directly. Server close joins
+request threads before closing the stop pipe. Request framing uses a single
+10-second deadline that also observes stop. The existing payload-startup
+10-second budget and process-termination 15-second budget remain finite waits.
+No background loop is added. `ResourceMonitor` retains its independent 1-second
+sampler; it is outside this listener change.
+
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
 The continuous exporter keeps serving under a closed or missing maintenance
@@ -9602,10 +9617,11 @@ supervisor owns its generation retirement and drift record, then respawns an
 exporter from the active generation. A direct exporter whose loaded receipt is
 unknown keeps serving until explicitly stopped, as it did before this change.
 
-SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
-the listener closes before any park proof, and the exporter joins every request
-thread it started. `ThreadingHTTPServer` uses daemon request threads, so
-`handle_request()` returning does not establish request completion.
+SIGTERM and SIGINT request stop through the shared `StopRequest`. The metrics
+listener selects its HTTP socket and the stop descriptor without a timeout.
+At a stop boundary the listener closes before any park proof, and the exporter
+joins every request thread it started. `ThreadingHTTPServer` uses daemon request
+threads, so listener exit does not establish request completion.
 
 The shutdown grace is 10 seconds in total, starting when accepts stop. This is
 a new stop-only bound, using the same operational patience as pbstatus's default
