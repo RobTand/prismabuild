@@ -568,18 +568,29 @@ def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: st
     """
 
     params = action["params"]
-    demand = (params.get("demand") or {}) if demand is None else demand
-    tags = ((params.get("placement") or {}).get("required_tags") or []) if required_tags is None else required_tags
-    if not requires_receipt(demand, tags,
-                            host_class=getattr(args, "host_class", None)):
+    sealed_demand = params.get("demand") or {}
+    sealed_tags = (params.get("placement") or {}).get("required_tags") or []
+    scope = action.get("execution_scope") or {}
+    sealed_intent = requires_receipt(
+        sealed_demand, sealed_tags, host_class=scope.get("host_class"))
+    demand = sealed_demand if demand is None else demand
+    tags = sealed_tags if required_tags is None else required_tags
+    row_intent = requires_receipt(demand, tags, host_class=getattr(args, "host_class", None))
+    if not sealed_intent and not row_intent:
         return None
     enforce = enforcement_enabled(store=store)
     job = str(action["action_key"])
     images = target_images(action)
     namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
     at = utc_now()
-    check = evaluate(args, action, cas=cas, at=at)
     checked_namespace = namespace if isinstance(namespace, str) else None
+    if enforce and not sealed_intent:
+        return ("the queue row asks for GPU placement "
+                f"(resources={dict(demand)}, tags={list(tags)}) the sealed job "
+                "does not declare, so no preflight receipt can bind it; "
+                "seal the GPU demand or placement into the action or drop "
+                "the row placement", checked_namespace)
+    check = evaluate(args, action, cas=cas, at=at)
     if enforce and check["result"] == "failed":
         return (check["reason"], checked_namespace)
     event = {

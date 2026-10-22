@@ -1083,3 +1083,169 @@ def test_the_shipped_registry_is_empty() -> None:
          "import pbrun; from prismabuild import d38_gate; print(len(d38_gate.INVOCATIONS))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.stdout.strip() == "0", shipped.stderr
+
+
+def test_a_decomposed_gpu_child_without_evidence_publishes_nothing(
+        tmp_path, monkeypatch) -> None:
+    import pbcampaign
+    from prismabuild.submission_types import SubmissionRefused
+
+    work, _ns, target, cas = _gpu_target(tmp_path, monkeypatch)
+    args = pbrun.request_from_args(pbrun.parse_args(
+        ["--detach", "--transport", "pool", "--cwd", str(work),
+         "--wait-s", "0.01", "--", "true"]))
+    queue = pool.PoolQueue(tmp_path / "pb-queue")
+    with pytest.raises(SubmissionRefused) as refused:
+        pbcampaign.child_record(target, args=args, queue=queue, cas=cas)
+    assert refused.value.returncode == 2
+    assert _ready(tmp_path) == []
+
+
+def test_campaign_rows_carry_d38_evidence_fields(tmp_path) -> None:
+    import pbcampaign
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([{
+        "argv": ["true"], "demand": {"cpu": 1, "mem_gb": 1},
+        "d38_receipt": "ab" * 32, "d38_exception": "dec-0000",
+        "d38_namespace": str(tmp_path / "namespace.json")}]), encoding="utf-8")
+    (row,) = pbcampaign.load_manifest(manifest, transport="pool")
+    flags = pbcampaign.pbrun_argv(row)
+    assert flags[flags.index("--d38-receipt") + 1] == "ab" * 32
+    assert flags[flags.index("--d38-exception") + 1] == "dec-0000"
+    assert flags[flags.index("--d38-namespace") + 1] == str(
+        tmp_path / "namespace.json")
+
+
+@pytest.mark.parametrize("options", [("--gpu",), ("--tag", "gb10"),
+                                     ("--measurement", "--host-class", "gb10")])
+@pytest.mark.parametrize("transport", ["pool", "slurm"])
+def test_fleet_submit_preserves_sealed_gpu_intent(
+        tmp_path, monkeypatch, options, transport, fleet) -> None:
+    """A CPU row cannot erase sealed GPU demand, tags or host class."""
+    from prismabuild import fleet_submit
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, *options)
+    request = cas.publish_action_request(target)
+    with pytest.raises(fleet_submit.SubmitRefused, match="D38"):
+        fleet_submit.submit(
+            target, cas=cas, request_path=request, transport=transport,
+            queue_root=tmp_path / "pb-queue", tags=[],
+            resources={"cpu": 1, "mem_gb": 1},
+            checkout_root=str(work) if transport == "pool" else None)
+    assert _ready(tmp_path) == []
+    assert _submissions(fleet) == []
+
+
+@pytest.mark.parametrize("transport", ["pool", "slurm"])
+@pytest.mark.parametrize("row_intent", ["demand", "tag", "needs_gpu"])
+@pytest.mark.parametrize("evidence", ["receipt", "exception"])
+def test_a_producer_row_cannot_add_gpu_intent_to_a_sealed_cpu_job(
+        tmp_path, monkeypatch, transport, row_intent, evidence, fleet, _isolated) -> None:
+    """Valid evidence for the CPU identity cannot bind row-added GPU intent."""
+    from prismabuild import fleet_submit
+    from prismabuild.submission_types import (
+        ProducerPublication, SubmissionRequest, SubmissionRefused)
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, "--d38-namespace", str(ns))
+    if evidence == "receipt":
+        key = _publish_receipt(tmp_path, cas, target)
+        options = {"d38_receipt": key}
+    else:
+        _grant(_isolated, "dec-1008-000000-row1", target)
+        options = {"d38_exception": "dec-1008-000000-row1"}
+    producer = ProducerPublication(
+        worker_script=fleet_submit.WORKER_SCRIPT,
+        checkout_root=str(work) if transport == "pool" else None,
+        tags=("gb10",) if row_intent == "tag" else (),
+        needs_gpu=row_intent == "needs_gpu",
+        resources={"cpu": 1, "mem_gb": 1, "gpu": int(row_intent == "demand")},
+        retry_safe=None, lane_root=fleet, job_entry=fleet_submit.JOB_ENTRY)
+    result = submit_core.submit_producer(
+        target, cas=cas, request_path=cas.publish_action_request(target),
+        producer=producer, store=pbrun.configured_store(),
+        request=SubmissionRequest(cwd=str(work), transport=transport, detach=True,
+                                  **options))
+    assert isinstance(result, SubmissionRefused)
+    assert result.returncode == 2
+    assert "sealed job" in result.reason
+    assert target["action_key"] in result.reason
+    assert "images=" in result.reason and "namespace=" in result.reason
+    assert _ready(tmp_path) == []
+    assert _submissions(fleet) == []
+    assert _audit(tmp_path, target["action_key"]) == []
+
+
+def test_fleet_submit_still_publishes_cpu_work_without_evidence(
+        tmp_path, monkeypatch) -> None:
+    from prismabuild import fleet_submit
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    target, cas = _seal(tmp_path, monkeypatch, work, "--tag", "x86")
+    result = fleet_submit.submit(
+        target, cas=cas, request_path=cas.publish_action_request(target),
+        transport="pool", queue_root=tmp_path / "pb-queue", tags=["x86"],
+        resources={"cpu": 1, "mem_gb": 1}, checkout_root=str(work))
+    assert result.transport == "pool"
+    assert len(_ready(tmp_path)) == 1
+
+
+def test_decomposed_common_carries_the_namespace_but_no_evidence() -> None:
+    import pbcampaign
+    from prismabuild import decomposition as dc
+
+    common = dc.validate_common_spec({
+        "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+        "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+        "gpu_memory_gb": None, "data_manifest": None, "env": {},
+        "d38_namespace": "/work/namespace.json"})
+    assert common["d38_namespace"] == "/work/namespace.json"
+    flags = pbcampaign.pbrun_argv(common)
+    assert flags[flags.index("--d38-namespace") + 1] == "/work/namespace.json"
+
+
+@pytest.mark.parametrize("field", ["d38_receipt", "d38_exception"])
+def test_decomposed_common_refuses_per_child_evidence(field: str) -> None:
+    from prismabuild import decomposition as dc
+
+    with pytest.raises(dc.ActionContractError, match="extra"):
+        dc.validate_common_spec({
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout", "demand": {"cpu": 1, "mem_gb": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {},
+            field: "x"})
+
+
+def test_a_campaign_gpu_row_with_a_grant_publishes(
+        tmp_path, monkeypatch, _isolated) -> None:
+    import pbcampaign
+    import re
+
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    ns = _namespace_file(tmp_path)
+    _prepare(tmp_path, monkeypatch)
+    row = {"argv": ["true"], "cwd": str(work),
+           "demand": {"cpu": 1, "mem_gb": 1, "gpu": 1},
+           "d38_namespace": str(ns)}
+    refused = pbcampaign.submit_row(row, transport="pool")
+    assert refused["status"] == "refused"
+    assert _ready(tmp_path) == []
+    match = re.search(r"job=([0-9a-f]{64})", refused["error"])
+    assert match is not None
+    key = match.group(1)
+    _grant(_isolated, "dec-1008-000000-row1", {"action_key": key})
+    published = pbcampaign.submit_row(
+        {**row, "d38_exception": "dec-1008-000000-row1"}, transport="pool")
+    assert published["status"] == "submitted", published
+    assert published["action_key"] == key
+    assert len(_ready(tmp_path)) == 1
+    events = _audit(tmp_path, key)
+    assert len(events) == 1
+    assert events[0]["authorization"] == "exception"
