@@ -15870,7 +15870,7 @@ class PoolQueue:
         A portable row also waits for a live, otherwise matching CPU host's
         UNKNOWN interpreter answer (#2014), regardless of capacity or previous
         pass-on evidence. PRESENT resumes the fit/pass rules; ABSENT excludes
-        that host. Staleness or disappearance also ends this unresolved wait.
+        that host. Draining, staleness or disappearance also ends this wait.
         """
 
         if not has_gpu or demand.get("gpu") or not demand:
@@ -15881,7 +15881,7 @@ class PoolQueue:
         for offer in self._matching_offers(item, live=placement.offers(),
                 allow_unknown_interpreter=self._portable_cpu_work(item)):
             remote_host = str(offer.get("host") or "")
-            if (not remote_host or remote_host == host
+            if (not remote_host or remote_host == host or offer.get("state") == "draining"
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue

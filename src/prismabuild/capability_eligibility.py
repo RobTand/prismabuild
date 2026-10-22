@@ -1,6 +1,7 @@
 """Host capability evidence from advisory offers and live observations."""
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -160,26 +161,36 @@ def observe_interpreters(
 ) -> InterpreterAnswers:
     """Recheck requested paths; the offer publisher serializes the shared names.
 
-    The host-local inventory contains names only, oldest first. Siblings and
-    empty READY polls retain them; no saved executable answer grants presence.
+    The host-local inventory retains bounded names and a rotation cursor.
+    Siblings share progress; no saved executable answer grants presence.
     """
     paths = sorted({
         str(item.get("interpreter"))
         for item in items
         if isinstance(item, dict) and isinstance(item.get("interpreter"), str)})
+    previous, cursor = [], None
     if inventory_path is not None:
         try:
             saved = json.loads(immutable_files.read_replaced_record(
                 inventory_path, where="interpreter inventory", max_bytes=256 * 1024))
             previous = saved.get("paths") if isinstance(saved, dict) else None
+            cursor = saved.get("cursor") if isinstance(saved, dict) else None
         except (OSError, ValueError, immutable_files.PrismaBuildError):
             previous = None
         previous = (previous if isinstance(previous, list)
                     and len(previous) <= INTERPRETER_INVENTORY_LIMIT
                     and all(isinstance(path, str) for path in previous) else [])
-        paths = [*dict.fromkeys([path for path in previous if path not in paths] + paths)][
-            -INTERPRETER_INVENTORY_LIMIT:]
-        immutable_files.write_json_atomic(inventory_path, {"paths": paths})
+        cursor = cursor if isinstance(cursor, str) else None
+    if len(paths) > INTERPRETER_INVENTORY_LIMIT:
+        # Advance only overflowing snapshots: an empty or smaller sibling
+        # publication must not reset progress through a stable READY set.
+        start = bisect_right(paths, cursor) if cursor is not None else 0
+        paths = (paths[start:] + paths[:start])[:INTERPRETER_INVENTORY_LIMIT]
+        cursor = paths[-1]
+    paths = [*dict.fromkeys([path for path in previous if path not in paths] + paths)][
+        -INTERPRETER_INVENTORY_LIMIT:]
+    if inventory_path is not None:
+        immutable_files.write_json_atomic(inventory_path, {"paths": paths, "cursor": cursor})
     host = LiveInterpreters()
     present, absent = set(), set()
     for path in paths:

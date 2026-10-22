@@ -2604,11 +2604,14 @@ host matches every other requirement but has not answered for this portable
 row's interpreter. Its `cpu_host` evidence names the host and path with
 `interpreter_presence: "unknown"`. The row stays READY until that host
 publishes PRESENT (normal fit/pass rules resume), ABSENT (the host is
-excluded), or goes stale/disappears. Current fullness or an earlier denial
+excluded), enters drain, or goes stale/disappears. Current fullness or an earlier denial
 does not resolve this wait. A positively idle GPU host can instead claim a
 proven restartable guest. Workers retain the last 32 requested interpreter
 paths across sibling and empty READY polls and recheck them on every offer
-publication; they retain no executable answers.
+publication, including drain polls. Overflowing snapshots rotate through 32
+paths at a time, answering every path in a stable N-path snapshot within
+ceil(N/32) publications of that snapshot. Sibling loops share progress; empty
+or smaller snapshots do not reset it. Workers retain no executable answers.
 `deferred_for_ready_gpu_row` is not a refusal either: a CPU-only row was held
 back for one pass because it would not fit beside a ready GPU row that fits the
 box's free GPU and that another loop was deciding (#1169). It ages nothing and

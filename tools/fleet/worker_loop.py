@@ -1314,15 +1314,14 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             # figure below is what stops any admission reading this box as
             # admittable.
             drain_capacity = dict(last_declared)
-            capabilities = capability_eligibility.OfferCapabilities(
-                images=capability_eligibility.ImageAnswers.from_observed(
-                    observed_images, class_verdict))
+            image_answers = capability_eligibility.ImageAnswers.from_observed(
+                observed_images, class_verdict)
 
             def announce_drain(queue=queue, host=host, tags=offered,
                                has_gpu=gpu_capable, capacity=drain_capacity,
                                runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                                timeout_s=args.timeout_s, loops=loops,
-                               addresses=addresses, capabilities=capabilities, fields=drain_fields):
+                               addresses=addresses, image_answers=image_answers, fields=drain_fields):
                 """The exact parked record this poll offers the queue.
 
                 A closure, not a kwargs dict, so the publisher's child runs
@@ -1331,6 +1330,14 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 offer the loop publishes when the gate reopens.
                 """
 
+                # The publisher holds the same host-local lock as open polls.
+                # Re-stat saved names so closing the gate cannot erase answers
+                # or preserve a stale executable answer for a waiting submitter.
+                interpreter_answers = capability_eligibility.observe_interpreters(
+                    [], inventory_path=(role_session.role_lock_directory()
+                                        / "interpreter-inventory.json"))
+                capabilities = capability_eligibility.OfferCapabilities(
+                    images=image_answers, interpreters=interpreter_answers)
                 queue.announce(
                     host=host, tags=tags, has_gpu=has_gpu,
                     capacity=capacity,
@@ -1482,8 +1489,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             """
 
             # The publisher holds this uid's host-local offer lock. Merge
-            # names there so sibling and empty polls cannot erase the last
-            # 32 requested paths; re-stat instead of saving positive answers.
+            # names and rotate there so sibling and empty polls share progress
+            # through overflowing snapshots; re-stat instead of saving answers.
             interpreter_answers = capability_eligibility.observe_interpreters(
                 requested, inventory_path=(role_session.role_lock_directory()
                                            / "interpreter-inventory.json"))
