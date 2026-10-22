@@ -610,7 +610,7 @@ def _worker_finish(
             # which a reader would adopt against the wrong disposition.
             for field in ("published_unix", "published_by", "claimed_by",
                           "claimed_unix", "claimed_host", "max_attempts",
-                          "retry_safe"):
+                          "retry_safe", "retry_scope"):
                 if field in snapshot:
                     filed[field] = snapshot[field]
             # Every end record names a repository (#1565): the
@@ -660,7 +660,8 @@ def _worker_finish(
             "detail": finished_detail,
         }
     )
-    terminal = succeeded or attempts >= limit
+    terminal = (succeeded or attempts >= limit
+                or record.get("retry_scope") == "interruption")
     disposition = (
         DONE if succeeded else FAILED if terminal else "requeued"
     )
@@ -677,6 +678,7 @@ def _worker_finish(
         # terminal's ``detail`` back out of it, so a receipt added only to
         # the record is overwritten two statements below.
         detail=finished_detail,
+        worker_reported=True,
     )
     adopted = queue.attempt_ending(record)
     record.update(

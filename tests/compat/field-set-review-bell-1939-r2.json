@@ -1,0 +1,12 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/queue_bell_events.py",
+      "owner": "InotifyQueue.consume",
+      "unresolved": "affected"
+    },
+    "count": 1,
+    "reason": "InotifyQueue.consume subtracts the set of affected transient bell topic names while installing a namespace with no action ID. This symbolic set is a coverage proof control, not a durable record field policy or schema. Preserve its exact source witness without claiming new durable-wire compatibility."
+  }
+]

@@ -185,7 +185,9 @@ def test_mergeq_heartbeat_does_not_count_a_forged_display_line(tmp_path, monkeyp
             errors.append(exc)
 
     monkeypatch.setattr(store, 'event', event)
-    monkeypatch.setattr(mq, 'HEARTBEAT_S', 0)
+    # Previously the queue's sleep(2) delayed even a zero-interval heartbeat.
+    # Keep that startup allowance explicitly now that the wait honors deadlines.
+    monkeypatch.setattr(mq, 'HEARTBEAT_S', 2)
     monkeypatch.setattr(mq.subprocess, 'Popen', launch)
     thread = threading.Thread(target=run, name='c26-native-runner')
     thread.start()

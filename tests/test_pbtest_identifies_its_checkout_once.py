@@ -189,26 +189,27 @@ def test_caller_environment_is_sealed_into_every_shard_of_one_template(
         assert core.seal_action(changed)["action_key"] != action["action_key"]
 
 
-def test_without_env_shard_requests_keep_their_legacy_bytes(tmp_path, monkeypatch):
+def test_without_caller_env_shard_requests_keep_their_default_bytes(tmp_path, monkeypatch):
     from dataclasses import asdict, replace
 
     build = pbtest.shard_request
     requests = []
 
-    def legacy_bytes(request, *, environment, python_entry, arguments):
+    def default_bytes(request, *, environment, python_entry, arguments):
         actual = build(request, environment=environment,
                        python_entry=python_entry, arguments=arguments)
-        legacy = replace(request, env=(
-            "TMPDIR=/home/rob/tmp", "OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1",
+        expected = replace(request, env=(
+            "TMPDIR=/home/rob/tmp", "PRISMABUILD_PBTEST_RECORD_BINDING=1",
+            "OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1",
             "OPENBLAS_NUM_THREADS=1", "TORCH_NUM_THREADS=1",
             f"PRISMABUILD_TEST_TIMEOUT_S={120 - pool.HEARTBEAT_S:g}",
             "PRISMABUILD_SHARD_BUDGET_S=120", "PYTHONPATH=src:experiments"),
             command=(*python_entry, *arguments))
-        assert core._canonical_bytes(asdict(actual)) == core._canonical_bytes(asdict(legacy))
+        assert core._canonical_bytes(asdict(actual)) == core._canonical_bytes(asdict(expected))
         requests.append(actual)
         return actual
 
-    monkeypatch.setattr(pbtest, "shard_request", legacy_bytes)
+    monkeypatch.setattr(pbtest, "shard_request", default_bytes)
     _, counts, root = _counted_run(tmp_path, monkeypatch)
     assert len(requests) == len(_sealed(root)) == 3
     assert counts == {"identity": 4, "bundle": 1}
@@ -223,7 +224,8 @@ def test_without_env_shard_requests_keep_their_legacy_bytes(tmp_path, monkeypatc
     *[((f"{key}=override",), key) for key in (
         "TMPDIR", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "TORCH_NUM_THREADS", "PRISMABUILD_TEST_TIMEOUT_S",
-        "PRISMABUILD_SHARD_BUDGET_S", "PYTHONPATH", "PYTEST_ADDOPTS")],
+        "PRISMABUILD_SHARD_BUDGET_S", "PRISMABUILD_PBTEST_RECORD_BINDING",
+        "PYTHONPATH", "PYTEST_ADDOPTS")],
 ])
 def test_invalid_caller_env_refuses_before_preparation_or_submission(
         tmp_path, monkeypatch, capsys, items, diagnostic):

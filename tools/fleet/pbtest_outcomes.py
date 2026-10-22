@@ -35,7 +35,7 @@ from prismabuild.digest_primitives import raw_sha256
 import os
 import posixpath
 import re
-from contextlib import nullcontext
+import secrets
 from pathlib import Path
 import sys
 import tempfile
@@ -52,6 +52,14 @@ TRACE_SCHEMA = "prismabuild.pbtest_trace.v1"
 TRACE_NODEID_MAX_BYTES = 4096
 COMPLETION_PREFIX = "pbtest-completion: "
 COMPLETION_SCHEMA = "prismabuild.pbtest_completion.v1"
+RECORD_BINDING_VERSION = 1
+RECORD_BINDING_ENV = "PRISMABUILD_PBTEST_RECORD_BINDING"
+
+
+def record_binding_for_action(action):
+    """Producer declaration from the validated action, never its stdout."""
+    value = action["environment"]["variables"].get(RECORD_BINDING_ENV)
+    return RECORD_BINDING_VERSION if value == str(RECORD_BINDING_VERSION) else value
 
 # xdist forwards selected IDs but neither successful collection reports nor
 # pytest_deselected to its controller. This tiny worker plugin returns only
@@ -225,7 +233,7 @@ def skip_location(report, start: Path | None = None) -> str | None:
 REPORT_FIELDS = ("nodeid", "when", "category", "reason", "location")
 
 
-def parse(output: str) -> dict | None:
+def parse(output: str, *, record_binding: int | None = None) -> dict | None:
     """The last outcome record in a shard's output, or ``None``.
 
     ``None`` means the shard printed no final outcomes. Exit hooks can block
@@ -233,26 +241,46 @@ def parse(output: str) -> dict | None:
     separate record and cannot replace final outcomes.
     """
 
-    return _parse_record(output, PREFIX, SCHEMA)
+    return _parse_record(output, PREFIX, SCHEMA, record_binding=record_binding)
 
 
-def _parse_record(output: str, prefix: str, schema: str) -> dict | None:
+def _parse_record(output: str, prefix: str, schema: str, *,
+                  record_binding: int | None = None) -> dict | None:
+    record = next(_record_candidates(output, prefix, record_binding=record_binding), None)
+    return record if isinstance(record, dict) and record.get("schema") == schema else None
+
+
+def _record_candidates(output: str, prefix: str, *, record_binding: int | None = None):
+    # Only invocation-owned metadata can select bound mode. In legacy mode,
+    # retain the original last-marker behavior even with nested preflights.
+    run_nonce = None
+    if record_binding is not None:
+        if type(record_binding) is not int or record_binding != RECORD_BINDING_VERSION:
+            return
+        decision, _ = _preflight(output)
+        run_nonce = decision.get("run_nonce") if decision is not None else None
+        if not isinstance(run_nonce, str) or re.fullmatch(r"[0-9a-f]{64}", run_nonce) is None:
+            return
     for line in reversed((output or "").splitlines()):
         if not line.startswith(prefix):
             continue
         try:
             record = json.loads(line[len(prefix):])
         except ValueError:
-            return None
-        if isinstance(record, dict) and record.get("schema") == schema:
-            return record
-        return None
-    return None
+            record = None
+        if record_binding is not None and (
+                not isinstance(record, dict) or record.get("run_nonce") != run_nonce):
+            continue
+        yield record
 
 
-def completion(output: str) -> dict:
+def completion(output: str, *, record_binding: int | None = None) -> dict:
     """Verify selected-test completion, not final outcomes or process exit."""
-    record = _parse_record(output, COMPLETION_PREFIX, COMPLETION_SCHEMA)
+    return _completion_evidence(_parse_record(
+        output, COMPLETION_PREFIX, COMPLETION_SCHEMA, record_binding=record_binding))
+
+
+def _completion_evidence(record: dict | None) -> dict:
     if record is None:
         return {"status": "unknown", "problems": ["no valid test completion record"]}
     lists = ("collected", "teardown_finished", "outcome_nodeids")
@@ -453,10 +481,14 @@ def _valid_runtime_refusal(value):
             and isinstance(value["message"], str) and bool(value["message"]))
 
 
-def preflight_record(exit_code: int, refusal: dict | None) -> str:
-    return PREFLIGHT_PREFIX + json.dumps({"schema": PREFLIGHT_SCHEMA,
+def preflight_record(exit_code: int, refusal: dict | None, *,
+                     run_nonce: str | None = None) -> str:
+    record = {"schema": PREFLIGHT_SCHEMA,
         "status": "refused" if exit_code else "accepted", "exit_code": exit_code,
-        "runtime_refusal": refusal}, separators=(",", ":"))
+        "runtime_refusal": refusal}
+    if run_nonce is not None:
+        record["run_nonce"] = run_nonce
+    return PREFLIGHT_PREFIX + json.dumps(record, separators=(",", ":"))
 
 
 def _preflight(output):
@@ -574,13 +606,19 @@ def _judge_row(row, index):
         problem("report_invalid", "invalid shard observation")
         return verdict
     verdict["shard"] = row.get("shard", index)
+    record_binding = row.get("record_binding")
+    if record_binding is not None and (
+            type(record_binding) is not int or record_binding != RECORD_BINDING_VERSION):
+        problem("record_binding_invalid", "unsupported shard record binding")
+        return verdict
     output = row["output"]
     summary = pytest_summary(output.splitlines())
-    verdict.update(summary=summary, ran=bool(summary), completion=completion(output))
+    verdict.update(summary=summary, ran=bool(summary),
+                   completion=completion(output, record_binding=record_binding))
     decision, preflight_problem = _preflight(output)
     if preflight_problem:
         problem("preflight_invalid", preflight_problem)
-    record = parse(output)
+    record = parse(output, record_binding=record_binding)
     if record is None:
         problem("outcomes_missing", "no outcome record: the shard's tests cannot be matched against its collection")
         if summary:
@@ -629,7 +667,8 @@ def _judge_row(row, index):
         verdict["coverage"] = ("collection_only" if record.get("collect_only") else
                                "executed" if verdict["collected"] else "excluded")
     complete = verdict["completion"]
-    if any(line.startswith(COMPLETION_PREFIX) for line in output.splitlines()):
+    if any(True for _ in _record_candidates(output, COMPLETION_PREFIX,
+                                           record_binding=record_binding)):
         for message in complete["problems"]:
             if message == "no selected test execution" and ((record or {}).get("collect_only") or not verdict["collected"]):
                 continue
@@ -714,7 +753,7 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
     if required_nodes is not None:
         expected = sorted(required_nodes)
         selected = sorted(n for s in shards for n in s["collected"])
-        records = [parse(row["output"]) for row in rows
+        records = [parse(row["output"], record_binding=row.get("record_binding")) for row in rows
                    if isinstance(row, dict) and isinstance(row.get("output"), str)]
         records = [r for r in records if _valid_record(r)]
         reports = [r for record in records if record for r in record.get("reports", [])]
@@ -748,8 +787,13 @@ def main(argv: list[str] | None = None, *, preflight=None,
     ``TMPDIR``.
     """
 
+    # Execution-local, never sealed into argv or placed in os.environ. Nested
+    # pytest invocations get their own nonce, even with identical source/env.
+    run_nonce = secrets.token_hex(32)
+    getpid = os.getpid
+    recorder_pid = getpid()
     refused, refusal = (0, None) if preflight is None else preflight()
-    print(preflight_record(refused, refusal), flush=True)
+    print(preflight_record(refused, refusal, run_nonce=run_nonce), flush=True)
     if refused:
         return int(refused)
     import pytest
@@ -759,9 +803,34 @@ def main(argv: list[str] | None = None, *, preflight=None,
         # test that re-reads it sees the same thing under this program.
         sys.argv[0] = str(Path(pytest.__file__).with_name("__main__.py"))
 
-    class OutcomeRecorder:
+    # Preserve the harness stream before pytest installs capture. Neither a
+    # replaced terminal.write nor capture's test-visible buffers see bound bytes.
+    output_fd = os.dup(sys.stdout.fileno())
+    write_output = os.write
+    encode_record = json.JSONEncoder(separators=(",", ":")).encode
+
+    def emit_line(line):
+        data = ("\n" + line + "\n").encode("utf-8", errors="replace")
+        while data:
+            data = data[write_output(output_fd, data):]
+
+    def emit_bound(prefix, record):
+        # A fork without exec inherits the closure, but never its authority.
+        if getpid() != recorder_pid:
+            return
+        emit_line(prefix + encode_record({**record, "run_nonce": run_nonce}))
+
+    class RecorderState:
         def __init__(self) -> None:
             self.config = None
+            self.session = None
+            self.sessionstart_finished = False
+            self.sessionfinish_started = False
+            self.collect_only = False
+            self.collection_started = False
+            self.collection_finished = False
+            self.runtestloop_started = False
+            self.runtestloop_finished = False
             self.collected: list[str] | None = None
             self.deselected: list[str] = []
             # Modules whose collection failed or skipped, as every xdist
@@ -782,83 +851,212 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.expected_workers = 0
             self.completion_written = False
 
-        def pytest_configure(self, config) -> None:
-            self.config = config
+    state = RecorderState()
 
-        def trace(self, event: str, nodeid: str, **fields) -> None:
-            if not trace_enabled:
-                return
-            encoded = nodeid.encode("utf-8", errors="replace")
-            if len(encoded) > TRACE_NODEID_MAX_BYTES:
-                fields.update(nodeid_truncated=True,
-                              nodeid_sha256=raw_sha256(encoded))
-                nodeid = encoded[:TRACE_NODEID_MAX_BYTES].decode("utf-8", errors="ignore")
-            line = TRACE_PREFIX + json.dumps({
-                "schema": TRACE_SCHEMA, "event": event, "nodeid": nodeid,
-                "reported_unix": time.time(),
-                **fields,
-            }, separators=(",", ":"))
-            self.emit(line)
+    def trace(event: str, nodeid: str, **fields) -> None:
+        if not trace_enabled:
+            return
+        encoded = nodeid.encode("utf-8", errors="replace")
+        if len(encoded) > TRACE_NODEID_MAX_BYTES:
+            fields.update(nodeid_truncated=True,
+                          nodeid_sha256=raw_sha256(encoded))
+            nodeid = encoded[:TRACE_NODEID_MAX_BYTES].decode("utf-8", errors="ignore")
+        line = TRACE_PREFIX + json.dumps({
+            "schema": TRACE_SCHEMA, "event": event, "nodeid": nodeid,
+            "reported_unix": time.time(),
+            **fields,
+        }, separators=(",", ":"))
+        emit_line(line)
 
-        def emit(self, line: str) -> None:
-            # The terminal writer owns the stream outside pytest's capture.
-            # Direct stdout writes can be captured with the dying test and
-            # never reach the pool log. Flush each record explicitly.
-            terminal = self.config.pluginmanager.getplugin("terminalreporter")
-            if terminal is not None:
-                # Another hook may just have printed a progress dot. Start
-                # our own line rather than depending on its cursor state.
-                terminal.write("\n" + line + "\n", flush=True)
+    def emit_completion(*, session_finished: bool = False) -> None:
+        if state.completion_written:
+            return
+        collected = state.collected
+        if not session_finished and (
+                collected is None or not collected
+                or len(state.teardown_finished) < len(collected)):
+            return
+        collection_complete = collected is not None
+        if state.expected_workers:
+            collection_complete = (
+                len(state.worker_collections) == state.expected_workers
+                and all(ids == collected
+                        for ids in state.worker_collections.values()))
+        record = {
+            "schema": COMPLETION_SCHEMA,
+            "collection_complete": collection_complete,
+            "collect_only": state.collect_only,
+            "collection_errors": any(row[1:3] == ["collect", "error"]
+                                     for row in state.reports),
+            "collected": collected or [],
+            "teardown_finished": sorted(state.teardown_finished),
+            "duplicate_teardown": state.duplicate_teardown,
+            "outcome_nodeids": sorted(
+                {row[0] for row in state.reports if row[1] != "collect"}
+                | {row[0] for row in state.uncounted}),
+        }
+        if session_finished or _completion_evidence(record)["status"] == "complete":
+            emit_bound(COMPLETION_PREFIX, record)
+            state.completion_written = True
+
+    def outcome_record() -> dict:
+        config = state.config
+        record = {
+            "schema": SCHEMA,
+            "rootdir_relative": (os.path.relpath(config.rootpath,
+                config.invocation_params.dir) if config is not None else "."),
+            "collect_only": state.collect_only,
+            "collected": state.collected,
+            "deselected": state.deselected,
+            "collect_seen": sorted(set(state.collect_seen)),
+            "reports": state.reports,
+            "bound_failures": state.bound_failures,
+            "uncounted": state.uncounted,
+            # Each file's summed phase seconds, to the millisecond:
+            # the packing model a later run reads (#1246).  Additive,
+            # so a reader that predates it sees the same record.
+            "file_durations": {
+                name: round(seconds, 3)
+                for name, seconds in state.file_durations.items()},
+        }
+        if state.first_tightened_test is not None:
+            record["first_tightened_test_budget_remaining_s"] = state.first_tightened_test[
+                "budget_remaining_s"]
+        if collection_spec is not None:
+            view = None
+            error = None
+            if xdist:
+                if (state.selection_views and state.selection_views[0] is not None
+                        and all(v == state.selection_views[0] for v in state.selection_views)):
+                    view = state.selection_views[0]
+                else:
+                    error = "missing or inconsistent worker file selection evidence"
             else:
-                capture = self.config.pluginmanager.getplugin("capturemanager")
-                with (capture.global_and_fixture_disabled()
-                      if capture is not None else nullcontext()):
-                    sys.stdout.write(line + "\n")
-                    sys.stdout.flush()
+                plugin = config.pluginmanager.getplugin("pbtest-file-selection")
+                if plugin is not None:
+                    view = plugin.report()
+                else:
+                    error = "file selection owner is unavailable"
+            record["file_selection"] = view
+            record["file_selection_error"] = error
+        return record
 
-        def emit_completion(self, *, session_finished: bool = False) -> None:
-            if self.completion_written:
-                return
-            collected = self.collected
-            if not session_finished and (
-                    collected is None or not collected
-                    or len(self.teardown_finished) < len(collected)):
-                return
-            collection_complete = collected is not None
-            if self.expected_workers:
-                collection_complete = (
-                    len(self.worker_collections) == self.expected_workers
-                    and all(ids == collected
-                            for ids in self.worker_collections.values()))
-            record = {
-                "schema": COMPLETION_SCHEMA,
-                "collection_complete": collection_complete,
-                "collect_only": bool(self.config.getoption("collectonly", False)),
-                "collection_errors": any(row[1:3] == ["collect", "error"]
-                                         for row in self.reports),
-                "collected": collected or [],
-                "teardown_finished": sorted(self.teardown_finished),
-                "duplicate_teardown": self.duplicate_teardown,
-                "outcome_nodeids": sorted(
-                    {row[0] for row in self.reports if row[1] != "collect"}
-                    | {row[0] for row in self.uncounted}),
-            }
-            line = COMPLETION_PREFIX + json.dumps(record, separators=(",", ":"))
-            if session_finished or completion(line)["status"] == "complete":
-                self.emit(line)
-                self.completion_written = True
+    # The public dispatch monitor, installed before conftests load, owns phase
+    # authority. Advancing a registered hook's generator is not evidence that
+    # pytest dispatched (let alone completed) collection or the test loop.
+    hook_calls = []
+    monitored_manager = None
+    command_call = None
+
+    def before_hook(name, implementations, kwargs):
+        nonlocal command_call
+        parent = hook_calls[-1] if hook_calls else None
+        call = {"name": name, "kwargs": dict(kwargs), "phase": False, "consumed": False}
+        hook_calls.append(call)
+        if (name == "pytest_cmdline_main" and parent is None and command_call is None
+                and kwargs["config"].pluginmanager is monitored_manager):
+            command_call = call
+        # Lifecycle events belong directly to this invocation's command, not
+        # to an intervening hook such as sessionstart or collection_finish.
+        if parent is not command_call or command_call is None:
+            return
+        if name == "pytest_configure" and state.config is None:
+            state.config = kwargs["config"]
+            state.collect_only = bool(state.config.getoption("collectonly", False))
+        session = kwargs.get("session")
+        if (name == "pytest_sessionstart" and state.session is None
+                and session.config is state.config):
+            state.session = session
+            call["phase"] = True
+        elif session is not None and session is state.session:
+            if (name == "pytest_collection" and state.sessionstart_finished
+                    and not state.collection_started):
+                state.collection_started = True
+                call["phase"] = True
+            elif (name == "pytest_runtestloop" and state.collection_finished
+                    and not state.runtestloop_started):
+                state.runtestloop_started = True
+                call["phase"] = True
+            elif (name == "pytest_sessionfinish" and state.runtestloop_finished
+                    and not state.sessionfinish_started):
+                state.sessionfinish_started = True
+                call["phase"] = True
+                emit_completion(session_finished=True)
+
+    def after_hook(result, name, implementations, kwargs):
+        call = hook_calls.pop()
+        if name == "pytest_runtest_logreport":
+            record_test_report(call["kwargs"]["report"])
+        if not call["phase"]:
+            return
+        if name == "pytest_sessionstart":
+            state.sessionstart_finished = result.excinfo is None
+        elif name == "pytest_collection":
+            # The controller's population arrives from xdist workers. Snapshot
+            # local items only after the whole real collection dispatch returns.
+            if not state.expected_workers:
+                state.collected = [item.nodeid for item in state.session.items]
+            state.collection_finished = result.excinfo is None
+        elif name == "pytest_runtestloop":
+            # KeyboardInterrupt must still allow outcomes before unconfigure.
+            state.runtestloop_finished = True
+        elif name == "pytest_sessionfinish":
+            state.last_record = outcome_record()
+            emit_bound(PREFIX, state.last_record)
+            state.written = True
+
+    def accept_hook(name, **arguments):
+        if not hook_calls:
+            return False
+        call = hook_calls[-1]
+        if (call["name"] != name or call["consumed"]
+                or any(call["kwargs"].get(key) is not value
+                       for key, value in arguments.items())):
+            return False
+        # These synchronous adapters consume each dispatched argument once;
+        # fabricated arguments and direct calls from other hooks have no claim.
+        call["consumed"] = True
+        return True
+
+    class OutcomeRecorder:
+        # Only pytest event adapters are registered. State and emission helpers
+        # are reachable only by inspecting their closures, never via attributes.
+        __slots__ = ()
+
+        def pytest_plugin_registered(self, plugin, plugin_name, manager) -> None:
+            nonlocal monitored_manager
+            if plugin is self and monitored_manager is None:
+                monitored_manager = manager
+                manager.add_hookcall_monitoring(before_hook, after_hook)
+
+        # Keep the lifecycle adapter surface, but it has no authority. Only
+        # the private monitor can observe real dispatch entry and return.
+        def pytest_configure(self, config) -> None:
+            pass
+
+        def pytest_sessionstart(self, session) -> None:
+            pass
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_sessionfinish(self, session, exitstatus):
-            self.emit_completion(session_finished=True)
             yield
 
         def pytest_runtest_logstart(self, nodeid, location) -> None:
-            self.trace("start", nodeid)
+            trace("start", nodeid)
 
-        @pytest.hookimpl(tryfirst=True)
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_collection(self, session):
-            if collection_spec is not None:
+            yield
+
+        @pytest.hookimpl(hookwrapper=True, tryfirst=True)
+        def pytest_runtestloop(self, session):
+            yield
+
+        @pytest.hookimpl(specname="pytest_collection", tryfirst=True)
+        def pytest_collection_ignore_named(self, session):
+            if (not hook_calls or not hook_calls[-1]["phase"]
+                    or not accept_hook("pytest_collection", session=session)
+                    or collection_spec is not None):
                 return None
             # pytest never asks its ignore rules about a path named on the
             # command line, and pbtest names every file (#1304).  Drop the
@@ -874,163 +1072,119 @@ def main(argv: list[str] | None = None, *, preflight=None,
             if not session.config.args:
                 # Every named file is ignored: collect nothing rather than
                 # widen an empty argument list to the whole suite.
-                self.collected = []
                 session.testscollected = 0
                 return True
             return None
 
-        def location(self, report) -> str | None:
-            return skip_location(report, self.config.invocation_params.dir)
-
         def pytest_collection_finish(self, session) -> None:
-            self.collected = [item.nodeid for item in session.items]
+            # Only the dispatch monitor snapshots after collection returns.
+            # Direct registry calls, including during collection, are ignored.
+            pass
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_setupnodes(self, config, specs) -> None:
-            self.expected_workers = len(specs)
+            if accept_hook("pytest_xdist_setupnodes", config=config, specs=specs):
+                state.expected_workers = len(specs)
 
         def pytest_deselected(self, items) -> None:
-            self.deselected.extend(item.nodeid for item in items)
+            if accept_hook("pytest_deselected", items=items):
+                state.deselected.extend(item.nodeid for item in items)
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_xdist_node_collection_finished(self, node, ids) -> None:
+            if not accept_hook("pytest_xdist_node_collection_finished", node=node, ids=ids):
+                return
             # The xdist controller collects nothing itself; every worker
             # collects the whole population and reports its IDs here.
-            if self.collected is None:
-                self.collected = list(ids)
-            self.worker_collections[node.gateway.id] = list(ids)
+            if state.collected is None:
+                state.collected = list(ids)
+            state.worker_collections[node.gateway.id] = list(ids)
 
         @pytest.hookimpl(optionalhook=True)
         def pytest_testnodedown(self, node, error) -> None:
+            if not accept_hook("pytest_testnodedown", node=node, error=error):
+                return
             output = getattr(node, "workeroutput", None)
             if isinstance(output, dict):
-                self.deselected.extend(output.get("pbtest_deselected") or ())
-                self.collect_seen.extend(output.get("pbtest_collect_seen") or ())
+                state.deselected.extend(output.get("pbtest_deselected") or ())
+                state.collect_seen.extend(output.get("pbtest_collect_seen") or ())
                 if collection_spec is not None:
-                    self.selection_views.append(output.get("pbtest_file_selection"))
+                    state.selection_views.append(output.get("pbtest_file_selection"))
 
         def pytest_collectreport(self, report) -> None:
+            if not accept_hook("pytest_collectreport", report=report):
+                return
             if report.failed:
-                self.reports.append([report.nodeid, "collect", "error", None, None])
+                state.reports.append([report.nodeid, "collect", "error", None, None])
             elif report.skipped:
-                self.reports.append([report.nodeid, "collect", "skipped",
-                                     skip_reason(report), self.location(report)])
+                state.reports.append([report.nodeid, "collect", "skipped",
+                                     skip_reason(report),
+                                     skip_location(report, state.config.invocation_params.dir)])
 
         @pytest.hookimpl(hookwrapper=True, tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
+            # The monitor records the real dispatch even if a direct caller
+            # advances and then abandons this generator.
             yield
-            first = getattr(report, "pbtest_first_tightened_test", None)
-            if first is not None and (self.first_tightened_test is None
-                    or first["started_monotonic"] < self.first_tightened_test["started_monotonic"]):
-                # xdist can deliver reports out of start order. All workers
-                # share this host's monotonic clock; compare starts, not arrivals.
-                self.first_tightened_test = first
-            self.trace("phase", report.nodeid, when=report.when,
-                       outcome=report.outcome,
-                       worker=getattr(report, "worker_id", None),
-                       resources=getattr(report, "pbtest_resources", None))
-            # Every phase consumes wall time, counted or not: a passing
-            # setup or teardown never reaches the summary line, but the
-            # file still paid its seconds, and the packing model (#1246)
-            # must charge them.  Summed by repository-relative file, so a
-            # later run can key the same file out of its own history.
-            try:
-                duration = float(getattr(report, "duration", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                duration = 0.0
-            if duration > 0:
-                config = self.config
-                rootdir = ""
-                if config is not None:
-                    try:
-                        rootdir = os.path.relpath(
-                            config.rootpath, config.invocation_params.dir)
-                    except Exception:
-                        rootdir = ""
-                name = source_file(report.nodeid, rootdir)
-                self.file_durations[name] = (
-                    self.file_durations.get(name, 0.0) + duration)
-            status = self.config.hook.pytest_report_teststatus(
-                report=report, config=self.config)
-            category = status[0] if status else ""
-            if category:
-                if not getattr(report, "count_towards_summary", True):
-                    # Uncounted reports still establish that the test ran.
-                    self.uncounted.append([report.nodeid, report.when, category])
-                else:
-                    reason = location = None
-                    if category == "skipped":
-                        reason, location = skip_reason(report), self.location(report)
-                    elif hasattr(report, "wasxfail"):
-                        reason = str(report.wasxfail or "") or None
-                    self.reports.append([report.nodeid, report.when, category,
-                                         reason, location])
-                    kind = getattr(report, "pbtest_bound_kind", None)
-                    if kind is not None and category in ("failed", "error"):
-                        self.bound_failures.append({
-                            "nodeid": report.nodeid, "when": report.when, "kind": kind})
-            if report.when == "teardown":
-                if report.nodeid in self.teardown_finished:
-                    self.duplicate_teardown = True
-                self.teardown_finished.add(report.nodeid)
-                # xdist can wait for a worker's exit before sessionfinish.
-                self.emit_completion()
 
-        def record(self) -> str:
-            config = self.config
-            record = {
-                "schema": SCHEMA,
-                "rootdir_relative": (os.path.relpath(config.rootpath,
-                    config.invocation_params.dir) if config is not None else "."),
-                "collect_only": bool(config is not None
-                                     and config.getoption("collectonly", False)),
-                "collected": self.collected,
-                "deselected": self.deselected,
-                "collect_seen": sorted(set(self.collect_seen)),
-                "reports": self.reports,
-                "bound_failures": self.bound_failures,
-                "uncounted": self.uncounted,
-                # Each file's summed phase seconds, to the millisecond:
-                # the packing model a later run reads (#1246).  Additive,
-                # so a reader that predates it sees the same record.
-                "file_durations": {
-                    name: round(seconds, 3)
-                    for name, seconds in self.file_durations.items()},
-            }
-            if self.first_tightened_test is not None:
-                record["first_tightened_test_budget_remaining_s"] = self.first_tightened_test[
-                    "budget_remaining_s"]
-            if collection_spec is not None:
-                view = None
-                error = None
-                if xdist:
-                    if (self.selection_views and self.selection_views[0] is not None
-                            and all(v == self.selection_views[0] for v in self.selection_views)):
-                        view = self.selection_views[0]
-                    else:
-                        error = "missing or inconsistent worker file selection evidence"
-                else:
-                    plugin = config.pluginmanager.getplugin("pbtest-file-selection")
-                    if plugin is not None:
-                        view = plugin.report()
-                    else:
-                        error = "file selection owner is unavailable"
-                record["file_selection"] = view
-                record["file_selection_error"] = error
-            self.last_record = record
-            return PREFIX + json.dumps(record, separators=(",", ":"))
-
-        def pytest_terminal_summary(self, terminalreporter) -> None:
-            terminalreporter.write_line(self.record())
-            self.written = True
-
-        def pytest_unconfigure(self, config) -> None:
-            # Without the terminal plugin there is no summary hook; the
-            # record still has to reach the shard's stdout.
-            if not self.written:
-                sys.stdout.write(self.record() + "\n")
-                sys.stdout.flush()
-                self.written = True
+    def record_test_report(report):
+        first = getattr(report, "pbtest_first_tightened_test", None)
+        if first is not None and (state.first_tightened_test is None
+                or first["started_monotonic"] < state.first_tightened_test["started_monotonic"]):
+            # xdist can deliver reports out of start order. All workers
+            # share this host's monotonic clock; compare starts, not arrivals.
+            state.first_tightened_test = first
+        trace("phase", report.nodeid, when=report.when,
+              outcome=report.outcome,
+              worker=getattr(report, "worker_id", None),
+              resources=getattr(report, "pbtest_resources", None))
+        # Every phase consumes wall time, counted or not: a passing
+        # setup or teardown never reaches the summary line, but the
+        # file still paid its seconds, and the packing model (#1246)
+        # must charge them.  Summed by repository-relative file, so a
+        # later run can key the same file out of its own history.
+        try:
+            duration = float(getattr(report, "duration", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration > 0:
+            config = state.config
+            rootdir = ""
+            if config is not None:
+                try:
+                    rootdir = os.path.relpath(
+                        config.rootpath, config.invocation_params.dir)
+                except Exception:
+                    rootdir = ""
+            name = source_file(report.nodeid, rootdir)
+            state.file_durations[name] = (
+                state.file_durations.get(name, 0.0) + duration)
+        status = state.config.hook.pytest_report_teststatus(
+            report=report, config=state.config)
+        category = status[0] if status else ""
+        if category:
+            if not getattr(report, "count_towards_summary", True):
+                # Uncounted reports still establish that the test ran.
+                state.uncounted.append([report.nodeid, report.when, category])
+            else:
+                reason = location = None
+                if category == "skipped":
+                    reason = skip_reason(report)
+                    location = skip_location(report, state.config.invocation_params.dir)
+                elif hasattr(report, "wasxfail"):
+                    reason = str(report.wasxfail or "") or None
+                state.reports.append([report.nodeid, report.when, category,
+                                     reason, location])
+                kind = getattr(report, "pbtest_bound_kind", None)
+                if kind is not None and category in ("failed", "error"):
+                    state.bound_failures.append({
+                        "nodeid": report.nodeid, "when": report.when, "kind": kind})
+        if report.when == "teardown":
+            if report.nodeid in state.teardown_finished:
+                state.duplicate_teardown = True
+            state.teardown_finished.add(report.nodeid)
+            # xdist can wait for a worker's exit before sessionfinish.
+            emit_completion()
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     trace_enabled = TRACE_OPTION in arguments
@@ -1049,44 +1203,50 @@ def main(argv: list[str] | None = None, *, preflight=None,
     recorder = OutcomeRecorder()
     if trace_enabled and resource_source is None:
         raise ValueError("--pbtest-trace needs the sealed resource accounting source")
-    if xdist or trace_enabled or collection_spec is not None:
-        # The shard is already inside one admitted PB action. The worker
-        # plugin lives only for this pytest invocation and changes no checkout
-        # or sealed input. xdist's workeroutput is the transport it owns.
-        with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-",
-                                         dir=roster_parent) as folder:
-            Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
-            if collection_spec is not None:
-                Path(folder, "pbtest_file_selection.py").write_text(
-                    collection_source + "\n\ndef pytest_configure(config):\n"
-                    "    config.pluginmanager.register(selection_plugin("
-                    + repr(collection_spec) + "), 'pbtest-file-selection')\n")
-            if trace_enabled:
-                Path(folder, "pbtest_resource_scope.py").write_text(resource_source)
-                Path(folder, "pbtest_resource_trace.py").write_text(RESOURCE_TRACE_PLUGIN)
-            sys.path.insert(0, folder)
-            old_path = os.environ.get("PYTHONPATH")
-            os.environ["PYTHONPATH"] = folder + os.pathsep + (old_path or "")
-            try:
-                plugins = ["-p", "pbtest_xdist_roster"]
+    try:
+        if xdist or trace_enabled or collection_spec is not None:
+            # The shard is already inside one admitted PB action. The worker
+            # plugin lives only for this pytest invocation and changes no checkout
+            # or sealed input. xdist's workeroutput is the transport it owns.
+            with tempfile.TemporaryDirectory(prefix="pbtest-xdist-roster-",
+                                             dir=roster_parent) as folder:
+                Path(folder, "pbtest_xdist_roster.py").write_text(XDIST_ROSTER_PLUGIN)
                 if collection_spec is not None:
-                    plugins += ["-p", "pbtest_file_selection"]
+                    Path(folder, "pbtest_file_selection.py").write_text(
+                        collection_source + "\n\ndef pytest_configure(config):\n"
+                        "    config.pluginmanager.register(selection_plugin("
+                        + repr(collection_spec) + "), 'pbtest-file-selection')\n")
                 if trace_enabled:
-                    plugins += ["-p", "pbtest_resource_trace"]
-                code = pytest.main([*plugins, *arguments],
-                                   plugins=[recorder])
-            finally:
-                sys.path.remove(folder)
-                if old_path is None:
-                    os.environ.pop("PYTHONPATH", None)
-                else:
-                    os.environ["PYTHONPATH"] = old_path
-    else:
-        code = pytest.main(arguments, plugins=[recorder])
+                    Path(folder, "pbtest_resource_scope.py").write_text(resource_source)
+                    Path(folder, "pbtest_resource_trace.py").write_text(RESOURCE_TRACE_PLUGIN)
+                sys.path.insert(0, folder)
+                old_path = os.environ.get("PYTHONPATH")
+                os.environ["PYTHONPATH"] = folder + os.pathsep + (old_path or "")
+                try:
+                    plugins = ["-p", "pbtest_xdist_roster"]
+                    if collection_spec is not None:
+                        plugins += ["-p", "pbtest_file_selection"]
+                    if trace_enabled:
+                        plugins += ["-p", "pbtest_resource_trace"]
+                    code = pytest.main([*plugins, *arguments],
+                                       plugins=[recorder])
+                finally:
+                    sys.path.remove(folder)
+                    if old_path is None:
+                        os.environ.pop("PYTHONPATH", None)
+                    else:
+                        os.environ["PYTHONPATH"] = old_path
+        else:
+            code = pytest.main(arguments, plugins=[recorder])
+        if not state.written and state.config is not None:
+            state.last_record = outcome_record()
+            emit_bound(PREFIX, state.last_record)
+    finally:
+        os.close(output_fd)
     sys.stdout.flush()
     # Excluded/collection-skipped file quanta are resolved work, not test
     # passes. The parent still refuses a globally empty population.
-    record = recorder.last_record
+    record = state.last_record
     if (int(code) == 5 and collection_spec is not None and record is not None
             and not record.get("collected") and not record.get("file_selection_error")
             and isinstance(record.get("file_selection"), dict)):

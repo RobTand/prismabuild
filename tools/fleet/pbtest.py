@@ -990,7 +990,8 @@ def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[
             if not isinstance(result, dict):
                 skipped += 1
                 continue
-            record = pbtest_outcomes.parse(result.get("output") or "")
+            record = pbtest_outcomes.parse(result.get("output") or "",
+                record_binding=result.get("record_binding"))
             if record is None:
                 skipped += 1
                 continue
@@ -1393,7 +1394,8 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
 def validate_shard_env(entries: list[str]) -> None:
     """Check caller additions before preparing or publishing any shard (#1891)."""
     owned = {"TMPDIR", *SHARD_THREAD_ENV, test_bound_contract.TIMEOUT_ENV,
-             test_bound_contract.SHARD_BUDGET_ENV, "PYTHONPATH", "PYTEST_ADDOPTS"}
+             test_bound_contract.SHARD_BUDGET_ENV, "PYTHONPATH", "PYTEST_ADDOPTS",
+             pbtest_outcomes.RECORD_BINDING_ENV}
     seen: set[str] = set()
     for entry in entries:
         if "\x00" in entry:
@@ -2123,6 +2125,11 @@ def main() -> int:
                             if kind not in {"cpu", "gpu"}),
             cpus=shard_resources["cpu"], gpu=args.gpu, gpu_memory_gb=args.gpu_memory_gb,
             timeout_s=plan["sealed_s"], wait_s=args.wait_s, priority=args.priority,
+            # CPU shards may restart interruptions, never a reported red test.
+            # GPU shards retain their existing retry policy.
+            retry_safe=args.transport == "pool" and not args.gpu,
+            retry_scope="interruption" if args.transport == "pool" and not args.gpu else None,
+            max_attempts=3 if args.transport == "pool" and not args.gpu else 1,
             profile=args.profile,
             data_manifest=str(Path(args.data_manifest).resolve()) if args.data_manifest else None,
             requires_files=json.dumps(pins) if pins else None, residency=args.residency)
@@ -2132,6 +2139,7 @@ def main() -> int:
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
         environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
+                       f"{pbtest_outcomes.RECORD_BINDING_ENV}={pbtest_outcomes.RECORD_BINDING_VERSION}",
                        *threads, *plan["bound_env"], *explicit_env,
                        "PYTHONPATH=src:experiments", *args.env]
         spec: dict = {"files": bucket, "roots": requested_roots}
@@ -2215,6 +2223,9 @@ def main() -> int:
                      and ending.verdict.execution_timeout)
         observations.append({"shard": index, "files": bucket, "returncode": returncode,
             "output": out, "timed_out": timed_out, "attempts": attempts,
+            # The same owner/version was sealed into python_entry, independently
+            # of stdout. Old report rows lack this declaration and stay legacy.
+            "record_binding": pbtest_outcomes.RECORD_BINDING_VERSION,
             "action_key": shard_result.get("action_key")})
     verdict = pbtest_outcomes.judge_shards(observations, requested_files=files)
     results = []
@@ -2282,6 +2293,7 @@ def main() -> int:
         actual_s = summary_seconds(summary) if ran else None
         results.append({"schema": "prismabuild.pbtest_report.v1",
                         "shard": index, "files": bucket,
+                        "record_binding": observation["record_binding"],
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
                         "summary": summary,

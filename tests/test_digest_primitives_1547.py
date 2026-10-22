@@ -118,7 +118,7 @@ def test_installed_record_hash_and_result_match_main(tmp_path, monkeypatch, algo
     assert pins.verify_install("fixture", "a" * 40) == old.verify_install("fixture", "a" * 40)
 
 
-def test_trace_long_node_digest_and_bytes_match_main(monkeypatch):
+def test_trace_long_node_digest_and_bytes_match_main(monkeypatch, capfd):
     import contextlib
     outcomes = fleet_module("pbtest_outcomes")
     source = subprocess.run(["git", "show", f"{MAIN}:tools/fleet/pbtest_outcomes.py"],
@@ -140,13 +140,12 @@ def test_trace_long_node_digest_and_bytes_match_main(monkeypatch):
 
     def run_pytest(argv, plugins):
         recorder = plugins[0]
-        recorder.config = config
-        recorder.trace("start", nodeid)
+        recorder.pytest_runtest_logstart(nodeid, None)
         return 0
 
     monkeypatch.setattr(pytest, "main", run_pytest)
     assert outcomes.main(["--pbtest-trace"], resource_source="") == 0
-    assert expected in lines
+    assert expected in capfd.readouterr().out
 
 
 def test_shipped_owner_bytes_equal_the_loaded_package_module():

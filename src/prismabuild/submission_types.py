@@ -111,6 +111,7 @@ class SubmissionRequest:
     gang_size: int | None = None
     gang_index: int | None = None
     retry_safe: bool = False
+    retry_scope: Literal["interruption"] | None = None
     max_attempts: int = 1
     timeout_s: float | None = None
     awaited_batch: Mapping[str, object] | None = None
