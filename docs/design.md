@@ -2067,6 +2067,28 @@ An outer client exit of 1 can report ordinary shard test failures. Other
 nonzero outer exits leave the requested files unknown even when the shard
 records contain test failures; the known failing nodes remain in the verdict.
 
+Bound failures retain their cause through a typed pytest exception and report
+attributes, including xdist's existing report channel (#1919). The recorder
+adds `bound_failures: [{nodeid, when, kind}]` to
+`prismabuild.pbtest_outcomes.v1`; judgment copies it into
+`prismabuild.pbtest_shard_verdict.v1`. Kinds are `per_test_bound` for the full
+configured bound and `shard_budget_exhausted` for a shortened alarm. Only
+counted failing phases enter this list. Ordinary failures are unchanged, and
+the existing five-column outcome rows, failing-node list and non-green policy
+are preserved. Legacy missing metadata remains readable with unknown causes
+(`bound_failures: null` in the verdict); present metadata must match actual
+failed node/phase reports. Unknown additive object fields remain readable.
+
+The optional `first_tightened_test_budget_remaining_s` records raw shard budget
+left at setup start of the first test with a shortened alarm, before margin
+and minimum-alarm adjustments. The plugin retains that start even if a later
+phase first tightens; the recorder selects the earliest observed start across
+xdist workers using their shared host monotonic clock. A tightened test need
+not fail. Missing or interrupted reports provide no such observation.
+These invocation operator records have no retained-generation corpus goldens;
+their schema names remain unchanged. See the operating guide for release-gate
+classification and missing-field semantics.
+
 The sealed recorder emits its first `prismabuild.pbtest_preflight.v1` decision
 before importing pytest. Dependency-pin refusal is typed at that boundary;
 an accepted decision prevents later test output from inventing runtime refusal.

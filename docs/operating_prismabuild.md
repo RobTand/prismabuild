@@ -2022,6 +2022,33 @@ it. Each row adds `schema: "prismabuild.pbtest_report.v1"` (#1900), retaining
 1 for a non-green result or report-publication failure, and 2 for a preflight
 or usage refusal.
 
+Each shard verdict adds `bound_failures` (#1919), a list of
+`{nodeid, when, kind}` objects for failing setup, call or teardown reports.
+`kind: "per_test_bound"` means the test exhausted its full configured bound.
+`kind: "shard_budget_exhausted"` means its alarm was shortened to the shard's
+remaining budget. Release gates should classify the latter as infrastructure
+or couldn't-run evidence. Other failures in the same shard remain candidate
+failures; classify each node and phase separately. `failing_nodes` and exit
+codes keep their existing meanings, so budget exhaustion still makes the run
+non-green. A node with multiple failing phases can have multiple entries.
+
+The same optional list is in the `pbtest-outcomes: ` record with schema
+`prismabuild.pbtest_outcomes.v1`; its existing `reports` rows stay five columns
+wide. A verdict's `bound_failures: null`, or an absent field from an older
+producer, means the bound causes are unknown. An empty list means no counted
+failure was identified as a bound failure. Failure prose is never used to infer
+a cause. Invalid present metadata leaves coverage unknown.
+
+When observed, both records also include
+`first_tightened_test_budget_remaining_s`: the sealed shard budget left when
+the first test whose alarm was shortened began setup. It is measured before
+subtracting the 30 s reporting margin or applying the 1 s minimum alarm, and
+can be negative. The recorder compares test starts across xdist workers rather
+than report arrival order. This fact can be present even if that test passes.
+Its absence means no tightened test start was observed. These additive fields
+keep the existing schema names; published use requires a runtime containing
+the updated recorder and a checkout loading the updated bound plugin.
+
 With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
 It counts completed submission clients, not passing tests or verified receipts.
 The final list report remains authoritative. Mergeq binds the companion to each
