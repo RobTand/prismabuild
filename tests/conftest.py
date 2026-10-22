@@ -116,6 +116,7 @@ if _TEST_HELPERS not in sys.path:
 # Shared by the gang tests, whichever module imports ``gang_fleet``: a host that
 # holds the protected copy of the generation it runs (#1579, #1659).
 from movement_publication_support import movement_authority, publication_store  # noqa: E402,F401
+from record_compat_namespace import RecordCompatNamespacePreflight  # noqa: E402
 
 #: The mount the fleet executes against. The environment override exists so
 #: the guard itself can be exercised against a scratch store.
@@ -282,6 +283,8 @@ def _live_store_audit(event: str, args: tuple) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    if not config.pluginmanager.hasplugin("record-compat-namespace-preflight"):
+        config.pluginmanager.register(RecordCompatNamespacePreflight(), "record-compat-namespace-preflight")
     config.addinivalue_line(
         "markers",
         "live_store(reason): the test reads the fleet's live store on purpose; "
