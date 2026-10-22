@@ -28,11 +28,13 @@ def test_submission_phase_fields_are_additive_for_retained_readers(case, generat
         accepted(invoke(ROOT, case, tmp_path / generation / "new", raw=original))
 
 
-def test_timed_supersession_preserves_both_reader_directions(generations, tmp_path):
+def test_timed_supersession_preserves_both_reader_directions(tmp_path):
     import json
+    import subprocess
+    import tarfile
     from prismabuild import pool
-    from record_compat import accepted, invoke
-    from record_compat_contract import ROOT, GOLDENS, decoded, has_historical_participant
+    from record_compat import accepted, invoke, write
+    from record_compat_contract import ROOT, GOLDENS, decoded
     case = "publication-ending/initial"
     old_raw = decoded(GOLDENS[case])
     reference = json.loads(old_raw)
@@ -44,11 +46,16 @@ def test_timed_supersession_preserves_both_reader_directions(generations, tmp_pa
     current = ending.path.read_bytes()
     assert set(json.loads(current)) == set(reference)
     assert current == old_raw
-    supported = 0
-    for generation, old, manifest in generations:
-        if not has_historical_participant(case, generation, old, manifest):
-            continue
-        supported += 1
-        accepted(invoke(old, case, tmp_path / generation / "old", raw=current, manifest=manifest))
-        accepted(invoke(ROOT, case, tmp_path / generation / "new", raw=old_raw))
-    assert supported
+    # The retained archive generations predate publication endings. Exercise
+    # the actual main decoder from the issue's pinned base instead.
+    archive_path = tmp_path / "main-source.tar"
+    with archive_path.open("wb") as stream:
+        subprocess.run(["git", "archive", "48c47c0540483461201dc8b5f8996976390fdd9d",
+                        "src/prismabuild", "tools/fleet"], cwd=ROOT, stdout=stream, check=True)
+    old = tmp_path / "main-source"
+    with tarfile.open(archive_path) as archive:
+        archive.extractall(old, filter="data")
+    prior = write(old, case, tmp_path / "old-writer")
+    assert prior == old_raw
+    accepted(invoke(old, case, tmp_path / "old-reader", raw=current))
+    accepted(invoke(ROOT, case, tmp_path / "new-reader", raw=prior))
