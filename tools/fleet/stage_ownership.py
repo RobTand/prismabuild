@@ -12,7 +12,7 @@ from pathlib import Path
 import stat
 import time
 
-from prismabuild import digest_primitives, manifest_layout, reader_lease, staged_path
+from prismabuild import data_manifest, digest_primitives, manifest_layout, reader_lease, staged_path
 
 
 class _Budget(ValueError):
@@ -45,13 +45,10 @@ class _IO:
     @contextmanager
     def scandir(self, path):
         self.check()
-        try:
-            self.no_links(path)
-            entries = os.scandir(path)
-        except FileNotFoundError:
-            yield iter(())
-            return
-        with entries:
+        # Missing namespaces are not universally optional. Propagate absence
+        # so each census can apply its own missing_ok policy.
+        self.no_links(path)
+        with os.scandir(path) as entries:
             def checked():
                 for entry in entries:
                     self.check()
@@ -92,6 +89,9 @@ class _IO:
         document = self.read_document(path, max_bytes=128 << 20)
         if pb.new_sha256(self.raw[str(path)]).hexdigest() != digest:
             raise ValueError(f'{path}: manifest digest mismatch')
+        # Digest identity does not imply valid structure. Use the strict
+        # reader's validator before expanding v2 read-plan entry indices.
+        document = data_manifest.validate_data_manifest(document)
         entries = manifest_layout.read_entries(document)
         prefix = document.get('mount_prefix')
         if not isinstance(entries, list) or not isinstance(prefix, str) or not prefix.startswith('/'):
@@ -273,7 +273,8 @@ def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
         error(residence, message)
     from prismabuild import stage_release
     wanted_movers, live = stage_release.live_claims(
-        queue, evidence=census.records if census is not None else [])
+        queue, evidence=census.records if census is not None else [],
+        evidence_errors=io.errors)
     live_actions = set(live)
     for namespace, mover, document, direct in fragments:
         if not work():
@@ -344,9 +345,13 @@ def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
     directory_identities = {name: identities(directory['references'])
                             for name, directory in rows.items()}
     # Token files themselves are holder evidence, not content documents.
+    # The held namespace is created lazily. Only its initial absence is clean;
+    # disappearance during traversal still means incomplete evidence.
+    held_opened = False
     try:
         held = queue.tier(tier_id).paths.held
         with io.scandir(held) as holders:
+            held_opened = True
             for holder in holders:
                 if not holder.is_dir(follow_symlinks=False):
                     continue
@@ -368,6 +373,9 @@ def collect(queue, *, tier_id, stage_root, cas_root, residency_root,
                         attached = True
                 if tokens.get('stage_gib') and not attached:
                     error(holder.path, 'held stage scope has no resolved path evidence')
+    except FileNotFoundError as exc:
+        if held_opened:
+            error(held, exc)
     except (OSError, ValueError) as exc:
         error(queue.root, exc)
 
