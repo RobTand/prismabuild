@@ -16397,6 +16397,12 @@ operator command, `tools/fleet/stage_reclaim.py`, does not change that contract.
 Automatic pressure reclaim remains outside this scope. Live apply still needs
 CEO approval and sufficient quarantine capacity.
 
+The separate `--report` mode (#1973) produces bounded, read-only ownership
+evidence without the reclaim proof/action path. See
+[Stage ownership report](stage_ownership_report.md) for invocation, exclusive
+observed-byte reconciliation versus overlapping declarations, budgets and
+incompleteness. No report result authorizes deletion.
+
 The default dry run lists every candidate with an original path, extent,
 SHA-256 and proof receipt, or a refusal reason. It changes no stage bytes,
 xattrs or file times. Explicit receipt and memo outputs must remain outside
