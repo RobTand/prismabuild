@@ -98,9 +98,19 @@ class HolderCensus:
     def holders(self) -> Iterator[HolderIdentity]:
         directories = (self._directory.iterdir() if self._scan is None
                        else self._scan(self._directory))
-        for directory in directories:
-            if directory.is_dir():
-                yield self._identity(directory.name)
+        for directory in self.directory_inputs(directories):
+            yield self._identity(directory.name)
+
+    @staticmethod
+    def directory_inputs(entries, *, include_symlinks=False):
+        """All holder directories, including unknown and hidden names.
+
+        Bell reconstruction also retains every symlink for rejection, even
+        before its target exists or becomes a directory. Admission keeps its
+        existing directory predicate and accounting.
+        """
+        return (entry for entry in entries
+                if (include_symlinks and entry.is_symlink()) or entry.is_dir())
 
     @property
     def non_mirror_holders(self) -> Iterator[HolderIdentity]:
