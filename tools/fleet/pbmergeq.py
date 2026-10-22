@@ -38,8 +38,10 @@ import dataclasses
 import fcntl
 import importlib.util
 import json
+import math
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -652,6 +654,35 @@ def test_command(cfg: Config, checkout: Path, files: list[str], report: Path,
             "--json", str(report), *cfg.pbtest_args, *history, *files]
 
 
+@contextlib.contextmanager
+def _child_pidfds(processes: Iterable[subprocess.Popen]):
+    """Own the wait set, including partial setup and exceptional exits."""
+    pending = {}
+    try:
+        for process in processes:
+            pending[os.pidfd_open(process.pid)] = process
+        yield pending
+    finally:
+        with contextlib.ExitStack() as cleanup:
+            for fd in pending:
+                cleanup.callback(os.close, fd)
+
+
+def _reap_ready(pending: dict[int, subprocess.Popen], deadline: float) -> None:
+    """Block until child exit or the heartbeat deadline; consume ready pidfds."""
+    waiter = select.poll()
+    for fd in pending:
+        waiter.register(fd, select.POLLIN)
+    # poll uses milliseconds: round up rather than spin before the deadline.
+    ready = waiter.poll(math.ceil(max(0.0, deadline - time.monotonic()) * 1000))
+    for fd, _ in ready:
+        process = pending.pop(fd)
+        try:
+            process.wait()
+        finally:
+            os.close(fd)
+
+
 class Runner:
     """Submits ``pbtest.py`` runs and waits for them with a heartbeat."""
 
@@ -844,25 +875,27 @@ class Runner:
             live[name] = (process, handle, report, log, runtime, time.monotonic(), invocation, {"sequence": -1, "completed": None})
             self.store.event(batch, f"run {name} started: {len(files)} file(s) on "
                                     f"{checkout.name}, pid {process.pid}, log {log}")
-        last = time.monotonic()
+        deadline = time.monotonic() + HEARTBEAT_S
         if self.full_suite:
             # The one-shot gate needs process exit, not periodic queue status.
             for process, *_ in live.values():
                 process.wait()
-        while not self.full_suite and any(p.poll() is None for p, *_ in live.values()):
-            time.sleep(2)
-            if time.monotonic() - last >= HEARTBEAT_S:
-                last = time.monotonic()
-                for name, (process, _, report, log, _, started, invocation, progress) in live.items():
-                    if process.poll() is None:
-                        snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
-                        if snapshot is not None and snapshot["sequence"] >= progress["sequence"]:
-                            progress.update(sequence=snapshot["sequence"], completed=snapshot["completed_shards"])
-                        count = progress["completed"] if progress["completed"] is not None else "unknown"
-                        self.store.event(batch, f"run {name} waiting "
-                                                f"{time.monotonic() - started:.0f}s: "
-                                                f"{count} shard(s) reported")
-                self.store.write_status()
+        else:
+            with _child_pidfds(p for p, *_ in live.values()) as pending:
+                while pending:
+                    _reap_ready(pending, deadline)
+                    if time.monotonic() >= deadline:
+                        deadline += HEARTBEAT_S
+                        for name, (process, _, report, log, _, started, invocation, progress) in live.items():
+                            if process.returncode is None:
+                                snapshot = self.outcomes.read_progress(self.outcomes.progress_path(report), **invocation)
+                                if snapshot is not None and snapshot["sequence"] >= progress["sequence"]:
+                                    progress.update(sequence=snapshot["sequence"], completed=snapshot["completed_shards"])
+                                count = progress["completed"] if progress["completed"] is not None else "unknown"
+                                self.store.event(batch, f"run {name} waiting "
+                                                        f"{time.monotonic() - started:.0f}s: "
+                                                        f"{count} shard(s) reported")
+                        self.store.write_status()
         for name, (process, handle, report, log, runtime, started, invocation, _) in live.items():
             handle.close()
             wall = time.monotonic() - started

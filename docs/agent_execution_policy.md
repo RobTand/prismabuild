@@ -42,16 +42,21 @@ workers neither offer the `interpreter-path-v1` capability nor answer path
 questions, so interpreter-naming rows wait out a rolling publish rather than
 running where they would exit 127.
 
-Placement holds two bounded preferences you may see in a denial and must not
-read as a refusal: `deferred_for_preferred_cpu`, and
-`deferred_for_cross_resource_placement`, which keeps a box already working one
-resource from taking work for the other one when a freer compatible box
-exists. Each expires on its own after 20 seconds and the work is then claimed
-anyway. They are best effort, they measure nothing thermal, and they are not a
-reason to retag or resubmit. `deferred_for_cpu_only_host` (#1262) is a placement
-rule rather than a preference: a GPU host leaves a CPU-only row to a matching
-host without a GPU that fits it now, until that host claims it or passes on it.
-Do not tag CPU-only work to a GPU host to get it placed.
+Placement has three bounded preferences: `deferred_for_preferred_cpu`,
+`deferred_for_cross_resource_placement`, and `deferred_for_idle_gpu_host`.
+Each expires after at most 20 seconds; do not retag or resubmit to defeat it.
+Idle GPUs give restartable portable CPU rows first claim on the Sparks' CPUs
+(#1929). Idle requires no PB GPU reservation, a fresh trusted GPU sample with
+no foreign process, including exempt vLLM serving, and no eligible READY GPU
+row. A draining GPU denial can evict CPU guests through existing preemption;
+pinned CPU rows never become guests; ordinary #364 preemption still applies.
+CPU pbtest shards seal interruption-only retry safety and three launches. A
+worker-reported failure is final immediately; interruptions and lease loss may
+requeue within that budget. An exhausted guest waits only while a live matching
+CPU-only host has not passed on it, then may run as a non-guest.
+While the GPU is in use or GPU work is pending, #1262 and #1526 still apply.
+`deferred_for_cpu_only_host` remains an untimed placement rule for that case
+and for nonrestartable portable work. Leave portable work untagged.
 
 Every worker loop applies its own payload execution safety ceiling, **7200 s
 by default**, as a ``min`` against ``--timeout-s``. Each box announces its

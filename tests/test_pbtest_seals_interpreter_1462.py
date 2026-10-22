@@ -69,8 +69,12 @@ def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     with monkeypatch.context() as scoped:
         patch_store(scoped, client=pbrun, root=root)
         patch_store(scoped, client=pbrun, runtime_root=PUBLISHED)
-        scoped.setattr(sys, 'argv', [*command[1:2], '--detach', *command[2:]])
-        assert pbrun.main() == 0
+        # CPU shards now carry an interruption budget; publish attached with
+        # one observation instead of converting them to single-attempt detach.
+        boundary = command.index('--')
+        scoped.setattr(sys, 'argv', [*command[1:boundary], '--wait-s', '0',
+                                  *command[boundary:]])
+        assert pbrun.main() == 75
     requests = list((root / 'cas/requests').rglob('*.json'))
     assert len(requests) == 1
     action = json.loads(requests[0].read_text())
@@ -86,6 +90,7 @@ def test_generated_request_and_published_row_bind_the_same_interpreter(tmp_path,
     assert action['params']['command'][0] == sys.executable
     assert action['params']['interpreter'] == sys.executable
     assert row['interpreter'] == sys.executable
+    assert row['retry_scope'] == 'interruption' and row['max_attempts'] == 3
     assert contracts.INTERPRETER_TAG in row['tags']
     assert action['params']['placement']['required_tags'] == []
 

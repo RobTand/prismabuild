@@ -4831,6 +4831,12 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             "pbrun: --max-attempts greater than 1 requires --retry-safe; "
             "--deterministic covers result bytes, not external side effects"
         )
+    if args.retry_scope not in (None, "interruption"):
+        raise SubmissionRefused("pbrun: unknown retry scope")
+    if args.retry_scope is not None and not args.retry_safe:
+        raise SubmissionRefused("pbrun: --retry-scope requires --retry-safe")
+    if args.retry_scope is not None and args.transport != "pool":
+        raise SubmissionRefused("pbrun: --retry-scope requires the pool transport")
     if args.detach and args.max_attempts > 1:
         raise SubmissionRefused(detached_attempts_refusal(args.max_attempts))
     gang = gang_declaration(args)
@@ -4838,6 +4844,8 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         "max_attempts": args.max_attempts,
         "retry_safe": args.retry_safe,
     }
+    if args.retry_scope is not None:
+        retry_policy["retry_scope"] = args.retry_scope
     determinism = "deterministic" if args.deterministic else "stochastic"
     # An image reference is sealed into the action's identity, so a mutable
     # tag or a malformed digest is an argument error here, before any
@@ -5539,7 +5547,7 @@ def interpreter_of(command: Sequence[str]) -> str | None:
 
 
 _DEFERRED_PUBLICATION_ARGS = (
-    "priority", "priority_reason", "max_attempts", "retry_safe", "residency",
+    "priority", "priority_reason", "max_attempts", "retry_safe", "retry_scope", "residency",
     "residency_tier",
     "residency_ram", "residency_share", "residency_mover_mem_gb",
     "residency_mover_readers",
@@ -5695,7 +5703,8 @@ def register_deferred(prepared: Mapping[str, object],
         edges=edges, template=record_template(template), cas_root=cas.root,
         static_manifest=static_input,
         publication={name: getattr(args, name)
-                     for name in _DEFERRED_PUBLICATION_ARGS})
+                     for name in _DEFERRED_PUBLICATION_ARGS
+                     if name != "retry_scope" or args.retry_scope is not None})
     try:
         pending_id, path = action_edges.file_deferred(q.root, body)
     except action_edges.ActionEdgeError as exc:
@@ -6506,10 +6515,10 @@ def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRe
 
 def _request_value_matches(value, expected) -> bool:
     from types import UnionType
-    from typing import Literal, get_args, get_origin
+    from typing import Literal, Union, get_args, get_origin
     origin = get_origin(expected)
     args = get_args(expected)
-    if origin is UnionType:
+    if origin in (UnionType, Union):
         return any(_request_value_matches(value, member) for member in args)
     if origin is Literal:
         return value in args
@@ -6662,7 +6671,10 @@ def producer_publication_row(action, *, args: SubmissionRequest,
         checkout_root=producer.checkout_root, worker_script=str(producer.worker_script),
         tags=list(producer.tags), needs_gpu=producer.needs_gpu, priority=args.priority,
         resources=dict(producer.resources), max_attempts=args.max_attempts,
-        retry_safe=producer.retry_safe, container_images=images or None, **dependencies)
+        retry_safe=producer.retry_safe, container_images=images or None,
+        **({"retry_scope": params["retry_policy"]["retry_scope"]}
+           if params.get("retry_policy", {}).get("retry_scope") is not None else {}),
+        **dependencies)
 
 
 def release_deferred(q, pending_id, record, *, producers=(), store: FleetStore,
