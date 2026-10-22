@@ -270,7 +270,7 @@ class _HistoryGuard:
                 argv, repo = commands[0]
                 if argv == ['rev-parse', 'HEAD'] and repo is not None:
                     marker = f'\0HEAD{id(node)}\0'
-                    self.heads[marker] = repo
+                    self.heads[marker] = (repo, node)
                     return marker
         return '?'
 
@@ -312,23 +312,30 @@ class _HistoryGuard:
         except ValueError:
             return None
 
-    def repository(self, node):
-        if node is None:
+    def repository(self, node, seen=frozenset()):
+        if node in seen:
+            return None
+        seen = seen | {node}
+        if node is None or isinstance(node, ast.Constant) and node.value is None:
             return ('cwd',)
         if isinstance(node, ast.Call) and self.canonical(node.func) == 'str' and len(node.args) == 1:
-            return self.repository(node.args[0])
+            return self.repository(node.args[0], seen)
         if isinstance(node, ast.Name):
             scope = self.lexical.scopes.get(node, self.lexical.root)
             owner, value = scope.lookup(node.id)
             values = owner.bindings.get(node.id, [])
             if owner is not scope or len(values) > 1:
                 return None
+            if isinstance(value, (ast.Name, ast.Constant)):
+                return self.repository(value, seen)
             return (id(owner), node.id)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return ('path', node.value)
         return None
 
     def program(self, node, seen=frozenset()):
+        if isinstance(node, str):
+            return node.rsplit('/', 1)[-1]
         if node is None or node in seen:
             return '?'
         seen = seen | {node}
@@ -395,39 +402,88 @@ class _HistoryGuard:
         program = self.program(node)
         return program == 'git' or (program == '?' and 'git' in self.canonical(node).lower())
 
+    @staticmethod
+    def assignment(word):
+        return bool(re.match(r'^[a-zA-Z_][a-zA-Z_0-9]*=', word))
+
+    def environment_safe(self, node, seen=frozenset()):
+        if node is None or isinstance(node, ast.Constant) and node.value is None:
+            return True
+        if node in seen:
+            return False
+        if isinstance(node, ast.Name):
+            value = self.binding(node)
+            return value is not None and self.environment_safe(value, seen | {node})
+        return (isinstance(node, ast.Dict) and all(
+            key is not None and self.text(key) not in {'?', 'GIT_DIR', 'GIT_WORK_TREE'}
+            for key in node.keys))
+
+    def argv_commands(self, argv, repo, executable=None):
+        if not argv:
+            return [(['?'], repo)] if self.git_program(executable) else []
+        program = executable if executable is not None else argv[0]
+        name = self.program(program)
+        if name == 'env':
+            rest = list(argv[1:])
+            while rest and self.assignment(self.text(rest[0]) if isinstance(rest[0], ast.AST) else rest[0]):
+                value = rest.pop(0)
+                word = self.text(value) if isinstance(value, ast.AST) else value
+                if word.split('=', 1)[0] in {'GIT_DIR', 'GIT_WORK_TREE'}:
+                    repo = None
+            return self.argv_commands(rest, repo)
+        if name in {'sh', 'bash'} and len(argv) >= 3:
+            flag = self.text(argv[1]) if isinstance(argv[1], ast.AST) else argv[1]
+            script = self.text(argv[2]) if isinstance(argv[2], ast.AST) else argv[2]
+            if flag in {'-c', '-lc'} and script != '?':
+                return self.shell_commands(script, repo)
+        if self.git_program(program):
+            return [self.git_arguments(argv[1:], repo)]
+        return []
+
     def shell_commands(self, text, repo):
-        # Split command boundaries for recognition, then require literal operands.
-        lexer = shlex.shlex(text, posix=True, punctuation_chars=';&|')
+        # Substitutions are out of scope. Do not split their internal commands.
+        substitution = '$(' in text or '`' in text
+        lexer = shlex.shlex(text, posix=True, punctuation_chars='' if substitution else ';&|\n')
+        lexer.whitespace = ' \t\r' if not substitution else lexer.whitespace
         lexer.whitespace_split = True
         lexer.commenters = ''
         words = []
         commands = []
         try:
             for word in lexer:
-                if word in {';', '&&', '||', '|'}:
+                if not substitution and word and all(char in ';&|\n' for char in word):
                     commands.append(words)
                     words = []
                 else:
                     words.append(word)
         except ValueError:
-            # An unterminated operand must not hide an already recognized Git.
             words.append('?')
         commands.append(words)
         if len(commands) > 1:
-            repo = None  # Earlier shell commands may change cwd or add captured output.
-        unsafe = any(char in text for char in {'$', '`', '<', '>', chr(92), chr(10)})
-        return [self.git_arguments(['?'] if unsafe else command[1:], repo)
-                for command in commands if command and self.git_program(command[0])]
+            repo = None  # Earlier shell commands may change cwd or captured output.
+        unsafe = any(char in text for char in {'$', '`', '<', '>', chr(92)})
+        result = []
+        for command in commands:
+            command_repo = repo
+            while command and self.assignment(command[0]):
+                if command.pop(0).split('=', 1)[0] in {'GIT_DIR', 'GIT_WORK_TREE'}:
+                    command_repo = None
+            for argv, identity in self.argv_commands(command, command_repo):
+                result.append((['?'] if unsafe else argv, identity))
+        return result
 
     def commands(self, node):
         name = self.canonical(node.func)
         leaf = name.rsplit('.', 1)[-1]
         keywords = {kw.arg: kw.value for kw in node.keywords}
         repo = self.repository(keywords.get('cwd'))
+        if not self.environment_safe(keywords.get('env')):
+            repo = None
         if isinstance(node.func, ast.Name) and (name in self.WRAPPERS or leaf in self.WRAPPERS):
             args = list(node.args)
             if len(args) > 1 and self.text(args[0]) not in HISTORY_VERBS | self.SETUP_VERBS and not self.text(args[0]).startswith('-'):
-                repo = self.repository(args.pop(0))
+                operand = self.repository(args.pop(0))
+                repo = (repo, '-C', operand) if repo is not None and operand is not None else None
             return [self.git_arguments(args, repo)]
         if leaf not in self.LAUNCHERS:
             return []
@@ -435,18 +491,29 @@ class _HistoryGuard:
             return []
         arg = node.args[0] if node.args else keywords.get('args', keywords.get('cmd'))
         executable = keywords.get('executable')
-        if executable is not None and self.program(executable) not in {'git', '?'}:
-            return []
+        shell = keywords.get('shell')
+        if isinstance(shell, ast.Constant) and shell.value is True:
+            script = self.text(arg)
+            if script == '?':
+                values = self.sequence(arg)
+                if values:
+                    script = self.text(values[0]) if isinstance(values[0], ast.AST) else values[0]
+            return self.shell_commands(script, repo) if script != '?' else []
         if leaf.startswith(('exec', 'spawn', 'posix_spawn')):
             offset = 1 if leaf.startswith('spawn') else 0
             executable = node.args[offset] if len(node.args) > offset else keywords.get('path', keywords.get('file'))
             rest = node.args[offset + 1:]
+            environment = node.args[-1] if leaf.endswith('e') or leaf.startswith('posix_spawn') else None
+            if not self.environment_safe(environment):
+                repo = None
             if leaf.startswith(('execl', 'spawnl')):
                 argv = list(rest[:-1] if leaf.endswith('e') else rest)
             else:
                 argv = self.sequence(rest[0]) if rest else self.sequence(keywords.get('argv', keywords.get('args')))
         else:
-            if isinstance(arg, ast.Call) and self.canonical(arg.func) == 'shlex.split' and arg.args:
+            if leaf in {'system', 'popen', 'getoutput', 'getstatusoutput'}:
+                return self.shell_commands(self.text(arg), repo)
+            if executable is None and isinstance(arg, ast.Call) and self.canonical(arg.func) == 'shlex.split' and arg.args:
                 text = self.text(arg.args[0])
                 if text != '?':
                     commands = self.shell_commands(text, repo)
@@ -463,10 +530,7 @@ class _HistoryGuard:
                         return [(['?'], repo)]
                 if text != '?':
                     return self.shell_commands(text, repo)
-        program = executable if executable is not None else argv[0] if argv else arg
-        if not self.git_program(program):
-            return []
-        return [self.git_arguments(argv[1:], repo)] if argv else [(['?'], repo)]
+        return self.argv_commands(argv, repo, executable if executable is not None else arg if not argv else None)
 
     def git_arguments(self, argv, repo):
         words = [item if isinstance(item, str) else self.text(item) for item in argv]
@@ -476,9 +540,9 @@ class _HistoryGuard:
             if option in {'-C', '--git-dir', '--work-tree', '-c'}:
                 if index + 1 >= len(words):
                     return ['?'], repo
-                if option != '-c':
-                    value = argv[index + 1]
-                    repo = self.repository(value) if isinstance(value, ast.AST) else ('path', value)
+                value = argv[index + 1]
+                operand = self.repository(value) if isinstance(value, ast.AST) else ('path', value)
+                repo = (repo, '-C', operand) if option == '-C' and repo is not None and operand is not None else None
                 index += 2
             elif option in {'--no-pager', '--no-optional-locks'}:
                 index += 1
@@ -486,12 +550,30 @@ class _HistoryGuard:
                 return ['?'], repo
         return words[index:], repo
 
-    def safe_revision(self, revision, repo):
+    def safe_revision(self, revision, repo, launch):
         revision = revision.split(':', 1)[0]
-        return all(part == 'HEAD' or (repo is not None and self.heads.get(part) == repo)
-                   for part in re.split(r'\.\.\.?', revision))
+        for part in re.split(r'\.\.\.?', revision):
+            if part == 'HEAD':
+                continue
+            captured = self.heads.get(part)
+            if repo is None or captured is None or captured[0] != repo:
+                return False
+            capture = captured[1]
+            scope = self.lexical.scopes[capture]
+            if self.lexical.scopes.get(launch) is not scope:
+                return False
+            start = (capture.lineno, capture.col_offset)
+            end = (launch.lineno, launch.col_offset)
+            if start >= end or any(
+                isinstance(node, ast.Call) and self.canonical(node.func) == 'os.chdir'
+                and self.lexical.scopes[node] is scope
+                and start < (node.lineno, node.col_offset) < end
+                for node in ast.walk(self.tree)
+            ):
+                return False
+        return True
 
-    def inspect(self, argv, repo):
+    def inspect(self, argv, repo, launch):
         if not argv:
             return []
         verb, *operands = argv
@@ -534,55 +616,98 @@ class _HistoryGuard:
                     return [operand]
             else:
                 revisions.append(operand)
-                if not self.safe_revision(operand, repo):
+                if not self.safe_revision(operand, repo, launch):
                     return revisions
                 if verb in {'archive', 'cat-file', 'ls-tree'}:
                     return []
         return []
 
-    def sites(self):
-        found = set()
-        pragmas = {}
+    def pragma_suppressions(self, launches):
+        suppressed, errors = set(), set()
+        # Compound statements span other statements; only the smallest owning
+        # statement can own a trailing comment. AST columns are UTF-8 bytes.
+        statements = [node for node in ast.walk(self.tree) if isinstance(node, ast.stmt)
+                      and not hasattr(node, 'body')]
+        owners = {}
+        for launch in launches:
+            parent = self.parents.get(launch)
+            while parent is not None and parent not in statements:
+                parent = self.parents.get(parent)
+            owners[launch] = parent
+        lines = self.source.splitlines()
         for token in tokenize.generate_tokens(io.StringIO(self.source).readline):
-            if token.type == tokenize.COMMENT and (match := re.match(r'#\s*pb-history-ok\b(.*)', token.string)):
-                pragmas[token.start[0]] = match[1]
-        used = set()
-        for node in ast.walk(self.tree):
-            if not isinstance(node, ast.Call):
+            if token.type != tokenize.COMMENT or not (match := re.match(r'#\s*pb-history-ok\b(.*)', token.string)):
                 continue
-            for context in self.contexts(node):
-                self.overrides = context
-                commands = self.commands(node)
-                if not commands:
-                    continue
-                attached = set(pragmas).intersection({node.lineno, node.lineno - 1})
-                used.update(attached)
-                if attached or self.forwarded(node):
-                    continue
-                for argv, repo in commands:
-                    if bad := self.inspect(argv, repo):
-                        found.add((node.lineno, argv[0] if argv else '?', tuple(bad)))
-        for line, reason in pragmas.items():
+            line, column = token.start
+            prefix = lines[line - 1][:column]
+            position = (line, len(prefix.encode()))
+            standalone = not prefix.strip()
+            if standalone:
+                attached = [node for node in launches if node.lineno == line + 1]
+            else:
+                candidates = [stmt for stmt in statements
+                              if (stmt.lineno, stmt.col_offset) <= position and stmt.end_lineno >= line]
+                owner = max(candidates, key=lambda stmt: (stmt.lineno, stmt.col_offset), default=None)
+                attached = [node for node in launches if owners[node] is owner and owner is not None]
+            on_line = [node for node in launches if node.lineno <= line <= node.end_lineno]
+            if not standalone and any(node in attached for node in on_line):
+                attached = [node for node in attached if node in on_line]
+            reason = match[1]
             if not reason.startswith(':') or len(reason[1:].strip()) < 15:
-                found.add((line, 'pragma', ('pb-history-ok needs a reason of at least 15 characters',)))
-            if line not in used:
-                found.add((line, 'pragma', ('pb-history-ok is not attached to a Git launch',)))
+                errors.add((line, 'pragma', ('pb-history-ok needs a reason of at least 15 characters',)))
+            if len(on_line) > 1 or len(attached) > 1:
+                errors.add((line, 'pragma', ('pb-history-ok is ambiguous between Git launches',)))
+            elif not attached or attached[0] in suppressed:
+                errors.add((line, 'pragma', ('pb-history-ok is not attached to an unsuppressed Git launch',)))
+            else:
+                suppressed.add(attached[0])
+        return suppressed, errors
+
+    def sites(self):
+        launches = {}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Call):
+                commands = []
+                for context in self.contexts(node):
+                    self.overrides = context
+                    commands.extend(self.commands(node))
+                if commands:
+                    launches[node] = commands
+        self.overrides = {}
+        suppressed, found = self.pragma_suppressions(launches)
+        for node, commands in launches.items():
+            if node in suppressed or self.forwarded(node):
+                continue
+            for argv, repo in commands:
+                if bad := self.inspect(argv, repo, node):
+                    found.add((node.lineno, argv[0] if argv else '?', tuple(bad)))
         return [(line, verb, list(bad)) for line, verb, bad in sorted(found)]
 
 
 def history_read_sites(source, root=None, path=None):
-    """Reject identified Git launches without a same-repository HEAD proof.
+    """Reject accidental Git history reads without a same-repository HEAD proof.
 
-    Git programs resolve from literal argv, lexical bindings, repository imports
-    and literal shell commands, including commands after ;, &&, || and |.
+    Git programs resolve from literal argv, lexical bindings, repository imports,
+    literal shell strings, sh/bash -c/-lc, env and assignment prefixes. Shell
+    boundaries include newlines, ;, &&, ||, | and simple & splitting. shell=True
+    inspects the script even with an executable override; direct launches use
+    the replacement executable.
+
     Unresolved programs are out of scope unless their name or attribute contains
-    "git". TrustLadder's history-free checkouts are the backstop: its environment
-    text states that a checkout has no history before its base.
+    "git". functools.partial bindings, asyncio subprocess APIs, command
+    substitution and background & chains beyond simple splitting are also out
+    of scope. TrustLadder's history-free checkouts are the enforcement backstop:
+    its environment text states that a checkout has no history before its base.
 
-    For identified Git launches, unknown revision operands fail closed. An inline
-    # pb-history-ok: <reason> on the launch's first line or directly above it
-    suppresses the site. Reasons need at least 15 characters; stale pragmas fail.
-    No source is executed or imported while scanning it.
+    Captured HEAD requires identical literal or lexically resolved cwd and every
+    -C operand, a provable launch environment without GIT_DIR/GIT_WORK_TREE, and
+    no intervening os.chdir in the same function. Relative paths are not resolved.
+    Unknown revisions or unproved repository identity fail closed.
+
+    A trailing # pb-history-ok: <reason> attaches by token column to its owning
+    launch statement. A directly preceding pragma must be a standalone comment.
+    Each pragma suppresses one launch once; ambiguous and stale pragmas fail.
+    Reasons need at least 15 characters. No source is executed or imported.
     """
     return _HistoryGuard(source, root, path).sites()
 
@@ -798,6 +923,164 @@ def test_history_guard_shell_head_capture_needs_a_single_repository():
     source = ('head = subprocess.check_output("echo ready && git rev-parse HEAD").strip()\n'
               'subprocess.run(["git", "diff", f"{head}...HEAD"])')
     assert history_read_sites(source)
+
+
+
+@pytest.mark.parametrize("revision, finding", [("deadbeef:file", True), ("HEAD:file", False)])
+@pytest.mark.parametrize("template", [
+    'subprocess.run({script!r}, shell=True, executable="/bin/bash")',
+    'from subprocess import run as launch\nlaunch({script!r}, shell=True, executable="/bin/bash")',
+    'COMMAND={script!r}\nsubprocess.run(COMMAND, shell=True, executable="/bin/bash")',
+    'subprocess.run([{script!r}], shell=True, executable="/bin/bash")',
+    'subprocess.Popen({script!r}, shell=True, executable="/bin/sh")',
+    'subprocess.check_output({script!r}, shell=True, executable="python")',
+    'subprocess.run(["sh", "-c", {script!r}])',
+    'subprocess.run(["/bin/sh", "-c", {script!r}])',
+    'subprocess.run(["bash", "-c", {script!r}])',
+    'subprocess.run(["bash", "-lc", {script!r}])',
+    'subprocess.run(["/bin/bash", "-lc", {script!r}])',
+    'subprocess.run(["alias", "-c", {script!r}], executable="/bin/sh")',
+    'os.execv("/bin/bash", ["alias", "-lc", {script!r}])',
+    'subprocess.run({nested!r}, shell=True)',
+    'subprocess.run(["env", "git", "show", {revision!r}])',
+    'subprocess.run(["/usr/bin/env", "LANG=C", "HOME=/fixture", "git", "show", {revision!r}])',
+    'os.execv("/usr/bin/env", ["alias", "LANG=C", "git", "show", {revision!r}])',
+    'subprocess.run({env_script!r}, shell=True)',
+    'subprocess.run({plain_env!r}, shell=True)',
+    'subprocess.run({simple_background!r}, shell=True)',
+    'os.system({assigned!r})',
+    'subprocess.getoutput({newlines!r})',
+    'subprocess.run(["bash", "-lc", {assigned!r}])',
+])
+def test_history_guard_plausible_shell_forms(template, revision, finding):
+    script = f"git show {revision}"
+    source = template.format(script=script, revision=revision,
+                             nested=f"/bin/bash -lc '{script}'",
+                             env_script=f"env LANG=C HOME=/fixture {script}",
+                             plain_env=f"env {script}",
+                             simple_background=f"echo ready & {script}",
+                             assigned=f"LANG=C HOME=/fixture {script}",
+                             newlines=f"echo ready\nLANG=C env HOME=/fixture {script}\necho done")
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("source", [
+    'subprocess.run(["git", "show", "deadbeef:file"], executable="python")',
+    'subprocess.run(shlex.split("git show deadbeef:file"), executable="python")',
+    'subprocess.run(["git", "show", "deadbeef:file"], shell=False, executable="/bin/sh")',
+    'subprocess.run(["sh", "-c", "echo git show deadbeef:file"])',
+    'subprocess.run(["bash", "-lc", script])',
+    'subprocess.run(["env", "LANG=C", "python", "show", "deadbeef:file"])',
+    'subprocess.run("LANG=C echo git show deadbeef:file", shell=True)',
+    'subprocess.run("echo \'git show deadbeef:file\\nmore\'", shell=True)',
+])
+def test_history_guard_shell_non_git_controls(source):
+    assert not history_read_sites(source)
+
+
+@pytest.mark.parametrize("source", [
+    'from functools import partial\nlaunch=partial(subprocess.run, ["git","show","deadbeef:file"])\nlaunch()',
+    'functools.partial(subprocess.run, ["git","show","deadbeef:file"])()',
+    'asyncio.create_subprocess_exec("git", "show", "deadbeef:file")',
+    'asyncio.create_subprocess_shell("git show deadbeef:file")',
+    'subprocess.run("echo $(git show deadbeef:file)", shell=True)',
+    'os.system("echo `git show deadbeef:file`")',
+    'subprocess.run("echo $(echo ready && git show deadbeef:file)", shell=True)',
+    'subprocess.run("(git show deadbeef:file) & wait", shell=True)',
+])
+def test_history_guard_documented_exotic_forms_are_out_of_scope(source):
+    assert not history_read_sites(source)
+
+
+@pytest.mark.parametrize("source, bad_lines, pragma_lines", [
+    ('subprocess.run(["git","show","fixture:file"])  # pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","deadbeef:file"])', [2], []),
+    ('subprocess.run(["python","proof.py"])  # pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","deadbeef:file"])', [2], [1]),
+    ('subprocess.run(["git","show","a:file"]); subprocess.run(["git","show","b:file"])  '
+     '# pb-history-ok: Reads fixture-created repository objects.', [1, 1], [1]),
+    ('# pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","a:file"]); subprocess.run(["git","show","b:file"])', [2, 2], [1]),
+    ('subprocess.run(["git","show","a:file"]); subprocess.run(["python","proof.py"])  '
+     '# pb-history-ok: Reads fixture-created repository objects.', [1], [1]),
+    ('subprocess.run(["python","proof.py"]); subprocess.run(["git","show","a:file"])  '
+     '# pb-history-ok: Reads fixture-created repository objects.', [], []),
+    ('value="é"; subprocess.run(["python","proof.py"]); subprocess.run(["git","show","a:file"])  '
+     '# pb-history-ok: Reads fixture-created repository objects.', [], []),
+    ('subprocess.run(  # pb-history-ok: Reads fixture-created repository objects.\n'
+     ' ["git","show","a:file"])\nsubprocess.run(["git","show","b:file"])', [3], []),
+    ('subprocess.run(\n ["git","show","a:file"])  # pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","b:file"])', [3], []),
+    ('subprocess.run(["git","show","a:file"])  # pb-history-ok: Reads fixture-created repository objects.\n'
+     '# pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","b:file"])', [], []),
+    ('# pb-history-ok: Reads fixture-created repository objects.\n'
+     'subprocess.run(["git","show","a:file"])  # pb-history-ok: Reads fixture-created repository objects.', [], [2]),
+])
+def test_history_guard_pragma_precision(source, bad_lines, pragma_lines):
+    sites = history_read_sites(source)
+    assert sorted(line for line, verb, _ in sites if verb != 'pragma') == bad_lines
+    assert sorted(line for line, verb, _ in sites if verb == 'pragma') == pragma_lines
+
+
+@pytest.mark.parametrize("capture, use, finding", [
+    ('["git","-C","repo","rev-parse","HEAD"], cwd="/a"',
+     '["git","-C","repo","diff",head], cwd="/b"', True),
+    ('["git","-C","repo","rev-parse","HEAD"], cwd="/a"',
+     '["git","-C","repo","diff",head], cwd="/a"', False),
+    ('["git","-C","a","-C","repo","rev-parse","HEAD"]',
+     '["git","-C","b","-C","repo","diff",head]', True),
+    ('["git","-C","a","-C","repo","rev-parse","HEAD"]',
+     '["git","-C","a","-C","repo","diff",head]', False),
+    ('["git","-C","/repo","rev-parse","HEAD"], cwd="/a"',
+     '["git","-C","/repo","diff",head], cwd="/b"', True),
+    ('["git","rev-parse","HEAD"], env={"GIT_DIR":"/a"}',
+     '["git","diff",head], env={"GIT_DIR":"/b"}', True),
+    ('["git","rev-parse","HEAD"], env={"GIT_WORK_TREE":"/repo"}',
+     '["git","diff",head], env={"GIT_WORK_TREE":"/repo"}', True),
+    ('["git","rev-parse","HEAD"]', '["git","diff",head], env=environment', True),
+    ('["git","rev-parse","HEAD"], env=environment', '["git","diff",head]', True),
+    ('["git","rev-parse","HEAD"], env={"LANG":"C"}',
+     '["git","diff",head], env={"LANG":"C"}', False),
+    ('["git","rev-parse","HEAD"], env=None', '["git","diff",head]', False),
+    ('["git","rev-parse","HEAD"], cwd=None', '["git","diff",head]', False),
+    ('["git","rev-parse","HEAD"], env={**os.environ}', '["git","diff",head]', True),
+    ('["git","rev-parse","HEAD"]', '["git","diff",head], env={"GIT_DIR":"/repo"}', True),
+    ('["env","GIT_DIR=/repo","git","rev-parse","HEAD"]',
+     '["env","GIT_DIR=/repo","git","diff",head]', True),
+    ('"GIT_WORK_TREE=/repo git rev-parse HEAD", shell=True',
+     '["git","diff",head]', True),
+    ('["git","--work-tree","/repo","rev-parse","HEAD"]',
+     '["git","--work-tree","/repo","diff",head]', True),
+    ('["git","--git-dir","/repo","rev-parse","HEAD"]',
+     '["git","--git-dir","/repo","diff",head]', True),
+])
+def test_history_guard_captured_head_repository_proof(capture, use, finding):
+    source = f'head=subprocess.check_output({capture}).strip()\nsubprocess.run({use})'
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("prefix, between, suffix, finding", [
+    ('', '', '', False),
+    ('', 'os.chdir("/other")\n', '', True),
+    ('', 'from os import chdir as move\nmove("/other")\n', '', True),
+    ('os.chdir("/before")\n', '', '', False),
+    ('', '', '\nos.chdir("/after")', False),
+    ('', 'def unrelated():\n os.chdir("/other")\n', '', False),
+])
+def test_history_guard_captured_head_chdir(prefix, between, suffix, finding):
+    body = (prefix + 'head=subprocess.check_output(["git","rev-parse","HEAD"]).strip()\n'
+            + between + 'subprocess.run(["git","diff",head])' + suffix)
+    source = 'def check():\n' + '\n'.join(' ' + line for line in body.splitlines())
+    assert bool(history_read_sites(source)) is finding
+
+
+@pytest.mark.parametrize("use, finding", [('alias', False), ('other', True)])
+def test_history_guard_resolves_repository_aliases(use, finding):
+    source = ('root="/fixture"\nalias=root\nother="/other"\n'
+              'head=subprocess.check_output(["git","-C",root,"rev-parse","HEAD"]).strip()\n'
+              f'subprocess.run(["git","-C",{use},"diff",head])')
+    assert bool(history_read_sites(source)) is finding
 
 
 def test_every_committed_history_input_has_a_verified_blob():
