@@ -65,6 +65,7 @@ def _legacy_dirty_sha256(root: Path) -> str:
     """Derive the key the way the unfixed code did, for comparison."""
 
     return hashlib.sha256(
+        # pb-history-ok: Replays the legacy dirty diff only against the generated fixture repository.
         _git(root, *LEGACY_DIFF).encode("utf-8", "surrogateescape")
     ).hexdigest()
 
@@ -288,9 +289,11 @@ def test_diff_environment_does_not_move_key(tmp_path: Path, monkeypatch) -> None
 def test_identity_uses_worktree_index_without_modifying_it(tmp_path: Path) -> None:
     root = _dirty_tree(tmp_path / "checkout")
     worktree = tmp_path / "linked"
+    # pb-history-ok: Inspects the generated fixture repository to compare byte-derived checkout identities.
     _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
     (worktree / "a.txt").write_text("staged modification\n")
     _git(worktree, "add", "a.txt")
+    # pb-history-ok: Inspects the generated fixture repository to compare byte-derived checkout identities.
     index = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
     index_bytes = index.read_bytes()
     assert pb.git_checkout_identity(worktree)["dirty_sha256"] == _legacy_dirty_sha256(worktree)

@@ -144,6 +144,7 @@ def _snapshot_record_carrying(
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     bundle = tmp_path / f"{'-'.join(sorted(links))}.bundle"
+    # pb-history-ok: Bundles the generated fixture commit for symlink containment checks.
     _git(sealed, "bundle", "create", str(bundle), "HEAD")
     entry, _ = cas.ingest_input(bundle, input_id="pbrun.checkout-snapshot")
     return {

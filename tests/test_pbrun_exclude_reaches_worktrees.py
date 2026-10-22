@@ -56,6 +56,7 @@ def test_a_linked_worktree_is_taught_to_ignore_the_stamp(tmp_path: Path) -> None
 
     root = _repo(tmp_path)
     tree = tmp_path / "wt"
+    # pb-history-ok: Creates a temporary linked worktree in the generated exclusion fixture.
     _git(root, "worktree", "add", "-q", str(tree), "-b", "probe")
     stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
     (tree / stamp).write_text("{}\n")
@@ -79,6 +80,7 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
 
     root = _repo(tmp_path)
     tree = tmp_path / "wt"
+    # pb-history-ok: Creates a temporary linked worktree in the generated exclusion fixture.
     _git(root, "worktree", "add", "-q", str(tree), "-b", "probe")
     stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
     (tree / stamp).write_text("{}\n")

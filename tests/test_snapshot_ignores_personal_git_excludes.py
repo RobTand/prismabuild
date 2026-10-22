@@ -81,13 +81,16 @@ def _seal(checkout: Path, stamp_name: str, store: Path) -> tuple[str, list[str]]
     materialized = store.parent / f"materialized-{store.name}"
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Restores a generated fixture bundle and compares its current tree identity.
     assert _git(
         materialized, "fetch", "-q", str(cas.input_path(snapshot["input"])),
         "refs/heads/prismabuild-snapshot",
     ).returncode == 0
+    # pb-history-ok: Restores a generated fixture bundle and compares its current tree identity.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0
+    # pb-history-ok: Restores a generated fixture bundle and compares its current tree identity.
     tree = _git(materialized, "rev-parse", "HEAD^{tree}")
     assert tree.returncode == 0
     listing = _git(materialized, "ls-tree", "-r", "--name-only", "HEAD")
