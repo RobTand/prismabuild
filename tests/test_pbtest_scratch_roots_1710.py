@@ -200,5 +200,5 @@ def test_registry_default_uses_the_executing_uid_not_sealed_home(tmp_path, monke
     monkeypatch.setenv("HOME", str(tmp_path / "sealed-home"))
     namespace = {}
     exec(compile(Path(roots.__file__).read_bytes(), roots.__file__, "exec"), namespace)
-    assert namespace["REGISTRY"] == (
+    assert namespace["pbtest_registry_path"]() == (
         Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".local/state/prismabuild/pbtest-roots-v1")

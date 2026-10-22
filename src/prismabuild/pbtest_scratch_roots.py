@@ -13,17 +13,23 @@ import random
 import re
 import stat
 
-REGISTRY = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".local/state/prismabuild/pbtest-roots-v1"
+REGISTRY: Path | None = None
 SWEEP_INTERVAL_S = 3600
 ROOTS_PER_SWEEP = 64
 _ROOT_ENTRY = re.compile(r"(tmpdir|basetemp)-([0-9]+)-([0-9]+)")
 _ROOT_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
+def pbtest_registry_path() -> Path:
+    return REGISTRY if REGISTRY is not None else (
+        Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".local/state/prismabuild/pbtest-roots-v1")
+
+
 def _open_pbtest_registry(*, create: bool = False) -> int:
+    registry = pbtest_registry_path()
     if create:
-        REGISTRY.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(REGISTRY, _ROOT_DIRECTORY)
+        registry.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(registry, _ROOT_DIRECTORY)
     try:
         info = os.fstat(descriptor)
         if info.st_uid != os.geteuid() or info.st_mode & 0o077:
