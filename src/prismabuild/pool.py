@@ -16671,8 +16671,6 @@ class PoolQueue:
             if holder == action_key:
                 continue
             tokens = ledger.holder_tokens(holder)
-            if not tokens and not pressure_drain:
-                continue
             holders.add(holder)
             try:
                 record = record_store.value_or_raise(self.records.item(CLAIMED, holder))
@@ -16692,6 +16690,10 @@ class PoolQueue:
                 pending_guest = pending_guest or record.get("cpu_guest") is True
                 for kind, count in tokens.items():
                     pending[kind] = pending.get(kind, 0) + count
+                continue
+            # Metadata-only borrowers can still owe allocation cleanup. Check
+            # pending releases first, but count only physical tokens for fit.
+            if not tokens and not pressure_drain:
                 continue
             if exclude_gang_election is not None:
                 from . import _gang

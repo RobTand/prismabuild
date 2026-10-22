@@ -84,6 +84,51 @@ def test_gpu_host_pressure_reclaims_fully_borrowed_guest(borrowed_guest, monkeyp
         assert fleet.queue.ledger().available()["cpu"] == 8
 
 
+def test_pressure_to_token_drain_waits_for_borrowed_guest_cleanup(borrowed_guest, monkeypatch):
+    fleet, key, guest, sample = borrowed_guest
+    other = fleet.publish("d", priority=30)
+    other_claim = fleet.claim()
+    assert other_claim["action_key"] == other and other_claim["cpu_guest"] is True
+    gpu = fleet.publish("b", gpu=True, cpu=7, priority=-10)
+    ledger = fleet.queue.ledger()
+    assert ledger.available()["cpu"] == 6
+
+    def pressured(controller, item, demand, **kwargs):
+        controller.last_decision = {"reason": "host_pressure", "held_cpus": [0, 1],
+                                    "foreign_cpus": []}
+        return None
+
+    monkeypatch.setattr(pool.cpu_admission.Controller, "decision", pressured)
+    assert fleet.claim(adaptive_cpu=True, cpu_sampler=sample, gpu_sampler=lambda: {}) is None
+    assert fleet.stopped(key)[0]["preempted_by"] == gpu
+    assert not fleet.stopped(other)
+
+    # Change refusal paths while the borrowed allocation still awaits cleanup.
+    # Even a holder with no physical tokens must serialize the next handoff.
+    for _ in range(2):
+        assert fleet.claim() is None  # non-adaptive, physical CPU token shortage
+        assert not fleet.stopped(other)
+        assert len(fleet.stopped(key)) == 1
+        assert key in ledger.held_keys()
+        assert fleet.queue.records.item_path(pool.CLAIMED, key).exists()
+        assert ledger.available()["cpu"] == 6
+
+    fleet.finish(guest, "withdrawn")
+    assert key not in ledger.held_keys()
+    assert not fleet.queue.records.item_path(pool.CLAIMED, key).exists()
+    assert ledger.available()["cpu"] == 6  # borrowed CPUs return no physical tokens
+    assert fleet.claim() is None
+    assert fleet.stopped(other)[0]["preempted_by"] == gpu
+    assert fleet.claim() is None
+    assert len(fleet.stopped(other)) == 1
+    assert ledger.available()["cpu"] == 6
+    fleet.finish(other_claim, "withdrawn")
+    taken = fleet.claim()
+    assert taken["action_key"] == gpu
+    fleet.finish(taken)
+    assert ledger.available() == fleet.capacity
+
+
 @pytest.mark.parametrize("mode,cpus,evicts", [
     ("exclusive", None, True),
     (pool.DRAIN_HELD_CPUS, [0], True),  # CPU zero is a real allocation
@@ -111,8 +156,9 @@ def test_borrowed_allocation_does_not_count_as_returned_cpu_tokens(borrowed_gues
     assert not fleet.stopped(key)
 
 
+@pytest.mark.parametrize("mode", [pool.DRAIN_HELD_CPUS, "tokens"])
 @pytest.mark.parametrize("pending", ["finish_pending", "container_cleanup_pending"])
-def test_pending_borrower_blocks_another_pressure_handoff(borrowed_guest, pending):
+def test_pending_borrower_blocks_another_guest_handoff(borrowed_guest, pending, mode):
     fleet, key, guest, _ = borrowed_guest
     other = fleet.publish("d", priority=30)
     assert fleet.claim()["action_key"] == other
@@ -120,6 +166,7 @@ def test_pending_borrower_blocks_another_pressure_handoff(borrowed_guest, pendin
         {**guest, "cpu_guest": False, pending: {"pending": True}})
     gpu = fleet.publish("b", gpu=True)
     assert fleet.queue._preempt_background_holder(
-        fleet.queue.ledger(), action_key=gpu, demand={"cpu": 1, "gpu": 1},
-        priority=0, guest_drain=pool.DRAIN_HELD_CPUS, held_cpus=[0, 1]) is None
+        fleet.queue.ledger(), action_key=gpu,
+        demand={"cpu": 8 if mode == "tokens" else 1, "gpu": 1},
+        priority=0, guest_drain=mode, held_cpus=[0, 1]) is None
     assert not fleet.stopped(key) and not fleet.stopped(other)
