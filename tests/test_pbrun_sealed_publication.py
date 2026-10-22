@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from functools import wraps
 import shutil
 import socket
 
@@ -55,6 +56,7 @@ def test_seal_then_publish_matches_direct_publication(sealed_fleet, monkeypatch,
     publications = []
     publish = submission.pool.PoolQueue.publish
 
+    @wraps(publish)
     def observe_publication(self, **row):
         publications.append(row)
         return publish(self, **row)
