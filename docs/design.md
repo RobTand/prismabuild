@@ -16375,8 +16375,29 @@ Fresh checks under the stage ownership lock protect these references:
 - Held ledger keys, whose scope must be readable.
 - The produced-output lane.
 
-An unreadable reference record refuses the pass. The final reference census
-also covers references that appear during the quarantine copy. Identity
+An unreadable reference record refuses the pass, as do ledger/holder census
+failures, reader barriers and unsafe walks. An unavailable, malformed or invalid
+referenced manifest instead remains an explicit unresolved reference, never
+an empty read-set. The census retains the originating record and manifest
+digest alongside usable layouts and unresolved coverage. The receipt's
+`reference_refusals` names each unresolved record, digest, protected scope and
+reason.
+
+A recognized input-mover receipt's authoritative top-level `stage_root` can
+bound its own staged destinations even without a usable manifest layout. The
+entire bounded root remains protected while independently proven copies outside
+it can be reclaimed. This exception does not transfer to nested documents,
+residency summaries, consumer declarations or promotion destination roots:
+promotion source reads still require protection. Without a defensible physical
+bound, uncertainty protects the entire potentially affected stage, including
+ready/claimed declarations for a different tier. Partial positive path hints
+are not exhaustive coverage; ordinary input filenames cannot be inferred from
+a manifest digest or byte windows alone.
+
+The final reference census runs afresh under the ownership lock after the
+quarantine copy. It observes both newly published ownership and newly unresolved
+references, adds their named refusal diagnostics, and protects their scopes
+before removal. Initial uncertainty remains protected for the pass. Identity
 checks run again immediately before removal.
 
 Apply requires `--apply`, a new `--run-id`, and `--quarantine-root`.
