@@ -78,6 +78,17 @@ def placement_environment(monkeypatch, tmp_path, _explicit_submission_store):
     return store
 
 
+@pytest.fixture
+def local_checkout(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(pool_module, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
+    checkout = tmp_path / "local-checkout"
+    checkout.mkdir()
+    return checkout
+
+
 def _git_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -143,7 +154,7 @@ def test_a_shared_checkout_is_free_to_run_on_any_box() -> None:
     assert _tags("/mnt/shared/prismabuild-fleet/repo") == []
 
 
-def test_a_box_local_checkout_is_pinned_to_that_box() -> None:
+def test_a_box_local_checkout_is_pinned_to_that_box(local_checkout) -> None:
     """The pin is a fact about the path, not a preference.
 
     ``/home/rob/tessera`` exists on every box and holds *different* bytes on
@@ -151,8 +162,10 @@ def test_a_box_local_checkout_is_pinned_to_that_box() -> None:
     it silently operates on another box's tree.
     """
 
-    assert _tags("/home/rob/tessera") == [HOST]
-    assert _tags("/home/rob/tmp/ts50") == [HOST]
+    other = local_checkout / "other"
+    other.mkdir()
+    assert _tags(str(local_checkout)) == [HOST]
+    assert _tags(str(other)) == [HOST]
 
 
 def test_portable_snapshot_keeps_a_box_local_executable_host_pin(
@@ -203,7 +216,7 @@ def test_portable_snapshot_refuses_an_unplaced_missing_executable(
         here=False,
         hostname=HOST,
         portable_checkout=True,
-        command=["/home/rob/venvs/missing/bin/python", "-V"],
+        command=[str(tmp_path / "missing-venv" / "bin" / "python"), "-V"],
         repository_root=checkout,
         environment={"PATH": "/usr/bin:/bin"},store=pbrun.configured_store(), display=pbrun.render_submission)[0]
 
@@ -1853,7 +1866,7 @@ def _notice(queue, *, cwd: str, tags: list[str], demand: dict, here=False,
                             here=here)
 
 
-def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
+def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path, local_checkout) -> None:
     """The pin was a silent consequence of a path.
 
     ``pbrun`` printed ``tags=['sparky']`` and stopped there, so an agent that
@@ -1864,16 +1877,16 @@ def test_a_box_local_checkout_says_it_pinned_the_action(tmp_path) -> None:
     the other two boxes idled.
     """
 
-    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101",
+    notice = _notice(_fleet(tmp_path), cwd=str(local_checkout),
                      tags=[HOST], demand={"cpu": 1, "mem_gb": 4})
 
     assert "PINNED to sparky" in notice
-    assert "/home/rob/tmp/ts101 is box-local" in notice
+    assert f"{local_checkout} is box-local" in notice
     assert "2 other live boxes fit this demand: dl380g10, gx10-6b77" in notice
     assert str(submit_core.SHARED_ROOT) in notice      # and what to do about it
 
 
-def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path) -> None:
+def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path, local_checkout) -> None:
     """Not "how many boxes match the pinned tags" -- that is always one.
 
     The question worth answering is how many boxes would have been eligible
@@ -1884,9 +1897,9 @@ def test_the_width_quoted_is_the_width_the_pin_cost(tmp_path) -> None:
 
     queue = _fleet(tmp_path)
 
-    one_slot = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    one_slot = _notice(queue, cwd=str(local_checkout), tags=[HOST],
                        needs_gpu=True, demand={"gpu": 1, "mem_gb": 16})
-    both_slots = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    both_slots = _notice(queue, cwd=str(local_checkout), tags=[HOST],
                          needs_gpu=True, demand={"gpu": 2, "mem_gb": 16})
 
     assert "1 other live box fits this demand: gx10-6b77" in one_slot
@@ -1910,7 +1923,7 @@ def test_here_is_still_reported_as_the_pin_it_is(tmp_path) -> None:
     assert "2 other live boxes fit this demand" in notice
 
 
-def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> None:
+def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path, local_checkout) -> None:
     """``--tag`` REPLACES the pin, so the tree can be invisible where it lands.
 
     That failure is loud rather than silent -- the worker refuses on an
@@ -1920,7 +1933,7 @@ def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> Non
     submitter is here now.
     """
 
-    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+    notice = _notice(_fleet(tmp_path), cwd=str(local_checkout), tags=["x86"],
                      demand={"cpu": 1})
 
     assert "WARNING" in notice
@@ -1928,7 +1941,7 @@ def test_an_explicit_tag_over_a_box_local_checkout_is_a_warning(tmp_path) -> Non
     assert "--tag sparky" in notice
 
 
-def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> None:
+def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path, local_checkout) -> None:
     """The issue's own remedy must not be scolded for being applied.
 
     ``--tag sparky`` from a sparky worktree is exactly what the issue says
@@ -1946,11 +1959,11 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
 
     queue = _fleet(tmp_path)
 
-    own = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    own = _notice(queue, cwd=str(local_checkout), tags=[HOST],
                   demand={"cpu": 1})
     alias = submit_core.pin_notice(
         queue, {"tags": ["sparklina"], "needs_gpu": False, "resources": {"cpu": 1}},
-        cwd=Path("/home/rob/tmp/ts91"), hostname="gx10-6b77", here=False)
+        cwd=local_checkout, hostname="gx10-6b77", here=False)
 
     assert "WARNING" not in own and "WARNING" not in alias
     assert notice_host(own) == "sparky"
@@ -1960,7 +1973,7 @@ def test_naming_this_box_is_the_correct_submission_not_a_warning(tmp_path) -> No
     assert "--tag gx10-6b77" in alias
 
 
-def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path) -> None:
+def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path, local_checkout) -> None:
     """The one thing a host tag is trusted for, checked rather than assumed.
 
     ``sparky`` is this box's alone by construction of ``worker_loop``'s
@@ -1973,7 +1986,7 @@ def test_a_host_tag_another_box_also_offers_is_not_exclusive(tmp_path) -> None:
     queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86", HOST],
                    has_gpu=False, capacity={"gpu": 0, "mem_gb": 60, "cpu": 80})
 
-    notice = _notice(queue, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    notice = _notice(queue, cwd=str(local_checkout), tags=[HOST],
                      demand={"cpu": 1})
 
     assert "WARNING" in notice and "dl380g10" in notice
@@ -1984,7 +1997,7 @@ def notice_host(notice: str) -> str:
     return notice.split("PINNED to ", 1)[1].split(" ", 1)[0]
 
 
-def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path) -> None:
+def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path, local_checkout) -> None:
     """The placer cannot answer, so fall back to the one tag that is provable.
 
     A tag naming this host cannot be claimed elsewhere whatever the fleet turns
@@ -1994,21 +2007,21 @@ def test_with_nobody_announced_only_this_boxs_own_name_is_trusted(tmp_path) -> N
 
     empty = pool_module.PoolQueue(tmp_path / "q")
 
-    own = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    own = _notice(empty, cwd=str(local_checkout), tags=[HOST],
                   demand={"cpu": 1})
-    other = _notice(empty, cwd="/home/rob/tmp/ts101", tags=["x86"],
+    other = _notice(empty, cwd=str(local_checkout), tags=["x86"],
                     demand={"cpu": 1})
 
     assert "WARNING" not in own
     assert "WARNING" in other and "let another box claim" in other
 
 
-def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path) -> None:
+def test_an_unannounced_fleet_reports_unknown_rather_than_zero(tmp_path, local_checkout) -> None:
     """A missing diagnostic must not be printed as a measurement."""
 
     empty = pool_module.PoolQueue(tmp_path / "q")
 
-    notice = _notice(empty, cwd="/home/rob/tmp/ts101", tags=[HOST],
+    notice = _notice(empty, cwd=str(local_checkout), tags=[HOST],
                      demand={"cpu": 1})
 
     assert "PINNED to sparky" in notice
@@ -2143,10 +2156,10 @@ def test_here_beside_the_host_tag_does_not_repeat_the_hostname(tmp_path) -> None
     explicit=[HOST, "x86"], here=True, hostname=HOST,store=pbrun.configured_store(), display=pbrun.render_submission)[0] == ["x86", HOST]
 
 
-def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path) -> None:
+def test_a_pinning_tag_over_a_box_local_tree_says_both_things(tmp_path, local_checkout) -> None:
     """A class tag that is not this box's leaves the local tree unreachable."""
 
-    notice = _notice(_fleet(tmp_path), cwd="/home/rob/tmp/ts101", tags=["x86"],
+    notice = _notice(_fleet(tmp_path), cwd=str(local_checkout), tags=["x86"],
                      demand={"cpu": 1}, here=False)
 
     assert "PINNED" not in notice
@@ -2179,7 +2192,7 @@ def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
     assert "--anywhere and --tag contradict each other" in str(raised.value)
 
 
-def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> None:
+def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path, local_checkout) -> None:
     """"match only this box" was true of the fleet as ANNOUNCED, not of the fleet.
 
     With only sparky's offer live, a box-local checkout submitted ``--tag
@@ -2194,7 +2207,7 @@ def test_a_tag_no_other_box_offers_today_is_not_called_exclusive(tmp_path) -> No
     lonely.announce(host=HOST, tags=["gb10", HOST], has_gpu=True,
                     capacity={"gpu": 2, "mem_gb": 48, "cpu": 10})
 
-    notice = _notice(lonely, cwd="/home/rob/tmp/ts101", tags=["gb10"],
+    notice = _notice(lonely, cwd=str(local_checkout), tags=["gb10"],
                      demand={"cpu": 1})
 
     assert "match only this box" not in notice

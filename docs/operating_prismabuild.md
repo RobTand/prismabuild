@@ -5931,3 +5931,102 @@ Then resume the pending publisher command for convergence and canary verificatio
 The helper itself never opens the gate. Qualified runtime identities are copied
 from verified root receipts into the plan and checked before host preparation;
 changing the plan's runtime list is not a qualification route.
+
+## Capture an event-wait before/after pair (#1881)
+
+Take the **before** on the current runtime before publishing any event-wait
+change. `tools/maintenance/event_wait_baseline.py` is a checkout-only operator
+tool, intentionally outside `publish_runtime.py`'s runtime script allowlist.
+It changes no queue, admission, or role behavior. TL schedules the full baseline
+and matched-load after window; a short smoke is only collector validation.
+
+Run the collector through the published client on the queue's local host.
+Replace the uppercase arguments with current role PIDs and paths. Keep the same
+bounds, load, duration, architecture filters, and sampling cadence for both arms.
+Use disk-backed evidence storage, outside the runtime and queue.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd CHECKOUT --tag QUEUE_HOST --cpus 1 --demand mem_gb=1 \
+  --priority -10 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 \
+  --env OPENBLAS_NUM_THREADS=1 --timeout-s 420 -- \
+  /home/rob/venvs/pb-cpu/bin/python3.14 \
+  tools/maintenance/event_wait_baseline.py collect \
+  --queue QUEUE --role tier=TIER_PID --role prewarm=PREWARM_PID \
+  --role worker=WORKER_PID --denials CLAIM_DENIALS_JSON --tier-log TIER_LOG \
+  --x86-host X86_HOST --source-revision SOURCE_COMMIT --phase steady \
+  --duration-s 300 --sample-s 1 --load-note 'matched workload and cache state' \
+  --tree-size 'stage=COUNT:SOURCE' --output EVIDENCE/before.json
+```
+
+This observes the running fleet under its existing load. It does not reserve a
+quiet benchmark window or establish a speedup. Use `--measurement` for isolated
+wall-time experiments; that isolation suppresses concurrent claims and cannot
+represent loaded claim latency. Retain the PB terminal record, log, CAS receipt,
+printed summary, and raw JSON in the evidence handoff. Change `before.json` to
+`after.json` for the second arm. Run the same tool's `analyze RAW.json` through
+PB to recompute nearest-rank p50/p95/p99 from the retained observations.
+
+The collector lists only `ready/` and `claimed/`, once, at most 513 names each
+with the default 512-entry bound. Counts marked incomplete are lower bounds.
+Local inotify supplies subsequent keys, including terminal changes; historical
+`done/` and `failed/` are never enumerated. Defaults cap selected keys at 2,048,
+retained queue record versions plus tier-log events at 20,000, total reads at
+64 MiB, individual records/log lines at 256 KiB, and linked immutable attempts
+at 16 per record. Reports retain every hit bound and watch/read failure. Such
+limits can censor the sample; increase
+explicit bounds for both arms or shorten the window. Tree counts supplied with
+`--tree-size` must include their source; unknown sizes remain unknown.
+
+Latency uses `(action_key, published_unix, attempt)`. It reports first-attempt
+publication-to-claim separately from retries, backlog and unclaimed/censored
+publications, without assigning missing claims zero latency. Hosts/tags select
+x86 evidence explicitly. Cross-host wall clocks must be synchronized; the tool
+records that assumption, rejects negative latencies, and does not verify NTP.
+Monotonic deltas determine process rates. Cgroup counters are raw scope context
+and may include several roles; do not add them to per-process counters.
+
+The drain report measures first explicit drain-relevant refusal to eligibility
+in the same host/publication/attempt episode, only when refusal count one was
+observed. `worker_loop` waits at most one second with a nonempty queue;
+`drain_policy` ordinarily becomes eligible at `passes + 1 >= 3`. Real scans and
+shared refusal counters affect the elapsed window. Latest-only diagnostics can
+omit observations, especially early adaptive refusals. Left/right censoring
+remains explicit and no configured interval is reported as a measured window.
+Measurement/GPU shortcuts can already be eligible at the first observation.
+
+Capture cold start in a separate `--phase cold-start` window scheduled around
+an independently authorized role start. Compare it with unchanged steady state.
+The tool records role command/generation paths, uptime, local load and its own
+CPU/read overhead; its phase label does not restart roles or flush caches.
+
+`/proc/PID/io` supplies physical `read_bytes`, logical `rchar`, and read/write
+syscall counts. It cannot count all syscalls. For optional total syscall counts,
+run `trace --pid TIER_PID --seconds 5 --output EVIDENCE/trace.json` in a separate
+admitted action, away from latency collection. Attachment failures or missing
+`strace` are retained; the tool never invokes sudo. Measure tracing overhead
+with separate matched runs before using traced timings.
+
+For recorded-input decision comparison, supply `--tier-log` with the tier loop's
+stdout JSONL log. Capture begins at its current end, not at historical rows.
+The raw `tier_events` array retains **all named events in wire order**, including
+flat `ram-window-gated`, `window-gated`, eviction, funding and mover-publication
+events; those decisions are not nested in `tier-cycle`. Diagnostics, lifecycle
+events and cycle summaries are also kept, so new policy event names cannot be
+silently omitted. `tier_cycles` remains the summary-only view used by analysis.
+
+`compare LEFT RIGHT` checks the full recorded/replayed event stream and cycle
+accounting exactly, preserving event order, duplicates and every payload field.
+Only each event's top-level emission `unix` is ignored. Decision deadlines such
+as `expected_landing_unix`, nested times, and standing-verdict history
+(`verdict_since_unix`, `waited_s`) are **not** normalized; replay must control
+clocks and history as well as policy inputs. Both captures must include cycle
+accounting and non-summary events. Legacy/summary-only captures still support
+`analyze`, but cannot establish parity. Any hit bound, malformed/truncated log,
+rotation, or read/watch error also prevents a parity result: `equal: false` with
+nonempty `unavailable` means insufficient evidence, not a proven policy change.
+With complete evidence, `equal: false` means a recorded event/accounting
+mismatch. This is strict log equality, not an input-equivalence verifier or a
+policy-coverage certificate; the experiment must establish identical inputs and
+exercise the decisions of interest. Unrelated live windows do not establish
+decision parity.
