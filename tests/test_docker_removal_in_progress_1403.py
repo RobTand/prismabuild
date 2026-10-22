@@ -45,7 +45,7 @@ class FakeDocker:
             if argv[1] == "ps":
                 out = "".join(f"{cid}\n" for cid in sorted(self.present))
                 return subprocess.CompletedProcess(argv, 0, out, "")
-            assert argv[1:4] == ["rm", "-f", "-v"]
+            assert argv[1:3] == ["rm", "-f"]
             code, out, err = self.rm_answers.pop(0)
             return subprocess.CompletedProcess(argv, code, out, err)
 
