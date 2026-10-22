@@ -28,6 +28,7 @@ from . import adaptive_cpu, gpu_sample_facts
 from .gpu_sample_facts import (GpuSampleFacts, device_identity, is_nonnegative_number,
                                memory_counters)
 from .holder_census import GPU_METADATA, HolderCensus, HolderKind
+from .host_memory_budget import physical_memory_budget_gib
 
 METADATA = GPU_METADATA
 SAMPLE_PATH = Path('/run/prismabuild/gpu-capacity.json')
@@ -373,7 +374,7 @@ def unified_placement(tags=None, host_class=None) -> bool:
     return not names.isdisjoint(UNIFIED_PLACEMENTS)
 
 
-def _sample_external_unified_gib(sample) -> tuple[int, int, bool]:
+def _sample_external_unified_gib(sample) -> tuple[int, int, bool, int | None]:
     """Ceiled GiB of foreign GPU bytes in one broker sample.
 
     Zero, with a clear unknown flag, when the sample is missing or stale:
@@ -381,17 +382,18 @@ def _sample_external_unified_gib(sample) -> tuple[int, int, bool]:
     ordinary token admission stays authoritative.
     """
     if not isinstance(sample, Mapping):
-        return 0, 0, False
+        return 0, 0, False, None
     facts = GpuSampleFacts(sample)
     timestamp = facts.timestamp
     inventory = facts.single_device_inventory(
         fresh=bool(timestamp and timestamp.finite_nonnegative
                    and timestamp.within(time.time(), MAX_SAMPLE_AGE_S)))
-    if inventory is None:
-        return 0, 0, False
+    if inventory is None or inventory.device.get("memory_domain") != "shared_system":
+        return 0, 0, False, None
     total, unknown = gpu_sample_facts.external_unified_gpu_bytes(
         [inventory.device], inventory.foreign_processes)
-    return math.ceil(total / GIB), total, unknown
+    return (math.ceil(total / GIB), total, unknown,
+            physical_memory_budget_gib(sample.get("host_total_bytes")))
 
 
 def _unified_committed_gib(ledger) -> tuple[list[dict[str, object]], float, float, float, float]:
@@ -460,16 +462,19 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None,
     An unreadable ledger census refuses nothing here: the token path reports
     that shortage itself.
     """
-    held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(
-        ledger)
-    external_gib, external_bytes, external_unknown = _sample_external_unified_gib(
-        sample)
+    external_gib, external_bytes, external_unknown, physical_budget = _sample_external_unified_gib(sample)
+    if external_unknown:
+        # Unknown residency is a deferral, even if the known bytes fit or the
+        # ledger cannot be read. Existing holders keep all their reservations.
+        return {"reason": "unified_gpu_memory_unknown", "external_gpu_unknown": True,
+                "external_gpu_bytes": external_bytes, "external_gpu_gib": external_gib,
+                "requested_mem_gb": demand.get("mem_gb", 0), "requested_budget_bytes": budget}
+    held_caps, committed, held_total, held_mem, ram_mem = _unified_committed_gib(ledger)
     try:
         baseline = float(observed_external_gib or 0)
     except (TypeError, ValueError):
         baseline = 0.0
     baseline = math.ceil(max(0.0, baseline))
-    charged_external_gib = max(0, external_gib - baseline)
     try:
         census = ledger.capacity_census()
     except (AttributeError, OSError, ValueError):
@@ -487,6 +492,14 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None,
             offer_gib = float(counts.get("mem_gb", 0))
         except (TypeError, ValueError):
             return None
+    # A caller cannot credit more foreign memory than its offer actually
+    # leaves below the physical bound, regardless of held-token add-back.
+    if physical_budget is None:
+        baseline = 0
+    else:
+        offer_gib = min(offer_gib, physical_budget)
+        baseline = min(baseline, max(0, physical_budget - offer_gib))
+    charged_external_gib = max(0, external_gib - baseline)
     candidate_mem = demand.get("mem_gb", 0)
     candidate_mem = float(candidate_mem) if type(candidate_mem) in (int, float) else 0.0
     candidate = candidate_mem
@@ -510,7 +523,8 @@ def unified_memory_verdict(ledger, demand, budget, *, sample=None,
             "external_charged_gib": charged_external_gib,
             "external_gpu_unknown": external_unknown,
             "candidate_charge_gib": candidate,
-            "mem_offer_gib": offer_gib}
+            "mem_offer_gib": offer_gib,
+            "physical_mem_budget_gib": physical_budget}
 
 
 def _power_estimate(rows):

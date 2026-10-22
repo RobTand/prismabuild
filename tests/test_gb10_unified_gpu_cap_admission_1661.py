@@ -999,3 +999,132 @@ def test_external_growth_prevents_a_useless_background_stop(rig, tmp_path, monke
     decision = _denial(queue, candidate)["evidence"]["decision"]
     assert decision["external_charged_gib"] == 100
     assert decision["reason"] == "unified_gpu_memory_budget"
+
+
+def test_external_subtraction_survives_owned_gpu_addback(rig, tmp_path, monkeypatch):
+    queue, now, sample, args = rig
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
+    first, _, _ = _sealed(tmp_path, "review-owned-gpu")
+    _publish(queue, first, {"cpu": 2, "gpu": 1, "mem_gb": 60})
+    assert queue.claim(**args)["action_key"] == first
+    _tick(rig)
+    # The defect motivating #1661: CUDA bytes can be absent from MemAvailable.
+    sample["jobs"][0].update(gpu_reported_bytes=60 * GIB)
+    sample["foreign_processes"] = [
+        {"pid": 999, "gpu_uuid": "GPU-1", "used_bytes": 30 * GIB}]
+    sample["cpu_pressure_full"] = 0.0
+    observer = box_capacity.CapacityObserver(samples=1)
+    capacity = observer.offer(CAPACITY, queue.ledger().held,
+                              gpu_sample=sample, mem_gb=120, load1=0, now=now[0])
+    candidate, _, _ = _sealed(tmp_path, "review-cpu-after-owned-and-foreign")
+    _publish_cpu(queue, candidate, {"cpu": 2, "mem_gb": 44})
+    got = queue.claim(capacity=capacity, tags=["gb10"], cpu_tiers=TIERS,
+                      adaptive_cpu=True, has_gpu=True,
+                      observed_external_gib=observer.last_offer_external_gib)
+    assert got is None, (
+        "claimed 60+44 PB GiB plus 30 foreign GiB on 128-GiB host",
+        capacity["mem_gb"], observer.last_offer_external_gib,
+        queue.ledger().held().get("mem_gb", 0))
+
+
+
+def test_foreign_gpu_unknown_bytes_cannot_be_free_memory(rig, tmp_path, monkeypatch):
+    queue, now, sample, args = rig
+    sample["foreign_processes"] = [
+        {"pid": 999, "gpu_uuid": "GPU-1", "used_bytes": None}]
+    sample["cpu_pressure_full"] = 0.0
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
+    observer = box_capacity.CapacityObserver(samples=1)
+    capacity = observer.offer(CAPACITY, {}, gpu_sample=sample, mem_gb=120,
+                              load1=0, now=now[0])
+    key, cas_root, checkout = _sealed(tmp_path, "review-unknown-foreign")
+    queue.publish(action_key=key, cas_root=cas_root, checkout_root=checkout,
+                  worker_script="/w.py", resources={"cpu": 2, "mem_gb": 104},
+                  priority=-10, tags=["gb10"])
+    got = queue.claim(capacity=capacity, tags=["gb10"], cpu_tiers=TIERS,
+                      adaptive_cpu=True, has_gpu=True,
+                      observed_external_gib=observer.last_offer_external_gib)
+    assert got is None, ("claimed all 104 GiB despite unquantified foreign GPU residency",
+                         capacity["mem_gb"], queue.ledger().held().get("mem_gb", 0))
+
+
+def test_unenforced_external_baseline_cannot_authorize_a_full_offer(rig):
+    queue, _now, sample, _args = rig
+    queue.ledger().ensure_capacity(CAPACITY)
+    sample["foreign_processes"] = [{"gpu_uuid": "GPU-1", "used_bytes": 30 * GIB}]
+    verdict = adaptive_gpu.unified_memory_verdict(
+        queue.ledger(), {"cpu": 2, "mem_gb": 104}, 0,
+        sample=sample, observed_external_gib=30)
+    assert verdict is not None
+    assert verdict["reason"] == "unified_gpu_memory_budget"
+    assert verdict["physical_mem_budget_gib"] == 120
+    assert verdict["external_baseline_gib"] == 16
+    assert verdict["external_charged_gib"] == 14
+
+
+def test_unknown_foreign_memory_bypasses_the_observation_window(rig):
+    _queue, now, sample, _args = rig
+    sample["cpu_pressure_full"] = 0.0
+    observer = box_capacity.CapacityObserver(samples=3)
+    assert observer.offer(CAPACITY, {}, gpu_sample=sample, mem_gb=120,
+                          load1=0, now=now[0])["mem_gb"] == 104
+    sample["foreign_processes"] = [
+        {"gpu_uuid": "GPU-1", "used_bytes": 5 * GIB},
+        {"gpu_uuid": "GPU-1", "used_bytes": None}]
+    offered = observer.offer(CAPACITY, {}, gpu_sample=sample, mem_gb=120,
+                             load1=0, now=now[0])
+    assert offered["mem_gb"] == 0
+    assert observer.last.detail["external_unified_gpu_unknown"] is True
+    assert observer.last_offer_external_gib == 0
+    sample["foreign_processes"] = []
+    assert observer.offer(CAPACITY, {}, gpu_sample=sample, mem_gb=120,
+                          load1=0, now=now[0])["mem_gb"] == 104
+
+
+def test_unknown_foreign_memory_keeps_holders_and_recovers_ready_work(rig, tmp_path, monkeypatch):
+    queue, now, sample, args = rig
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
+    holder, _, _ = _sealed(tmp_path, "r2-unknown-holder")
+    _publish(queue, holder, {"cpu": 2, "gpu": 1, "mem_gb": 60})
+    assert queue.claim(**args)["action_key"] == holder
+    _tick(rig)
+    sample["cpu_pressure_full"] = 0.0
+    sample["foreign_processes"] = [{"gpu_uuid": "GPU-1", "used_bytes": None}]
+    candidate, _, _ = _sealed(tmp_path, "r2-unknown-candidate")
+    queue.publish(action_key=candidate, cas_root="/cas", checkout_root="/co",
+                  worker_script="/w.py", resources={"cpu": 2, "mem_gb": 4},
+                  priority=0, tags=["gb10"])
+    observer = box_capacity.CapacityObserver(samples=3)
+    capacity = observer.offer(CAPACITY, queue.ledger().held, gpu_sample=sample,
+                              mem_gb=120, load1=0, now=now[0])
+    assert queue.claim(**dict(args, capacity=capacity,
+                              observed_external_gib=observer.last_offer_external_gib)) is None
+    assert _denial(queue, candidate)["evidence"]["decision"]["reason"] == "unified_gpu_memory_unknown"
+    assert queue.records.item_path(pool.READY, candidate).is_file()
+    assert queue.ledger().held()["mem_gb"] == 60
+    assert queue.records.withdrawal_decisions(holder) == []
+    sample["foreign_processes"] = []
+    _tick(rig)
+    capacity = observer.offer(CAPACITY, queue.ledger().held, gpu_sample=sample,
+                              mem_gb=120, load1=0, now=now[0])
+    got = queue.claim(**dict(args, capacity=capacity,
+                            observed_external_gib=observer.last_offer_external_gib))
+    assert got is not None and got["action_key"] == candidate
+    assert queue.ledger().held()["mem_gb"] == 64
+
+
+def test_unknown_discrete_foreign_vram_does_not_defer_cpu_memory(rig, tmp_path, monkeypatch):
+    queue, now, sample, args = rig
+    monkeypatch.setattr(adaptive_gpu, "trusted_sample", lambda: sample)
+    sample["cpu_pressure_full"] = 0.0
+    sample["devices"][0].update(memory_domain="discrete", memory_total_bytes=100 * GIB,
+                                 memory_free_bytes=90 * GIB, memory_used_bytes=10 * GIB)
+    sample["foreign_processes"] = [{"gpu_uuid": "GPU-1", "used_bytes": None}]
+    observer = box_capacity.CapacityObserver(samples=1)
+    capacity = observer.offer(CAPACITY, {}, gpu_sample=sample, mem_gb=120,
+                              load1=0, now=now[0])
+    assert capacity["mem_gb"] == 104
+    candidate, _, _ = _sealed(tmp_path, "r2-discrete-unknown")
+    _publish_cpu(queue, candidate, {"cpu": 2, "mem_gb": 4})
+    got = queue.claim(**dict(args, capacity=capacity))
+    assert got is not None and got["action_key"] == candidate

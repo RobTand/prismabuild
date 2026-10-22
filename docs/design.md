@@ -7264,6 +7264,20 @@ holder's `mem_gb` charge. The claim gate charges only fresh growth beyond the
 foreign GiB the offer already subtracted, so observation and admission never
 charge the same bytes twice.
 
+After held-token add-back, the unified offer also stays below physical host
+memory minus the unchanged 8 GiB operating margin and external GPU residency.
+`host_memory_budget` owns that physical bound for observation and admission.
+A credited external baseline cannot exceed the gap between the physical bound
+and the offered memory. Memory smoothing cannot grant credit for bytes the
+selected offer did not leave outside its budget.
+
+Fresh shared-system foreign residency with an unknown byte count grants no
+new host-memory commitment. Observation propagates the unknown flag and offers
+zero memory immediately, bypassing its smoothing window. Admission returns
+`unified_gpu_memory_unknown` before the fit check. The row stays READY for the
+next fresh sample. Existing holders retain their tokens and are not preempted
+for this unknown external load. Discrete VRAM remains independent.
+
 CPU-only candidates face the same gate on a GPU host, with the held caps
 identified from ledger metadata when GPU telemetry is absent or stale. A
 missing or stale sample only withholds the external term. New GPU claims

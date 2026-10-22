@@ -1781,7 +1781,9 @@ submit:
     converting to between 1 and `2**63 - 1` bytes, just like `pbrun`.
     Booleans, non-finite values and out-of-range budgets refuse before any row
     is submitted. A cap above the row's `mem_gb` refuses too on unified-memory
-    placements: the GPU cap is a subset of `mem_gb` on unified memory.
+    placements with an explicit `gb10` tag or class. Universal placement
+    resolution at submission is tracked by #2036. The GPU cap is a subset of
+    `mem_gb` on unified memory.
     For example, `"demand": {"gpu": 1,
     "mem_gb": 80}, "gpu_memory_gb": 32` retains the 80 GiB aggregate budget
     and 32 GiB GPU cap.
@@ -4707,7 +4709,7 @@ host `--demand mem_gb=M`. The two memory domains have different accounting:
 
 | Memory domain | Budget contract |
 |---|---|
-| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission for unified-memory placements, and admission refuses it per device. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
+| `shared_system` (GB10) | `mem_gb` covers aggregate physical DRAM used by the action. The GPU budget limits its GPU subset; omitting it defaults that cap to `mem_gb`. A cap above `mem_gb` refuses at submission with an explicit `gb10` tag or class, and admission refuses it per device. Universal submission-time placement resolution is tracked by #2036. CPU and GPU allocation bounds are reconciled by the broker because CUDA allocations are not reliably charged to the cgroup. |
 | `discrete` | Host RAM and VRAM are independent reservations. `mem_gb` limits host memory, while `--gpu-memory-gb` limits VRAM and defaults to `mem_gb` when omitted. Both budgets must fit; unused RAM does not provide VRAM capacity. |
 
 Unified admission charges each claimed and starting action's `mem_gb` once
@@ -4719,6 +4721,14 @@ New GPU claims still require fresh trusted telemetry. The refusal
 `unified_gpu_memory_budget` names each held cap, the cap total, the external
 bytes, the candidate charge, and the offer. The 104 GiB roof, the 8 GiB margin,
 and the memory observation window remain unchanged.
+
+The final unified offer is capped after held-token add-back by physical memory
+minus the operating margin and known external GPU residency. Admission credits
+only external bytes that the offered memory actually leaves outside that
+physical budget. Unknown foreign shared-system byte counts immediately defer
+new CPU and GPU commitments. Existing holders keep their reservations, and
+READY work is re-judged on the next fresh sample. No terminal failure is filed
+for this deferral.
 
 For example, `--gpu --demand mem_gb=32 --gpu-memory-gb=8` reserves 32 GiB host
 RAM and 8 GiB VRAM on a discrete device; on GB10 it charges 32 GiB once

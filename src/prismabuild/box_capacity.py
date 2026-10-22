@@ -42,13 +42,10 @@ import subprocess
 import time
 
 from . import adaptive_gpu
+from .host_memory_budget import MEMORY_MARGIN_GB, physical_memory_budget_gib
 from .gpu_sample_facts import (GPU_MEMORY_DOMAINS, SCHEMA as GPU_CAPACITY_SCHEMA,
                                ObservationFailure, external_unified_gpu_bytes, nonnegative_float, offer_header,
                                offer_inventory)
-
-#: Memory the box keeps for itself rather than offering the queue its last
-#: byte.  Carried over from the ``--honest-memory`` flag this replaces.
-MEMORY_MARGIN_GB = 8
 
 #: How many consecutive host-memory observations must agree before that offer
 #: falls. GPU evidence bypasses this window because its freshness and exact
@@ -226,35 +223,39 @@ def _held_snapshot(
     return {str(kind): int(value) for kind, value in (source or {}).items()}
 
 
-def _shared_external_gib(
+def _shared_memory_evidence(
     sample: object,
     *,
     devices: list,
     foreign_processes: list,
     gpu_parsed: bool,
     now: float | None,
-) -> int:
-    """Ceiled GiB of foreign GPU bytes on shared-system devices (#1661).
+    margin_gb: int,
+) -> tuple[int, bool, int] | None:
+    """Foreign GiB, unknown residency, and the physical shared-memory bound.
 
     Reuses the GPU branch parse when it ran; otherwise validates the sample
-    here. Zero without fresh evidence: nothing proven, nothing subtracted.
+    here. None means there is no fresh shared-system evidence.
     """
     if not gpu_parsed:
         if sample is _READ:
             sample = trusted_gpu_sample()
         if not isinstance(sample, Mapping):
-            return 0
+            return None
         header = offer_header(sample)
         if isinstance(header, ObservationFailure):
-            return 0
+            return None
         current = time.time() if now is None else float(now)
         inventory = offer_inventory(header, now=current, max_age_s=GPU_SAMPLE_MAX_AGE_S)
         if isinstance(inventory, ObservationFailure):
-            return 0
+            return None
         devices, foreign_processes = inventory.devices, inventory.foreign_processes
-    total, _unknown = external_unified_gpu_bytes(
+    if not any(device.get("memory_domain") == "shared_system" for device in devices):
+        return None
+    total, unknown = external_unified_gpu_bytes(
         devices, foreign_processes)
-    return math.ceil(total / adaptive_gpu.GIB) if total > 0 else 0
+    budget = physical_memory_budget_gib(sample["host_total_bytes"], margin_gb=margin_gb)
+    return math.ceil(total / adaptive_gpu.GIB), unknown, budget
 
 
 def observe(
@@ -422,6 +423,16 @@ def observe(
                 clamp("gpu", wanted["gpu"])
 
     if "mem_gb" in wanted:
+        unified = _shared_memory_evidence(
+            gpu_sample, devices=gpu_devices, foreign_processes=gpu_foreign,
+            gpu_parsed=gpu_parsed, now=now, margin_gb=margin_gb)
+        external_gib = 0
+        if unified is not None:
+            external_gib, external_unknown, physical_budget = unified
+            detail["external_unified_gpu_unknown"] = external_unknown
+            detail["unified_memory_budget_gib"] = physical_budget
+            if external_gib:
+                detail["external_unified_gpu_gib"] = external_gib
         if mem_gb is _READ:
             mem_gb = mem_available_gb()
             # ``ours`` and ``MemAvailable`` are *added* below, so they have to
@@ -462,11 +473,7 @@ def observe(
             # pool holder. Attributed bytes stay out: their host share sits
             # inside the held tokens added back below, and a second
             # subtraction here would charge the box twice for its own work.
-            external_gib = _shared_external_gib(
-                gpu_sample, devices=gpu_devices, foreign_processes=gpu_foreign,
-                gpu_parsed=gpu_parsed, now=now)
             if external_gib:
-                detail["external_unified_gpu_gib"] = external_gib
                 available = max(0, available - external_gib)
                 detail["mem_available_less_external_gib"] = available
             # The honest total is what the pool already holds here plus what is
@@ -478,6 +485,11 @@ def observe(
             honest = min(wanted["mem_gb"],
                          max(0, ours.get("mem_gb", 0)) + max(0, available - margin_gb))
             clamp("mem_gb", wanted["mem_gb"] - honest)
+        if unified is not None:
+            # Driver residency can be absent from MemAvailable. Bound after
+            # adding held tokens back, so that add-back cannot erase it.
+            ceiling = 0 if external_unknown else max(0, physical_budget - external_gib)
+            clamp("mem_gb", wanted["mem_gb"] - min(capacity["mem_gb"], ceiling))
 
     if wanted.get("cpu", 0) > 0:
         if load1 is _READ:
@@ -713,6 +725,12 @@ class CapacityObserver:
             for kind, value in wanted.items()
         }
         self.last_offer_external_gib = 0
+        physical_budget = seen.detail.get("unified_memory_budget_gib")
+        if "mem_gb" in offered and physical_budget is not None:
+            offered["mem_gb"] = min(offered["mem_gb"], physical_budget)
+            if seen.detail.get("external_unified_gpu_unknown"):
+                offered["mem_gb"] = 0
+                return offered
         if "mem_gb" in offered and self._history:
             # The baseline behind the returned mem offer: the external term
             # of the most recent entry attaining the window maximum, so the
@@ -721,7 +739,11 @@ class CapacityObserver:
             target = offered["mem_gb"]
             for entry, entry_external in zip(
                     reversed(self._history), reversed(self._external_history)):
-                if min(wanted["mem_gb"], entry.get("mem_gb", 0)) == target:
+                if min(wanted["mem_gb"], entry.get("mem_gb", 0),
+                       physical_budget if physical_budget is not None else wanted["mem_gb"]) == target:
                     self.last_offer_external_gib = entry_external
                     break
+            if physical_budget is not None:
+                self.last_offer_external_gib = min(
+                    self.last_offer_external_gib, max(0, physical_budget - offered["mem_gb"]))
         return offered

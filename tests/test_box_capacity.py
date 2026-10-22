@@ -113,7 +113,9 @@ def test_a_pool_job_with_many_processes_is_not_foreign():
 
 def test_foreign_gpu_inventory_closes_capacity_without_process_count_arithmetic():
     seen = bc.observe(DECLARED, {"gpu": 1},
-                      gpu_sample=gpu_sample(foreign=[{"pid": 1}, {"pid": 2}]),
+                      gpu_sample=gpu_sample(foreign=[
+                          {"pid": pid, "gpu_uuid": "GPU-0", "used_bytes": 0}
+                          for pid in (1, 2)]),
                       mem_gb=100, load1=0)
 
     assert seen.capacity["gpu"] == 0
@@ -203,7 +205,7 @@ def test_unknown_resource_passes_through():
 def test_gpu_decision_is_immediate_while_memory_fall_remains_smoothed():
     observer = bc.CapacityObserver(samples=3)
     idle = gpu_sample()
-    busy = gpu_sample(foreign=[{"pid": 9}])
+    busy = gpu_sample(foreign=[{"pid": 9, "gpu_uuid": "GPU-0", "used_bytes": 0}])
 
     first = observer.offer(DECLARED, {}, gpu_sample=idle, mem_gb=100, load1=0)
     second = observer.offer(DECLARED, {}, gpu_sample=busy, mem_gb=20, load1=0)
