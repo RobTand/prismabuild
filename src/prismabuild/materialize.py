@@ -151,7 +151,8 @@ def _cleanup_execution_checkout(
         if deadline_unix is None:
             _remove_checkout_tree(temporary, **({} if expect is None else {"expect": expect}))
         else:
-            _remove_tree_before(temporary, deadline_unix, expect=expect)
+            _remove_tree_before(temporary, deadline_unix,
+                                **({} if expect is None else {"expect": expect}))
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = f"{type(exc).__name__}: {exc}"
     try:
@@ -450,7 +451,8 @@ def _execution_checkout(
         # failure must not change an already-published action into a failure.
         try:
             verdict = _cleanup_execution_checkout(
-                base, temporary, item, expect=expected,
+                base, temporary, item,
+                **({} if expected is None else {"expect": expected}),
                 **({} if cleanup_deadline_unix is None
                    else {"deadline_unix": cleanup_deadline_unix}))
             if cleanup is not None:
