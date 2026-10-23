@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from gpu_evidence_fixtures import frozen_gpu, gpu_reply, worker_peer
+
 from prismabuild import client, core as pb, gpu_memory as gm, pool, resource_scope
 from test_core import _body
 from test_resource_broker import authority, monitored  # noqa: F401
@@ -57,19 +59,20 @@ def generic_gpu(tmp_path, monkeypatch):
         raise OSError('broker contacted')
 
     monkeypatch.setattr(pb.socket, 'socket', no_broker)
+    monkeypatch.setattr(pb, 'GPU_OBSERVATION_TIMEOUT_S', .01)
     return queue, item, action, cas, checkout
 
 
 def _broker_final(monkeypatch, queue, telemetry):
+    item = json.loads(next(queue.records.dir(pool.record_store.CLAIMED).glob('*.json')).read_text())
+    telemetry = {'gpu_record': frozen_gpu(telemetry, action_key=item['action_key'])}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
         'complete': True, 'resource_scope': {'telemetry': dict(telemetry)}})
 
 
 def test_generic_gpu_zero_use_leaves_no_success_receipt(generic_gpu, monkeypatch):
     queue, item, action, cas, checkout = generic_gpu
-    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
-        'resource_telemetry': ZERO, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
-        'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *args, **fields: gpu_reply(action, ZERO, **fields))
     with pytest.raises(pb.LocalActionError, match='zero distinct GPU UUIDs'):
         pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                             resource_demand=queue.demand_of(item))
@@ -181,8 +184,9 @@ def test_gpu_observation_rpc_does_not_shorten_guard_debounce(monitored, monkeypa
     monkeypatch.setattr(Path, 'read_text', lambda f, *x, **k: (
         '0::/prismabuild.slice/' + rec_a['scope_id'] + '/payload\n') if f == peer else original(f, *x, **k))
     # Core in attempt A asks for its final observation, as every GPU action does.
+    worker_peer(a, rec_a, monkeypatch)
     a.handle(a.uid, 123456789, {'op': 'gpu_observation', 'action_key': req_a['action_key'],
-                                'nonce': req_a['nonce']})
+                                'nonce': req_a['nonce'], 'deadline_monotonic': time.monotonic() + 10})
     gap = gpu.samples[-1] - gpu.samples[-2]
     assert backend.stopped == [], (
         f"attempt B stopped by the Guard on two samples {gap * 1000:.1f} ms apart; "
@@ -217,17 +221,16 @@ def test_unsampled_short_gpu_use_is_not_a_terminal_zero(generic_gpu, monitored, 
     original = Path.read_text
     monkeypatch.setattr(Path, 'read_text', lambda f, *x, **k: (
         '0::/prismabuild.slice/' + rec['scope_id'] + '/payload\n') if f == peer else original(f, *x, **k))
+    worker_peer(a, rec, monkeypatch)
     final = a.handle(a.uid, 123456789, {'op': 'gpu_observation', 'action_key': req['action_key'],
-                                        'nonce': req['nonce']})['resource_telemetry']
+                                        'nonce': req['nonce'], 'deadline_monotonic': time.monotonic() + 10})['gpu_record']
     queue, item, action, cas, checkout = generic_gpu
-    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
-        'resource_telemetry': final, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
-        'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *args, **fields: gpu_reply(action, final['resource_telemetry'], **fields))
     result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                                  resource_demand=queue.demand_of(item))
     assert result['receipt']['resource_telemetry']['gpu_use'] == 'unobserved'
     assert cas.lookup(action) is not None
-    _broker_final(monkeypatch, queue, final)
+    _broker_final(monkeypatch, queue, final['resource_telemetry'])
     path_t = queue.finish(item['action_key'], status='executed',
                           detail={'status': 'executed', 'returncode': 0, 'stdout': '', 'stderr': '',
                                   'resource_telemetry': dict(final)},
@@ -264,12 +267,10 @@ def test_broker_core_and_pool_agree_on_all_three_outcomes(generic_gpu, monitored
             raise subprocess.TimeoutExpired('nvidia-smi', 1.)
         monkeypatch.setattr(gpu, 'collect', timeout)
     live.poll_once()
-    live.observe_gpu(rec['scope_id'])
-    observation = a.records[rec['scope_id']]['resource_telemetry']
+    live.observe_gpu(rec['scope_id'], __import__('time').monotonic() + 10)
+    observation = a.records[rec['scope_id']]['gpu_record']
     assert pb.gpu_execution_judgment(observation)['gpu_use'] == outcome
-    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
-        'resource_telemetry': observation, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
-        'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *args, **fields: gpu_reply(action, observation['resource_telemetry'], **fields))
     if outcome == 'zero':
         with pytest.raises(pb.LocalActionError, match='zero distinct GPU UUIDs'):
             pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
@@ -280,7 +281,7 @@ def test_broker_core_and_pool_agree_on_all_three_outcomes(generic_gpu, monitored
                                      resource_demand=queue.demand_of(item))
         assert client.cas_receipt_self_check(result['receipt']) is None
         assert cas.lookup(action)['resource_telemetry']['gpu_use'] == outcome
-    _broker_final(monkeypatch, queue, observation)
+    _broker_final(monkeypatch, queue, observation['resource_telemetry'])
     path_t = queue.finish(item['action_key'], status='executed', detail={'returncode': 0}, claim_snapshot=item)
     terminal = json.loads(path_t.read_text())
     assert terminal['status'] == ('failed' if outcome == 'zero' else 'executed')

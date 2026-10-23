@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from gpu_evidence_fixtures import frozen_gpu, gpu_reply, worker_peer
+
 from prismabuild import core as pb, gpu_memory as gm, lifecycle, pool, resource_scope
 from test_core import _body
 from test_resource_broker import authority, monitored  # noqa: F401
@@ -52,6 +54,7 @@ def generic_gpu(tmp_path, monkeypatch):
     monkeypatch.setenv('PRISMABUILD_RESOURCE_BROKER_SOCKET', str(tmp_path / 'run' / 'resources.sock'))
     monkeypatch.delenv(pb.ACTION_STATUS_PATH_ENV, raising=False)
     monkeypatch.setattr(pb.socket, 'socket', lambda *a: (_ for _ in ()).throw(OSError('no broker')))
+    monkeypatch.setattr(pb, 'GPU_OBSERVATION_TIMEOUT_S', .01)
     return queue, item, action, cas, checkout
 
 
@@ -73,6 +76,8 @@ def _bind_claim(queue, item, nonce, scope):
 
 
 def _broker_final(monkeypatch, queue, telemetry):
+    item = json.loads(next(queue.records.dir(pool.record_store.CLAIMED).glob('*.json')).read_text())
+    telemetry = {'gpu_record': frozen_gpu(telemetry, action_key=item['action_key'])}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
         'complete': True, 'resource_scope': {'telemetry': dict(telemetry)}})
 
@@ -128,8 +133,7 @@ def test_r1_b1_generic_zero_use_leaves_no_receipt_and_files_terminal_zero(generi
     nonce = 'a' * 32
     scope = _scope_for(action['action_key'], nonce)
     _bind_env(monkeypatch, nonce, scope)
-    monkeypatch.setattr(pb, '_gpu_broker_request', lambda a, op, **f: {
-        'ok': True, 'resource_telemetry': ZERO, 'nonce': nonce, 'scope_id': scope})
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *args, **fields: gpu_reply(action, ZERO, **fields))
     with pytest.raises(pb.LocalActionError, match='zero distinct GPU UUIDs'):
         pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                             resource_demand=queue.demand_of(item))
@@ -179,8 +183,7 @@ def test_r1_b1_valid_cache_hit_survives_idle_replay_broker_zero(generic_gpu, mon
     scope = _scope_for(action['action_key'], nonce)
     _bind_env(monkeypatch, nonce, scope)
     used = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-real'], 'gpu_evidence': ev(False, True, True)}
-    monkeypatch.setattr(pb, '_gpu_broker_request', lambda a, op, **f: {
-        'ok': True, 'resource_telemetry': used, 'nonce': nonce, 'scope_id': scope})
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *args, **fields: gpu_reply(action, used, **fields))
     first = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                                 resource_demand=queue.demand_of(item))
     assert first['receipt']['resource_telemetry']['gpu_use'] == 'used'
@@ -204,7 +207,7 @@ def test_r1_b1_core_cache_hit_race_is_not_filed_zero(generic_gpu, monkeypatch):
     other_scope = _scope_for(action['action_key'], other_nonce)
     used = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-real'], 'gpu_evidence': ev(False, True, True)}
     monkeypatch.setattr(pb, '_gpu_broker_request', lambda a, op, **f: {
-        'ok': True, 'resource_telemetry': used, 'nonce': other_nonce, 'scope_id': other_scope})
+        **gpu_reply(action, used)})
     _bind_env(monkeypatch, other_nonce, other_scope)
     pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                         resource_demand=queue.demand_of(item))   # another attempt published
@@ -257,9 +260,9 @@ def test_r1_b2_final_observation_does_not_shorten_guard_debounce(monitored, monk
     live = type(monitor)(a, gpu)
     live.poll_once()
     assert backend.stopped == []
-    _peer_in(monkeypatch, rec_a['scope_id'])
+    worker_peer(a, rec_a, monkeypatch, PEER)
     a.handle(a.uid, PEER, {'op': 'gpu_observation', 'action_key': req_a['action_key'],
-                           'nonce': req_a['nonce']})
+                           'nonce': req_a['nonce'], 'deadline_monotonic': time.monotonic() + 10})
     assert backend.stopped == []
 
 
@@ -308,7 +311,7 @@ def test_r2_payload_rpc_flood_cannot_blind_the_guard_for_other_scopes(monitored,
         while not done.is_set():
             try:
                 a.handle(a.uid, PEER, {'op': 'gpu_observation', 'action_key': req_a['action_key'],
-                                       'nonce': req_a['nonce']})
+                                       'nonce': req_a['nonce'], 'deadline_monotonic': time.monotonic() + 10})
             except Exception:                                    # noqa: BLE001
                 pass
 
@@ -374,7 +377,7 @@ def test_q3_core_and_pool_land_in_the_same_outcome(generic_gpu, monitored, monke
     alive['value'] = False                             # argv exited; Core observes
     core_scope = _scope_for(action['action_key'], req['nonce'])
     _bind_env(monkeypatch, req['nonce'], core_scope)
-    _peer_in(monkeypatch, rec['scope_id'])
+    worker_peer(a, rec, monkeypatch, PEER)
 
     def route(action_, op, **fields):
         if op != 'gpu_observation':
@@ -384,7 +387,7 @@ def test_q3_core_and_pool_land_in_the_same_outcome(generic_gpu, monitored, monke
                                        'nonce': req['nonce'], **fields})
         # The fixture broker record has another action key; bind its reply
         # to Core's own scope, as the production broker would.
-        return {**reply, 'scope_id': core_scope}
+        return gpu_reply(action, reply['gpu_record']['resource_telemetry'], **fields)
 
     monkeypatch.setattr(pb, '_gpu_broker_request', route)
     try:
@@ -400,7 +403,7 @@ def test_q3_core_and_pool_land_in_the_same_outcome(generic_gpu, monitored, monke
         gpu.script = [step]
         live.poll_once()
     record = _bind_claim(queue, item, req['nonce'], core_scope)
-    _broker_final(monkeypatch, queue, a.records[rec['scope_id']]['resource_telemetry'])
+    _broker_final(monkeypatch, queue, a.records[rec['scope_id']]['gpu_record']['resource_telemetry'])
     path = queue.finish(item['action_key'], status=status, detail=detail, claim_snapshot=record)
     terminal = json.loads(path.read_text())
     pool_outcome = terminal['detail'].get('gpu_use')
@@ -436,7 +439,7 @@ def test_q3_late_finisher_keeps_the_zero_verdict(scoped, monkeypatch):
     def status_with_zero(scope, op, **extra):
         reply = request(scope, op, **extra)
         if op == 'status' and scope.nonce == old:
-            reply = {**reply, 'resource_telemetry': dict(ZERO)}
+            reply = {**reply, 'gpu_record': frozen_gpu(ZERO, action_key=key, nonce=old)}
         return reply
 
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', status_with_zero)

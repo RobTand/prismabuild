@@ -9,6 +9,8 @@ from dataclasses import replace
 
 import pytest
 
+from gpu_evidence_fixtures import frozen_gpu, gpu_reply, worker_peer
+
 from prismabuild import core as pb, pool
 from test_gpu_review_r2 import generic_gpu, _job, _RealGuardGpu, MIB  # noqa: F401
 from test_resource_broker import authority, monitored  # noqa: F401
@@ -31,8 +33,7 @@ def test_complete_attempt_core_and_terminal_agree(generic_gpu, monkeypatch,
                  'gpu_evidence': {'sample_failed': failed, 'live_sample': covered,
                                   'final_succeeded': final}}
     monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
-        'resource_telemetry': telemetry, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
-        'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
+        **gpu_reply(action, telemetry)})
     if state == 'zero':
         with pytest.raises(pb.LocalActionError, match='zero distinct GPU UUIDs'):
             pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
@@ -44,7 +45,7 @@ def test_complete_attempt_core_and_terminal_agree(generic_gpu, monkeypatch,
         observed = result['receipt']['resource_telemetry']
         assert (observed['gpu_use'], observed['gpu_use_reason']) == (state, reason)
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
-        'complete': True, 'resource_scope': {'telemetry': telemetry}})
+        'complete': True, 'resource_scope': {'telemetry': {'gpu_record': frozen_gpu(telemetry, action_key=action['action_key'])}}})
     path = queue.finish(item['action_key'], status='executed', detail={'returncode': 0},
                         claim_snapshot=item)
     terminal = json.loads(path.read_text())
@@ -79,44 +80,16 @@ def test_broker_retains_complete_history_and_final_sample(monitored, monkeypatch
     monkeypatch.setattr(live, '_payload_live', lambda r: covered)
     live.poll_once()
     choice[0] = last
-    live.observe_gpu(record['scope_id'])
-    evidence = a.records[record['scope_id']]['resource_telemetry']
+    live.observe_gpu(record['scope_id'], __import__('time').monotonic() + 10)
+    evidence = a.records[record['scope_id']]['gpu_record']
     judgment = pb.gpu_execution_judgment(evidence)
     assert (judgment['gpu_use'], judgment['gpu_use_reason']) == (state, reason)
     mirror = a.gpu_evidence_dir / (record['scope_id'] + '.json')
     stored = json.loads(mirror.read_text())
-    assert set(stored) == {'action_key', 'nonce', 'scope_id', 'resource_telemetry'}
-    assert stored['resource_telemetry'] == evidence
+    assert set(stored) == {'action_key', 'nonce', 'scope_id', 'resource_telemetry', 'deadline_monotonic'}
+    assert stored == evidence
     assert stat.S_IMODE(mirror.stat().st_mode) == 0o444
     assert backend.stopped == []
-
-
-@pytest.mark.parametrize('uuids,state', [([], 'unobserved'), (['GPU-earlier'], 'used')])
-def test_failed_rpc_recovers_only_trusted_prior_evidence(generic_gpu, monkeypatch, uuids, state):
-    queue, item, action, cas, checkout = generic_gpu
-    previous = {'gpu_devices_used': len(uuids), 'gpu_uuids': uuids,
-                'gpu_evidence': {'sample_failed': False, 'live_sample': True, 'final_succeeded': None}}
-    monkeypatch.setattr(pb, '_read_broker_gpu_evidence', lambda a: previous)
-    result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
-                                 resource_demand=queue.demand_of(item))
-    observed = result['receipt']['resource_telemetry']
-    assert observed['gpu_use'] == state
-    assert observed['gpu_use_reason'] == ('attributed_gpu_uuid' if uuids else 'final_observation_failed')
-    # Pool recovers a different sample after publication; the bound receipt
-    # remains the attempt's final judgment, including earlier positive use.
-    monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
-        'complete': True, 'resource_scope': {'telemetry': {
-            'gpu_devices_used': 0, 'gpu_uuids': [], 'gpu_evidence': {
-                'sample_failed': False, 'live_sample': True, 'final_succeeded': True}}}})
-    claimed = queue.records.item_path(pool.record_store.CLAIMED, item['action_key'])
-    record = json.loads(claimed.read_text())
-    record['resource_scope'] = {key: os.environ[env] for key, env in
-                               [('nonce', pb.ACTION_NONCE_ENV), ('scope_id', pb.ACTION_SCOPE_ENV)]}
-    queue.records.replace_record_at(claimed, record)
-    path = queue.finish(item['action_key'], status='executed', detail={'returncode': 0}, claim_snapshot=record)
-    terminal = json.loads(path.read_text())
-    assert terminal['status'] == 'executed'
-    assert terminal['detail']['resource_telemetry'] == observed
 
 
 @pytest.mark.parametrize('fault', [None, 'owner', 'writable_parent', 'symlink', 'attempt', 'oversize'])
@@ -126,11 +99,11 @@ def test_broker_evidence_read_requires_protected_ancestry_and_attempt(generic_gp
     directory.mkdir()
     scope = os.environ[pb.ACTION_SCOPE_ENV]
     path = directory / (scope + '.json')
-    evidence = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-root'], 'gpu_evidence': {
-        'sample_failed': False, 'live_sample': True, 'final_succeeded': None}}
+    evidence = {'gpu_uuids': ['GPU-root'], 'gpu_evidence': {
+        'sample_failed': False, 'live_sample': True, 'final_succeeded': True}}
     record = {'action_key': action['action_key'], 'scope_id': scope,
               'nonce': 'b' * 32 if fault == 'attempt' else os.environ[pb.ACTION_NONCE_ENV],
-              'resource_telemetry': evidence}
+              'resource_telemetry': evidence, 'deadline_monotonic': 1.0}
     path.write_text('x' * 65537 if fault == 'oversize' else json.dumps(record))
     path.chmod(0o444)
     if fault == 'symlink':
@@ -153,7 +126,7 @@ def test_broker_evidence_read_requires_protected_ancestry_and_attempt(generic_gp
     with monkeypatch.context() as patch:
         patch.setattr(os, 'fstat', ownership)
         if fault is None:
-            assert pb._read_broker_gpu_evidence(action) == evidence
+            assert pb._read_broker_gpu_evidence(action) == record
         else:
             with pytest.raises((pb.ActionContractError, OSError)):
                 pb._read_broker_gpu_evidence(action)
@@ -167,8 +140,8 @@ def test_failed_process_sample_cannot_invent_used(monitored, monkeypatch):
     monkeypatch.setattr(gpu, 'collect', lambda *a, **k: replace(collect(*a, **k), gpu_query_complete=False))
     live = type(monitor)(a, gpu)
     monkeypatch.setattr(live, '_payload_live', lambda row: True)
-    live.observe_gpu(record['scope_id'])
-    observed = pb.gpu_execution_judgment(a.records[record['scope_id']]['resource_telemetry'])
+    live.observe_gpu(record['scope_id'], __import__('time').monotonic() + 10)
+    observed = pb.gpu_execution_judgment(a.records[record['scope_id']]['gpu_record'])
     assert observed['gpu_use'] == 'unobserved' and observed['gpu_uuids'] == []
 
 
@@ -178,7 +151,7 @@ def test_gpu_recovery_directory_is_readable_under_service_umask(monitored):
     live = type(monitor)(a, _RealGuardGpu(lambda: [_job(record, path, gpu_bytes=0)]))
     mask = os.umask(0o077)
     try:
-        live.observe_gpu(record['scope_id'])
+        live.observe_gpu(record['scope_id'], __import__('time').monotonic() + 10)
     finally:
         os.umask(mask)
     assert stat.S_IMODE(a.gpu_evidence_dir.stat().st_mode) == 0o755
@@ -192,5 +165,5 @@ def test_gpu_recovery_directory_symlink_cannot_change_target_mode(monitored, tmp
     target.mkdir(mode=0o700)
     a.gpu_evidence_dir.symlink_to(target, target_is_directory=True)
     with pytest.raises(OSError):
-        live.observe_gpu(record['scope_id'])
+        live.observe_gpu(record['scope_id'], __import__('time').monotonic() + 10)
     assert stat.S_IMODE(target.stat().st_mode) == 0o700

@@ -6226,29 +6226,49 @@ The PB lead's ruling on #1743's truncated text defines three outcomes:
   `no_sample_during_lifetime` for absent coverage. An early zero followed by a
   failed final observation is unobserved: GPU work could have started later.
 
-The broker retains raw attempt evidence: the union of UUIDs from successful
-samples, whether any sample failed, lifetime coverage, and final-sample success.
-Core and Pool use one judgment over that evidence. A protected root-owned
-`gpu-observations/<scope>.json` beside the broker socket mirrors only action,
-nonce, scope and sampling evidence, without tokens or process identities. Like
-private broker attempt records it is retained for recovery until `/run` clears.
-The broker explicitly sets the directory to 0755 and leaves to 0444 despite
-its service's private umask; directory writes use a held no-follow descriptor.
-Core may recover earlier positive use there if the final RPC fails. Recovery
-opens each ancestor and leaf without following symlinks, verifies root ownership
-and write protection, caps input at 64 KiB, and checks the attempt identity.
-A payload which could make the broker RPC fail could only turn the run visibly
-`unobserved`, never `used`; an earlier successful UUID attribution still wins.
-Sampler failures never erase successful UUIDs or invent positive attribution.
+The broker accumulates raw sampling history until the launched worker requests
+its final observation. The broker then commits one root-owned, read-only GPU
+record bound to action key, nonce and scope. The random nonce identifies the
+attempt independently of the queue's retry ordinal. The record contains the
+union of UUIDs, failed-sample and lifetime flags, final-sample success and its
+commit deadline. Periodic polls continue protecting the host through the Guard
+but cannot alter that attempt's frozen evidence. `gpu_execution_judgment` is
+the only outcome calculation. Core, Pool, late finishers and the ending readers
+used by pbwait, action_result and pbmcp consume it; census and pbstatus project
+the same judgment. Live scope telemetry cannot serve as judgment input.
 
-Core hashes the final judgment into the receipt's optional `resource_telemetry`
-field and validates it on lookup. CPU receipts retain their existing shape.
-Old receipts without GPU telemetry retain an unobserved execution. Cache hits
-require a verified CAS receipt and carry its original observation, never the
-replay scope's idle sample. A verified receipt bound to the current attempt's
-nonce and scope seals the judgment through its final observation. Pool honors
-that judgment; later cleanup samples cannot retroactively reinterpret it.
-Unsampled short CUDA contexts are unobserved.
+Only the broker-launched worker's kernel peer PID and start time may request
+final observation. Payloads, including same-UID children in the same cgroup,
+cannot request it. One request admits sampling per attempt; concurrent calls
+cannot extend its deadline. Redelivery by that worker returns the identical
+committed record without sampling again. Final censuses use a separate,
+nonblocking admission lock and never take the periodic Guard's sample lock.
+A competing final census is explicitly unobserved rather than queued ahead of
+Guard polls. Census exceptions record sampler_error and degrade monitor health.
+
+The worker supplies an absolute monotonic deadline. The broker commits before
+replying and refuses publication after that deadline. If the reply is lost,
+Core waits until the deadline, then reads the protected
+`gpu-observations/<scope>.json` beside the broker socket. A committed record is
+authoritative even when its reply was lost. This is the PB lead's refinement of
+"RPC failure = unobserved". An absent record after the deadline is permanently
+unobserved with final_observation_failed; no late commit can contradict it.
+The reader opens each ancestor and leaf without following symlinks, verifies
+root ownership and write protection, caps input at 64 KiB, and validates the
+attempt binding. The broker writes the mirror only at finalization, sets its
+directory to 0755 and leaf to 0444 despite the service umask, and removes the
+mirror when the scope settles. The private broker record retains the frozen
+value for status and recovery. A payload capable of breaking RPC transport
+could only cause visible unobserved evidence when no record was committed;
+it cannot manufacture used. Sampler errors never invent UUID attribution.
+
+Core hashes the frozen record and its derived judgment into the receipt's
+optional resource_telemetry field and validates their agreement on lookup.
+CPU receipts retain their existing shape. Historical receipts keep their
+sealed observation. Cache hits require a verified CAS receipt and carry its
+original observation, never the replay scope's idle sample. An attempt with no
+committed record may carry a bound unobserved receipt; Pool honors the same
+sealed absence. Unsampled short CUDA contexts remain unobserved.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand
 does not imply `gb10`, even when submitted from a GPU host. Portable CPU work

@@ -14574,6 +14574,8 @@ class PoolQueue:
         try:
             status = scope._request("status")
             telemetry.update(status.get("resource_telemetry") or {})
+            if status.get("gpu_record") is not None:
+                telemetry["gpu_record"] = status["gpu_record"]
             if status.get("stop_reason"):
                 telemetry["termination_reason"] = status["stop_reason"]
             if status.get("termination_evidence"):

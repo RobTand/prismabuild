@@ -197,6 +197,7 @@ QUEUE_ROOT_ENV = "PRISMABUILD_QUEUE_ROOT"
 #: (legacy inspection without acquiring is a separate helper).
 ACTION_NONCE_ENV = "PRISMABUILD_ACTION_NONCE"
 ACTION_SCOPE_ENV = "PRISMABUILD_ACTION_SCOPE"
+GPU_OBSERVATION_TIMEOUT_S = 10.0
 #: Sealed helper root for reader-lease imports, set by the resource_exec
 #: proxy from its own sealed script path (never the broker token, never a
 #: user value): consumers add ``<root>/src`` to ``sys.path`` and import
@@ -6152,7 +6153,8 @@ def _validate_receipt_shape(value: object) -> Mapping[str, object]:
 def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
     fields = frozenset({"gpu_devices_used", "gpu_uuids", "scope_id", "nonce"})
     modern = isinstance(value, Mapping) and "gpu_use" in value
-    raw = _exact_mapping(value, keys=fields | ({"gpu_use", "gpu_use_reason"} if modern else set()),
+    raw = _exact_mapping(value, keys=fields | ({"gpu_use", "gpu_use_reason"} if modern else set())
+                         | ({"gpu_record"} if isinstance(value, Mapping) and "gpu_record" in value else set()),
                          where="GPU execution observation")
     state = raw.get("gpu_use")
     if modern and (not isinstance(state, str) or state not in {"used", "zero", "unobserved"}):
@@ -6175,34 +6177,72 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
     result = {"gpu_devices_used": count, "gpu_uuids": list(uuids), "scope_id": scope, "nonce": nonce}
     if modern:
         result.update(gpu_use=state, gpu_use_reason=_text(raw["gpu_use_reason"], where="GPU use reason"))
+    if "gpu_record" in raw:
+        judgment = gpu_execution_judgment(raw["gpu_record"])
+        if any(result[key] != judgment[key] for key in result):
+            _fail("GPU observation disagrees with frozen record")
+        result["gpu_record"] = raw["gpu_record"]
     return result
 
 
 def _unobserved_gpu_use(reason: str, *, bind_scope: bool = False) -> dict[str, object]:
-    nonce = os.environ.get(ACTION_NONCE_ENV) if bind_scope else None
-    scope = os.environ.get(ACTION_SCOPE_ENV) if bind_scope else None
-    if (not isinstance(nonce, str) or not re.fullmatch(r"[a-f0-9]{32}", nonce)
-            or not isinstance(scope, str)
-            or not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope)):
-        nonce = scope = None
-    return {"gpu_use": "unobserved", "gpu_use_reason": reason,
-            "gpu_devices_used": None, "gpu_uuids": [], "scope_id": scope, "nonce": nonce}
+    return gpu_execution_judgment(None, reason=reason,
+        nonce=os.environ.get(ACTION_NONCE_ENV) if bind_scope else None,
+        scope_id=os.environ.get(ACTION_SCOPE_ENV) if bind_scope else None)
 
 
-def gpu_execution_judgment(telemetry: Mapping[str, object]) -> dict[str, object]:
-    """One outcome from the broker's complete-attempt sampling evidence."""
-    uuids = telemetry.get("gpu_uuids", [])
+def gpu_execution_judgment(record: Mapping[str, object] | None, *,
+                           action_key: str | None = None, nonce: str | None = None,
+                           scope_id: str | None = None,
+                           reason: str = "final_observation_failed") -> dict[str, object]:
+    """The sole GPU judgment, from a frozen attempt record or verified receipt.
+
+    Absence after the commit deadline is final unobserved evidence. Live scope
+    telemetry is deliberately not an accepted input. The random nonce is the
+    attempt identity, independently of a queue generation's retry ordinal.
+    """
+    if record is None:
+        if (not isinstance(nonce, str) or not re.fullmatch(r"[a-f0-9]{32}", nonce)
+                or not isinstance(scope_id, str)
+                or not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope_id)):
+            nonce = scope_id = None
+        return {"gpu_use": "unobserved", "gpu_use_reason": reason,
+                "gpu_devices_used": None, "gpu_uuids": [], "nonce": nonce, "scope_id": scope_id}
+    if "gpu_record" in record:
+        return gpu_execution_judgment(record["gpu_record"], action_key=action_key,
+                                      nonce=nonce, scope_id=scope_id)
+    if "gpu_use" in record or set(record) == {"gpu_devices_used", "gpu_uuids", "nonce", "scope_id"}:
+        # Historical CAS receipts already seal their observation. New receipts
+        # carry the raw frozen record and always take the branch above.
+        observation = _validate_gpu_execution_observation(record)
+        if "gpu_use" not in observation:
+            observation.update(gpu_use="used" if observation["gpu_uuids"] else "zero",
+                               gpu_use_reason="attributed_gpu_uuid" if observation["gpu_uuids"] else "successful_payload_sample")
+        return observation
+    frozen = _exact_mapping(record, keys={"action_key", "nonce", "scope_id",
+                            "deadline_monotonic", "resource_telemetry"}, where="frozen GPU attempt")
+    key = _text(frozen["action_key"], where="GPU action key", pattern=_SHA256_RE)
+    observed_nonce = _text(frozen["nonce"], where="GPU attempt nonce", pattern=re.compile(r"[a-f0-9]{32}"))
+    observed_scope = _text(frozen["scope_id"], where="GPU attempt scope",
+                          pattern=re.compile(r"prismabuild-job[a-f0-9]{32}\.slice"))
+    expected_scope = "prismabuild-job" + raw_sha256((key + observed_nonce).encode())[:32] + ".slice"
+    if (observed_scope != expected_scope or (action_key is not None and key != action_key)
+            or (nonce is not None and observed_nonce != nonce)
+            or (scope_id is not None and observed_scope != scope_id)):
+        _fail("frozen GPU evidence belongs to another attempt")
+    deadline = frozen["deadline_monotonic"]
+    if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline < 0:
+        _fail("invalid GPU observation deadline")
+    telemetry = _exact_mapping(frozen["resource_telemetry"], keys={"gpu_uuids", "gpu_evidence"},
+                               where="frozen GPU sampling evidence")
+    uuids = telemetry["gpu_uuids"]
     if (not isinstance(uuids, list) or any(not isinstance(value, str) or not value for value in uuids)
             or uuids != sorted(set(uuids))):
         _fail("GPU UUID evidence must be distinct and sorted")
-    evidence = telemetry.get("gpu_evidence")
-    if evidence is None:
-        evidence = {"sample_failed": False, "live_sample": False, "final_succeeded": None}
-    evidence = _exact_mapping(evidence, keys={"sample_failed", "live_sample", "final_succeeded"},
-                              where="GPU attempt evidence")
-    if (type(evidence["sample_failed"]) is not bool or type(evidence["live_sample"]) is not bool
-            or (evidence["final_succeeded"] is not None and type(evidence["final_succeeded"]) is not bool)):
-        _fail("invalid GPU sampling evidence")
+    evidence = _exact_mapping(telemetry["gpu_evidence"],
+        keys={"sample_failed", "live_sample", "final_succeeded"}, where="GPU attempt evidence")
+    if any(type(value) is not bool for value in evidence.values()):
+        _fail("invalid frozen GPU sampling evidence")
     if uuids:
         state, reason = "used", "attributed_gpu_uuid"
     elif evidence["final_succeeded"] is False:
@@ -6211,16 +6251,15 @@ def gpu_execution_judgment(telemetry: Mapping[str, object]) -> dict[str, object]
         state, reason = "unobserved", "sampler_error"
     elif not evidence["live_sample"]:
         state, reason = "unobserved", "no_sample_during_lifetime"
-    elif evidence["final_succeeded"] is not True:
-        state, reason = "unobserved", "final_observation_failed"
     else:
         state, reason = "zero", "successful_payload_sample"
     return {"gpu_use": state, "gpu_use_reason": reason, "gpu_uuids": list(uuids),
-            "gpu_devices_used": None if state == "unobserved" else len(uuids)}
+            "gpu_devices_used": None if state == "unobserved" else len(uuids),
+            "nonce": observed_nonce, "scope_id": observed_scope, "gpu_record": dict(frozen)}
 
 
 def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, object]:
-    """Recover only root-owned evidence when the final broker RPC is unavailable."""
+    """Read the single root-owned frozen record after the commit window closes."""
     scope, nonce = os.environ[ACTION_SCOPE_ENV], os.environ[ACTION_NONCE_ENV]
     if not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope):
         _fail("invalid GPU observation scope")
@@ -6253,13 +6292,9 @@ def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, obje
             _fail("broker GPU evidence changed or exceeds 64 KiB")
     finally:
         os.close(descriptor)
-    evidence = _exact_mapping(digest_primitives.decode_strict_json(bytes(raw), where="broker GPU evidence"),
-                              keys={"action_key", "nonce", "scope_id", "resource_telemetry"},
-                              where="broker GPU evidence")
-    if (evidence["action_key"] != action["action_key"] or evidence["nonce"] != nonce
-            or evidence["scope_id"] != scope):
-        _fail("broker GPU evidence belongs to another attempt")
-    return evidence["resource_telemetry"]
+    evidence = digest_primitives.decode_strict_json(bytes(raw), where="broker GPU evidence")
+    gpu_execution_judgment(evidence, action_key=str(action["action_key"]), nonce=nonce, scope_id=scope)
+    return evidence
 
 
 def _gpu_broker_request(action: Mapping[str, object], op: str, **fields: object) -> Mapping[str, object]:
@@ -6297,21 +6332,23 @@ def _gpu_execution_observation(action: Mapping[str, object],
                                demand: Mapping[str, object] | None = None) -> dict[str, object] | None:
     if not _action_needs_gpu(action, demand):
         return None
+    deadline = time.monotonic() + GPU_OBSERVATION_TIMEOUT_S
     try:
-        response = _gpu_broker_request(action, "gpu_observation")
-        judgment = gpu_execution_judgment(response["resource_telemetry"])
-        observation = _validate_gpu_execution_observation({**judgment, "nonce": response["nonce"],
-                                                          "scope_id": response["scope_id"]})
+        response = _gpu_broker_request(action, "gpu_observation", deadline_monotonic=deadline)
+        observation = gpu_execution_judgment(response["gpu_record"], action_key=str(action["action_key"]),
+            nonce=os.environ.get(ACTION_NONCE_ENV), scope_id=os.environ.get(ACTION_SCOPE_ENV))
     except (OSError, ValueError, KeyError, TypeError, ActionContractError):
-        # The RPC itself is an attempted observation. Earlier successful use
-        # still wins, but an earlier zero can never prove the failed interval.
+        # A lost reply is only transport failure. Wait for the point after
+        # which the broker cannot commit, then honor its protected record.
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
         try:
-            previous = dict(_read_broker_gpu_evidence(action))
-            previous["gpu_evidence"] = {**previous.get("gpu_evidence", {}),
-                                        "sample_failed": True, "final_succeeded": False}
-            judgment = gpu_execution_judgment(previous)
-            observation = _validate_gpu_execution_observation({**judgment,
-                "nonce": os.environ[ACTION_NONCE_ENV], "scope_id": os.environ[ACTION_SCOPE_ENV]})
+            frozen = _read_broker_gpu_evidence(action)
+            if frozen["deadline_monotonic"] != deadline:
+                _fail("GPU observation commit deadline differs from this request")
+            observation = gpu_execution_judgment(frozen, action_key=str(action["action_key"]),
+                nonce=os.environ.get(ACTION_NONCE_ENV), scope_id=os.environ.get(ACTION_SCOPE_ENV))
         except (OSError, ValueError, KeyError, TypeError, ActionContractError):
             observation = _unobserved_gpu_use("final_observation_failed", bind_scope=True)
     if observation["gpu_devices_used"] == 0:

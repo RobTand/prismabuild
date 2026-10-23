@@ -7,7 +7,7 @@ from enum import Enum
 import math
 from pathlib import Path
 
-from . import record_store
+from . import record_store, core as pb
 
 DONE = "done"
 FAILED = "failed"
@@ -374,10 +374,11 @@ def resolve_attempt(
     if not isinstance(raw_detail, Mapping):
         raise invalid("pool attempt detail must be an object")
     observation = raw_detail.get("resource_telemetry")
+    gpu_judgment = None
+    if isinstance(observation, Mapping) and ("gpu_record" in observation or "gpu_use" in observation):
+        gpu_judgment = pb.gpu_execution_judgment(observation)
     gpu_refusal_final = (raw_detail.get("termination_reason") == "zero_gpu_devices_used"
-                         and isinstance(observation, Mapping)
-                         and type(observation.get("gpu_devices_used")) is int
-                         and observation["gpu_devices_used"] == 0)
+                         and gpu_judgment is not None and gpu_judgment["gpu_use"] == "zero")
     expected = (
         WITHDRAWN if status == WITHDRAWN else
         DONE if succeeded else FAILED if (stopped or worker_failure_final or gpu_refusal_final
@@ -399,6 +400,9 @@ def resolve_attempt(
     if not isinstance(finished_host, str) or not finished_host:
         raise invalid("pool attempt finished_host must be nonempty text")
     detail = dict(raw_detail)
+    if gpu_judgment is not None:
+        detail.update(resource_telemetry=gpu_judgment, gpu_use=gpu_judgment["gpu_use"],
+                      gpu_use_reason=gpu_judgment["gpu_use_reason"])
     logs = adopted.get("logs")
     for stream in ("stdout", "stderr"):
         # Only the bounded tail lives in the mutable record; the immutable

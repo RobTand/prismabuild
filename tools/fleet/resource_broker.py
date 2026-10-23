@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import pwd
@@ -212,13 +213,15 @@ def _dead_supervisor_owner(owner):
         return False
     return current != starttime
 
-def _atomic(path, value, *, mode=0o600):
+def _atomic(path, value, *, mode=0o600, deadline=None):
     temp=path.with_name('.'+path.name+'.'+secrets.token_hex(8))
     try:
         fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         os.fchmod(fd,mode)
         with os.fdopen(fd,'w') as out:
             json.dump(value,out,sort_keys=True);out.write('\n');out.flush();os.fsync(out.fileno())
+        if deadline is not None and time.monotonic()>=deadline:
+            raise ValueError('GPU observation deadline elapsed')
         os.replace(temp,path)
         directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(directory)
@@ -730,6 +733,7 @@ class Authority:
                 if op=='release':
                     if self.backend.exists(scope):self.backend.release(scope)
                     record['released_unix']=time.time()
+                self.remove_gpu_record(scope)
                 _atomic(self.state_dir/(scope+'.json'),record)
                 return {'ok':True,'scope_id':scope,'released':bool(record.get('released_unix')),
                         **self._stop_details(record)}
@@ -760,6 +764,7 @@ class Authority:
                 if not record.get('stopped_unix'):raise ValueError('scope not stopped')
                 record['container_settlement']=evidence
                 record['settled_unix']=time.time()
+                self.remove_gpu_record(scope)
                 _atomic(self.state_dir/(scope+'.json'),record)
                 return {'ok':True,'scope_id':scope,'settled':True,**self._stop_details(record)}
             if op=='stop':
@@ -785,13 +790,14 @@ class Authority:
                     return {'ok':True,'scope_id':scope,'retired':True}
                 self.backend.release(scope)
                 record['released_unix']=time.time()
+                self.remove_gpu_record(scope)
                 _atomic(self.state_dir/(scope+'.json'),record)
             return {'ok':True,'scope_id':scope,**self._stop_details(record)}
 
     @staticmethod
     def _stop_details(record):
         return {key:record[key] for key in ('stop_reason','stopped_unix',
-                'termination_evidence','last_cleanup_reason','resource_telemetry') if key in record}
+                'termination_evidence','last_cleanup_reason','resource_telemetry','gpu_record') if key in record}
 
     @staticmethod
     def _live_process(pid):
@@ -828,28 +834,84 @@ class Authority:
             return {'ok':True,'scope_id':scope,'nonce':nonce}
 
     def gpu_observation(self,pid,request):
-        """Read-only payload access, authorized by kernel scope membership."""
-        if set(request)!={'op','action_key','nonce'}:raise ValueError('invalid GPU observation fields')
+        """The launched worker may sample once, then redeliver the frozen result."""
+        if set(request)!={'op','action_key','nonce','deadline_monotonic'}:
+            raise ValueError('invalid GPU observation fields')
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
-        groups=Path(f'/proc/{pid}/cgroup').read_text().splitlines()
-        membership='/prismabuild.slice/'+scope
-        if not any(line=='0::'+membership or line.startswith('0::'+membership+'/') for line in groups):
-            raise PermissionError('GPU observer is outside the payload scope')
-        # Observation never advances the Guard. Post-exit samples can retain
-        # UUIDs, but cannot establish a zero-use payload lifetime.
-        observer=getattr(self,'gpu_observer',None)
-        if observer is None:raise ValueError('GPU observation monitor unavailable')
-        observer(scope)
+        deadline=request['deadline_monotonic']
+        if type(deadline) not in (int,float) or not math.isfinite(deadline):
+            raise ValueError('invalid GPU observation deadline')
         with self.lock:
-            record=self.records.get(scope)
-            if record is None or record.get('released_unix'):raise ValueError('GPU observation scope unavailable')
+            record=self.records.get(scope);worker=self._live_process(pid)
+            if record is None or worker is None or record.get('worker_process')!=worker:
+                raise PermissionError('GPU observation requires the launched worker')
+            groups=Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+            membership='0::/prismabuild.slice/'+scope
+            if not any(line==membership or line.startswith(membership+'/') for line in groups):
+                raise PermissionError('GPU observer is outside the payload scope')
+            if record.get('gpu_record') is not None:
+                return {'ok':True,'scope_id':scope,'nonce':nonce,'gpu_record':record['gpu_record']}
+            now=time.monotonic()
+            if deadline<=now or deadline>now+10:
+                raise ValueError('GPU observation deadline elapsed or outside supported window')
+            if record.get('released_unix') or record.get('settled_unix'):
+                raise ValueError('GPU observation scope unavailable')
             info=self.backend.path(scope).stat()
             if [info.st_dev,info.st_ino]!=record.get('cgroup_identity'):
                 raise ValueError('GPU observation kernel scope changed')
-            return {'ok':True,'scope_id':scope,'nonce':nonce,
-                    'resource_telemetry':dict(record.get('resource_telemetry') or {
-                        'gpu_devices_used':0,'gpu_uuids':[],
-                        'gpu_evidence':{'sample_failed':False,'live_sample':False,'final_succeeded':False}})}
+            # Persist the first deadline before sampling. An in-flight retry
+            # cannot extend the commit window or start another census.
+            if record.get('gpu_observation_started') is not None:
+                raise ValueError('GPU observation already in progress or expired')
+            record['gpu_observation_started']=now
+            record['gpu_observation_deadline']=deadline
+            _atomic(self.state_dir/(scope+'.json'),record)
+        observer=getattr(self,'gpu_observer',None)
+        if observer is not None:observer(scope,deadline)
+        with self.lock:
+            record=self.records[scope]
+            if record.get('gpu_record') is None:
+                self.freeze_gpu_record(scope,deadline,final_succeeded=False)
+            return {'ok':True,'scope_id':scope,'nonce':nonce,'gpu_record':record['gpu_record']}
+
+    def freeze_gpu_record(self,scope,deadline,*,final_succeeded):
+        """Commit the sole public attempt record before returning any judgment."""
+        with self.lock:
+            record=self.records[scope]
+            if record.get('gpu_record') is not None:return record['gpu_record']
+            if time.monotonic()>=deadline:raise ValueError('GPU observation deadline elapsed')
+            prior=record.get('resource_telemetry') or {}
+            telemetry={'gpu_uuids':list(prior.get('gpu_uuids',[])),
+                       'gpu_evidence':{**prior.get('gpu_evidence',{
+                           'sample_failed':False,'live_sample':False}),
+                           'final_succeeded':final_succeeded}}
+            frozen={key:record[key] for key in ('action_key','nonce','scope_id')}
+            frozen.update(deadline_monotonic=deadline,resource_telemetry=telemetry)
+            directory=self.gpu_evidence_dir
+            directory.mkdir(mode=0o755,exist_ok=True)
+            directory_fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            try:
+                info=os.fstat(directory_fd)
+                if info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                    raise ValueError('unsafe GPU evidence directory')
+                os.fchmod(directory_fd,0o755)
+                _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
+                        frozen,mode=0o444,deadline=deadline)
+            finally:os.close(directory_fd)
+            record['gpu_record']=frozen
+            _atomic(self.state_dir/(scope+'.json'),record)
+            return frozen
+
+    def remove_gpu_record(self,scope):
+        """Settlement ends the public mirror's recovery lifetime."""
+        directory=self.gpu_evidence_dir
+        try:descriptor=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        except FileNotFoundError:return
+        try:
+            os.unlink(scope+'.json',dir_fd=descriptor)
+            os.fsync(descriptor)
+        except FileNotFoundError:pass
+        finally:os.close(descriptor)
 
     def admin(self,uid,request):
         """Operate the one gate that stops this host, as a claim with a holder.
@@ -1074,6 +1136,7 @@ class Authority:
         if not self.backend.empty(scope):raise ValueError('retired scope became populated: '+scope)
         self.backend.release(scope)
         record['released_unix']=time.time()
+        self.remove_gpu_record(scope)
         record['maintenance_cleanup']='settled container transaction'
         _atomic(self.state_dir/(scope+'.json'),record)
         return True
@@ -1282,7 +1345,7 @@ class ResourceMonitor:
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
-        self.sample_lock=threading.Lock()
+        self.sample_lock=threading.Lock();self.final_lock=threading.Lock();self.sample_error=None
         self.guard.minimum_sample_interval_s=interval_s
         authority.gpu_observer=self.observe_gpu
 
@@ -1322,11 +1385,20 @@ class ResourceMonitor:
         with self.sample_lock:
             return self._poll_once()
 
-    def observe_gpu(self,scope):
-        """Collect attribution without OOM checks, Guard counters or stop calls."""
-        with self.sample_lock:
-            snapshot,_=self._sample_gpu(self._records(),final_scope=scope)
-            return snapshot
+    def observe_gpu(self,scope,deadline):
+        """One bounded final census, independent of the periodic Guard lock."""
+        # A concurrent final census gets an explicit failed observation rather
+        # than queuing host-wide work ahead of the Guard. Payload RPCs never
+        # reach here; worker authentication and once-only admission precede it.
+        if not self.final_lock.acquire(blocking=False):
+            return self.authority.freeze_gpu_record(scope,deadline,final_succeeded=False)
+        try:
+            records=self._records()
+            records={scope:records[scope]} if scope in records else {}
+            snapshot,_=self._sample_gpu(records,final_scope=scope)
+            return self.authority.freeze_gpu_record(scope,deadline,
+                final_succeeded=snapshot is not None and snapshot.gpu_query_complete is True)
+        finally:self.final_lock.release()
 
     def _payload_live(self,record):
         child=record.get('gpu_payload')
@@ -1346,7 +1418,9 @@ class ResourceMonitor:
                                                      for device in device_readings[0]}
                 memory_options['gpu_devices']=device_readings[0]
             snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
-        except (OSError,ValueError,subprocess.TimeoutExpired):
+        except Exception as exc:
+            self.sample_error=type(exc).__name__
+            self.last_success_monotonic=None
             self._retain_gpu_observation(records,{'gpu_query_complete':False,'jobs':[
                 {'scope_id':scope,'cgroup_identity':record['cgroup_identity'],'processes':[]}
                 for scope,record in records.items()]},live,final_scope)
@@ -1363,7 +1437,7 @@ class ResourceMonitor:
             if identity is None or tuple(identity)!=tuple(expected['cgroup_identity']):continue
             with self.authority.lock:
                 current=self.authority.records.get(scope)
-                if (current is None or current.get('released_unix')
+                if (current is None or current.get('released_unix') or current.get('gpu_record') is not None
                         or any(current.get(key)!=expected.get(key) for key in self.identity_fields)):
                     continue
                 info=self.authority.backend.path(scope).stat()
@@ -1381,25 +1455,9 @@ class ResourceMonitor:
                 current['resource_telemetry']={'gpu_devices_used':len(uuids),'gpu_uuids':sorted(uuids),
                                                'gpu_evidence':evidence}
                 _atomic(self.authority.state_dir/(scope+'.json'),current)
-                # This mirror contains no token or process identity. Root owns
-                # its directory and read-only leaf; the payload may only read.
-                directory=self.authority.gpu_evidence_dir
-                directory.mkdir(mode=0o755,exist_ok=True)
-                directory_fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
-                try:
-                    info=os.fstat(directory_fd)
-                    if info.st_uid!=os.geteuid() or info.st_mode&0o022:
-                        raise ValueError('unsafe GPU evidence directory')
-                    # The installed service uses UMask=0077. Public evidence
-                    # must remain readable without granting payload writes.
-                    os.fchmod(directory_fd,0o755)
-                    _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
-                        {key:current[key] for key in ('action_key','nonce','scope_id','resource_telemetry')},
-                        mode=0o444)
-                finally:os.close(directory_fd)
 
     def _poll_once(self):
-        records=self._records();stopped=[];errors=[]
+        records=self._records();stopped=[];errors=[];self.sample_error=None
         # Only a local OOM identifies exhaustion of this aggregate limit.
         # Hierarchical victim counts also include safely contained child OOMs.
         # Stop at local exhaustion even before a victim appears: allocation
@@ -1432,6 +1490,8 @@ class ResourceMonitor:
         active={scope:record for scope,record in records.items()
                 if scope not in stopped and not record.get('monitor_stop_pending')}
         snapshot,device_readings=self._sample_gpu(active) if active or self.capacity is not None else (None,None)
+        if self.sample_error is not None:
+            errors.append({'error':'sampler_error: '+self.sample_error})
         if snapshot is not None:
             for decision in self.guard.observe(snapshot):
                 expected=records.get(decision.scope_id)
@@ -1454,7 +1514,7 @@ class ResourceMonitor:
                 public['errors'].append('scope inventory changed or monitor errors during sample')
             _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
         _atomic(self.authority.state_dir/'monitor.status',status)
-        self.last_success_monotonic=time.monotonic()
+        self.last_success_monotonic=time.monotonic() if not errors else None
         return status
 
     def healthy(self):

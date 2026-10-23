@@ -252,7 +252,7 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
     # the recovery evidence are filed. Neither can overwrite a successor.
     queue.records.replace_record_at(path, record)
     result = _archive_late_finish(queue,
-        str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live)
+        str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live, telemetry=telemetry)
     evidence = dict(record)
     evidence.pop("finish_pending", None)
     evidence.pop("container_cleanup_pending", None)
@@ -285,14 +285,10 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     bound = (execution.get("nonce") is not None and execution.get("nonce") == scope.get("nonce")
              and execution.get("scope_id") == scope.get("scope_id"))
     if receipt and (status == "cache_hit" or bound):
-        # The receipt seals the final observation of this attempt. Cleanup
-        # samples cannot reinterpret it after successful publication.
-        observation = dict(execution)
-        judgment = observation if "gpu_use" in observation else pb.gpu_execution_judgment(observation)
+        observation = pb.gpu_execution_judgment(execution or None)
     else:
-        observation = dict(telemetry)
-        judgment = pb.gpu_execution_judgment(observation)
-    observation.update(judgment)
+        observation = pb.gpu_execution_judgment(telemetry.get("gpu_record"),
+            action_key=str(record["action_key"]), nonce=scope.get("nonce"), scope_id=scope.get("scope_id"))
     state, reason = observation["gpu_use"], observation["gpu_use_reason"]
     if status == "cache_hit" and receipt is None:
         status = "failed"
@@ -319,6 +315,7 @@ def _archive_late_finish(
     detail: Mapping[str, object] | None,
     snapshot: Mapping[str, object],
     live: Mapping[str, object],
+    telemetry: Mapping[str, object] | None = None,
 ) -> Path:
     """File the result of an attempt that a newer one has already replaced.
 
@@ -351,7 +348,7 @@ def _archive_late_finish(
     """
     from . import pool
 
-    status, detail, zero_gpu = _gpu_finish_verdict(queue, snapshot, status, detail, {})
+    status, detail, zero_gpu = _gpu_finish_verdict(queue, snapshot, status, detail, telemetry or {})
 
     attempt = int(snapshot.get("attempts", 0)) + 1
     if (queue.records.attempt_generation({**snapshot, "action_key": action_key})

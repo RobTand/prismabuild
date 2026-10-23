@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gpu_evidence_fixtures import frozen_gpu, gpu_reply, worker_peer
+
 from prismabuild import action_client, client, core as pb, gpu_memory as gm, pool, submission
 from test_core import _body
 from test_gpu_memory import system, process, query, SID
@@ -33,12 +35,11 @@ def test_attributed_gpu_uuid_union_survives_empty_samples(monitored, tmp_path, m
     monkeypatch.setattr(monitor, '_payload_live', lambda row: True)
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
-    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_devices_used'] is None
+    assert status['resource_telemetry']['gpu_evidence']['sample_failed']
     query(monkeypatch, '20, GPU-visible, 1\n')
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
-    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_use'] == 'unobserved'
-    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_use_reason'] == 'sampler_error'
+    assert status['resource_telemetry']['gpu_evidence']['sample_failed']
     query(monkeypatch, '10, GPU-first, [N/A]\n11, GPU-first, 1\n10, GPU-second, 2\n20, GPU-visible, 3\n')
     monitor.poll_once()
     query(monkeypatch, '')
@@ -51,29 +52,11 @@ def test_attributed_gpu_uuid_union_survives_empty_samples(monitored, tmp_path, m
 def test_gpu_observation_requires_exact_peer_scope_and_kernel_identity(monitored, monkeypatch):
     a, backend, rows, gpu, monitor = monitored
     request, record, path = rows[0]
-    telemetry = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-observed']}
-    a.records[record['scope_id']]['resource_telemetry'] = telemetry
-    monkeypatch.setattr(a, 'gpu_observer', lambda scope: None)
-    peer = Path('/proc/123456789/cgroup')
-    membership = '/prismabuild.slice/' + record['scope_id']
-    group = membership + '-foreign/payload'
-    original = Path.read_text
-
-    def peer_group(file, *args, **kwargs):
-        return '0::' + group + '\n' if file == peer else original(file, *args, **kwargs)
-
-    monkeypatch.setattr(Path, 'read_text', peer_group)
     query = {key: request[key] for key in ('action_key', 'nonce')}
-    query['op'] = 'gpu_observation'
-    with pytest.raises(PermissionError, match='outside the payload scope'):
+    query.update(op='gpu_observation', deadline_monotonic=__import__('time').monotonic() + 10)
+    with pytest.raises(PermissionError, match='launched worker'):
         a.handle(a.uid, 123456789, query)
-    group = membership + '/payload/container'
-    response = a.handle(a.uid, 123456789, query)
-    assert response == {'ok': True, 'scope_id': record['scope_id'],
-                        'nonce': request['nonce'], 'resource_telemetry': telemetry}
-    assert 'token' not in response
-    with pytest.raises(PermissionError, match='outside the payload scope'):
-        a.handle(a.uid, 123456789, {**query, 'nonce': rows[1][0]['nonce']})
+    worker_peer(a, record, monkeypatch)
     path.rename(path.with_name(path.name + '-old'))
     path.mkdir()
     with pytest.raises(ValueError, match='kernel scope changed'):
@@ -90,7 +73,7 @@ def test_pool_finish_adjudicates_gpu_use(scoped, count, monkeypatch):
              'gpu_evidence': {'sample_failed': False, 'live_sample': count is not None,
                               'final_succeeded': True}}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
-        'complete': True, 'resource_scope': {'telemetry': final}})
+        'complete': True, 'resource_scope': {'telemetry': {'gpu_record': frozen_gpu(final, action_key=item['action_key'])}}})
     path = queue.finish(item['action_key'], status='executed', detail=detail,
                         claim_snapshot=item)
     terminal = json.loads(path.read_text())
@@ -141,7 +124,7 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         def sendall(self, raw): requests.append(json.loads(raw))
         def recv(self, bound):
             return (json.dumps({'ok': True, 'scope_id': scope, 'nonce': nonce,
-                                'resource_telemetry': telemetry}) + '\n').encode()
+                                'gpu_record': frozen_gpu(telemetry, action_key=action['action_key'], nonce=nonce, deadline=requests[-1].get('deadline_monotonic'))}) + '\n').encode()
 
     monkeypatch.setattr(pb.socket, 'socket', lambda *args: GpuReply())
     cas = pb.PrismaBuildCAS(tmp_path / 'cas')
@@ -152,7 +135,7 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         assert not status_file.exists()
     else:
         first = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout)
-        recorded = {**pb.gpu_execution_judgment(telemetry), 'scope_id': scope, 'nonce': nonce}
+        recorded = {**pb.gpu_execution_judgment(frozen_gpu(telemetry, action_key=action['action_key'], nonce=nonce, deadline=requests[-1]['deadline_monotonic'])), 'scope_id': scope, 'nonce': nonce}
         assert first['receipt']['resource_telemetry'] == recorded
         assert client.cas_receipt_self_check(first['receipt']) is None
         assert cas.lookup(action)['resource_telemetry'] == recorded
@@ -169,10 +152,11 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         receipt_file.write_text(json.dumps(damaged))
         receipt_file.chmod(0o444)
         assert client.cas_receipt_self_check(damaged) == 'cas-receipt-shape'
-        with pytest.raises(pb.CASTamperError, match='zero distinct GPU UUIDs'):
+        with pytest.raises(pb.CASTamperError, match='GPU observation disagrees|zero distinct GPU UUIDs'):
             cas.lookup(action)
     assert [r['op'] for r in requests] == ['gpu_payload', 'gpu_observation']
-    assert requests[-1] == {'op': 'gpu_observation', 'action_key': action['action_key'], 'nonce': nonce}
+    assert {k: v for k, v in requests[-1].items() if k != 'deadline_monotonic'} == {
+        'op': 'gpu_observation', 'action_key': action['action_key'], 'nonce': nonce}
 
 
 @pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
@@ -201,7 +185,7 @@ def test_fresh_gpu_finish_retains_final_broker_uuid_union(scoped, monkeypatch):
     queue, item, calls = scoped
     final = {'gpu_devices_used': 2, 'gpu_uuids': ['GPU-first', 'GPU-second']}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *args, **kw: {
-        'complete': True, 'resource_scope': {'telemetry': final}})
+        'complete': True, 'resource_scope': {'telemetry': {'gpu_record': frozen_gpu(final, action_key=item['action_key'])}}})
     path = queue.finish(item['action_key'], status='executed',
                         detail={'returncode': 0, 'resource_telemetry': {
                             'gpu_devices_used': 1, 'gpu_uuids': ['GPU-first']}},
