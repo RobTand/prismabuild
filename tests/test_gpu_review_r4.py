@@ -754,9 +754,17 @@ def test_lifecycle_second_judgment_mutants_are_refused(e2e, mutant):
         'computed_banned_keys': '(telemetry.get("gpu_" + "evidence") or {}).get("live_" + "sample")',
         'unscanned_pool_self_receiver': 'queue._gpu_live_judgment(telemetry)',
     }
-    e2e.monkeypatch.setattr(e2e.queue, '_gpu_live_judgment', lambda t: t.get('gpu_devices_used') == 0, raising=False)
-    changed = _replace_function(lifecycle, '_gpu_finish_verdict', lambda source:
-        source.replace(anchor, '    if ' + conditions[mutant] + ':\n        ' + forged + '\n' + anchor))
+    def receiver(status):
+        live = status.get('resource_telemetry') or {}
+        evidence = live.get('gpu_evidence') or {}
+        return 'zero' if not live.get('gpu_uuids') and evidence.get('live_sample') else 'unobserved'
+    e2e.monkeypatch.setattr(e2e.queue, '_gpu_live_judgment', receiver, raising=False)
+    if mutant == 'unscanned_pool_self_receiver':
+        changed = _replace_function(lifecycle, '_gpu_finish_verdict', lambda source:
+            source.replace(anchor, '    observation = queue._gpu_live_judgment({"resource_telemetry": telemetry})\n' + anchor))
+    else:
+        changed = _replace_function(lifecycle, '_gpu_finish_verdict', lambda source:
+            source.replace(anchor, '    if ' + conditions[mutant] + ':\n        ' + forged + '\n' + anchor))
     e2e.monkeypatch.setattr(lifecycle, '_gpu_finish_verdict', changed)
     with pytest.raises(pb.ActionContractError, match='GpuUseJudgment'):
         _finish_and_read(e2e, core)
@@ -798,7 +806,11 @@ def test_pool_fabricated_record_mutant_breaks_the_contract():
     anchor = '            if status.get("gpu_record") is not None:'
     changed = _replace_function(pool, '_sample_resource_scope', lambda source: source.replace(anchor.strip(),
         'if status.get("gpu_record") is None:\n'
-        '            telemetry["gpu_record"] = {"resource_telemetry": status.get("resource_telemetry")}\n'
+        '            live = status["resource_telemetry"]\n'
+        '            telemetry["gpu_record"] = {"action_key": scope.action_key, "nonce": scope.nonce,\n'
+        '                "scope_id": scope.scope_id, "deadline_monotonic": 0.0, "resource_telemetry": {\n'
+        '                    "gpu_uuids": live["gpu_uuids"],\n'
+        '                    "gpu_evidence": {**live["gpu_evidence"], "final_succeeded": True}}}\n'
         '        ' + anchor.strip()))
     with pytest.raises(AssertionError):
         _scope_sampler_contract(changed)
@@ -821,9 +833,11 @@ def _frozen_retention_contract(e):
     _lifetime(e, ['zero'])
     assert _run_core(e, 'deliver')['outcome'] == 'zero'
     frozen = json.loads(json.dumps(e.a.records[e.scope]['gpu_record']))
+    history = json.loads(json.dumps(e.a.records[e.scope]['resource_telemetry']))
     e.gpu.plan = lambda: {e.scope: 'GPU-late'}
     e.live.poll_once()
     assert e.a.records[e.scope]['gpu_record'] == frozen
+    assert e.a.records[e.scope]['resource_telemetry'] == history
     assert json.loads((e.a.gpu_evidence_dir / (e.scope + '.json')).read_text()) == frozen
 
 
@@ -833,10 +847,7 @@ def test_frozen_record_is_unchanged_by_late_samples(e2e):
 
 def test_retain_mutant_breaks_the_frozen_record_contract(e2e):
     changed = _replace_function(type(e2e.live), '_retain_gpu_observation', lambda source: source.replace(
-        "current.get('gpu_record') is not None", 'False  # gpu_record spelled in comment\n                       ')
-        .replace("prior=current.get('resource_telemetry') or {}",
-                 "current.get('gpu_record', {}).get('resource_telemetry', {})['gpu_uuids']=['GPU-forged-late']\n"
-                 "            prior=current.get('resource_telemetry') or {}"))
+        "current.get('gpu_record') is not None", 'False  # gpu_record spelled in comment\n                       '))
     e2e.monkeypatch.setattr(type(e2e.live), '_retain_gpu_observation', changed)
     with pytest.raises(AssertionError):
         _frozen_retention_contract(e2e)
