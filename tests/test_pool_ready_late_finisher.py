@@ -1,4 +1,6 @@
 """A charged retry remains pending when its previous caller reports late (#234)."""
+
+from admitted_queue_fixture import simulated_capacity
 import json
 from pathlib import Path
 import sys
@@ -20,7 +22,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     queue.publish(action_key=key, cas_root=tmp_path / 'cas',
                   checkout_root=tmp_path / 'checkout', worker_script=tmp_path / 'worker.py',
                   resources={'cpu': 1}, max_attempts=2, retry_safe=True)
-    first = queue.claim(owner='original', capacity={'cpu': 1})
+    first = queue.claim(owner='original', capacity=simulated_capacity({'cpu': 1}))
     assert first is not None
     # A real production reaper transition, with an expired lease and a charged
     # immutable attempt. No successor has claimed READY when the caller resumes.
@@ -50,7 +52,7 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
     assert original_outcome.read_bytes() == original_bytes
     assert submit_core.action_wait.await_ending(queue, key, wait_s=0.01,
                                generation=retry['published_unix']) is None
-    successor = queue.claim(owner='successor', capacity={'cpu': 1})
+    successor = queue.claim(owner='successor', capacity=simulated_capacity({'cpu': 1}))
     assert successor is not None and successor['attempts'] == (0 if republish else 1)
     ending = queue.finish(key, status='executed', detail={'returncode': 0,
                           'stdout': 'successor result'}, claim_snapshot=successor)
@@ -101,7 +103,7 @@ def test_late_ready_cleanup_refusal_is_recoverable_without_ending_the_retry(scop
     assert recovered.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not pending.exists()
     assert ready.read_bytes() == saved and outcome.read_bytes() == original
-    successor = recovered.claim(owner='successor', capacity=first['resources'])
+    successor = recovered.claim(owner='successor', capacity=simulated_capacity(first['resources']))
     assert successor is not None
     recovered.finish(key, status='executed', detail={'returncode': 0},
                      claim_snapshot=successor)

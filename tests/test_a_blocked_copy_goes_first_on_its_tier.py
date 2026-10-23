@@ -30,6 +30,8 @@ queue or a real stage mountpoint (#628).
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 import json
 import os
@@ -67,7 +69,7 @@ def _claim_all(queue: pool.PoolQueue, *, limit: int = 12) -> list[str]:
 
     claimed: list[str] = []
     for _ in range(limit):
-        item = queue.claim(capacity=dict(WORKER), tags=["dl380g10"])
+        item = queue.claim(capacity=simulated_capacity(dict(WORKER)), tags=["dl380g10"])
         if item is None:
             break
         claimed.append(str(item["action_key"]))

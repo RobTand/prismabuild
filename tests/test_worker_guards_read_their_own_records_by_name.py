@@ -16,6 +16,8 @@ an unreadable directory is pinned by the ``test_an_unreadable_*`` modules.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from contextlib import contextmanager
 import json
 import os
@@ -111,7 +113,7 @@ def test_a_claim_lists_no_terminal_or_withdrawn_directory(
     """The scan's withdrawal guard and the commit's terminal and withdrawal guards."""
 
     with listings(queue, tmp_path) as seen:
-        claimed = queue.claim(capacity={"cpu": 1})
+        claimed = queue.claim(capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None and claimed["action_key"] == KEY
     assert seen == []
 
@@ -121,7 +123,7 @@ def test_a_withdrawn_ready_copy_is_still_dropped_without_a_listing(
 ) -> None:
     _marker(queue, _generation(queue))
     with listings(queue, tmp_path) as seen:
-        assert queue.claim(capacity={"cpu": 1}) is None
+        assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
     assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert seen == []
 
@@ -131,7 +133,7 @@ def test_a_reap_lists_no_terminal_directory(
 ) -> None:
     """A stranded claim whose generation already ended is cleaned, not requeued."""
 
-    assert queue.claim(capacity={"cpu": 1}) is not None
+    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is not None
     claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())
     record["claimed_unix"] = pool._now() - (pool.HEARTBEAT_S * 10)

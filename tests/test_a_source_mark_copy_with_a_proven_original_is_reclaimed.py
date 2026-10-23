@@ -7,6 +7,8 @@ copies never move. Restore round-trips.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 import json
 import os
@@ -130,7 +132,7 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
                   worker_script="worker.py", tags=["x86"], resources=demand,
                   residency=residency)
     if claim:
-        claimed = queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2})
+        claimed = queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 2, "mem_gb": 2}))
         assert claimed is not None and claimed["action_key"] == key
     return key, digest
 
@@ -613,7 +615,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
                        "range_start_bytes": 0, "range_end_bytes": SIZE})
 
     publish()
-    assert queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2}) is None
+    assert queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 2, "mem_gb": 2})) is None
     assert queue.tier(TIER).holdings(waiting_key) == {}
     queue.withdraw(waiting_key, reason="fixture pauses the mover", by="test")
     got = _reclaim(fleet, apply=True, run_id="run-mint")
@@ -625,7 +627,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     assert after["writable"] == before["writable"] + 1
     assert queue.tier(TIER).holdings(retained_key) == {KIND: 1}
     publish()
-    admitted = queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2})
+    admitted = queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 2, "mem_gb": 2}))
     assert admitted is not None and admitted["action_key"] == waiting_key
     assert queue.tier(TIER).holdings() == {KIND: 3}
     assert queue.tier(TIER).holdings(waiting_key) == {KIND: 2}

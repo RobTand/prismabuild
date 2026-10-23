@@ -1,4 +1,6 @@
 """Coexisting generations and unknown observations never collapse into one state."""
+
+from admitted_queue_fixture import simulated_capacity
 from pathlib import Path
 
 import pytest
@@ -106,7 +108,7 @@ def test_unknown_cancelled_attempt_retains_claim_lease_and_reservation(tmp_path,
     key = "e" * 64
     queue.publish(action_key=key, cas_root=tmp_path / "cas", checkout_root=tmp_path,
                   worker_script="worker.py", resources={"cpu": 1})
-    claim = queue.claim(owner="worker", capacity={"cpu": 1})
+    claim = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 1}))
     queue.withdraw(key, signal_child=False)
     paths = (queue.records.item_path("claimed", key), queue.records.lease_path(key))
     saved = [path.read_bytes() for path in paths]

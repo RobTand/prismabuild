@@ -26,6 +26,8 @@ read through the queue's own ledger; the consumer is published through the
 real ``PoolQueue.publish``.  No payload runs and no GPU is touched.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import FleetWorld
 
 import json
@@ -195,7 +197,7 @@ def test_a_stale_epoch_map_is_refused_at_claim_before_tokens(
     _map_with_ram(queue, ram_epoch=OLD_EPOCH)
     _publish_consumer(queue)
 
-    assert queue.claim(owner="w-consumer", capacity={"cpu": 4}) is None
+    assert queue.claim(owner="w-consumer", capacity=simulated_capacity({"cpu": 4})) is None
     assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).exists()
     denial = _denial(queue, CONSUMER)
@@ -217,7 +219,7 @@ def test_a_map_naming_a_ram_tier_nobody_announced_is_refused(
     _map_with_ram(queue, ram_epoch=NEW_EPOCH)
     _publish_consumer(queue)
 
-    assert queue.claim(owner="w-consumer", capacity={"cpu": 4}) is None
+    assert queue.claim(owner="w-consumer", capacity=simulated_capacity({"cpu": 4})) is None
     assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_ram_epoch_stale"
@@ -230,7 +232,7 @@ def test_a_current_epoch_map_still_claims(tmp_path: Path) -> None:
     _map_with_ram(queue, ram_epoch=NEW_EPOCH)
     _publish_consumer(queue)
 
-    claimed = queue.claim(owner="w-consumer", capacity={"cpu": 4})
+    claimed = queue.claim(owner="w-consumer", capacity=simulated_capacity({"cpu": 4}))
 
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
@@ -242,7 +244,7 @@ def test_a_stage_only_map_still_claims(tmp_path: Path) -> None:
     _stage_only_map(queue)
     _publish_consumer(queue)
 
-    claimed = queue.claim(owner="w-consumer", capacity={"cpu": 4})
+    claimed = queue.claim(owner="w-consumer", capacity=simulated_capacity({"cpu": 4}))
 
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"

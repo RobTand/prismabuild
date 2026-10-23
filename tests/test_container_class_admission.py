@@ -1,5 +1,7 @@
 """Configured class image drift gates container claims, not native work (#807)."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
 import copy
@@ -77,7 +79,7 @@ def test_drift_refuses_before_consuming_claim_attempt_or_resources(tmp_path, mon
     q.ledger().ensure_capacity(CAPACITY)
     publish(q)
     before = q.records.item_path(pool.record_store.READY, KEY).read_bytes()
-    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
+    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=simulated_capacity(CAPACITY),
                       observed_images=[CONTENT], container_class_policy=policy(),
                       container_inventory=snapshot(**change))
     assert claimed is None
@@ -98,7 +100,7 @@ def test_unknown_class_inventory_refuses_even_with_positive_action_reference(tmp
 def test_native_claim_survives_class_drift(tmp_path, monkeypatch):
     FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q, container=False)
-    assert q.claim(capacity=CAPACITY, container_class_policy=policy(), container_inventory=None) is not None
+    assert q.claim(capacity=simulated_capacity(CAPACITY), container_class_policy=policy(), container_inventory=None) is not None
 
 
 def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_path, monkeypatch):
@@ -123,7 +125,7 @@ def test_configured_claim_uses_current_snapshot_not_an_old_satisfied_offer(tmp_p
 def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path, monkeypatch):
     FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     q = pool.PoolQueue(tmp_path / 'queue'); publish(q)
-    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    claimed = q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=simulated_capacity(CAPACITY), observed_images=[CONTENT],
                       container_class_policy=policy(), container_inventory=snapshot())
     evidence = claimed['container_class_verdict']
     assert evidence['status'] == 'satisfied'
@@ -184,7 +186,7 @@ def test_expiry_during_reservation_abandons_only_this_handle(tmp_path, monkeypat
         now[0] += 6.
         return result
     monkeypatch.setattr(pool.ResourceLedger, 'begin_acquire', delayed_begin)
-    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=simulated_capacity(CAPACITY), observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
     assert q.records.item_path(pool.record_store.READY, KEY).exists()
@@ -235,7 +237,7 @@ def test_expiry_during_intent_write_restores_moved_item_and_returns_own_reservat
         original(*args, **kwargs)
         now[0] += 6.
     monkeypatch.setattr(q, '_write_claim_intent', delay)
-    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY, observed_images=[CONTENT],
+    assert q.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=simulated_capacity(CAPACITY), observed_images=[CONTENT],
                    container_class_policy=policy(), container_inventory=snapshot()) is None
     assert q.ledger().available() == CAPACITY
     assert q.records.item_path(pool.record_store.READY, KEY).exists()
@@ -251,7 +253,7 @@ def test_serve_once_forwards_the_actual_class_snapshot_to_claim(tmp_path, monkey
         return None
     monkeypatch.setattr(q, 'claim', capture)
     monkeypatch.setattr(q, '_sweep_due', lambda: False)
-    q.serve_once(capacity=CAPACITY, container_class_policy=selected, container_inventory=observed)
+    q.serve_once(capacity=simulated_capacity(CAPACITY), container_class_policy=selected, container_inventory=observed)
     assert seen['container_class_policy'] is selected
     assert seen['container_inventory'] is observed
 

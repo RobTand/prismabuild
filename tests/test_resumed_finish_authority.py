@@ -1,4 +1,6 @@
 """A real recovered finisher must not publish after its marker was retired."""
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 import json
 import os
@@ -43,12 +45,12 @@ def test_a_restored_finisher_cannot_replace_a_later_generations_terminal(
     FleetClock(source=lambda: clock.now).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     _publication(queue, tmp_path)
-    first = queue.claim(owner="first", capacity={"cpu": 1})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 1}))
     assert first is not None
     queue.finish(KEY, status="failed", detail={"stderr": "first"}, claim_snapshot=first)
     clock.advance(1)
     _publication(queue, tmp_path)
-    middle = queue.claim(owner="middle", capacity={"cpu": 1})
+    middle = queue.claim(owner="middle", capacity=simulated_capacity({"cpu": 1}))
     assert middle is not None
     go_read, go_write = os.pipe()
     event_read, event_write = os.pipe()
@@ -96,7 +98,7 @@ def test_a_restored_finisher_cannot_replace_a_later_generations_terminal(
         assert not queue.records.item_path(record_store.CLAIMED, KEY).exists()
         clock.advance(1)
         _publication(queue, tmp_path)
-        latest = queue.claim(owner="latest", capacity={"cpu": 1})
+        latest = queue.claim(owner="latest", capacity=simulated_capacity({"cpu": 1}))
         assert latest is not None
         destination = queue.finish(KEY, status=latest_status, detail={"stdout": "latest"},
                                    claim_snapshot=latest)

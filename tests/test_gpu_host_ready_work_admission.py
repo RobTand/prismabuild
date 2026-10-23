@@ -1,4 +1,6 @@
 """Portable CPU work cannot overtake a GPU row eligible for this host (#1526)."""
+
+from admitted_queue_fixture import simulated_capacity
 from contextlib import contextmanager
 import sys
 
@@ -54,7 +56,7 @@ def fleet(tmp_path, monkeypatch, request):
     def claim(*, has_gpu=True, tags=None):
         return queue.claim(
             tags=tags or worker_tags,
-            has_gpu=has_gpu, capacity=CAPACITY, cpu_tiers=TIERS,
+            has_gpu=has_gpu, capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
         )
 
     return queue, publish, claim, host

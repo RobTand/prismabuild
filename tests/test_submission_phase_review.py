@@ -1,4 +1,6 @@
 """Review regressions for submission diagnostics and publication safety (#1936)."""
+
+from admitted_queue_fixture import simulated_capacity
 import errno
 import json
 import os
@@ -111,7 +113,7 @@ def test_timed_retry_supersession_keeps_closed_fields_and_original_timing(queue,
     with submission_timing.SubmissionTimings().activate():
         with submission_timing.submission_phase("queue_publication"):
             _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
     assert original is not None and original["phases"]
     clock[0] += 1
     _publish(queue)
@@ -216,7 +218,7 @@ def test_floor_cleanup_is_timed_and_receives_body_exceptions(sealed_fleet, monke
 def test_supersession_timing_survives_retirement_archive_removal(queue, clock):
     with submission_timing.SubmissionTimings().activate(), submission_timing.submission_phase("queue_publication"):
         _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
     clock[0] += 1
     _publish(queue)
     _end_claim(queue, original, "finish_retry", clock)

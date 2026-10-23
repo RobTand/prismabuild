@@ -219,7 +219,7 @@ from .holder_census import ACQUIRING_PREFIX
 from . import container_images as image_inventory
 from . import residency_map
 from . import storage_tiers
-from . import box_capacity
+from . import box_capacity, host_cap
 from . import box_window
 from . import resource_scope
 from . import posix_lock
@@ -5563,7 +5563,7 @@ class _ClaimScan:
     tags: frozenset[str]
     has_gpu: bool
     owner: str
-    capacity: Mapping[str, int] | None
+    capacity: host_cap.CappedCapacity | None
     cpu_tiers: Mapping[str, Sequence[int]] | None
     controller: cpu_admission.Controller | None
     gpu_controller: gpu_admission.Controller | None
@@ -16109,7 +16109,7 @@ class PoolQueue:
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
-        owner: str | None = None, capacity: Mapping[str, int] | None = None,
+        owner: str | None = None, capacity: host_cap.CappedCapacity | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
         ready: list[dict[str, object]] | None = None,
@@ -16128,6 +16128,8 @@ class PoolQueue:
         immediately before the intent write, so a fence that closed after the
         poll check is still observed. ``None`` preserves current behavior.
         """
+        if capacity is not None:
+            host_cap.require_capped_capacity(capacity)
         ledger = self.ledger()
         memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
                   if has_gpu else None)
@@ -16899,6 +16901,8 @@ class PoolQueue:
         latest-only ``claim-denials.json`` (:meth:`_record_claim_pass`).
         """
 
+        if kwargs.get("capacity") is not None:
+            host_cap.require_capped_capacity(kwargs["capacity"])
         holds = _TransitionHolds()
         batch = _ClaimDiagnostics(self)
         token = _CLAIM_DIAGNOSTICS.set(batch)
@@ -17972,6 +17976,7 @@ class PoolQueue:
     def _rename_and_commit_claim(
         self, tiers: _TakenClaimTiers, scan_pass: _ClaimScan,
     ) -> _CommittedClaim | _ClaimHandled:
+        host_cap.require_capped_capacity(scan_pass.capacity)
         ledger = scan_pass.ledger
         owner = scan_pass.owner
         tagset = scan_pass.tags
@@ -18646,7 +18651,7 @@ class PoolQueue:
         tags: Iterable[str] = (),
         has_gpu: bool = False,
         owner: str | None = None,
-        capacity: Mapping[str, int] | None = None,
+        capacity: host_cap.CappedCapacity | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         controller: cpu_admission.Controller | None = None,
         gpu_controller: gpu_admission.Controller | None = None,
@@ -18658,6 +18663,8 @@ class PoolQueue:
         memory: _ClaimMemory | None = None,
     ) -> _ClaimScan:
         """Prepare the ordered ready scan and its existing pass-lived views."""
+        if capacity is not None:
+            host_cap.require_capped_capacity(capacity)
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         if memory is None and has_gpu:
@@ -18963,7 +18970,7 @@ class PoolQueue:
         tags: Iterable[str] = (),
         has_gpu: bool = False,
         owner: str | None = None,
-        capacity: Mapping[str, int] | None = None,
+        capacity: host_cap.CappedCapacity | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         controller: cpu_admission.Controller | None = None,
         gpu_controller: gpu_admission.Controller | None = None,
@@ -18975,6 +18982,8 @@ class PoolQueue:
         memory: _ClaimMemory | None = None,
     ) -> dict[str, object] | None:
         """Drive one ordered scan through T, canonical M/H, commit and publication."""
+        if capacity is not None:
+            host_cap.require_capped_capacity(capacity)
         scan_pass = self._start_claim_scan(
             tags=tags, has_gpu=has_gpu, owner=owner, capacity=capacity,
             cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
@@ -22453,7 +22462,7 @@ class PoolQueue:
         has_gpu: bool = False,
         python: str | Path = sys.executable,
         timeout_s: float | None = None,
-        capacity: Mapping[str, int] | None = None,
+        capacity: host_cap.CappedCapacity | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
         containment: bool = False,
@@ -22487,6 +22496,8 @@ class PoolQueue:
         before the reaper: caller work that is due once per box per
         heartbeat, not on every poll of every loop.  It must not raise.
         """
+        if capacity is not None:
+            host_cap.require_capped_capacity(capacity)
 
         if self._sweep_due():
             if on_sweep is not None:

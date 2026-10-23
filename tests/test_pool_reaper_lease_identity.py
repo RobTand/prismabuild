@@ -1,3 +1,5 @@
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 from prismabuild import claim_identity
 """A stale claim read cannot authorize cleanup of a different leased attempt."""
@@ -22,7 +24,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
                       resources=resources, max_attempts=2, retry_safe=True)
 
     publish(key)
-    first = queue.claim(owner='original', capacity=resources)
+    first = queue.claim(owner='original', capacity=simulated_capacity(resources))
     claim_path, lease_path = queue.records.item_path(
         pool.record_store.CLAIMED,
         key,
@@ -35,13 +37,13 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
     lease_path.unlink()
     queue.ledger().release(key)
     publish(key)
-    newer = queue.claim(owner='original' if reused_owner else 'successor', capacity=resources)
+    newer = queue.claim(owner='original' if reused_owner else 'successor', capacity=simulated_capacity(resources))
     assert not claim_identity.same_claim(first, newer)
     saved = {path: path.read_bytes() for path in (claim_path, lease_path)}
 
     # One contradictory key must not prevent unrelated expired claims recovering.
     publish(healthy_key)
-    healthy = queue.claim(owner='healthy', capacity={'cpu': 2, 'mem_gb': 2})
+    healthy = queue.claim(owner='healthy', capacity=simulated_capacity({'cpu': 2, 'mem_gb': 2}))
     assert healthy['action_key'] == healthy_key
     if pending_finish:
         first['finish_pending'] = {'status': 'executed', 'detail': {'returncode': 0}}

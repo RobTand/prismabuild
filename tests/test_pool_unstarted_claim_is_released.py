@@ -30,6 +30,8 @@ is not knowable across boxes.  It stops the taking from destroying the work.
 Issue #222.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -74,7 +76,7 @@ def test_a_claim_whose_lease_never_arrived_is_released(
         retry_safe=True,
     )
     assert queue.claim(owner="sparklina:43944:a4bcd411",
-                       capacity={"cpu": 1}) is not None
+                       capacity=simulated_capacity({"cpu": 1})) is not None
     # The claimant blocked between the rename and ``write_lease``.
     queue.records.lease_path(KEY).unlink()
 
@@ -110,7 +112,7 @@ def test_the_release_is_recorded_where_an_investigator_looks(
         max_attempts=1,
         retry_safe=True,
     )
-    assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
+    assert queue.claim(owner="sparklina:1:a", capacity=simulated_capacity({"cpu": 1})) is not None
     queue.records.lease_path(KEY).unlink()
 
     _reap_later(queue)
@@ -138,7 +140,7 @@ def test_a_lease_that_expired_is_still_a_charged_attempt(
         max_attempts=4,
         retry_safe=True,
     )
-    assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
+    assert queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1})) is not None
     # The lease is there and stale -- the shape of a worker that died running.
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]
@@ -171,7 +173,7 @@ def test_a_finisher_that_died_holding_the_claim_keeps_its_outcome(
         max_attempts=4,
         retry_safe=True,
     )
-    claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    claimed = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     # The finisher's own attempt, published before it entombed the claim.
     queue.archive_attempt(
@@ -207,7 +209,7 @@ def test_a_withdrawn_claim_is_never_released_back_into_the_queue(
         max_attempts=3,
         retry_safe=True,
     )
-    claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    claimed = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     original = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
     queue.withdraw(KEY, signal_child=False)
@@ -254,7 +256,7 @@ def test_a_claim_lost_before_its_record_was_rewritten_is_released(
         max_attempts=1,
         retry_safe=True,
     )
-    assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
+    assert queue.claim(owner="sparklina:1:a", capacity=simulated_capacity({"cpu": 1})) is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(path.read_text())
     for field in ("claimed_by", "claimed_unix", "claimed_host"):

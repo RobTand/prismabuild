@@ -5,6 +5,8 @@ but the copy is a preference, never admission: a fit host without one
 still claims, and a row without a set keeps the prior order exactly.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -362,7 +364,7 @@ def resident_gang(fleet, tmp_path, monkeypatch):
     def gclaim(host, *, advance=0.01):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(advance)
-        result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+        result = queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
                              has_gpu=True, tags=["gb10", host, _gang.TAG],
                              cpu_sampler=lambda: cpu_sample(clock, readings),
                              gpu_sampler=lambda: gpu_sample(sample, readings))

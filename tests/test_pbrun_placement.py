@@ -1,6 +1,8 @@
 """Where an action may run is derived from the checkout, not asked of the caller."""
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 from submission_support import patch_store
 from submission_support import refusal_value
@@ -2430,7 +2432,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
         row,
     )
     item = queue.claim(tags=["gb10", "local-dependency-v1"], has_gpu=False,
-                       capacity={"cpu": 1, "mem_gb": 4})
+                       capacity=simulated_capacity({"cpu": 1, "mem_gb": 4}))
     assert item is not None
     outcome = queue.execute(item, heartbeat_s=0.05)
     assert outcome["status"] == "executed" and outcome["returncode"] == 0
@@ -2823,7 +2825,7 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
         alias.unlink()
     assert target.is_file()
     item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1, "mem_gb": 4})
+                       capacity=simulated_capacity({"cpu": 1, "mem_gb": 4}))
     if not present:
         assert item is None
         assert ready.read_bytes() == before
@@ -2986,7 +2988,7 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
         alias.unlink()
     assert target.is_file()
     item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1, "mem_gb": 4})
+                       capacity=simulated_capacity({"cpu": 1, "mem_gb": 4}))
     if not present:
         assert item is None
         assert ready.read_bytes() == before
@@ -3106,7 +3108,7 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     if case == "missing":
         alias.unlink()
     item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1, "mem_gb": 4})
+                       capacity=simulated_capacity({"cpu": 1, "mem_gb": 4}))
     if case == "missing":
         assert item is None
         assert ready.read_bytes() == before
@@ -3262,7 +3264,7 @@ def test_raw_directory_suffix_preserves_real_copy_layout(raw_copy_submission, mo
     submit, queue, work, raw, content = raw_copy_submission
     row = submit(mode)
     item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
-                       capacity={"cpu": 1, "mem_gb": 4})
+                       capacity=simulated_capacity({"cpu": 1, "mem_gb": 4}))
     assert item is not None
     outcome = queue.execute(item, heartbeat_s=0.05)
     queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)

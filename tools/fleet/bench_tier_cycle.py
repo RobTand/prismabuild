@@ -100,6 +100,9 @@ MANIFEST = "9" * 64
 DIGEST = "a" * 64
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def _key(label: str) -> str:
     return hashlib.sha256(f"bench-992:{label}".encode()).hexdigest()
 
@@ -266,7 +269,7 @@ def _dead_action(queue: pool.PoolQueue, key: str, status: str) -> None:
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
                   resources={"cpu": 1}, max_attempts=1)
-    claimed = queue.claim(capacity={"cpu": 4})
+    claimed = queue.claim(**capped_simulation_parameters(queue, {"cpu": 4}))
     assert claimed is not None and claimed["action_key"] == key, claimed
     queue.finish(key, status=status,
                  detail={"returncode": 0 if status == "executed" else 1})

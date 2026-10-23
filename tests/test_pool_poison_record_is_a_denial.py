@@ -17,6 +17,8 @@ not merely survive the poison, it went on to the next record.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -133,7 +135,7 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
         resources={'cpu': 1},
     )
 
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
     # One poll, and it did both things: filed the poison as a denial and
     # carried straight on to the good record.
     assert claimed is not None and claimed["action_key"] == GOOD
@@ -181,7 +183,7 @@ def test_a_foreign_resources_block_is_a_denial_and_the_poll_carries_on(
         resources={'cpu': 1},
     )
 
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
     assert claimed is not None and claimed["action_key"] == GOOD
     denial = _denial(queue, POISON)
     assert denial is not None and denial["reason"] == "malformed_demand"
@@ -212,7 +214,7 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
         resources={'cpu': 1},
     )
 
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
     assert claimed is not None and claimed["action_key"] == GOOD
     denial = _denial(queue, CONSUMER)
     assert denial is not None
@@ -256,7 +258,7 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
         resources={'cpu': 1},
     )
 
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
     assert claimed is not None and claimed["action_key"] == GOOD
     denial = _denial(queue, CONSUMER)
     assert denial is not None

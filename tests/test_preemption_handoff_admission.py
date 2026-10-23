@@ -3,6 +3,8 @@
 Private queues and logical CPU/memory tokens; no payloads or real stalls.
 Events hold one handoff open while a separate queue instance tries to claim.
 """
+
+from admitted_queue_fixture import simulated_capacity
 import json
 import multiprocessing
 import os
@@ -35,7 +37,7 @@ def publish(q, key, memory, priority):
 
 
 def claim(q):
-    return q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample)
+    return q.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample)
 
 
 def _idle_sample():

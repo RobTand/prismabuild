@@ -5,6 +5,8 @@ failure, spent acquisition handles, and idempotent token release. They do
 not exercise membership commands, attempt handoff, or broker containment.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -29,7 +31,7 @@ def _box(queue: pool.PoolQueue) -> None:
 
 
 def _claim(queue: pool.PoolQueue, **extra):
-    return queue.claim(owner="worker:1:abcd0001", capacity=dict(CAPACITY),
+    return queue.claim(owner="worker:1:abcd0001", capacity=simulated_capacity(dict(CAPACITY)),
                        **extra)
 
 

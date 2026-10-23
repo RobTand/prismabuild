@@ -1,3 +1,5 @@
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import claim_identity
 """A withdrawal already superseded cannot mutate the successor claim (#318)."""
 from prismabuild import census as fleet_census
@@ -21,7 +23,7 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
                       resources={"cpu": 1}, max_attempts=2, retry_safe=True)
 
     publish()
-    first = queue.claim(owner="first", capacity={"cpu": 1})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 1}))
     write = pool.immutable_files.write_json_atomic
     successor = {}
 
@@ -35,7 +37,7 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
             # annotation of that same withdrawn record.
             queue.finish(KEY, status="withdrawn", claim_snapshot=first)
             publish()
-            successor.update(queue.claim(owner="second", capacity={"cpu": 1}))
+            successor.update(queue.claim(owner="second", capacity=simulated_capacity({"cpu": 1})))
 
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', advance_after_marker)
     monkeypatch.setattr(pool, "find_launcher_pids", lambda key: [])
@@ -160,7 +162,7 @@ def test_cancelled_cleanup_does_not_conclude_a_successor(tmp_path, monkeypatch, 
                       checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py",
                       resources={"cpu": 1})
     publish()
-    first = queue.claim(owner="first", capacity={"cpu": 1})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 1}))
     queue.withdraw(KEY, signal_child=False)
     cleanup = queue.cleanup_action_containers
     successor = {}
@@ -169,7 +171,7 @@ def test_cancelled_cleanup_does_not_conclude_a_successor(tmp_path, monkeypatch, 
             successor["advancing"] = True
             queue.finish(KEY, status="withdrawn", claim_snapshot=first)
             publish()
-            successor.update(queue.claim(owner="second", capacity={"cpu": 1}))
+            successor.update(queue.claim(owner="second", capacity=simulated_capacity({"cpu": 1})))
         return cleanup(record, **kwargs)
     monkeypatch.setattr(queue, "cleanup_action_containers", advance_during_cleanup)
     if operation == "finish":

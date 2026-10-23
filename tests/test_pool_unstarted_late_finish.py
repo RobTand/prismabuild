@@ -1,4 +1,6 @@
 """A released non-attempt cannot occupy the successor's execution history (#234)."""
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 import json
 from pathlib import Path
@@ -23,7 +25,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     queue.publish(action_key=key, cas_root=tmp_path / 'cas',
                   checkout_root=tmp_path / 'checkout', worker_script=tmp_path / 'worker.py',
                   resources={'cpu': 1}, max_attempts=1, retry_safe=True)
-    first = queue.claim(owner='original', capacity={'cpu': 1})
+    first = queue.claim(owner='original', capacity=simulated_capacity({'cpu': 1}))
     assert first is not None
     # The supported missing-lease recovery shape, as in the #222 regression.
     # This models a lost/stalled publication, not a real NFS outage.
@@ -33,7 +35,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
         FleetClock(source=lambda: later).install(patch, scope="pool")
         assert queue.reap_stale() == [key]
     if successor_state == pool.record_store.CLAIMED:
-        successor = queue.claim(owner='successor', capacity={'cpu': 1})
+        successor = queue.claim(owner='successor', capacity=simulated_capacity({'cpu': 1}))
         assert successor is not None
         paths = (queue.records.item_path(
             pool.record_store.CLAIMED,
@@ -64,7 +66,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert queue.ledger().held(
     ) == ({'cpu': 1} if successor_state == pool.record_store.CLAIMED else {})
     if successor_state == pool.record_store.READY:
-        successor = queue.claim(owner='successor', capacity={'cpu': 1})
+        successor = queue.claim(owner='successor', capacity=simulated_capacity({'cpu': 1}))
         assert successor is not None
 
     ending = queue.finish(key, status='executed', detail={'returncode': 0,
@@ -90,7 +92,7 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
     with monkeypatch.context() as patch:
         FleetClock(source=lambda: later).install(patch, scope="pool")
         assert queue.reap_stale() == [key]
-    successor = queue.claim(owner='successor', capacity=first['resources'])
+    successor = queue.claim(owner='successor', capacity=simulated_capacity(first['resources']))
     assert successor is not None
     queue._start_resource_scope(successor)
     saved = {p: p.read_bytes() for p in (

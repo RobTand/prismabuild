@@ -1,3 +1,5 @@
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import claim_identity
 """A replaced finisher releases only its own scope, including after a crash."""
 import json
@@ -19,7 +21,7 @@ def _replaced_scope(scoped, monkeypatch):
     queue.publish(action_key=key, cas_root=first['cas_root'],
                   checkout_root=first['checkout_root'], worker_script=first['worker_script'],
                   resources=first['resources'], max_attempts=2, retry_safe=True)
-    newer = queue.claim(owner='newer-attempt', capacity=first['resources'])
+    newer = queue.claim(owner='newer-attempt', capacity=simulated_capacity(first['resources']))
     assert newer is not None
     queue._start_resource_scope(newer)
     assert not claim_identity.same_claim(first, newer)
@@ -292,12 +294,12 @@ def test_pending_late_cleanup_blocks_a_new_claim_without_changing_its_ready_byte
                  claim_snapshot=newer)
     ready_path = queue.records.item_path(pool.record_store.READY, newer['action_key'])
     ready = ready_path.read_bytes()
-    assert queue.claim(owner='third-attempt', capacity=newer['resources']) is None
+    assert queue.claim(owner='third-attempt', capacity=simulated_capacity(newer['resources'])) is None
     assert ready_path.read_bytes() == ready and pending.exists()
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', request)
     assert queue.sweep_finish_tombstones() == [first['action_key']]
     assert ready_path.read_bytes() == ready
-    assert queue.claim(owner='third-attempt', capacity=newer['resources']) is not None
+    assert queue.claim(owner='third-attempt', capacity=simulated_capacity(newer['resources'])) is not None
 
 
 def test_late_finish_reconciles_an_interrupted_creation_by_exact_nonce(scoped, monkeypatch):

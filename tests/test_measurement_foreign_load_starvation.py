@@ -23,6 +23,8 @@ withhold-then-admit behavior, and a drain that is really pending -- the busy
 is on a held CPU -- admits after the drain as before.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
@@ -84,7 +86,7 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 
 def _claim(q, capacity, *, tiers, cpu_sampler):
-    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = q.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     return None if item is None else item["action_key"]
 
 

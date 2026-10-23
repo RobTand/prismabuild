@@ -25,6 +25,8 @@ not be dropped for not fitting yet (#1230 kept it only when it fit then).
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
 import hashlib
@@ -146,7 +148,7 @@ def box(tmp_path: Path, monkeypatch):
                                    "scope_id": record["scope_unit"], "complete": True})
 
     def claim():
-        return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
+        return _key_of(queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
                                    tags=[HOST, "gb10"], cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler))
 
@@ -234,7 +236,7 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
                   worker_script="/w.py", priority=-10, resources=dict(G2))
     with held_transition(queue, busy_row):
         _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
-        claimed = queue.claim(has_gpu=True, capacity=capacity)
+        claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(capacity))
         assert claimed is None, (
             f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
             "whose holder released after its room was read")
@@ -246,7 +248,7 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
         assert deferred["reason"] == "deferred_for_ready_gpu_row"
         assert deferred["evidence"]["gpu_row"] == busy_row[:12]
         assert deferred["evidence"]["kept_for"] == "transition_busy"
-    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == busy_row
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(capacity))["action_key"] == busy_row
 
 
 def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
@@ -276,7 +278,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
         queue.record_pass(row)
     now[0] += pool.WITHHOLD_CEILING_S + 1.0
     _release_when(monkeypatch, queue, row, "reservation_unavailable", holder)
-    claimed = queue.claim(has_gpu=True, capacity=capacity)
+    claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(capacity))
     assert claimed is None, (
         f"claimed {claimed and claimed['action_key'][:4]} into the boundary "
         "the +1 row was refused for")
@@ -286,7 +288,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
     deferred = _denial(queue, lower)
     assert deferred["reason"] == "deferred_for_ready_gpu_row"
     assert deferred["evidence"]["kept_for"] == "reservation_unavailable_past_ceiling"
-    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == row
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(capacity))["action_key"] == row
 
 
 def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
@@ -380,7 +382,7 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
         return key
 
     def claim():
-        item = queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity,
+        item = queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=simulated_capacity(capacity),
                            cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
                            gpu_sampler=idle_gpu_sample)
         return None if item is None else item["action_key"]

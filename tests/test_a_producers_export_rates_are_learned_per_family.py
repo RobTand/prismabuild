@@ -22,6 +22,8 @@ export's completion is fed through ``PoolQueue._learn_export``, the hook its
 resource-scope cleanup calls, with its landing time stated.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
@@ -79,7 +81,7 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
 
 def _claim_producer(queue: pool.PoolQueue, monkeypatch, owner: str) -> dict:
     cpu_sampler = al._sample(psi=0.)
-    claimed = queue.claim(owner="spool-producer", capacity=al.CAPACITY,
+    claimed = queue.claim(owner="spool-producer", capacity=simulated_capacity(al.CAPACITY),
                           cpu_tiers=al.CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     return claimed

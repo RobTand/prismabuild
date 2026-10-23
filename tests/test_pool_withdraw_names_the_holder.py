@@ -22,6 +22,8 @@ Issue #271.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import socket
@@ -78,7 +80,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
         with mock.patch.object(pool.immutable_files, 'write_json_atomic',
                                dies_before_naming_itself):
             with pytest.raises(_ClaimantDied):
-                q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity=DEMAND)
+                q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity=simulated_capacity(DEMAND))
 
     # The window as the claimant left it.  If these stop holding, the window
     # has moved and everything below is about something else.

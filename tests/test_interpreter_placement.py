@@ -8,6 +8,8 @@ interpreter exists", which is how CPU-only work pinned itself onto the GPU
 hosts and idled both GPUs for 100 minutes on 2026-09-28.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from prismabuild import submission as submit_core
 
@@ -206,7 +208,7 @@ def test_the_claim_denies_an_interpreter_this_box_does_not_have(tmp_path):
         interpreter='/no/such/bin/python',
     )
 
-    assert queue.claim(capacity=CAPACITY,
+    assert queue.claim(capacity=simulated_capacity(CAPACITY),
                        tags=[contracts.INTERPRETER_TAG, "gb10"]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "interpreter_not_present"
@@ -222,7 +224,7 @@ def test_the_claim_takes_an_interpreter_this_box_has(tmp_path):
         interpreter=sys.executable,
     )
 
-    claimed = queue.claim(capacity=CAPACITY,
+    claimed = queue.claim(capacity=simulated_capacity(CAPACITY),
                           tags=[contracts.INTERPRETER_TAG, "gb10"])
 
     assert claimed is not None
@@ -423,7 +425,7 @@ def test_local_dependency_requirement_guards_claim_before_attempt(tmp_path, targ
     ActionRows(q).publish(key, resources={'cpu': 1}, local_dependencies={str(dependency): 'path'})
     before = _item_of(q, key)
     assert local_dependencies.TAG in before["tags"]
-    item = q.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    item = q.claim(tags=[local_dependencies.TAG], capacity=simulated_capacity({"cpu": 1}))
     if missing:
         assert item is None
         assert _item_of(q, key) == before
@@ -505,7 +507,7 @@ def test_raw_file_suffix_is_absent_at_offer_and_claim(tmp_path, kind, suffix):
     key = "f" * 64
     ActionRows(queue).publish(key, resources={'cpu': 1}, local_dependencies=requirements)
     before = _item_of(queue, key)
-    item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    item = queue.claim(tags=[local_dependencies.TAG], capacity=simulated_capacity({"cpu": 1}))
     assert item is None
     assert answers == {invalid: "absent"}
     assert placeable is False

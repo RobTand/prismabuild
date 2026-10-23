@@ -105,7 +105,7 @@ def _cleanup(record: dict, detail: dict) -> dict:
     from .resource_scope import scope_path_matches
     _require(scope.get("action_key") == key and scope.get("scope_id") == unit
              and isinstance(scope.get("cgroup_path"), str)
-             and scope_path_matches(scope["cgroup_path"], unit),
+             and scope_path_matches(scope["cgroup_path"], unit, host=host),
              "scope identity differs from the failed attempt")
     _require(cleanup.get("complete") is True and cleanup.get("nonce") == nonce,
              "exact scope cleanup is incomplete")

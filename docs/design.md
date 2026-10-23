@@ -6301,8 +6301,8 @@ host cgroup memory and GPU power.
 
 A roster entry may declare `cap: {cpus: "4-7,12-15", mem_gb: 32,
 slice: "prismabuild.slice"}`. The slice is a top-level system slice. The
-supervisor, its workers, the broker and all broker-created action cgroups
-share that slice. Uncapped hosts retain their existing capacity policy.
+supervisor, its workers, the broker, client updater, movement publisher and
+all broker-created action cgroups share that slice. Uncapped hosts retain their existing capacity policy.
 
 `host_cap.enforce_host_cap` is the common final clamp used by
 `worker_loop.observed_claim_capacity`, including private executable callers.
@@ -6324,9 +6324,21 @@ publish `observed_detail.host_cap_refusal`; `pbstatus` reports `refused` and
 the reason. The worker skips admission on refusal and rechecks the same clamp
 at the final claim boundary. A shrinking envelope refuses that claim.
 
+The clamp alone mints immutable `CappedCapacity` values. Claim and admission
+check their exact type and a module-private identity registry before queue I/O;
+plain mappings, subclasses, copied, pickled or forged instances refuse.
+Missing capacity remains a refusal. Ordinary workers and private tools share
+`claim_capacity_fence`, which rechecks both the cap and maintenance under the
+last claim transition. Both benchmark entrypoints use that same private path. Private simulation
+drivers retain their declared geometry through `capped_simulation_parameters`;
+it mints via the same live clamp and supplies the same final fence.
+
 `install_supervisor_unit.sh --system --slice NAME.slice --cpus CPU-LIST
 --memory-gb N` installs a system supervisor with `User=rob`, `Slice` and
-`AllowedCPUs`, the aggregate cap slice, and the broker drop-in. `--print`
+`AllowedCPUs`, the aggregate cap slice, and broker, client-updater and
+movement-publisher drop-ins. The ancillary installers also copy the installed
+`/etc/prismabuild/host-cap.conf`, so either installation order retains their
+containment and individual memory/task limits. `--print`
 renders the units without installation. Both supervisor modes keep cooperative
 shutdown and explicit `--systemd` startup ownership. A stopped system unit
 also suppresses cron startup. The broker's per-host `PB_SCOPE_PARENT` setting
@@ -6334,6 +6346,9 @@ supplies `resource_broker.py --scope-parent`, defaulting to `prismabuild.slice`.
 The action-and-nonce scope identifier stays unchanged. The actual kernel unit
 replaces its `prismabuild-` prefix with the configured parent prefix; path
 validators require that exact parent, child and identity relationship.
+Creation, adoption and recovery derive the permitted parent from the host
+roster. A broker reply cannot choose another parent. Receipt reconciliation
+uses the claiming host's roster entry, even when run on another host.
 
 Roster `status: enrolling` requires the same reason, author and timestamp as
 other non-active declarations. Its supervisor runs, but publication preflight,

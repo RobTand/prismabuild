@@ -1,6 +1,8 @@
 """Untrusted IPC and recovery cannot turn supersession into execution or follow."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 
 import pytest
@@ -46,7 +48,7 @@ def test_malformed_ipc_refuses_without_following_or_changing_queue_state(
     elif damage == "no_generation":
         wire["generation"] = None
     else:
-        claim = queue.claim(owner="successor", capacity=DEMAND)
+        claim = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
         assert claim is not None
         path = queue.finish(KEY, status="executed", claim_snapshot=claim)
         wire["landed"] = {"path": str(path), "record": json.loads(path.read_bytes())}

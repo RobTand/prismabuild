@@ -8,6 +8,8 @@ tolerates both.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -62,7 +64,7 @@ def _requeued_by_finish(q: pool.PoolQueue, key: str) -> dict:
         resources={'cpu': 1},
         tags=[_tag(key)],
     )
-    claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
+    claimed = q.claim(tags=[_tag(key)], capacity=simulated_capacity({"cpu": 1}),
                       cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     q.finish(key, status="failed", detail={"returncode": 3},
@@ -80,7 +82,7 @@ def _requeued_by_the_reaper(q: pool.PoolQueue, key: str) -> dict:
         resources={'cpu': 1},
         tags=[_tag(key)],
     )
-    claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
+    claimed = q.claim(tags=[_tag(key)], capacity=simulated_capacity({"cpu": 1}),
                       cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     assert q.reap_stale(timeout_s=-1.0) == [key]

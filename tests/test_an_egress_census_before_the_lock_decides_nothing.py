@@ -15,6 +15,8 @@ reconciliation), so no test sleeps.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 import os
 from pathlib import Path
@@ -151,7 +153,7 @@ def _land(queue: pool.PoolQueue, stage: Path, root: Path) -> list[Path]:
                              "range_start_bytes": 0,
                              "range_end_bytes": storage_tiers.GIB},
                   max_attempts=1, retry_safe=False)
-    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == MOVER
     queue.record_move(MOVER, {
         "consumer_action_key": CONSUMER, "tier_id": TIER,

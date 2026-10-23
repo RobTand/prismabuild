@@ -1,4 +1,6 @@
 """Exact publication/lock/restart boundary for the UNKNOWN-first #1419 slice."""
+
+from admitted_queue_fixture import simulated_capacity
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -32,7 +34,7 @@ def test_stale_prefetch_cannot_omit_an_elected_measurement(fleet):
     lower = publish("omitted-measurement", timeout_s=5)
     _observe_real_sharing_permission(fleet, lower)
     candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
-    result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+    result = queue.claim(capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120}),
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
                          adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"],
                          ready=[candidate],
@@ -122,7 +124,7 @@ def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
     lower = publish("busy-M-lower")
     candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
     def candidate_only():
-        return queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+        return queue.claim(capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120}),
                            cpu_tiers={"preferred": list(range(20)), "fallback": []},
                            adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"],
                            ready=[candidate],
@@ -201,7 +203,7 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
         try:
             start.wait(timeout=5)
             return pool.PoolQueue(queue.root).claim(
-                capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+                capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120}),
                 cpu_tiers={"preferred": list(range(20)), "fallback": []},
                 adaptive_cpu=True, has_gpu=True, tags=["gb10", host], ready=[row],
                 cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
@@ -277,7 +279,7 @@ def test_locked_authoritative_retirement_allows_lower_progress(fleet, ending):
     else:
         tick(11)
     candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
-    result = queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+    result = queue.claim(capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120}),
                          cpu_tiers={"preferred": list(range(20)), "fallback": []},
                          adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
                          cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
@@ -295,7 +297,7 @@ def test_census_cap_is_unknown_not_an_empty_election(fleet, monkeypatch):
 
 
 def _legacy_claim(queue, row):
-    return queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+    return queue.claim(capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120}),
                        cpu_tiers={"preferred": list(range(20)), "fallback": []},
                        adaptive_cpu=False, has_gpu=True, tags=["gb10", "sparklina"], ready=[row])
 

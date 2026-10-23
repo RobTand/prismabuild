@@ -124,6 +124,10 @@ Unit=prismabuild-movement-publish.service
 WantedBy=timers.target
 UNIT
 chmod 0644 /etc/systemd/system/prismabuild-movement-publish.{service,timer}
+if [ -f /etc/prismabuild/host-cap.conf ]; then
+    install -d /etc/systemd/system/prismabuild-movement-publish.service.d
+    install -m 0644 /etc/prismabuild/host-cap.conf /etc/systemd/system/prismabuild-movement-publish.service.d/10-host-cap.conf
+fi
 systemctl daemon-reload
 systemctl enable --now prismabuild-movement-publish.timer
 systemctl start prismabuild-movement-publish.service || true

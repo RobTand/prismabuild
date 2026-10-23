@@ -14,6 +14,8 @@ the claim unchanged, a claim without enough of it is refused, and a producer
 whose claimed row did not reserve its window refuses to spool.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
@@ -122,7 +124,7 @@ def test_a_claim_reserves_spool_on_a_box_that_declares_it(tmp_path):
         checkout_root=str(Path(queue.root).parent / 'checkout'),
         resources={'cpu': 1, 'mem_gb': 1, KIND: 3},
     )
-    claimed = queue.claim(owner="w", capacity={"cpu": 2, "mem_gb": 4, KIND: 5})
+    claimed = queue.claim(owner="w", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4, KIND: 5}))
     assert claimed is not None and claimed["resources"][KIND] == 3
     ledger = queue.ledger()
     assert ledger.capacity()[KIND] == 5
@@ -146,7 +148,7 @@ def test_a_box_that_declares_no_spool_never_fits_and_placement_calls_it_unknown(
         resources=intent['resources'],
     )
     # ... and every claim refuses it for want of the kind.
-    assert queue.claim(owner="w", capacity={"cpu": 2, "mem_gb": 4}) is None
+    assert queue.claim(owner="w", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4})) is None
     local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     denial = next(iter(pool.cpu_admission.read_json(local)["records"].values()))
     assert denial["reason"] == "never_fits_capacity"
@@ -184,7 +186,7 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
               worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
               checkout_root=str(tmp_path / "mover-checkout"),
               resources=resources, produced_output_template=template)
-    claimed = q.claim(owner="finite-producer", capacity=capacity)
+    claimed = q.claim(owner="finite-producer", capacity=simulated_capacity(capacity))
     assert claimed is not None and claimed["action_key"] == owner
     control = fx._broker_control(q, owner)
     po.declare_template(q.root, template)

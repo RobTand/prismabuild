@@ -9,6 +9,8 @@ ages the item: the box does other work while the tier is busy.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from prismabuild import funding
@@ -121,7 +123,7 @@ def test_mint_follows_discovery_down_as_well_as_up(queue: pool.PoolQueue) -> Non
 def test_claim_takes_tier_tokens_and_finish_returns_them(queue: pool.PoolQueue) -> None:
     queue.tier(TIER).mint({'stage_gib': 2, 'fill_mb_s_pool_side': 5})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 2, FILL: 5})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None and claimed["action_key"] == KEY_A
     assert claimed["tier_reservations"] == {
         TIER: {"fill_mb_s_pool_side": 5, "stage_gib": 2}}
@@ -171,7 +173,7 @@ def test_finish_returns_tier_tokens_through_the_output_aware_release(
 
     queue.tier(TIER).mint({'stage_gib': 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     monkeypatch.setattr(
         funding.FundingLedger, "output_keep_names_for_owner",
@@ -194,7 +196,7 @@ def test_tier_shortage_denies_without_holding_the_host_or_aging(
     if minted:
         queue.tier(TIER).mint(minted)
     _publish(queue, KEY_A, demand)
-    assert queue.claim(owner="mover", capacity={"cpu": 1}) is None
+    assert queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1})) is None
     assert queue.ledger().held() == {}, "host tokens must be returned on a tier shortage"
     assert tier_holdings.for_action(queue, KEY_A) == {}
     assert queue.passes(KEY_A) == 0, "a cluster-scoped shortage must not withhold this box"
@@ -210,18 +212,18 @@ def test_busy_tier_denies_the_second_mover_and_frees_it_after_the_first(
     queue.tier(TIER).mint({'stage_gib': 2})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 2}, priority=1)
     _publish(queue, KEY_B, {"cpu": 1, STAGE: 1})
-    first = queue.claim(owner="one", capacity={"cpu": 2})
+    first = queue.claim(owner="one", capacity=simulated_capacity({"cpu": 2}))
     assert first is not None and first["action_key"] == KEY_A
     # The tier is full; the second item is denied, not aged, and the box
     # keeps its second CPU free for anything else.
-    assert queue.claim(owner="two", capacity={"cpu": 2}) is None
+    assert queue.claim(owner="two", capacity=simulated_capacity({"cpu": 2})) is None
     assert queue.ledger().held() == {"cpu": 1}
     assert queue.passes(KEY_B) == 0
     denial = _denial(queue, KEY_B)
     assert denial is not None and denial["reason"] == "tier_reservation_unavailable"
     assert denial["evidence"]["tier_shortage"]["available"] == {}
     queue.finish(KEY_A, status="executed", claim_snapshot=first)
-    second = queue.claim(owner="two", capacity={"cpu": 2})
+    second = queue.claim(owner="two", capacity=simulated_capacity({"cpu": 2}))
     assert second is not None and second["action_key"] == KEY_B
     assert tier_holdings.for_action(queue, KEY_B) == {TIER: {'stage_gib': 1}}
 
@@ -234,12 +236,12 @@ def test_losing_claimant_returns_only_its_own_tier_handle(queue: pool.PoolQueue)
 
     def intent(key: str, *, owner: str) -> None:
         if owner == "winner":
-            observed["contender"] = queue.claim(owner="loser", capacity={"cpu": 1})
+            observed["contender"] = queue.claim(owner="loser", capacity=simulated_capacity({"cpu": 1}))
             observed["tier_held_during"] = dict(queue.tier(TIER).holdings())
         original_intent(key, owner=owner)
 
     queue._write_claim_intent = intent  # type: ignore[method-assign]
-    winner = queue.claim(owner="winner", capacity={"cpu": 1})
+    winner = queue.claim(owner="winner", capacity=simulated_capacity({"cpu": 1}))
     assert winner is not None and winner["claimed_by"] == "winner"
     assert observed["contender"] is None
     assert observed["tier_held_during"] == {"stage_gib": 1}
@@ -251,7 +253,7 @@ def test_losing_claimant_returns_only_its_own_tier_handle(queue: pool.PoolQueue)
 def test_reap_stale_returns_tier_tokens_with_the_host_tokens(queue: pool.PoolQueue) -> None:
     queue.tier(TIER).mint({'stage_gib': 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]
     assert queue.ledger().held() == {}
@@ -266,7 +268,7 @@ def test_withdrawing_a_claimed_action_returns_tier_tokens_when_its_owner_conclud
 ) -> None:
     queue.tier(TIER).mint({'stage_gib': 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     queue.withdraw(KEY_A)
     # A withdrawal marks; the owner concludes the claimed attempt and that
@@ -295,7 +297,7 @@ def test_reclaim_terminal_reservation_reaches_tier_tokens_no_box_holds(
 ) -> None:
     queue.tier(TIER).mint({'stage_gib': 1})
     _publish(queue, KEY_A, {"cpu": 1, STAGE: 1})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None
     queue.finish(KEY_A, status="executed", claim_snapshot=claimed)
     # A pinned residency: tier tokens under a done key with no box holder.

@@ -36,6 +36,9 @@ from prismabuild.resource_scope import ResourceScope, scope_pids
 from prismabuild import submission
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def put(path, value):
     temporary = path.with_suffix(f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n")
@@ -313,7 +316,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
               worker_script=root / "unused.py", resources={"cpu": 1},
               max_attempts=2, retry_safe=True,
               container_owner=key if docker_image else None)
-    first = q.claim(owner=f"original:{os.getpid()}", capacity={"cpu": 1})
+    first = q.claim(owner=f"original:{os.getpid()}", **capped_simulation_parameters(q, {"cpu": 1}))
     assert first is not None
     scope_info = None
     if real_scope:
@@ -422,7 +425,7 @@ def peer(root, late_status, stale_claim_read=False, *, stack, real_scope=False,
     assert digest(ready) == ready_hash and digest(attempt) == attempt_hash
     assert not q.records.item_path(pool.record_store.DONE, key).exists()
     assert not q.records.item_path(pool.record_store.FAILED, key).exists()
-    successor = q.claim(owner=f"peer:{os.getpid()}", capacity={"cpu": 1})
+    successor = q.claim(owner=f"peer:{os.getpid()}", **capped_simulation_parameters(q, {"cpu": 1}))
     assert successor is not None and successor["attempts"] == 1
     assert successor["published_unix"] == first["published_unix"]
     scope_info = None

@@ -19,6 +19,8 @@ with another worker's claim.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import socket
 import sys
@@ -149,7 +151,7 @@ def test_mover_retry_preserves_range_tier_recompute_and_claim(
     assert original["recompute"] is True
 
     snap_a = queue.claim(tags=["dl380g10"], owner=f"{host}:1:ma",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_a is not None and snap_a["action_key"] == MOVER
     withdrawn, ready = _resign_handoff(queue, MOVER, snap_a, owner)
     # A mover names no plan: the window (not the withdrawal) owns mover
@@ -165,7 +167,7 @@ def test_mover_retry_preserves_range_tier_recompute_and_claim(
     assert ready["supersedes_withdrawal"]["withdrawn_by"] == owner
 
     snap_b = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mb",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     assert "tier_reservations" in snap_b
     assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
@@ -185,12 +187,12 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
 
     # The gate holds before the bytes land: ordinary work would claim.
     assert queue.claim(tags=["x86"], owner=f"{host}:1:probe",
-                       capacity={"cpu": 4, "mem_gb": 16}) is None
+                       capacity=simulated_capacity({"cpu": 4, "mem_gb": 16})) is None
     assert queue.residency_verdict(original)["state"] == "lead_not_resident"
 
     # Land the lead through the real staging records.
     snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mm",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_m is not None and snap_m["action_key"] == MOVER
     queue.record_move(MOVER, {
         "tier_id": TIER, "manifest_sha256": MANIFEST,
@@ -211,7 +213,7 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
         CONSUMER)
 
     snap_a = queue.claim(tags=["x86"], owner=f"{host}:1:ca",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_a is not None and snap_a["action_key"] == CONSUMER
     withdrawn, ready = _resign_handoff(queue, CONSUMER, snap_a, owner)
     # A membership handoff preserves its sealed plan: the same work
@@ -224,5 +226,5 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
     assert ready["resigned_by"] == owner
 
     snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:cb",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_b is not None and int(snap_b["attempts"]) == 1

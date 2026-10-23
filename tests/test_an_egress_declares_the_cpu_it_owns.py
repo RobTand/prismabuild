@@ -24,6 +24,8 @@ receipts, so there is nothing honest to price it off, and pricing it off the
 movers' copy receipts would measure the wrong node entirely (#655's lesson).
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 import pbrun
 from prismabuild import submission as submit_core
 from prismabuild import residency_plan  # noqa: E402
@@ -178,7 +180,7 @@ def _hold_one_cpu(queue: pool.PoolQueue, tiers, cpu_sampler) -> dict[str, object
     queue.publish(action_key=HOLDER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="worker.py",
                   resources={"cpu": 1})
-    claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    claim = queue.claim(capacity=simulated_capacity(CAPACITY), tags=["dl380g10"], cpu_tiers=tiers,
                         adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == HOLDER
     return claim
@@ -206,7 +208,7 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     assert row["resources"]["cpu"] == 1, row["resources"]
     assert row["resources"]["mem_gb"] == 1, row["resources"]
     queue.publish(**row)
-    claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    claim = queue.claim(capacity=simulated_capacity(CAPACITY), tags=["dl380g10"], cpu_tiers=tiers,
                         adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None, "a bounded egress must run beside one holder"
     assert claim["action_key"] == row["action_key"]
@@ -217,7 +219,7 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
                               for key, value in row["resources"].items()
                               if key != "cpu"}
     queue.publish(**unbounded)
-    assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    assert queue.claim(capacity=simulated_capacity(CAPACITY), tags=["dl380g10"], cpu_tiers=tiers,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.records.item_path(pool.record_store.READY, unbounded["action_key"]).exists()
 

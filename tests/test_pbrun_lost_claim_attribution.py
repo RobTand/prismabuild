@@ -23,6 +23,8 @@ Issue #227.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import socket
@@ -75,7 +77,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         max_attempts=1, retry_safe=True,
     )
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
-        assert q.claim(owner=f"{HELD_BY}:1:abc", capacity={"cpu": 1}) is not None
+        assert q.claim(owner=f"{HELD_BY}:1:abc", capacity=simulated_capacity({"cpu": 1})) is not None
     path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     if never_leased:
         # The lease is what says a payload was launched; this one has none.

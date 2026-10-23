@@ -7,6 +7,8 @@ executed from; dropping that identity leaks the reservation forever.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import socket
@@ -44,7 +46,7 @@ def test_finish_lost_race_releases_from_the_claim_snapshot(
         return {"status": "executed", "returncode": 0}
 
     monkeypatch.setattr(queue, "execute", claim_disappears_after_execution)
-    outcome = queue.serve_once(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
+    outcome = queue.serve_once(has_gpu=True, capacity=simulated_capacity({"gpu": 1, "mem_gb": 8}))
 
     assert outcome["status"] == "executed"
     assert queue.records.item_path(pool.record_store.DONE, KEY).exists()
@@ -61,7 +63,7 @@ def test_a_terminal_orphan_can_be_reclaimed_by_verified_key(tmp_path: Path) -> N
         worker_script="/worker.py",
         resources={"cpu": 1, "mem_gb": 3},
     )
-    claimed = queue.claim(capacity={"cpu": 1, "mem_gb": 3})
+    claimed = queue.claim(capacity=simulated_capacity({"cpu": 1, "mem_gb": 3}))
     terminal = dict(claimed)
     terminal.update({"status": "executed", "finished_host": socket.gethostname()})
     queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(terminal))
@@ -85,7 +87,7 @@ def test_reclaim_refuses_while_a_claim_is_live(tmp_path: Path) -> None:
         worker_script="/worker.py",
         resources={"cpu": 1},
     )
-    queue.claim(capacity={"cpu": 1})
+    queue.claim(capacity=simulated_capacity({"cpu": 1}))
 
     try:
         queue.reclaim_terminal_reservation(KEY)

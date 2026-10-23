@@ -12,6 +12,8 @@ refused before anything is submitted rather than after the scheduler has
 placed it.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import submission
 
 import json
@@ -651,7 +653,7 @@ def test_shared_submit_dependency_is_guarded_at_actual_claim(tmp_path, present):
     queue = pool.PoolQueue(queue_root)
     ready = queue.records.item_path(pool.record_store.READY, action["action_key"])
     before = ready.read_bytes()
-    item = queue.claim(tags=[local_dependencies.TAG], capacity={"cpu": 1})
+    item = queue.claim(tags=[local_dependencies.TAG], capacity=simulated_capacity({"cpu": 1}))
     if not present:
         assert item is None
         assert ready.read_bytes() == before

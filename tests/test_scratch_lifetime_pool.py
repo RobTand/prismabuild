@@ -1,5 +1,7 @@
 """Existing pool finalization owns scratch cleanup and the capacity barrier."""
 
+from admitted_queue_fixture import simulated_capacity
+
 from prismabuild import scratch_lifetime
 import copy
 import json
@@ -201,16 +203,16 @@ def test_unrecorded_created_leaf_after_registration_crash_is_not_adopted(lifetim
 def test_old_worker_cannot_claim_versioned_retry(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
     queue.finish(item["action_key"], status="failed", detail=outcome, claim_snapshot=item)
-    assert queue.claim(capacity=item["resources"], tags=[]) is None
+    assert queue.claim(capacity=simulated_capacity(item["resources"]), tags=[]) is None
     assert queue.records.item_path(pool.record_store.READY, item["action_key"]).exists()
     assert queue.ledger().held() == {}
-    assert queue.claim(capacity=item["resources"], tags=[contracts.SCRATCH_LIFETIME_TAG]) is not None
+    assert queue.claim(capacity=simulated_capacity(item["resources"]), tags=[contracts.SCRATCH_LIFETIME_TAG]) is not None
 
 
 def test_predecessor_late_finish_never_deletes_successor_scratch(lifetime, monkeypatch):
     queue, old, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
     queue.finish(old["action_key"], status="failed", detail=outcome, claim_snapshot=old)
-    successor = queue.claim(capacity=old["resources"], tags=[contracts.SCRATCH_LIFETIME_TAG])
+    successor = queue.claim(capacity=simulated_capacity(old["resources"]), tags=[contracts.SCRATCH_LIFETIME_TAG])
     process(monkeypatch)
     queue.execute(successor, containment=True)
     sentinel = leaf(successor) / "successor"
@@ -243,7 +245,7 @@ def test_diagnostic_publish_before_successor_registration_passes_payload_spy(
     lifetime = lifetime_state(create, calls, monkeypatch)
     queue, old, variables, outcome = launch(lifetime, monkeypatch, returncode=1)
     queue.finish(old["action_key"], status="failed", detail=outcome, claim_snapshot=old)
-    successor = queue.claim(capacity=old["resources"], tags=[contracts.SCRATCH_LIFETIME_TAG])
+    successor = queue.claim(capacity=simulated_capacity(old["resources"]), tags=[contracts.SCRATCH_LIFETIME_TAG])
     assert successor is not None
     seen = []
 
@@ -542,7 +544,7 @@ def test_old_tombstone_never_mutates_a_claimed_successors_scratch_or_capacity(li
     key = old["action_key"]
     saved = live_record(queue, old)
     queue.finish(key, status="failed", detail=outcome, claim_snapshot=old)
-    successor = queue.claim(capacity=old["resources"], tags=[contracts.SCRATCH_LIFETIME_TAG])
+    successor = queue.claim(capacity=simulated_capacity(old["resources"]), tags=[contracts.SCRATCH_LIFETIME_TAG])
     process(monkeypatch)
     queue.execute(successor, containment=True)
     sentinel = leaf(successor) / "successor"

@@ -11,6 +11,8 @@ already has.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
 import json
@@ -203,7 +205,7 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
                       checkout_root=tmp_path / "checkout",
                       worker_script=str(tmp_path / "worker.py"),
                       resources={"cpu": 1, "mem_gb": 2}, max_attempts=1)
-        item = queue.claim(capacity={"cpu": 2, "mem_gb": 4})
+        item = queue.claim(capacity=simulated_capacity({"cpu": 2, "mem_gb": 4}))
         assert item is not None and item["action_key"] == key
         record = pool.record_store.value_or_raise(
             queue.records.item(pool.record_store.CLAIMED, key),

@@ -9,6 +9,8 @@ scan's copy, which wrote the replaced generation back over it.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import os
 from pathlib import Path
@@ -95,7 +97,7 @@ def test_replacement_is_admitted_against_its_own_requirements(
 
     with monkeypatch.context() as patch:
         patch.setattr(pool.os, "rename", resubmit_then_rename)
-        assert queue.claim(capacity={"cpu": 2}) is None
+        assert queue.claim(capacity=simulated_capacity({"cpu": 2})) is None
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held() == {}
@@ -103,4 +105,4 @@ def test_replacement_is_admitted_against_its_own_requirements(
     for name, value in replacement.items():
         assert ready[name] == value
     assert queue.claim(tags=["other-host"], has_gpu=True,
-                       capacity={"cpu": 2}) is not None
+                       capacity=simulated_capacity({"cpu": 2})) is not None

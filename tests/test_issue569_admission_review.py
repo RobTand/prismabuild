@@ -6,6 +6,8 @@ here is the behavior under test, never a missing-telemetry accident.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -92,7 +94,7 @@ def test_pressure_refuses_measurement_with_complete_healthy_telemetry(
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', True))
     cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .02), psi_some)
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert (item is not None) is expect_admission
 
 
@@ -110,7 +112,7 @@ def test_pressure_refuses_unbounded_demand_with_complete_healthy_telemetry(
     cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .02), psi_some)
     publish(queue, tmp_path, resources={'gpu': 1, 'mem_gb': 1})
     gpu_sample = idle_gpu_sample()
-    item = queue.claim(has_gpu=True, capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
+    item = queue.claim(has_gpu=True, capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True,
                        cpu_sampler=cpu_sampler, gpu_sampler=lambda: gpu_sample)
     assert (item is not None) is expect_admission, [
         (record["reason"], record.get("evidence", {}).get("decision", {}).get("reason"))
@@ -135,7 +137,7 @@ def test_pressure_refuses_full_width_even_with_a_learned_cheap_profile(
     cpu_sampler = lambda: host_sample(cpus, uniform(cpus, per_cpu), psi_some)
     seed_cheap_profile(queue)
     publish(queue, tmp_path, resources={'cpu': 2, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert (item is not None) is expect_admission
 
 
@@ -157,7 +159,7 @@ def test_low_some_control_still_borrows_the_proven_idle_preferred_cpu(tmp_path, 
     designed: this is the unchanged preferred-before-fallback behavior."""
     from prismabuild import adaptive_cpu
     queue, capacity, tiers, cpu_sampler = light_preferred_box(tmp_path, monkeypatch, 0.)
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [0], 'fallback': []}
     meta = adaptive_cpu.read_json(
@@ -173,7 +175,7 @@ def test_high_some_never_shares_the_held_preferred_cpu(tmp_path, monkeypatch):
     evidence pressure has made untrustworthy."""
     from prismabuild import adaptive_cpu
     queue, capacity, tiers, cpu_sampler = light_preferred_box(tmp_path, monkeypatch, .11)
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     if item is not None:
         allocation = item['cpu_allocation']
         assert 0 not in allocation['preferred'] + allocation['fallback'], (
@@ -199,7 +201,7 @@ def test_hot_cpus_inside_the_tier_are_skipped_for_idle_ones(
     busy = {cpu: (1. if cpu < 4 else 0.) for cpu in cpus}
     cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [4, 5, 6, 7], 'fallback': []}
 
@@ -217,7 +219,7 @@ def test_a_claim_that_would_have_to_take_hot_cpus_still_refuses(
     busy = {cpu: (1. if cpu < 4 else 0.) for cpu in cpus}
     cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 8, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 def test_pinned_neighbour_outside_the_claim_still_admits(tmp_path, monkeypatch):
@@ -231,7 +233,7 @@ def test_pinned_neighbour_outside_the_claim_still_admits(tmp_path, monkeypatch):
     busy = {cpu: (1. if cpu in (8, 9, 10, 11) else 0.) for cpu in cpus}
     cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 4, 'mem_gb': 1})
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert item is not None
     assert item['cpu_allocation'] == {'preferred': [0, 1, 2, 3], 'fallback': []}
 
@@ -250,7 +252,7 @@ def test_full_host_saturation_refuses_on_occupancy_alone(tmp_path, monkeypatch):
     cpu_sampler = lambda: host_sample(cpus, uniform(cpus, .95), 0.)
     seed_cheap_profile(queue, cpu=.05)
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 def test_projected_cost_refuses_despite_pressure(tmp_path, monkeypatch):
@@ -268,7 +270,7 @@ def test_projected_cost_refuses_despite_pressure(tmp_path, monkeypatch):
     assert sum(busy.values()) == pytest.approx(6.05)
     cpu_sampler = lambda: host_sample(cpus, busy, .633)
     publish(queue, tmp_path, resources={'cpu': 6, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
 
 
 @pytest.mark.parametrize('mutation', ['missing', 'nan'])
@@ -292,4 +294,4 @@ def test_unknown_per_cpu_evidence_refuses_instead_of_admitting(
 
     cpu_sampler = mutated
     publish(queue, tmp_path, resources={'cpu': 1, 'mem_gb': 1})
-    assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None

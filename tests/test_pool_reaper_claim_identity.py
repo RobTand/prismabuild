@@ -14,6 +14,8 @@ The claim's identity decides. Two live claims of one key are the shape #61 and
 reaper's.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -47,7 +49,7 @@ def _reap_while_the_claim_turns_over(q: pool.PoolQueue, first: dict) -> dict:
             seen["done"] = True
             q.finish(KEY_A, status="failed", detail={"rc": 1},
                      claim_snapshot=first)
-            seen["retry"] = q.claim(owner="attempt-2", capacity={"cpu": 1})
+            seen["retry"] = q.claim(owner="attempt-2", capacity=simulated_capacity({"cpu": 1}))
         return out
 
     with mock.patch.object(pool.PoolQueue, "archive_attempt", archive):
@@ -69,7 +71,7 @@ def test_the_reaper_leaves_a_retry_that_claimed_under_it(
         max_attempts=4,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
     assert first is not None
 
     seen = _reap_while_the_claim_turns_over(queue, first)
@@ -105,7 +107,7 @@ def test_the_reaper_still_requeues_the_claim_it_did_judge(
         max_attempts=4,
         retry_safe=True,
     )
-    assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
+    assert queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1})) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
@@ -137,7 +139,7 @@ def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(
         max_attempts=4,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
     assert first is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
 

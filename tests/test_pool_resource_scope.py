@@ -1,4 +1,6 @@
 """A pool attempt keeps its tokens until its exact aggregate scope is empty."""
+
+from admitted_queue_fixture import simulated_capacity
 import json
 import hashlib
 import socket
@@ -36,7 +38,7 @@ def scoped(tmp_path, monkeypatch, request):
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout, worker_script='/worker.py',
                   resources=demand, max_attempts=2, retry_safe=True)
-    item = queue.claim(has_gpu='gpu' in demand, capacity=demand)
+    item = queue.claim(has_gpu='gpu' in demand, capacity=simulated_capacity(demand))
     calls = []
 
     def request(scope, op, **extra):

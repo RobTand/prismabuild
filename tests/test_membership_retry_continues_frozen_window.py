@@ -20,6 +20,8 @@ cancellation of the same shape still stops publication.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import socket
 import sys
@@ -115,7 +117,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, mover: str,
     mover_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert mover_ready
     snap = queue.claim(tags=["dl380g10"], owner=f"{host}:1:stage",
-                       capacity={"cpu": 4, "mem_gb": 16}, ready=mover_ready)
+                       capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=mover_ready)
     assert snap is not None and snap["action_key"] == mover
     start = 0 if mover == MOVER0 else SPAN
     queue.record_move(mover, {
@@ -167,7 +169,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     assert tier_loop.compose_map(queue, CONSUMER) == queue.records.residency_map_path(
         CONSUMER)
     snap_a = queue.claim(tags=["x86"], owner=f"{host}:1:ca",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_a is not None and snap_a["action_key"] == CONSUMER
 
     # The ordinary resign sequence, with a real window tick inside the
@@ -204,7 +206,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     mover1_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER1]
     assert mover1_ready
     snap_m1 = queue.claim(tags=["dl380g10"], owner=f"{host}:1:m1",
-                          capacity={"cpu": 4, "mem_gb": 16}, ready=mover1_ready)
+                          capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=mover1_ready)
     assert snap_m1 is not None and snap_m1["action_key"] == MOVER1
     queue.record_move(MOVER1, {
         "tier_id": TIER, "manifest_sha256": MANIFEST,
@@ -215,7 +217,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     assert json.loads(
         queue.records.item_path(pool.record_store.DONE, MOVER1).read_text())["status"] == "executed"
     snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:cb",
-                         capacity={"cpu": 4, "mem_gb": 16})
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
     assert snap_b is not None and int(snap_b["attempts"]) == 1
 
 
@@ -249,7 +251,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     mover0_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER0]
     assert mover0_ready
     snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mm",
-                         capacity={"cpu": 4, "mem_gb": 16}, ready=mover0_ready)
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=mover0_ready)
     assert snap_m is not None and snap_m["action_key"] == MOVER0
     requeue = queue.plan_requeue(dict(snap_m))
     queue.withdraw(MOVER0, reason=f"resign {owner}: test", by=owner,
@@ -269,7 +271,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     mover0_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER0]
     assert mover0_ready
     snap_b = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mb",
-                         capacity={"cpu": 4, "mem_gb": 16}, ready=mover0_ready)
+                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=mover0_ready)
     assert snap_b is not None and snap_b["action_key"] == MOVER0 and int(snap_b["attempts"]) == 1
     assert residency_plan.superseded(queue, plan) is None
 
