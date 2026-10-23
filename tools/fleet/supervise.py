@@ -59,6 +59,7 @@ a stopped role keeps its lock until an operator continues or terminates it.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from collections import deque
 from dataclasses import dataclass
 import fcntl
@@ -72,6 +73,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 from typing import Collection, TextIO
 
@@ -448,7 +450,8 @@ def _config(host: str) -> fleet_roster.Box:
 
 def declared_shape(host: str, override_loops: int,
                    previous: tuple[int, list[str]] | None = None, *,
-                   record: bool = True) -> tuple[int, list[str]]:
+                   record: bool = True,
+                   _defer: bool = False) -> tuple[int, list[str]]:
     """This box's target count and loop arguments, re-read every tick.
 
     The docstring above promises that the shape of the fleet is a versioned
@@ -485,7 +488,8 @@ def declared_shape(host: str, override_loops: int,
     if SPOOL_FLAG in args or any(a.startswith(SPOOL_FLAG + "=") for a in args):
         # Only a box that declares a spool budget reads anything more; every
         # other box's arguments are the file's, byte for byte (#910).
-        args = spool_declaration(host, config, args, record=record)
+        args = spool_declaration(host, config, args, record=record,
+                                 _defer=_defer)
     return (loops, args)
 
 
@@ -676,7 +680,8 @@ def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
 
 def spool_declaration(host: str, box: fleet_roster.Box,
                       args: list[str], *, statvfs=None,
-                      record: bool = True) -> list[str]:
+                      record: bool = True, _commit=None,
+                      _defer: bool = False) -> list[str]:
     """The loop arguments with ``--spool-gb`` measured, or dropped with a reason.
 
     The arguments are settled once per distinct declaration in this process
@@ -707,64 +712,179 @@ def spool_declaration(host: str, box: fleet_roster.Box,
     except ValueError as exc:
         floor_key = str(exc)
     key = (host, tuple(args), box.entry.get(LOCAL_DISK_FIELD), floor_key)
-    if key in _SPOOL_VERDICTS:
-        settled = list(_SPOOL_VERDICTS[key])
-        if (record and SPOOL_FLAG in settled
-                and int(settled[settled.index(SPOOL_FLAG) + 1]) > 0):
-            verdict = _spool_budget(host, box, args, statvfs=statvfs)
+    settled = list(_SPOOL_VERDICTS[key]) if key in _SPOOL_VERDICTS else None
+    if settled is not None and not record:
+        return settled
+    if settled is not None and (
+            SPOOL_FLAG not in settled or _spool_gb_of(settled) in (None, 0)):
+        # Refused proof is retried too: recovery must not depend on a roster
+        # edit or a supervisor restart, even at unchanged rounded capacity.
+        settled = None
+    if _defer:
+        return _without_spool(args)
+    measured_unix = time.time()
+    verdict = _spool_budget(host, box, args, statvfs=statvfs)
+    # A first deferred declaration may need the existing ledger's ceiling.
+    # This acquisition is not allowed to hold the publication/cancel fence.
+    deferred_gib = 0
+    if settled is None and verdict[0] == "wait":
+        try:
+            deferred_gib = pool.PoolQueue(_queue_root()).ledger(host).capacity().get(
+                SPOOL_KIND, 0)
+        except (OSError, pool.PoolContractError):
+            pass
+
+    # Legacy one-shot declaration retains its original fallback contract.
+    # The recurring producer must revoke explicitly: unlinking would let old
+    # workers fall back to a previously measured positive argv declaration.
+    revoke = _clear_live_spool if _commit is None else _revoke_live_spool
+
+    def settle() -> list[str]:
+        nonlocal verdict
+        if settled is not None:
             if verdict[0] == "wait" and key not in _SPOOL_LIVE:
-                # Settled before this process owned the box, and a holder has
-                # arrived since: whatever the file holds was not measured here.
-                _clear_live_spool(host)
+                revoke(host)
                 _SPOOL_LIVE[key] = "cleared"
             else:
-                _record_live_spool(host, key, verdict)
-        return settled
-    verdict = _spool_budget(host, box, args, statvfs=statvfs)
-    if verdict[0] == "offer":
-        # A verdict of "offer" means the declaration parsed.
-        declared = args[args.index(SPOOL_FLAG) + 1]
-        if int(verdict[1]) == 0 and _spool_gb_of(args) != 0:
-            verdict = ("refuse", f"{SPOOL_FLAG} {declared} measures 0 GiB: "
-                       f"{verdict[2]}")
-    if verdict[0] == "offer":
-        gib = int(verdict[1])
-        _SPOOL_VERDICTS[key] = _with_spool(args, gib)
-        _SPOOL_WAITING.pop(key, None)
-        if gib:
-            print(f"[{host}] {SPOOL_FLAG} {declared} measured {gib} GiB: "
-                  f"{verdict[2]}", flush=True)
-        if record:
+                _record_live_spool(host, key, verdict, measured_unix=measured_unix)
+            return settled
+        if verdict[0] == "offer":
+            # A verdict of "offer" means the declaration parsed.
+            declared = args[args.index(SPOOL_FLAG) + 1]
+            if int(verdict[1]) == 0 and _spool_gb_of(args) != 0:
+                verdict = ("refuse", f"{SPOOL_FLAG} {declared} measures 0 GiB: "
+                           f"{verdict[2]}")
+        if verdict[0] == "offer":
+            gib = int(verdict[1])
+            _SPOOL_VERDICTS[key] = _with_spool(args, gib)
+            _SPOOL_WAITING.pop(key, None)
             if gib:
-                _record_live_spool(host, key, verdict)
-            else:
-                _clear_live_spool(host)
-        return list(_SPOOL_VERDICTS[key])
-    # No value this process measured may stand in the file: a refused or
-    # waiting declaration leaves the loops their own arguments (#1190).
-    if record:
-        _clear_live_spool(host)
-    if verdict[0] == "refuse":
-        _SPOOL_VERDICTS[key] = _without_spool(args)
-        _SPOOL_WAITING.pop(key, None)
-        print(f"[{host}] {SPOOL_FLAG} declaration refused, so this box offers "
-              f"no {SPOOL_KIND}: {verdict[1]}", flush=True)
-        return list(_SPOOL_VERDICTS[key])
-    try:
-        total = pool.PoolQueue(_queue_root()).ledger(host).capacity().get(SPOOL_KIND, 0)
-    except (OSError, pool.PoolContractError):
-        total = 0
-    ceiling = _spool_gb_of(args)
-    if ceiling is not None:
-        total = min(ceiling, total)
-    waiting = _with_spool(args, total) if total else _without_spool(args)
-    offering = f"the ledger's current {total} GiB" if total else "none"
-    line = (f"[{host}] {SPOOL_FLAG} measurement waits: {verdict[1]}; offering "
-            f"{offering} until it can be taken")
-    if _SPOOL_WAITING.get(key) != line:
-        _SPOOL_WAITING[key] = line
-        print(line, flush=True)
-    return waiting
+                print(f"[{host}] {SPOOL_FLAG} {declared} measured {gib} GiB: "
+                      f"{verdict[2]}", flush=True)
+            if record:
+                if gib:
+                    _record_live_spool(host, key, verdict, measured_unix=measured_unix)
+                else:
+                    revoke(host)
+            return list(_SPOOL_VERDICTS[key])
+        # No value this process measured may stand in the file: a refused or
+        # waiting declaration leaves the loops their own arguments (#1190).
+        if record:
+            revoke(host)
+        if verdict[0] == "refuse":
+            refused = _without_spool(args)
+            changed = _SPOOL_VERDICTS.get(key) != refused
+            _SPOOL_VERDICTS[key] = refused
+            _SPOOL_WAITING.pop(key, None)
+            if changed:
+                print(f"[{host}] {SPOOL_FLAG} declaration refused, so this box offers "
+                      f"no {SPOOL_KIND}: {verdict[1]}", flush=True)
+            return list(_SPOOL_VERDICTS[key])
+        total = deferred_gib
+        ceiling = _spool_gb_of(args)
+        if ceiling is not None:
+            total = min(ceiling, total)
+        waiting = _with_spool(args, total) if total else _without_spool(args)
+        offering = f"the ledger's current {total} GiB" if total else "none"
+        line = (f"[{host}] {SPOOL_FLAG} measurement waits: {verdict[1]}; offering "
+                f"{offering} until it can be taken")
+        if _SPOOL_WAITING.get(key) != line:
+            _SPOOL_WAITING[key] = line
+            print(line, flush=True)
+        return waiting
+
+    if _commit is None:
+        return settle()
+    return _commit(settle, settled if settled is not None else _without_spool(args))
+
+
+class _SpoolObservationProducer:
+    """One supervisor-owned numeric disk producer, not one per worker.
+
+    Acquisition may block in statvfs or a ledger read.  Publication is separate
+    and cancellable; close does not join a stuck acquisition or permit its
+    late result to renew proof.  A stalled producer is not replaced by another
+    sampler.  Readers expire its last proof instead.
+    """
+
+    def __init__(self, host: str, override: int | None,
+                 initial: tuple[int, list[str]]) -> None:
+        self.host = host
+        self.override = override
+        self._shape = initial
+        self._interested = SPOOL_FLAG in initial[1]
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop,
+                                        name="spool-observation", daemon=True)
+
+    def start(self) -> None:
+        # Initial argv measurements and inherited files are not recurring proof.
+        # Fence them before launching workers; the first observation renews it.
+        if self._interested:
+            _revoke_live_spool(self.host)
+        self._thread.start()
+
+    def shape(self) -> tuple[int, list[str]]:
+        # Only the supervisor thread owns shape.  Observation publishes settled
+        # argument lists by replacement; reading them never waits on disk I/O.
+        self._shape = declared_shape(self.host, self.override, self._shape,
+                                     record=False, _defer=True)
+        return self._shape
+
+    def _commit(self, settle, cancelled):
+        with self._lock:
+            if self._stop.is_set():
+                return cancelled
+            return settle()
+
+    def _loop(self) -> None:
+        period = local_scratch.SPOOL_OBSERVATION_INTERVAL_S
+        deadline = time.monotonic()
+        failure = None
+        while not self._stop.wait(max(0.0, deadline - time.monotonic())):
+            try:
+                config = _config(self.host)
+                args = list(config.loop_args)
+                interested = (SPOOL_FLAG in args or any(
+                    arg.startswith(SPOOL_FLAG + "=") for arg in args))
+                with self._lock:
+                    if self._stop.is_set():
+                        return
+                    if interested != self._interested:
+                        _revoke_live_spool(self.host)
+                        self._interested = interested
+                if interested:
+                    spool_declaration(self.host, config, args,
+                                      _commit=self._commit)
+                if failure is not None:
+                    print(f"[{self.host}] disk observation recovered", flush=True)
+                    failure = None
+            except (OSError, ValueError, RuntimeError, SystemExit) as exc:
+                # _config uses SystemExit for an absent/invalid roster entry.
+                # In this producer that is unavailable proof, not thread exit.
+                reason = f"{type(exc).__name__}: {exc}"
+                if failure != reason:
+                    print(f"[{self.host}] disk observation unavailable; "
+                          f"retry within {period:g}s: {reason}", flush=True)
+                    failure = reason
+            # Work, including failed work, counts inside the period.  Skip
+            # missed slots rather than spinning or queuing catch-up probes.
+            now = time.monotonic()
+            deadline += period
+            if deadline <= now:
+                deadline += (int((now - deadline) / period) + 1) * period
+
+    def close(self) -> None:
+        with self._lock:
+            if self._stop.is_set():
+                return
+            self._stop.set()
+            # A following supervisor must not inherit this process's proof.
+            if self._interested:
+                _revoke_live_spool(self.host)
+        # statvfs is not interruptible in Python.  The daemon can finish its
+        # read, but _commit fences all subsequent cache/offer publication.
 
 
 def _spool_ledger_base(host: str) -> Path:
@@ -773,7 +893,8 @@ def _spool_ledger_base(host: str) -> Path:
     return pool.PoolQueue(_queue_root()).ledger(host).base
 
 
-def _record_live_spool(host: str, key: tuple, verdict: tuple) -> None:
+def _record_live_spool(host: str, key: tuple, verdict: tuple, *,
+                       measured_unix: float | None = None) -> None:
     """Record a tick's measurement for the loops, or keep the last one.
 
     ``offer`` records its value, 0 included: it was taken with nothing held
@@ -792,7 +913,8 @@ def _record_live_spool(host: str, key: tuple, verdict: tuple) -> None:
     gib = int(verdict[1]) if verdict[0] == "offer" else 0
     reason = str(verdict[2]) if verdict[0] == "offer" else str(verdict[1])
     try:
-        local_scratch.write_spool_offer(_spool_ledger_base(host), gib, reason)
+        local_scratch.write_spool_offer(_spool_ledger_base(host), gib, reason,
+                                        measured_unix=measured_unix)
     except (OSError, RuntimeError, ValueError) as exc:
         if _SPOOL_LIVE.get(key) != ("unwritten", str(exc)):
             _SPOOL_LIVE[key] = ("unwritten", str(exc))
@@ -803,6 +925,21 @@ def _record_live_spool(host: str, key: tuple, verdict: tuple) -> None:
     if _SPOOL_LIVE.get(key) != gib:
         _SPOOL_LIVE[key] = gib
         print(f"[{host}] {SPOOL_FLAG} live offer {gib} GiB: {reason}", flush=True)
+
+
+def _revoke_live_spool(host: str) -> None:
+    key = (host, "revocation")
+    try:
+        local_scratch.write_spool_offer(_spool_ledger_base(host), 0,
+                                        "disk observation revoked")
+        _SPOOL_LIVE.pop(key, None)
+    except (OSError, RuntimeError, ValueError) as exc:
+        reason = str(exc)
+        if _SPOOL_LIVE.get(key) != reason:
+            _SPOOL_LIVE[key] = reason
+            print(f"[{host}] disk proof revocation unavailable; prior proof "
+                  f"expires within {local_scratch.SPOOL_OBSERVATION_INTERVAL_S:g}s: "
+                  f"{reason}", flush=True)
 
 
 def _clear_live_spool(host: str) -> None:
@@ -2055,6 +2192,11 @@ def main() -> int:
 
 
 def _run_supervisor(stop_requested) -> int:
+    with ExitStack() as cleanup:
+        return _supervise(stop_requested, cleanup)
+
+
+def _supervise(stop_requested, cleanup: ExitStack) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ensure", action="store_true",
                     help="exit 0 if a supervisor already owns this box")
@@ -2133,8 +2275,15 @@ def _run_supervisor(stop_requested) -> int:
         stopped = cycle_stale(published)
         print(f"[{host}] cycled {len(stopped)} idle loop(s) onto "
               f"{published[:12] or '(unknown)'}: {stopped}", flush=True)
+    observations = None
+    if not args.once:
+        observations = _SpoolObservationProducer(host, args.loops, (target, loop_args))
+        observations.start()
+        cleanup.callback(observations.close)
     while True:
         if stop_requested():
+            if observations is not None:
+                observations.close()
             _wait_for_shutdown()
             return 0
         if not args.systemd and _systemd_managed():
@@ -2149,8 +2298,8 @@ def _run_supervisor(stop_requested) -> int:
         if not args.once and _monotonic() >= next_scratch_sweep:
             _sweep_pbtest_scratch()
             next_scratch_sweep = _monotonic() + pbtest_scratch_roots.SWEEP_INTERVAL_S
-        target, loop_args = declared_shape(
-            host, args.loops, (target, loop_args))
+        target, loop_args = (observations.shape() if observations is not None
+                             else declared_shape(host, args.loops, (target, loop_args)))
         if stop_requested():
             continue
         # A box the roster declares absent offers nothing (#606).  Startup
@@ -2333,7 +2482,6 @@ def _run_supervisor(stop_requested) -> int:
         active = busy > 0 or backlog is True
         time.sleep(min(args.interval_s, BUSY_INTERVAL_S)
                    if active else args.interval_s)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

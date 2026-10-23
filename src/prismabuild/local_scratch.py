@@ -540,7 +540,13 @@ def _private_offer_root() -> Path:
     return directory
 
 
-def write_spool_offer(ledger_base, gib: int, detail: str) -> None:
+# Numeric disk observations have no kernel change notification.  The supervisor
+# renews interested disks on this deadline, independently of supervision work.
+SPOOL_OBSERVATION_INTERVAL_S = 5.0
+
+
+def write_spool_offer(ledger_base, gib: int, detail: str, *,
+                      measured_unix: float | None = None) -> None:
     """Record ``gib`` as the box's measured ``spool_gb`` offer, atomically.
 
     Only the supervisor writes it, and only from a measurement taken while
@@ -553,7 +559,8 @@ def write_spool_offer(ledger_base, gib: int, detail: str) -> None:
         raise ValueError(f"a spool offer is a whole number of GiB, not {gib!r}")
     _private_offer_root()
     adaptive_cpu.write_json(spool_offer_path(ledger_base), {
-        KIND: gib, "detail": str(detail), "measured_unix": time.time(),
+        KIND: gib, "detail": str(detail),
+        "measured_unix": time.time() if measured_unix is None else measured_unix,
         "pid": os.getpid()})
 
 
@@ -576,8 +583,18 @@ def read_spool_offer(ledger_base) -> int | None:
         path = spool_offer_path(ledger_base)
     except OSError:
         return None
-    value = adaptive_cpu.read_json(path).get(KIND)
-    return value if type(value) is int and value >= 0 else None
+    record = adaptive_cpu.read_json(path)
+    value = record.get(KIND)
+    if type(value) is not int or value < 0:
+        return None
+    measured = record.get("measured_unix")
+    # Expired proof is not a fresh capacity observation.  Return zero rather
+    # than None: callers use None to fall back to their starting declaration.
+    # This retires only free ledger tokens, never a running holder's tokens.
+    if (type(measured) not in (int, float) or not math.isfinite(measured)
+            or not 0 <= time.time() - measured <= SPOOL_OBSERVATION_INTERVAL_S):
+        return 0
+    return value
 
 
 # -- opt-in measured I/O service placement (Refs #1182) ----------------------
