@@ -1,0 +1,9 @@
+[Unit]
+Description=Optional hourly PrismaBuild attempt log survey
+# Deliberately no [Install] section. Installation does not enable this timer.
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=prismabuild-attempt-log-survey.service

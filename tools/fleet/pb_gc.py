@@ -97,6 +97,7 @@ from collections.abc import Iterable, Mapping, Sequence  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import immutable_files  # noqa: E402
 from prismabuild import pool, posix_lock  # noqa: E402
+from prismabuild import attempt_archive, attempt_retention  # noqa: E402
 
 #: The litter classes, in the order the report prints them.
 KIND_CLAIM = "claim"
@@ -1694,6 +1695,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "lock runs posix_lock's post-lock check (a runtime "
                          "carrying #995 on every box and role); required "
                          "with --apply for the queue kinds")
+    ap.add_argument("--attempt-log-after", default=None,
+                    help="explicit attempt-log survey continuation key; the report prints the next key")
+    ap.add_argument("--attempt-log-max-keys", type=int, default=attempt_retention.MAX_RETENTION_KEYS,
+                    metavar="N", help="maximum keys in each attempt-log survey, from 1 to "
+                    f"{attempt_retention.MAX_RETENTION_KEYS} (default {attempt_retention.MAX_RETENTION_KEYS})")
+    ap.add_argument("--attempt-log-max-bytes", type=int, default=None, metavar="B",
+                    help="aggregate retired log payload byte budget for this run (default unlimited); "
+                         "nonnegative; stop before a descriptor that would exceed it")
+    ap.add_argument("--retire-attempt-logs", action="store_true",
+                    help="archive and retire old immutable attempt stdout/stderr only; "
+                         "requires the complete reader gate, verified HDD store and --apply")
     ap.add_argument("--retire-movement-receipts", action="store_true",
                     help="explicitly enable the movement-receipt kind: an old "
                          "reader generation cannot see movers-retired/, so a "
@@ -1721,9 +1733,35 @@ def _main_queue(args: argparse.Namespace) -> int:
     except SweepError as exc:
         print(f"pb_gc: {exc}", file=sys.stderr)
         return 2
+    try:
+        log_plan = attempt_retention.survey_attempt_log_retention(
+            pool.PoolQueue(Path(args.queue_root).absolute()), after_key=args.attempt_log_after,
+            max_keys=args.attempt_log_max_keys)
+    except (attempt_retention.AttemptRetentionRefused, attempt_archive.AttemptArchiveUnavailable) as exc:
+        print(f"pb_gc: attempt log survey refused: {exc}", file=sys.stderr)
+        return 2
     print("\n".join(report_queue(plan, list_paths=not args.summary)))
+    print(f"attempt logs: {log_plan['keys_scanned']} keys surveyed, "
+          f"{log_plan['eligible_bytes']} eligible bytes, {log_plan['retained_bytes']} retained bytes, "
+          f"{log_plan['retention_days']:g} days; archive={log_plan['archive_health']}; "
+          f"reader_gate={log_plan['reader_gate']['verified']}; truncated={log_plan['truncated']}; "
+          f"next_cursor={log_plan['next_cursor']}; wrapped={log_plan['wrapped']}")
+    for reason, count in log_plan["retained_keys"].items():
+        print(f"  retained {count} keys: {reason}")
+    if args.apply and args.retire_attempt_logs:
+        try:
+            log_result = attempt_retention.apply_attempt_log_retention(
+                pool.PoolQueue(Path(args.queue_root).absolute()), log_plan,
+                max_bytes=args.attempt_log_max_bytes)
+        except (attempt_retention.AttemptRetentionRefused, attempt_archive.AttemptArchiveUnavailable) as exc:
+            print(f"pb_gc: attempt log retirement refused: {exc}", file=sys.stderr)
+            return 2
+        log_plan["next_cursor"] = log_result["next_cursor"]
+        print(f"attempt logs retired: {len(log_result['removed'])}; skipped: {len(log_result['skipped'])}; "
+              f"bytes_retired={log_result['bytes_retired']}; stopped_on_budget={log_result['stopped_on_budget']}; "
+              f"next_cursor={log_result['next_cursor']}")
     outcome = None
-    if args.apply:
+    if args.apply and not args.retire_attempt_logs:
         try:
             outcome = sweep_queue(
                 plan, lock_takers_verify=args.all_lock_takers_verify,
@@ -1734,9 +1772,17 @@ def _main_queue(args: argparse.Namespace) -> int:
         print(f"\nremoved {len(outcome['removed'])} queue entries")
         for row, why in outcome["skipped"]:
             print(f"  left {row['path']}: {why}")
+    elif args.apply:
+        outcome = {"removed": [], "skipped": [], "own_locks_retired": 0, "sweep_s": 0.0}
     else:
         print("\nnothing removed from the queue; re-run with --apply")
+    try:
+        attempt_retention.checkpoint_attempt_log_survey(Path(args.queue_root).absolute(), log_plan)
+    except (OSError, ValueError, attempt_archive.AttemptArchiveUnavailable, pb.PrismaBuildError) as exc:
+        print(f"pb_gc: attempt log cursor not advanced: {exc}", file=sys.stderr)
+        return 2
     receipt = queue_receipt(plan, outcome)
+    receipt["attempt_logs"] = log_plan
     try:
         written = write_queue_receipt(Path(args.queue_root), receipt,
                                       Path(args.receipt) if args.receipt else None)
@@ -1749,6 +1795,13 @@ def _main_queue(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not 1 <= args.attempt_log_max_keys <= attempt_retention.MAX_RETENTION_KEYS:
+        print(f"pb_gc: --attempt-log-max-keys must be between 1 and {attempt_retention.MAX_RETENTION_KEYS}",
+              file=sys.stderr)
+        return 2
+    if args.attempt_log_max_bytes is not None and args.attempt_log_max_bytes < 0:
+        print("pb_gc: --attempt-log-max-bytes must be nonnegative", file=sys.stderr)
+        return 2
     if not math.isfinite(args.min_age_hours) or args.min_age_hours < 0:
         print("pb_gc: --min-age-hours must be finite and nonnegative", file=sys.stderr)
         return 2

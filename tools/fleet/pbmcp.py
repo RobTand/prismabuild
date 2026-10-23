@@ -46,8 +46,8 @@ What it deliberately does not do:
     and stderr whole and hashes them, which is the right contract for a
     verifier and the wrong one for a status call on a run that printed a
     gigabyte.  The attempt records are read directly instead, and their log
-    metadata is reported; ``pb_log`` seeks to the end of one log and reads a
-    capped tail.
+    metadata is reported; ``pb_log`` verifies one log in a streaming pass
+    while retaining only a bounded suffix under the call deadline.
 """
 from __future__ import annotations
 
@@ -73,6 +73,10 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import census as fleet_census  # noqa: E402
 from prismabuild import core as pb, endings, pool, _bounded_reader as _reader  # noqa: E402
+from prismabuild.attempt_archive import (  # noqa: E402
+    _verified_attempt_log_tail, InvalidLogDescriptor, AttemptLogMissing,
+    AttemptLogIntegrityError, AttemptArchiveUnavailable,
+)
 
 #: The envelope every tool result carries, versioned so a client can tell.
 SCHEMA_V1 = "prismaquant.prismabuild.pbmcp.v1"
@@ -103,8 +107,8 @@ DEFAULT_ACTIONS_LIMIT = 50
 #: debugging session #660 was drawn from; pass 0 to read every recorded denial.
 DEFAULT_DENIAL_HOURS = 24.0
 
-#: The most bytes ``pb_log`` will read from the tail of one log.  A log is
-#: never read whole: the reader seeks to ``size - cap`` and reads once.
+#: The most bytes ``pb_log`` retains from one log. Verification streams all
+#: bytes under the call deadline before returning this bounded suffix.
 DEFAULT_LOG_TAIL_BYTES = 65536
 DEFAULT_TAIL_LINES = 40
 
@@ -894,45 +898,6 @@ def _receipt_verdict(state: str | None,
     return None
 
 
-def _log_tail(path: Path, *, tail_lines: int, max_bytes: int) -> dict:
-    """The last lines of one log, without reading the log.
-
-    ``lseek`` to ``size - max_bytes`` and one ``read``: the file is opened
-    ``O_RDONLY|O_NOFOLLOW|O_CLOEXEC`` and the process never holds more than
-    ``max_bytes`` of it.  ``truncated_head`` says the front was skipped, so a
-    reader is never shown a partial log as if it were whole.
-    """
-
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError as exc:
-        return {"path": str(path), "present": False, "error": str(exc)}
-    start = 0
-    try:
-        total = os.fstat(descriptor).st_size
-        start = max(0, total - max(0, int(max_bytes)))
-        if start:
-            os.lseek(descriptor, start, os.SEEK_SET)
-        raw = os.read(descriptor, max(0, int(max_bytes)))
-    finally:
-        os.close(descriptor)
-    text = raw.decode("utf-8", errors="replace")
-    lines = text.splitlines()
-    if start and lines:
-        # The first line of a mid-file read is half a line.
-        lines = lines[1:]
-    kept = lines[-max(0, int(tail_lines)):] if tail_lines else []
-    return {
-        "path": str(path),
-        "present": True,
-        "total_bytes": total,
-        "bytes_read": len(raw),
-        "truncated_head": bool(start),
-        "lines": kept,
-        "lines_returned": len(kept),
-    }
-
-
 def _reservations(queue_root: Path) -> dict:
     """Token files present per host, counted by kind.
 
@@ -1196,8 +1161,8 @@ class Session:
         derives the one canonical path for this attempt, stream and digest, so
         metadata naming another file, another action, or an absolute path that
         would escape the queue is reported unreadable instead of served.  The
-        body is never hashed or read whole; the tail reader seeks to the end
-        and reads at most the configured cap.
+        streaming verifier checks every byte while retaining only the configured
+        suffix. The enclosing Call.read owns cancellation and the deadline.
         """
 
         number = attempt.get("attempt")
@@ -1221,18 +1186,25 @@ class Session:
             return {**base, "present": False,
                     "path": metadata.get("path"), "canonical": relative,
                     "reason": "the attempt's log link is not its canonical path"}
-        tail = _log_tail(canonical, tail_lines=tail_lines,
-                         max_bytes=self.log_tail_bytes)
-        recorded = metadata.get("bytes")
+        try:
+            raw = _verified_attempt_log_tail(queue.root, metadata, max_bytes=self.log_tail_bytes)
+        except (InvalidLogDescriptor, AttemptLogMissing,
+                AttemptLogIntegrityError, AttemptArchiveUnavailable) as exc:
+            return {**base, "path": str(canonical), "present": False,
+                    "error": str(exc), "verified": False}
+        total = metadata["bytes"]
+        start = max(0, total - len(raw))
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if start and lines:
+            lines = lines[1:]
+        kept = lines[-max(0, int(tail_lines)):] if tail_lines else []
         return {
-            **base,
-            "recorded_bytes": recorded,
-            "recorded_sha256": metadata.get("sha256"),
-            # Cheap honesty: the recorded length against the length on disk,
-            # which catches a truncated or replaced log without hashing it.
-            "bytes_match": (None if tail.get("total_bytes") is None
-                            else recorded == tail.get("total_bytes")),
-            **tail,
+            **base, "recorded_bytes": total, "recorded_sha256": metadata.get("sha256"),
+            "path": str(canonical), "present": True, "verified": True,
+            "bytes_match": True, "total_bytes": total, "bytes_read": total,
+            "retained_bytes": len(raw),
+            "verified_bytes": total, "truncated_head": bool(start),
+            "lines": kept, "lines_returned": len(kept),
         }
 
     # -- pb_actions --------------------------------------------------------
@@ -2179,8 +2151,8 @@ TOOLS: tuple[dict, ...] = (
     {
         "name": "pb_log",
         "description": "A bounded tail of one attempt's stdout or stderr. The "
-                       "log is never read whole: the reader seeks to the end "
-                       "and reads a capped number of bytes. An attempt a "
+                       "log is verified in a streaming pass retaining only a bounded suffix "
+                       "under the call deadline. An attempt a "
                        "withdrawal preserved is readable and marked "
                        "before_withdrawal.",
         "inputSchema": {
@@ -2431,7 +2403,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many terminal records pb_status reads by default.")
     parser.add_argument(
         "--log-tail-bytes", type=int, default=DEFAULT_LOG_TAIL_BYTES,
-        help="The most bytes read from the tail of any one log.")
+        help="The most bytes retained from any log; verification streams the full log.")
     return parser
 
 
