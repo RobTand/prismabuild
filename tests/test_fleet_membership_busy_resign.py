@@ -54,10 +54,13 @@ class Backend:
         return {name: {"populated": row["populated"], "frozen": row["frozen"],
                        "identity": row["identity"]} for name, row in self.groups.items()}
 
-    def create(self, scope, budget):
+    def create(self, scope, budget, cpu_weight=100):
         self.groups[scope] = {"populated": False, "frozen": False,
-                              "identity": [7, len(self.groups) + 1]}
+                              "identity": [7, len(self.groups) + 1], "cpu_weight": cpu_weight}
         return {"cgroup_identity": self.groups[scope]["identity"]}
+
+    def verify_cpu_weight(self, scope, expected):
+        assert self.groups[scope]['cpu_weight'] == expected
 
     def run(self, scope, uid, command, stdio):
         self.groups[scope]["populated"] = True

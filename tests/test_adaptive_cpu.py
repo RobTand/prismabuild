@@ -238,6 +238,8 @@ def test_cpu_owned_by_unmeasured_borrower_is_not_lent_again(rig):
     adaptive_cpu.write_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json', {
         'shape': {'samples': 10, 'cpu': .1, 'sampled_unix': clock[0]}})
     publish(3)
+    assert claim() is None
+    queue.finish(first['action_key'], status='executed', detail={})
     third = claim()
     assert third and third['cpu_allocation'] == {'preferred': [], 'fallback': [1]}
 
