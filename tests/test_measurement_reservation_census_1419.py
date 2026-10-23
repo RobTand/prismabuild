@@ -221,32 +221,40 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
     assert _chosen(queue, measurement) == selected
 
 
-def test_claim_defer_retry_preserves_one_election(fleet):
+def test_claim_consumes_election_and_defer_retry_reestablish_current_protection(fleet):
+    from test_measurement_election_claim_2181 import _assert_consumed
+
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     chosen = _chosen(queue, measurement)
     queue.finish(holder, status="executed")
     tick(11)
     assert claim() == measurement
-    assert _chosen(queue, measurement) == chosen
+    _assert_consumed(queue, measurement)
     record = pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.CLAIMED, measurement),
     )
     queue._defer_unstarted_claim(record)
-    assert _chosen(queue, measurement) == chosen
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    lower = publish("must-not-refill-deferred-measurement")
+    candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
+    assert _legacy_claim(pool.PoolQueue(queue.root), candidate) is None
+    protection = pool.record_store.read_document(queue.records.passes_path(measurement)) or {}
+    assert reservation.selection(protection) != chosen, "defer inherited consumed authority"
     tick(11)
     assert claim(q=pool.PoolQueue(queue.root)) == measurement
-    assert _chosen(queue, measurement) == chosen
+    _assert_consumed(queue, measurement)
     queue.finish(measurement, status="failed", detail={"returncode": 1})
     retry = pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.READY, measurement),
     )
     assert isinstance(retry, dict) and retry["attempts"] == 1
-    assert _chosen(queue, measurement) == chosen
+    assert _legacy_claim(pool.PoolQueue(queue.root), candidate) is None
+    protection = pool.record_store.read_document(queue.records.passes_path(measurement)) or {}
+    assert reservation.selection(protection) != chosen, "retry inherited consumed authority"
     tick(11)
     assert claim(q=pool.PoolQueue(queue.root)) == measurement
-    assert _chosen(queue, measurement) == chosen
+    _assert_consumed(queue, measurement)
 
 
 @pytest.mark.parametrize("ending", ["withdrawal", "terminal", "successor"])
@@ -347,13 +355,16 @@ def test_unavailable_host_identity_refuses_nonadaptive_capacity_claim(fleet, mon
     assert not queue.ledger().held_keys()
 
 
-def test_claimed_tombstone_ready_defer_gap_never_loses_election(fleet, monkeypatch):
+def test_claimed_tombstone_ready_defer_gap_keeps_protection_not_consumed_election(fleet, monkeypatch):
+    from test_measurement_election_claim_2181 import _assert_consumed
+
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
+    chosen = _chosen(queue, measurement)
     queue.finish(holder, status="executed")
     tick(11)
     assert claim() == measurement
-    chosen = _chosen(queue, measurement)
+    _assert_consumed(queue, measurement)
     row = pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.CLAIMED, measurement),
     )
@@ -375,13 +386,15 @@ def test_claimed_tombstone_ready_defer_gap_never_loses_election(fleet, monkeypat
             assert not queue.records.item_path(pool.record_store.READY, measurement).exists()
             assert not queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
             assert _legacy_claim(pool.PoolQueue(queue.root), candidate) is None
-            assert _chosen(queue, measurement) == chosen
+            protection = pool.record_store.read_document(queue.records.passes_path(measurement)) or {}
+            assert reservation.selection(protection) != chosen
         finally:
             proceed.set()
         deferred.result(timeout=5)
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert _legacy_claim(queue, candidate) is None
-    assert _chosen(queue, measurement) == chosen
+    protection = pool.record_store.read_document(queue.records.passes_path(measurement)) or {}
+    assert reservation.selection(protection) != chosen
 
 
 def test_persisted_live_reader_blocks_restart_before_another_fork(fleet, monkeypatch):

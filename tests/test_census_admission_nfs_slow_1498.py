@@ -190,7 +190,7 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
     assert {key: queue.records.passes_path(key).read_bytes() for key in kept} == before
 
 
-def test_fair_sweep_recovers_capped_census_without_retiring_elections(
+def test_fair_sweep_recovers_capped_census_by_retiring_exact_concluded_elections(
         fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     ordinary = publish("ordinary-after-fair-sweep", gpu=0)
@@ -209,7 +209,7 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
             {"schema": pool.POOL_OUTCOME_SCHEMA_V1, **publication,
              "status": "executed", "finished_unix": 4.0}), encoding="utf-8")
         kept.append(key)
-    before = {key: queue.records.passes_path(key).read_bytes() for key in kept}
+    endings = {key: queue.records.item_path(pool.record_store.DONE, key).read_bytes() for key in kept}
     orphan = _conclude(queue, 300)
     # Scale only the record cap: real bounded census, retirement proof, reader
     # fence, transition locks, admission gate and capacity claim all execute.
@@ -222,11 +222,14 @@ def test_fair_sweep_recovers_capped_census_without_retiring_elections(
     assert "record cap exceeded" in refusal["evidence"]["unavailable"]
     assert not queue.ledger().held_keys()
 
-    assert queue.sweep_orphan_passes() == []
-    assert pool.PoolQueue(queue.root).sweep_orphan_passes() == [orphan]
-    assert {key: queue.records.passes_path(key).read_bytes() for key in kept} == before
+    first = queue.sweep_orphan_passes()
+    assert len(first) == pool.ORPHAN_PASSES_SWEEP_LIMIT
+    rest = pool.PoolQueue(queue.root).sweep_orphan_passes()
+    assert sorted(first + rest) == sorted(kept + [orphan])
+    assert all(not queue.records.passes_path(key).exists() for key in kept + [orphan])
+    assert {key: queue.records.item_path(pool.record_store.DONE, key).read_bytes() for key in kept} == endings
     census = reservation.CensusReader(queue, queue.ledger()).capture()
-    assert set(census["selections"]) == set(kept)
+    assert census["selections"] == {}
     assert census["elections"] == {}  # exact endings, not missing authority
     tick(11)
     claimed = _claim(queue, ordinary,
