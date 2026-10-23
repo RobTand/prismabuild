@@ -233,7 +233,7 @@ def test_audit_oserror_obeys_the_setting(
 def test_disabled_deferred_release_audits_the_completed_identity(
         tmp_path, monkeypatch, capsys):
     de, queue, work, template, producer = h._deferred_setup(tmp_path, monkeypatch)
-    assert h._submit_deferred(work, monkeypatch, de, producer, template) == 0, \
+    assert h._submit_deferred(work, monkeypatch, de, producer, template, "--gpu") == 0, \
         capsys.readouterr().err
     assert not list((queue.root / d38_gate.AUDIT_DIR_NAME).rglob("*.json"))
     instance = de._start(queue, template, producer)

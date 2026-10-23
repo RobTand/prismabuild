@@ -861,6 +861,8 @@ def _deferred_setup(tmp_path, monkeypatch):
     import test_deferred_action_edges as de
 
     queue, work = de._env(tmp_path, monkeypatch)
+    queue.announce(host="dl380g10", tags=["dl380g10", "x86"], has_gpu=False,
+                   capacity={"cpu": 4, "mem_gb": 16})
     template = de._template(tmp_path / "canonical")
     producer = de._producer_key(tmp_path, template, "d38-band")
     de._publish_producer(queue, template, producer)
@@ -891,7 +893,7 @@ def test_a_deferred_gpu_submission_is_refused_at_registration(
     de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
     ns = _namespace_file(tmp_path)
     code = _submit_deferred(work, monkeypatch, de, producer, template,
-                            "--d38-namespace", str(ns))
+                            "--gpu", "--d38-namespace", str(ns))
     err = capsys.readouterr().err
     assert code == 1, err
     assert "D38 refuses GPU publication" in err
@@ -904,8 +906,8 @@ def test_a_deferred_cpu_submission_still_files(
         tmp_path, monkeypatch, capsys) -> None:
     de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
     # An x86 placement on a non-pinned runtime is not GPU intent.
-    monkeypatch.setattr(d38_gate, "requires_receipt", lambda *a, **k: False)
-    assert _submit_deferred(work, monkeypatch, de, producer, template) == 0, \
+    assert _submit_deferred(work, monkeypatch, de, producer, template,
+                            "--tag", "x86") == 0, \
         capsys.readouterr().err
 
 
@@ -916,7 +918,7 @@ def test_a_release_re_checks_the_gate_for_a_record_an_old_client_filed(
 
     de, queue, work, template, producer = _deferred_setup(tmp_path, monkeypatch)
     d38_config.write_text('{"d38_enforce": false}', encoding="utf-8")
-    assert _submit_deferred(work, monkeypatch, de, producer, template) == 0, \
+    assert _submit_deferred(work, monkeypatch, de, producer, template, "--gpu") == 0, \
         capsys.readouterr().err
     instance = de._start(queue, template, producer)
     de._commit(queue, template, instance, "b1", b"d38 handoff bytes")
