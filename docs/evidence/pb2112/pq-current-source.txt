@@ -1,0 +1,405 @@
+Read-only source excerpts; NOT execution or artifact authentication.
+Repository/revision: prismaquant dfc220bda04b8b355f45540f7f626852ec20653a
+
+prismaquant/staged_lease.py
+Full-file raw SHA256: 45e0db78a13e274eee9123165a8927c59b642b128c821fad5c8b80e38a486de9
+Lines 91-111 (1-based):
+91: PINNED_SDK_COMMIT = PB_READER_LEASE_PIN_COMMIT
+92: 
+93: #: The PrismaBuild client SDK version this package is written against
+94: #: (``prismabuild.client.SDK_VERSION``, PB #1402 / PQ #1888). A tree that serves another
+95: #: version refuses as unsupported: the SDK's contract is pinned by version, so
+96: #: a mismatch is a different contract, never a subset to probe.
+97: #: SDK5 (PB #1482) adds ``require_native_producer_context`` on
+98: #: ``read_verified_action_result`` — the selected attempt's authenticated
+99: #: native producer context PQ #2152 joins — beside SDK4's public
+100: #: ``read_verified_action_result`` and ``bind_standard_capture_command``.
+101: #: SDK4 and anything else still refuse; cache-hit, legacy and missing native
+102: #: production evidence refuse inside the SDK rather than degrading.
+103: PB_CLIENT_SDK_VERSION = 5
+104: 
+105: #: The one PrismaBuild module PrismaQuant imports.
+106: _CLIENT_MODULE = "prismabuild.client"
+107: 
+108: #: Names PQ actually calls. Anything else is not our protocol.
+109: _REQUIRED_NAMES = ("injected_context", "acquire_for", "open_pinned",
+110:                    "release", "covers_for_keys", "READER_LEASE_TAG")
+111: 
+Lines 289-327 (1-based):
+289:     root = lease_helper_root()
+290:     if root is not None:
+291:         return _sdk_from_tree(root)
+292:     with _HELPER_LOCK:
+293:         injected = _INJECTED
+294:     if injected is not None:
+295:         _require_client_surface(injected)
+296:         return injected
+297:     raise _refuse("lease-helper-unavailable", kind="availability")
+298: 
+299: 
+300: def client_sdk():
+301:     """PrismaBuild's client SDK (``prismabuild.client``), or a named refusal.
+302: 
+303:     The one way a PrismaQuant module reaches PrismaBuild. It resolves exactly
+304:     as the reader lease does (:func:`_sdk`): the sealed generation tree PB
+305:     injected into this action, an explicit test override, or the test-only
+306:     injected install; anything else refuses ``lease-helper-unavailable``
+307:     rather than importing whatever ``prismabuild`` a bare import would find.
+308:     Every name a caller uses is PB's public, versioned surface
+309:     (:data:`PB_CLIENT_SDK_VERSION`).
+310:     """
+311: 
+312:     return _sdk()
+313: 
+314: 
+315: def _require_client_surface(module) -> None:
+316:     """Refuse a client module whose contract is not the one PQ is written for."""
+317: 
+318:     version = getattr(module, "SDK_VERSION", None)
+319:     if version != PB_CLIENT_SDK_VERSION:
+320:         raise _refuse(
+321:             f"lease-helper-unsupported: prismabuild.client SDK_VERSION "
+322:             f"{version!r}, this package needs {PB_CLIENT_SDK_VERSION}",
+323:             kind="availability")
+324:     for name in _REQUIRED_NAMES:
+325:         if not hasattr(module, name):
+326:             raise _refuse(f"lease-helper-unsupported: no {name}",
+327:                           kind="availability")
+Lines 507-593 (1-based):
+507: def _check_package_coherence(expected_dir: Path) -> None:
+508:     """Refuse any preimported ``prismabuild.*`` outside the expected root.
+509: 
+510:     Component-wise path containment against the actual package directory
+511:     proven by the resolved SDK module (plus the package itself) — never a
+512:     substring or private-path blacklist. Runs BEFORE any acquire, so a
+513:     divergent preimport cannot strand a pin.
+514:     """
+515:     expected = Path(expected_dir).resolve()
+516:     # Keep the same point-in-time module mapping without allocating one
+517:     # tracked tuple per unrelated import. On a loaded model those temporary
+518:     # tuples repeatedly trigger cyclic GC on the lease hot path. A dict copy
+519:     # retains the identical names and module objects; all path checks below
+520:     # still run, including newly imported modules and changed symlink targets.
+521:     for name, mod in sys.modules.copy().items():
+522:         if name != "prismabuild" and not name.startswith("prismabuild."):
+523:             continue
+524:         if mod is None:
+525:             continue
+526:         location = getattr(mod, "__file__", None)
+527:         if location is None:
+528:             paths = getattr(mod, "__path__", None)
+529:             if paths is None:
+530:                 continue
+531:             try:
+532:                 entries = [Path(entry).resolve() for entry in paths]
+533:             except OSError:
+534:                 raise _refuse(
+535:                     f"lease-helper-divergent: {name} has unresolvable path",
+536:                     kind="integrity")
+537:             if not any(entry == expected for entry in entries):
+538:                 raise _refuse(
+539:                     f"lease-helper-divergent: {name} resolves elsewhere",
+540:                     kind="integrity")
+541:             continue
+542:         try:
+543:             resolved = Path(location).resolve()
+544:         except OSError:
+545:             raise _refuse(
+546:                 f"lease-helper-divergent: {name} has unresolvable file",
+547:                 kind="integrity")
+548:         if resolved != expected and expected not in resolved.parents:
+549:             raise _refuse(
+550:                 f"lease-helper-divergent: {name} resolves elsewhere",
+551:                 kind="integrity")
+552: 
+553: 
+554: def _sdk_from_tree(root: str):
+555:     """Import the SDK from one sealed generation tree.
+556: 
+557:     The tree's package root is ``<root>/src/prismabuild``; the serving
+558:     module plus every preimported ``prismabuild.*`` must resolve inside
+559:     it (component-wise containment), else entry refuses divergent before
+560:     any pin. No substring matching, no vendoring.
+561:     """
+562:     src = Path(root) / "src"
+563:     expected = src / "prismabuild"
+564:     with _HELPER_LOCK:
+565:         present = sys.modules.get(_CLIENT_MODULE)
+566:         if present is not None:
+567:             module = present
+568:         else:
+569:             sys.path.insert(0, str(src))
+570:             try:
+571:                 import prismabuild.client as module  # noqa: PLC0415
+572:             except ImportError as exc:
+573:                 raise _refuse(f"lease-helper-unavailable: {exc}",
+574:                               kind="availability") from None
+575:         try:
+576:             served = Path(getattr(module, "__file__", "")).resolve()
+577:             want = expected.resolve()
+578:         except OSError:
+579:             raise _refuse("lease-helper-divergent: unresolvable SDK file",
+580:                           kind="integrity")
+581:         try:
+582:             served.relative_to(want)
+583:         except ValueError:
+584:             raise _refuse("lease-helper-divergent: SDK resolves elsewhere",
+585:                           kind="integrity")
+586:     _require_client_surface(module)
+587:     _check_package_coherence(_package_dir_of(module))
+588:     return module
+589: 
+590: 
+591: def resolve_context(*, env=None):
+592:     """The SDK's injected identity, or a clear availability refusal.
+593: 
+
+tests/pb_runtime_generation_pin.json
+Full-file raw SHA256: c41227a59b89799d6741c1a3d1e9fab7bd5da6129b83aab1cb8fc15dc656a180
+Lines 1-43 (1-based):
+1: {
+2:   "schema": "prismaquant.stagea_produced_boundaries.pb_candidate_pin.v1",
+3:   "bundle_root": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088",
+4:   "candidate_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+5:   "runtime_generation": "027103d9a8417e06c7f13356e58779a313cd7088",
+6:   "qualification": "SOURCE QUALIFICATION ONLY: reviewed PB #1482 at 027103d9, SDK5; immutable git-archive source bundle. No fleet deployment or GPU qualification is established.",
+7:   "files": {
+8:     "src/prismabuild/action_edges.py": "969abef4dddbf195da96c1d2c3b5a8775efbe348a44f6f80ffac14e3ae8ea9af",
+9:     "src/prismabuild/action_result.py": "32526ec1c622c734421395b14cbb9bfa7a4822fe402b7d303e77ce3b5c0c0dae",
+10:     "src/prismabuild/adaptive_cpu.py": "e6782bff313d39bd481cba8f8aef577c1e0a6e40e733c2a5711c653b3f5d6bad",
+11:     "src/prismabuild/client.py": "40b4f5cc88b18ea127eeb9325e7f03d954adcd0e4b6cdceda25ceda8a9f352c9",
+12:     "src/prismabuild/core.py": "aff66d949b76b9b9a4b44f01588fe3bdf74a5e43b58aad88e3c600ee7a7e11a4",
+13:     "src/prismabuild/movement_actions.py": "059ae9fe6efa18de826f58cb8333e1688b688622b894c92896b9ebdf074ad0c9",
+14:     "src/prismabuild/pool.py": "8956e06af22df44225ca4e5857937960222302e62311677341f70eb45f71e6be",
+15:     "src/prismabuild/produced_output.py": "8d636899e500ee8ea88dde1b5654a1a938fba619b76fb485ac17903ec0898187",
+16:     "src/prismabuild/produced_spool.py": "818891c8d9c13b3e05beefb551b43091ee419b2eb7457cdcf5321b9ea5dd2645",
+17:     "src/prismabuild/reader_lease.py": "645a58bf26f88f1afc5ce20baf20d9bc4244b619eaf1c17b3bea76c23dc11f9b",
+18:     "src/prismabuild/residency_map.py": "10ce7f4f654fab46d45f64ffa5a85768df5dafa12bd8343a61b5abb0363d7b99",
+19:     "src/prismabuild/residency_plan.py": "bb2a133d52547a48e9f696b82022d2bdb2d20a8c9cb2f62704ff4082d84fd589",
+20:     "src/prismabuild/resource_scope.py": "1392c1b4fbadd9d2b131a667596f11c0428f050882258760ddadffd3e2b3c547",
+21:     "src/prismabuild/storage_tiers.py": "cf1685e2001318ce02c545327c9eeb904b9471f6103d47e64d04a505ea5106ee",
+22:     "tools/fleet/prewarm_loop.py": "1d8b5c0c5a3df2ddb2cdd739226f5bfd4f44ada0689fd10732efd534da14cafe",
+23:     "tools/fleet/produced_export.py": "0bc4159cf5d4d4955bc83c10d6676df42108a281a4b0b6e9024d5c4c73a30efc",
+24:     "tools/fleet/ram_promote.py": "4d28cf1b9fe9bcf8b00afc4271543f09d69f0e5df12ccb02edc0ffb73a5c2ece",
+25:     "tools/fleet/stage_move.py": "e73b73aa448cdc2d3398b512176b54bdb390e79e281a59deff569464018f8ead",
+26:     "tools/fleet/stage_release.py": "8bb0c30187cf8fd3350e96e37a59fe9f33800ba4ceabceb9f0bf91a726a66be4",
+27:     "tools/prismabuild_worker.py": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418"
+28:   },
+29:   "search_paths": [
+30:     {
+31:       "path": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088"
+32:     }
+33:   ],
+34:   "consumers": [
+35:     "tests/fullstack_pb_generation.py",
+36:     "tests/test_band_serial_handoff_produced.py",
+37:     "tests/test_band_serial_handoff_spool_real_pb.py",
+38:     "tests/test_produced_output_spool_real_pb.py",
+39:     "tests/test_stage_a_produced_boundary_chain.py",
+40:     "tests/test_stage_a_retirement_pb_1073.py",
+41:     "tests/test_stage_b_prep_produced_1070.py"
+42:   ],
+43:   "note": "One shared immutable source pin for connected SDK5 and produced-output CPU fixtures (PQ #1084, #1293, #2152). Current consumers share the complete file union; the historical SDK3 and SDK4 bundles and receipts remain preserved in Git and on the shared mount, and the SDK5 consumer refuses them by version. The pin and staged_lease.PB_READER_LEASE_PIN_COMMIT move together (tests/test_pb_generation_pin_1084.py). Source qualification is independent of live worker activation."
+
+tests/fullstack_pb_generation.py
+Full-file raw SHA256: 3d8abe7e461759759fcb48ed29b8170f9a566142f7abf12d0bbfa3c3fbdc24cc
+Lines 26-108 (1-based):
+26: def _resolve_once() -> Path:
+27:     """The single immutable root every PB import in this process comes from."""
+28:     require_prismabuild_sdk()
+29:     global _ROOT
+30:     if _ROOT is None:
+31:         pin = json.loads(PIN_PATH.read_text())
+32:         root = Path(pin["bundle_root"]).resolve()
+33:         assert root.is_dir(), f"pinned PB root missing: {root}"
+34:         assert root.name == pin["runtime_generation"], (
+35:             f"PB root {root} differs from its declared generation")
+36:         for name, digest in pin["files"].items():
+37:             assert hashlib.sha256((root / name).read_bytes()).hexdigest() == digest, name
+38:         assert (root / "src" / "prismabuild" / "core.py").is_file(), (
+39:             f"published PB stdlib missing under {root / 'src'}")
+40:         assert (root / "tools" / "fleet" / "stage_move.py").is_file(), (
+41:             f"published PB fleet tools missing under {root / 'tools' / 'fleet'}")
+42:         _ROOT = root
+43:     return _ROOT
+44: 
+45: 
+46: @contextmanager
+47: def source_bound():
+48:     """Own a fresh canonical import graph for the authenticated source pin.
+49: 
+50:     Fixtures construct all PB objects inside this scope and finish their work
+51:     before it exits. The installed SDK graph is restored, not substituted or
+52:     accepted as this source tree.
+53:     """
+54:     from fleet_sdk import prismabuild_imports_restored
+55: 
+56:     root = _resolve_once()  # Authenticate every declared byte before detaching.
+57:     with prismabuild_imports_restored(source_root=root):
+58:         yield
+59: 
+60: 
+61: @contextmanager
+62: def reader_sdk_bound():
+63:     """Bind PQ's existing explicit SDK owner to this fixture's one source root."""
+64:     from prismaquant.staged_lease import set_lease_helper_root
+65:     set_lease_helper_root(_resolve_once())
+66:     try:
+67:         yield
+68:     finally:
+69:         set_lease_helper_root(None)
+70: 
+71: 
+72: def generation() -> str:
+73:     """The immutable generation id, derived from the resolved root's name."""
+74:     return _resolve_once().name
+75: 
+76: 
+77: def require_paths() -> dict[str, str]:
+78:     """Insert the pinned root's src/fleet tools; verify imports land there."""
+79:     require_prismabuild_sdk()
+80:     root = _resolve_once()
+81:     src = root / "src"
+82:     fleet = root / "tools" / "fleet"
+83:     import sys
+84:     for entry in (str(src), str(fleet)):
+85:         if entry not in sys.path:
+86:             sys.path.insert(0, entry)
+87:     import prismabuild.core as core  # noqa: E402
+88:     import stage_move  # noqa: E402
+89:     for module in (core, stage_move):
+90:         location = Path(getattr(module, "__file__", "")).resolve()
+91:         assert location.is_relative_to(root), (
+92:             f"{module.__name__} loaded from {location}, not the "
+93:             f"resolved root {root}")
+94:     info = {"generation": root.name, "root": str(root),
+95:             "src": str(src), "fleet": str(fleet),
+96:             "core_file": str(Path(core.__file__).resolve())}
+97:     print(f"[pb-generation] {info['generation']} root={info['root']} "
+98:           f"core={info['core_file']}", flush=True)
+99:     return info
+100: 
+101: 
+102: def runtime_version_digest() -> str:
+103:     """Digest of the resolved root's own runtime version record, when filed."""
+104:     root = _resolve_once()
+105:     record = root / "RUNTIME_VERSION.json"
+106:     if record.is_file():
+107:         return hashlib.sha256(record.read_bytes()).hexdigest()
+108:     return ""
+
+tests/test_pb_sdk5_pin_2152.py
+Full-file raw SHA256: 828a9685c5054100be60050aa2d7e8668bd7b75c9aed3e4cb3f4625db6986c84
+Lines 78-84 (1-based):
+78:         assert isinstance(sdk.__file__, str)
+79:         assert Path(sdk.__file__).resolve().is_relative_to(root / "src")
+80:         assert "require_native_producer_context" in inspect.signature(
+81:             sdk.read_verified_action_result).parameters
+82:         assert callable(sdk.bind_standard_capture_command)
+83:         assert sdk.READER_LEASE_TAG == "reader-lease-v1"
+84:         assert callable(sdk.acquire_for) and callable(sdk.open_pinned)
+
+tests/test_prismabuild_import_leak_1281.py
+Full-file raw SHA256: 5a6f53ebd1e3fa07d351d8b24f486f1b7e09db18d79ef92ba41eaf8ff8f40830
+Lines 387-420 (1-based):
+387: def test_authenticated_source_scope_restores_installed_identity_and_tools(
+388:         installed_client_sdk, monkeypatch):
+389:     from types import ModuleType
+390:     from threading import Thread
+391:     import fullstack_pb_generation as published
+392:     from prismaquant import staged_lease
+393: 
+394:     old_tool = ModuleType("stage_move")
+395:     monkeypatch.setitem(sys.modules, "stage_move", old_tool)
+396:     before = prismabuild_entries()
+397:     before_path = list(sys.path)
+398:     for _ in range(2):
+399:         with published.source_bound(), published.reader_sdk_bound():
+400:             info = published.require_paths()
+401:             core = importlib.import_module("prismabuild.core")
+402:             tool = importlib.import_module("stage_move")
+403:             sdk = staged_lease.client_sdk()
+404:             assert sdk is not installed_client_sdk
+405:             assert tool is not old_tool and tool.pb is core
+406:             assert sdk.canonical_sha256 is core.canonical_sha256
+407:             for module in (core, tool, sdk):
+408:                 assert Path(module.__file__).resolve().is_relative_to(Path(info["root"]))
+409:             observed = []
+410:             child = Thread(target=lambda: observed.append(core.canonical_sha256({"scope": "owned"})))
+411:             child.start()
+412:             child.join()  # No source-bound object is used after graph restoration.
+413:             assert observed == [core.canonical_sha256({"scope": "owned"})]
+414:         assert sys.path == before_path
+415:         after = prismabuild_entries()
+416:         assert after.keys() == before.keys()
+417:         assert all(after[name] is before[name] for name in before)
+418:         assert sys.modules["stage_move"] is old_tool
+419:         assert staged_lease.client_sdk() is installed_client_sdk
+420: 
+Lines 423-458 (1-based):
+423:         tmp_path, monkeypatch, installed_client_sdk):
+424:     import json
+425:     import fullstack_pb_generation as published
+426: 
+427:     pin = json.loads(published.PIN_PATH.read_text())
+428:     pin["files"]["src/prismabuild/core.py"] = "0" * 64
+429:     path = tmp_path / "wrong-source-pin.json"
+430:     path.write_text(json.dumps(pin))
+431:     monkeypatch.setattr(published, "PIN_PATH", path)
+432:     monkeypatch.setattr(published, "_ROOT", None)
+433:     before = prismabuild_entries()
+434:     before_path = list(sys.path)
+435:     with pytest.raises(AssertionError, match="src/prismabuild/core.py"):
+436:         with published.source_bound():
+437:             pytest.fail("a mismatching source pin cannot enter the context")
+438:     assert sys.path == before_path
+439:     after = prismabuild_entries()
+440:     assert after.keys() == before.keys()
+441:     assert all(after[name] is before[name] for name in before)
+442: 
+443: 
+444: def test_source_scope_keeps_production_divergent_origin_refusal(
+445:         tmp_path, monkeypatch, installed_client_sdk):
+446:     from types import ModuleType
+447:     import fullstack_pb_generation as published
+448:     from prismaquant import staged_lease
+449: 
+450:     with published.source_bound(), published.reader_sdk_bound():
+451:         staged_lease.client_sdk()
+452:         foreign = ModuleType("prismabuild.foreign")
+453:         foreign.__file__ = str(tmp_path / "foreign.py")
+454:         with monkeypatch.context() as owned:
+455:             owned.setitem(sys.modules, foreign.__name__, foreign)
+456:             with pytest.raises(staged_lease.LeaseRefused, match="lease-helper-divergent"):
+457:                 staged_lease.client_sdk()
+458:     assert staged_lease.client_sdk() is installed_client_sdk
+
+docs/ARCHITECTURE.md
+Full-file raw SHA256: 130d9f08abd9d575adf4b540516555fd328f493e5975c145fa21e84c8099dc64
+Lines 3638-3663 (1-based):
+3638: Re-stamped 2026-10-09 (Refs PQ #2152, #2455): the shared connected-fixture pin
+3639: `tests/pb_runtime_generation_pin.json` moves with the reader pin. It now names
+3640: PB `027103d9a8417e06c7f13356e58779a313cd7088`, SDK5. The bundle is an
+3641: immutable `git archive` of that commit. It carries the `.pinned-source.json`
+3642: marker of the SDK3 and SDK4 bundles. PB action
+3643: `1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5` published it
+3644: read-only at
+3645: `/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088`.
+3646: The archive digest is
+3647: `94727274fd0515c5f1ee7c031c90c1106793ef22b38b286caf44f1755675677d`. It equals
+3648: the digest of `git archive` from the PrismaBuild history. The same method
+3649: reproduces the recorded SDK3 and SDK4 digests. Before this change, the reader
+3650: pin had moved and the shared pin had not. The Stage A produced-output, band
+3651: handoff, spool, retirement and render-publication suites then refused the SDK4
+3652: archive by version. A census of 121 test files showed 255 such failures.
+3653: `tests/test_pb_generation_pin_1084.py` now requires one commit for both pins.
+3654: The SDK4 archive stays on the mount. The consumer still refuses it by exact
+3655: version. Source qualification is independent of live worker activation. The
+3656: pbtest pin guard reads the reader pin. It refuses a shard when the interpreter
+3657: has no non-editable Git install of that commit. Every PrismaQuant pbtest run
+3658: now needs an SDK5 interpreter, and the SDK4 interpreters are refused. The x86
+3659: interpreter is `/home/rob/venvs/pq-task-suite-layer-sdk5-20261009/bin/python`
+3660: (PQ #2467). It is a layer over `/home/rob/venvs/pq-pin-fca4c6ce0-pb027103d9`,
+3661: which holds PrismaBuild `027103d9` and Tessera `fca4c6ce`. The guard passes in
+3662: PB action `20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6`.
+3663: PB #1485 still owns the portable Python 3.12 pack.
