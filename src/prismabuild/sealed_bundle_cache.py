@@ -18,7 +18,7 @@ from . import digest_primitives as digests, local_scratch
 def _default_bundle_cache_root() -> Path:
     directory = Path(tempfile.gettempdir())
     try:
-        local_scratch.root_identity(directory)
+        local_scratch.root_identity(str(directory))
     except (OSError, ValueError, local_scratch.LocalScratchError):
         directory = Path.home() / "tmp"
     return directory / "prismabuild-sealed-bundles"
