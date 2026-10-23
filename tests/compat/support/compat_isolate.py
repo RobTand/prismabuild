@@ -150,6 +150,7 @@ def main():
     args.store.mkdir(parents=True, exist_ok=True)
     (args.store / "tmp").mkdir(exist_ok=True)
     os.environ["TMPDIR"] = str(args.store / "tmp")
+    os.environ["PRISMABUILD_BUNDLE_CACHE_ROOT"] = str(args.store / "sealed-bundles")
     private_writes_only(args.store)
     output = {"isolated": bool(sys.flags.isolated), "no_site": bool(sys.flags.no_site),
               "affinity": sorted(os.sched_getaffinity(0)),
