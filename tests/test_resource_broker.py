@@ -694,8 +694,12 @@ def test_disappearing_scope_preserves_stopped_recovery_contract(authority, monke
         with pytest.raises(ValueError,match='stopped'):
             a.container(os.getuid(),os.getpid(),{'op':'container_begin','scope_id':record['scope_id']})
     else:
-        with pytest.raises(ValueError,match='scope disappeared'):
-            a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+        recovered=a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+        assert recovered['token']==record['token']
+        with pytest.raises(FileNotFoundError):
+            launch(a,request,recovered)
+        a.handle(os.getuid(),os.getpid(),auth(request,recovered,'stop'))
+        assert a.handle(os.getuid(),os.getpid(),auth(request,recovered,'release'))['released_unix']
 
 
 def test_absent_creation_recovery_fences_a_delayed_create_across_restart(authority):

@@ -4142,10 +4142,22 @@ class ResourceLedger:
                 (holder / marker).unlink(missing_ok=True)
             except OSError:
                 return
+        self._finish_returned_holder(holder)
+
+    def _finish_returned_holder(self, holder: Path) -> None:
+        """Retire only resource-free release remnants under the mutation guard."""
         try:
             holder.rmdir()
         except OSError:
-            pass
+            if not holder.is_dir():
+                return
+            # NFS may retain an unlinked metadata inode while a reader has it
+            # open. No resource token may leave the authoritative held tree.
+            if any(not path.name.startswith('.nfs') for path in holder.iterdir()):
+                raise
+            retired = self.base / 'released-holders'
+            retired.mkdir(parents=True, exist_ok=True)
+            os.rename(holder, retired / (holder.name + '.' + uuid.uuid4().hex))
 
     @_guarded_mutation(blocking=True)
     def release_count(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
@@ -5110,10 +5122,7 @@ class ResourceLedger:
             return released
         for marker in metadata:
             marker.unlink(missing_ok=True)
-        try:
-            holder.rmdir()
-        except OSError:
-            pass
+        self._finish_returned_holder(holder)
         return released
 
     def holder_census(self) -> holder_census.HolderCensus:

@@ -642,11 +642,9 @@ class Authority:
                     record['gpu_memory_max_bytes']=gpu_budget
                     _atomic(self.state_dir/(scope+'.json'),record)
                 if (not record.get('released_unix') and not record.get('pending')
-                        and (not record.get('stopped_unix') or self.backend.exists(scope))):
+                        and self.backend.exists(scope)):
                     try:self.backend.verify_cpu_weight(scope,cpu_weight)
-                    except FileNotFoundError:
-                        if not record.get('stopped_unix'):
-                            raise ValueError('scope disappeared before CPU weight verification') from None
+                    except FileNotFoundError:pass  # vanished scopes remain recoverable for stop/release
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int

@@ -1953,8 +1953,11 @@ class Controller:
                 # Attribution uses the physical free-token ordinals even when
                 # an orphan borrower still occupies them. These IDs explain
                 # which holders must drain; they never authorize acquisition.
-                predicted = self.ledger.cpu_ids(
-                    self.ledger._census_glob(self.ledger.free_dir, 'cpu-*'), self.tiers)[:declared]
+                try:
+                    predicted = self.ledger.cpu_ids(
+                        self.ledger._census_glob(self.ledger.free_dir, 'cpu-*'), self.tiers)[:declared]
+                except ValueError:
+                    return refuse('host_pressure_unproven', fresh=fresh)
                 if len(predicted) != declared:
                     predicted = None
             if predicted is None:

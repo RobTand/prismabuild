@@ -340,6 +340,48 @@ def test_running_donor_policy_must_name_its_actual_holder(loan_rig):
     assert cpu_lending.opportunistic_eligibility(saved, action, **options) is None
 
 
+@pytest.mark.parametrize('counted', [False, True])
+@pytest.mark.parametrize('nfs_remnant', [False, True])
+def test_completed_release_remnant_cannot_block_host_cpu_admission(loan_rig, monkeypatch, counted, nfs_remnant):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    holder = ledger.held_dir / donor['action_key']
+    original = Path.rmdir
+    def cannot_remove(path):
+        if path == holder:
+            if nfs_remnant:
+                (path / '.nfs-test-reader').touch()
+            raise OSError('injected delayed directory removal')
+        return original(path)
+    monkeypatch.setattr(Path, 'rmdir', cannot_remove)
+    if counted:
+        assert ledger.release_count(donor['action_key'], {'cpu': 4}) == {'cpu': 4}
+    else:
+        assert ledger.release(donor['action_key']) == 4
+    assert not holder.exists()
+    assert len(list((ledger.base / 'released-holders').iterdir())) == 1
+    assert ledger.begin_acquire('e' * 64, {'cpu': 1}, cpu_tiers=tiers)
+    assert ledger.capacity()['cpu'] == 8
+
+
+def test_directory_retirement_cannot_hide_a_surviving_resource(loan_rig):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    holder = ledger.held_dir / donor['action_key']
+    with pytest.raises(OSError):
+        ledger._finish_returned_holder(holder)
+    assert holder.is_dir() and len(list(holder.glob('cpu-*'))) == 4
+
+
+def test_bad_physical_token_refuses_pressure_attribution(loan_rig, monkeypatch):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    (ledger.free_dir / 'cpu-999').touch()
+    sample = observation(131)
+    sample['psi_some'] = .2
+    controller._host_sample = None
+    monkeypatch.setattr(controller, '_sampler', lambda: sample)
+    assert controller.decision(item, item['resources'], identity=('candidate', False), owner=None) is None
+    assert controller.last_decision['reason'] == 'host_pressure_unproven'
+
+
 @pytest.mark.parametrize('fault', ['default', 'priority', 'measurement', 'exclusive', 'funded', 'legacy_donor'])
 def test_eligibility_requires_explicit_policy(fault):
     item = {'action_key': 'a' * 64, 'cpu_qos': 'opportunistic', 'priority': -10, 'resources': {'cpu': 1}}
