@@ -127,15 +127,15 @@ def test_a_withdrawn_ready_copy_is_still_dropped_without_a_listing(
 
 
 def test_a_reap_lists_no_terminal_directory(
-    queue: pool.PoolQueue, tmp_path: Path,
+    queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stranded claim whose generation already ended is cleaned, not requeued."""
 
     assert queue.claim(capacity={"cpu": 1}) is not None
     claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())
-    record["claimed_unix"] = pool._now() - (pool.HEARTBEAT_S * 10)
-    pool.immutable_files.write_json_atomic(claimed_path, record)
+    later = pool._now() + pool.HEARTBEAT_S * 10
+    monkeypatch.setattr(pool, "_now", lambda: later)
     queue.records.lease_path(KEY).unlink(missing_ok=True)
     pool.immutable_files.write_json_atomic(
         queue.records.item_path(DONE, KEY),
