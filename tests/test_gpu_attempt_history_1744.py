@@ -170,3 +170,23 @@ def test_failed_process_sample_cannot_invent_used(monitored, monkeypatch):
     live.observe_gpu(record['scope_id'])
     observed = pb.gpu_execution_judgment(a.records[record['scope_id']]['resource_telemetry'])
     assert observed['gpu_use'] == 'unobserved' and observed['gpu_uuids'] == []
+
+
+def test_gpu_recovery_directory_is_readable_under_service_umask(monitored):
+    a, backend, rows, gpu, monitor = monitored
+    mask = os.umask(0o077)
+    try:
+        monitor.observe_gpu(rows[0][1]['scope_id'])
+    finally:
+        os.umask(mask)
+    assert stat.S_IMODE(a.gpu_evidence_dir.stat().st_mode) == 0o755
+
+
+def test_gpu_recovery_directory_symlink_cannot_change_target_mode(monitored, tmp_path):
+    a, backend, rows, gpu, monitor = monitored
+    target = tmp_path / 'unrelated'
+    target.mkdir(mode=0o700)
+    a.gpu_evidence_dir.symlink_to(target, target_is_directory=True)
+    with pytest.raises(OSError):
+        monitor.observe_gpu(rows[0][1]['scope_id'])
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700

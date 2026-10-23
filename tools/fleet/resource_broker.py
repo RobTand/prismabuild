@@ -1385,11 +1385,18 @@ class ResourceMonitor:
                 # its directory and read-only leaf; the payload may only read.
                 directory=self.authority.gpu_evidence_dir
                 directory.mkdir(mode=0o755,exist_ok=True)
-                info=directory.lstat()
-                if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
-                    raise ValueError('unsafe GPU evidence directory')
-                _atomic(directory/(scope+'.json'),{key:current[key] for key in
-                    ('action_key','nonce','scope_id','resource_telemetry')},mode=0o444)
+                directory_fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                try:
+                    info=os.fstat(directory_fd)
+                    if info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                        raise ValueError('unsafe GPU evidence directory')
+                    # The installed service uses UMask=0077. Public evidence
+                    # must remain readable without granting payload writes.
+                    os.fchmod(directory_fd,0o755)
+                    _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
+                        {key:current[key] for key in ('action_key','nonce','scope_id','resource_telemetry')},
+                        mode=0o444)
+                finally:os.close(directory_fd)
 
     def _poll_once(self):
         records=self._records();stopped=[];errors=[]

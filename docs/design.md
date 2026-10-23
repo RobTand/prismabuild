@@ -6232,6 +6232,8 @@ Core and Pool use one judgment over that evidence. A protected root-owned
 `gpu-observations/<scope>.json` beside the broker socket mirrors only action,
 nonce, scope and sampling evidence, without tokens or process identities. Like
 private broker attempt records it is retained for recovery until `/run` clears.
+The broker explicitly sets the directory to 0755 and leaves to 0444 despite
+its service's private umask; directory writes use a held no-follow descriptor.
 Core may recover earlier positive use there if the final RPC fails. Recovery
 opens each ancestor and leaf without following symlinks, verifies root ownership
 and write protection, caps input at 64 KiB, and checks the attempt identity.
