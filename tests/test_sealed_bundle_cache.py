@@ -1,6 +1,7 @@
 """Repeated seals reuse verified bytes without changing snapshot identity."""
 import ast
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import pickle
@@ -8,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 import types
+import threading
+import shutil
 
 import pytest
 
@@ -60,7 +63,7 @@ def test_cached_bytes_equal_an_independent_fresh_pack(sealing, monkeypatch):
 
 
 @pytest.mark.parametrize("component", (
-    "ref-name", "tip", "stamp-name", "stamp-payload", "pack-config", "pack-options", "git-version", "inherited-config",
+    "ref-name", "tip", "stamp-name", "stamp-payload", "pack-config", "pack-options", "git-version", "inherited-config", "git-environment",
 ))
 def test_every_seal_input_invalidates_the_cache(sealing, monkeypatch, component):
     checkout, _, packs, seal = sealing
@@ -85,6 +88,8 @@ def test_every_seal_input_invalidates_the_cache(sealing, monkeypatch, component)
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "pack.deltaCacheSize")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", "0")
+    elif component == "git-environment":
+        monkeypatch.setenv("GIT_TEST_NAME_HASH_VERSION", "2")
     else:
         native = submission._snapshot_git
 
@@ -96,6 +101,37 @@ def test_every_seal_input_invalidates_the_cache(sealing, monkeypatch, component)
     seal(**kwargs)
     seal(**kwargs)
     assert len(packs) == 2
+
+
+def test_external_graft_file_bypasses_cache_and_preserves_fresh_bytes(sealing, tmp_path, monkeypatch):
+    root, _, packs, seal = sealing
+    (root / "f00001.txt").write_text("second commit\n")
+    subprocess.run(["git", "-C", str(root), "commit", "-qam", "second"], check=True)
+    before = seal()[1]
+    tip = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    grafts = tmp_path / "grafts"
+    grafts.write_text(tip + "\n")
+    monkeypatch.setenv("GIT_GRAFT_FILE", str(grafts))
+    after = seal()[1]
+    assert seal()[1] == after and len(packs) == 3
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", "off")
+    assert seal()[1] == after
+    assert before != after
+
+
+def test_default_cache_prefers_qualified_tempdir_and_falls_back_to_home(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(cache_module.tempfile, "gettempdir", lambda: str(scratch))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    assert cache_module._default_bundle_cache_root() == scratch / "prismabuild-sealed-bundles"
+
+    def unsupported(root):
+        raise cache_module.local_scratch.LocalScratchError("unsupported filesystem")
+
+    monkeypatch.setattr(cache_module.local_scratch, "root_identity", unsupported)
+    assert cache_module._default_bundle_cache_root() == tmp_path / "home/tmp/prismabuild-sealed-bundles"
+    assert not (tmp_path / "home").exists()
 
 
 def test_ordered_refs_and_object_format_are_bound(tmp_path, monkeypatch):
@@ -358,6 +394,135 @@ print(snapshot["input"]["sha256"])
             child.wait()
 
 
+def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
+    first = {"case": 0}
+    prefix = core.canonical_sha256(first)[0]
+    second = next({"case": i} for i in range(1, 1000)
+                  if core.canonical_sha256({"case": i})[0] == prefix)
+    entered, release, other = threading.Event(), threading.Event(), threading.Event()
+    a, b = tmp_path / "a", tmp_path / "b"
+
+    def seal_first():
+        entered.set()
+        assert release.wait(15)
+        a.write_bytes(b"first")
+
+    def seal_second():
+        other.set()
+        b.write_bytes(b"second")
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first_result = workers.submit(cache_module.seal_bundle_cached, a, first, seal_first)
+        assert entered.wait(15)
+        second_result = workers.submit(cache_module.seal_bundle_cached, b, second, seal_second)
+        try:
+            assert other.wait(5), "an unrelated address waited for the first sealer"
+        finally:
+            release.set()
+        first_result.result(timeout=15)
+        second_result.result(timeout=15)
+    assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
+
+
+def test_warm_deadline_callers_all_reuse_the_bundle(sealing):
+    _, _, packs, seal = sealing
+    expected = seal()[1]
+    ready = threading.Barrier(4)
+
+    def warm():
+        ready.wait(timeout=30)
+        return seal(deadline=core.time.monotonic() + 600)[1]
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        results = [future.result(timeout=120) for future in [workers.submit(warm) for _ in range(4)]]
+    assert results == [expected] * 4
+    assert len(packs) == 1
+
+
+def test_hit_copy_releases_inventory_and_survives_eviction(sealing, monkeypatch):
+    _, cache, packs, seal = sealing
+    expected = seal()[1]
+    entry = next(cache.glob("*/bundle")).parent
+    copying, release = threading.Event(), threading.Event()
+    native_copy = shutil.copyfileobj
+
+    def held_copy(source, destination, length=0):
+        copying.set()
+        assert release.wait(30)
+        return native_copy(source, destination, length)
+
+    monkeypatch.setattr(shutil, "copyfileobj", held_copy)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        result = workers.submit(seal)
+        try:
+            assert copying.wait(30)
+            with cache_module._bundle_cache_lock(cache / ".inventory", nonblocking=True) as locked:
+                assert locked is not None, "copy holds the inventory lock"
+                shutil.rmtree(entry)
+        finally:
+            release.set()
+        assert result.result(timeout=60)[1] == expected
+    assert len(packs) == 1
+
+
+def test_fallback_does_not_rewrite_a_valid_entry(sealing, monkeypatch):
+    _, cache, packs, seal = sealing
+    expected = seal()[1]
+    bundle = next(cache.glob("*/bundle"))
+    identity = (bundle.parent.stat().st_ino, bundle.stat().st_ino)
+    monkeypatch.setattr(cache_module, "_reuse_bundle_cache", lambda *args, **kwargs: False)
+    assert seal()[1] == expected and len(packs) == 2
+    assert (bundle.parent.stat().st_ino, bundle.stat().st_ino) == identity
+    assert not list(cache.glob(".pending-*"))
+
+
+def test_dead_address_lock_is_reaped_without_process_inspection(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
+    script = '''
+import os, sys
+from pathlib import Path
+from prismabuild.sealed_bundle_cache import seal_bundle_cached
+seal_bundle_cached(Path(sys.argv[1]), {"dead": True}, lambda: os._exit(0))
+'''
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path / "dead")], check=False)
+    assert result.returncode == 0
+    assert list(cache.glob(".pin-*")) and list(cache.glob(".lock-*"))
+    target = tmp_path / "live"
+    cache_module.seal_bundle_cached(target, {"dead": False}, lambda: target.write_bytes(b"live"))
+    assert target.read_bytes() == b"live"
+    assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
+
+
+def test_failed_fill_is_removed_under_inventory_and_can_recover(sealing, monkeypatch):
+    _, cache, packs, seal = sealing
+    native_copy, native_remove = shutil.copyfileobj, shutil.rmtree
+    removed = []
+
+    def full(source, destination, length=0):
+        name = getattr(destination, "name", None)
+        if isinstance(name, (str, Path)) and Path(name).name == "bundle":
+            raise OSError("fixture disk full")
+        return native_copy(source, destination, length)
+
+    def checked_remove(path, *args, **kwargs):
+        if Path(path).name.startswith(".pending-"):
+            with cache_module._bundle_cache_lock(cache / ".inventory", nonblocking=True) as locked:
+                assert locked is None, "pending removal escaped inventory protection"
+            removed.append(Path(path).name)
+        return native_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfileobj", full)
+    monkeypatch.setattr(shutil, "rmtree", checked_remove)
+    expected = seal()[1]
+    assert removed and not list(cache.glob(".pending-*"))
+    monkeypatch.setattr(shutil, "copyfileobj", native_copy)
+    assert seal()[1] == expected
+    assert seal()[1] == expected and len(packs) == 2
+
+
 def _bundle_capability_routes(source):
     tree = ast.parse(source)
     parents, owners = {}, {}
@@ -493,22 +658,23 @@ def test_digest_check_mutation_fails_the_corruption_invariant(sealing, tmp_path)
 
     def corruption_invariant(module):
         assert not module._reuse_bundle_cache(cache, bundle.parent.name,
-                                              tmp_path / "out", bounded_wait=False)
+                                              tmp_path / "out")
 
     corruption_invariant(cache_module)
     with pytest.raises(AssertionError):
         corruption_invariant(mutant)
 
 
-@pytest.mark.parametrize("which_lock", ("stripe", "inventory"))
+@pytest.mark.parametrize("which_lock", ("address", "inventory"))
 def test_caller_deadline_bypasses_a_contended_cache_lock(sealing, which_lock):
     _, cache, packs, seal = sealing
     expected = seal()[1]
     address = next(cache.glob("*/bundle")).parent.name
-    name = f".lock-{address[0]}" if which_lock == "stripe" else ".inventory"
-    with cache_module._bundle_cache_lock(cache / name):
+    lock = (cache_module._bundle_cache_flight(cache, address, bounded_wait=False) if which_lock == "address"
+            else cache_module._bundle_cache_lock(cache / ".inventory"))
+    with lock:
         assert seal(deadline=core.time.monotonic() + 60)[1] == expected
-    assert len(packs) == 2
+    assert len(packs) == (1 if which_lock == "address" else 2)
 
 
 def test_ordinary_cache_path_refuses_a_forged_verification(sealing, monkeypatch):

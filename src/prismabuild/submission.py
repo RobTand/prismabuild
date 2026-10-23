@@ -721,7 +721,8 @@ def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[st
                              config: str, *, deadline: float | None) -> list[str | None]:
     """Bind attributes outside the object closure in the private bare sealer."""
     if (not environment.get("GIT_INDEX_FILE")
-            or any(name in environment for name in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_ATTR_SOURCE"))
+            or any(name in environment for name in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_ATTR_SOURCE",
+                                                    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE"))
             or any(part.startswith("core.worktree\n") for part in config.split("\0"))
             or any("\n" in environment.get(name, "") for name in ("HOME", "XDG_CONFIG_HOME"))
             or any("\n" in part.partition("\n")[2] for part in config.split("\0")
@@ -795,6 +796,10 @@ def write_deterministic_bundle(
             in, without which the sealed commit is not visible.
     """
 
+    environment = dict(environment)
+    git_environment = sorted((key, value) for key, value in environment.items()
+        if key.startswith("GIT_") and key not in {
+            "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"})
     object_format = _snapshot_git(
         root,
         [f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
@@ -831,6 +836,7 @@ def write_deterministic_bundle(
         "pack_options": BUNDLE_PACK_OPTIONS, "git_version": git_version,
         "effective_config": effective_config if git_version else "",
         "attribute_inputs": attribute_inputs if git_version else None,
+        "git_environment": git_environment,
     }
 
     def seal() -> None:

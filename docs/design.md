@@ -3644,15 +3644,20 @@ without the member or the ordinary package import boundary.
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
   Submission sealing caches those exact bundle bytes on the submitting host
-  (#2171). The default root is `~/tmp/prismabuild-sealed-bundles`, limited to
-  128 entries and 2 GiB of bundle and digest-record bytes, plus sixteen fixed
-  stripe locks and one inventory lock. `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  (#2171). The default root is `prismabuild-sealed-bundles` under the client's
+  `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
+  under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
+  digest-record bytes, including active fill reservations.
+  `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
   another absolute root; `off` disables the cache. The opened directory must
   be private to its owner and on a positively identified local disk filesystem
   accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
   The cache key binds the object format, ordered ref names and tip IDs, exact
   header and tip stream, pack configuration and options, Git version, and the
   effective Git configuration including inherited settings not explicitly pinned.
+  Sorted `GIT_*` variables also participate, except the private index and object
+  storage paths whose contents are already bound. External graft and shallow
+  history overrides bypass caching rather than trusting mutable path contents.
   It also binds the private index and contents of Git's global, system and
   repository attribute files. A configured attribute path alone is insufficient:
   changing its `delta` rules can change pack bytes without changing any object.
@@ -3664,9 +3669,16 @@ without the member or the ordinary package import boundary.
   The snapshot tip transitively binds the injected stamp or closure, tree,
   parent and reachable objects. Storage layout and temporary paths do not
   participate. A Git-version or configuration probe failure bypasses the cache.
-  A stripe flock spans lookup and sealing, so concurrent identical seals
-  share one fill. Callers with a deadline bypass a contended stripe lock.
-  The inventory flock serializes copy verification, publication and eviction.
+  A per-address flock coalesces identical misses without holding up unrelated
+  addresses. A shared pin keeps its lock inode stable for owners and waiters;
+  the last user removes idle lock files. Dead owners are reaped using only
+  cache-owned nonblocking locks. Warm hits need no per-address lock.
+  Deadline callers bypass a contended miss lock.
+  Hits open metadata and payload descriptors under a nonblocking shared
+  inventory flock, then release it before copying and verification. Open
+  descriptors survive eviction. Four warm deadline readers can all hit.
+  Exclusive inventory locking covers only bookkeeping, space reservations,
+  trimming and publication; contention falls back to fresh sealing.
   Each hit copies to a private destination-side file, verifies its length and
   stored SHA-256, and atomically installs that same file. Only verification
   mints a registered, single-use `_VerifiedBundle` capability. Installation
@@ -3674,10 +3686,13 @@ without the member or the ordinary package import boundary.
   it rechecks the verified digest as well as stat identity, because same-size
   writes can share filesystem timestamps. Tests force that metadata collision.
   instances carry no minting authority. A miss runs the original
-  sealer. Under the inventory lock, publication evicts oldest entries to make
-  room, fsyncs both staged files and their directory, renames the complete
-  entry, and fsyncs the cache root. Interrupted staging is removed on the next
-  access. Cache I/O errors, partial records and digest mismatches fall back
+  sealer. A fallback preserves an already valid cache entry. Fills reserve
+  space and mark their staging owner under inventory protection, copy outside
+  it, then rename the complete entry under it. Entries are disposable and
+  digest-verified, so cache writes require no fsync. Failed staging is removed
+  under the inventory lock; abandoned staging is reaped on a subsequent miss
+  or fill, with live reservations counted against the caps. Cache I/O errors,
+  partial records and digest mismatches fall back
   to sealing; oversized bundles bypass storage. A hit is byte-identical to
   a fresh seal and changes neither snapshot records nor action keys.
   `tools/maintenance/measure_bundle_cache.py` compares repeated fixture
