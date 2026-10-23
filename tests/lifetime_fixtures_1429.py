@@ -107,7 +107,8 @@ def claim(queue: AdmittedQueueFixture) -> dict:
     return item
 
 
-def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float = FENCE_S):
+def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float = FENCE_S,
+                          max_attempts: int = 1):
     """A fenced action whose checkout is a materialized snapshot."""
 
     source = tmp_path / "source"
@@ -145,7 +146,7 @@ def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float = FENCE_S):
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
-                  checkout_snapshot=snapshot, worker_script=WORKER, max_attempts=1)
+                  checkout_snapshot=snapshot, worker_script=WORKER, max_attempts=max_attempts)
     return queue, action, cas
 
 

@@ -20910,6 +20910,9 @@ registration or vanished tree without removal proof retains custody.
 A successful retry records its actual completion time. A retry after the
 fence permits ordinary release on settlement proof but audits UNKNOWN.
 Container cleanup alone never certifies snapshot cleanup.
+The executed claim snapshot carries the same checkout proof as the outcome,
+so late-finisher recovery can settle its own journal while preserving the
+successor's claim, lease, tokens and immutable earlier result.
 
 This is source support for SC-01, ID-02, ID-08 and SM-01 of the staged-read
 contract. It does not change their wider requirement status. No generation

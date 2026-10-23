@@ -82,3 +82,28 @@ def test_cleanup_proof_from_another_attempt_never_returns_tokens(
     done = _finish(queue, item, outcome)
     assert done == queue.records.item_path(pool.DONE, item["action_key"])
     assert queue.ledger().held_keys() == []
+
+
+def test_late_snapshot_completion_keeps_its_cleanup_proof_and_successor_isolation(
+        tmp_path, broker, monkeypatch):
+    queue, action, _ = fenced_snapshot_queue(tmp_path, max_attempts=3)
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    first = claim(queue)
+    outcome = _execute(queue, first)
+    assert outcome["status"] == "executed"
+    # A collector can fail after the payload published. Its completed attempt
+    # remains immutable even if its old worker later reports success.
+    ready = _finish(queue, first, {**outcome, "status": "failed", "returncode": 1})
+    original = queue.attempt_outcomes(record_store.read_document(ready))[0]
+    successor = claim(queue)
+    key = first["action_key"]
+    assert successor["claimed_by"] != first["claimed_by"]
+    path = queue.records.item_path(pool.CLAIMED, key)
+    live, lease = path.read_bytes(), queue.records.lease_path(key).read_bytes()
+    held = queue.ledger().held()
+    _finish(queue, first, outcome)
+    assert path.read_bytes() == live
+    assert queue.records.lease_path(key).read_bytes() == lease
+    assert queue.ledger().held() == held
+    assert not queue.records.late_finish_path(first).exists()
+    assert queue.attempt_outcomes(record_store.read_document(path))[0] == original

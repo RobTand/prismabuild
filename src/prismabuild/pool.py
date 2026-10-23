@@ -21829,6 +21829,7 @@ class PoolQueue:
             life.claim = lifetime_fence.attempt_identity(item)
             if item.get("checkout_snapshot") is not None:
                 checkout_cleanup["claim"] = life.claim
+                item["checkout_cleanup"] = checkout_cleanup
                 outcome["checkout_cleanup"] = checkout_cleanup
             outcome["lifetime_evidence"] = life.as_record()
         outcome.update(budget.as_record())
