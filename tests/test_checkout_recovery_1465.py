@@ -330,7 +330,8 @@ def _planned(case: RecoveryCase, **kwargs: object) -> dict[str, object]:
     assert plan["schema"] == PLAN_SCHEMA, json.dumps(plan, sort_keys=True)
     assert plan["complete"] is True and plan["status"] == "planned", plan
     assert case.cleanup_calls == []
-    assert case.preserved() == before, _snapshot_delta(before, case.preserved())
+    after = case.preserved()
+    assert after == before, str(_snapshot_delta(before, after))
     return plan
 
 
@@ -343,7 +344,8 @@ def _refused(case: RecoveryCase, operation: Callable[[], dict[str, object]]) -> 
     assert result["errors"] and all(isinstance(error, str) for error in result["errors"])
     assert result["removed"] == []
     assert case.cleanup_calls == [], "a refusal must precede the one deletion owner"
-    assert case.preserved() == before, "refusal changed original or protected bytes"
+    after = case.preserved()
+    assert after == before, str(_snapshot_delta(before, after))
     return result
 
 
