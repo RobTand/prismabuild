@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 import json
 import shutil
 
@@ -16,7 +17,18 @@ ORIGINAL = "f82bb7b65fee904a64b4e114b0c2171805efd5de9c68e59b932c356d82d44d6c"
 
 
 @pytest.fixture(scope="module")
-def actual_loan(tmp_path_factory):
+def private_path_observations():
+    # These assertions compare decisions, not canonical wire bytes. Capture
+    # qualification still requires its stable-path namespace independently.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(record_compat, "KINDS", tuple(
+            replace(kind, stable_paths=False) if kind.name == "host-cpu-metadata" else kind
+            for kind in record_compat.KINDS))
+        yield
+
+
+@pytest.fixture(scope="module")
+def actual_loan(tmp_path_factory, private_path_observations):
     return write(ROOT, CASE, tmp_path_factory.mktemp("real-opportunistic-loan"))
 
 
