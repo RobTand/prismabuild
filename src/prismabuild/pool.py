@@ -16110,9 +16110,8 @@ class PoolQueue:
                     is capability_eligibility.Presence.PRESENT]
         if not without_gpu or not with_gpu:
             return False
-        return any(all(tag not in offered for offered in without_gpu)
-                   and any(tag in offered for offered in with_gpu)
-                   for tag in required)
+        return (not any(required <= offered for offered in without_gpu)
+                and any(required <= offered for offered in with_gpu))
 
     def _class_scoped_candidate(
         self, item: Mapping[str, object], records: Sequence[Mapping[str, object]],
@@ -16122,9 +16121,9 @@ class PoolQueue:
         Its tags name something no host without a GPU offers, it is no gang member
         (a gang election is written before any later check and outlives a refusal,
         so it could fence the GPU row out with every token free), and its sealed
-        host demand is plain and bounded: an explicit ``cpu`` and ``mem_gb``, no
-        GPU, no tier or fill kind (a tier demand takes what a GPU row's own claim
-        may need). This only makes the row a candidate; whether it passes is
+        host demand is bounded: explicit ``cpu`` and ``mem_gb``, optional
+        ``spool_gb``, no GPU, no tier or fill kind (a tier demand takes what a
+        GPU row's own claim may need). This only makes the row a candidate; whether it passes is
         decided at the token boundary (:meth:`_class_scoped_beside_room`).
         """
         if item.get("gang") is not None or not self._excluded_from_cpu_hosts(item, records):
@@ -16133,7 +16132,7 @@ class PoolQueue:
             host, tiers = storage_tiers.split_demand(self.demand_of(item))
         except (TypeError, ValueError, PoolContractError):
             return False
-        return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb"}
+        return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb", "spool_gb"}
                 and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
 
     def _class_scoped_gpu_shape(
@@ -16217,106 +16216,6 @@ class PoolQueue:
         return room, None
 
     @staticmethod
-    def _class_scoped_holder_costs(
-        ledger: "ResourceLedger", controller: object | None,
-    ) -> dict[str, float] | None:
-        """This host's live holder costs by the owner's rule, or ``None`` when unknown (#1721).
-
-        Called under host admission at the token boundary. It applies the exact
-        terms ``adaptive_cpu.decision`` refuses on: every holder's conservative
-        cost over the same inputs the owner uses -- the holder's declared
-        reservation, its fresh local telemetry, and the controller's own cached
-        interval state (``jobs.json``). Only an interval inside
-        ``MIN_INTERVAL_S`` to ``MAX_INTERVAL_S`` prices a rate (``cpu * 1.25``);
-        a shorter delta reuses the cached rate the owner's own decision just
-        priced, and anything else charges the full reservation to ``pending``
-        too. Measurement holders are not priced here: a measurement on the box
-        refuses the GPU row on its own. ``None`` when any term does not read --
-        unknown costs are unknown, never zero -- and when there is no
-        controller to own the sample. Host-local reads only.
-        """
-        if controller is None:
-            return None
-        base = getattr(controller, "base", None)
-        sample = getattr(controller, "_host_sample", None)
-        cpus = getattr(controller, "cpus", None)
-        if base is None or not isinstance(sample, Mapping) or not isinstance(cpus, list):
-            return None
-        try:
-            now = time.time()
-            sampled = sample.get("sampled_unix", 0)
-            busy = sample.get("busy_cpus")
-            count = sample.get("cpu_count")
-            interval = sample.get("interval_s")
-            if not (type(sampled) in (int, float) and 0 <= now - sampled <= cpu_admission.MAX_SAMPLE_AGE_S):
-                return None
-            if not (isinstance(busy, (int, float)) and math.isfinite(busy)):
-                return None
-            if count != len(cpus) or not (
-                    isinstance(interval, (int, float)) and math.isfinite(interval)):
-                return None
-            recent = cpu_admission.read_json(Path(str(base)) / "jobs.json")
-            if not isinstance(recent, dict):
-                return None
-            active = 0.0
-            pending = 0.0
-            census = holder_census.HolderCensus(ledger.held_dir, cpu_admission.read_json)
-            for holder in census.non_mirror_holders:
-                reservation = census.cpu(holder.name)
-                meta = reservation.metadata
-                physical = reservation.physical_cpu_count
-                reserved = meta.get("declared_cpu", physical)
-                if type(reserved) is not int or reserved <= 0:
-                    if meta or reservation.has_contents:
-                        return None
-                    continue
-                if meta.get("measurement"):
-                    return None
-                record = cpu_admission.read_json(Path(str(base)) / "telemetry" / f"{holder.name}.json")
-                cpu: float | None = None
-                valid = (record.get("complete") is True
-                         and 0 <= now - record.get("sampled_unix", 0) <= cpu_admission.MAX_SAMPLE_AGE_S
-                         and record.get("sampled_unix", 0) >= meta.get("admitted_unix", now)
-                         and record.get("action_key", holder.name) == holder.name
-                         and all(type(record.get(kind)) in (int, float) and math.isfinite(record[kind])
-                                 and record[kind] >= 0 for kind in ("cpu_seconds", "wall_seconds")))
-                if valid:
-                    previous = recent.get(holder.name, {})
-                    if not isinstance(previous, Mapping):
-                        return None
-                    if (previous.get("nonce") != record.get("nonce")
-                            or previous.get("sampled_unix", 0) < meta.get("admitted_unix", now)):
-                        previous = {}
-                    wall_delta = record["wall_seconds"] - previous.get(
-                        "wall_seconds", record["wall_seconds"])
-                    cpu_delta = record["cpu_seconds"] - previous.get(
-                        "cpu_seconds", record["cpu_seconds"])
-                    if not (type(wall_delta) in (int, float) and type(cpu_delta) in (int, float)
-                            and math.isfinite(wall_delta) and math.isfinite(cpu_delta)):
-                        return None
-                    if (cpu_admission.MIN_INTERVAL_S <= wall_delta <= cpu_admission.MAX_INTERVAL_S
-                            and cpu_delta >= 0):
-                        cpu = cpu_delta / wall_delta
-                        if not math.isfinite(cpu) or cpu < 0:
-                            return None
-                    elif (0 <= wall_delta < cpu_admission.MIN_INTERVAL_S and previous
-                            and 0 <= now - previous.get("sampled_unix", 0)
-                            <= cpu_admission.MAX_SAMPLE_AGE_S):
-                        cpu = previous.get("_cpu")
-                        if cpu is not None and not (
-                                type(cpu) in (int, float) and math.isfinite(cpu) and cpu >= 0):
-                            return None
-                if cpu is None:
-                    cost = float(reserved)
-                    pending += cost
-                else:
-                    cost = max(0.05, cpu * 1.25)
-                active += cost
-            return {"active": active, "pending": pending, "busy_cpus": float(busy)}
-        except (OSError, ValueError, TypeError, AttributeError):
-            return None
-
-    @staticmethod
     def _class_scoped_projected_headroom(
         room: Mapping[str, object], demand: Mapping[str, int], *,
         cpu_count: int, holder_costs: Mapping[str, float] | None,
@@ -16329,15 +16228,16 @@ class PoolQueue:
         row's own cost cross the host. This replays the owner's rule through
         the one shared calculation (:func:`adaptive_cpu.projected_cpu_fits`)
         with the live terms: every holder on the box plus this candidate at
-        its complete admission cost, including accepted export allowances before
-        funding deductions, plus the GPU row at its declared demand. Without
-        holder costs the row waits: unknown is unknown, never zero.
+        its future busy-holder cost, including the owner's margin on accepted
+        export allowances before funding deductions, plus the GPU row at its
+        declared demand. Without holder costs the row waits: unknown is unknown,
+        never zero.
         """
         if holder_costs is None:
             return {"class_scoped": "holder_costs_unreadable"}
         try:
             full = candidate_demand if candidate_demand is not None else demand
-            holder_cost = float(int(full.get("cpu", 0)))
+            holder_cost = cpu_admission.cpu_consumption_cost(float(int(full.get("cpu", 0))))
             gpu_cost = float(int(room["room"].get("cpu", 0)))  # type: ignore[union-attr]
             active = float(holder_costs["active"]) + holder_cost
             pending = float(holder_costs["pending"]) + holder_cost
@@ -17820,7 +17720,8 @@ class PoolQueue:
             adaptive = controller.decision(
                 item, demand, identity=identity, owner=dependent_owner,
                 allowance=allowance,
-                foreign_load_exempt=canary_exempt)
+                foreign_load_exempt=canary_exempt,
+                include_holder_costs=request.class_room is not None)
             cpu_decision = getattr(controller, "last_decision", None)
             refused = adaptive is None
             if refused:
@@ -17883,8 +17784,7 @@ class PoolQueue:
                 adaptive = None
         if not refused and request.class_room is not None:
             # Final token/headroom checks share the candidate's host admission lock.
-            costs = (self._class_scoped_holder_costs(ledger, controller)
-                     if controller is not None else None)
+            costs = controller.holder_costs if controller is not None else None
             why = self._class_scoped_beside_room(
                 request.class_room, ledger=ledger, identity=identity,
                 demand=reservation_demand,

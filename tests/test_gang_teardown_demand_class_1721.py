@@ -10,8 +10,8 @@ Unit and integrated claim coverage for the three rules:
   keeps the old fence against strictly lower priority and nothing more.
 * Class-scoped CPU rows (tags no host without a GPU offers) pass the
   READY-GPU guard only beside the eligible GPU row's own room, with adaptive
-  headroom through the one shared projected-cost calculation at declared
-  demand. Portable rows and hostname-pinned rows never qualify.
+  headroom through the shared pricing owner's future busy-holder cost.
+  Portable rows and hostname-pinned rows never qualify.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation
 from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
+from gpu_capacity_fixture import idle_gpu_sample
 
 FIRST = 1000.0
 BOUND = reservation.GANG_RESERVE_AFTER_S
@@ -103,7 +104,7 @@ def test_projected_cost_unknown_is_unknown_never_zero(kw):
     assert adaptive_cpu.projected_cpu_fits(**kw) is False
 
 
-def test_class_headroom_shares_the_one_calculation_at_declared_demand():
+def test_class_headroom_shares_the_one_calculation_at_future_holder_cost():
     room = {"action_key": "b" * 64, "room": {"cpu": 4, "mem_gb": 48}}
     costs = {"active": 1.0, "pending": 0.0, "busy_cpus": 1.0}
     # Declared demand decides: a 1-CPU candidate beside a 4-CPU GPU row fits 8.
@@ -115,7 +116,7 @@ def test_class_headroom_shares_the_one_calculation_at_declared_demand():
         room, {"cpu": 6, "mem_gb": 2}, cpu_count=8, holder_costs=costs,
         candidate_demand={"cpu": 6, "mem_gb": 2})
     assert held is not None and held["kept_for"] == "class_scoped_cpu_projected_cpu_cost"
-    assert held["holder_cost"] == 6.0 and held["gpu_cost"] == 4.0
+    assert held["holder_cost"] == 7.5 and held["gpu_cost"] == 4.0
     # The token remainder never stands in for the declared cost.
     assert adaptive_cpu.projected_cpu_fits(
         busy_cpus=1.0, pending_cpu_cost=6.0, active_cpu_cost=7.0,
@@ -583,26 +584,26 @@ def test_claim_class_scoped_producer_allowance_preserves_gpu_headroom(class_clai
     assert before["cpu"] >= 3 + 4 and before["mem_gb"] >= 3 + 8
     with _class_gpu_lock_busy(host, gpu):
         assert _claim_class_action(host) is None
-    _assert_class_deferred(host, candidate, gpu, cost=3)
+    _assert_class_deferred(host, candidate, gpu, cost=3.75)
     assert host.queue.ledger().available() == before
     assert host.queue.ledger().held_keys() == [holder]
 
 
 @pytest.mark.parametrize(("busy", "admitted"), [
-    (1.0, True), (1.01, True), (1.02, False),
+    (1.25, True), (1.26, True), (1.27, False),
 ], ids=["equality", "tolerance-boundary", "beyond-tolerance"])
 def test_claim_class_scoped_producer_full_allowance_fits(class_claim_host, busy, admitted):
     host = class_claim_host
     _class_holder(host)
     candidate = _publish_class_action(host, "producer", {"cpu": 1, "mem_gb": 1},
                                       producer=True, slots=2)
-    gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 8})
+    gpu = _publish_class_action(host, "gpu", {"cpu": 3, "gpu": 1, "mem_gb": 8})
     host.busy = busy
     with _class_gpu_lock_busy(host, gpu):
         claimed = _claim_class_action(host)
     if not admitted:
         assert claimed is None
-        _assert_class_deferred(host, candidate, gpu, cost=3)
+        _assert_class_deferred(host, candidate, gpu, cost=3.75, gpu_cost=3)
         return
     assert claimed is not None and claimed["action_key"] == candidate
     assert host.queue.ledger().holder_tokens(candidate) == {"cpu": 3, "mem_gb": 3}
@@ -625,7 +626,7 @@ def test_claim_class_scoped_producer_without_accepted_allowance(
     candidate = _publish_class_action(host, "producer", {"cpu": 1, "mem_gb": 1},
                                       producer=True, slots=slots)
     gpu = _publish_class_action(host, "gpu", {"cpu": 4, "gpu": 1, "mem_gb": 8})
-    host.busy = 3.0 if adaptive else 7.0
+    host.busy = 2.75 if adaptive else 7.0
     with _class_gpu_lock_busy(host, gpu):
         claimed = _claim_class_action(host, adaptive=adaptive)
     assert claimed is not None and claimed["action_key"] == candidate
@@ -638,7 +639,7 @@ def test_claim_class_scoped_producer_without_accepted_allowance(
     assert host.queue.records.item_path(pool.READY, gpu).exists()
 
 
-@pytest.mark.parametrize(("busy", "admitted"), [(2.0, True), (3.0, False)],
+@pytest.mark.parametrize(("busy", "admitted"), [(1.75, True), (3.0, False)],
                          ids=["funded-fits", "funded-defers"])
 def test_claim_class_scoped_funded_row_uses_full_demand(class_claim_host, busy, admitted):
     host = class_claim_host
@@ -653,7 +654,7 @@ def test_claim_class_scoped_funded_row_uses_full_demand(class_claim_host, busy, 
     assert host.queue.ledger().available() == before
     if not admitted:
         assert claimed is None
-        _assert_class_deferred(host, candidate, gpu, cost=1, gpu_cost=5)
+        _assert_class_deferred(host, candidate, gpu, cost=1.25, gpu_cost=5)
         return
     assert claimed is not None and claimed["action_key"] == candidate
     assert host.queue.ledger().holder_tokens(candidate) == {}
@@ -733,7 +734,38 @@ def test_automatic_capability_tags_do_not_establish_class_exclusion(capability):
     assert not pool.PoolQueue._class_scoped_candidate(_candidate_self(), row, offers)
 
 
-def test_original_1589_spool_row_stays_outside_plain_cpu_exception():
+def test_original_1589_spool_row_is_class_scoped():
     row = {"tags": ["container-image-v1", "gb10"],
            "resources": {"cpu": 1, "mem_gb": 4, "spool_gb": 2}}
-    assert not pool.PoolQueue._class_scoped_candidate(_candidate_self(), row, _offers())
+    assert pool.PoolQueue._class_scoped_candidate(_candidate_self(), row, _offers())
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+@pytest.mark.parametrize(("capacity", "gpu_spool", "admitted"), [
+    (6, 2, True), (6, 3, False), (3, 0, False),
+], ids=["exact-room", "preserve-gpu-spool", "own-spool-exhausted"])
+def test_class_spool_contention_keeps_gpu_room(class_claim_host, monkeypatch, adaptive,
+                                                capacity, gpu_spool, admitted):
+    host = class_claim_host
+    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: idle_gpu_sample())
+    host.capacity["spool_gb"] = capacity
+    holder = _publish_class_action(host, "holder", {"cpu": 1, "mem_gb": 1, "spool_gb": 2})
+    assert _claim_class_action(host, adaptive=adaptive)["action_key"] == holder
+    candidate = _publish_class_action(host, "spool-prerequisite", {
+        "cpu": 1, "mem_gb": 4, "spool_gb": 2}, tags=["gb10", "arm64"])
+    gpu = _publish_class_action(host, "gpu", {
+        "cpu": 4, "gpu": 1, "mem_gb": 16, "spool_gb": gpu_spool})
+    with _class_gpu_lock_busy(host, gpu):
+        claimed = _claim_class_action(host, adaptive=adaptive)
+    assert bool(claimed) is admitted
+    if admitted:
+        assert claimed["action_key"] == candidate
+        assert not claimed.get("cpu_guest")
+        assert host.queue.ledger().holder_tokens(candidate)["spool_gb"] == 2
+    else:
+        assert host.queue.records.item_path(pool.READY, candidate).exists()
+        assert host.queue.ledger().holder_tokens(candidate) == {}
+    assert _claim_class_action(host, adaptive=adaptive)["action_key"] == gpu
+    held = host.queue.ledger().held()
+    assert held["spool_gb"] == 2 + (2 if admitted else 0) + gpu_spool
+    assert held["spool_gb"] <= capacity

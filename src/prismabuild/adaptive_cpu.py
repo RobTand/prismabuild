@@ -48,6 +48,12 @@ _UNREAD = object()
 #: Tolerance on the projected-cost comparison. A learned cheap cost only
 #: admits more; the declared demand is the conservative side (#1721).
 PROJECTED_CPU_TOLERANCE = 0.01
+CPU_COST_MARGIN = 1.25
+
+
+def cpu_consumption_cost(cpu: float) -> float:
+    """Conservative holder cost for measured or future CPU consumption."""
+    return max(.05, cpu * CPU_COST_MARGIN)
 
 
 def projected_cpu_fits(*, busy_cpus: object, pending_cpu_cost: object,
@@ -1799,15 +1805,93 @@ class Controller:
         return {'cpus': spare[:need_cpu], 'mem_gb': need_mem,
                 'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
 
+    def _price_holders(self, census, holders, now):
+        """Price one admission census once, retaining its rates and headroom terms.
+
+        Ordinary admission consumes these rates for lending as well. Funded
+        dependents request them only when a caller must preserve other room;
+        their usual allowance fast path remains independent of host pressure.
+        """
+        profiles = read_json(self.base / 'profiles.json')
+        recent = read_json(self.base / 'jobs.json')
+        next_recent = {}
+        prices = {}
+        active = pending = 0.
+        known = True
+        for holder in holders:
+            reservation = census.cpu(holder.name)
+            meta = reservation.metadata
+            reserved = meta.get('declared_cpu', reservation.physical_cpu_count)
+            if not reserved:
+                known = known and not (meta or reservation.has_contents)
+                continue
+            if type(reserved) is not int or reserved < 0 or meta.get('measurement'):
+                known = False
+            # ``self.base`` rather than ``local_telemetry_path``: that helper
+            # resolves the ledger path, which is three stats on the mount per
+            # call, and this loop runs once per holder under the lock.
+            record = read_json(self.base / 'telemetry' / f'{holder.name}.json')
+            valid = (record.get('complete') is True
+                     and 0 <= now - record.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
+                     and record.get('sampled_unix', 0) >= meta.get('admitted_unix', now)
+                     and record.get('action_key', holder.name) == holder.name
+                     and all(type(record.get(k)) in (int, float) and math.isfinite(record[k]) and record[k] >= 0
+                             for k in ('cpu_seconds', 'wall_seconds')))
+            previous = recent.get(holder.name, {})
+            if (previous.get('nonce') != record.get('nonce')
+                    or previous.get('sampled_unix', 0) < meta.get('admitted_unix', now)):
+                previous = {}
+            cpu = None
+            if valid:
+                wall_delta = record['wall_seconds'] - previous.get('wall_seconds', record['wall_seconds'])
+                cpu_delta = record['cpu_seconds'] - previous.get('cpu_seconds', record['cpu_seconds'])
+                if MIN_INTERVAL_S <= wall_delta <= MAX_INTERVAL_S and cpu_delta >= 0:
+                    cpu = cpu_delta / wall_delta
+                    record['_cpu'] = cpu
+                    next_recent[holder.name] = record
+                    # Measurements are never learned from (``record_completion``);
+                    # one is read here only beside its own dependents (#982).
+                    if meta.get('shape') and not meta.get('measurement'):
+                        old = profiles.get(meta['shape'], {})
+                        # Decay slowly; increases apply immediately. A changed
+                        # phase must promptly undo a previous cheap estimate.
+                        profiles[meta['shape']] = {**old, 'cpu': max(cpu * CPU_COST_MARGIN, old.get('cpu', cpu) * .98),
+                                                   'sampled_unix': now,
+                                                   'samples': min(1000, old.get('samples', 0) + 1),
+                                                   'memory_peak_bytes': max(record.get('memory_peak_bytes', 0),
+                                                                            old.get('memory_peak_bytes', 0))}
+                elif 0 <= wall_delta < MIN_INTERVAL_S and previous:
+                    next_recent[holder.name] = previous
+                    if 0 <= now - previous.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S:
+                        cpu = previous.get('_cpu')
+                else:
+                    next_recent[holder.name] = record
+            cost = float(reserved) if cpu is None else cpu_consumption_cost(cpu)
+            prices[holder.name] = (cpu, cost)
+            active += cost
+            # Startup/unknown attribution is not already in host busy.
+            if cpu is None:
+                pending += cost
+        self.write_state('jobs.json', next_recent)
+        profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
+        self.write_state('profiles.json', profiles)
+        terms = {'active': active, 'pending': pending,
+                 'busy_cpus': self._host_sample.get('busy_cpus')}
+        self.holder_costs = terms if known else None
+        return profiles, prices, terms
+
     def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
-                 foreign_load_exempt=False):
+                 foreign_load_exempt=False, include_holder_costs=False):
         """Decide under admission; callers may pre-read sealed action identity.
 
         ``owner`` is the producer a dependent serves, when the caller knows it
         (the pool reads it from the sealed request, outside this lock); left unread it is
         read only if a measurement holds the host (#982).  ``allowance`` is the
         export allowance a producer's claim reserves with itself (#985).
+        ``include_holder_costs`` also prices a funded claim's census for room
+        protection; ``holder_costs`` is unknown unless that sample is fresh.
         """
+        self.holder_costs = None
         funding_refusal = None
         measurement_drain = {}
         self.last_decision = {"reason": "not_evaluated"}
@@ -1878,6 +1962,8 @@ class Controller:
             funded, funding_refusal = self._funding(owner, holders, demand, census)
             if funded is not None:
                 serves_measurement = funded.pop('owner_measurement')
+                if include_holder_costs and fresh:
+                    self._price_holders(census, holders, now)
                 self.last_decision = {"reason": "admitted_on_allowance", "sample": sample,
                                       "dependent_of": owner}
                 return {'declared_cpu': int(demand.get('cpu', 0)),
@@ -2013,15 +2099,10 @@ class Controller:
         if unbounded_cpu and (holders or not fresh or idle['exceeds']):
             return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh,
                           baseline=idle)
-        profiles = read_json(self.base / 'profiles.json')
-        recent = read_json(self.base / 'jobs.json')
-        next_recent = {}
         serves = None
-        pending = 0.
         lendable = False
         lending_cpus = set()
         protected_cpus = set()
-        active_cost = 0.
         for holder in holders:
             reservation = census.cpu(holder.name)
             meta = reservation.metadata
@@ -2052,46 +2133,17 @@ class Controller:
                     return refuse("measurement_holder", holder=holder.name,
                                   isolated_by=holder.name)
                 serves = holder.name
-            # ``self.base`` rather than ``local_telemetry_path``: that helper
-            # resolves the ledger path, which is three stats on the mount per
-            # call, and this loop runs once per holder under the lock.
-            record = read_json(self.base / 'telemetry' / f'{holder.name}.json')
-            valid = (record.get('complete') is True
-                     and 0 <= now - record.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
-                     and record.get('sampled_unix', 0) >= meta.get('admitted_unix', now)
-                     and record.get('action_key', holder.name) == holder.name
-                     and all(type(record.get(k)) in (int, float) and math.isfinite(record[k]) and record[k] >= 0
-                             for k in ('cpu_seconds', 'wall_seconds')))
-            previous = recent.get(holder.name, {})
-            if (previous.get('nonce') != record.get('nonce')
-                    or previous.get('sampled_unix', 0) < meta.get('admitted_unix', now)):
-                previous = {}
-            cpu = None
-            if valid:
-                wall_delta = record['wall_seconds'] - previous.get('wall_seconds', record['wall_seconds'])
-                cpu_delta = record['cpu_seconds'] - previous.get('cpu_seconds', record['cpu_seconds'])
-                if MIN_INTERVAL_S <= wall_delta <= MAX_INTERVAL_S and cpu_delta >= 0:
-                    cpu = cpu_delta / wall_delta
-                    record['_cpu'] = cpu
-                    next_recent[holder.name] = record
-                    # Measurements are never learned from (``record_completion``);
-                    # one is read here only beside its own dependents (#982).
-                    if meta.get('shape') and not meta.get('measurement'):
-                        old = profiles.get(meta['shape'], {})
-                        # Decay slowly; increases apply immediately. A changed
-                        # phase must promptly undo a previous cheap estimate.
-                        profiles[meta['shape']] = {**old, 'cpu': max(cpu * 1.25, old.get('cpu', cpu) * .98),
-                                                   'sampled_unix': now,
-                                                   'samples': min(1000, old.get('samples', 0) + 1),
-                                                   'memory_peak_bytes': max(record.get('memory_peak_bytes', 0),
-                                                                            old.get('memory_peak_bytes', 0))}
-                elif 0 <= wall_delta < MIN_INTERVAL_S and previous:
-                    next_recent[holder.name] = previous
-                    if 0 <= now - previous.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S:
-                        cpu = previous.get('_cpu')
-                else:
-                    next_recent[holder.name] = record
-            cost = float(reserved) if cpu is None else max(.05, cpu * 1.25)
+        profiles, prices, terms = self._price_holders(census, holders, now)
+        if not fresh:
+            self.holder_costs = None
+        active_cost, pending = terms['active'], terms['pending']
+        for holder in holders:
+            if holder.name not in prices:
+                continue
+            reservation = census.cpu(holder.name)
+            meta = reservation.metadata
+            reserved = meta.get('declared_cpu', reservation.physical_cpu_count)
+            cpu, cost = prices[holder.name]
             # Pass the metadata already read; an absent or unreadable file keeps
             # the ledger's own read and its own refusal on a torn record.
             allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
@@ -2103,20 +2155,9 @@ class Controller:
             if (cpu is not None and meta.get('shape') and not meta.get('measurement')
                     and not meta.get('funded_by') and cost < reserved):
                 lending_cpus.update(assigned)
+                lendable = True
             else:
                 protected_cpus.update(assigned)
-            active_cost += cost
-            # Host busy already includes samples ending before this reading.
-            # Charge startup/unknown attribution in full to avoid spending the
-            # same headroom in concurrent admissions.
-            if cpu is None:
-                pending += cost
-            elif (meta.get('shape') and not meta.get('measurement')
-                  and not meta.get('funded_by') and cost < reserved):
-                lendable = True
-        self.write_state('jobs.json', next_recent)
-        profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
-        self.write_state('profiles.json', profiles)
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)
