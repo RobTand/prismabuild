@@ -490,7 +490,7 @@ def test_stale_foreign_heartbeat_retains_registered_checkout_until_certified(tmp
     assert record_store.read_document(queue.records.lease_path(key))["owner"] == predecessor["owner"]
     live = record_store.read_document(live_path)
     assert live["claimed_by"] == "successor"
-    assert live["container_cleanup_pending"]
+    assert not live.get("container_cleanup_pending"), "an unproved current owner must remain untouched"
 
 
 def test_legacy_lease_without_attempt_envelope_is_retained_visibly(tmp_path):

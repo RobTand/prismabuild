@@ -12253,6 +12253,17 @@ class PoolQueue:
         lease = record_store.read_document(path)
         if lease is None or not self._heartbeat_conflicts(claim, lease):
             return True
+        current_identity = {k: v for k, v in lifetime_fence.attempt_identity(claim).items()
+                            if k not in ("nonce", "scope_id")}
+        manifests = [record_store.read_document(self.ledger(host).release_owner_path(key))
+                     for host in self.claim_reservation_hosts(key)]
+        if not manifests or any(not manifest or manifest.get("claim") != current_identity
+                                for manifest in manifests):
+            # A stale claim observation must never aim cleanup at the newer
+            # lease. Its own durable reservation is the independent authority.
+            print(f"pool reaper: contradictory claim and lease identity for {key}; "
+                  "current reservation identity unproved; custody retained", file=sys.stderr)
+            return False
         try:
             if not self._heartbeat_cleanup_due(lease):
                 raise PoolContractError("foreign heartbeat owner is live or its identity is unknown")
