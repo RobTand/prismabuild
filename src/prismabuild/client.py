@@ -93,7 +93,7 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 6
+SDK_VERSION = 7
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -334,6 +334,7 @@ DECOMPOSITION_TAG = "decomposition-v1"
 CAPABILITIES = frozenset({
     READER_LEASE_TAG,
     _contracts.PROGRESS_TAG,
+    _core.LIFETIME_TAG,
     DECOMPOSITION_TAG,
     VERIFIED_ACTION_RESULT_TAG,
     NATIVE_PRODUCER_CONTEXT_TAG,

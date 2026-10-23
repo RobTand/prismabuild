@@ -202,6 +202,7 @@ from .record_store import (
     _STATES,
 )
 from . import data_manifest as manifest_codec
+from . import lifetime_fence
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
     _cleanup_execution_checkout,
@@ -2268,6 +2269,68 @@ def _requested_execution_timeout(item: Mapping[str, object]) -> float | None:
     return _execution_timeout(item, None)
 
 
+def _sealed_lifetime_fence(item: Mapping[str, object]) -> float | None:
+    """The sealed opt-in lifetime fence in seconds, or ``None`` when unfenced.
+
+    Read from the same sealed request the payload deadline is, for the
+    same reason: a bound the receipt reports and a bound the worker
+    enforces that disagreed would be worse than either alone. A legacy
+    launcher with no request declares nothing. An unreadable fence
+    refuses, exactly as an unreadable deadline does.
+    """
+
+    action = _sealed_action_request(item["cas_root"], str(item["action_key"]))
+    if action is None:
+        return None
+    try:
+        lifetime = pb.action_lifetime(action)
+    except pb.ActionContractError as exc:
+        raise PoolContractError(str(exc)) from exc
+    if lifetime is None:
+        return None
+    return float(lifetime["fence_s"])
+
+
+def _lifetime_log(item: Mapping[str, object]) -> lifetime_fence.AttemptLog | None:
+    """This attempt's lifetime log, or ``None`` for an unfenced action (#1429).
+
+    The sealed request names the fence and publication projected the clock
+    from it; both must agree before any phase is recorded against that clock.
+    """
+
+    fence_s = _sealed_lifetime_fence(item)
+    if fence_s is None:
+        return None
+    fence_clock = lifetime_fence.clock(
+        published_unix=item.get("published_unix"), fence_s=fence_s)
+    if (fence_clock is None
+            or item.get("lifetime_deadline_unix") != fence_clock.deadline_unix):
+        raise PoolContractError(
+            "lifetime-fenced execution does not carry its publication deadline")
+    return lifetime_fence.AttemptLog(fence_clock)
+
+
+def _fence_refusal(
+    message: str, *, argv: Sequence[str], allocation: object,
+) -> dict[str, object]:
+    """The failed outcome of a launch the fence refused (#1429).
+
+    No payload existed, so no receipt is filed for it; ``finish`` still
+    cleans whatever scope was made and returns the tokens on proof.
+    """
+
+    return {
+        "status": "failed",
+        "returncode": None,
+        "termination_reason": lifetime_fence.FENCE_TERMINATION_REASON,
+        "stdout": "",
+        "stderr": message,
+        "elapsed_s": 0.0,
+        "argv": list(argv),
+        "cpu_allocation": allocation,
+    }
+
+
 def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = None) -> tuple[str, float | None]:
     """What a claimed action declared about how long it may run.
 
@@ -2309,17 +2372,20 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
 
 
 @contextmanager
-def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
+def _execution_checkout(
+    item: Mapping[str, object], **fence: object,
+) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
 
     The sequence itself is ``materialize._execution_checkout``; SLURM runs the
     same one.  What this adds is the root: ``LOCAL_CHECKOUT_ROOT`` is read here,
-    at call time, so the queue's root is the queue's to state.
+    at call time, so the queue's root is the queue's to state.  ``fence`` is
+    the lifetime action's pair of deadlines (#1429), passed through untouched.
     """
 
     try:
         with materialize._execution_checkout(
-            item, local_checkout_root=LOCAL_CHECKOUT_ROOT
+            item, local_checkout_root=LOCAL_CHECKOUT_ROOT, **fence
         ) as checkout_root:
             yield checkout_root
     except materialize.MaterializationContractError as exc:
@@ -6702,6 +6768,15 @@ class PoolQueue:
             sealed_retry_scope = (sealed_params.get("retry_policy") or {}).get("retry_scope")
             if sealed_request_present and retry_scope != sealed_retry_scope:
                 raise PoolContractError("retry_scope differs from the sealed retry policy")
+            try:
+                sealed_lifetime: Mapping[str, object] | None = None
+                if sealed_request is not None:
+                    sealed_lifetime = pb.action_lifetime(sealed_request)
+            except pb.ActionContractError as exc:
+                raise PoolContractError(str(exc)) from exc
+            sealed_fence_s = (
+                None if sealed_lifetime is None
+                else float(sealed_lifetime["fence_s"]))
             sealed_batch_raw = sealed_params.get("produced_output_batch")
             from . import movement_actions
             for forged in movement_actions.CAPACITY_ROLE_FIELDS:
@@ -6759,7 +6834,8 @@ class PoolQueue:
                 local_dependencies=bool(dependencies),
                 requires_files=declared_requirements is not None,
                 container_images=bool(image_refs), canary=canary_ref is not None,
-                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime)))
+                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime),
+                lifetime=sealed_fence_s is not None))
             for contract in contracts.CONTRACTS:
                 if contract.tag in normalized_tags and contract.tag not in declared_contracts:
                     unknown = ("; sealed request unavailable, declaration unknown"
@@ -7102,6 +7178,14 @@ class PoolQueue:
         if declared_gang is not None:
             # A hint checked against the sealed ``params.gang`` at claim.
             item["gang"] = declared_gang
+        if sealed_fence_s is not None:
+            # Project the sealed clock before admission (#1429): the release
+            # deadline, stamped where the publication clock is.  Claim and
+            # execution verify it against the sealed request.
+            item["lifetime_fence_s"] = sealed_fence_s
+            item["lifetime_deadline_unix"] = (
+                lifetime_fence.fence_deadline(
+                    published_unix=published_unix, fence_s=sealed_fence_s))
         if recompute:
             # A movement node.  Its key is a content hash and its receipt is
             # filed in the CAS like any other, so a republish of the same key
@@ -7294,6 +7378,48 @@ class PoolQueue:
         except (TypeError, ValueError):
             return True
         return any(int(host.get(kind, 0) or 0) > 0 for kind in kinds)
+
+    def _fenced_backfill_ahead_of_withhold(
+        self, item: Mapping[str, object], key: str, withheld_for: str,
+    ) -> bool:
+        """Whether this fenced row proves release before the withhold's need.
+
+        The narrow #1429 exception to a measurement's whole-box wait:
+        the candidate's prospective release bound must be finite and
+        strictly before the withholder's own need. The withholder's
+        need is its election opportunity when one is filed, else its
+        drain point when one is on record, else UNKNOWN. Every
+        unreadable shape answers False and the row stays held back.
+        The census gate below rechecks the election before any claim.
+        """
+
+        try:
+            from . import _measurement_reservation as _withhold_reservation
+            if lifetime_fence.LIFETIME_TAG not in (item.get("tags") or []) or not key:
+                return False
+            row = record_store.read_document(self.records.item_path(READY, key))
+            if not isinstance(row, Mapping) or row.get("action_key") != key:
+                return False
+            bound = _withhold_reservation.candidate_release_bound(self, row)
+            if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                return False
+            prior = record_store.read_document(self.records.passes_path(withheld_for)) or {}
+            chosen = _withhold_reservation.selection(prior)
+            opportunity = (
+                chosen.get("opportunity_unix")
+                if isinstance(chosen, Mapping) else None)
+            if opportunity is None:
+                drain = (prior.get("measurement_drains") or {})
+                episode = (
+                    drain.get(socket.gethostname())
+                    if isinstance(drain, Mapping) else None)
+                opportunity = (
+                    episode.get("measurement_until_unix")
+                    if isinstance(episode, Mapping) else None)
+            return lifetime_fence.timed_backfill_allowed(
+                candidate_bound=bound, original_opportunity=opportunity)
+        except (OSError, ValueError, PoolContractError, KeyError, TypeError):
+            return False
 
     @staticmethod
     def _reservation_demand(host_demand: Mapping[str, int], *,
@@ -14939,6 +15065,15 @@ class PoolQueue:
         result = self._cleanup_payload_containers(record, reason=reason, scope_only=scope_only)
         if not result["complete"]:
             return result
+        if record.get("lifetime_fence_s") is not None and record.get("checkout_snapshot") is not None:
+            checkout = materialize.settle_checkout_cleanup(
+                record, local_checkout_root=LOCAL_CHECKOUT_ROOT)
+            if isinstance(record, dict):
+                record["checkout_cleanup"] = checkout
+            result = {**result, "checkout_cleanup": checkout,
+                      "complete": checkout.get("complete") is True}
+            if not result["complete"]:
+                return result
         try:
             if not record.get("action_key") and scratch_lifetime.SCRATCH_LIFETIME_FIELD not in record:
                 # The legacy lost-claim finisher passes an empty record. It
@@ -15192,6 +15327,100 @@ class PoolQueue:
             # SystemExit still stops the process.
             return {"complete": False, "used": True, "removed": [], "remaining": [],
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
+
+    def _complete_lifetime_evidence(
+        self,
+        finished_detail: dict[str, object],
+        record: Mapping[str, object],
+        *,
+        container_cleanup: Mapping[str, object],
+        scope_cleanup: Mapping[str, object],
+    ) -> None:
+        """File cleanup and scope settlement for this exact attempt (#1429).
+
+        Each phase carries the instant its own proof completed.  Cleanup
+        reaches here only when the container verdict is complete.  Scope
+        settlement is enforced only by the broker's token-gated export
+        verdict for this scope proving it stopped and empty; a run with no
+        scope has no such proof, and a contained run whose export does not
+        prove it files the phase unenforced.  Release waits for the ledger
+        return.  A record that does not belong to this claim is left alone.
+        """
+
+        log = lifetime_fence.AttemptLog.from_record(
+            finished_detail.get("lifetime_evidence"))
+        if (log is None
+                or log.claim != lifetime_fence.attempt_identity(record)
+                or log.clock.published_unix != record.get("published_unix")
+                or log.clock.fence_s != record.get("lifetime_fence_s")
+                or log.clock.deadline_unix != record.get("lifetime_deadline_unix")):
+            return
+        from prismabuild import reader_lease
+
+        nonce = scope_cleanup.get("nonce")
+        contained = isinstance(nonce, str) and bool(nonce)
+        scope = record.get("resource_scope")
+        scope_id = scope.get("scope_id") if isinstance(scope, Mapping) else None
+        proved, _why = reader_lease.export_verdict_proves_empty(
+            scope_cleanup.get("export"), scope_id=str(scope_id or ""))
+        settled_unix = scope_cleanup.get("checked_unix") if contained else _now()
+        checkout = record.get("checkout_cleanup")
+        snapshot = record.get("checkout_snapshot") is not None
+        checkout_complete = (not snapshot or isinstance(checkout, Mapping)
+                             and checkout.get("claim") == lifetime_fence.attempt_identity(record)
+                             and checkout.get("complete") is True)
+        cleanup_end = max(settled_unix, _now())
+        if snapshot and isinstance(checkout, Mapping):
+            finished_detail["checkout_cleanup"] = dict(checkout)
+            ended = checkout.get("ended_unix")
+            if type(ended) in (int, float):
+                cleanup_end = max(cleanup_end, ended)
+            else:
+                checkout_complete = False
+        log.end("cleanup",
+                mechanism=("fail-closed-cleanup" if checkout_complete
+                           and container_cleanup.get("complete") is True else None),
+                evidence=("container-and-checkout-cleanup-complete" if snapshot and checkout_complete
+                          else "checkout-cleanup-unproven" if snapshot
+                          else "container-cleanup-complete"), ended_unix=cleanup_end)
+        log.end("scope_settlement",
+                mechanism="exact-scope-proof" if contained and proved else None,
+                evidence=(f"scope-proof:{nonce}" if contained and proved
+                          else "scope-export-unproven" if contained
+                          else "uncontained-no-scope"),
+                ended_unix=settled_unix)
+        finished_detail["lifetime_evidence"] = log.as_record()
+
+    def _stamp_lifetime_release(
+        self, record: dict[str, object], action_key: str, *,
+        holder: str | None,
+    ) -> None:
+        """File the release record after the ledger return, if proved (#1429).
+
+        The host ledger must no longer hold the key.  Retained tier occupancy
+        is not host capacity and does not delay this record.  The terminal row
+        carries it beside the immutable attempt, whose evidence and logs stay
+        as filed.
+        """
+
+        detail = record.get("detail")
+        log = (lifetime_fence.AttemptLog.from_record(detail.get("lifetime_evidence"))
+               if isinstance(detail, Mapping) else None)
+        if (log is None
+                or log.claim != lifetime_fence.attempt_identity(record)
+                or not {"cleanup", "scope_settlement"} <= set(log.phases)):
+            return
+        try:
+            held = (
+                str(action_key) in self.ledger(holder).held_keys()
+                if holder is not None else True)
+        except (OSError, ValueError, PoolContractError):
+            return
+        if held:
+            return
+        log.end("resource_release", mechanism="release-after-proof",
+                evidence="ledger-returned", ended_unix=_now())
+        record["lifetime_evidence"] = log.as_record()
 
     @staticmethod
     def _note_cleanup_attempt(
@@ -17319,10 +17548,13 @@ class PoolQueue:
         serves_incumbent = incumbent.serves_incumbent
         census_blocked = incumbent.blocker
         if incumbent.must_defer:
-            self.record_denial(item, "deferred_for_measurement_reservation", {
-                "withheld_for": census_blocked["action_key"],
-                "selection": census_blocked, "candidate_release_bound": "UNKNOWN"})
-            return _ClaimHandled.REFUSED
+            permitted, bound = measurement_reservation.timed_backfill_permitted(self, item, census_blocked)
+            if not permitted:
+                self.record_denial(item, "deferred_for_measurement_reservation", {
+                    "withheld_for": census_blocked["action_key"],
+                    "selection": census_blocked, "candidate_release_bound": bound})
+                return _ClaimHandled.REFUSED
+            census_blocked = None
         # A protected role skips only reservation arithmetic.
         # Legacy movement rows keep the host on main's fallback
         # until the complete census proves that they have ended.
@@ -18400,6 +18632,31 @@ class PoolQueue:
             when=_now(), )
             dst.unlink(missing_ok=True)
             return None
+        try:
+            durable = record_store.read_document(dst)
+            if durable is None or not claim_identity.same_claim(durable, moved):
+                raise PoolContractError("committed lifetime claim changed before persistence")
+            moved = durable
+            fence_s = _sealed_lifetime_fence(moved)
+            if fence_s is None and moved.get("lifetime_fence_s") is not None:
+                raise PoolContractError("sealed lifetime request disappeared after commit")
+            if fence_s is not None:
+                fence_clock = lifetime_fence.clock(
+                    published_unix=moved.get("published_unix"), fence_s=fence_s)
+                reason = ("lifetime_fence_mismatch" if fence_clock is None
+                          or moved.get("lifetime_deadline_unix") != fence_clock.deadline_unix
+                          else "lifetime_fence_expired" if fence_clock.launch_expired(_now())
+                          else None)
+                if reason is not None:
+                    reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                        moved=_MovedReady(src, dst, moved))
+                    self.record_denial(item, reason, {"fence_s": fence_s})
+                    return None
+        except (pb.PrismaBuildError, OSError, ValueError) as exc:
+            reservation.abandon(_ClaimExit.COMMITTED_RETRY,
+                                moved=_MovedReady(src, dst, moved))
+            self.record_denial(item, "lifetime_fence_unreadable", {"error": str(exc)})
+            return None
         claimed = self._build_claim_record(committed, scan_pass)
         if reservation.tier_funded:
             # Re-verify each funding against the renamed record before
@@ -18508,6 +18765,12 @@ class PoolQueue:
                 "adaptive_cpu": adaptive is not None,
                 "adaptive_gpu": adaptive_gpu is not None,
             })
+            return None
+        if fence_s is not None and fence_clock.launch_expired(_now()):
+            reservation.abandon(_ClaimExit.PERSISTED_RETRY,
+                                moved=_MovedReady(src, dst, moved))
+            self.record_denial(item, "lifetime_fence_expired", {
+                "phase": "claim-persisted", "stop_unix": fence_clock.stop_unix})
             return None
         if reservation.tier_funded:
             # Fuse each funding shut only after the claim is durable.
@@ -18729,6 +18992,10 @@ class PoolQueue:
             held_back = scan.row_held_back(
                 takes_kind=takes_kind, reserving_priority=reserving_gang,
                 withheld_priority=ready_priority.get(scan.withheld_for, 0))
+        if held_back and (scan.withheld_for in scan.measurement_withholds
+                          or scan.withheld_for in scan.carried_measurement_withholds):
+            held_back = not self._fenced_backfill_ahead_of_withhold(
+                item, key, scan.withheld_for)
         producer = held_back and self._may_serve_a_producer(item)
         opening = candidate_policy.row_before_placement(
             scan, held_back=held_back, producer=producer)
@@ -21503,13 +21770,67 @@ class PoolQueue:
         # still governs, progress or no progress.
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
-        with _execution_checkout(item) as checkout_root:
-            outcome = self._execute_in_checkout(
-                item, checkout_root=checkout_root, python=python,
-                timeout_s=budget.effective, heartbeat_s=heartbeat_s,
-                timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy, clock=clock,
-            )
+        # An opted-in action (#1429) is materialized under the stop instant
+        # and its tree is removed under the deadline.  Absent, the checkout
+        # runs the calls it always did.
+        life = _lifetime_log(item)
+        checkout_cleanup: dict[str, object] = {}
+        fence = ({} if life is None else {
+            "deadline_unix": life.clock.stop_unix,
+            "cleanup_deadline_unix": life.clock.deadline_unix,
+            "cleanup": checkout_cleanup})
+        try:
+            with _execution_checkout(item, **fence) as checkout_root:
+                if life is None:
+                    outcome = self._execute_in_checkout(
+                        item, checkout_root=checkout_root, python=python,
+                        timeout_s=budget.effective, heartbeat_s=heartbeat_s,
+                        timeout_grace_s=timeout_grace_s,
+                        containment=containment, progress=policy, clock=clock,
+                    )
+                else:
+                    checkout_end = _now()
+                    life.end("admission", mechanism="claim-gate",
+                             evidence="claim-lease-written",
+                             ended_unix=item.get("claimed_unix"))
+                    if life.clock.launch_expired(checkout_end):
+                        life.refuse("checkout", now_unix=checkout_end,
+                                    evidence="checkout-ended-after-the-stop-instant")
+                        outcome = _fence_refusal(
+                            "PrismaBuild: lifetime fence expired during checkout.\n",
+                            argv=[], allocation=item.get("cpu_allocation"))
+                    else:
+                        life.end("checkout",
+                                 mechanism="deadline-bounded-checkout",
+                                 evidence=("checkout-materialized"
+                                           if item.get("checkout_snapshot") is not None
+                                           else "checkout-live-root"),
+                                 ended_unix=checkout_end)
+                        outcome = self._execute_in_checkout(
+                            item, checkout_root=checkout_root, python=python,
+                            timeout_s=budget.effective, heartbeat_s=heartbeat_s,
+                            timeout_grace_s=timeout_grace_s,
+                            containment=containment, progress=policy, clock=clock,
+                            lifetime=life,
+                        )
+        except materialize.MaterializationDeadline as exc:
+            # Raised only under a lifetime deadline: a Git call, the link
+            # check or the tree ran out of the time the fence left.
+            assert life is not None
+            life.refuse("checkout", now_unix=_now(),
+                        evidence="deadline-passed-during-checkout")
+            outcome = _fence_refusal(
+                f"PrismaBuild: lifetime fence expired during checkout: {exc}\n",
+                argv=[], allocation=item.get("cpu_allocation"))
+        if life is not None:
+            # The record travels on the outcome into the attempt archive,
+            # where ``finish`` completes it and the audit reads it back.  The
+            # scope nonce exists only now, so the identity binds last.
+            life.claim = lifetime_fence.attempt_identity(item)
+            if item.get("checkout_snapshot") is not None:
+                checkout_cleanup["claim"] = life.claim
+                outcome["checkout_cleanup"] = checkout_cleanup
+            outcome["lifetime_evidence"] = life.as_record()
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's
@@ -21679,6 +22000,7 @@ class PoolQueue:
         containment: bool = False,
         clock: ExecutionClock | None = None,
         progress: ProgressPolicy | None = None,
+        lifetime: lifetime_fence.AttemptLog | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -21691,6 +22013,10 @@ class PoolQueue:
         the timeout signals the launcher's whole process group and the launcher
         relays that into the action's own session; the timeout path itself is
         bounded end to end, because a timeout that can hang is not a timeout.
+
+        ``lifetime`` is the opt-in contract's log (#1429).  It carries the
+        publication clock the caller derived before checkout ran, so checkout's
+        own cost cannot move it, and it receives each phase this method ends.
         """
 
         clock = clock or ExecutionClock(time.monotonic, _now)
@@ -21700,6 +22026,12 @@ class PoolQueue:
         # authority the deadline's flush opportunity uses, so that path never
         # rereads shared CAS after launch.
         timeout_s, profiled = _sealed_execution_policy(item, timeout_s)
+        # The opt-in lifetime contract (#1429): the clock is absolute and
+        # nothing here credits it.  ``life`` is ``None`` when unfenced, and
+        # then none of the fence code below runs.
+        life = lifetime
+        #: The stop alarm, armed once the payload exists.
+        alarm: lifetime_fence.StopAlarm | None = None
         # The complete worker argv, captured before any taskset or
         # resource_exec wrapper: once those wrappers have exec'd, this is
         # exactly what ``/proc/<pid>/cmdline`` shows, and it is what the
@@ -21745,12 +22077,31 @@ class PoolQueue:
                 "argv": argv,
                 "cpu_allocation": allocation,
             }
+        if life is not None and item.get("gang") is not None:
+            # Claim refused this shape; a direct executor must too. The
+            # gang barrier waits on siblings, which no fence bounds.
+            raise PoolContractError(
+                "lifetime-fenced gang members are not supported")
         barrier = self._gang_start_barrier(item, owner=owner, heartbeat_s=heartbeat_s)
         if barrier is not None:
             return {"returncode": None, "stdout": "", "stderr": "",
                     "elapsed_s": clock.unix() - started, "argv": argv,
                     "cpu_allocation": allocation, **barrier}
-        from . import local_scratch
+        if life is not None:
+            # Readiness ends where the allocation, withdrawal and barrier
+            # checks above completed.  A stop instant already behind us means
+            # no payload may exist: fail closed without launching.  The
+            # payload budget never saw this run, and ``finish`` files no
+            # receipt for work that never started.
+            readiness_end = _now()
+            if life.clock.launch_expired(readiness_end):
+                life.refuse("readiness", now_unix=readiness_end,
+                            evidence="stop-instant-passed-before-launch")
+                return _fence_refusal(
+                    "PrismaBuild: lifetime fence expired before launch.\n",
+                    argv=argv, allocation=allocation)
+            life.end("readiness", mechanism="launch-gate",
+                     evidence="allocation-verified", ended_unix=readiness_end)
 
         variables = local_scratch._sealed_scratch_variables(item, allow_missing=True)
         lifetimes = scratch_lifetime.selections(variables)
@@ -21822,19 +22173,42 @@ class PoolQueue:
                     Path(pb_progress.__file__).resolve()),
             }
         )
+        # The action's own ending, and a killed run's partial profile, travel
+        # in a file because this process's exit status cannot carry them.
+        launch_environment = {
+            **os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
+            **progress_environment, **self.launch_environment(item)}
+        if life is not None:
+            # The last gate before the payload exists (#1429).  Everything
+            # above that can wait on a shared mount or a slow call has run:
+            # the scope, the status and progress files, the environment.  So
+            # the check follows all of it, and the instant it passes is the
+            # instant prelaunch ended.  Past the stop instant no payload
+            # starts: the refusal fails closed, and ``finish`` cleans and
+            # settles the scope this run made like any other.
+            prelaunch_end = _now()
+            if life.clock.launch_expired(prelaunch_end):
+                life.refuse("prelaunch", now_unix=prelaunch_end,
+                            evidence="stop-instant-passed-during-launch-preparation")
+                return _fence_refusal(
+                    "PrismaBuild: lifetime fence expired during launch preparation.\n",
+                    argv=argv, allocation=allocation)
+            life.end("prelaunch", mechanism="launch-gate",
+                     evidence=("scope-ready-launch-prepared" if scope is not None
+                               else "uncontained-launch-prepared"),
+                     ended_unix=prelaunch_end)
         # No payload exists during withdrawal, scope preparation or status-file
         # cleanup. Shared I/O there must not spend its execution budget.
         deadline = None if timeout_s is None else clock.monotonic() + timeout_s
+        #: What the payload budget started with; the credited waits move
+        #: ``deadline`` away from it and never move the fence.
+        deadline_initial = deadline
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            # The action's own ending, and a killed run's partial profile,
-            # travel in a file because this process's exit status cannot
-            # carry them.
-            env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.launch_environment(item)},
+            env=launch_environment,
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.
@@ -21850,6 +22224,23 @@ class PoolQueue:
         # its own session with nothing left to reap it.  Everything after the
         # Popen belongs under the same guard.
         try:
+            if life is not None:
+                # Armed before the first synchronous call below: the stop must
+                # not depend on any I/O this supervisor does (#1429).
+                def stop_for_fence() -> None:
+                    try:
+                        if scope is not None:
+                            scope.terminate_owned(
+                                lifetime_fence.FENCE_TERMINATION_REASON)
+                    finally:
+                        pb._terminate_process_group(
+                            process, grace_s=timeout_grace_s)
+
+                alarm = lifetime_fence.StopAlarm(
+                    life.clock.stop_unix, stop_for_fence,
+                    alive=lambda: process.poll() is None,
+                    now=lambda: _now())
+                alarm.arm()
             checkpoint_started = clock.monotonic()
             observation = _observe_execution(process, scope=scope)
             watch = (None if progress is None else ProgressWatch(
@@ -21979,6 +22370,37 @@ class PoolQueue:
                 them agreeing about what a record carries and one not.
                 """
 
+                if life is not None:
+                    # Every ending ends the alarm (a thread must not outlive
+                    # its attempt) and files the payload-side phases.  The
+                    # credit is what the payload budget was given back; the
+                    # fence clock above never read it.
+                    stopped = alarm is not None and not alarm.disarm()
+                    payload_end = _now()
+                    credited_s = (0.0 if deadline is None or deadline_initial is None
+                                  else max(0.0, deadline - deadline_initial))
+                    # Pipes still held after the drain, or a stop that raised,
+                    # mean the stop did not end the payload: not enforced.
+                    survived = outcome.get("action_survived_kill") is True
+                    stop_failed = stopped and alarm is not None and alarm.error is not None
+                    life.end("payload",
+                             mechanism=None if survived else "stop-alarm",
+                             evidence=("payload-survived-the-stop" if survived
+                                       else f"stopped-at-fence:fired={alarm.fired_unix:.3f}"
+                                       if stopped else "payload-ended"),
+                             ended_unix=payload_end)
+                    life.end("credited_waits", mechanism="absolute-stop-clock",
+                             evidence=f"credited_s={credited_s:.3f}",
+                             ended_unix=payload_end)
+                    life.end("termination",
+                             mechanism=("scope-stop"
+                                        if scope is not None and not stop_failed else None),
+                             evidence=("fence-stop-failed" if stop_failed
+                                       else "scope-stopped-at-fence" if stopped and scope is not None
+                                       else "process-group-ladder" if stopped
+                                       else "payload-group-ended"),
+                             ended_unix=payload_end)
+
                 stall: dict[str, object] | None = None
                 if watch is not None:
                     ended = clock.monotonic()
@@ -21994,7 +22416,8 @@ class PoolQueue:
                     outcome["stall"] = stall
                 if (outcome.get("status") == "withdrawn"
                         or outcome.get("termination_reason") in (
-                            "no_progress", "execution_deadline")):
+                            "no_progress", "execution_deadline",
+                            lifetime_fence.FENCE_TERMINATION_REASON)):
                     # A kill names what it was waiting on (#990): the rows it
                     # depended on, the tier loops' verdicts about it, and the
                     # reason rings.  Diagnostics only, so a failure to read
@@ -22019,6 +22442,31 @@ class PoolQueue:
                 with suppress(OSError):
                     Path(pb_progress.export_wait_path(str(progress_path))).unlink()
                 return self._merge_action_status(outcome, status_path)
+
+            def fence_ending(out: str, err: str, survived: bool) -> dict[str, object]:
+                """The ending of a payload the stop alarm stopped (#1429)."""
+
+                outcome: dict[str, object] = {
+                    "status": "timeout",
+                    "termination_reason": lifetime_fence.FENCE_TERMINATION_REASON,
+                    "execution_observation": observation,
+                    "returncode": None,
+                    "launcher_returncode": process.returncode,
+                    "stdout": out,
+                    "stderr": err,
+                    "action_survived_kill": survived,
+                    "elapsed_s": _now() - started,
+                    "child_rusage": _reaped_children(
+                        rusage_before,
+                        resource.getrusage(resource.RUSAGE_CHILDREN)),
+                    "argv": argv, "cpu_allocation": allocation,
+                }
+                if alarm is not None and alarm.error is not None:
+                    # The stop raised; ``finish`` stops the scope again and
+                    # keeps the tokens until that is proved.
+                    outcome["fence_stop_error"] = repr(alarm.error)
+                return ending(outcome)
+
             self.write_lease(
                 key,
                 owner=owner, claim_snapshot=item,
@@ -22038,11 +22486,19 @@ class PoolQueue:
             # reaped out from under itself.
             next_heartbeat = clock.monotonic() + heartbeat_s
             next_progress_poll = clock.monotonic() + heartbeat_s
+            #: True when stray pipe holders outlived the launcher past the
+            #: stop instant and the drain below closed their pipes (#1429).
+            pipes_held = False
             while True:
                 try:
                     interval = min(heartbeat_s, 2.0) if scope is not None else heartbeat_s
                     if deadline is not None:
                         interval = min(interval, max(0.0, deadline - clock.monotonic()))
+                    if life is not None:
+                        # Absolute and non-creditable: checkpoint I/O below
+                        # credits only the payload deadline, never this.
+                        interval = min(
+                            interval, max(0.0, life.clock.stop_unix - _now()))
                     if watch is not None:
                         interval = min(
                             interval,
@@ -22138,6 +22594,22 @@ class PoolQueue:
                         deadline += clock.monotonic() - checkpoint_started
                     if watch is not None:
                         watch.shift(clock.monotonic() - checkpoint_started)
+                    if life is not None and life.clock.launch_expired(_now()):
+                        # The fence rung: absolute, non-creditable, and checked
+                        # before the payload deadline below.  The checkpoint
+                        # credits above moved only the payload deadline.  The
+                        # alarm may have stopped the payload already while this
+                        # loop could not look; the stop runs once either way.
+                        # False means the launcher had ended on its own and
+                        # only stray pipe holders remain.  The payload's own
+                        # exit is then judged below, never the fence's kill.
+                        stopped = alarm.fire()
+                        out, err, survived = _drain(
+                            process, timeout_s=timeout_grace_s)
+                        if stopped:
+                            return fence_ending(out, err, survived)
+                        pipes_held = survived
+                        break
                     if deadline is not None and clock.monotonic() >= deadline:
                         # The branch's worst case stays the old three grace
                         # budgets.  The profiled flush opportunity, discovery
@@ -22148,7 +22620,8 @@ class PoolQueue:
                         # f + 2*(g-f) + g <= 3*g.  Nothing here may prevent
                         # the hard stop or change the timeout verdict; the
                         # lease is not refreshed during any of it, against a
-                        # 300 s expiry.
+                        # 300 s expiry. The fence rung above already fired
+                        # first when both bounds passed together.
                         settled = None
                         stop_grace_s = timeout_grace_s
                         if scope is not None:
@@ -22254,6 +22727,8 @@ class PoolQueue:
             # session it did, and the launcher's own unwind reaped the action.
             # Unwinding from here without reaping would leave exactly the
             # orphan that session was introduced to bound.
+            if alarm is not None:
+                alarm.disarm()
             pb._terminate_process_group(process, grace_s=timeout_grace_s)
             _drain(process, timeout_s=timeout_grace_s)
             with suppress(OSError):
@@ -22265,6 +22740,11 @@ class PoolQueue:
             with suppress(OSError):
                 Path(pb_progress.export_wait_path(str(progress_path))).unlink()
             raise
+        if alarm is not None and not alarm.disarm():
+            # The alarm stopped the payload while this loop could not look,
+            # and the pipes closed under it: this is the fence's ending, not
+            # the launcher's own exit (#1429).
+            return fence_ending(out, err, False)
         status = "executed" if process.returncode == 0 else "failed"
         if watch is not None:
             # A short action may finish before the first heartbeat, or publish
@@ -22296,6 +22776,8 @@ class PoolQueue:
         profile = profile_from_launcher_stdout(out)
         if profile is not None:
             outcome["profile"] = profile
+        if pipes_held:
+            outcome["action_survived_kill"] = True
         return ending(outcome)
 
     def _stop_action(self, process: subprocess.Popen) -> tuple[str, str]:

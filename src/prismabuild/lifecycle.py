@@ -494,6 +494,12 @@ def _worker_finish(
     holder = queue.resolve_claim_holder(action_key, effective_record)
     if holder is not None:
         effective_record["claimed_host"] = holder
+    checkout = (detail or {}).get("checkout_cleanup")
+    if (effective_record.get("lifetime_fence_s") is not None
+            and isinstance(checkout, Mapping)):
+        from . import lifetime_fence
+        if checkout.get("claim") == lifetime_fence.attempt_identity(effective_record):
+            effective_record["checkout_cleanup"] = dict(checkout)
     container_cleanup = queue.cleanup_action_containers(
         effective_record, reason=str((detail or {}).get("termination_reason") or status))
     if not container_cleanup["complete"]:
@@ -645,6 +651,11 @@ def _worker_finish(
     if isinstance(placement, Mapping):
         # Always use the actual winner's claim, not caller-supplied detail.
         finished_detail[local_scratch.PLACEMENT] = dict(placement)
+    if record.get("lifetime_fence_s") is not None:
+        finished_detail["container_cleanup"] = container_cleanup
+        queue._complete_lifetime_evidence(
+            finished_detail, record, container_cleanup=container_cleanup,
+            scope_cleanup=scope_cleanup)
     warmed = record.get("prewarm")
     if isinstance(warmed, Mapping):
         resolved = queue.resolve_prewarm_reference(warmed)
@@ -803,6 +814,8 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
         queue._release_reservation(key, host=holder, keep_tier=keep_tier)
     else:
         queue._release_reservation(key, host=holder)
+    if record.get("lifetime_fence_s") is not None:
+        queue._stamp_lifetime_release(record, key, holder=holder)
     if cancelled:
         if isinstance(plan, CancelledClaim) and isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
             from . import _gang

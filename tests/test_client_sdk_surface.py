@@ -58,7 +58,7 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 6
+SDK_VERSION = 7
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
@@ -119,7 +119,7 @@ SIGNATURES = {
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 6,
+    "SDK_VERSION": 7,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": "prismabuild.scratch_declaration_record.v1",
     "SCRATCH_LIFETIME_TAG": "scratch-lifetime-v1",
@@ -151,7 +151,7 @@ CONSTANTS = {
     "TIER_LOOP_LIVENESS_S": 120.0,
     "TIER_RECORD_SCHEMA": "prismabuild.storage_tier.v1",
     "DECOMPOSITION_TAG": "decomposition-v1",
-    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "decomposition-v1",
+    "CAPABILITIES": frozenset({"reader-lease-v1", "progress-v1", "lifetime-fence-v1", "decomposition-v1",
                                "verified-action-result-v1", "native-producer-context-v1",
                                "scratch-lifetime-v1"}),
 }
@@ -331,6 +331,8 @@ def test_the_liveness_bound_is_the_one_the_pool_applies():
 def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.READER_LEASE_TAG in client.CAPABILITIES
     assert contracts.PROGRESS_TAG in client.CAPABILITIES
+    assert pb.LIFETIME_TAG == contracts.LIFETIME_TAG
+    assert pb.LIFETIME_TAG in client.CAPABILITIES
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES

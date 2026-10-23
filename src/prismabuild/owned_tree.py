@@ -16,6 +16,7 @@ shard's interpreter (see ``docs/design.md``, "Owned trees").
 from __future__ import annotations
 
 from contextlib import nullcontext
+from collections.abc import Callable
 import errno
 import fcntl
 import os
@@ -116,7 +117,7 @@ def drop_owner_lock(dir_fd: int, name: str, lock: int) -> None:
 
 
 def remove_tree(dir_fd: int, name: str, *, keep: str | None = None,
-                expect: tuple[int, int] | None = None) -> None:
+                expect: tuple[int, int] | None = None, check: Callable[[], object] | None = None) -> None:
     """Remove directory ``name`` under ``dir_fd`` and all below it, or raise.
 
     Never follows a symlink (it is unlinked, never entered) and never leaves
@@ -124,17 +125,20 @@ def remove_tree(dir_fd: int, name: str, *, keep: str | None = None,
     this user owns before it is emptied, as pytest's ``rm_rf`` does, so a
     read-only (0555) directory does not stop it. ``keep`` (an owner lock) is
     removed last, only once nothing else is left; ``expect`` is the tree's
-    required ``(st_dev, st_ino)``.
+    required ``(st_dev, st_ino)``. ``check`` may refuse before each deletion
+    when a caller deadline expires.
     """
+    if check is not None:
+        check()
     device, mount = os.fstat(dir_fd).st_dev, _mount_id_of(dir_fd)
-    top = _open_for_removal(dir_fd, name, device, mount)
+    top = _open_for_removal(dir_fd, name, device, mount, expect=expect)
     if top < 0:
         raise OSError(errno.EXDEV, f"{name} is not on its parent's mount")
     try:
         info = os.fstat(top)
         if expect is not None and (info.st_dev, info.st_ino) != expect:
             raise OSError(errno.ESTALE, f"{name} was replaced")
-        left = _empty_tree(top, device, mount, keep)
+        left = _empty_tree(top, device, mount, keep, check)
         if not left and keep is not None:
             try:
                 os.unlink(keep, dir_fd=top)
@@ -146,6 +150,8 @@ def remove_tree(dir_fd: int, name: str, *, keep: str | None = None,
         os.close(top)
     if left:
         raise OSError(errno.ENOTEMPTY, f"{name}: {left} entries could not be removed")
+    if check is not None:
+        check()
     os.rmdir(name, dir_fd=dir_fd)
 
 
@@ -157,7 +163,7 @@ def _mount_id_of(fd: int) -> int:
     raise OSError(errno.ENOTSUP, "descriptor mount identity unknown")
 
 
-def _open_for_removal(parent: int, name: str, device: int, mount: int) -> int:
+def _open_for_removal(parent: int, name: str, device: int, mount: int, *, expect: tuple[int, int] | None = None) -> int:
     """Open directory ``name`` to empty it, or -1 when it is off this mount.
 
     ``O_PATH`` needs no permission and follows no link, so device and mount
@@ -167,6 +173,8 @@ def _open_for_removal(parent: int, name: str, device: int, mount: int) -> int:
                    dir_fd=parent)
     try:
         info = os.fstat(path)
+        if expect is not None and (info.st_dev, info.st_ino) != expect:
+            raise OSError(errno.ESTALE, f"{name} was replaced")
         if info.st_dev != device or _mount_id_of(path) != mount:
             return -1
         handle = f"/proc/self/fd/{path}"
@@ -177,22 +185,28 @@ def _open_for_removal(parent: int, name: str, device: int, mount: int) -> int:
         os.close(path)
 
 
-def _empty_tree(fd: int, device: int, mount: int, keep: str | None = None) -> int:
+def _empty_tree(fd: int, device: int, mount: int, keep: str | None = None, check: Callable[[], object] | None = None) -> int:
     """Remove everything in the directory open at ``fd``; count what stays."""
     left = 0
+    if check is not None:
+        check()
     for name in os.listdir(fd):
+        if check is not None:
+            check()
         if name == keep:
             continue
         try:
-            if not stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+            entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISDIR(entry.st_mode):
                 os.unlink(name, dir_fd=fd)
                 continue
-            child = _open_for_removal(fd, name, device, mount)
+            child = _open_for_removal(fd, name, device, mount,
+                                      expect=(entry.st_dev, entry.st_ino))
             if child < 0:
                 left += 1
                 continue
             try:
-                left += _empty_tree(child, device, mount)
+                left += _empty_tree(child, device, mount, check=check)
             finally:
                 os.close(child)
             os.rmdir(name, dir_fd=fd)

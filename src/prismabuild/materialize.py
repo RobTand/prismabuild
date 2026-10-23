@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+import math
 import os
 from pathlib import Path
 import re
@@ -56,8 +57,29 @@ LOCAL_CHECKOUT_ROOT = Path(
 CHECKOUT_TREE = re.compile(r"[0-9a-f]{12}\.[a-z0-9_]{8}")
 
 
+class MaterializationDeadline(MaterializationError):
+    """A step ran out of the time its caller gave the whole checkout (#1429).
+
+    Raised only when the caller passed a deadline.  The step did not finish,
+    so nothing the tree holds is trusted; the caller refuses the launch.
+    """
+
+
 def _now() -> float:
     return time.time()
+
+
+#: What one Git call may take when no caller deadline is shorter.
+_GIT_TIMEOUT_S = 120.0
+
+
+def _seconds_before(deadline_unix: float, where: str) -> float:
+    """The seconds left before ``deadline_unix``, or the deadline refusal."""
+
+    remaining = float(deadline_unix) - _now()
+    if remaining <= 0:
+        raise MaterializationDeadline(f"{where}: the deadline has passed")
+    return remaining
 
 
 def _run_materializer_git(
@@ -65,7 +87,12 @@ def _run_materializer_git(
     *,
     where: str,
     environment: Mapping[str, str] | None = None,
+    deadline_unix: float | None = None,
 ) -> str:
+    timeout = _GIT_TIMEOUT_S
+    if deadline_unix is not None:
+        # One call may not outlive the caller's deadline either (#1429).
+        timeout = min(timeout, _seconds_before(deadline_unix, where))
     try:
         # ``argv`` is ``git <args>``; ``git -C . <args>`` is the same command
         # run through the one shared runner (#1318).
@@ -74,34 +101,57 @@ def _run_materializer_git(
         completed = pb._git_run(
             ".",
             *argv[1:],
-            timeout=120,
+            timeout=timeout,
             env=None if environment is None else dict(environment),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        if timeout < _GIT_TIMEOUT_S:
+            raise MaterializationDeadline(
+                f"{where}: the deadline passed during the call") from exc
+        raise MaterializationError(f"{where} failed: {exc}") from exc
+    except OSError as exc:
         raise MaterializationError(f"{where} failed: {exc}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
         raise MaterializationError(f"{where} failed: {detail or completed.returncode}")
     return completed.stdout
 
-def _remove_checkout_tree(temporary: Path) -> None:
+def _remove_checkout_tree(temporary: Path, *, expect=None) -> None:
     """Remove one private tree on its own filesystem, read-only parts too."""
 
     parent = os.open(temporary.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        owned_tree.remove_tree(parent, temporary.name)
+        owned_tree.remove_tree(parent, temporary.name, expect=expect)
+    finally:
+        os.close(parent)
+
+def _remove_tree_before(path: Path, deadline_unix: float) -> None:
+    """Remove through the owned-tree authority while checking the fence."""
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        owned_tree.remove_tree(
+            parent, path.name,
+            check=lambda: _seconds_before(deadline_unix, "checkout removal"))
     finally:
         os.close(parent)
 
 
 def _cleanup_execution_checkout(
-    base: Path, temporary: Path, item: Mapping[str, object]
-) -> None:
-    """Remove one private tree, recording a leak without changing task status."""
+    base: Path, temporary: Path, item: Mapping[str, object],
+    *, deadline_unix: float | None = None, expect=None,
+) -> dict[str, object]:
+    """Remove one private tree, recording a leak without changing task status.
+
+    With ``deadline_unix`` the removal stops there (#1429); the rest is a leak
+    like any other failed removal.
+    """
 
     error = ""
     try:
-        _remove_checkout_tree(temporary)
+        if deadline_unix is None:
+            _remove_checkout_tree(temporary, **({} if expect is None else {"expect": expect}))
+        else:
+            _remove_tree_before(temporary, deadline_unix)
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = str(exc)
     try:
@@ -111,8 +161,9 @@ def _cleanup_execution_checkout(
         error = error or f"cannot verify removal: {exc}"
     if remains and not error:
         error = "materialized checkout still exists after recursive cleanup"
+    verdict = {"complete": not error, "ended_unix": _now(), "error": error}
     if not error:
-        return
+        return verdict
 
     action_key = str(item.get("action_key") or "unknown-action")
     record = {
@@ -138,6 +189,8 @@ def _cleanup_execution_checkout(
         file=sys.stderr,
         flush=True,
     )
+
+    return verdict
 
 
 def _new_owned_checkout(base: Path, prefix: str) -> tuple[Path, int]:
@@ -190,7 +243,9 @@ def _release_checkout(base: Path, temporary: Path, lock: int) -> None:
 
 
 @contextmanager
-def _require_contained_materialized_links(repository: Path) -> None:
+def _require_contained_materialized_links(
+    repository: Path, *, deadline_unix: float | None = None,
+) -> None:
     """Refuse a materialized checkout whose symlinks reach outside it.
 
     The seal-time gate reasons about the tree it is about to bundle, and this
@@ -209,6 +264,8 @@ def _require_contained_materialized_links(repository: Path) -> None:
     root = repository.resolve()
     pending = [root]
     while pending:
+        if deadline_unix is not None:
+            _seconds_before(deadline_unix, "materialized link check")
         directory = pending.pop()
         try:
             entries = list(os.scandir(directory))
@@ -247,6 +304,9 @@ def _execution_checkout(
     *,
     local_checkout_root: str | Path | None = None,
     on_temporary: Callable[[Path], None] | None = None,
+    deadline_unix: float | None = None,
+    cleanup_deadline_unix: float | None = None,
+    cleanup: dict[str, object] | None = None,
 ) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
 
@@ -262,6 +322,11 @@ def _execution_checkout(
             pre-created so ``mkdtemp`` and the cleanup below stay owned by this
             one function, and so the signature both transports share is
             unchanged for the caller that does not need it.
+        deadline_unix: With it, every Git call and the link check end before
+            this instant or raise :class:`MaterializationDeadline` (#1429).
+        cleanup_deadline_unix: With it, the final removal stops there and
+            records the rest as a leak.  Without either, the calls are the
+            ones every other transport has always made.
     """
 
     raw_snapshot = item.get("checkout_snapshot")
@@ -288,17 +353,24 @@ def _execution_checkout(
     base.mkdir(parents=True, exist_ok=True)
     temporary, owner_lock = _new_owned_checkout(
         base, f"{str(item['action_key'])[:12]}.")
+    if cleanup is not None:
+        identity = temporary.stat(follow_symlinks=False)
+        cleanup.update(path=str(temporary), device=identity.st_dev, inode=identity.st_ino,
+                       complete=False, ended_unix=None)
     if on_temporary is not None:
         on_temporary(temporary)
     repository = temporary / "checkout"
+    bounded = {} if deadline_unix is None else {"deadline_unix": deadline_unix}
     try:
         _run_materializer_git(
             ["git", "init", "-q", str(repository)],
             where="initialize materialized checkout",
+            **bounded,
         )
         heads = _run_materializer_git(
             ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
             where="read checkout snapshot bundle",
+            **bounded,
         )
         commit = str(snapshot["commit"])
         advertised = {
@@ -341,6 +413,7 @@ def _execution_checkout(
                     f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
                 ],
                 where="detach materialized HEAD from a fetched branch",
+                **bounded,
             )
         _run_materializer_git(
             [
@@ -348,6 +421,7 @@ def _execution_checkout(
                 str(bundle), *refspecs,
             ],
             where="fetch checkout snapshot bundle",
+            **bounded,
         )
         _run_materializer_git(
             [
@@ -358,8 +432,9 @@ def _execution_checkout(
             ],
             where="check out sealed commit",
             environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+            **bounded,
         )
-        _require_contained_materialized_links(repository)
+        _require_contained_materialized_links(repository, **bounded)
         subdirectory = repository / str(snapshot["subdirectory"])
         if not subdirectory.is_dir():
             raise MaterializationContractError(
@@ -372,8 +447,49 @@ def _execution_checkout(
         # dropping can leave residue inside this bounded root, but cleanup
         # failure must not change an already-published action into a failure.
         try:
-            _cleanup_execution_checkout(base, temporary, item)
+            verdict = _cleanup_execution_checkout(
+                base, temporary, item,
+                **({} if cleanup_deadline_unix is None
+                   else {"deadline_unix": cleanup_deadline_unix}))
+            if cleanup is not None:
+                cleanup.update(verdict)
         finally:
             _release_checkout(base, temporary, owner_lock)
 
 
+
+def settle_checkout_cleanup(
+    record: Mapping[str, object], *, local_checkout_root: Path,
+) -> dict[str, object]:
+    """Retry only the registered tree of an exact fenced snapshot attempt.
+
+    A timer never returns resources. Missing proof, a foreign attempt, or a
+    replacement inode retains them. A later successful retry records its own
+    completion time, so settlement after the fence remains UNKNOWN.
+    """
+    from . import lifetime_fence
+
+    proof = record.get("checkout_cleanup")
+    if not isinstance(proof, Mapping) or proof.get("claim") != lifetime_fence.attempt_identity(record):
+        return {"complete": False, "error": "checkout cleanup proof missing or belongs to another attempt"}
+    if proof.get("complete") is True:
+        ended = proof.get("ended_unix")
+        if type(ended) not in (int, float) or not math.isfinite(ended):
+            return {**proof, "complete": False, "error": "checkout cleanup has no completion time"}
+        return dict(proof)
+    try:
+        path = Path(str(proof.get("path") or ""))
+        if (path.parent != local_checkout_root or not CHECKOUT_TREE.fullmatch(path.name)
+                or not path.name.startswith(str(record["action_key"])[:12] + ".")
+                or type(proof.get("device")) is not int or type(proof.get("inode")) is not int):
+            raise ValueError("checkout cleanup path or inode is not registered")
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return {**proof, "complete": False, "error": "registered checkout vanished without removal proof"}
+        verdict = _cleanup_execution_checkout(
+            local_checkout_root, path, record,
+            expect=(proof["device"], proof["inode"]))
+        return {**proof, **verdict}
+    except (OSError, ValueError) as exc:
+        return {**proof, "complete": False, "error": str(exc)}

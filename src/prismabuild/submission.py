@@ -2879,6 +2879,20 @@ def require_progress_scope(*, progress: Mapping[str, object] | None,
         )
 
 
+def require_lifetime_scope(*, lifetime_s: float | None, transport: str) -> None:
+    """Refuse the lifetime contract on a transport that does not support it.
+
+    The pool worker enforces the contract and records per-phase evidence.
+    The SLURM lane does not support this versioned contract.
+    """
+
+    if lifetime_s is not None and transport != "pool":
+        raise ValueError(
+            "--lifetime-s requires pool transport: the lifetime fence is "
+            "the pull-queue worker's, and the SLURM lane cannot enforce it. "
+            "Submit this action to the pool, or bound it there with --timeout-s"
+        )
+
 def require_awaited_batch_scope(
         *, awaited: Mapping[str, object] | None,
         progress: Mapping[str, object] | None, transport: str) -> None:
@@ -4124,6 +4138,7 @@ def freeze_template(
     exclusive: bool,
     gpu_memory_gb: float | None,
     execution_timeout_s: float | None,
+    lifetime_s: float | None = None,
     progress: Mapping[str, object] | None,
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
@@ -4446,6 +4461,9 @@ def freeze_template(
             params["gpu_memory_gb"] = gpu_memory_gb
     if execution_timeout_s is not None:
         params["execution_timeout_s"] = execution_timeout_s
+    if lifetime_s is not None:
+        params[pb.LIFETIME_PARAM] = {
+            "schema": pb.LIFETIME_SCHEMA_V1, "fence_s": float(lifetime_s)}
     if gang is not None:
         # Sealed membership (#1517): the group, its size and this index are
         # part of the action key. Absent, the key is byte-identical to before.
@@ -5056,6 +5074,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             awaited_batch=getattr(args, "awaited_batch", None) is not None
                 and progress_policy is not None,
             gang=gang is not None, container_images=bool(images),
+            lifetime=args.lifetime_s is not None,
             scratch_io=scratch_io_intent(variables, transport=args.transport) is not None,
             requires_files=bool(requirements)))])
     require_reachable_runtime(
@@ -5194,6 +5213,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         exclusive=args.exclusive,
         gpu_memory_gb=args.gpu_memory_gb,
         execution_timeout_s=args.timeout_s,
+        lifetime_s=args.lifetime_s,
         progress=progress_policy,
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
@@ -6659,6 +6679,18 @@ def validate_request(request: SubmissionRequest) -> None:
     if request.timeout_s is not None and (
             not math.isfinite(request.timeout_s) or request.timeout_s <= 0):
         raise SubmissionRefused("pbrun: --timeout-s must be a positive finite number")
+
+
+    if request.lifetime_s is not None:
+        if (not math.isfinite(request.lifetime_s)
+                or not pb.LIFETIME_MIN_FENCE_S <= request.lifetime_s <= pb.LIFETIME_MAX_FENCE_S):
+            raise SubmissionRefused(
+                "pbrun: --lifetime-s must lie within "
+                f"{pb.LIFETIME_MIN_FENCE_S:g}s and {pb.LIFETIME_MAX_FENCE_S:g}s")
+        try:
+            require_lifetime_scope(lifetime_s=request.lifetime_s, transport=request.transport)
+        except ValueError as exc:
+            raise SubmissionRefused(str(exc)) from None
 
 
 def producer_publication_row(action, *, args: SubmissionRequest,
