@@ -59,13 +59,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix="measure-bundle-cache-") as temporary:
         root = Path(temporary)
         checkout, refs = _bundle_fixture(root, args.files)
+        bare = root / "bundle.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(checkout), str(bare)],
+                       check=True, capture_output=True)
+        environment = dict(os.environ, GIT_INDEX_FILE=str(checkout / ".git" / "index"))
         cache = root / "cache"
 
         def seal(arm):
             os.environ["PRISMABUILD_BUNDLE_CACHE_ROOT"] = "off" if arm == "before" else str(cache)
             output = root / f"{arm}.bundle"
             submission.write_deterministic_bundle(checkout, output, refs,
-                git_dir=checkout / ".git", environment=dict(os.environ))
+                git_dir=bare, environment=environment)
             return output
 
         expected = core.stream_sha256(seal("after"))

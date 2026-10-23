@@ -117,13 +117,77 @@ def test_ordered_refs_and_object_format_are_bound(tmp_path, monkeypatch):
         subprocess.run(["git", "-C", str(root), "-c", "user.name=Test",
                         "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"], check=True)
         oid = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        bare = tmp_path / f"{algorithm}.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(root), str(bare)], check=True)
+        environment = dict(os.environ, GIT_INDEX_FILE=str(root / ".git" / "index"))
         refs = [("refs/heads/a", oid), ("refs/heads/b", oid)]
         for ordered in (refs, list(reversed(refs))):
             submission.write_deterministic_bundle(root, root / "out.bundle", ordered,
-                git_dir=root / ".git", environment=dict(os.environ))
+                git_dir=bare, environment=environment)
     assert {identity["object_format"] for identity in identities} == {"sha1", "sha256"}
     assert len({core.canonical_sha256(identity) for identity in identities}) == 4
     assert len(list((tmp_path / "cache").glob("*/bundle"))) == 4
+
+
+@pytest.mark.parametrize("source", ("global", "repository", "index"))
+def test_external_attribute_contents_invalidate_cached_bytes(sealing, tmp_path, monkeypatch, source):
+    root, _, packs, _ = sealing
+    bare = tmp_path / "bare.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(root), str(bare)], check=True)
+    attrs = (tmp_path / "global-attributes" if source == "global" else
+             root / ".gitattributes" if source == "index" else bare / "info" / "attributes")
+    attrs.write_text("")
+    if source == "index":
+        subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+    environment = dict(os.environ, GIT_INDEX_FILE=str(root / ".git" / "index"))
+    if source == "global":
+        environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.attributesFile",
+                           GIT_CONFIG_VALUE_0=str(attrs))
+    tip = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+
+    def seal():
+        target = tmp_path / "out.bundle"
+        submission.write_deterministic_bundle(root, target, [("refs/heads/test", tip)],
+                                             git_dir=bare, environment=environment)
+        return target.read_bytes()
+
+    before = seal()
+    assert seal() == before and len(packs) == 1
+    attrs.write_text("* -delta\n")
+    if source == "index":
+        subprocess.run(["git", "-C", str(root), "add", ".gitattributes"], check=True)
+    after = seal()
+    assert seal() == after and len(packs) == 2
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", "off")
+    assert seal() == after
+    assert before != after
+
+
+@pytest.mark.parametrize("doubt", ("unsupported-git", "attribute-source", "symlink"))
+def test_uncertain_attribute_context_seals_fresh(sealing, tmp_path, monkeypatch, doubt):
+    root, _, packs, seal = sealing
+    if doubt == "unsupported-git":
+        native = submission._snapshot_git
+
+        def without_attribute_discovery(root, args, **kwargs):
+            result = native(root, args, **kwargs)
+            return ("\n".join(line for line in result.splitlines() if not line.startswith("GIT_ATTR_"))
+                    if args[-2:] == ["var", "-l"] else result)
+
+        monkeypatch.setattr(submission, "_snapshot_git", without_attribute_discovery)
+    elif doubt == "attribute-source":
+        tip = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        monkeypatch.setenv("GIT_ATTR_SOURCE", tip)
+    else:
+        target = tmp_path / "attrs"
+        target.write_text("")
+        link = tmp_path / "attribute-link"
+        link.symlink_to(target)
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(link))
+    assert seal()[1] == seal()[1]
+    assert len(packs) == 2
 
 
 @pytest.mark.parametrize("damage", (

@@ -717,6 +717,57 @@ def deterministic_bundle_argv(git_dir: Path) -> list[str]:
     ]
 
 
+def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[str, str],
+                             config: str, *, deadline: float | None) -> list[str | None]:
+    """Bind attributes outside the object closure in the private bare sealer."""
+    if (not environment.get("GIT_INDEX_FILE")
+            or any(name in environment for name in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_ATTR_SOURCE"))
+            or any(part.startswith("core.worktree\n") for part in config.split("\0"))
+            or any("\n" in environment.get(name, "") for name in ("HOME", "XDG_CONFIG_HOME"))
+            or any("\n" in part.partition("\n")[2] for part in config.split("\0")
+                   if part.startswith("core.attributesfile\n"))):
+        raise ValueError("noncanonical attribute context")
+    paths = _snapshot_git(root, [*prefix, "rev-parse", "--is-bare-repository",
+        "--git-path", "index", "--git-path", "info/attributes"],
+        environment=environment, deadline=deadline, strip=False).splitlines()
+    if len(paths) != 3 or paths[0] != "true":
+        raise ValueError("cache requires the private bare snapshot index")
+    variables = _snapshot_git(root, [*prefix, "var", "-l"],
+        environment=environment, deadline=deadline, strip=False)
+    attributes = dict(line.split("=", 1) for line in variables.splitlines()
+                      if line.startswith(("GIT_ATTR_GLOBAL=", "GIT_ATTR_SYSTEM=")))
+    if "GIT_ATTR_GLOBAL" not in attributes:
+        raise ValueError("Git cannot identify external attribute files")
+    fingerprints = []
+    for index, raw in enumerate([*paths[1:], attributes["GIT_ATTR_GLOBAL"],
+                                 attributes.get("GIT_ATTR_SYSTEM", "")]):
+        if not raw:
+            fingerprints.append(None)
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            if index == 0:
+                raise
+            fingerprints.append(None)
+            continue
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > CHECKOUT_SNAPSHOT_MAX_BYTES:
+                raise ValueError("attribute input is not a bounded regular file")
+            fingerprints.append(pb.stream_sha256(Path(f"/proc/self/fd/{fd}")))
+            after = os.fstat(fd)
+            if ((after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    != (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+                raise ValueError("attribute input changed while hashing")
+        finally:
+            os.close(fd)
+    return fingerprints
+
+
 def write_deterministic_bundle(
     root: Path,
     bundle: Path,
@@ -769,13 +820,17 @@ def write_deterministic_bundle(
         effective_config = _snapshot_git(
             root, [*argv[1:argv.index("pack-objects")], "config", "--null", "--list"],
             environment=environment, deadline=deadline)
-    except SubmissionRefused:
+        attribute_inputs = (_bundle_attribute_inputs(
+            root, argv[1:argv.index("pack-objects")], environment, effective_config,
+            deadline=deadline) if os.environ.get("PRISMABUILD_BUNDLE_CACHE_ROOT") != "off" else None)
+    except (SubmissionRefused, OSError, ValueError):
         git_version = ""
     identity = {
         "object_format": object_format, "refs": list(refs), "header": header,
         "tips": tips, "pack_configuration": BUNDLE_PACK_CONFIGURATION,
         "pack_options": BUNDLE_PACK_OPTIONS, "git_version": git_version,
         "effective_config": effective_config if git_version else "",
+        "attribute_inputs": attribute_inputs if git_version else None,
     }
 
     def seal() -> None:

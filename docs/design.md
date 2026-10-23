@@ -3653,6 +3653,12 @@ without the member or the ordinary package import boundary.
   The cache key binds the object format, ordered ref names and tip IDs, exact
   header and tip stream, pack configuration and options, Git version, and the
   effective Git configuration including inherited settings not explicitly pinned.
+  It also binds the private index and contents of Git's global, system and
+  repository attribute files. A configured attribute path alone is insufficient:
+  changing its `delta` rules can change pack bytes without changing any object.
+  Cache reuse requires the canonical bare repository and private index used by
+  snapshot sealing. Other attribute contexts, unsupported Git attribute-path
+  discovery and unreadable or changing inputs fall back to the original sealer.
   The snapshot tip transitively binds the injected stamp or closure, tree,
   parent and reachable objects. Storage layout and temporary paths do not
   participate. A Git-version or configuration probe failure bypasses the cache.
