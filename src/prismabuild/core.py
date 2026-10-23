@@ -3841,7 +3841,7 @@ class PrismaBuildCAS:
         if _action_needs_gpu(normalized) and resource_telemetry is None:
             resource_telemetry = _unobserved_gpu_use()
         if resource_telemetry is not None:
-            resource_telemetry = GpuUseJudgment.require(resource_telemetry)
+            resource_telemetry = GpuUseJudgment.require(resource_telemetry, action_key=str(normalized["action_key"]))
             if resource_telemetry["gpu_use"] == "zero":
                 raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope")
         if staging_namespace is None:
@@ -6148,7 +6148,8 @@ def _validate_receipt_shape(value: object) -> Mapping[str, object]:
     receipt = _exact_mapping(value, keys=_RECEIPT_KEYS | optional, where="CAS receipt")
     if optional:
         observation = _validate_gpu_execution_observation(receipt["resource_telemetry"])
-        judgment = GpuUseJudgment.require(gpu_execution_judgment(observation.get("gpu_record")))
+        judgment = GpuUseJudgment.require(gpu_execution_judgment(observation.get("gpu_record"),
+            action_key=str(receipt["action_key"])))
         if judgment["gpu_use"] == "zero":
             _fail("GPU action used zero distinct GPU UUIDs in its payload scope")
     return receipt
@@ -6210,10 +6211,14 @@ class GpuUseJudgment(Mapping[str, object]):
         raise AttributeError("GPU judgment is immutable")
 
     @staticmethod
-    def require(value: object) -> GpuUseJudgment:
+    def require(value: object, *, action_key: str | None = None) -> GpuUseJudgment:
         if (type(value) is not GpuUseJudgment
                 or getattr(value, "_authority", None) is not _GPU_JUDGMENT_AUTHORITY):
             raise ActionContractError("GPU consumer requires a GpuUseJudgment")
+        if action_key is not None:
+            frozen = json.loads(value._encoded).get("gpu_record")
+            if frozen is not None and frozen["action_key"] != action_key:
+                raise ActionContractError("GPU judgment belongs to another action")
         return value
 
     def as_dict(self) -> dict[str, object]:

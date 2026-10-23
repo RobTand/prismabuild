@@ -735,7 +735,7 @@ def _replace_function(module, name, change, extra=''):
     source = textwrap.dedent(" " * node.col_offset + ast.get_source_segment(source, node))
     changed = change(source)
     assert changed != source, 'stale mutation anchor'
-    namespace = dict(vars(module))
+    namespace = dict(getattr(module, name).__globals__ if isinstance(module, type) else vars(module))
     exec(compile(extra + '\n' + changed, name, 'exec'), namespace)
     return namespace[name]
 
@@ -938,6 +938,7 @@ def test_r3_final_census_that_excluded_the_scope_is_not_a_success(e2e):
     e2e.a.handle(e2e.a.uid, WORKER, {'op': 'gpu_observation', 'action_key': e2e.action['action_key'],
                                      'nonce': e2e.nonce, 'deadline_monotonic': time.monotonic() + 5})
     frozen = pb.gpu_execution_judgment(e2e.a.records[e2e.scope]['gpu_record'])
+    assert frozen['gpu_use_reason'] == 'final_census_skipped'
     key = e2e.action['action_key']
     claimed = e2e.queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(claimed.read_text())

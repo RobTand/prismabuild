@@ -313,7 +313,8 @@ def test_a_payload_read_lock_can_only_refuse_commit_without_blocking_guard(monit
     a, backend, rows, _, monitor = monitored
     request, record, path = rows[0]
     worker_peer(a, record, monkeypatch)
-    a.gpu_evidence_dir.mkdir()
+    a.gpu_evidence_dir.mkdir(mode=0o755)
+    a.gpu_evidence_dir.chmod(0o755)
     lock = a.gpu_evidence_dir / (record['scope_id'] + '.lock')
     lock.write_bytes(b'')
     # Root owns this file in production. Keep it writable for the simulated
@@ -338,3 +339,11 @@ def test_a_payload_read_lock_can_only_refuse_commit_without_blocking_guard(monit
             os.close(other)
     finally:
         os.close(descriptor)
+
+
+def test_judgment_cannot_be_rebound_to_another_action():
+    record = frozen_gpu({'gpu_uuids': ['GPU-real'], 'gpu_evidence': {
+        'sample_failed': False, 'live_sample': True, 'final_succeeded': True}})
+    judgment = pb.gpu_execution_judgment(record)
+    with pytest.raises(pb.ActionContractError, match='another action'):
+        pb.GpuUseJudgment.require(judgment, action_key='f' * 64)
