@@ -23,7 +23,7 @@ def test_cancelled_tombstone_recovers_capacity_after_lease_removal(
     publish(queue, tmp_path)
     first = queue.claim(owner="original", capacity={"cpu": 1})
     queue.withdraw(KEY, signal_child=False)
-    def crash_before_release(self, key):
+    def crash_before_release(self, key, **kwargs):
         raise RuntimeError("interrupted before reservation return")
 
     with monkeypatch.context() as patch:
@@ -64,7 +64,7 @@ def test_tombstone_retains_recovery_authority_when_cleanup_is_unknown(
         monkeypatch.setattr(queue, "cleanup_action_containers",
                             lambda *args, **kwargs: {"complete": False})
     elif refusal == "release":
-        monkeypatch.setattr(pool.ResourceLedger, "release", lambda *args: 0)
+        monkeypatch.setattr(pool.ResourceLedger, "release", lambda *args, **kwargs: 0)
     else:
         foreign = queue.ledger("other-holder")
         foreign.ensure_capacity({"cpu": 1})

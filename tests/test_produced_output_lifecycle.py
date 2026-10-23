@@ -104,6 +104,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     assert live is not None
     live["resource_scope"] = control
     pool.immutable_files.write_json_atomic(path, live)
+    queue.write_lease(owner, owner=live["claimed_by"], claim_snapshot=live)
     return control
 
 
@@ -364,6 +365,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
             queue.records.item_path(pool.record_store.CLAIMED, owner),
             live,
         )
+        queue.write_lease(owner, owner=live["claimed_by"], claim_snapshot=live)
         env = {"PRISMABUILD_ACTION_KEY": owner,
                "PRISMABUILD_ACTION_NONCE": control["nonce"],
                "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
@@ -436,7 +438,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
         third = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
-        assert third["ok"] is True and third["released"] == 1
+        assert third["ok"] is True and third["released"] == 1, third
         fourth = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
         assert fourth["ok"] is True and fourth["released"] == 0

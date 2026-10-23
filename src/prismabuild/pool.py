@@ -3627,6 +3627,18 @@ class ResourceLedger:
         self.release_records.replace_record_at(path, current)
         return current
 
+    def _register_acquisition_receipt(self, action_key, handle, source):
+        """Persist exact rollback custody before the first commit rename."""
+        reservation = self._register_reservation(action_key, handle)
+        # Freeze precisely this take's token names before the partial move.
+        # A rollback capability for this nonce can return only these names.
+        names = [p.name for p in immutable_files.scan_optional(source)
+                 if p.name not in (cpu_admission.METADATA, gpu_admission.METADATA)]
+        self.release_records.replace_record_at(
+            self.acquisition_receipt_path(action_key, handle),
+            {"action_key": action_key, "nonce": handle,
+             "reservation_nonce": reservation["nonce"], "token_names": names})
+
     def bind_release_claim(self, action_key, claim):
         path = self.release_owner_path(action_key)
         current = record_store.read_document(path)
@@ -4681,15 +4693,7 @@ class ResourceLedger:
         destination = self.held_dir / action_key
         if not source.is_dir():
             return 0
-        reservation = self._register_reservation(action_key, handle)
-        # Freeze precisely this take's token names before the partial move.
-        # A rollback capability for this nonce can return only these names.
-        names = [p.name for p in immutable_files.scan_optional(source)
-                 if p.name not in (cpu_admission.METADATA, gpu_admission.METADATA)]
-        self.release_records.replace_record_at(
-            self.acquisition_receipt_path(action_key, handle),
-            {"action_key": action_key, "nonce": handle,
-             "reservation_nonce": reservation["nonce"], "token_names": names})
+        self._register_acquisition_receipt(action_key, handle, source)
         moved = 0
         destination.mkdir(parents=True, exist_ok=True)
         for token in immutable_files.scan_optional(source):
@@ -5055,7 +5059,8 @@ class ResourceLedger:
             wanted = sum(int(v) for v in demand.values() if int(v) > 0)
             if self.commit_acquire(action_key, handle) < wanted:
                 self.abandon_acquire(handle)
-                self.release(action_key, certificate=self.certify_release(action_key, nonce=handle))
+                if not immutable_files.confirmed_metadata_absence(self.held_dir / action_key):
+                    self.release(action_key, certificate=self.certify_release(action_key, nonce=handle))
                 return False
             return True
 
@@ -5444,7 +5449,8 @@ class _ClaimReservation:
             # An uncertain probe stays spent, even if the private tokens returned.
             return
         if exit is _ClaimExit.DROP_EXACT_CLAIM:
-            if self.ledger is not None and self.host_handle is not None:
+            if (self.ledger is not None and self.host_handle is not None
+                    and not immutable_files.confirmed_metadata_absence(self.ledger.held_dir / self.action_key)):
                 self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
                     self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
             # Only this admission's receipts can be returned, never a predecessor's hold.
@@ -5458,7 +5464,8 @@ class _ClaimReservation:
             assert self.ledger is not None and self.host_handle is not None
         if self.ledger is not None and self.host_handle is not None:
             self.ledger.abandon_acquire(self.host_handle)
-            if exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}:
+            if (exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}
+                    and not immutable_files.confirmed_metadata_absence(self.ledger.held_dir / self.action_key)):
                 self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
                     self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
             self._return_borrow()
@@ -12900,12 +12907,15 @@ class PoolQueue:
 
         if claim_snapshot is not None and custody is not None and not claim_identity.same_claim(custody, claim_snapshot):
             raise PoolContractError("release belongs to another claim; reservation retained")
-        custody = custody or {"action_key": action_key}
-        certification = materialize.certify_checkout_cleanup(
-            self, custody, owner_path=owner, recover=False,
-            local_checkout_root=LOCAL_CHECKOUT_ROOT)
-        if not certification["complete"]:
-            raise PoolContractError("checkout cleanup is not certified; reservation retained")
+        if custody is not None:
+            certification = materialize.certify_checkout_cleanup(
+                self, custody, owner_path=owner, recover=False,
+                local_checkout_root=LOCAL_CHECKOUT_ROOT)
+            if not certification["complete"]:
+                raise PoolContractError("checkout cleanup is not certified; reservation retained")
+        # An unstarted fence can precede a claim. Its ledger-owned durable
+        # empty registration still needs the common mint at each return.
+        # A bound reservation with lost custody cannot mint that certificate.
         released = 0
         if host is not None:
             ledger = self.ledger(host)

@@ -300,7 +300,7 @@ class TierLedger:
                          if kind in RATE_KINDS}
                 if not rates:
                     continue
-                released = self.release_rates(key)
+                released = self.release_rates(key, certificate=self.certify_release(key))
             except (OSError, PoolContractError):
                 continue
             events.append({"event": "tier-rate-reclaimed", "tier_id": self.tier_id,
@@ -622,7 +622,8 @@ class TierLedger:
         ledger = self._ledger
         destroyed = ledger.retire_held(action_key, destroy)
         shortfall = {kind: int(count) - int(destroyed.get(kind, 0)) for kind, count in destroy.items() if int(count) - int(destroyed.get(kind, 0)) > 0}
-        released = ledger.release_count(action_key, free, certificate=ledger.certify_release(action_key))
+        released = (ledger.release_count(action_key, free, certificate=ledger.certify_release(action_key))
+                    if any(int(count) > 0 for count in free.values()) else {})
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
             self._trim_host_to_occupancy(action_key)
         return {'destroyed': destroyed, 'released': released, 'shortfall': shortfall}

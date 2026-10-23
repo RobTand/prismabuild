@@ -442,3 +442,14 @@ def test_release_certificate_cannot_be_retargeted(tmp_path):
     assert isinstance(certificate._manifest, bytes)
     assert isinstance(certificate._registrations, bytes)
     assert ledger.release("owned", certificate=certificate) == 1
+
+
+def test_missing_custody_cannot_turn_a_bound_reservation_into_an_empty_fence(tmp_path, broker):
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    claim(queue)
+    key = action["action_key"]
+    queue.records.lease_path(key).unlink()
+    queue.records.item_path(pool.CLAIMED, key).unlink()
+    with pytest.raises(pool.PoolContractError, match="certif"):
+        queue._release_reservation(key, host=queue.ledger().host)
+    assert queue.ledger().held_keys() == [key]

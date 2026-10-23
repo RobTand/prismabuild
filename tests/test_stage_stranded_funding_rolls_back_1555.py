@@ -413,7 +413,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
         if fault == "token-release":
             release = pool.ResourceLedger.release
 
-            def fail_release(self, key):
+            def fail_release(self, key, **kwargs):
                 if key == mover:
                     observed_faults.append("token-release")
                     raise OSError("injected token release failure")
@@ -473,7 +473,7 @@ def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeyp
     prewrite = bl.prewrites_dir(q.root, inst) / "fault.prewrite.json"
     release = pool.ResourceLedger.release
 
-    def fail_release(self, key):
+    def fail_release(self, key, **kwargs):
         if key == mover:
             raise OSError("injected legacy token release failure")
         return release(self, key, **kwargs)

@@ -43,6 +43,7 @@ def make_ledger(root, purpose):
 
 def capture(root, ledger, method, args, monkeypatch, *, fault_at=None):
     trace = []
+    recording = True
     fault = OSError(errno.EIO, "collector default fault")
 
     def relative(value):
@@ -53,15 +54,45 @@ def capture(root, ledger, method, args, monkeypatch, *, fault_at=None):
 
     def wrapped(name, real):
         def call(*positional, **keywords):
-            trace.append((name, tuple(relative(v) for v in positional),
-                          tuple((k, relative(v)) for k, v in sorted(keywords.items()))))
+            if recording:
+                trace.append((name, tuple(relative(v) for v in positional),
+                              tuple((k, relative(v)) for k, v in sorted(keywords.items()))))
             if fault_at is not None and fault_at(name, positional):
                 raise fault
             return real(*positional, **keywords)
         return call
 
+    # The historical collector promises token effects and their read order.
+    # Release custody is a new contract, exercised independently by #1429's
+    # nonce/receipt regressions. Persist it normally, outside this trace.
+    register = ledger._register_reservation
+    acquisition = ledger._register_acquisition_receipt
+    replace = pool.record_store.RecordStore.replace_record_at
+
+    def quiet(call, *positional, **keywords):
+        nonlocal recording
+        previous, recording = recording, False
+        try:
+            return call(*positional, **keywords)
+        finally:
+            recording = previous
+
+    def register_custody(*positional, **keywords):
+        return quiet(register, *positional, **keywords)
+
+    def acquisition_custody(*positional, **keywords):
+        return quiet(acquisition, *positional, **keywords)
+
+    def replace_custody(store, path, *positional, **keywords):
+        if {"release-owners", "release-receipts"}.intersection(Path(path).parts):
+            return quiet(replace, store, path, *positional, **keywords)
+        return replace(store, path, *positional, **keywords)
+
     result, failure = None, None
     with monkeypatch.context() as patch:
+        patch.setattr(ledger, "_register_reservation", register_custody)
+        patch.setattr(ledger, "_register_acquisition_receipt", acquisition_custody)
+        patch.setattr(pool.record_store.RecordStore, "replace_record_at", replace_custody)
         for name in ("exists", "is_dir", "is_file", "mkdir", "rmdir", "stat", "open"):
             patch.setattr(Path, name, wrapped(name, getattr(Path, name)))
         patch.setattr(os, "rename", wrapped("rename", os.rename))
@@ -76,7 +107,8 @@ def capture(root, ledger, method, args, monkeypatch, *, fault_at=None):
                        exc is fault, type(exc.__cause__) if exc.__cause__ else None)
     state = [(relative(path.relative_to(root)),
               None if path.is_dir() else path.read_bytes())
-             for path in sorted(root.rglob("*"))]
+             for path in sorted(root.rglob("*"))
+             if not {"release-owners", "release-receipts"}.intersection(path.parts)]
     return result, failure, trace, state
 
 

@@ -5659,7 +5659,10 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
                 try:
-                    released += queue.tier(tier).egress(holder, certificate=queue.tier(tier).certify_release(holder))
+                    ledger = queue.tier(tier)
+                    if immutable_files.confirmed_metadata_absence(ledger.paths.held / holder):
+                        continue  # No reservation was taken, or it already returned.
+                    released += ledger.egress(holder, certificate=ledger.certify_release(holder))
                 except Exception as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Holders are empty post-transfer by construction; leftovers

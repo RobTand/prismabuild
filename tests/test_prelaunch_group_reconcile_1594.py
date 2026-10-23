@@ -234,6 +234,9 @@ def _split_80_of_166(queue, holder: str) -> str:
     assert handle is not None
     names = sorted((p.name for p in (ledger.paths.held / handle).iterdir()))
     assert len(names) == 166
+    # A real interrupted commit records empty reservation custody before its
+    # first token rename. Preserve that boundary in this partial-move fixture.
+    ledger._ledger._register_reservation(holder, handle)
     _move_tokens(ledger.paths.held / handle, names[:80], ledger.paths.held / holder)
     return handle
 
