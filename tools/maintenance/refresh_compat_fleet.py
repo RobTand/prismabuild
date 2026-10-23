@@ -28,10 +28,10 @@ def refresh_fleet_addition(args):
     producer = parents[0]
     drift = subprocess.check_output(
         ["git", "-C", str(root), "diff", "--name-only", producer, "--",
-         "src", "tools", "tests/compat/support"], text=True).splitlines()
+         "src", "tools/fleet", "tools/prismabuild_worker.py", "tests/compat/support"], text=True).splitlines()
     if drift:
         raise ValueError(("capture source differs", drift))
-    prior, historical = data / "goldens-config.jsonl", data / "historical-config.jsonl"
+    prior, historical = data / "goldens-configuration.jsonl", data / "historical-configuration.jsonl"
     old_raw = prior.read_bytes()
     before = [row for row in rows(prior) if row["case"] in expected]
     after = rows(capture / "goldens.jsonl")
@@ -56,12 +56,12 @@ def refresh_fleet_addition(args):
     archive = data / "history-controls" / ("superseded-fleet-config-" + sha(old_raw)[:16])
     if archive.exists() or args.report.exists():
         raise ValueError("adoption already exists; inspect partial results")
-    manifest = data / "capture-config.json"
+    manifest = data / "capture-configuration.json"
     with tempfile.TemporaryDirectory(prefix="adopt-fleet-") as temporary:
         staged = Path(temporary)
         subprocess.run([sys.executable, str(root / "tests/compat/support/adopt_compat_capture.py"),
                         "--capture", str(capture), "--destination", str(staged),
-                        "--suffix", "config", "--primary-audit", str(args.primary_audit)], check=True)
+                        "--suffix", "configuration", "--primary-audit", str(args.primary_audit)], check=True)
         adopted = (staged / prior.name).read_bytes()
         if (staged / historical.name).read_bytes() != selected_history:
             raise ValueError("adopter changed historical bytes")
