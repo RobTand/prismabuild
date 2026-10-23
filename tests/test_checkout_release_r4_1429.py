@@ -504,3 +504,15 @@ def test_creation_intent_cannot_certify_while_its_creator_can_still_create(
              if path.is_dir() and materialize.CHECKOUT_TREE.fullmatch(path.name)]
     assert trees
     assert queue.ledger().held_keys() == [key], "pending creation borrowed a never-created proof"
+
+
+def test_legacy_lease_writer_does_not_require_an_unregistered_attempt_counter(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    key = "a" * 64
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), {
+        "action_key": key, "claimed_by": "legacy", "claimed_host": "legacy-host"})
+    queue.write_lease(key, owner="legacy")
+    lease = record_store.read_document(queue.records.lease_path(key))
+    assert lease["owner"] == "legacy"
+    assert not {"claimed_by", "claimed_host", "attempts", "checkout_registrations"} & lease.keys()

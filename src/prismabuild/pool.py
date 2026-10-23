@@ -12189,8 +12189,11 @@ class PoolQueue:
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
-        for field in ("claimed_by", "claimed_host", "attempts"):
-            lease[field] = claim[field]
+        if "checkout_registrations" in claim or claim.get("checkout_snapshot") is not None:
+            # Registered admissions carry full custody, including empty lists.
+            # Legacy heartbeat callers need not invent an attempt counter.
+            for field in ("claimed_by", "claimed_host", "attempts"):
+                lease[field] = claim[field]
         previous = record_store.read_document(self.records.lease_path(action_key))
         if previous is not None and "checkout_registrations" in previous:
             # Registration is lease-owned. A stale heartbeat cannot erase an
