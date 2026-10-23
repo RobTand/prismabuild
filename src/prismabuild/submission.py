@@ -5149,6 +5149,11 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
             transport=args.transport,
         )
+        from ._gpu_submission_policy import _require_gb10_memory_subset
+        _require_gb10_memory_subset(
+            demand=demand, gpu_memory_gb=args.gpu_memory_gb,
+            tags=args.tag or (), host_class=args.host_class,
+        )
     except ValueError as exc:
         args.refuse_argument(str(exc))
     try:
