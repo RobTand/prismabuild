@@ -37,7 +37,7 @@ def bench_receipt_thaws_main() -> None:
         queue = pool.PoolQueue(Path(scratch) / 'queue')
         queue.records.ensure_layout()
         corpus._receipts(queue, args.receipts)
-        for index, path in enumerate(sorted(queue.records.dir(pool.record_store.MOVERS).glob('*.json'))):
+        for index, path in enumerate(sorted((queue.root / pool.record_store.MOVERS).glob('*.json'))):
             record = pool.record_store.read_document(path)
             delivered = 220.0 + index % 20
             record.update(disk_pacing={'mean_pool_read_mb_s': delivered,
