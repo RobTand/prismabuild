@@ -563,10 +563,14 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
         demand = row.get("demand") or {}
+        gpu = bool(row.get("gpu") or row.get("exclusive") or int(demand.get("gpu", 0)))
+        mem_gb = demand.get("mem_gb", submission.default_host_mem_gb(gpu=bool(row.get("gpu"))))
+        if row.get("exclusive"):
+            mem_gb = max(mem_gb, submission.default_host_mem_gb(gpu=True))
         submission.require_gpu_memory_scope(
             gpu_memory_gb=row.get("gpu_memory_gb"),
-            gpu=bool(row.get("exclusive") or int(demand.get("gpu", 0))),
-            transport=transport,
+            gpu=gpu, transport=transport, mem_gb=mem_gb,
+            tags=row.get("tags"), host_class=row.get("host_class"),
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None

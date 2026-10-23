@@ -93,7 +93,9 @@ def test_fresh_snapshot_announces_one_physical_gpu_on_a_gb10(tmp_path):
 def test_foreign_gpu_work_immediately_retires_the_free_physical_token(tmp_path):
     host = socket.gethostname()
     queue = _run(tmp_path, [*BASE, "--once"],
-                 gpu_sample=sample(foreign=[{"pid": 794915}, {"pid": 805673}]))
+                 gpu_sample=sample(foreign=[
+                     {"pid": pid, "gpu_uuid": "GPU-one", "used_bytes": 0}
+                     for pid in (794915, 805673)]))
     offer = _offer(queue, host)
 
     assert offer["capacity"]["gpu"] == 1

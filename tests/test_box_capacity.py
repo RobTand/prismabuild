@@ -113,7 +113,9 @@ def test_a_pool_job_with_many_processes_is_not_foreign():
 
 def test_foreign_gpu_inventory_closes_capacity_without_process_count_arithmetic():
     seen = bc.observe(DECLARED, {"gpu": 1},
-                      gpu_sample=gpu_sample(foreign=[{"pid": 1}, {"pid": 2}]),
+                      gpu_sample=gpu_sample(foreign=[
+                          {"pid": pid, "gpu_uuid": "GPU-0", "used_bytes": 0}
+                          for pid in (1, 2)]),
                       mem_gb=100, load1=0)
 
     assert seen.capacity["gpu"] == 0
@@ -203,7 +205,7 @@ def test_unknown_resource_passes_through():
 def test_gpu_decision_is_immediate_while_memory_fall_remains_smoothed():
     observer = bc.CapacityObserver(samples=3)
     idle = gpu_sample()
-    busy = gpu_sample(foreign=[{"pid": 9}])
+    busy = gpu_sample(foreign=[{"pid": 9, "gpu_uuid": "GPU-0", "used_bytes": 0}])
 
     first = observer.offer(DECLARED, {}, gpu_sample=idle, mem_gb=100, load1=0)
     second = observer.offer(DECLARED, {}, gpu_sample=busy, mem_gb=20, load1=0)
@@ -224,6 +226,34 @@ def test_rejoin_caps_memory_but_does_not_override_current_gpu_safety():
 
     assert offer["gpu"] == 0
     assert offer["mem_gb"] == 40
+
+
+@pytest.mark.parametrize("available,expected", [(120, 40), (20, 12)])
+def test_rejoin_forgets_populated_window_and_external_baseline(available, expected):
+    """Pre-action samples must not decide the first offer after rejoin."""
+    observer = bc.CapacityObserver(samples=3)
+    declared = {"cpu": 20, "gpu": 1, "mem_gb": 104}
+    now = time.time()
+    foreign = {
+        "schema": bc.GPU_CAPACITY_SCHEMA, "sample_id": "e" * 32,
+        "sampled_unix": now, "complete": True, "attributed": True,
+        "devices": [{"uuid": "GPU-1", "memory_domain": "shared_system"}],
+        "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
+        "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
+        "cpu_pressure_some": 0.0, "cpu_pressure_full": 0.0,
+        "foreign_processes": [{"pid": 9, "gpu_uuid": "GPU-1",
+                               "used_bytes": 30 * GIB}],
+        "jobs": []}
+    for _ in range(3):
+        offer = observer.offer(declared, {}, gpu_sample=foreign, mem_gb=120,
+                               load1=0)
+    assert offer["mem_gb"] == 82
+    assert observer.last_offer_external_gib == 30
+    observer.rejoin({"cpu": 20, "gpu": 1, "mem_gb": 40})
+    assert observer.last_offer_external_gib == 0
+    offer = observer.offer(declared, {}, gpu_sample=None, mem_gb=available, load1=0)
+    assert offer["mem_gb"] == expected
+    assert observer.last_offer_external_gib == 0
 
 
 def test_invalid_sample_count_is_refused():
@@ -341,3 +371,18 @@ def test_unknown_power_withholds_both_fractions():
     seen = bc.observe(DECLARED, {}, gpu_sample=sample, mem_gb=100, load1=3)
     assert "gpu_power_fraction" not in seen.detail
     assert "gpu_power_measured_fraction" not in seen.detail
+
+
+def test_lower_measured_roof_keeps_the_window_external_baseline():
+    roof = [104]
+    observer = bc.CapacityObserver(samples=2, mem_roof=lambda: roof[0])
+    sample = gpu_sample(foreign=[{"gpu_uuid": "GPU-0", "used_bytes": 30 * GIB}])
+    declared = {"gpu": 1, "mem_gb": 104}
+    for _ in range(2):
+        offered = observer.offer(declared, {}, gpu_sample=sample, mem_gb=120, load1=0)
+    assert offered["mem_gb"] == 82
+    assert observer.last_offer_external_gib == 30
+    roof[0] = 80
+    offered = observer.offer(declared, {}, gpu_sample=sample, mem_gb=70, load1=0)
+    assert offered["mem_gb"] == 80
+    assert observer.last_offer_external_gib == 30
