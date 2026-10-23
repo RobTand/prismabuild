@@ -837,9 +837,22 @@ def write_deterministic_bundle(
         _write_bundle_pack(root, bundle, header, tips, argv,
                            environment=environment, deadline=deadline)
 
+    def inputs_unchanged() -> bool:
+        try:
+            prefix = argv[1:argv.index("pack-objects")]
+            return (
+                _snapshot_git(root, ["--version"], environment=environment,
+                              deadline=deadline) == git_version
+                and _snapshot_git(root, [*prefix, "config", "--null", "--list"],
+                                  environment=environment, deadline=deadline) == effective_config
+                and _bundle_attribute_inputs(root, prefix, environment, effective_config,
+                                              deadline=deadline) == attribute_inputs)
+        except (SubmissionRefused, OSError, ValueError):
+            return False
+
     if git_version:
         sealed_bundle_cache.seal_bundle_cached(bundle, identity, seal,
-                                              bounded_wait=deadline is not None)
+            bounded_wait=deadline is not None, unchanged=inputs_unchanged)
     else:
         seal()
 

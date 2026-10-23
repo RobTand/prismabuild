@@ -191,6 +191,32 @@ def test_uncertain_attribute_context_seals_fresh(sealing, tmp_path, monkeypatch,
     assert len(packs) == 2
 
 
+def test_attribute_change_during_pack_does_not_publish_under_the_old_key(sealing, tmp_path, monkeypatch):
+    _, cache, packs, seal = sealing
+    attrs = tmp_path / "external-attributes"
+    attrs.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(attrs))
+    native = subprocess.run
+    changed = False
+
+    def change_at_pack(args, **kwargs):
+        nonlocal changed
+        if "pack-objects" in args and not changed:
+            changed = True
+            attrs.write_text("* -delta\n")
+        return native(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", change_at_pack)
+    during = seal()[1]
+    assert not list(cache.glob("*/bundle"))
+    attrs.write_text("")
+    after = seal()[1]
+    assert after != during
+    assert seal()[1] == after and len(packs) == 2
+
+
 @pytest.mark.parametrize("damage", (
     "payload", "digest", "key", "size", "partial", "missing-payload", "invalid-json", "symlink", "fifo",
 ))

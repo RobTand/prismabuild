@@ -3659,6 +3659,8 @@ without the member or the ordinary package import boundary.
   Cache reuse requires the canonical bare repository and private index used by
   snapshot sealing. Other attribute contexts, unsupported Git attribute-path
   discovery and unreadable or changing inputs fall back to the original sealer.
+  A cold seal rechecks these mutable inputs before publication; a changed input
+  leaves the fresh bundle usable but prevents filling under the earlier key.
   The snapshot tip transitively binds the injected stamp or closure, tree,
   parent and reachable objects. Storage layout and temporary paths do not
   participate. A Git-version or configuration probe failure bypasses the cache.

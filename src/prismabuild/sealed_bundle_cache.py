@@ -237,7 +237,8 @@ def _store_bundle_cache(root: Path, address: str, source: Path, *, bounded_wait:
 
 
 def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
-                       seal: Callable[[], None], *, bounded_wait: bool = False) -> None:
+                       seal: Callable[[], None], *, bounded_wait: bool = False,
+                       unchanged: Callable[[], bool] | None = None) -> None:
     """Reuse a digest-verified bundle, or invoke the unchanged sealer once."""
     try:
         address = digests.canonical_sha256(identity)
@@ -248,5 +249,5 @@ def seal_bundle_cached(destination: Path, identity: Mapping[str, object],
         if root is not None and _reuse_bundle_cache(root, address, destination, bounded_wait=bounded_wait):
             return
         seal()
-        if root is not None:
+        if root is not None and (unchanged is None or unchanged()):
             _store_bundle_cache(root, address, destination, bounded_wait=bounded_wait)
