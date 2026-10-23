@@ -24,6 +24,8 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_claim_parameters
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
@@ -377,7 +379,7 @@ def test_a_box_that_cannot_place_a_row_does_not_take_its_lock(
         return original(action_key, **kwargs)
 
     monkeypatch.setattr(queue, "action_transition_lock", recording)
-    assert queue.claim(**worker) is None
+    assert queue.claim(**simulated_claim_parameters(worker)) is None
     assert key not in taken, (
         "a box that can never place the row took its transition lock (#1085)")
     assert _denial(queue, key)["reason"] == "placement_mismatch"

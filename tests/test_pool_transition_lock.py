@@ -43,7 +43,7 @@ def test_busy_key_does_not_block_independent_claim(tmp_path):
     publish(queue, OTHER)
     with ThreadPoolExecutor(max_workers=1) as executor:
         with queue.action_transition_lock(KEY):
-            claimed = executor.submit(queue.claim, owner="worker", capacity={"cpu": 2}).result(timeout=5)
+            claimed = executor.submit(queue.claim, owner="worker", capacity=simulated_capacity({"cpu": 2})).result(timeout=5)
     assert claimed["action_key"] == OTHER
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 

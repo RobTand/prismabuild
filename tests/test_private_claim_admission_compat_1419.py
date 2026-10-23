@@ -1,4 +1,6 @@
 """Private callers keep the real admission boundary and shared observation."""
+
+from admitted_queue_fixture import simulated_claim_parameters
 import json
 import os
 import subprocess
@@ -34,7 +36,9 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
             return {"cpu": 2, "mem_gb": 3}
     monkeypatch.setattr(worker_loop.box_capacity, "CapacityObserver", Observer)
     parameters = worker_loop.private_claim_parameters(queue)
-    assert parameters == {"capacity": {"cpu": 2, "mem_gb": 3},
+    assert callable(parameters["admission_open"])
+    assert parameters["admission_open"]()
+    assert {k: v for k, v in parameters.items() if k != "admission_open"} == {"capacity": {"cpu": 2, "mem_gb": 3},
                           "cpu_tiers": TIERS, "adaptive_cpu": True}
     assert len(seen) == 1 and seen[0]["gpu_sample"] is None
     cpu_sampler = lambda: {
@@ -44,7 +48,7 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={"cpu": 1, "mem_gb": 1})
-    assert queue.claim(**parameters, cpu_sampler=cpu_sampler)["action_key"] == key
+    assert queue.claim(**simulated_claim_parameters(parameters), cpu_sampler=cpu_sampler)["action_key"] == key
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
     queue.finish(key, status="executed")
     assert queue.ledger().held_keys() == []
@@ -61,7 +65,8 @@ def test_private_parameters_refuse_unknown_inherited_topology(tmp_path, monkeypa
 def test_private_write_only_owner_claims_and_holds_real_host_tokens(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     monkeypatch.setattr(worker_loop, "private_claim_parameters", lambda queue: {
-        "capacity": CAPACITY, "cpu_tiers": TIERS, "adaptive_cpu": False})
+        **worker_loop.capped_simulation_parameters(queue, CAPACITY),
+        "cpu_tiers": TIERS, "adaptive_cpu": False})
     template = cycle._write_only_template(tmp_path / "out")
     key = "b" * 64
     instance = cycle._bind_owner(queue, template, key)

@@ -47,4 +47,3 @@ def test_a_valid_scope_in_the_wrong_slice_is_refused(capped, tmp_path, monkeypat
         monkeypatch.setattr(actual, "_request", lambda *a, **kw: response)
         with pytest.raises(OSError):
             getattr(actual, "create" if boundary == "create" else "recover_create")()
-

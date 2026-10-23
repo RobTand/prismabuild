@@ -16,6 +16,8 @@ stays on the mount. The ownership tests for it are elsewhere
 (``test_pool_ambiguous_holder_recovery``, ``test_pool_holder_contradiction``).
 """
 
+from admitted_queue_fixture import simulated_claim_parameters
+
 from admitted_queue_fixture import simulated_capacity
 from prismabuild import census as fleet_census
 import pbstatus
@@ -166,7 +168,7 @@ def gpu_rig(tmp_path, monkeypatch):
                                    'scope_id': record['scope_unit'], 'complete': True})
 
     def claim():
-        return queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
+        return queue.claim(**simulated_claim_parameters(args), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
 
     return queue, clock, sample, capacity, publish, tick, claim
 

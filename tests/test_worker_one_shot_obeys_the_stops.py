@@ -46,7 +46,7 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-from prismabuild import role_session
+from prismabuild import role_session, host_cap
 role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
@@ -63,7 +63,7 @@ wl.pool.PoolQueue.serve_once = serve_once
 def once(stop, **options):
     q = wl.pool.PoolQueue(Path({str(tmp_path / 'pb-queue')!r}))
     result = q.serve_once(tags=["gb10"], has_gpu=True,
-                          capacity={{"cpu": 1}}, containment=True)
+                          capacity=host_cap.enforce_host_cap({{"cpu": 1}}, None, {{}}), containment=True)
     options["on_outcome"](result)
     return 0
 wl._run_loop = once
@@ -127,7 +127,7 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-from prismabuild import role_session
+from prismabuild import role_session, host_cap
 role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})

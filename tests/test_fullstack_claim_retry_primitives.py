@@ -6,6 +6,8 @@ not exercise membership commands, attempt handoff, or broker containment.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_claim_parameters
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -32,7 +34,7 @@ def _box(queue: pool.PoolQueue) -> None:
 
 def _claim(queue: pool.PoolQueue, **extra):
     return queue.claim(owner="worker:1:abcd0001", capacity=simulated_capacity(dict(CAPACITY)),
-                       **extra)
+                       **simulated_claim_parameters(extra))
 
 
 def test_qualification_tags_conjoined_both_directions(tmp_path: Path) -> None:
