@@ -155,13 +155,16 @@ def _cleanup_execution_checkout(
                                 **({} if expect is None else {"expect": expect}))
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = f"{type(exc).__name__}: {exc}"
-    try:
-        remains = temporary.exists() or temporary.is_symlink()
-    except OSError as exc:
-        remains = True
-        error = error or f"cannot verify removal: {exc}"
-    if remains and not error:
-        error = "materialized checkout still exists after recursive cleanup"
+    if expect is None:
+        try:
+            remains = temporary.exists() or temporary.is_symlink()
+        except OSError as exc:
+            remains = True
+            error = error or f"cannot verify removal: {exc}"
+        if remains and not error:
+            error = "materialized checkout still exists after recursive cleanup"
+    # With a registration, owned_tree's held descriptor already proved the
+    # exact inode unlinked. A new name at that path cannot erase that proof.
     verdict = {"complete": not error, "ended_unix": _now(), "error": error,
                "unlinked": not error and expect is not None}
     if not error:

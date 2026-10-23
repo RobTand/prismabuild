@@ -275,3 +275,25 @@ def test_unfenced_snapshot_also_retains_exact_checkout_custody(tmp_path, broker,
     assert not checkout.exists()
     assert queue.ledger().held_keys() == []
     assert not queue.records.lease_path(key).exists()
+
+
+def test_new_name_after_proven_unlink_does_not_erase_exact_cleanup(tmp_path, broker, monkeypatch):
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    key = action["action_key"]
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    original = materialize.owned_tree.remove_tree
+    replacements = []
+
+    def replace_after_unlink(parent, name, **kwargs):
+        original(parent, name, **kwargs)
+        path = Path(os.readlink(f"/proc/self/fd/{parent}")) / name
+        path.mkdir()
+        replacements.append(path)
+
+    monkeypatch.setattr(materialize.owned_tree, "remove_tree", replace_after_unlink)
+    item = claim(queue)
+    outcome = _execute(queue, item)
+    assert replacements and replacements[0].is_dir()
+    assert outcome["checkout_cleanup"]["unlinked"] is True
+    assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
+    assert queue.ledger().held_keys() == []
