@@ -666,9 +666,9 @@ class ReceiptCache:
                              self.records.generation(directory))
                             for directory in self._directories)
         root = "" if self._queue is None else str(self._queue.root)
-        # An untrusted empty read has no parsed entry to advance a directory
-        # generation after its old capture was discarded. The observed names
-        # are also inputs, so losing the last receipt still invalidates folds.
+        # A same-tick or untrusted receipt is returned without being kept.
+        # Removing it before the next read need not advance the kept-set
+        # generation, even with other receipts left. Names invalidate its folds.
         return generations + (("retired", root, self._retired_generation),
                               ("receipt-names", self._receipt_names))
 
@@ -10025,12 +10025,8 @@ def _cycle(
         tier_identity = record.get("pool_identity")
         identity = (tier_identity if isinstance(tier_identity, Mapping)
                     else None)
-        # Folded again only when the receipts changed (#992); a stand-in
-        # receipt reader without the memo folds every cycle, as before.
-        supply = (receipts.fill_supply(identity)
-                  if isinstance(receipts, ReceiptCache)
-                  else storage_tiers.fill_supply_from_records(
-                      fill_records, pool_identity=identity))
+        # Folded again only when the receipts changed (#992).
+        supply = receipts.fill_supply(identity)
         record["fill_supply"] = {key: value for key, value in supply.items()
                                  if key != "ceiling_receipt"}
         if supply["ceiling_receipt"]:
@@ -10107,10 +10103,7 @@ def _cycle(
         if record.get("tier") == "stage":
             # Which copies read the pool first, and how many at once (#1091),
             # beside the fill numbers it is folded from the same receipts as.
-            cap = (receipts.mover_cap(tier_id, identity)
-                   if isinstance(receipts, ReceiptCache)
-                   else storage_tiers.mover_cap_from_records(
-                       fill_records, tier_id=tier_id, pool_identity=identity))
+            cap = receipts.mover_cap(tier_id, identity)
             record[READER_PLAN_FIELD] = reader_plan(queue, tier_id, cap=cap, store=store)
         # What a movement node on this tier is run *with*, discovered on the
         # box that will run it.  A mover for the dl380g10 stage is sealed by a

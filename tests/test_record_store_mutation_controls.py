@@ -1,6 +1,8 @@
 """Real kept consumers must not retain a caller's nested record mutation."""
 import json
-from prismabuild import kept_reads, pool
+
+import pytest
+from prismabuild import kept_reads, pool, storage_tiers
 from prismabuild import census as fleet_census
 import pbmetrics
 from prismabuild import tier_cycle as tier_loop
@@ -179,3 +181,47 @@ def test_extension_discovery_cannot_mutate_private_receipt_inputs(tmp_path):
     record = next(r for r in loop.receipts._records if r.get('action_key') == key)
     assert record['nested'] == PAYLOAD['nested']
     assert len(loop.receipts._records) > 1
+
+
+@pytest.mark.parametrize('consumer', ['discovery', 'fill_supply', 'mover_cap'])
+def test_native_receipt_consumers_leave_retained_documents_unchanged(tmp_path, consumer):
+    import test_a_terminal_receipt_retires_behind_a_covered_fold as history
+    from test_storage_tiers import _runner
+
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    for index, delivered in enumerate((200.0, 300.0)):
+        history._move(queue, f'read-only-{index}', consumer=KEY,
+                      unix=history.T0 + index, delivered=delivered)
+    directories = [queue.records.move_path(KEY).parent]
+    cache = tier_loop.ReceiptCache(trust=ObservedTrust())
+    cache.refresh(directories, queue=queue)
+    retained = cache._records
+    arcstats = tmp_path / 'arcstats'
+    arcstats.write_text('c_max 4 257698037760\narc_meta_used 4 5423149896\n')
+    missing = str(tmp_path / 'missing')
+
+    def consume(records):
+        if consumer == 'discovery':
+            return storage_tiers.discover_tiers(
+                host='receipt-test', runner=_runner(pools='', statuses={}),
+                arcstats_path=str(arcstats), proc_pressure=missing,
+                sysfs=missing, by_id=missing, fill_records=records, now=history.T0)
+        if consumer == 'fill_supply':
+            return storage_tiers.fill_supply_from_records(
+                records, pool_identity=history.IDENTITY_A)
+        return storage_tiers.mover_cap_from_records(
+            records, tier_id=history.TIER, pool_identity=history.IDENTITY_A)
+
+    actual = consume(retained)
+    cold = tier_loop.ReceiptCache(trust=ObservedTrust())
+    fresh = cold.read(directories, queue=queue)
+    assert retained == fresh, f'{consumer} mutated a retained receipt'
+    assert actual == consume(fresh)
+    if consumer == 'discovery':
+        assert actual['arc:receipt-test'][storage_tiers.FILL_RECORD_FIELD] is not None
+    elif consumer == 'mover_cap':
+        assert actual['receipts'] == 2
+    cache.refresh(directories, queue=queue)
+    assert cache._records is retained
+    assert cache._records == cold.read(directories, queue=queue)

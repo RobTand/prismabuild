@@ -21,10 +21,14 @@ from prismabuild import pool, storage_tiers, tier_cycle
 
 def bench_receipt_thaws_main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--baseline', type=Path, required=True)
-    parser.add_argument('--receipts', type=int, default=6434)
-    parser.add_argument('--cycles', type=int, default=10)
-    parser.add_argument('--pairs', type=int, default=5)
+    parser.add_argument('--baseline', type=Path, required=True,
+                        help='Path to the recorded baseline ReceiptCache.read method')
+    parser.add_argument('--receipts', type=int, default=6434,
+                        help='Number of synthetic receipt files in the replay corpus (default: 6434)')
+    parser.add_argument('--cycles', type=int, default=10,
+                        help='Warm receipt cycles per arm in each pair (default: 10)')
+    parser.add_argument('--pairs', type=int, default=5,
+                        help='Interleaved baseline/current sample pairs (default: 5)')
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fleet'))
     import bench_tier_cycle as corpus

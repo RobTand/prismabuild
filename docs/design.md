@@ -9155,13 +9155,16 @@ The loop now keeps what it read from one cycle to the next, on its
   withdrawal names. Helpers receive that Store directly. Residency's
   `EpochRecords` uses the same C11 reader for fragment headers.
   Receipt thaws are retained by the exact frozen input returned by that
-  reader (#2172). Its five-field file identity, current filesystem trust and
+  reader (#2172). Its six-field file identity, current filesystem trust and
   coarse-clock fence qualify every reuse; an untrusted or same-tick parse
   produces a new frozen input and invalidates the thaw. Removed names are
   forgotten. The active/retired merge is reused only while the reader and
   all participating directory generations and observed receipt names hold.
-  The name set also catches an empty untrusted read whose discarded capture
-  cannot advance the directory generation. Public receipt reads still
+  A receipt filed in the read's coarse clock tick, or on an untrusted
+  filesystem, can be returned without being kept. Removing that receipt
+  before the next read need not advance the kept-set generation, even while
+  other receipts remain. The observed names invalidate both `fill_supply`
+  and `mover_cap` in this case. Public receipt reads still
   detach every JSON container. The cycle's native discovery and folds read
   the private retained inputs; extension discovery callbacks receive copies.
   This skips repeated thawing and merging of unchanged receipt inputs.
