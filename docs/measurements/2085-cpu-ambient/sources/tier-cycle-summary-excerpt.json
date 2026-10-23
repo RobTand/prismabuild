@@ -1,0 +1,27 @@
+{
+  "origin": "/mnt/shared/prismabuild-fleet/measurements/astra-pb-tiers-20261002/1027-filter-pair/0-before/summary.json",
+  "sha256": "8936e8e3a029da26b02cd9c632e7b9716ca7397b35199f40afe298ccdffdd3e0",
+  "bytes": 42767,
+  "extraction": "Top-level host/python/shape/setup_s/returncode selected from parsed JSON. Excerpt only, not the full source. No CPU values reconstructed.",
+  "excerpt": {
+    "host": "dl380g10",
+    "python": "3.14.4",
+    "shape": {
+      "empty_dirs": 370,
+      "fragments": 145,
+      "fragment_entries": 240705,
+      "done": 30000,
+      "failed": 7142,
+      "withdrawn": 1877,
+      "receipts": 6000,
+      "passes": 1324,
+      "movers_in_flight": 1,
+      "live_consumers": 6,
+      "ready_noise": 30,
+      "claimed_noise": 28
+    },
+    "setup_s": 7.17,
+    "returncode": 0
+  },
+  "limitations": "Benchmark context only; not holder-free ambient provenance or per-CPU attribution. Full raw summary is not retained here."
+}

@@ -10,6 +10,7 @@
  "_gpu_interpreters_why": "The interpreters whose invocation starts GPU work on this fleet. require_pool.py refuses a command that runs one outside PrismaBuild; it reads the list here rather than naming a client's venv in code (#1076). A loop's --python is not this list and must never name one of them: the loop's interpreter is PrismaBuild's own (see _worker_python_2026_09_28), while this list is the client environments that client GPU work runs. Change the list when the fleet's GPU environment moves.",
  "boxes": {
   "sparky": {
+   "cpu_ambient_policy": "cpu-ambient-policy.json",
    "loops": 5,
    "local_disk": "/home/rob",
    "args": [
@@ -34,6 +35,7 @@
    "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. The supervisor measures f_bavail minus the 5% floor, in whole GiB: at start, into the loops' arguments, and then on every tick, into a host-local offer file the loops read on each poll (#1190). It measures only while the host ledger shows no spool_gb held; while an action holds some, the offer stays what it was. No number is written here, so freeing space on the disk raises the offer on the next tick, and filling it lowers the offer. A whole number in place of auto caps the measured value."
   },
   "gx10-6b77": {
+   "cpu_ambient_policy": "cpu-ambient-policy.json",
    "_alias": "sparklina",
    "_alias_why": "The OS hostname is now sparklina. The supervisor resolves this explicit alias to the same shape; both names remain placement tags for existing submissions.",
    "loops": 3,
@@ -64,6 +66,7 @@
    "_spool_gb": "--spool-gb auto: the box offers its measured local disk to produced-output spool windows and declared bounded local scratch (#747, #911), carved from local_disk /home/rob. The supervisor measures f_bavail minus the 5% floor, in whole GiB: at start, into the loops' arguments, and then on every tick, into a host-local offer file the loops read on each poll (#1190). It measures only while the host ledger shows no spool_gb held; while an action holds some, the offer stays what it was. No number is written here, so freeing space on the disk raises the offer on the next tick, and filling it lowers the offer. A whole number in place of auto caps the measured value."
   },
   "dl380g10": {
+   "cpu_ambient_policy": "cpu-ambient-policy.json",
    "loops": 16,
    "local_disk": "/tmp/pbscratch",
    "_spool_gb": "The supervisor measures the root-NVMe Btrfs scratch filesystem above the existing free-space floor and caps its offer at 8 GiB (#1689). The cap is not a measured offer or an action D1 qualification.",

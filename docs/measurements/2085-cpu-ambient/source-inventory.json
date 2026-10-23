@@ -1,0 +1,105 @@
+{
+  "schema": "prismabuild.cpu-ambient-source-inventory.v1",
+  "scope": "Bounded selective inspection of 0-before summary and three system.cpu charts under 1027-filter-pair, plus fleet roster and top-level measurement directory listings. Not an exhaustive search.",
+  "new_host_measurement_performed": false,
+  "sources": [
+    {
+      "host": "sparky",
+      "source_host_label": "sparky",
+      "origin": "/mnt/shared/prismabuild-fleet/measurements/astra-pb-tiers-20261002/1027-filter-pair/0-before/netdata-sparky-system.cpu.json",
+      "path": "docs/measurements/2085-cpu-ambient/sources/netdata-sparky-system.cpu.json",
+      "sha256": "8aeafac6e4f239adcf939be8d7614b64cbbd50698607f3b385d89d5bd7a732d4",
+      "bytes": 2303,
+      "extraction": "Verbatim raw bytes copied read-only; no values reconstructed or resampled. Metadata below parsed from JSON.",
+      "chart": "chart://hosts:sparky/instance:system.cpu/dimensions:*/after:1790954549/before:1790954560/points:4096/group:average/options:jsonwrap,unaligned",
+      "dimensions": [
+        "guest_nice",
+        "guest",
+        "steal",
+        "softirq",
+        "irq",
+        "user",
+        "system",
+        "nice",
+        "iowait"
+      ],
+      "points": 12,
+      "after": 1790954549,
+      "before": 1790954560,
+      "update_every": 1,
+      "limitations": [
+        "Aggregate system.cpu chart in benchmark tier-cycle context; not foreign-per-CPU attribution.",
+        "Host label is not independent observed host/topology attestation.",
+        "No effective CPU IDs/tier membership, attribution implementation identity, or affirmative whole-interval holder-free and holder-tail-free evidence.",
+        "Not a separate ambient/foreign/sustained-load/clear evaluation window."
+      ]
+    },
+    {
+      "host": "gx10-6b77",
+      "source_host_label": "sparklina",
+      "origin": "/mnt/shared/prismabuild-fleet/measurements/astra-pb-tiers-20261002/1027-filter-pair/0-before/netdata-sparklina-system.cpu.json",
+      "path": "docs/measurements/2085-cpu-ambient/sources/netdata-sparklina-system.cpu.json",
+      "sha256": "ae3f3a38c6dd0c47f640c17c0a42449193efce1742d850863d2a307cb4e3dc17",
+      "bytes": 2172,
+      "extraction": "Verbatim raw bytes copied read-only; no values reconstructed or resampled. Metadata below parsed from JSON.",
+      "chart": "chart://hosts:sparklina/instance:system.cpu/dimensions:*/after:1790954549/before:1790954560/points:4096/group:average/options:jsonwrap,unaligned",
+      "dimensions": [
+        "guest_nice",
+        "guest",
+        "steal",
+        "softirq",
+        "irq",
+        "user",
+        "system",
+        "nice",
+        "iowait"
+      ],
+      "points": 12,
+      "after": 1790954549,
+      "before": 1790954560,
+      "update_every": 1,
+      "limitations": [
+        "Aggregate system.cpu chart in benchmark tier-cycle context; not foreign-per-CPU attribution.",
+        "Host label is not independent observed host/topology attestation.",
+        "No effective CPU IDs/tier membership, attribution implementation identity, or affirmative whole-interval holder-free and holder-tail-free evidence.",
+        "Not a separate ambient/foreign/sustained-load/clear evaluation window."
+      ]
+    },
+    {
+      "host": "dl380g10",
+      "source_host_label": "dl380g10",
+      "origin": "/mnt/shared/prismabuild-fleet/measurements/astra-pb-tiers-20261002/1027-filter-pair/0-before/netdata-dl380g10-system.cpu.json",
+      "path": "docs/measurements/2085-cpu-ambient/sources/netdata-dl380g10-system.cpu.json",
+      "sha256": "5d39f7084588ef73908f9e72e1c020dd9aed0ded9f63334f9c34feacc06cd94a",
+      "bytes": 2290,
+      "extraction": "Verbatim raw bytes copied read-only; no values reconstructed or resampled. Metadata below parsed from JSON.",
+      "chart": "chart://hosts:dl380g10/instance:system.cpu/dimensions:*/after:1790954549/before:1790954560/points:4096/group:average/options:jsonwrap,unaligned",
+      "dimensions": [
+        "guest_nice",
+        "guest",
+        "steal",
+        "softirq",
+        "irq",
+        "user",
+        "system",
+        "nice",
+        "iowait"
+      ],
+      "points": 12,
+      "after": 1790954549,
+      "before": 1790954560,
+      "update_every": 1,
+      "limitations": [
+        "Aggregate system.cpu chart in benchmark tier-cycle context; not foreign-per-CPU attribution.",
+        "Host label is not independent observed host/topology attestation.",
+        "No effective CPU IDs/tier membership, attribution implementation identity, or affirmative whole-interval holder-free and holder-tail-free evidence.",
+        "Not a separate ambient/foreign/sustained-load/clear evaluation window."
+      ]
+    }
+  ],
+  "context_excerpt": {
+    "path": "docs/measurements/2085-cpu-ambient/sources/tier-cycle-summary-excerpt.json",
+    "sha256": "f97d6c716d41092409d15c7aeb8e12055d11479d0bbce0473018fff16320c4ae",
+    "kind": "selected-summary-fields-not-calibration"
+  }
+}

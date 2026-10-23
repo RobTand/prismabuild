@@ -1,0 +1,110 @@
+{
+  "schema": "prismabuild.cpu-ambient-acceptance.v1",
+  "related_issues": [
+    1317,
+    1322,
+    2084,
+    2085
+  ],
+  "deployed": false,
+  "interpretation": "empirical-envelope-not-gaussian-confidence-bound",
+  "roster_sha256": "ff19b2cccce8290bcb35647fde7cf85d366d6aad06f7c9fe1c3de7d2b3cf8762",
+  "population_basis": "Roster.at(repository root); box_status(name, entry)[0] == ACTIVE; positive CPU worker loops. Configuration population only, not deployed-runtime or observed-host attestation.",
+  "source_correctness": "W1 implementation correctness and transport execution not verified by this piece. The disposition test is not a threshold implementation test.",
+  "measured_qualification": "No configured host qualified; no new host observation, approval or held-out replay performed.",
+  "selected_transport": {
+    "path": "tools/fleet/cpu-ambient-policy.json",
+    "sha256": "df8ab21e35882884aecd8f0cbaf3b90149bfaeb0e9d397c4939a208772cbf329",
+    "qualified_references_selected": false
+  },
+  "remaining_acceptance": "#1317 and #1322 empirical acceptance remains open for all configured active CPU hosts; no provisional/fairness constants changed.",
+  "hosts": {
+    "sparky": {
+      "status": "unqualified",
+      "configured_alias": null,
+      "configured_cpu_worker_loops": 5,
+      "observed_host_identity": null,
+      "observed_sources": [
+        {
+          "path": "docs/measurements/2085-cpu-ambient/sources/netdata-sparky-system.cpu.json",
+          "sha256": "8aeafac6e4f239adcf939be8d7614b64cbbd50698607f3b385d89d5bd7a732d4",
+          "kind": "aggregate-benchmark-context-not-qualified",
+          "source_host_label": "sparky"
+        },
+        {
+          "path": "docs/measurements/2085-cpu-ambient/source-inventory.json",
+          "sha256": "7b6642cdcdedddb9ec4c15f869cd67567cafb4e1f779cdd2503bf283b6f7b2ac",
+          "kind": "bounded-inspection-inventory"
+        }
+      ],
+      "unresolved_prerequisites": [
+        "sparky: Inspect a host-side foreign-per-CPU reference series from supported explicit CPU-only collection/import, retaining original source timestamps, interval boundaries and cadence; no such verified series was obtained in this piece.",
+        "sparky: Authenticate actual observed host identity and effective logical CPU IDs and tier membership for that window against the selected host; configured hostname/alias and loop count are not topology attestation.",
+        "sparky: Bind every observation to the actual attribution implementation/version and complete finite per-CPU foreign values; aggregate system.cpu and aggregate busy/PSI stdev cannot substitute.",
+        "sparky: Retain authoritative affirmative whole-interval PB-holder-free and holder-tail-free evidence for every calibration observation, with inspectable source records and raw digests; absence of a listed holder is not proof.",
+        "sparky: Retain separate timestamp-disjoint held-out ambient, foreign spike, sustained foreign load and complete-proof clear/recovery observations with the same topology, attribution and interval provenance; none were measured here.",
+        "sparky: Obtain independent dependence/decorrelation review and empirical justification of host-specific k, minimum count/span/spacing and bounded reference size/count; fixture constants and the historical sparklina summary do not establish these.",
+        "sparky: After W1 supported calculation/replay facilities are available, reproduce per-CPU maxima, population stdev, full-precision max+k*stdev thresholds below 1 and held-out outcomes from portable digest-bound sources; retain canonical calibration identity and review approval before explicit selection. No empirical replay occurred here."
+      ],
+      "proposed_configuration": null
+    },
+    "gx10-6b77": {
+      "status": "unqualified",
+      "configured_alias": "sparklina",
+      "configured_cpu_worker_loops": 3,
+      "observed_host_identity": null,
+      "observed_sources": [
+        {
+          "path": "docs/measurements/2085-cpu-ambient/sources/netdata-sparklina-system.cpu.json",
+          "sha256": "ae3f3a38c6dd0c47f640c17c0a42449193efce1742d850863d2a307cb4e3dc17",
+          "kind": "aggregate-benchmark-context-not-qualified",
+          "source_host_label": "sparklina"
+        },
+        {
+          "path": "docs/measurements/2085-cpu-ambient/source-inventory.json",
+          "sha256": "7b6642cdcdedddb9ec4c15f869cd67567cafb4e1f779cdd2503bf283b6f7b2ac",
+          "kind": "bounded-inspection-inventory"
+        }
+      ],
+      "unresolved_prerequisites": [
+        "gx10-6b77: Inspect a host-side foreign-per-CPU reference series from supported explicit CPU-only collection/import, retaining original source timestamps, interval boundaries and cadence; no such verified series was obtained in this piece.",
+        "gx10-6b77: Authenticate actual observed host identity and effective logical CPU IDs and tier membership for that window against the selected host; configured hostname/alias and loop count are not topology attestation.",
+        "gx10-6b77: Bind every observation to the actual attribution implementation/version and complete finite per-CPU foreign values; aggregate system.cpu and aggregate busy/PSI stdev cannot substitute.",
+        "gx10-6b77: Retain authoritative affirmative whole-interval PB-holder-free and holder-tail-free evidence for every calibration observation, with inspectable source records and raw digests; absence of a listed holder is not proof.",
+        "gx10-6b77: Retain separate timestamp-disjoint held-out ambient, foreign spike, sustained foreign load and complete-proof clear/recovery observations with the same topology, attribution and interval provenance; none were measured here.",
+        "gx10-6b77: Obtain independent dependence/decorrelation review and empirical justification of host-specific k, minimum count/span/spacing and bounded reference size/count; fixture constants and the historical sparklina summary do not establish these.",
+        "gx10-6b77: After W1 supported calculation/replay facilities are available, reproduce per-CPU maxima, population stdev, full-precision max+k*stdev thresholds below 1 and held-out outcomes from portable digest-bound sources; retain canonical calibration identity and review approval before explicit selection. No empirical replay occurred here."
+      ],
+      "proposed_configuration": null
+    },
+    "dl380g10": {
+      "status": "unqualified",
+      "configured_alias": null,
+      "configured_cpu_worker_loops": 16,
+      "observed_host_identity": null,
+      "observed_sources": [
+        {
+          "path": "docs/measurements/2085-cpu-ambient/sources/netdata-dl380g10-system.cpu.json",
+          "sha256": "5d39f7084588ef73908f9e72e1c020dd9aed0ded9f63334f9c34feacc06cd94a",
+          "kind": "aggregate-benchmark-context-not-qualified",
+          "source_host_label": "dl380g10"
+        },
+        {
+          "path": "docs/measurements/2085-cpu-ambient/source-inventory.json",
+          "sha256": "7b6642cdcdedddb9ec4c15f869cd67567cafb4e1f779cdd2503bf283b6f7b2ac",
+          "kind": "bounded-inspection-inventory"
+        }
+      ],
+      "unresolved_prerequisites": [
+        "dl380g10: Inspect a host-side foreign-per-CPU reference series from supported explicit CPU-only collection/import, retaining original source timestamps, interval boundaries and cadence; no such verified series was obtained in this piece.",
+        "dl380g10: Authenticate actual observed host identity and effective logical CPU IDs and tier membership for that window against the selected host; configured hostname/alias and loop count are not topology attestation.",
+        "dl380g10: Bind every observation to the actual attribution implementation/version and complete finite per-CPU foreign values; aggregate system.cpu and aggregate busy/PSI stdev cannot substitute.",
+        "dl380g10: Retain authoritative affirmative whole-interval PB-holder-free and holder-tail-free evidence for every calibration observation, with inspectable source records and raw digests; absence of a listed holder is not proof.",
+        "dl380g10: Retain separate timestamp-disjoint held-out ambient, foreign spike, sustained foreign load and complete-proof clear/recovery observations with the same topology, attribution and interval provenance; none were measured here.",
+        "dl380g10: Obtain independent dependence/decorrelation review and empirical justification of host-specific k, minimum count/span/spacing and bounded reference size/count; fixture constants and the historical sparklina summary do not establish these.",
+        "dl380g10: After W1 supported calculation/replay facilities are available, reproduce per-CPU maxima, population stdev, full-precision max+k*stdev thresholds below 1 and held-out outcomes from portable digest-bound sources; retain canonical calibration identity and review approval before explicit selection. No empirical replay occurred here."
+      ],
+      "proposed_configuration": null
+    }
+  }
+}
