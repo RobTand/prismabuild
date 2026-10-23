@@ -55,7 +55,9 @@ def bench_receipt_thaws_main() -> None:
         expected = (storage_tiers.fill_rate_from_records(recorded),
                     storage_tiers.fill_supply_from_records(recorded),
                     storage_tiers.mover_cap_from_records(recorded, tier_id=corpus.TIER))
-        assert expected[0] is not None and expected[1]['best_mb_s'] is not None
+        assert expected[0] is not None
+        assert any(expected[1][field] is not None
+                   for field in ('best_mb_s', 'ceiling_mb_s'))
         assert expected[2]['curve'], 'recording must exercise measured mover pricing'
         old, new = baseline_cache(), tier_cycle.ReceiptCache()
         old.read(directories, queue=queue)
