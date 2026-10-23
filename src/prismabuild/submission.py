@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
-from . import action_client, action_wait, client_channel, endings, contracts, manifest_layout
+from . import action_client, action_wait, client_channel, endings, contracts, manifest_layout, sealed_bundle_cache
 from . import (action_edges, adaptive_gpu, capability_eligibility, container_images,
     core as pb, decomposition as dc, dependency_digest, filesystem_floor, fleet_roster,
     materialize, movement_actions, owned_tree, pool, residency_plan, slurm_lane, storage_tiers,
@@ -760,6 +760,39 @@ def write_deterministic_bundle(
     header += "".join(f"{oid} {name}\n" for name, oid in refs) + "\n"
     tips = "".join(f"{oid}\n" for _, oid in refs)
     argv = deterministic_bundle_argv(git_dir)
+    # The snapshot tip binds the injected stamp, tree, parent and complete
+    # reachable object closure. Paths and object storage layout do not.
+    # A version probe failure only disables this disposable optimization.
+    try:
+        git_version = _snapshot_git(root, ["--version"], environment=environment,
+                                    deadline=deadline)
+        effective_config = _snapshot_git(
+            root, [*argv[1:argv.index("pack-objects")], "config", "--null", "--list"],
+            environment=environment, deadline=deadline)
+    except SubmissionRefused:
+        git_version = ""
+    identity = {
+        "object_format": object_format, "refs": list(refs), "header": header,
+        "tips": tips, "pack_configuration": BUNDLE_PACK_CONFIGURATION,
+        "pack_options": BUNDLE_PACK_OPTIONS, "git_version": git_version,
+        "effective_config": effective_config if git_version else "",
+    }
+
+    def seal() -> None:
+        _write_bundle_pack(root, bundle, header, tips, argv,
+                           environment=environment, deadline=deadline)
+
+    if git_version:
+        sealed_bundle_cache.seal_bundle_cached(bundle, identity, seal,
+                                              bounded_wait=deadline is not None)
+    else:
+        seal()
+
+
+def _write_bundle_pack(root: Path, bundle: Path, header: str, tips: str,
+                       argv: list[str], *, environment: dict[str, str],
+                       deadline: float | None) -> None:
+    """The original binary-streaming sealer, also used for every cache miss."""
     try:
         with bundle.open("wb") as handle:
             handle.write(header.encode("utf-8"))

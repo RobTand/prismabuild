@@ -3643,6 +3643,37 @@ without the member or the ordinary package import boundary.
   (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
+  Submission sealing caches those exact bundle bytes on the submitting host
+  (#2171). The default root is `~/tmp/prismabuild-sealed-bundles`, limited to
+  128 entries and 2 GiB of bundle and digest-record bytes, plus sixteen fixed
+  stripe locks and one inventory lock. `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  another absolute root; `off` disables the cache. The opened directory must
+  be private to its owner and on a positively identified local disk filesystem
+  accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
+  The cache key binds the object format, ordered ref names and tip IDs, exact
+  header and tip stream, pack configuration and options, Git version, and the
+  effective Git configuration including inherited settings not explicitly pinned.
+  The snapshot tip transitively binds the injected stamp or closure, tree,
+  parent and reachable objects. Storage layout and temporary paths do not
+  participate. A Git-version or configuration probe failure bypasses the cache.
+  A stripe flock spans lookup and sealing, so concurrent identical seals
+  share one fill. Callers with a deadline bypass a contended stripe lock.
+  The inventory flock serializes copy verification, publication and eviction.
+  Each hit copies to a private destination-side file, verifies its length and
+  stored SHA-256, and atomically installs that same file. Only verification
+  mints a registered, single-use `_VerifiedBundle` capability. Installation
+  rejects plain, forged, copied or consumed capabilities and changed files;
+  instances carry no minting authority. A miss runs the original
+  sealer. Under the inventory lock, publication evicts oldest entries to make
+  room, fsyncs both staged files and their directory, renames the complete
+  entry, and fsyncs the cache root. Interrupted staging is removed on the next
+  access. Cache I/O errors, partial records and digest mismatches fall back
+  to sealing; oversized bundles bypass storage. A hit is byte-identical to
+  a fresh seal and changes neither snapshot records nor action keys.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated complete
+  snapshot submissions with caching disabled and enabled. Run it through PB;
+  it measures process and child CPU, counts pack executions, and checks every
+  snapshot and bundle digest against the uncached result.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
