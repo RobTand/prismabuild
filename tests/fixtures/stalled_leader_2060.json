@@ -1,0 +1,76 @@
+{
+  "scope": "W1 evidence and proposed contract only; no full historical recovery or production repair.",
+  "observed_fixture": "stalled_leader_2060_observed.json",
+  "declarations": {
+    "2bce5567a050816e9af0564c4b6f775564d668fefad4365f303aaa348ea6bd28": {
+      "priority": 0,
+      "resources": {
+        "gpu": 1,
+        "cpu": 4,
+        "mem_gb": 56
+      }
+    },
+    "cafd40ce45d818b7d894e8a6bd6cee0eff2a1ced6f496c257855cd7f05378507": {
+      "priority": -10,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      }
+    }
+  },
+  "historical": {
+    "barrier_event": {
+      "unix": 1791748669.3183753,
+      "event": "window-gated",
+      "consumer": "cafd40ce45d818b7d894e8a6bd6cee0eff2a1ced6f496c257855cd7f05378507",
+      "tier_id": "prismabuild-stage:dl380g10",
+      "reason": "higher-priority-window-waiting",
+      "permanent": false,
+      "need_gib": 1,
+      "output_note": "output-scope-unenforced",
+      "waiting_on": {
+        "consumer": "2bce5567a050816e9af0564c4b6f775564d668fefad4365f303aaa348ea6bd28",
+        "reason": "joint-fit-stall"
+      },
+      "verdict_since_unix": 1791746380.9835446,
+      "waited_s": 2288.335
+    },
+    "barrier_source": {
+      "queue_relative_path": "residency-events/cafd40ce45d818b7d894e8a6bd6cee0eff2a1ced6f496c257855cd7f05378507/dl380g10.jsonl",
+      "sha256": "744fa6646ac07f8a641cf67adeb299234b9c64ac59edf11749bd5f2bd4c25542",
+      "bytes": 142523,
+      "lines": 313,
+      "line": 137
+    },
+    "full_admission_snapshot_recovered": false,
+    "audit_status": "previously_permission_denied_not_independently_verified",
+    "unresolved": {
+      "held": "No same-pass holder ledger, ownership, fences, collectibility or evictability. Window capacity/free observations are not a full ledger.",
+      "queued": "No contemporaneous full READY mover/consumer demand census.",
+      "output": "Event says output-scope-unenforced; exact owed-output and enforcement inputs absent.",
+      "protected_next": "No same-pass protected-next aggregate or admitted/running extras; leader current/next geometry unavailable.",
+      "prelaunch": "No historical group ownership/order/funding/peak/reservation census. Absence of a field in the canary plan is not proof of no groups.",
+      "sharing": "No contemporaneous cross-consumer sharing/deduplication census; leader plan absent.",
+      "commitment": "No same-pass commitment footprints, admitted growth, static occupancy decomposition or decision terms.",
+      "leader_plan": "Exact consumer-named plan, map and event directory absent in bounded current queue lookups. Terminal declaration is not plan geometry."
+    }
+  },
+  "synthetic_probe": {
+    "historical_replay": false,
+    "capacity_gib": 20,
+    "static_held_gib": 5,
+    "leader_stage_gib": 18,
+    "canary_stage_gib": 3
+  },
+  "contract": {
+    "historical_safe_backfill_proved": false,
+    "preserve_feasible_wait": true,
+    "unknown_state": "refuse",
+    "preserve_future_higher_priority_rights": true,
+    "production_change_in_w1": false,
+    "repair_owner": "#2061",
+    "tracking_parent": "#1772",
+    "priority": "P1",
+    "specification": "docs/measurements/2060-stalled-leader-contract.md"
+  }
+}
