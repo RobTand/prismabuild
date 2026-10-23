@@ -1579,6 +1579,11 @@ def command_dependency_contract(
     return [invocation, *arguments], local_dependencies.normalize(requirements), bound_caller
 
 
+def default_gpu_placement(*, needs_gpu: bool) -> list[str]:
+    """CPU work has no implicit GPU-host constraint."""
+    return ["gb10"] if needs_gpu else []
+
+
 def placement_contract(
     cwd: Path, *, explicit: list[str], here: bool, hostname: str,
     portable_checkout: bool = False, command: list[str] | None = None,
@@ -1602,7 +1607,7 @@ store: FleetStore, display: DisplaySink = discard_display) -> tuple[list[str], d
     command, requirements, bound_caller = command_dependency_contract(
         cwd, command, repository_root=repository_root or cwd,
         environment=environment, caller_environment=caller_environment)
-    if offer_queue is not None:
+    if offer_queue is not None and needs_gpu:
         try:
             roster = fleet_roster.Roster.read(store.roster_path)
             members = fleet_roster.class_members(roster.document, "gb10")
@@ -1611,10 +1616,10 @@ store: FleetStore, display: DisplaySink = discard_display) -> tuple[list[str], d
                   channel="stderr", flush=True)
             return [hostname], requirements, command, bound_caller
         aliases = {alias for names in members.values() for alias in names}
-        if hostname in aliases or (hostname == "celestia" and needs_gpu):
+        if hostname in aliases or hostname == "celestia":
             reason = offer_queue().class_dependency_gap("gb10", members, requirements)
             if reason is None:
-                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
+                return [*default_gpu_placement(needs_gpu=needs_gpu), *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
             emit_display(display, f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
                   channel="stderr", flush=True)
             return [hostname], requirements, command, bound_caller

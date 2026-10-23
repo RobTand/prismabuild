@@ -597,6 +597,7 @@ class Authority:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
+        if op=='gpu_observation':return self.gpu_observation(pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
                  else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
@@ -788,7 +789,29 @@ class Authority:
     @staticmethod
     def _stop_details(record):
         return {key:record[key] for key in ('stop_reason','stopped_unix',
-                'termination_evidence','last_cleanup_reason') if key in record}
+                'termination_evidence','last_cleanup_reason','resource_telemetry') if key in record}
+
+    def gpu_observation(self,pid,request):
+        """Read-only payload access, authorized by kernel scope membership."""
+        if set(request)!={'op','action_key','nonce'}:raise ValueError('invalid GPU observation fields')
+        key,nonce=self.identity(request);scope=scope_id(key,nonce)
+        groups=Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+        membership='/prismabuild.slice/'+scope
+        if not any(line=='0::'+membership or line.startswith('0::'+membership+'/') for line in groups):
+            raise PermissionError('GPU observer is outside the payload scope')
+        # One final bounded census catches empty short-lived payloads. Sampling
+        # owns no admission lock and revalidates the exact authority afterwards.
+        observer=getattr(self,'gpu_observer',None)
+        if observer is None:raise ValueError('GPU observation monitor unavailable')
+        observer()
+        with self.lock:
+            record=self.records.get(scope)
+            if record is None or record.get('released_unix'):raise ValueError('GPU observation scope unavailable')
+            info=self.backend.path(scope).stat()
+            if [info.st_dev,info.st_ino]!=record.get('cgroup_identity'):
+                raise ValueError('GPU observation kernel scope changed')
+            return {'ok':True,'scope_id':scope,'nonce':nonce,
+                    'resource_telemetry':dict(record.get('resource_telemetry') or {})}
 
     def admin(self,uid,request):
         """Operate the one gate that stops this host, as a claim with a holder.
@@ -1217,6 +1240,8 @@ class ResourceMonitor:
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
+        self.sample_lock=threading.Lock()
+        authority.gpu_observer=self.poll_once
 
     def _records(self):
         with self.authority.lock:
@@ -1251,6 +1276,32 @@ class ResourceMonitor:
             return True
 
     def poll_once(self):
+        with self.sample_lock:
+            return self._poll_once()
+
+    def _retain_gpu_observation(self,records,snapshot):
+        """Union only UUIDs attributed to this unchanged kernel scope."""
+        for job in snapshot.get('jobs',()):
+            scope=job.get('scope_id');expected=records.get(scope)
+            if expected is None:continue
+            identity=job.get('cgroup_identity')
+            if identity is None or tuple(identity)!=tuple(expected['cgroup_identity']):continue
+            with self.authority.lock:
+                current=self.authority.records.get(scope)
+                if (current is None or current.get('released_unix')
+                        or any(current.get(key)!=expected.get(key) for key in self.identity_fields)):
+                    continue
+                info=self.authority.backend.path(scope).stat()
+                if (info.st_dev,info.st_ino)!=tuple(identity):continue
+                prior=current.get('resource_telemetry') or {}
+                uuids=set(prior.get('gpu_uuids',()))
+                uuids.update(row['gpu_uuid'] for row in job.get('processes',()))
+                known=bool(uuids) or snapshot.get('gpu_query_complete') is True or prior.get('gpu_devices_used') is not None
+                current['resource_telemetry']={'gpu_devices_used':len(uuids) if known else None,
+                                               'gpu_uuids':sorted(uuids)}
+                _atomic(self.authority.state_dir/(scope+'.json'),current)
+
+    def _poll_once(self):
         records=self._records();stopped=[];errors=[]
         # Only a local OOM identifies exhaustion of this aggregate limit.
         # Hierarchical victim counts also include safely contained child OOMs.
@@ -1296,6 +1347,7 @@ class ResourceMonitor:
             memory_options['gpu_devices']=device_readings[0]
         if scopes or self.capacity is not None:
             snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
+            self._retain_gpu_observation(records,snapshot.as_dict())
             for decision in self.guard.observe(snapshot):
                 expected=records.get(decision.scope_id)
                 if expected is None:continue

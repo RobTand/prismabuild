@@ -1684,9 +1684,14 @@ class Session:
         receipt = call.read("receipt", lambda: pool.record_store.inspection_document(receipt_path))
         checks["receipt_present"] = receipt is not None
         if receipt is not None:
-            receipt_body = {name: receipt.get(name) for name in pb.CAS_RECEIPT_BODY_KEYS}
+            try:
+                pb._validate_receipt_shape(receipt)
+                receipt_shape_valid = True
+            except pb.ActionContractError:
+                receipt_shape_valid = False
+            receipt_body = {name: value for name, value in receipt.items() if name != "receipt_sha256"}
             checks["receipt_self_consistent"] = (
-                set(receipt) == set(pb.CAS_RECEIPT_KEYS)
+                receipt_shape_valid
                 and receipt.get("receipt_sha256") == pb.canonical_sha256(receipt_body))
             checks["receipt_binds_the_claims_manifest"] = (
                 receipt.get("action_manifest_sha256")

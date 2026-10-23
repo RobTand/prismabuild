@@ -3576,7 +3576,7 @@ class PrismaBuildCAS:
         self, value: object, *, action: Mapping[str, object]
     ) -> dict[str, object]:
         try:
-            receipt = _exact_mapping(value, keys=_RECEIPT_KEYS, where="CAS receipt")
+            receipt = _validate_receipt_shape(value)
             if receipt["schema"] != CAS_RECEIPT_SCHEMA_V3:
                 _fail(f"CAS receipt schema must be {CAS_RECEIPT_SCHEMA_V3!r}")
             action_key = _sha256(receipt["action_key"], where="CAS receipt.action_key")
@@ -3614,6 +3614,8 @@ class PrismaBuildCAS:
                 "result": result,
                 "producer": producer,
             }
+            if "resource_telemetry" in receipt:
+                body["resource_telemetry"] = _validate_gpu_execution_observation(receipt["resource_telemetry"])
             recorded = _sha256(
                 receipt["receipt_sha256"], where="CAS receipt.receipt_sha256"
             )
@@ -3815,6 +3817,7 @@ class PrismaBuildCAS:
         precommit_verify: Callable[[], None] | None = None,
         staging_namespace: str | None = None,
         return_execution_receipt: bool = False,
+        resource_telemetry: Mapping[str, object] | None = None,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
@@ -3833,6 +3836,12 @@ class PrismaBuildCAS:
 
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
+        if normalized["params"].get("demand", {}).get("gpu") and resource_telemetry is None:
+            raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published")
+        if resource_telemetry is not None:
+            resource_telemetry = _validate_gpu_execution_observation(resource_telemetry)
+            if resource_telemetry["gpu_devices_used"] == 0:
+                raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope")
         if staging_namespace is None:
             staging_directory = self.root / ".staging"
         else:
@@ -3855,6 +3864,8 @@ class PrismaBuildCAS:
                 "result": result,
                 "producer": producer,
             }
+            if resource_telemetry is not None:
+                body["resource_telemetry"] = dict(resource_telemetry)
             candidate = {**body, "receipt_sha256": canonical_sha256(body)}
             receipt_path = self._receipt_path(str(normalized["action_key"]))
 
@@ -6113,6 +6124,69 @@ def _sigterm_unwinds_this_process():
         signal.signal(signal.SIGTERM, previous_term)
 
 
+def _validate_receipt_shape(value: object) -> Mapping[str, object]:
+    optional = {"resource_telemetry"} if isinstance(value, Mapping) and "resource_telemetry" in value else set()
+    receipt = _exact_mapping(value, keys=_RECEIPT_KEYS | optional, where="CAS receipt")
+    if optional and _validate_gpu_execution_observation(receipt["resource_telemetry"])["gpu_devices_used"] == 0:
+        _fail("GPU action used zero distinct GPU UUIDs in its payload scope")
+    return receipt
+
+
+def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
+    raw = _exact_mapping(value, keys=frozenset({"gpu_devices_used", "gpu_uuids", "scope_id", "nonce"}),
+                         where="GPU execution observation")
+    count = _nonnegative_integer(raw["gpu_devices_used"], where="GPU devices used")
+    uuids = raw["gpu_uuids"]
+    if (not isinstance(uuids, list) or any(not isinstance(uuid, str) or not uuid for uuid in uuids)
+            or uuids != sorted(set(uuids)) or len(uuids) != count):
+        _fail("GPU UUIDs must be distinct, sorted and agree with the device count")
+    nonce = _text(raw["nonce"], where="GPU observation nonce", pattern=re.compile(r"[a-f0-9]{32}"))
+    scope = _text(raw["scope_id"], where="GPU observation scope",
+                  pattern=re.compile(r"prismabuild-job[a-f0-9]{32}\.slice"))
+    return {"gpu_devices_used": count, "gpu_uuids": list(uuids), "scope_id": scope, "nonce": nonce}
+
+
+def _gpu_execution_observation(action: Mapping[str, object]) -> dict[str, object] | None:
+    if not action["params"].get("demand", {}).get("gpu"):
+        return None
+    nonce, scope = os.environ.get(ACTION_NONCE_ENV), os.environ.get(ACTION_SCOPE_ENV)
+    if not nonce or not scope:
+        raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(10)
+            client.connect(os.environ.get("PRISMABUILD_RESOURCE_BROKER_SOCKET", "/run/prismabuild/resources.sock"))
+            client.sendall(_canonical_bytes({"op": "gpu_observation", "action_key": action["action_key"],
+                                            "nonce": nonce}) + b"\n")
+            data = bytearray()
+            while b"\n" not in data:
+                chunk = client.recv(65537 - len(data))
+                if not chunk or len(data) + len(chunk) > 65536:
+                    raise ValueError("GPU observation response unavailable or exceeds 64 KiB")
+                data.extend(chunk)
+        response = digest_primitives.decode_strict_json(data.split(b"\n", 1)[0], where="GPU observation")
+        if (not isinstance(response, Mapping) or response.get("ok") is not True
+                or response.get("nonce") != nonce or response.get("scope_id") != scope):
+            raise ValueError("GPU observation is not bound to the payload scope")
+        observation = _validate_gpu_execution_observation({**response["resource_telemetry"],
+                                                          "nonce": nonce, "scope_id": scope})
+    except (OSError, ValueError, KeyError, TypeError, ActionContractError) as exc:
+        raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published") from exc
+    _write_action_status({"resource_telemetry": observation})
+    if observation["gpu_devices_used"] == 0:
+        _write_action_status({"termination_reason": "zero_gpu_devices_used"})
+        raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope; no receipt was published")
+    return observation
+
+
+def _cached_gpu_observation(result: dict[str, object], action: Mapping[str, object]) -> dict[str, object]:
+    observation = result["receipt"].get("resource_telemetry")
+    if action["params"].get("demand", {}).get("gpu"):
+        _write_action_status({"cached_execution": True,
+                              **({"resource_telemetry": observation} if observation is not None else {})})
+    return result
+
+
 def run_local_action(
     action: object,
     *,
@@ -6133,11 +6207,11 @@ def run_local_action(
         cached = cas.lookup(normalized)
         if cached is not None:
             verify_code_closure(normalized["code_closure"], root)
-            return {
+            return _cached_gpu_observation({
                 "status": "cache_hit",
                 "receipt": cached,
                 "payload_path": str(cas._verified_receipt_result_path(cached)),
-            }
+            }, normalized)
     task = normalized["task"]
     environment = normalized["environment"]
     assert isinstance(task, Mapping)
@@ -6161,11 +6235,11 @@ def run_local_action(
             cached = cas.lookup(normalized)
             if cached is not None:
                 verify_code_closure(normalized["code_closure"], root)
-                return {
+                return _cached_gpu_observation({
                     "status": "cache_hit",
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
-                }
+                }, normalized)
         attestation = preflight_action(
             normalized,
             cas_root=cas_root,
@@ -6358,6 +6432,7 @@ def run_local_action(
             raise LocalActionError(
                 f"action succeeded without its declared result file: {output}"
             )
+        resource_telemetry = _gpu_execution_observation(normalized)
         # Preflight alone is insufficient: an action (or another checkout
         # writer) can change a closure member while argv is running.  Check
         # once before an expensive result copy, then again at the CAS receipt
@@ -6378,6 +6453,7 @@ def run_local_action(
             precommit_verify=verify_publication_provenance,
             staging_namespace=str(claim["claim_sha256"]),
             return_execution_receipt=True,
+            resource_telemetry=resource_telemetry,
         )
     result = {
         "status": "published" if won else "execution_result_published",

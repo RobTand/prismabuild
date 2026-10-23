@@ -241,6 +241,21 @@ def test_verify_claim_hashes_the_payload_when_asked(session: pbmcp.Session,
     assert body["attestation_verified"] is None
 
 
+@pytest.mark.parametrize("count", [0, 1])
+def test_verify_claim_checks_gpu_execution_evidence(session: pbmcp.Session, fleet: fx.Fleet, count):
+    receipt_path = (fleet.cas_root / "actions" / "v3" / fx.DONE_KEY[:2] / f"{fx.DONE_KEY}.json")
+    receipt = json.loads(receipt_path.read_text())
+    receipt["resource_telemetry"] = {
+        "gpu_devices_used": count, "gpu_uuids": ["GPU-observed"] if count else [],
+        "nonce": "a" * 32, "scope_id": "prismabuild-job" + "b" * 32 + ".slice"}
+    receipt["receipt_sha256"] = pbmcp.pb.canonical_sha256({key: value for key, value in receipt.items()
+                                                        if key != "receipt_sha256"})
+    receipt_path.write_text(json.dumps(receipt))
+    body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)})
+    assert body["checks"]["receipt_self_consistent"] is (count > 0)
+    assert body["checks_passed"] is (count > 0)
+
+
 def test_verify_claim_fails_a_payload_that_is_not_what_the_receipt_says(
     session: pbmcp.Session, fleet: fx.Fleet,
 ) -> None:

@@ -5667,6 +5667,9 @@ class PoolQueue:
             path.unlink()
         if not isinstance(body, dict):
             return outcome
+        for field in ("resource_telemetry", "cached_execution", "termination_reason"):
+            if field in body:
+                outcome[field] = body[field]
         for field in ("action_returncode", "action_signal"):
             value = body.get(field)
             if isinstance(value, int) and not isinstance(value, bool):
@@ -14571,6 +14574,7 @@ class PoolQueue:
                     f"broker GPU capacity snapshot unavailable: {type(exc).__name__}")
         try:
             status = scope._request("status")
+            telemetry.update(status.get("resource_telemetry") or {})
             if status.get("stop_reason"):
                 telemetry["termination_reason"] = status["stop_reason"]
             if status.get("termination_evidence"):
@@ -21523,7 +21527,8 @@ class PoolQueue:
             outcome.update(policy.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self.scope_for_record(item))
-            outcome["resource_telemetry"] = telemetry
+            if not outcome.get("cached_execution"):
+                outcome["resource_telemetry"] = {**telemetry, **outcome.get("resource_telemetry", {})}
             resource_failure = self._resource_failure(telemetry)
             if resource_failure:
                 outcome.update(status="failed", returncode=137,

@@ -109,6 +109,7 @@ def main() -> int:
         # so readers import from sealed bytes, never the mutable repo.
         payload_env = payload_identity_env(
             os.environ, action_key=args.action_key, nonce=args.nonce)
+        payload_env['PRISMABUILD_RESOURCE_BROKER_SOCKET'] = str(args.socket)
         request = {'op': 'run', **identity, 'argv': argv,
                    'cwd': os.getcwd(), 'env': payload_env,
                    'affinity': sorted(os.sched_getaffinity(0)), 'umask': process_umask()}

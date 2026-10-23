@@ -234,9 +234,6 @@ build_scratch_lifetime_selection = scratch_lifetime.build_scratch_lifetime_selec
 
 CAS_RECEIPT_SCHEMA_V3 = _core.CAS_RECEIPT_SCHEMA_V3
 WORKER_ATTESTATION_SCHEMA_V2 = _core.WORKER_ATTESTATION_SCHEMA_V2
-_CAS_RECEIPT_KEYS = frozenset({
-    "schema", "action_key", "action_manifest_sha256", "producer", "result",
-    "receipt_sha256"})
 
 #: :func:`cas_receipt_self_check` refusals, in the order they are checked.
 RECEIPT_REFUSALS = ("cas-receipt-shape", "cas-receipt-digest",
@@ -249,8 +246,8 @@ def cas_receipt_self_check(receipt: Mapping[str, object]) -> str | None:
     ``None`` when it does, else the first refusal of
     :data:`RECEIPT_REFUSALS`:
 
-    1. ``cas-receipt-shape``: the receipt is not exactly the six v3 fields, or
-       its schema is not :data:`CAS_RECEIPT_SCHEMA_V3`.
+    1. ``cas-receipt-shape``: the receipt differs from the v3 fields plus
+       optional positive GPU execution evidence, or its schema differs.
     2. ``cas-receipt-digest``: ``receipt_sha256`` is not the canonical digest
        of the other five fields.
     3. ``worker-attestation-digest``: the producer is not a
@@ -265,7 +262,11 @@ def cas_receipt_self_check(receipt: Mapping[str, object]) -> str | None:
     binds that itself (the action key, the inputs, the result digest).
     """
 
-    if set(receipt) != _CAS_RECEIPT_KEYS or receipt["schema"] != CAS_RECEIPT_SCHEMA_V3:
+    try:
+        _core._validate_receipt_shape(receipt)
+    except _core.ActionContractError:
+        return RECEIPT_REFUSALS[0]
+    if receipt["schema"] != CAS_RECEIPT_SCHEMA_V3:
         return RECEIPT_REFUSALS[0]
     body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     if _core.canonical_sha256(body) != receipt["receipt_sha256"]:

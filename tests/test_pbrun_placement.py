@@ -2258,7 +2258,7 @@ def class_submission(tmp_path, monkeypatch):
 
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
 
-    def submit(command, *, host="spark-a", flags=(), answers=None, omit=(), stale=()):
+    def submit(command, *, host="spark-a", flags=(), answers=None, omit=(), stale=(), gpu=True):
         for member in ("spark-a", "spark-b"):
             if member in omit:
                 continue
@@ -2283,7 +2283,7 @@ def class_submission(tmp_path, monkeypatch):
             record.write_text(json.dumps(value))
         monkeypatch.setattr(socket, "gethostname", lambda: host)
         monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(checkout),
-                                         *flags, "--", *command])
+                                         *(["--gpu"] if gpu else []), *flags, "--", *command])
         with pytest.raises(StopAfterSeal):
             pbrun.main()
         return sealed[-1]
@@ -2310,6 +2310,29 @@ def test_default_class_cli_cases(class_submission, capsys, case):
     if case == "host-only":
         notice = capsys.readouterr().err
         assert path in notice and "absent" in notice
+
+
+def test_device_free_submission_skips_gpu_class_and_attaches_open_child(class_submission):
+    submit, root = class_submission
+    executable = root / "checkout" / "task"
+    executable.write_text("#!/bin/sh\nprintf cpu-only\n")
+    executable.chmod(0o755)
+    action = submit(["./task"], gpu=False)
+    assert action["params"]["placement"]["required_tags"] == []
+    assert "gpu" not in action["params"]["demand"]
+    queue = pool_module.PoolQueue(root / "attachment-queue")
+    cas = core_module.PrismaBuildCAS(root / "attachment-cas")
+    cas.publish_action_request(action)
+    publication = dict(action_key=action["action_key"], cas_root=cas.root,
+                       checkout_root=root / "checkout", worker_script=REPOSITORY / "tools/prismabuild_worker.py",
+                       tags=[], needs_gpu=False, resources=action["params"]["demand"])
+    first, generation = submit_core.publish_or_attach(queue, publication, key=action["action_key"])
+    again, attached = submit_core.publish_or_attach(queue, publication, key=action["action_key"])
+    assert first is not None and again is None and attached == generation
+    ready = queue.ready_items()
+    assert len(ready) == 1
+    assert ready[0]["needs_gpu"] is False
+    assert "gb10" not in ready[0]["tags"]
 
 
 @pytest.mark.parametrize("source", ["argv", "environment"])
@@ -2408,6 +2431,12 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
+    # Exercise GPU-class dependency binding with synthetic placement intent;
+    # the real nested worker below remains CPU-only in this admitted test.
+    real_placement = submit_core.placement_contract
+    def gpu_class_placement(*args, **kwargs):
+        return real_placement(*args, **{**kwargs, "needs_gpu": True})
+    monkeypatch.setattr(submit_core, "placement_contract", gpu_class_placement)
     earlier = tmp_path / "earlier-path"
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work), "--detach",
                                      "--env", f"PATH={earlier}:{tmp_path}/path-link/..:/usr/bin:/bin", "--",
@@ -2620,7 +2649,7 @@ def test_zero_external_dependencies_cannot_widen_failed_class_default(class_subm
     flags = (["--gpu"] if proof == "invalid" else ["--here"] if proof == "here"
              else ["--tag", "x86"] if proof == "tag" else ["--anywhere"] if proof == "anywhere" else [])
     host = "celestia" if proof in ("invalid", "non-class") else "spark-a"
-    action = submit(["./task"], host=host, flags=flags,
+    action = submit(["./task"], host=host, flags=flags, gpu=proof != "non-class",
                     omit=["spark-b"] if proof == "missing" else [],
                     stale=["spark-b"] if proof == "stale" else [])
     assert action["params"].get("dependency_queries", {}) == {}
@@ -3105,7 +3134,7 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     before = ready.read_bytes()
     if case == "missing":
         alias.unlink()
-    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+    item = queue.claim(tags=["spark-a", "gb10", local_dependencies.TAG], has_gpu=False,
                        capacity={"cpu": 1, "mem_gb": 4})
     if case == "missing":
         assert item is None
@@ -3261,7 +3290,7 @@ def test_raw_directory_suffix_preserves_real_copy_layout(raw_copy_submission, mo
     from prismabuild import local_dependencies
     submit, queue, work, raw, content = raw_copy_submission
     row = submit(mode)
-    item = queue.claim(tags=["gb10", local_dependencies.TAG], has_gpu=False,
+    item = queue.claim(tags=["spark-a", "gb10", local_dependencies.TAG], has_gpu=False,
                        capacity={"cpu": 1, "mem_gb": 4})
     assert item is not None
     outcome = queue.execute(item, heartbeat_s=0.05)

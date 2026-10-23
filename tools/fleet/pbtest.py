@@ -1545,8 +1545,8 @@ def _pbtest_population(checkout: Path, paths: list[str], capabilities: str | Non
 
 
 def _pbtest_tags(args) -> list[str]:
-    return args.tag or (["gb10"] if args.gpu and
-                        not pool.is_box_local_path(RUNTIME_ROOT) else [])
+    return args.tag or submission.default_gpu_placement(
+        needs_gpu=args.gpu and not pool.is_box_local_path(RUNTIME_ROOT))
 
 
 def main() -> int:

@@ -6190,6 +6190,41 @@ windows remain sourced from Netdata and GB10 windows from their existing
 recorders. Status and metrics expose discrete VRAM peak/total separately from
 host cgroup memory and GPU power.
 
+### GPU execution closure (#1744)
+
+The broker retains the union of GPU UUIDs attributed by `gpu_memory.collect`
+to each exact payload cgroup across samples. `resource_telemetry.gpu_devices_used`
+is the distinct observed UUID count, and `gpu_uuids` records its members.
+Device visibility, foreign processes and framebuffer occupancy do not count.
+Unavailable process-memory bytes do not erase valid device attribution.
+The monitor rechecks the attempt authority and kernel cgroup identity before
+persisting a sample. A missing or incomplete census with no earlier complete
+sample is unknown, rather than evidence of zero use.
+
+Before publishing a new GPU result, Core requests one final broker census.
+The read-only `gpu_observation` operation verifies the peer's kernel membership
+in the requested action/nonce scope without handing broker tokens to payloads.
+Zero observed UUIDs refuse publication with `zero_gpu_devices_used`; unavailable
+attribution also refuses a new GPU receipt. Positive scope evidence is hashed
+into the receipt's optional `resource_telemetry` field and independently checked
+on lookup. CPU receipts retain their existing shape. Existing receipts without
+this field retain their historical unknown observation.
+
+`Pool.finish`, through the lifecycle owner, files a zero-use successful GPU
+attempt as terminal `failed`, including its immutable attempt and the named
+reason. This policy refusal cannot retry automatically. The shared ending
+reader accepts the same terminal disposition. Cache reuse carries the original
+execution's observation and never substitutes the replay scope's idle sample.
+An unsampled short GPU use may fall between censuses; this signal proves
+observed scope attribution, not a trace of every GPU kernel.
+
+Submission and test-shard defaults share the GPU placement judgment. CPU demand
+does not imply `gb10`, even when submitted from a GPU host. Explicit placement
+and genuine box-local dependency constraints retain their existing rules.
+This source change and CPU fixtures establish no runtime deployment or live
+GPU qualification. SM-01 terminal consistency is tested at the component level;
+ID-08 deployment and ACC-02 live workload qualification remain separate gates.
+
 ## Preferred, overflow and adaptive CPU admission
 
 Host admission uses a nonblocking local FLOCK around the box's headroom

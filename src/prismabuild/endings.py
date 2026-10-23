@@ -370,9 +370,17 @@ def resolve_attempt(
         validate_output_retry_stop(adopted["output_retry_stop"], adopted)
     worker_failure_final = (adopted.get("retry_scope") == "interruption"
                             and adopted.get("worker_reported") is True)
+    raw_detail = adopted.get("detail")
+    if not isinstance(raw_detail, Mapping):
+        raise invalid("pool attempt detail must be an object")
+    observation = raw_detail.get("resource_telemetry")
+    gpu_refusal_final = (raw_detail.get("termination_reason") == "zero_gpu_devices_used"
+                         and isinstance(observation, Mapping)
+                         and type(observation.get("gpu_devices_used")) is int
+                         and observation["gpu_devices_used"] == 0)
     expected = (
         WITHDRAWN if status == WITHDRAWN else
-        DONE if succeeded else FAILED if (stopped or worker_failure_final
+        DONE if succeeded else FAILED if (stopped or worker_failure_final or gpu_refusal_final
                                          or attempt >= max_attempts) else "requeued"
     )
     if disposition != expected:
@@ -380,9 +388,6 @@ def resolve_attempt(
             f"pool attempt {attempt} status {status!r} requires "
             f"disposition {expected!r}, not {disposition!r}"
         )
-    raw_detail = adopted.get("detail")
-    if not isinstance(raw_detail, Mapping):
-        raise invalid("pool attempt detail must be an object")
     finished_unix = adopted.get("finished_unix")
     if (
         isinstance(finished_unix, bool)

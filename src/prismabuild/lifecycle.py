@@ -247,6 +247,7 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
         detail.update(status="failed", returncode=137,
                       termination_reason=resource_failure, resource_telemetry=telemetry,
                       termination_evidence=telemetry.get("termination_evidence"))
+    status, detail, _ = _gpu_finish_verdict(queue, record, status, detail, telemetry)
     # Keep completed cleanup durable until both the immutable attempt and
     # the recovery evidence are filed. Neither can overwrite a successor.
     queue.records.replace_record_at(path, record)
@@ -265,6 +266,29 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
         ))
     path.unlink(missing_ok=True)
     return result
+
+
+def _gpu_finish_verdict(queue, record, status, detail, telemetry):
+    detail = dict(detail or {})
+    if detail.get("cached_execution") or status == "cache_hit":
+        observation = detail.get("resource_telemetry") or {}
+    else:
+        observation = {**telemetry, **(detail.get("resource_telemetry") or {})}
+    if observation:
+        detail["resource_telemetry"] = observation
+    zero_gpu = ((status in {"executed", "cache_hit"}
+                 or detail.get("termination_reason") == "zero_gpu_devices_used")
+                and queue.demand_of(record).get("gpu", 0) > 0
+                and type(observation.get("gpu_devices_used")) is int
+                and observation["gpu_devices_used"] == 0)
+    if zero_gpu:
+        status = "failed"
+        message = "PrismaBuild: GPU action used zero distinct GPU UUIDs in its payload scope."
+        stderr = str(detail.get("stderr") or "")
+        detail.update(status="failed", returncode=1,
+                      termination_reason="zero_gpu_devices_used",
+                      stderr=stderr if message in stderr else stderr + "\n" + message + "\n")
+    return status, detail, zero_gpu
 
 
 def _archive_late_finish(
@@ -307,6 +331,8 @@ def _archive_late_finish(
     """
     from . import pool
 
+    status, detail, zero_gpu = _gpu_finish_verdict(queue, snapshot, status, detail, {})
+
     attempt = int(snapshot.get("attempts", 0)) + 1
     if (queue.records.attempt_generation({**snapshot, "action_key": action_key})
             == queue.records.attempt_generation({**live, "action_key": action_key})
@@ -336,7 +362,7 @@ def _archive_late_finish(
     # not a failure and must not descend the retry ladder.
     disposition = (
         WITHDRAWN if status == WITHDRAWN else
-        DONE if succeeded else FAILED if attempt >= limit else "requeued"
+        DONE if succeeded else FAILED if zero_gpu or attempt >= limit else "requeued"
     )
     _legal_destination(Transition.LATE, "attempt")
     queue.archive_attempt(
@@ -519,6 +545,12 @@ def _worker_finish(
         detail = {**dict(detail or {}), "status": "failed", "returncode": 137,
                   "termination_reason": resource_failure, "resource_telemetry": telemetry,
                   "termination_evidence": telemetry.get("termination_evidence")}
+    status, detail, zero_gpu = _gpu_finish_verdict(queue, effective_record, status, detail, telemetry)
+    succeeded = status in {"executed", "cache_hit"}
+    if zero_gpu:
+        if effective_record.get("gang") is not None:
+            queue._gang_teardown(effective_record, by=action_key,
+                                reason=f"member {action_key[:12]} used zero GPUs")
     if effective_record.get("tier_fill_borrowed"):
         # Before the export's own tokens go back (#999): which lenders
         # left while it still wrote on what they lent.
@@ -661,7 +693,7 @@ def _worker_finish(
         }
     )
     terminal = (succeeded or attempts >= limit
-                or record.get("retry_scope") == "interruption")
+                or zero_gpu or record.get("retry_scope") == "interruption")
     disposition = (
         DONE if succeeded else FAILED if terminal else "requeued"
     )
