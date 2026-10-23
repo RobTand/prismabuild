@@ -464,6 +464,10 @@ class ReceiptCache:
         self.ledger_records = kept_reads.DirectoryRecords(trust=self.trust)
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
+        self._receipt_thaws: dict[str, tuple[object, object]] = {}
+        self._receipt_seen: set[str] = set()
+        self._receipt_names: frozenset[str] = frozenset()
+        self._merged_generation: tuple | None = None
         self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
         self._queue: pool.PoolQueue | None = None
         self._retired_generation: tuple | None = None
@@ -508,10 +512,28 @@ class ReceiptCache:
             self._queue = current
         return current
 
+    def _thaw_receipt(self, path: Path, frozen: object) -> object:
+        """Reuse only the exact frozen input requalified by DirectoryRecords."""
+        key = str(path)
+        self._receipt_seen.add(key)
+        previous = self._receipt_thaws.get(key)
+        if previous is None or previous[0] is not frozen:
+            previous = (frozen, pool.record_store._thawed_document(path, frozen))
+            self._receipt_thaws[key] = previous
+        return previous[1]
+
     def read(self, directories: list[Path], *,
              liveness: "Liveness | None" = None,
              queue: pool.PoolQueue | None = None) -> list[dict[str, object]]:
-        """Every receipt in ``directories``, re-read only where it changed.
+        """Refresh receipt inputs and return independent mutable documents."""
+        self.refresh(directories, liveness=liveness, queue=queue)
+        return [pool.record_store.independent_document(record)
+                for record in self._records]
+
+    def refresh(self, directories: list[Path], *,
+                liveness: "Liveness | None" = None,
+                queue: pool.PoolQueue | None = None) -> None:
+        """Refresh private receipt inputs, re-thawing only changed records.
 
         ``liveness`` is the tier loop's `Liveness` (#1148).  The read
         checkpoints it while each directory is listed, before each entry is
@@ -538,6 +560,7 @@ class ReceiptCache:
         """
 
         owner = self._owner(directories, queue)
+        self._receipt_seen = set()
         store = pool.record_store.RecordStore.kept(
             Path(directories[0]).parent if directories else Path("."),
             records=self.records)
@@ -551,7 +574,7 @@ class ReceiptCache:
                     liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = store.receipt_records_at(
-                    directory, readers=RECEIPT_READERS,
+                    directory, readers=RECEIPT_READERS, thaw=self._thaw_receipt,
                     **({} if checkpoint is None else {"checkpoint": checkpoint}))
             except OSError as exc:
                 unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
@@ -573,7 +596,8 @@ class ReceiptCache:
                 # other record the loop keeps -- no bare stat tuple, and an
                 # unreadable directory is not an empty one.
                 documents = {
-                    path.name: record for path, record in store.retirement_documents()}
+                    path.name: record for path, record in store.retirement_documents(
+                        thaw=self._thaw_receipt)}
                 generation = self.records.generation(retired_dir)
                 checkpoint = documents.get(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT)
                 state = documents.get(pool.record_store.MOVERS_RETIREMENT_STATE)
@@ -606,6 +630,16 @@ class ReceiptCache:
                 self._retired_memo = None
                 generation = None
                 retired = {}
+        self._receipt_thaws = {key: self._receipt_thaws[key]
+                               for key in self._receipt_seen}
+        self._receipt_names = frozenset(self._receipt_seen)
+        self._directories = tuple(read)
+        self._retired_generation = generation
+        self.retired_error = error
+        self.unreadable = unreadable
+        merged_generation = (id(self.records), self._generations())
+        if self._merged_generation == merged_generation:
+            return
         merged: list[dict[str, object]] = []
         for directory in read:
             records = by_directory.get(str(directory), [])
@@ -616,13 +650,8 @@ class ReceiptCache:
                     union[str(record.get("action_key") or "")] = record
                 records = [union[key] for key in sorted(union)]
             merged.extend(records)
-        self._directories = tuple(read)
         self._records = merged
-        self._retired_generation = generation
-        self.retired_error = error
-        self.unreadable = unreadable
-        return [pool.record_store.independent_document(record)
-                for record in merged]
+        self._merged_generation = merged_generation
 
     def _retired(self) -> None:
         """Refuse to fold when the retirement store could not be read."""
@@ -637,7 +666,11 @@ class ReceiptCache:
                              self.records.generation(directory))
                             for directory in self._directories)
         root = "" if self._queue is None else str(self._queue.root)
-        return generations + (("retired", root, self._retired_generation),)
+        # An untrusted empty read has no parsed entry to advance a directory
+        # generation after its old capture was discarded. The observed names
+        # are also inputs, so losing the last receipt still invalidates folds.
+        return generations + (("retired", root, self._retired_generation),
+                              ("receipt-names", self._receipt_names))
 
     def fill_supply(self, pool_identity: Mapping[str, object] | None,
                     ) -> dict[str, object]:
@@ -9821,10 +9854,11 @@ def _cycle(
     phases.lap("reclaim_idle_rates")
     # Checkpointed inside, per entry listed and read (#1148): the read can
     # outlast the liveness bound on a loaded pool.
-    fill_records = receipts.read(
+    receipts.refresh(
         [queue.root / pool.record_store.PREWARM, queue.root / MOVER_RECEIPTS],
         queue=queue,
         **({} if phases.liveness is None else {"liveness": phases.liveness}))
+    fill_records = receipts._records
     phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
@@ -9859,7 +9893,12 @@ def _cycle(
     phases.lap("sync_ram_host_mirror")
     rows_held_gib = rows_held_for_gate(
         queue, host, bool(mirror.get("converged")))
-    tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
+    # Native discovery only reads these inputs. Extension callbacks retain the
+    # independent mutable documents the public read has always supplied.
+    discovery_records = (fill_records if discover is storage_tiers.discover_tiers
+                         else [pool.record_store.independent_document(record)
+                               for record in fill_records])
+    tiers = discover(host=host, source_pool=source_pool, fill_records=discovery_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)
     phases.lap("discover")

@@ -9154,6 +9154,18 @@ The loop now keeps what it read from one cycle to the next, on its
   explicit `RecordStore.kept` questions for receipts, state records and
   withdrawal names. Helpers receive that Store directly. Residency's
   `EpochRecords` uses the same C11 reader for fragment headers.
+  Receipt thaws are retained by the exact frozen input returned by that
+  reader (#2172). Its five-field file identity, current filesystem trust and
+  coarse-clock fence qualify every reuse; an untrusted or same-tick parse
+  produces a new frozen input and invalidates the thaw. Removed names are
+  forgotten. The active/retired merge is reused only while the reader and
+  all participating directory generations and observed receipt names hold.
+  The name set also catches an empty untrusted read whose discarded capture
+  cannot advance the directory generation. Public receipt reads still
+  detach every JSON container. The cycle's native discovery and folds read
+  the private retained inputs; extension discovery callbacks receive copies.
+  This skips repeated thawing and merging of unchanged receipt inputs.
+  Clock-sensitive discovery, liveness, policy and ledger decisions stay fresh.
 - `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.

@@ -97,7 +97,7 @@ class _Loop:
         self.queue, self.stage = hz._fixture_queue(tmp_path, STAGE_GIB)
         self.receipts = tier_loop.ReceiptCache()
         self.liveness = tier_loop.Liveness(interval_s=INTERVAL_S)
-        #: True while ``ReceiptCache.read`` runs: the ``receipts`` step.
+        #: True while ``ReceiptCache.refresh`` runs: the ``receipts`` step.
         self.reading = False
         self.charges = 0
         #: ``age`` of the tier record, read off the file after every charge.
@@ -108,7 +108,7 @@ class _Loop:
         #: Called on the ``HANG_AT``-th charge, when set.
         self.hang = None
 
-        real_read = self.receipts.read
+        real_read = self.receipts.refresh
 
         def read(*args, **kwargs):
             self.reading = True
@@ -117,7 +117,7 @@ class _Loop:
             finally:
                 self.reading = False
 
-        self.receipts.read = read  # type: ignore[method-assign]
+        self.receipts.refresh = read  # type: ignore[method-assign]
 
         real_announce = self.queue.announce_tier
 

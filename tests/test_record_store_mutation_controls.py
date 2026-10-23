@@ -82,3 +82,100 @@ def test_retired_receipt_mutation_cannot_change_the_next_public_fold(tmp_path):
     assert receipts.read([queue.records.move_path(key).parent], queue=queue) == [expected]
     assert receipts.records.parsed == 2, 'both checkpoint records must retain native parse reuse'
     assert queue.read_mover_retirements()[key] == expected
+
+
+def test_unchanged_receipts_do_not_repeat_the_store_thaw(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    path = queue.records.move_path(KEY)
+    path.write_text(json.dumps(PAYLOAD))
+    receipts = tier_loop.ReceiptCache(trust=ObservedTrust())
+    receipts.read([path.parent], queue=queue)
+
+    def repeated_thaw(*_args):
+        raise AssertionError('unchanged receipt was thawed again by the store')
+
+    monkeypatch.setattr(pool.record_store, '_thawed_document', repeated_thaw)
+    assert receipts.read([path.parent], queue=queue) == [PAYLOAD]
+
+
+def test_private_receipt_refresh_reuses_documents_and_the_merged_sequence(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    path = queue.records.move_path(KEY)
+    path.write_text(json.dumps(PAYLOAD))
+    cache = tier_loop.ReceiptCache(trust=ObservedTrust())
+    cache.refresh([path.parent], queue=queue)
+    original = cache._records
+
+    def unexpected_copy(*_args):
+        raise AssertionError('steady refresh copied a retained JSON tree')
+
+    monkeypatch.setattr(pool.record_store, '_thaw_json', unexpected_copy)
+    cache.refresh([path.parent], queue=queue)
+    assert cache._records is original
+    assert cache.records.parsed == 1
+
+
+def test_receipt_thaw_reuse_follows_native_invalidation_and_forgets_removed_names(tmp_path):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    path = queue.records.move_path(KEY)
+    path.write_text(json.dumps(PAYLOAD))
+    trust = ObservedTrust()
+    cache = tier_loop.ReceiptCache(trust=trust)
+    cache.refresh([path.parent], queue=queue)
+    first = cache._records[0]
+    replacement = path.with_suffix('.tmp')
+    replacement.write_text(json.dumps({**PAYLOAD, 'v': 2}))
+    replacement.replace(path)
+    cache.refresh([path.parent], queue=queue)
+    assert cache._records[0] is not first
+    assert cache._records[0]['v'] == 2
+    assert cache.records.parsed == 2
+    trust.available = False
+    cache.refresh([path.parent], queue=queue)
+    cache.refresh([path.parent], queue=queue)
+    assert cache.records.parsed == 4
+    path.unlink()
+    cache.refresh([path.parent], queue=queue)
+    assert cache._records == []
+    assert str(path) not in cache._receipt_thaws
+
+
+def test_receipt_reuse_refuses_a_same_tick_replacement(tmp_path, monkeypatch):
+    from test_a_same_tick_record_version_is_not_kept import _replace_in_the_same_tick
+
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    path = queue.records.move_path(KEY)
+    path.write_bytes(b'{"v": 1}')
+    trust = ObservedTrust()
+    trust.fence = path.stat().st_ctime_ns
+    cache = tier_loop.ReceiptCache(trust=trust)
+    assert cache.read([path.parent], queue=queue) == [{'v': 1}]
+    _replace_in_the_same_tick(monkeypatch, path, b'{"v": 2}')
+    trust.fence = 2**63 - 1
+    assert cache.read([path.parent], queue=queue) == [{'v': 2}]
+    assert cache.records.parsed == 2
+
+
+def test_extension_discovery_cannot_mutate_private_receipt_inputs(tmp_path):
+    from test_a_steady_tier_cycle_rereads_only_what_changed import _Loop, _small_shape
+
+    loop = _Loop(tmp_path, _small_shape())
+    loop.receipts = tier_loop.ReceiptCache(trust=ObservedTrust())
+    key = 'b' * 64
+    loop.queue.records.move_path(key).write_text(json.dumps({**PAYLOAD, 'action_key': key}))
+
+    def change_discovery_inputs(**kwargs):
+        record = next(r for r in kwargs['fill_records'] if r.get('action_key') == key)
+        record['nested']['values'].clear()
+        kwargs['fill_records'].clear()
+        return {}
+
+    tier_loop.cycle(loop.queue, host='receipt-test', source_pool='storage_pool',
+                    receipts=loop.receipts, discover=change_discovery_inputs)
+    record = next(r for r in loop.receipts._records if r.get('action_key') == key)
+    assert record['nested'] == PAYLOAD['nested']
+    assert len(loop.receipts._records) > 1
