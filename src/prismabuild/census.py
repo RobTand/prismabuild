@@ -16,6 +16,7 @@ from typing import Generic, Literal, TypeVar
 from . import (core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
+from . import host_hold
 read_cache = kept_reads
 
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
@@ -490,6 +491,9 @@ def offers(queue_root: str | Path, *, reader=None,
         # is read with none of this, so a drain that stopped announcing
         # still reads as the loop having stopped.
         drain = _offer_drain(offer) if fresh else None
+        hold = host_hold.read_host_hold(queue.root, host, now=now)
+        if hold is not None and hold.expired:
+            hold = None
         if drain is not None:
             state = "draining"
             note = "draining for maintenance"
@@ -508,11 +512,17 @@ def offers(queue_root: str | Path, *, reader=None,
                 state = "retired"
                 note = (f"offer unrefreshed for {age / 86400:.1f} days; "
                         "box treated as retired (record kept)")
+        if hold is not None:
+            state = "held"
+            hold_note = (f"operator hold; owner {hold.owner}; {hold.reason}; "
+                         f"expires {hold.expires_unix}") if not hold.error else hold.error
+            note = f"{note}; {hold_note}" if note else hold_note
         nodes.append({
             "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
             "offer_clock_skew_s": timing.clock_skew_s,
-            "observed_capacity": offer.get("observed_capacity"),
+            "observed_capacity": ({kind: 0 for kind in offer["capacity"]}
+                                  if hold is not None else offer.get("observed_capacity")),
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
             "container_class_verdict": offer.get("container_class_verdict"),
@@ -525,6 +535,8 @@ def offers(queue_root: str | Path, *, reader=None,
             "drain_owner": drain["owner"] if drain else None,
             "drain_reason": drain["reason"] if drain else None,
             "drain_changed_unix": drain["changed_unix"] if drain else None,
+            "held": hold is not None,
+            "hold": hold.fields() if hold else None,
             "reason": note,
             "admission": {
                 "cpu": _admission_sample(admission[host]['cpu'], now=now,

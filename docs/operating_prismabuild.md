@@ -2614,6 +2614,25 @@ capability check; status keeps the node visible as stale and exposes
 identifying which clock is wrong. The tolerance applies only to offers;
 CPU/GPU admission telemetry and resource limits retain their existing checks.
 
+To stop new claims during an external-load window, use the published tool:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+  --host sparky --owner operator --reason 'external load window' \
+  --until 2026-10-23T22:00:00Z
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py --list
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+  --host sparky --owner operator --release
+```
+
+Choose an expiry in the next 12 hours. An expired hold permits claims again
+and the loop logs its expiry once. Running actions continue. A different
+owner's active hold cannot be changed or released without `--force --reason`.
+An unreadable hold requires the same override to repair or release it.
+`--queue-root` selects a private queue for fixtures. Holds live in the shared
+queue, require no root, and never open or close the client-upgrade drain.
+Both controls must be open before the host claims again.
+
 It prints three tables:
 
 *   **nodes** — for pool, each worker's declared and observed capacity, offer
@@ -2623,7 +2642,11 @@ It prints three tables:
     holder and reason (both in the table's note and as `drain_owner`,
     `drain_reason` and `drain_changed_unix` in `--json`); it is neither stale
     nor unhealthy, and its `observed_capacity` is zero because it will not
-    claim -- only a loop that actually stopped leaves a stale offer. For SLURM, the controller's nodes, partitions,
+    claim -- only a loop that actually stopped leaves a stale offer. An operator
+    hold shows `held`, its owner, reason and expiry in the note and a `hold`
+    object in `--json`. An unreadable or malformed hold also shows `held` with
+    an error. Hold status reads the queue record directly; the worker keeps
+    refreshing a zero-observed-capacity offer while parked. For SLURM, the controller's nodes, partitions,
     CPU/memory allocation, GRES, features, load and reachability.
 *   **jobs** — for pool, ready and claimed action keys, resources, placement,
     admission denial counts and lease age. Ready jobs use the pool's existing
