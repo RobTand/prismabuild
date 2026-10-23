@@ -451,8 +451,9 @@ def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> 
     return [by_host[host] for host in sorted(by_host)]
 
 def offers(queue_root: str | Path, *, reader=None,
-           captured: OfferCapture | None = None) -> Section[dict]:
-    """Worker offers and their conditional admission samples, independently read."""
+           captured: OfferCapture | None = None,
+           authoritative_holds: bool = False) -> Section[dict]:
+    """Worker observations; explicit operator views can refresh hold authority."""
     queue = pool.PoolQueue(Path(queue_root).absolute())
     if captured is None:
         workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS, reader=reader)
@@ -491,8 +492,11 @@ def offers(queue_root: str | Path, *, reader=None,
         # is read with none of this, so a drain that stopped announcing
         # still reads as the loop having stopped.
         drain = _offer_drain(offer) if fresh else None
-        hold = host_hold.read_host_hold(queue.root, host, now=now)
-        if hold is not None and hold.expired:
+        hold = offer.get("hold")
+        if authoritative_holds:
+            record = host_hold.read_host_hold(queue.root, host, now=now)
+            hold = record.fields() if record is not None and not record.expired else None
+        if not isinstance(hold, Mapping):
             hold = None
         if drain is not None:
             state = "draining"
@@ -514,8 +518,9 @@ def offers(queue_root: str | Path, *, reader=None,
                         "box treated as retired (record kept)")
         if hold is not None:
             state = "held"
-            hold_note = (f"operator hold; owner {hold.owner}; {hold.reason}; "
-                         f"expires {hold.expires_unix}") if not hold.error else hold.error
+            hold_note = hold.get("error") or (
+                f"operator hold; owner {hold.get('owner')}; {hold.get('reason')}; "
+                f"expires {hold.get('expires_unix')}")
             note = f"{note}; {hold_note}" if note else hold_note
         nodes.append({
             "node": host, "transport": "pool", "state": state,
@@ -536,7 +541,7 @@ def offers(queue_root: str | Path, *, reader=None,
             "drain_reason": drain["reason"] if drain else None,
             "drain_changed_unix": drain["changed_unix"] if drain else None,
             "held": hold is not None,
-            "hold": hold.fields() if hold else None,
+            "hold": dict(hold) if hold is not None else None,
             "reason": note,
             "admission": {
                 "cpu": _admission_sample(admission[host]['cpu'], now=now,
@@ -555,7 +560,8 @@ def offers(queue_root: str | Path, *, reader=None,
                         if isinstance(value, Exception))])
 
 
-def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
+def action_rows(queue_root: str | Path, *, reader=None,
+                authoritative_holds: bool = False) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -595,7 +601,8 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
     # spend the signal that says the mount did not answer.
     unreadable = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     observed = offers(queue_root, reader=reader,
-                      captured=OfferCapture(workers, worker_notes, admission, now))
+                      captured=OfferCapture(workers, worker_notes, admission, now),
+                      authoritative_holds=authoritative_holds)
     nodes, live = observed.value["nodes"], observed.value["live"]
     notes.extend(observed.value["notes"][len(worker_notes):])
     unreadable.extend(observed.value["unreadable"][len(worker_notes):])

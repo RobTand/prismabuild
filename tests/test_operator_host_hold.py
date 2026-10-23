@@ -132,7 +132,7 @@ def test_invalid_hold_is_fail_closed_and_visible(tmp_path, monkeypatch, fault):
     queue = pool.PoolQueue(root)
     queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1})
     assert queue.claim_hold().error
-    node = census.offers(root).value["nodes"][0]
+    node = census.offers(root, authoritative_holds=True).value["nodes"][0]
     assert node["state"] == "held" and node["hold"]["error"]
     assert "operator hold" in "\n".join(pbstatus.pool_node_lines([node]))
 
@@ -182,12 +182,20 @@ def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_
     gate = DRAIN_GATE if drain else {"draining": False}
     loop = _load_loop(tmp_path, monkeypatch, gate)
     gate_bytes = role_session.MAINTENANCE_GATE.read_bytes()
-    assert loop._run_loop(Event()) == 0
+    with monkeypatch.context() as patch:
+        if drain:
+            def unexpected_hold_read(*args, **kwargs):
+                pytest.fail("maintenance park read the hold record")
+            patch.setattr(host_hold, "read_host_hold", unexpected_hold_read)
+        assert loop._run_loop(Event()) == 0
     offer = json.loads((root / "workers" / f"{HOST}.json").read_text())
-    assert offer["hold"]["owner"] == "operator"
+    if drain:
+        assert "hold" not in offer
+    else:
+        assert offer["hold"]["owner"] == "operator"
     assert all(value == 0 for value in offer["observed_capacity"].values())
     assert role_session.MAINTENANCE_GATE.read_bytes() == gate_bytes
-    node = census.offers(root).value["nodes"][0]
+    node = census.offers(root, authoritative_holds=True).value["nodes"][0]
     assert node["state"] == "held"
     assert node["hold"]["expires_unix"] == hold.expires_unix
     assert node["draining"] is drain
@@ -203,6 +211,49 @@ def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_
     node = census.offers(root).value["nodes"][0]
     assert node["state"] == ("draining" if drain else "live")
     assert node["held"] is False
+
+
+def test_census_uses_the_published_hold_without_reading_its_record(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    hold = put_hold(queue.root)
+    queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1},
+                   hold=hold.fields(), observed_capacity={"cpu": 0})
+
+    def unexpected_hold_read(*args, **kwargs):
+        pytest.fail("ordinary census read hold authority")
+
+    monkeypatch.setattr(host_hold, "read_host_hold", unexpected_hold_read)
+    for observed in (census.offers(queue.root), census.action_rows(queue.root)):
+        node = observed.value["nodes"][0]
+        assert node["state"] == "held"
+        assert node["hold"] == hold.fields()
+        assert node["observed_capacity"] == {"cpu": 0}
+
+
+@pytest.mark.parametrize("record", ["active", "malformed", "expired", "released"])
+def test_pbstatus_refreshes_hold_authority_without_a_worker_poll(tmp_path, capsys, record):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    if record == "expired":
+        hold = host_hold.change_host_hold(queue.root, HOST, owner="operator", reason="load",
+                                          now=100, expires_unix=200)
+    else:
+        hold = put_hold(queue.root)
+    queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1},
+                   **({"hold": hold.fields()} if record in ("expired", "released") else {}))
+    if record == "malformed":
+        host_hold.host_hold_path(queue.root, HOST).write_text("broken")
+    elif record == "released":
+        host_hold.change_host_hold(queue.root, HOST, owner="operator", release=True)
+    assert pbstatus.main(["--transport", "pool", "--json", "--recent", "0",
+                          "--queue-root", str(queue.root)]) == 0
+    node = json.loads(capsys.readouterr().out)["nodes"][0]
+    assert node["held"] is (record in ("active", "malformed"))
+    if node["held"]:
+        assert node["state"] == "held" and node["observed_capacity"] == {"cpu": 0}
+        assert bool(node["hold"]["error"]) is (record == "malformed")
+    else:
+        assert node["state"] == "live" and node["hold"] is None
 
 
 def test_pbhold_command_sets_lists_and_releases_a_fixture(tmp_path, capsys):

@@ -4690,14 +4690,24 @@ operator write; a claim already past that boundary may finish normally.
 Running actions continue with their reservations and cleanup unchanged.
 
 The operator hold is independent of the upgrade maintenance drain. Either
-control parks the worker loop's new claims. Saved-finish retries continue,
+control parks the worker loop's new claims. The maintenance gate is checked
+before queue reads, including the hold record. A closed gate skips that hold
+read. Saved-finish retries continue,
 and the worker publishes fresh offers with declared capability intact and zero
 observed capacity. Holds add
-an optional `hold` object to the offer. If both controls apply, the offer retains
-the maintenance drain fields. Census and `pbstatus` read the authoritative hold
-record for each offered host and report `state: held`, `held: true`, zero
-observed capacity and `hold` details, including read errors, even before the
-next worker poll. A stale worker stays
+an optional `hold` object to the offer when the maintenance gate is open.
+Under a closed gate, the offer carries the maintenance drain fields.
+Census and metrics use the worker's published `hold` observation and report
+`held` with zero observed capacity when that observation is present. They do
+not read hold records, preserving the idle metrics contract of no record reads
+or directory listings on an unchanged queue. Their hold view changes when the
+worker republishes its offer. `pbstatus` explicitly requests
+`authoritative_holds=True` from `census.action_rows`, which passes it to
+`census.offers`. That path reads each host's current hold record and reports
+`state: held`, `held: true`, zero observed capacity and hold details, including
+read errors, even before the next worker poll or while maintenance is closed.
+An expired or released hold is absent from this authoritative view regardless
+of the last offer. A stale worker stays
 unhealthy while its hold remains visible. Releasing either control leaves the
 other intact; operator holds never read or write the host's maintenance gate.
 

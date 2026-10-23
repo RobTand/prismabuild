@@ -1227,16 +1227,16 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             continue
         loaded_commit = decision.identity.commit
         offered = offered_tags(host)
+        gate = role_session.read_maintenance_gate()
+        if gate is not None:
+            role_session.post_park_marker(gate)
         if not swept_dead_offers:
             swept_dead_offers = True
             swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
             if swept:
                 print(f"[{host}] swept {len(swept)} dead offer temporary "
                       f"file(s) (issue #1040)", flush=True)
-        gate = role_session.read_maintenance_gate()
-        if gate is not None:
-            role_session.post_park_marker(gate)
-        hold = queue.claim_hold()
+        hold = queue.claim_hold() if gate is None else None
         if gate is not None or hold is not None:
             if gate is not None:
                 print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
