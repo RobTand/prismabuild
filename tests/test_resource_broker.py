@@ -699,7 +699,7 @@ def test_disappearing_scope_preserves_stopped_recovery_contract(authority, monke
         with pytest.raises(FileNotFoundError):
             launch(a,request,recovered)
         a.handle(os.getuid(),os.getpid(),auth(request,recovered,'stop'))
-        assert a.handle(os.getuid(),os.getpid(),auth(request,recovered,'release'))['released']
+        assert a.handle(os.getuid(),os.getpid(),auth(request,recovered,'release'))['ok']
         assert a.records[record['scope_id']]['released_unix']
 
 
