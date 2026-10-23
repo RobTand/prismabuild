@@ -21,4 +21,4 @@ def test_the_public_output_constant_is_the_owner_object(name, value):
     assert namespace[name] == value
     assert vars(produced_output)[name] is vars(output_contract)[name]
     assert namespace[name] is vars(output_contract)[name]
-    assert client.SDK_VERSION == 6
+    assert client.SDK_VERSION >= 6

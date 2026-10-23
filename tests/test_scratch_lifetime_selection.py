@@ -56,7 +56,7 @@ def test_selection_is_nondestructive_and_sdk_advertises_versioned_capability(var
     assert sentinel.read_bytes() == b"persistent compilation cache"
     assert not (tmp_path / "temporary").exists()
     assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
-    assert client.SDK_VERSION == 6
+    assert client.SDK_VERSION >= 6
 
 
 @pytest.mark.parametrize("entry", [

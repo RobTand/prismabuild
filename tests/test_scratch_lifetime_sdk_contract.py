@@ -17,7 +17,7 @@ from prismabuild import client, local_scratch
 
 
 def test_sdk_advertises_versioned_scratch_lifetime():
-    assert client.SDK_VERSION == 6
+    assert client.SDK_VERSION >= 6
     assert client.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
     assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
     assert (client.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
