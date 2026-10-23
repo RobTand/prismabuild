@@ -2415,6 +2415,40 @@ the log alone cannot distinguish exhausted bytes from exhausted inodes.
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
+The reviewed definitions are
+[`tools/fleet/pb_cpu/x86_64-cp314.json`](../tools/fleet/pb_cpu/x86_64-cp314.json)
+for dl380g10's CPython 3.14 and
+[`tools/fleet/pb_cpu/aarch64-cp312.json`](../tools/fleet/pb_cpu/aarch64-cp312.json)
+for sparky and sparklina's CPython 3.12 over `/usr/bin/python3`.
+Each definition records exact distribution versions, including local versions
+such as `torch==2.11.0+cpu`, wheel SHA-256 hashes, and each package's purpose.
+PB's runtime remains stdlib-only.
+
+The declared shared test dependencies include pytest, pytest-xdist, PyYAML,
+CPU torch, jsonschema 4.26.0, numpy, scipy, compressed-tensors, transformers,
+safetensors, and their pinned dependencies. CPU torch and jsonschema support
+Tessera's rung-allowability tests. Compressed-tensors supports PrismaQuant's
+autouse fixtures. The definitions also retain the captured environment's
+tooling, with a reason beside each pin. Their presence does not qualify every
+served project's test suite or GPU execution.
+
+Run `tools/fleet/pb_cpu.py --python /absolute/interpreter check` through PB to
+compare a named interpreter with its host-class definition. The command prints
+JSON and exits 1 for missing, extra, duplicate, or different distributions,
+including a different `+cpu` suffix. It exits 2 for inspection or build errors.
+`--python /absolute/base/interpreter build /new/destination` creates a fresh
+venv, installs the hashed wheels without resolving new dependencies, and runs
+the same comparison. The destination must not exist. The tool refuses builds
+under `/home/rob/venvs/pb-cpu` and never installs during `check`.
+
+To change `pb-cpu`, review changes to the appropriate definition, including
+package purposes and wheel hashes. Preserve each host class's Python minor
+version. Build into a new directory through PB and qualify both PB tests and
+the affected projects' tests there. Re-provision a shared environment only
+while no `pb-cpu` user is running. Applying the ARM definition's jsonschema
+addition to live Sparks is a separate operations step after review. Never
+install dependencies into a shared venv from a running test action.
+
 For project CPU tests, use an interpreter qualified against that project's
 current dependency and runtime pins. Resolve its absolute path on eligible
 workers before submitting. The path below is illustrative, not a qualified
