@@ -21,6 +21,7 @@ import socket
 import stat
 import statistics
 import sys
+import threading
 import time
 import uuid
 
@@ -1420,6 +1421,134 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS,
         state, sample, holders=holders, identity=identity, fields=fields,
         interval_s=interval_s, prior_rule=prior_rule)
     return verdict, state
+
+
+class HostSampler:
+    """Worker-owned CPU producer, independent of claim passes (#1946).
+
+    Keep one instance for the worker lifetime and pass ``sample`` as
+    ``PoolQueue.claim(cpu_sampler=...)``. Construction arms local invalidations
+    before starting a single sampler thread; neither ``sample`` nor ``wait``
+    performs a proc census. Close it when the worker stops (before forking a
+    replacement worker). No bell or shared diagnostic publication lives here.
+
+    Sibling workers share the existing admission gate and counter history, so
+    only one collects a host interval. Contention skips a tick rather than
+    blocking admission. The existing delta floor and freshness policy remain
+    MIN_INTERVAL_S and MAX_SAMPLE_AGE_S; hints never make an old sample fresh.
+    """
+
+    def __init__(self, ledger, tiers, *, capacity_collector=None):
+        from . import adaptive_gpu, resource_scope
+        from .resource_observation import LocalObservationSource
+
+        self._controller = Controller(ledger, tiers)
+        self.base = self._controller.base
+        self._stop = threading.Event()
+        self._sample_error = None
+        self.capacity_collector = capacity_collector
+        self._leader = False
+        # Directory invalidations include atomic state-file replacement. The
+        # telemetry directory is separate: its children change without changing
+        # the containing adaptive directory's metadata.
+        self._source = LocalObservationSource(paths={
+            'cpu-sample': self.base / 'cpu-sample.json',
+            'host-capacity': self.base / 'host-capacity.json',
+            'adaptive-state': self.base,
+            'adaptive-telemetry': self.base / 'telemetry',
+            # Use the admission readers' authoritative path definitions. These
+            # are invalidation hints only, including snapshot replacement and
+            # broker socket unlink/rebind, never proof of fresh capacity.
+            'broker-snapshot': adaptive_gpu.SAMPLE_PATH,
+            'broker-socket': resource_scope.BROKER_SOCKET,
+        }, pidfds={})
+        self._thread = threading.Thread(target=self._run,
+                                        name='adaptive-cpu-sampler', daemon=True)
+        try:
+            self._thread.start()
+        except BaseException:
+            self._source.close()
+            raise
+
+    @property
+    def diagnostics(self):
+        return dict(self._source.diagnostics, sampler_leader=self._leader,
+                    sample_error=self._sample_error)
+
+    @property
+    def generation(self):
+        return self._source.generation
+
+    def wait(self, after_generation, timeout_s=30.0):
+        """Return local invalidation labels, not evidence of free capacity."""
+        return self._source.wait(after_generation, timeout_s)
+
+    def sample(self):
+        """Read the latest local snapshot, without collecting on demand.
+
+        Missing or failed collection yields absent/stale evidence. The
+        controller still applies its original five-second freshness check;
+        the reader must never replace the producer's sampled_unix with now.
+        """
+        return read_json(self.base / 'cpu-sample.json').get('observation', {})
+
+    def capacity_sample(self):
+        return read_json(self.base / 'host-capacity.json')
+
+    def _run(self):
+        descriptor = None
+        try:
+            while not self._stop.is_set():
+                started = time.monotonic()
+                try:
+                    # A permanent host-local inode elects one numeric producer
+                    # across all worker processes. Followers only retry owner
+                    # acquisition; they never take a proc census.
+                    if descriptor is None:
+                        descriptor = os.open(self.base / 'sampler.lock',
+                                             os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                        info = os.fstat(descriptor)
+                        if (not stat.S_ISREG(info.st_mode) or
+                                info.st_uid != os.getuid() or info.st_nlink != 1):
+                            os.close(descriptor)
+                            descriptor = None
+                            raise OSError('unsafe host sampler lock')
+                    if not self._leader:
+                        try:
+                            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            self._stop.wait(MIN_INTERVAL_S)
+                            continue
+                        self._leader = True
+                    # Do not use Controller.locked(): its finally block requests
+                    # shared mirror publication, which this producer does not own.
+                    with AdmissionGate(self._controller.ledger).locked():
+                        self._controller.sample()
+                        if self.capacity_collector is not None:
+                            write_json(self.base / 'host-capacity.json',
+                                       self.capacity_collector())
+                    self._sample_error = None
+                except (AdmissionBusy, AdmissionUnavailable, OSError) as exc:
+                    # Retain original timestamps. Unknown is never measured idle.
+                    self._sample_error = str(exc)[:1500]
+                remaining = MIN_INTERVAL_S - (time.monotonic() - started)
+                self._stop.wait(remaining if remaining > 0 else .05)
+        finally:
+            self._leader = False
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def close(self):
+        self._stop.set()
+        self._source.close()
+        if self._thread is not threading.current_thread():
+            self._thread.join()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
 
 
 class Controller:

@@ -20769,3 +20769,117 @@ values are unavailable measurements, never evidence of no contention. Gate
 and hold chart samples remain suppressed for incomplete identity; mount, RPC
 and probe reporting continue. Deployment and executed qualification remain
 the release master's responsibility.
+
+## Local resource observation producer (#1946; implemented source, not activation)
+
+`src/prismabuild/resource_observation.py` supplies the internal Linux
+`LocalObservationSource(paths={label: Path}, pidfds={label: fd})`. Construction
+arms watches before returning. One thread multiplexes inotify, `POLLPRI` cgroup
+event files, borrowed pidfds and a cancellation pipe. It does not collect or
+compare numeric resource values, publish shared diagnostics, ring a queue bell,
+or grant admission. Labels and generations are **invalidation hints**: consumers
+must reread their existing authority, including after coverage loss. Ledger and
+admission-gate decisions, identity-checked cgroup counters, GPU evidence and the
+existing cleanup/emptiness checks retain their authority.
+
+`wait(cursor, timeout_s=30.0)` uses a monotonic deadline and returns the current
+generation plus labels invalidated since that cursor. Per-label last generations
+retain hints for independent consumers without an unbounded event log. A timeout
+or close does not manufacture a generation. Close wakes condition waiters and
+the poll thread, joins the producer and releases owned descriptors. Callers own
+borrowed pidfds and keep them open until source close; no process is signalled.
+A readable pidfd is unregistered before its one exact-process hint is emitted.
+It is not proof that descendants, a cgroup, a container or an attempt are empty.
+
+Absolute lexical pathnames retain ancestor and target watches; missing leaves,
+atomic replacement, parent replacement and socket unlink/rebind can therefore
+invalidate coverage without resolving away the subscribed name. Overflow
+invalidates all path labels. Cgroup priority sources cover `cgroup.events`,
+`memory.events[.local]` and `pids.events[.local]`; reads acknowledge kernel
+notifications, not capacity. Watch failures remain visible. Missing names with
+`ENOENT`/`ENOTDIR` rely on ancestor coverage rather than inventing a resource
+change on every repair. Other coverage failures request conservative rereads.
+
+### Producer clocks and consumer boundaries
+
+* **Source repair:** one source-wide metadata/watch repair has a monotonic
+  two-second deadline. After a due repair, the next deadline is two seconds
+  after completion: no missed-deadline catch-up loop and no numeric poll per
+  subscription. Event processing can also repair watches. Inotify draining is
+  bounded to 16 reads per turn so continuous publishers cannot indefinitely
+  starve cancellation. The recovery target when notifications are unavailable
+  is a conservative reread within **at most five seconds**, not a claim of a
+  measured hard real-time guarantee; scheduling and filesystem work still cost
+  time. Successful repair removes the relevant coverage error; source close
+  cancels its recurring work. A producer exception records `producer`, emits a
+  final invalidation and closes, rather than leaving an apparently live wait.
+* **CPU:** `adaptive_cpu.HostSampler` owns one thread per worker lifetime and
+  watches the local CPU sample, adaptive directory, telemetry directory, public
+  broker snapshot and socket endpoint, using their existing path definitions.
+  A permanent host-local `sampler.lock` inode elects one numeric producer across
+  workers; followers retry ownership once per second and never collect counters.
+  Collection runs under the existing `AdmissionGate`, sharing counter history
+  across sibling workers. Contention/unavailability skips collection, retaining
+  original timestamps. `sample()` reads the local snapshot, not a proc census;
+  `wait()` only delegates hints. The one-second `MIN_INTERVAL_S` remains the
+  CPU delta floor; the existing freshness predicate is exactly
+  `0 <= now - sampled_unix <= 5.0` seconds (plus existing validity checks).
+  Hints never refresh timestamps or make unknown evidence idle. The present CPU
+  loop schedules the next observation from the start of collection, charging
+  work inside its one-second period. Overruns skip missed ticks and wait 50 ms
+  before retrying; slow measurements are not a hard real-time guarantee. Stop interrupts the wait, closes the source and joins the
+  sampler; an in-progress collection is not forcibly cancelled.
+* **Worker integration:** `tools/fleet/worker_loop.py` creates the sampler only
+  after its runtime-generation fence, when CPU tiers exist and `--assume-idle`
+  is false. The worker's queue claim hook supplies `host_sampler.sample` to
+  every candidate; ExitStack detaches the hook before closing the sampler.
+  This does not wire `HostSampler.wait()` into worker scheduling or replace the
+  worker's existing queue/drain waits with resource hints.
+* **Broker local enforcement:** `ResourceMonitor` arms an independent observer
+  before its initial numeric sample. It watches the authority directory and
+  each scope's `memory.events`, `memory.events.local` and `cgroup.events`, then
+  rereads identity-bound records/counters through `_local_limits`. Its one-second
+  source wait bounds scope-discovery refresh, not numeric vendor sampling.
+  Observer exceptions close the source, reread conservatively and use a
+  stop-interruptible two-second retry. Recovery rebuilds subscriptions and
+  clears `notification_error` on a successful observer turn. This path never
+  invokes vendor probes and never infers empty from an unavailable source.
+* **Broker numeric sampler:** the effective period is `min(interval_s, 1.0)`;
+  vendor calls receive `timeout_s` (default **1.0 second**). Work, including
+  failed vendor queries, is charged inside the period. Overrun skips missed
+  ticks and waits `min(period, 0.05)` rather than replaying a backlog. The stop
+  event cancels waits; bounded vendor calls may still be in flight. Passing a
+  timeout to individual probes is not a one-second whole-sample guarantee.
+  Broker monitor health requires a live numeric sampler thread, a completed
+  successful sample, and monotonic sample age **strictly less than 15 seconds**.
+  At exactly 15 seconds it is unhealthy. Observer activity alone cannot renew
+  this health timestamp.
+
+### Diagnostics and qualification limits
+
+Source `diagnostics` copies generation, closed state, counters for inotify,
+priority and pidfd events, overflows and repairs, armed pathname/priority counts,
+and current coverage errors. Broker `monitor.status.observation` retains
+`wake_sources`, `fallback_error` and source `coverage`; numeric sample failures
+also print a bounded error. These are diagnostics, not admission proofs. The CPU
+wrapper exposes source diagnostics plus elected-leader and collection-error
+state. The broker explicitly reconstructs a closed source after its two-second
+retry; qualification must exercise producer failure as well as watch repair.
+
+This documents inspected implementation, not deployment or release acceptance.
+Real qualification (including O5) is still missing: no executed real cgroup,
+vendor, notification-loss/recovery, cancellation or matched-load evidence is
+claimed here. Fixture validation is recorded separately in `resource_observation_1946_evidence.md`. #1946 grants **no
+activation**; slice 0 gates, independently reviewed baseline/evidence and the
+normal publication/rollout authorization remain required. The five-second
+unavailable-notification target, CPU cadence limits and exact health boundary
+must be qualified, not promoted from configured timers to observed results.
+
+Disk/statvfs has no kernel notification authority. The retained supervisor owner
+currently sleeps `--interval-s` (default 30 seconds), shortened to five seconds
+when busy/backlogged, **after cycle work**. A holder defers its no-holder measurement;
+the saved spool offer has no age expiry. Thus the requested interested-disk
+five-second bound is not implemented by this patch. Separating that existing
+supervisor producer/deadline and its freshness contract is outstanding; merely
+changing the interval would not prove the bound. No second worker disk census is
+introduced, and scratch admission/claim reconciliation remain with their owners.

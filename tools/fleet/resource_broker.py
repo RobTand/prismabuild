@@ -1217,6 +1217,9 @@ class ResourceMonitor:
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
+        self.observer_thread=None;self.observation=None
+        self.observation_ready=threading.Event()
+        self.wake_sources={};self.notification_error=None;self.scope_observations={}
 
     def _records(self):
         with self.authority.lock:
@@ -1250,8 +1253,8 @@ class ResourceMonitor:
             _atomic(path,current)
             return True
 
-    def poll_once(self):
-        records=self._records();stopped=[];errors=[]
+    def _local_limits(self, records):
+        stopped=[];errors=[]
         # Only a local OOM identifies exhaustion of this aggregate limit.
         # Hierarchical victim counts also include safely contained child OOMs.
         # Stop at local exhaustion even before a victim appears: allocation
@@ -1262,6 +1265,21 @@ class ResourceMonitor:
                 path=self.authority.backend.path(scope);info=path.stat()
                 identity=(info.st_dev,info.st_ino)
                 if identity!=tuple(record['cgroup_identity']):continue
+                # Notification readiness is not scope emptiness. Reread the
+                # full population under attempt/inode validation; this cache
+                # is diagnostic only. Release/destroy still reread authority.
+                with self.authority.lock:
+                    current=self.authority.records.get(scope)
+                    if (current is not None
+                            and all(current.get(key)==record.get(key) for key in self.identity_fields)
+                            and current['cgroup_identity']==list(identity)):
+                        empty=self.authority.backend.empty(scope)
+                        check=path.stat()
+                        if (check.st_dev,check.st_ino)!=identity:continue
+                        self.scope_observations[scope]={
+                            'action_key':record['action_key'],'nonce':record['nonce'],
+                            'cgroup_identity':list(identity),'empty':empty,
+                            'observed_unix':time.time()}
                 if record.get('monitor_stop_pending'):
                     if self._stop(scope,record,identity,record['stop_reason'],record['termination_evidence']):
                         stopped.append(scope)
@@ -1281,6 +1299,11 @@ class ResourceMonitor:
                               'oom_kill_baseline':baseline,'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
+        return stopped,errors
+
+    def poll_once(self):
+        records=self._records()
+        stopped,errors=self._local_limits(records)
         scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
                     **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
                        if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
@@ -1305,7 +1328,11 @@ class ResourceMonitor:
                 except (OSError,ValueError,KeyError) as exc:
                     errors.append({'scope_id':decision.scope_id,'error':str(exc)[:1500]})
         status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
-                'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
+                'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None,
+                'observation':{'wake_sources':dict(self.wake_sources),
+                               'fallback_error':self.notification_error,
+                               'scope_observations':dict(self.scope_observations),
+                               'coverage':self.observation.diagnostics if self.observation is not None else {}}}
         if self.capacity is not None and snapshot is not None:
             # This sanitized root-owned sibling is readable by pool workers;
             # private monitor/authority records retain their mode 0600.
@@ -1327,17 +1354,75 @@ class ResourceMonitor:
 
     def _loop(self):
         while not self.stopping.is_set():
+            started=time.monotonic()
             try:self.poll_once()
             except Exception as exc:
                 print('resource monitor sample failed: '+str(exc)[:1500],flush=True)
-            self.stopping.wait(self.interval_s)
+            # Work, including failed vendor queries, consumes the period. If a
+            # sample overruns, skip missed ticks rather than replaying them.
+            period=min(self.interval_s,1.0)
+            remaining=period-(time.monotonic()-started)
+            self.stopping.wait(remaining if remaining>0 else min(period,0.05))
+
+    def _observation_loop(self):
+        from prismabuild.resource_observation import LocalObservationSource
+        source=None;paths=None;cursor=0
+        try:
+            while not self.stopping.is_set():
+                records=self._records()
+                interests={}
+                for scope in records:
+                    for name in ('memory.events','memory.events.local','cgroup.events'):
+                        interests[scope+':'+name]=self.authority.backend.path(scope)/name
+                # State-directory replacement hints also discover newly
+                # created scopes, without coupling to a vendor query.
+                interests['authority']=self.authority.state_dir
+                try:
+                    if interests!=paths or source is None:
+                        replacement=LocalObservationSource(paths=interests,pidfds={})
+                        if source is not None:source.close()
+                        source=replacement;self.observation=source;paths=interests
+                        cursor=source.generation
+                        # Arm first, then read. Changes during this read remain
+                        # latched in the source for the subsequent wait.
+                        self._local_limits(self._records())
+                        self.observation_ready.set()
+                    generation,labels=source.wait(cursor,1.0)
+                    cursor=generation
+                    if source.diagnostics['closed'] and not self.stopping.is_set():
+                        raise OSError('local observation producer closed')
+                    if labels:
+                        for label in labels:
+                            kind=label.rsplit(':',1)[-1]
+                            self.wake_sources[kind]=self.wake_sources.get(kind,0)+1
+                        self._local_limits(self._records())
+                    self.notification_error=None
+                except Exception as exc:
+                    self.observation_ready.set()
+                    self.notification_error=str(exc)[:1500]
+                    if source is not None:source.close()
+                    source=None;self.observation=None
+                    # Unavailable local services: named bounded recovery,
+                    # still reread authority conservatively, never infer empty.
+                    self._local_limits(self._records())
+                    self.stopping.wait(2.0)
+        finally:
+            if source is not None:source.close()
 
     def start(self):
+        # Synchronously arm existing scopes before the initial numeric sample.
+        # The observer owns local enforcement; it never invokes vendor probes.
+        self.observer_thread=threading.Thread(target=self._observation_loop,
+                                             name='resource-monitor-events',daemon=True)
+        self.observer_thread.start()
+        self.observation_ready.wait()
         self.thread=threading.Thread(target=self._loop,name='resource-monitor',daemon=True)
         self.thread.start()
 
     def close(self):
         self.stopping.set()
+        if self.observation is not None:self.observation.close()
+        if self.observer_thread is not None:self.observer_thread.join(timeout=3)
         if self.thread is not None:self.thread.join(timeout=self.timeout_s+self.interval_s+1)
 
 

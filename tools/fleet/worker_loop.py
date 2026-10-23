@@ -90,6 +90,7 @@ claim boundaries and are never interrupted mid-action.
 import argparse
 import errno
 import fcntl
+import functools
 import json
 import math
 import os
@@ -99,6 +100,7 @@ import stat
 import sys
 import time
 from collections import namedtuple
+from contextlib import ExitStack
 from pathlib import Path
 from threading import Event
 
@@ -999,6 +1001,14 @@ def scratch_observed_detail(observer, profile_inputs):
 
 
 def _run_loop(stop: Event, *, argv=None, on_outcome=None):
+    # Own producers across every poll and action, and close them on every
+    # return/exception (including generation drift and graceful shutdown).
+    with ExitStack() as resources:
+        return _run_loop_with_resources(
+            stop, argv=argv, on_outcome=on_outcome, resources=resources)
+
+
+def _run_loop_with_resources(stop: Event, *, argv=None, on_outcome=None, resources):
     ap = build_parser()
     args = ap.parse_args(argv)
     validate_args(ap, args)
@@ -1057,6 +1067,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     # against the currently published one below.
     observer = None
     observer_initialized = False
+    host_sampler = None
     #: This box's bounded local Docker inventory, shared by its loops through
     #: a host-local record: one listing per TTL for the box, not one per loop
     #: per poll.  It is refreshed independently of the ready queue so the
@@ -1226,6 +1237,24 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             stop.wait(args.poll_s)
             continue
         loaded_commit = decision.identity.commit
+        if not args.assume_idle and cpu_tiers is not None and host_sampler is None:
+            # Start only after the generation fence, once for this worker (not
+            # per poll/claim). serve_once has no sampler argument, but dispatches
+            # through this queue instance's claim, whose cpu_sampler hook keeps
+            # every candidate on the producer's local snapshot without a census.
+            host_sampler = adaptive_cpu.HostSampler(
+                queue.ledger(), cpu_tiers,
+                # The elected snapshot is shared across workers with different
+                # admission flags. Always collect the configured roof; each
+                # consumer decides whether its policy applies that roof.
+                capacity_collector=functools.partial(
+                    box_capacity.collect_host_capacity, queue.ledger().held,
+                    _ram_tier_mem_roof))
+            resources.enter_context(host_sampler)
+            claim = queue.claim
+            queue.claim = functools.partial(claim, cpu_sampler=host_sampler.sample)
+            # Detach the hook before ExitStack closes and joins the producer.
+            resources.callback(setattr, queue, 'claim', claim)
         offered = offered_tags(host)
         if not swept_dead_offers:
             swept_dead_offers = True
@@ -1364,6 +1393,11 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                             ledger_total=queue.ledger().capacity(),
                             mem_roof=(_ram_tier_mem_roof
                                       if args.mem_gb_ram_tier_roof else None),
+                            host_sample=(None if host_sampler is None else
+                                         lambda: getattr(
+                                             host_sampler, "capacity_sample",
+                                             lambda: {})()),
+                            sample_max_age_s=adaptive_cpu.MAX_SAMPLE_AGE_S,
                         ))
             observer_initialized = True
         gpu_sample = box_capacity.trusted_gpu_sample() if gpu_capable else None

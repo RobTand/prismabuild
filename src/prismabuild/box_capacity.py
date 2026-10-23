@@ -497,6 +497,37 @@ def ram_policy_mem_roof(*, policy_path: str | Path, arcstats_path: str | Path,
     return max(0, mem_total - max(c_max, floor_bytes) - reserve_bytes) // gib
 
 
+def collect_host_capacity(
+    held: Callable[[], Mapping[str, int]],
+    mem_roof: Callable[[], object] | None = None,
+) -> dict[str, object]:
+    """Collect on HostSampler's elected producer tick, never on a claim.
+
+    The held-token bracket belongs around the numeric read, not around a
+    later snapshot read. Consumers intersect it with their current held set
+    as well, so a release after collection cannot be credited twice.
+    The optional RAM policy reader uses the worker's existing configuration.
+    """
+    sampled_unix = time.time()
+    before = _held_snapshot(held)
+    available = mem_available_gb()
+    load = run_queue()
+    roof = (mem_roof() if mem_roof is not None
+            else (None, "fallback:not_configured"))
+    after = _held_snapshot(held)
+    return {
+        "sampled_unix": sampled_unix,
+        "mem_gb": available,
+        "load1": load,
+        "held": {kind: min(value, after.get(kind, 0))
+                 for kind, value in before.items()},
+        "held_before": before,
+        "held_after": after,
+        "mem_roof": roof,
+        "mem_roof_enabled": mem_roof is not None,
+    }
+
+
 class CapacityObserver:
     """The offer a worker publishes: observations, held for a few polls.
 
@@ -505,12 +536,19 @@ class CapacityObserver:
     recovers on the first that disagrees.  See the module docstring for why the
     asymmetry is required rather than tidy: a retire outlives the loop that
     made it for as long as that loop is inside an action.
+
+    ``host_sample`` switches memory/load/RAM roof to producer snapshots from
+    ``collect_host_capacity``. Missing, future, stale, or pre-rejoin snapshots
+    fail memory closed immediately, outside smoothing. GPU evidence retains
+    its existing independent broker path.
     """
 
     def __init__(
         self, *, samples: int = DEFAULT_SAMPLES, margin_gb: int = MEMORY_MARGIN_GB,
         ledger_total: Mapping[str, int] | None = None,
         mem_roof: Callable[[], int | None] | None = None,
+        host_sample: Callable[[], Mapping[str, object]] | None = None,
+        sample_max_age_s: float = 5.0,
     ) -> None:
         if int(samples) < 1:
             raise ValueError("a capacity observer needs at least one sample")
@@ -522,6 +560,9 @@ class CapacityObserver:
         # a running loop; ``None`` from the callable keeps the declaration,
         # which fails closed to the operator's static fallback.
         self._mem_roof = mem_roof
+        self._host_sample = host_sample
+        self._sample_max_age_s = float(sample_max_age_s)
+        self._sample_not_before = 0.0
         # What this host's ledger already totals, read once by the caller: the
         # window is seeded from it so a restarting loop inherits the box's
         # standing verdict instead of re-asserting the declaration.  An empty
@@ -558,6 +599,7 @@ class CapacityObserver:
         """
 
         self._history.clear()
+        self._sample_not_before = time.time()
         # An emptied window is not a new one: the pad is what a start gets, and
         # a return must not be given it -- see the module docstring.
         self._seeded = True
@@ -570,6 +612,41 @@ class CapacityObserver:
         **overrides: object,
     ) -> dict[str, int]:
         wanted = {str(kind): int(value) for kind, value in declared.items()}
+        host: Mapping[str, object] = {}
+        host_valid = True
+        if self._host_sample is not None:
+            try:
+                candidate = self._host_sample()
+                host = candidate if isinstance(candidate, Mapping) else {}
+            except Exception:
+                host = {}
+            now = time.time()
+            stamp = nonnegative_float(host.get("sampled_unix"))
+            available = nonnegative_float(host.get("mem_gb"))
+            sampled_held = host.get("held")
+            host_valid = (stamp is not None and
+                          self._sample_not_before <= stamp <= now and
+                          now - stamp <= self._sample_max_age_s and
+                          available is not None and
+                          isinstance(sampled_held, Mapping) and
+                          (self._mem_roof is None or
+                           host.get("mem_roof_enabled") is True))
+            current = _held_snapshot(held)
+            if host_valid:
+                # Credit only tokens present in both producer bracket reads
+                # AND still held now. Never pair old free bytes with new holds.
+                try:
+                    credited = _held_snapshot(sampled_held)
+                except (TypeError, ValueError, OverflowError):
+                    credited = {}
+                    host_valid = False
+                held = {kind: min(value, current.get(kind, 0))
+                        for kind, value in credited.items()}
+            else:
+                held = {}
+            overrides.update(mem_gb=available if host_valid else 0,
+                             load1=(nonnegative_float(host.get("load1"))
+                                    if host_valid else None))
         # #1222/#1245 review B2: the roof in force, stamped into the
         # observation every poll so a silent fall back to the static
         # declaration is observable after deploy.  The callable may answer
@@ -581,10 +658,11 @@ class CapacityObserver:
             # Measured once per offer, not once per process: the roof follows
             # the ARC and the policy between polls (#1222).
             try:
-                roof = self._mem_roof()
+                roof = (host.get("mem_roof") if self._host_sample is not None
+                        else self._mem_roof())
             except Exception as exc:
                 roof = (None, f"fallback:roof_error:{type(exc).__name__}")
-            if isinstance(roof, tuple):
+            if isinstance(roof, (tuple, list)) and len(roof) == 2:
                 value, source = roof
                 roof_source = str(source)
                 roof_value = (int(value)
@@ -595,7 +673,7 @@ class CapacityObserver:
                     and roof >= 0):
                 roof_value = roof
                 roof_source = "measured"
-            if roof_value is None and not isinstance(roof, tuple):
+            if roof_value is None and not (isinstance(roof, (tuple, list)) and len(roof) == 2):
                 roof_source = "fallback:roof_unreadable"
             if roof_value is not None:
                 wanted["mem_gb"] = roof_value
@@ -621,6 +699,24 @@ class CapacityObserver:
             seen.detail["mem_roof_gib"] = (
                 roof_value if roof_value is not None else int(wanted["mem_gb"]))
             seen.detail["mem_roof_source"] = roof_source
+        if self._host_sample is not None:
+            seen.detail["host_capacity_sampled_unix"] = host.get("sampled_unix")
+            seen.detail["host_capacity_trusted"] = host_valid
+            if host_valid:
+                seen.detail["observed_unix"] = host["sampled_unix"]
+                if host.get("held_before") != host.get("held_after"):
+                    seen.detail["held_moved_during_read"] = {
+                        "before": host.get("held_before"),
+                        "after": host.get("held_after")}
+            else:
+                seen.detail["host_capacity_error"] = "missing_stale_or_invalid_sample"
+                # Freshness is a hard admission fact, not a smoothed reading.
+                # Remove old positive memory from the window as well, so a
+                # later valid reading cannot resurrect pre-gap capacity.
+                seen.capacity["mem_gb"] = 0
+                for previous in self._history:
+                    if "mem_gb" in previous:
+                        previous["mem_gb"] = 0
         self.last = seen
         sample = dict(seen.capacity)
         if self._cap is not None:

@@ -6085,3 +6085,99 @@ mismatch. This is strict log equality, not an input-equivalence verifier or a
 policy-coverage certificate; the experiment must establish identical inputs and
 exercise the decisions of interest. Unrelated live windows do not establish
 decision parity.
+
+## Operating the local observation producer (#1946; no activation authorization)
+
+The implemented local producer is `src/prismabuild/resource_observation.py`.
+It supplies invalidation labels, **not** free capacity, numeric measurements,
+cleanup completion or admission authority. On a hint or lost coverage, reread
+through the existing owner: CPU admission and ledger under their gate, broker
+identity-checked cgroup records/counters, and the existing GPU and physical
+cleanup authorities. A pidfd hint identifies one exact process exit; it does
+not establish descendant, scope, container or attempt emptiness. Never release
+resources or bypass cleanup merely because a notification arrived or stopped.
+
+The worker owns a `adaptive_cpu.HostSampler` handle after the generation fence when
+CPU tiers exist and `--assume-idle` is false. Claims read its local snapshot
+rather than collecting a CPU census for each candidate. The hook is removed
+before shutdown closes the sampler. A permanent host-local lock elects one
+numeric owner across worker processes; followers only retry ownership. This integration does not use the sampler's
+`wait()` to replace worker queue/drain scheduling. It also does not turn a local
+hint into a queue bell or shared diagnostic publication.
+
+### Timing and recovery checklist
+
+| Source / consumer | Deadline and bound | Cancellation / recovery |
+| --- | --- | --- |
+| Local source wait | Caller-selected finite nonnegative timeout; default 30 seconds, monotonic deadline; returns latched generation/labels | Close wakes all waiters without an invented generation or exception and wakes poll through its pipe |
+| Local source repair | One source-wide two-second metadata/watch repair deadline, reset after completion; events may repair earlier | No numeric per-subscription polling or catch-up; close cancels recurring work; inspect coverage errors and restoration |
+| CPU producer | One-second delta floor and start-to-start period; work is inside the period; overruns skip ticks with a 50 ms yield | Gate contention skips a tick; stop interrupts sleep and joins after in-flight work; no catch-up census |
+| CPU owner recovery | Follower retries the permanent host-local sampler lock once per second | OS releases ownership on exit; follower never collects while another owner holds the lock |
+| Disk/statvfs (outstanding bound) | Existing supervisor: default 30 s post-cycle sleep, busy/backlogged 5 s post-cycle; holder-deferred reads have no completion bound | Stop checked between operations; sleep/statvfs are not cancellation-aware. Existing offer has no age expiry. This does not meet the requested interested-disk five-second deadline |
+| CPU evidence | Existing freshness requires age from zero through **5.0 seconds inclusive**, plus validity checks | Failed collection preserves the old timestamp; absent/stale is unknown, never measured idle |
+| Broker local observer | One-second source wait for inventory refresh; on observer exception, conservative reread then two-second retry | Stop interrupts retry, source close wakes wait; successful turns clear the fallback error; no vendor calls on this path |
+| Broker numeric sampler | Effective period `min(interval_s, 1.0)`; vendor timeout parameter defaults to **1.0 second** | Work and failed queries consume the period; overruns skip ticks and wait at most `min(period, 0.05)`; stop interrupts waits, not an in-flight vendor call |
+| Broker numeric health | Thread alive, successful sample recorded, monotonic age **< 15 seconds** | Exactly 15 seconds is unhealthy; event activity is not a successful numeric sample |
+
+Unavailable notifications require bounded conservative rereads/recovery with a
+**<= 5-second target**, not silent indefinite reliance on stale hints. The
+source repairs metadata and coverage every two seconds; the broker's exception
+path retries after two seconds. Those are configured schedules, not measured
+end-to-end guarantees: filesystem work, scheduling and sequential vendor calls
+can add time. A one-second per-call vendor timeout is not a one-second total
+sample budget. Retain actual latency and cancellation observations during
+qualification. Neither numeric loop replays missed ticks after slow work.
+
+Watches are armed before the initial authoritative reread. Lexical target and
+ancestor coverage handles absent names, atomic replacement, parent replacement
+and socket unlink/rebind; overflow requests all path rereads. Missing names
+(`ENOENT`/`ENOTDIR`) can remain covered by ancestors without generating a
+change on every repair. Watch-limit/permission failures must remain visible,
+not be described as healthy notification delivery. Cgroup priority reads only
+acknowledge notifications. Borrowed pidfds remain caller-owned until source
+close and are unregistered after the first readiness hint; no process is
+signalled. Inotify draining is bounded to avoid starving cancellation.
+
+### Inspect diagnostics without promoting them to authority
+
+Use the deployment's configured broker state location, not an assumed host
+path. The existing `monitor.status` record's `observation` object contains:
+
+* `wake_sources`: observed label-kind wake counts, not resource changes or a
+  count of completed authoritative decisions;
+* `fallback_error`: the observer's bounded last exception, cleared on a
+  successful turn, not proof that every watch is healthy;
+* `coverage`: the source's generation, `closed`, event/overflow/repair counters,
+  armed pathname/priority-source counts and current `errors` map. Inspect
+  `watch:...`, `priority:...`, `pidfd:...` and `producer` errors as applicable.
+
+A healthy numeric monitor can still have degraded notification coverage; check
+both. Numeric exceptions are also printed as `resource monitor sample failed`.
+The source's diagnostics property is local; the CPU wrapper exposes coverage,
+`sampler_leader` and `sample_error` through `diagnostics`, without inventing a
+shared CPU diagnostic record.
+
+A producer exception emits a final hint and closes. Closed `wait()` returns
+without raising. The broker observer explicitly detects closed sources and
+reconstructs them on its two-second retry. Qualify this separately from
+recoverable watch/path loss. Likewise, CPU shutdown joins an in-progress
+collection rather than forcibly cancelling it. These are qualification/review
+items, not instructions to weaken freshness or health checks.
+
+### Release boundary and evidence still owed
+
+This describes inspected source; fixture results are retained in
+`resource_observation_1946_evidence.md`. **Real qualification,
+including O5, remains missing. No activation is authorized.** Keep slice 0 gates
+and the independently reviewed before/after baseline, evidence and normal
+publication/rollout approvals intact. Source implementation is not deployed
+support, a passing test run, an observed <=5-second repair, or a demonstrated
+performance improvement.
+
+The release owner still needs retained real-environment evidence for cgroup
+priority delivery and identity-safe enforcement, missing/replaced paths and
+coverage loss/recovery, overflow/watch exhaustion, pidfd identity without false
+emptiness, stop/cancellation under load, slow/failed vendor probes, CPU freshness
+and the exact 15-second health boundary. Preserve unavailable/failed checks as
+such and correlate diagnostics with authoritative rereads. Fixture checks are not fleet qualification. This change performed no production
+service, gate, pointer or deployment mutation.
