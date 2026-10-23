@@ -11,6 +11,20 @@
  ],
  "_gpu_interpreters_why": "The interpreters whose invocation starts GPU work on this fleet. require_pool.py refuses a command that runs one outside PrismaBuild; it reads the list here rather than naming a client's venv in code (#1076). A loop's --python is not this list and must never name one of them: the loop's interpreter is PrismaBuild's own (see _worker_python_2026_09_28), while this list is the client environments that client GPU work runs. Change the list when the fleet's GPU environment moves.",
  "boxes": {
+  "celestia": {
+   "status": "enrolling",
+   "status_reason": "Rob authorized a capped CPU-only worker; pinned enrollment proofs must pass before activation.",
+   "status_by": "Rob Tand, PB #2141",
+   "status_unix": 1792713600,
+   "cap": {"cpus": "4-7,12-15", "mem_gb": 32, "slice": "prismabuild.slice"},
+   "loops": 2,
+   "args": [
+    "--class", "x86", "--tag", "celestia",
+    "--cpu-slots", "8", "--mem-gb", "32", "--all-cores",
+    "--timeout-s", "3600", "--max-idle", "2000", "--poll-s", "10",
+    "--python", "/home/rob/venvs/pb-cpu/bin/python"
+   ]
+  },
   "sparky": {
    "loops": 5,
    "local_disk": "/home/rob",

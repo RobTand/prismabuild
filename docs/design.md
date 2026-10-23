@@ -6297,6 +6297,56 @@ windows remain sourced from Netdata and GB10 windows from their existing
 recorders. Status and metrics expose discrete VRAM peak/total separately from
 host cgroup memory and GPU power.
 
+## Capped partial-host workers (#2141)
+
+A roster entry may declare `cap: {cpus: "4-7,12-15", mem_gb: 32,
+slice: "prismabuild.slice"}`. The slice is a top-level system slice. The
+supervisor, its workers, the broker and all broker-created action cgroups
+share that slice. Uncapped hosts retain their existing capacity policy.
+
+`host_cap.enforce_host_cap` is the common final clamp used by
+`worker_loop.observed_claim_capacity`, including private executable callers.
+The worker applies it after observer smoothing and measured roof replacement,
+including `--assume-idle`. CPU capacity cannot exceed inherited affinity or
+the effective cpuset. The slice and worker effective cpusets must equal the
+declared CPU list; a preferred-core process affinity may be narrower.
+The worker must be a descendant of the declared system slice, and its
+`memory.max` must equal the declared GiB cap.
+
+The total memory offer is the minimum of the observed offer, the declared cap,
+held reservations plus slice headroom less one GiB of PB overhead, and held
+reservations plus host `MemAvailable` less the existing eight GiB margin.
+Held reads bracket the memory instruments and use the lower reservation
+credit. This prevents counting a sibling's release twice. The clamp applies
+immediately, including when the observer's window still remembers a higher
+roof. Missing instruments or containment mismatch zero every resource and
+publish `observed_detail.host_cap_refusal`; `pbstatus` reports `refused` and
+the reason. The worker skips admission on refusal and rechecks the same clamp
+at the final claim boundary. A shrinking envelope refuses that claim.
+
+`install_supervisor_unit.sh --system --slice NAME.slice --cpus CPU-LIST
+--memory-gb N` installs a system supervisor with `User=rob`, `Slice` and
+`AllowedCPUs`, the aggregate cap slice, and the broker drop-in. `--print`
+renders the units without installation. Both supervisor modes keep cooperative
+shutdown and explicit `--systemd` startup ownership. A stopped system unit
+also suppresses cron startup. The broker's per-host `PB_SCOPE_PARENT` setting
+supplies `resource_broker.py --scope-parent`, defaulting to `prismabuild.slice`.
+The action-and-nonce scope identifier stays unchanged. The actual kernel unit
+replaces its `prismabuild-` prefix with the configured parent prefix; path
+validators require that exact parent, child and identity relationship.
+
+Roster `status: enrolling` requires the same reason, author and timestamp as
+other non-active declarations. Its supervisor runs, but publication preflight,
+barrier quorums and class-wide participant proofs exclude it. Workers advertise
+`enrolling-only:<canonical-name>` and, if declared, the alias marker. The shared
+placement matcher accepts such an offer only when the action explicitly requires
+one of those host names. General CPU or architecture tags grant no enrollment
+placement. An enrolling offer may be fresh during a barrier without joining it.
+Publishing status `active` removes this restriction and requires normal updater
+and barrier proofs. Celestia starts enrolling, CPU-only, at eight logical CPUs
+covering four physical cores, with a 32 GiB aggregate cap and no spool offer.
+This change provides source support; it performs no host installation or enrollment.
+
 ## Preferred, overflow and adaptive CPU admission
 
 Host admission uses a nonblocking local FLOCK around the box's headroom

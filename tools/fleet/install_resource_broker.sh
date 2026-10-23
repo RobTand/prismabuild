@@ -56,7 +56,8 @@ After=local-fs.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --uid 1000 --maintenance-state /var/lib/prismabuild-resource-broker/maintenance.json
+Environment=PB_SCOPE_PARENT=prismabuild.slice
+ExecStart=/usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --uid 1000 --maintenance-state /var/lib/prismabuild-resource-broker/maintenance.json --scope-parent ${PB_SCOPE_PARENT}
 Restart=on-failure
 RestartSec=1
 RuntimeDirectory=prismabuild

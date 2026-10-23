@@ -6130,7 +6130,8 @@ class PoolQueue:
         """Every roster member must positively answer; partial offers are not proof."""
         if not members:
             return f"no active {klass} class members declared"
-        live = self.offers()
+        live = [offer for offer in self.offers()
+                if not capability_eligibility.HostPresence.from_offer(offer).enrollment_pins]
         used_hosts = set()
         known = {alias for aliases in members.values() for alias in aliases}
         for offer in live:

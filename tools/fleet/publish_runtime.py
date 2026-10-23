@@ -1904,9 +1904,14 @@ def _barrier_roster(generations):
     live = {o["host"] for o in offers if -60 <= now - o["announced_unix"] <= 120}
     target_boxes = boxes_by_generation[-1]
     absent_names: set[str] = set()
+    enrolling_names: set[str] = set()
     absent_detail: dict[str, str] = {}
     for key, value in target_boxes.items():
         status, detail = fleet_roster.box_status(key, value)
+        if status == fleet_roster.ENROLLING:
+            enrolling_names.add(key)
+            if value.get("_alias"):
+                enrolling_names.add(value["_alias"])
         if status in fleet_roster.ABSENT:
             names = {key}
             if isinstance(value, dict) and value.get("_alias"):
@@ -1922,6 +1927,10 @@ def _barrier_roster(generations):
         )
     kept = []
     for group in groups:
+        if group <= enrolling_names:
+            continue
+        if group & enrolling_names:
+            raise SystemExit("barrier roster mixes enrolling and active names")
         if group <= absent_names:
             continue
         if group & absent_names:
@@ -1935,8 +1944,8 @@ def _barrier_roster(generations):
             "barrier roster is empty: every declared box is absent: "
             + "; ".join(sorted(absent_detail.values())))
     declared = set().union(*groups)
-    if live - declared - absent_names:
-        raise SystemExit(f"undeclared live barrier hosts: {sorted(live - declared - absent_names)}")
+    if live - declared - absent_names - enrolling_names:
+        raise SystemExit(f"undeclared live barrier hosts: {sorted(live - declared - absent_names - enrolling_names)}")
     canonical = []
     for group in groups:
         matches = live & group
@@ -2267,7 +2276,7 @@ def _active_roster_boxes(roster: fleet_roster.Roster) -> tuple[list[tuple[str, f
             status, detail = fleet_roster.box_status(key, entry)
         except fleet_roster.RosterPresenceError as exc:
             raise SystemExit(f"cannot establish the fleet roster: {exc}") from exc
-        if status in fleet_roster.ABSENT:
+        if status != fleet_roster.ACTIVE:
             absent.append(fleet_roster.describe_absent(key, detail))
         else:
             active.append((key, names))

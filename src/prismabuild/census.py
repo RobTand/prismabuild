@@ -546,6 +546,12 @@ def offers(queue_root: str | Path, *, reader=None,
                 state = "retired"
                 note = (f"offer unrefreshed for {age / 86400:.1f} days; "
                         "box treated as retired (record kept)")
+        observed = offer.get("observed_detail")
+        cap_refusal = observed.get("host_cap_refusal") if isinstance(observed, dict) else None
+        if fresh and cap_refusal:
+            state, note = "refused", str(cap_refusal)
+        elif fresh and any(str(tag).startswith("enrolling-only:") for tag in offer.get("tags", [])):
+            note = "; ".join(filter(None, (note, "enrolling; pinned proofs only")))
         nodes.append({
             "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
