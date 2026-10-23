@@ -4665,37 +4665,43 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
-## Automatic client convergence
+## Operator holds on new claims
 
-Operator holds are independent of client convergence. The published `pbhold.py`
-sets, lists and releases one atomic `holds/<host>.json` record under the queue
-root. Its `prismabuild.host_hold.v1` schema carries `owner`, `reason`,
+The published `pbhold.py` sets, lists and releases one atomic
+`holds/<host>.json` record under the queue root. Its `prismabuild.host_hold.v1`
+schema carries `owner`, `reason`,
 `created_unix` and `expires_unix`. The lifetime is positive and at most 12 hours.
 Operator mutations serialize on the host's adjacent permanent POSIX lock.
 A different owner cannot replace or release an active hold without `--force`
 and an explicit reason. An expired record may be replaced by a new owner.
 Releasing an expired record still requires its recorded owner or a forced override.
-Missing records permit claims; unreadable, nonregular or malformed records
-hold the host. Expired valid records are ignored and logged once per record
-per queue instance. Records are not removed by admission readers.
+Every `--force` override requires an explicit reason.
+An absent record leaves admission open. An unreadable, nonregular or malformed
+record holds the host, failing closed. A valid expired hold reopens admission,
+subject to the independent maintenance gate. Its expiry is logged once per
+record per queue instance. Admission readers do not remove records.
 
-`PoolQueue.claim_hold` owns the hold decision for all claim routes. `claim`
-checks before admission side effects, and `_rename_and_commit_claim` checks
+Every claim route consults the host's hold record through `PoolQueue.claim_hold`.
+`claim` checks before admission side effects, and `_rename_and_commit_claim` checks
 again under the per-key transition lock, unwinding reservations if a hold
 arrived during the pass. Ordinary CPU, GPU and restartable CPU guest claims
 all cross that boundary. The last read and rename are not atomic with an
 operator write; a claim already past that boundary may finish normally.
-Running actions, their reservations and their cleanup are unchanged.
+Running actions continue with their reservations and cleanup unchanged.
 
-The worker loop parks when either its maintenance gate or operator hold closes
-admission. It continues retrying its own pending finishes and publishing fresh
-offers with declared capability intact and zero observed capacity. Holds add
+The operator hold is independent of the upgrade maintenance drain. Either
+control parks the worker loop's new claims. Saved-finish retries continue,
+and the worker publishes fresh offers with declared capability intact and zero
+observed capacity. Holds add
 an optional `hold` object to the offer. If both controls apply, the offer retains
-the maintenance drain fields. Status reads the authoritative hold record for
-each offered host and reports `state: held`, `held: true` and `hold` details,
-including read errors, even before the next worker poll. A stale worker stays
+the maintenance drain fields. Census and `pbstatus` read the authoritative hold
+record for each offered host and report `state: held`, `held: true`, zero
+observed capacity and `hold` details, including read errors, even before the
+next worker poll. A stale worker stays
 unhealthy while its hold remains visible. Releasing either control leaves the
 other intact; operator holds never read or write the host's maintenance gate.
+
+## Automatic client convergence
 
 Worker membership uses this same broker maintenance gate and the existing
 roster, offers, queue withdrawal and reaper machinery. The published

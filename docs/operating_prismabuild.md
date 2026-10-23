@@ -2614,26 +2614,6 @@ capability check; status keeps the node visible as stale and exposes
 identifying which clock is wrong. The tolerance applies only to offers;
 CPU/GPU admission telemetry and resource limits retain their existing checks.
 
-To stop new claims during an external-load window, use the published tool:
-
-```bash
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
-  --host sparky --owner operator --reason 'external load window' \
-  --until 2026-10-23T22:00:00Z
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py --list
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
-  --host sparky --owner operator --release
-```
-
-Choose an expiry in the next 12 hours. An expired hold permits claims again
-and the loop logs its expiry once. Running actions continue. A different
-owner's active hold cannot be changed or released without `--force --reason`.
-Releasing an expired record also requires its recorded owner or this override.
-An unreadable hold requires the same override to repair or release it.
-`--queue-root` selects a private queue for fixtures. Holds live in the shared
-queue, require no root, and never open or close the client-upgrade drain.
-Both controls must be open before the host claims again.
-
 It prints three tables:
 
 *   **nodes** — for pool, each worker's declared and observed capacity, offer
@@ -2664,6 +2644,48 @@ It prints three tables:
 *   **endings** — how the last actions ended, newest first, each labelled with
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
+
+**Hold both Sparks for a direct vLLM serve.**
+
+To reserve both Sparks for an exempt direct vLLM serve, use the published
+`pbhold.py` before starting the serve:
+
+1.  Set a hold on both `sparky` and `sparklina`. Use your operator identity as
+    `--owner` and a UTC `--until` that covers the window, at most 12 hours ahead.
+    This example reserves two hours:
+
+    ```bash
+    until_utc=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+    for host in sparky sparklina; do
+      python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+        --host "$host" --owner operator --reason 'direct vLLM window' \
+        --until "$until_utc"
+    done
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py --list
+    ```
+
+2.  Wait for running PB rows on both Sparks to finish. Check the **jobs** table
+    with `python3 /mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py --transport pool`.
+    Both nodes show `held` with zero observed capacity. Running actions and
+    saved-finish retries continue while new claims are held.
+3.  Once the running rows finish, start the exempt vLLM serve directly.
+4.  Stop the serve, then release both holds with the same owner:
+
+    ```bash
+    for host in sparky sparklina; do
+      python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+        --host "$host" --owner operator --release
+    done
+    ```
+
+An expired hold reopens admission and the loop logs its expiry once. To extend
+an active hold, repeat the set command with the same owner and a new `--until`.
+Replacing an active hold or releasing any hold requires its recorded owner.
+An expired record may be replaced by a new owner. An ownership override or an
+unreadable-record repair requires `--force` and an explicit `--reason`.
+Holds require no root and do not change the upgrade maintenance drain.
+Both controls must be open before new claims resume. `--queue-root` selects
+a private queue for fixtures.
 
 For ready and claimed items, `pbstatus` prints each host's latest recorded
 skip in `DENIAL` beside `PASSES`, with its age; `--json` includes
