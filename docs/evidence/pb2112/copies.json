@@ -1,0 +1,44 @@
+[
+  {
+    "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+    "copy": "docs/evidence/pb2112/pq-current-source.txt",
+    "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+    "bytes": 21532
+  },
+  {
+    "reference": "prismabuild checkout HEAD 4aed1b637ef310b8a2c55b1cb5b50b0e4b6dc90f (not frozen027; research base b1168d0703f74e9bb8496a263f3f0f270d483959): selected source excerpts",
+    "copy": "docs/evidence/pb2112/pb-current-controls.txt",
+    "sha256": "77882bfa8069c00182ff82fc36f21002d4986f53bc881b24b33ff85da90a8853",
+    "bytes": 8666
+  },
+  {
+    "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1a/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+    "copy": "docs/evidence/pb2112/publication-receipt.json",
+    "sha256": "c5590e51ddb08e77af2cec194d402d245f12cc332198aa1a262906f4c83c432d",
+    "bytes": 2458
+  },
+  {
+    "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/01/0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+    "copy": "docs/evidence/pb2112/publication-result.txt",
+    "sha256": "0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+    "bytes": 427
+  },
+  {
+    "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/20/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+    "copy": "docs/evidence/pb2112/guard-receipt.json",
+    "sha256": "dce44503433834f37204ff9d1bfd0fc62199a41c194192e9181c632a0d0e7129",
+    "bytes": 2460
+  },
+  {
+    "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/d1/d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+    "copy": "docs/evidence/pb2112/guard-result.txt",
+    "sha256": "d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+    "bytes": 18600
+  },
+  {
+    "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+    "copy": "docs/evidence/pb2112/retained-linkage.json",
+    "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+    "bytes": 7823
+  }
+]
