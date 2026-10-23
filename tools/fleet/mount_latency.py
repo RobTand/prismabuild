@@ -136,7 +136,7 @@ _OP_FIELDS = ("ops", "trans", "timeouts", "bytes_sent", "bytes_recv",
 #: else is summed into the totals; naming these keeps the interesting rows
 #: readable without turning one sample into forty numbers.
 CLAIM_PATH_OPS = ("GETATTR", "LOOKUP", "ACCESS", "RENAME", "CREATE",
-                  "REMOVE", "OPEN", "READ", "WRITE", "TEST_STATEID")
+                  "REMOVE", "OPEN", "CLOSE", "READ", "WRITE", "TEST_STATEID")
 
 #: PrismaBuild's admission gate is a local ``flock`` (``adaptive_cpu.py``
 #: ``locked()``), taken on a file in this box-private directory and held across
@@ -199,8 +199,12 @@ def read_mountstats(target: Path, text: str | None = None) -> _Mount | None:
 
     if text is None:
         try:
-            text = Path("/proc/self/mountstats").read_text(encoding="utf-8")
-        except OSError:
+            with Path("/proc/self/mountstats").open("rb") as stream:
+                raw = stream.read(4 * 1024 * 1024 + 1)
+            if len(raw) > 4 * 1024 * 1024 or not raw.endswith(b"\n"):
+                return None
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeError):
             return None
     wanted = str(target)
     best: _Mount | None = None
@@ -275,6 +279,18 @@ def read_mountstats(target: Path, text: str | None = None) -> _Mount | None:
     return best
 
 
+def _same_population(before: _Mount, after: _Mount) -> bool:
+    """Never calculate a window across mount identities or counter resets."""
+    return (before.is_nfs and after.is_nfs
+            and (before.device, before.mount_point, before.fstype, before.options)
+            == (after.device, after.mount_point, after.fstype, after.options)
+            and after.age_s >= before.age_s
+            and before.ops.keys() == after.ops.keys()
+            and all(after.ops[name].get(field, 0) >= value
+                    for name, row in before.ops.items()
+                    for field, value in row.items()))
+
+
 def _op_delta(before: dict[str, dict[str, int]],
               after: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
     """Per-op counter differences, dropping any that went backwards.
@@ -291,7 +307,7 @@ def _op_delta(before: dict[str, dict[str, int]],
                for field in _OP_FIELDS}
         if any(value < 0 for value in row.values()):
             continue
-        if row["ops"]:
+        if any(row.values()):
             delta[name] = row
     return delta
 
@@ -329,9 +345,12 @@ def _rpc_view(delta: dict[str, dict[str, int]],
         ops = row["ops"]
         by_op[name] = {
             "ops_per_s": round(ops / window_s, 3) if window_s > 0 else 0.0,
-            "queue_ms": round(row["queue_ms"] / ops, 3),
-            "rtt_ms": round(row["rtt_ms"] / ops, 3),
-            "exec_ms": round(row["exec_ms"] / ops, 3),
+            "queue_ms": round(row["queue_ms"] / ops, 3) if ops else 0.0,
+            "rtt_ms": round(row["rtt_ms"] / ops, 3) if ops else 0.0,
+            "exec_ms": round(row["exec_ms"] / ops, 3) if ops else 0.0,
+            "ops": ops,
+            "trans": row["trans"],
+            "timeouts": row["timeouts"],
             "errors": row["errors"],
             "major_timeouts": row["timeouts"],
         }
@@ -618,7 +637,9 @@ class MountSampler:
                  deadline_s: float = PROBE_DEADLINE_S,
                  repeats: int = PROBE_REPEATS,
                  probe: object = None,
-                 lock_dir: Path = ADMISSION_LOCK_DIR) -> None:
+                 lock_dir: Path = ADMISSION_LOCK_DIR,
+                 passive: bool = False) -> None:
+        self.passive = passive
         self.mount = Path(mount)
         self.host = host or socket.gethostname()
         self.deadline_s = deadline_s
@@ -816,17 +837,18 @@ class MountSampler:
 
         now = time.time()
         before = read_mountstats(self.mount)
-        probe = self._run_probe()
-        after = read_mountstats(self.mount)
+        probe = {"status": "skipped"} if self.passive else self._run_probe()
+        after = before if self.passive else read_mountstats(self.mount)
 
         record: dict[str, object] = {
             "schema": SCHEMA,
+            "mode": "passive" if self.passive else "active",
             "host": self.host,
             "unix": round(now, 3),
             "mount_point": str(self.mount),
             "probe": probe,
-            "locks": lock_contention(self._lock_dir,
-                                     held_since=self._held_since, now=now),
+            "locks": (None if self.passive else lock_contention(
+                self._lock_dir, held_since=self._held_since, now=now)),
             "load1": _load1(),
         }
 
@@ -834,10 +856,16 @@ class MountSampler:
             # The box that exports this filesystem reaches it as a local pool.
             # Its probe numbers are real and its RPC numbers do not exist; a
             # zero here would read as "perfectly healthy network mount".
-            record["mount"] = {"transport": "local", "is_nfs": False,
+            record["mount"] = {"transport": "local" if after else "unknown",
+                               "is_nfs": False,
+                               "mount_point": after.mount_point if after else "",
+                               "options": after.options if after else {},
                                "device": after.device if after else "",
                                "fstype": after.fstype if after else ""}
             record["rpc"] = None
+            record["window_s"] = 0.0
+            if after is None:
+                record["note"] = "mountstats unavailable (unreadable, oversized, incomplete or no matching mount)"
             record["attribution"] = None
             self._previous, self._previous_at = after, now
             return record
@@ -848,6 +876,8 @@ class MountSampler:
             "device": after.device,
             "fstype": after.fstype,
             "age_s": after.age_s,
+            "mount_point": after.mount_point,
+            "options": after.options,
             "vers": after.options.get("vers", ""),
             "nconnect": after.options.get("nconnect", ""),
             "timeo": after.options.get("timeo", ""),
@@ -855,7 +885,7 @@ class MountSampler:
 
         window_s = 0.0 if self._previous_at is None else now - self._previous_at
         remounted = (self._previous is not None
-                     and after.age_s < self._previous.age_s)
+                     and not _same_population(self._previous, after))
         if self._previous is None or window_s <= 0 or remounted:
             # The first sample of a process, and the first after a remount,
             # have no window to state.  Reporting a rate over "since the mount
@@ -863,14 +893,15 @@ class MountSampler:
             # of the last fifteen seconds.
             record["rpc"] = None
             record["window_s"] = 0.0
-            record["note"] = ("remount detected; counters restarted"
+            record["note"] = ("remount or counter discontinuity detected; counters restarted"
                               if remounted else "first sample; no window yet")
         else:
             record["window_s"] = round(window_s, 3)
             record["rpc"] = _rpc_view(
                 _op_delta(self._previous.ops, after.ops), window_s)
 
-        record["attribution"] = _attribution(before, after, probe, self.repeats)
+        record["attribution"] = (None if self.passive else
+                                 _attribution(before, after, probe, self.repeats))
         self._previous, self._previous_at = after, now
         return record
 
@@ -886,7 +917,8 @@ def _attribution(before: _Mount | None, after: _Mount | None,
     every sample.
     """
 
-    if before is None or after is None or not after.is_nfs:
+    if (before is None or after is None or not after.is_nfs
+            or not _same_population(before, after)):
         return {}
     delta = _op_delta(before.ops, after.ops)
     attribution: dict[str, object] = {
@@ -1128,6 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mount", type=Path, default=DEFAULT_MOUNT,
                     help="shared mount to measure")
+    ap.add_argument("--passive", action="store_true",
+                    help="observe mountstats only; skip probes and lock scans")
     ap.add_argument("--once", action="store_true",
                     help="take one reading and exit")
     ap.add_argument("--json", action="store_true",
@@ -1160,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
                            else DEFAULT_RECORD_DIR)
     interval = args.update_every or args.interval_s
     sampler = MountSampler(args.mount, deadline_s=args.deadline_s,
-                           lock_dir=args.lock_dir)
+                           lock_dir=args.lock_dir, passive=args.passive)
 
     if args.netdata:
         _declare_charts(max(1, int(interval)), sys.stdout)
