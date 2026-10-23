@@ -389,6 +389,7 @@ def _sealed_source(
 def _snapshot(tmp_path: Path, source: Path, stamp_name: str,
               cas: pb.PrismaBuildCAS) -> dict:
     clone = tmp_path / f"snapshot-{uuid.uuid4().hex[:8]}"
+    # pb-history-ok: Clones or bundles the generated temporary source repository for SLURM fixtures.
     subprocess.run(["git", "clone", "-q", str(source), str(clone)], check=True)
     (clone / stamp_name).write_bytes((source / stamp_name).read_bytes())
     subprocess.run(["git", "-C", str(clone), "add", "-f", stamp_name], check=True)
@@ -400,6 +401,7 @@ def _snapshot(tmp_path: Path, source: Path, stamp_name: str,
         ["git", "-C", str(clone), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True).stdout.strip()
     bundle = tmp_path / f"{clone.name}.bundle"
+    # pb-history-ok: Clones or bundles the generated temporary source repository for SLURM fixtures.
     subprocess.run(
         ["git", "-C", str(clone), "bundle", "create", str(bundle), "HEAD"],
         check=True, capture_output=True)

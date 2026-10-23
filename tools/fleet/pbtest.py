@@ -76,7 +76,7 @@ from prismabuild.submission_types import (
 
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
-from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pool  # noqa: E402
+from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pbtest_scratch_roots, pool  # noqa: E402
 from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
@@ -1122,7 +1122,7 @@ raise SystemExit(load("pbtest_outcomes").main(
 """
 
 from prismabuild.pbtest_owned_temp import (
-    OWNED_TREE_PROGRAM, BASETEMP_PROGRAM, ATTEMPT_TEMP_PROGRAM,
+    OWNED_TREE_PROGRAM, ROOTS_PROGRAM, BASETEMP_PROGRAM, ATTEMPT_TEMP_PROGRAM,
 )
 
 
@@ -1194,8 +1194,10 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # directory under TMPDIR.
         program = ATTEMPT_TEMP_PROGRAM + program
     # The loaded module's own bytes, as with the digest owner above.
-    program = OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
-        Path(owned_tree.__file__)))) + program
+    program = (OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
+        Path(owned_tree.__file__)))) + ROOTS_PROGRAM.replace("@ROOT_SOURCE@", repr(
+            packed_source(Path(pbtest_scratch_roots.__file__))))
+        + program)
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays

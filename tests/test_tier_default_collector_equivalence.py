@@ -6,7 +6,7 @@ import errno
 import json
 import os
 from pathlib import Path
-import subprocess
+from history_inputs import source_bytes
 
 import pytest
 
@@ -19,9 +19,7 @@ OWNER, TARGET = "a" * 64, "b" * 64
 
 @pytest.fixture(scope="module")
 def original_methods():
-    root = Path(__file__).resolve().parents[1]
-    source = subprocess.check_output(
-        ["git", "show", f"{BASE}:src/prismabuild/pool.py"], cwd=root, text=True)
+    source = source_bytes(BASE, "src/prismabuild/pool.py").decode("utf-8")
     ledger = next(node for node in ast.parse(source).body
                   if isinstance(node, ast.ClassDef) and node.name == "ResourceLedger")
     methods = {}

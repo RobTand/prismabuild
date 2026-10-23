@@ -317,6 +317,7 @@ def test_one_commit_in_two_places_is_one_parent(
     first = _decompose(_request(work))
 
     twin = tmp_path / "twin"
+    # pb-history-ok: Clones the generated fixture repository for the resumed decomposition proof.
     completed = subprocess.run(
         ["git", "clone", "-q", str(work), str(twin)],
         capture_output=True, text=True,

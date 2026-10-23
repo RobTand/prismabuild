@@ -14,13 +14,16 @@ def source_git(snapshot, bundle, repository, *, expect_head=None, require_clean=
         subprocess.run(["git", "init", "--bare", "--quiet", str(repository)], check=True,
                        capture_output=True)
     command = ["git", "--git-dir", str(repository)]
+    # pb-history-ok: Audits objects supplied by the sealed snapshot bundle in a fresh repository.
     subprocess.run([*command, "bundle", "unbundle", str(bundle)], check=True, capture_output=True)
     commit = snapshot["commit"]
+    # pb-history-ok: Audits objects supplied by the sealed snapshot bundle in a fresh repository.
     parents, tree = subprocess.check_output(
         [*command, "show", "-s", "--format=%P%n%T", commit], text=True).splitlines()
     assert parents.split() == [snapshot["parent"]], "snapshot parent differs from actual Git object"
     if expect_head is not None:
         assert parents == expect_head, "action did not run the declared source pin"
+    # pb-history-ok: Audits objects supplied by the sealed snapshot bundle in a fresh repository.
     changed = subprocess.check_output(
         [*command, "diff-tree", "--no-commit-id", "--name-only", "-r", commit], text=True).splitlines()
     dirty = [name for name in changed if not re.fullmatch(r"\.pbrun-closure\.[0-9a-f]{16}\.json", name)]
@@ -120,6 +123,7 @@ def audit(key, fleet, repository=None, *, expect_head=None, require_clean=False)
     snapshot = request["params"]["checkout_snapshot"]
     source = snapshot["input"]
     bundle = cas / "blobs" / source["sha256"][:2] / source["sha256"]
+    # pb-history-ok: Audits objects supplied by the sealed snapshot bundle in a fresh repository.
     heads = subprocess.check_output(["git", "bundle", "list-heads", str(bundle)], text=True)
     assert snapshot["commit"] in heads
     provenance = (source_git(snapshot, bundle, repository, expect_head=expect_head, require_clean=require_clean)

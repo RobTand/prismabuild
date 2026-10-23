@@ -502,11 +502,9 @@ def test_journal_cannot_mark_required_broker_as_previously_absent(setup):
 
 def test_legacy_updater_needs_bridge_then_new_dependency_converges(setup, tmp_path):
     # Load the exact four-member updater deployed before this change, not a
-    # fake that reuses the new transaction implementation. The PB Git snapshot
-    # carries the parent commit, including this historical source.
-    import subprocess
-    source = subprocess.check_output(['git', 'show',
-        '161c9ae:tools/fleet/upgrade_client.py'], cwd=Path(__file__).parents[1])
+    # fake that reuses the new transaction implementation.
+    from history_inputs import source_bytes
+    source = source_bytes('161c9ae', 'tools/fleet/upgrade_client.py')
     legacy_path = tmp_path / 'legacy_upgrade.py'
     legacy_path.write_bytes(source)
     spec = importlib.util.spec_from_file_location('legacy_upgrade', legacy_path)

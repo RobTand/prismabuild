@@ -2349,10 +2349,51 @@ reads only the selected attempt, checks stdout and filed stderr against their
 addresses, verifies the announced execution receipt and payload when present,
 and rechecks the ending before returning. Default caps are 16 MiB per log,
 4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
-wraps that read in its isolated five-second observation budget. A mismatch,
-missing evidence or exceeded bound yields `unreadable`, never verified bytes.
-No bounded verified produced-output discovery exists, so `outputs` is empty.
+wraps that read in its isolated five-second observation budget.
+
+Logs are streamed in 4 MiB chunks through the stable, read-only, no-follow
+file verifier. The full byte count and recorded digest are checked, and every
+stdout line is scanned for receipt announcements during that same pass. The
+consumer projection bypasses the legacy renderer's complete log expansion;
+legacy JSON and human rendering keep their existing verification path.
+
+The 16 MiB per-stream cap bounds retained evidence, independently of total log
+size. Oversized descriptors retain `path`, `bytes` and `sha256` for the fully
+hashed log and add `truncated: true` and `evidence: {offset, bytes, sha256}`
+for the retained tail. That tail must also agree with the terminal's existing
+64 KiB stream summary. Announcements are verified wherever they occur, and
+multiple announcements refuse. Line buffering is capped at the 4 MiB evidence
+budget; oversized non-JSON lines are discarded after classification. A line
+that could contain a receipt but exceeds that bound leaves verification
+incomplete. Consumers needing the full log can read `result.stdout.path` or
+`result.stderr.path` and check its full byte count and digest.
+
+Streaming has a cooperative four-second budget within `pbwait`'s isolated
+five-second observation budget. If either expires, or bounded announcement
+scanning cannot finish, the action's status, success flag and exit outcome
+remain intact; `result.verified` is false and `result.verification_error`
+explains the incomplete read. Null receipt and log descriptors in that result
+make no claim about evidence not fully verified. A complete read returns
+`verified: true` only after full log, receipt, payload, immutable attempt and
+terminal-summary verification. A proven digest, receipt or summary mismatch
+still yields `unreadable`/74. Filesystem syscalls can exceed the cooperative
+budget; the isolated observation bounds how long the CLI waits for them.
+
+A mismatch, missing evidence or exceeded non-log bound yields `unreadable`,
+never verified bytes. No bounded verified produced-output discovery exists,
+so `outputs` is empty.
 The existing SDK exports, version and success-only guarantees are unchanged.
+
+The #1964 Core helper-pin change is qualified by six independently reproduced
+current runtime goldens (receipt, attestation and runtime, each in-process and
+script). The strict runtime adopter preserves all twelve historical rows byte
+exact and archives the superseded current goldens and capture metadata under
+`tests/compat/history-controls/superseded-runtime-0c20614e4325b088/`. The capture
+and adoption bind producer `bb2fba69f32c3775c3c0bbb00a1cf44357948de2`; their
+primary audits and exact commands are retained under
+`/mnt/shared/pbtl-probe-tmp/pb-lead-dl380/1964/round2/`. This qualifies corpus
+bytes and grants no runtime deployment credit.
+
 
 `pbrun --withdraw KEY --reason TEXT --json` returns
 `prismabuild.withdrawal.v1` with action key, prior state, withdrawal decision
@@ -2601,7 +2642,7 @@ the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
 `pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
 directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
 directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+24-hour retention clock; a later attempt or owning worker supervisor then removes it.
 A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
 under its root, and exit 0 also removes the key directory it empties. The
 sealed root and `TMPDIR` themselves are never removed or changed.
@@ -2795,6 +2836,26 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
+`pbtest_scratch_roots` registers the worker's opened pbtest root before its
+attempt directory becomes visible (#1710). The executing uid's passwd home,
+independent of sealed `HOME`, holds the private mode-0700 registry
+`.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
+`<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
+to the root's real absolute path. Registration refuses an unsafe registry or
+changed root before creating scratch. Both layouts keep the existing owner
+locks and namespace shapes; registration adds no second attempt custody.
+
+The supervisor holding the box claim sweeps at startup and hourly on its
+existing supervision cycles. `--once`, one-shot stale cycling, and a competing
+supervisor do not sweep. A pass selects at most 64 registered roots in random
+order, verifies their device and inode, refuses symlinked or missing roots,
+and delegates each layout to `owned_tree.reap_dead_trees` with its existing
+per-call bounds. Failures are reported and leave supervision running. The
+supervisor can therefore expire idle scratch without another pbtest run.
+Unregistered roots and unmarked legacy attempts remain outside automatic
+expiry. This source contract does not establish deployment or a first-pass
+space-freed measurement on real scratch.
+
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
   or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
@@ -2812,7 +2873,8 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
   pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), each new checkout reaps its checkout root, and each pbrun
+  sealed root), as does the owning supervisor for registered pbtest roots.
+  Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an
   attempt or a claim, and nothing starves. Reaping never fails the work that
@@ -7096,7 +7158,16 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and every following `wedged` sample carry
+`probe.outstanding_pid`, `probe.child_state` and `probe.child_wchan`. State
+and wchan come from that child's `/proc` entry at each sample's own time;
+if it has disappeared before the read, both diagnostics are `?` (unknown).
+The log's `child=state:wchan` and Netdata's `stuck_child` label expose the
+pair for attribution (#1398), not health. Older records lacking diagnostics
+remain unhealthy when their status is `timed_out` or `wedged`; statuses,
+health decisions, chart dimensions and numeric values are unchanged.
+Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose

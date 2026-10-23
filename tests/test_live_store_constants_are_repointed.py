@@ -97,6 +97,11 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "user service file under the home directory; repointed so tests do not "
         "depend on or modify the installed supervisor service"
     ),
+    ("prismabuild.pbtest_scratch_roots", "REGISTRY"): (
+        "None by default, and the per-uid registry it then resolves is under "
+        "the home directory; live workers register and sweep their pbtest "
+        "roots there, so tests are repointed off it (#1710)"
+    ),
     ("worker_loop", "PUBLICATION_LOCK_ROOT"): (
         "host-local publication fence owned by live workers; repointed so "
         "tests never contend on their lock inode"

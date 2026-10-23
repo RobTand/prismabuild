@@ -67,6 +67,7 @@ def test_a_sparse_checkout_is_refused_before_anything_is_sealed(
     tmp_path: Path,
 ) -> None:
     checkout = _checkout(tmp_path)
+    # pb-history-ok: Configures sparse or index state in the generated temporary fixture repository.
     assert _git(checkout, "sparse-checkout", "set", "keep").returncode == 0
     assert not (checkout / "away").exists()
 
@@ -85,6 +86,7 @@ def test_a_path_marked_skip_worktree_by_hand_is_refused_too(
     """The same defect without the porcelain: the bytes still come from HEAD."""
 
     checkout = _checkout(tmp_path)
+    # pb-history-ok: Configures sparse or index state in the generated temporary fixture repository.
     assert _git(
         checkout, "update-index", "--skip-worktree", "away/b.txt"
     ).returncode == 0
