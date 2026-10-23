@@ -4149,11 +4149,13 @@ class ResourceLedger:
         try:
             holder.rmdir()
         except OSError:
-            if not holder.is_dir():
+            try:
+                remaining = list(holder.iterdir())
+            except FileNotFoundError:
                 return
             # NFS may retain an unlinked metadata inode while a reader has it
             # open. No resource token may leave the authoritative held tree.
-            if any(not path.name.startswith('.nfs') for path in holder.iterdir()):
+            if any(not path.name.startswith('.nfs') for path in remaining):
                 raise
             retired = self.base / 'released-holders'
             retired.mkdir(parents=True, exist_ok=True)
