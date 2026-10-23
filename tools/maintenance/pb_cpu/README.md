@@ -1,5 +1,10 @@
 # Pool CPU environment definitions
 
+The provisioning tool is `tools/maintenance/pb_cpu.py`. Run it through
+`pbrun --cwd /path/to/prismabuild` from a PB checkout. The checkout snapshot
+carries the tool and these adjacent definitions to the worker. They are not
+members of the published fleet runtime.
+
 `x86_64-cp314.json` records dl380g10's 56 installed distributions.
 `aarch64-cp312.json` records the Sparks' identical 49 distributions plus
 jsonschema 4.26.0 and the same four dependencies as x86. Both inventories

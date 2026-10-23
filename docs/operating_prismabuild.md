@@ -2416,9 +2416,9 @@ the log alone cannot distinguish exhausted bytes from exhausted inodes.
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
 worker does not mean that arbitrary project dependencies are installed there.
 The reviewed definitions are
-[`tools/fleet/pb_cpu/x86_64-cp314.json`](../tools/fleet/pb_cpu/x86_64-cp314.json)
+`tools/maintenance/pb_cpu/x86_64-cp314.json`
 for dl380g10's CPython 3.14 and
-[`tools/fleet/pb_cpu/aarch64-cp312.json`](../tools/fleet/pb_cpu/aarch64-cp312.json)
+`tools/maintenance/pb_cpu/aarch64-cp312.json`
 for sparky and sparklina's CPython 3.12 over `/usr/bin/python3`.
 Each definition records exact distribution versions, including local versions
 such as `torch==2.11.0+cpu`, wheel SHA-256 hashes, and each package's purpose.
@@ -2432,7 +2432,7 @@ autouse fixtures. The definitions also retain the captured environment's
 tooling, with a reason beside each pin. Their presence does not qualify every
 served project's test suite or GPU execution.
 
-Run `tools/fleet/pb_cpu.py --python /absolute/interpreter check` through PB to
+Run `tools/maintenance/pb_cpu.py --python /absolute/interpreter check` through PB to
 compare a named interpreter with its host-class definition. The command prints
 JSON and exits 1 for missing, extra, duplicate, or different distributions,
 including a different `+cpu` suffix. It exits 2 for inspection or build errors.
