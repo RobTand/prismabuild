@@ -5728,6 +5728,8 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                 ns = str(entry.namespace or '')
                 try:
                     fragments = map_mod.read_fragments(out_base, ns)
+                    if getattr(fragments, "_unreadable", False):
+                        raise OSError("incomplete output residency evidence")
                 except Exception:
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id, "namespace": ns})
