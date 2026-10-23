@@ -18,33 +18,28 @@ def borrowed_guest(guest_fleet, monkeypatch, request):
     def sample():
         return {"sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1., **state}
 
-    # Occupy every physical CPU token, then establish low use with two actual
-    # cumulative telemetry observations so adaptive admission lends the CPUs.
-    lender_key = fleet.publish("c", cpu=8, tags=["sparky"])
-    lender = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
-    assert lender["action_key"] == lender_key
     key = "a" * 64
     fleet.queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
         worker_script="/w.py", resources={"cpu": 2, "mem_gb": request.param},
         retry_safe=True, max_attempts=3, priority=20)
-    state["busy_cpus"] = .1
-    for count in (1, 2):
-        clock[0] += 1
-        pool.cpu_admission.write_json(
-            pool.cpu_admission.local_telemetry_path(fleet.queue.ledger().base, lender_key), {
-                "action_key": lender_key, "sampled_unix": clock[0],
-                "cpu_seconds": count * .1, "wall_seconds": count,
-                "memory_current_bytes": 100, "memory_peak_bytes": 100, "complete": True})
-        guest = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
-        if count == 1:
-            assert guest is None
+    guest = fleet.claim()
     assert guest["action_key"] == key and guest["cpu_guest"] is True
     assert guest["cpu_allocation"] == {"preferred": [0, 1], "fallback": []}
     ledger = fleet.queue.ledger()
+    # Reader seam: retain a pre-QoS borrow after its donor returned the physical
+    # tokens. This priority-20 guest cannot acquire a new opportunistic loan.
+    # Current eligibility and acquisition are exercised in test_cpu_lending.
+    path = ledger.held_dir / key / pool.cpu_admission.METADATA
+    metadata = pool.cpu_admission.read_json(path)
+    metadata.pop('cpu_qos', None)
+    metadata.pop('cpu_weight', None)
+    metadata.update(borrowing=True, borrowed_cpu=2, shape='shape', admitted_unix=clock[0])
+    for token in (ledger.held_dir / key).glob('cpu-*'):
+        token.rename(ledger.free_dir / token.name)
+    pool.cpu_admission.write_json(path, metadata)
     assert ledger.holder_tokens(key) == ({"mem_gb": request.param} if request.param else {})
     assert pool.cpu_admission.read_json(
         ledger.held_dir / key / pool.cpu_admission.METADATA)["borrowed_cpu"] == 2
-    fleet.finish(lender)
     assert ledger.available()["cpu"] == 8  # pressure, not a physical token gap
     return fleet, key, guest, sample
 

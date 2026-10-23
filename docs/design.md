@@ -6785,8 +6785,10 @@ caps are 0 through 4 with more than ten preferred CPUs, and 0 through 2 otherwis
 Invalid settings disable lending. The initial rollout uses caps 2 then 4 on
 dl380g10, and 1 then 2 on one Spark at a time.
 
-Existing loans retain their affinity and low weight until completion. CPU
-pressure never kills a test or widens its affinity. The broker sets cpu.weight
+Existing loans retain their affinity and low weight until completion. Lending
+pressure never kills a test or widens its affinity; explicit restartable
+preemption, cancellation, lease recovery and memory enforcement remain separate.
+The broker sets cpu.weight
 10 for opportunistic scopes and 100 for protected scopes. Weight controls
 relative service during contention, not a CPU quota or a latency guarantee.
 Eligibility and loan grants are process-local registered capabilities. Both
