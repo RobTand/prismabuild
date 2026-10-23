@@ -9962,6 +9962,14 @@ watches existed, even when the scan finds an empty tree. Request diagnostics exp
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
 
+Host-tree watch removal compares normalized path strings (#2173). The removed
+root and its slash-terminated prefix are computed once per removal. Each
+installed Path supplies its cached normalized string; the watch loop compares
+that string for equality or the descendant prefix, without constructing Paths
+or running per-watch pathlib ancestry checks. Exact component boundaries keep
+sibling host names distinct. Removal order, inode-watch retirement, coverage
+resets, event ordering and v1/v2 reply fields are unchanged.
+
 The v2 client methods perform one bounded request. They positively check requested
 topics before accepting a cursor or successful wait. They introduce no consumer
 loop. A healthy empty renewal is transport only and must not trigger discovery.
