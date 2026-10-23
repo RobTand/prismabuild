@@ -163,7 +163,7 @@ def test_memory_shortage_names_observed_tokens_and_preserves_reservations(tmp_pa
         "resource": "mem_gb", "requested": 8, "available": 3,
     }
     assert queue.passes(KEY_A) == 1
-    ledger.release(KEY_B)
+    ledger.release(KEY_B, certificate=ledger.certify_release(KEY_B))
     assert queue.claim(capacity=capacity)["action_key"] == KEY_A
 
 
@@ -186,7 +186,7 @@ def test_shortage_uses_acquired_tokens_and_resets_on_the_next_attempt(tmp_path, 
         "resource": resource, "requested": 4, "available": free,
     }
     assert ledger.available().get(resource, 0) == free
-    ledger.release(KEY_B)
+    ledger.release(KEY_B, certificate=ledger.certify_release(KEY_B))
     handle = ledger.begin_acquire(KEY_A, {resource: 4})
     assert handle is not None
     assert ledger.last_token_shortage is None

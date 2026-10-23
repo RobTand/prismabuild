@@ -33,12 +33,12 @@ def test_metadata_unlink_failure_does_not_strand_tokens(tmp_path, monkeypatch, m
     with monkeypatch.context() as patch:
         patch.setattr(Path, "unlink", refuse_metadata)
         with pytest.raises(OSError) as raised:
-            getattr(ledger, operation)(handle)
+            getattr(ledger, operation)(handle, **({"certificate": ledger.certify_release(handle)} if operation == "release" else {}))
         assert raised.value.errno == error
         assert ledger.held() == {}, "cleanup error stranded physical capacity"
         assert marker.exists(), "failed metadata cleanup must remain retryable"
 
-    assert getattr(ledger, operation)(handle) == 0
+    assert getattr(ledger, operation)(handle, **({"certificate": ledger.certify_release(handle)} if operation == "release" else {})) == 0
     assert not holder.exists()
     assert ledger.acquire("b" * 64, {"cpu": 2, "mem_gb": 1})
 
@@ -61,9 +61,9 @@ def test_partial_token_return_retains_metadata_until_retry(tmp_path, monkeypatch
 
     with monkeypatch.context() as patch:
         patch.setattr(pool.os, "rename", refuse_one_token)
-        assert ledger.release(key) == 1
+        assert ledger.release(key, certificate=ledger.certify_release(key)) == 1
         assert blocked.exists()
         assert marker.exists(), "partial release must retain adaptive accounting"
 
-    assert ledger.release(key) == 1
+    assert ledger.release(key, certificate=ledger.certify_release(key)) == 1
     assert not holder.exists()

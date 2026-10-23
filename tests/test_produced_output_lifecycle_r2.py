@@ -107,6 +107,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     assert live is not None
     live["resource_scope"] = control
     pool.immutable_files.write_json_atomic(path, live)
+    queue.write_lease(owner, owner=live["claimed_by"], claim_snapshot=live)
     return control
 
 

@@ -13,9 +13,9 @@ def _replaced_scope(scoped, monkeypatch):
     queue._start_resource_scope(first)
     # Reproduce an old runtime/operator handoff that discarded the claim
     # without releasing the predecessor's separately owned broker scope.
+    queue.ledger().release(key, certificate=queue.ledger().certify_release(key))
     queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
     queue.records.lease_path(key).unlink()
-    queue.ledger().release(key)
     queue.publish(action_key=key, cas_root=first['cas_root'],
                   checkout_root=first['checkout_root'], worker_script=first['worker_script'],
                   resources=first['resources'], max_attempts=2, retry_safe=True)

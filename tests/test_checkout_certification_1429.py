@@ -104,7 +104,7 @@ def test_widowed_lease_cannot_release_unproved_snapshot_cleanup(tmp_path, broker
     assert fresh.ledger().held_keys() == [key], "widowed lease omitted the fenced checkout and returned its tokens"
 
 
-@pytest.mark.parametrize("entry", ["finish", "withdraw", "reap", "deferral", "widow", "direct", "late"])
+@pytest.mark.parametrize("entry", ["finish", "withdraw", "reap", "deferral", "widow", "direct", "late", "missing", "tombstone", "adopt", "terminal"])
 def test_every_checkout_release_path_requires_the_single_certifier(tmp_path, broker, monkeypatch, entry):
     queue, action, _ = fenced_snapshot_queue(tmp_path, max_attempts=3)
     key = action["action_key"]
@@ -129,14 +129,35 @@ def test_every_checkout_release_path_requires_the_single_certifier(tmp_path, bro
         seen.append(record["action_key"])
         return {"complete": False, "used": True, "error": "certification denied by regression"}
 
-    def observe_return(ledger, action_key):
+    def observe_return(ledger, action_key, **kwargs):
         released.append(action_key)
-        return original_release(ledger, action_key)
+        return original_release(ledger, action_key, **kwargs)
 
     monkeypatch.setattr(materialize, "certify_checkout_cleanup", deny_checkout)
     monkeypatch.setattr(pool.ResourceLedger, "release", observe_return)
     if entry in ("finish", "late"):
         _finish(queue, item, outcome)
+    elif entry == "missing":
+        queue.records.item_path(pool.CLAIMED, key).rename(tmp_path / "lost-claim.json")
+        _finish(queue, item, outcome)
+    elif entry == "tombstone":
+        tombstone, mine = queue.queue._entomb_claim(key, expect=item)
+        assert mine and tombstone
+        terminal = {**item, "status": "executed", "finished_host": item["claimed_host"]}
+        queue.records.replace_record_at(queue.records.item_path(pool.DONE, key), terminal)
+        Skew(monkeypatch).to(item["lifetime_deadline_unix"] + pool.LEASE_TIMEOUT_S + 1)
+        queue.sweep_finish_tombstones(grace_s=-1)
+    elif entry in ("terminal", "adopt"):
+        terminal = {**item, "status": "executed", "finished_host": item["claimed_host"]}
+        queue.records.replace_record_at(queue.records.item_path(pool.DONE, key), terminal)
+        if entry == "terminal":
+            queue.records.item_path(pool.CLAIMED, key).unlink()
+            queue.records.lease_path(key).unlink()
+            with pytest.raises(pool.PoolContractError, match="not certified"):
+                queue.reclaim_terminal_reservation(key)
+        else:
+            Skew(monkeypatch).to(item["lifetime_deadline_unix"] + pool.LEASE_TIMEOUT_S + 1)
+            queue.reap_stale()
     elif entry == "withdraw":
         queue.withdraw(key, reason="certification boundary")
         _finish(queue, item, outcome)
@@ -156,33 +177,38 @@ def test_every_checkout_release_path_requires_the_single_certifier(tmp_path, bro
     assert seen and set(seen) == {key}
     assert released == [], "a checkout-bearing conclusion bypassed certification"
     assert queue.ledger().held_keys() == [key]
-    assert queue.records.lease_path(key).exists()
+    if entry != "terminal":
+        assert queue.records.lease_path(key).exists()
 
 
 def test_scope_token_returns_have_one_conclusion_boundary():
     import ast
     root = Path(__file__).resolve().parents[1]
-    releases = set()
-    for module in ("pool", "lifecycle"):
-        tree = ast.parse((root / "src/prismabuild" / (module + ".py")).read_bytes())
-
+    constructions = []
+    for path in (root / "src/prismabuild").glob("*.py"):
+        tree = ast.parse(path.read_bytes())
+        aliases = {"ReleaseCertificate"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                aliases.update(entry.asname or entry.name for entry in node.names
+                               if entry.name == "ReleaseCertificate")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and (
+                    isinstance(node.value, ast.Attribute) and node.value.attr == "ReleaseCertificate"
+                    or isinstance(node.value, ast.Name) and node.value.id in aliases):
+                aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
         def walk(node, owners=()):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 owners = (*owners, node.name)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                receiver = ast.unparse(node.func.value)
-                if node.func.attr == "release" and receiver.startswith("self.ledger"):
-                    releases.add((module, *owners))
-                if (receiver == "tier_holdings" and node.func.attr == "egress_all"):
-                    releases.add((module, *owners))
+            if isinstance(node, ast.Call):
+                name = (node.func.id if isinstance(node.func, ast.Name)
+                        else node.func.attr if isinstance(node.func, ast.Attribute) else None)
+                if name in aliases:
+                    constructions.append((path.stem, owners))
             for child in ast.iter_child_nodes(node):
                 walk(child, owners)
-
         walk(tree)
-    # Acquisition rollback precedes execution and cannot own a checkout.
-    # Every concluding host/tier return has the guarded common boundary.
-    assert releases == {("pool", "_ClaimReservation", "abandon"),
-                        ("pool", "PoolQueue", "_release_reservation")}
+    assert constructions == [("materialize", ("certify_checkout_cleanup",))]
 
 
 def test_widowed_checkout_debt_releases_only_after_exact_removal(tmp_path, broker, monkeypatch):

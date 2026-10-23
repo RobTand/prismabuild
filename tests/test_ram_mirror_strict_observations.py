@@ -119,7 +119,7 @@ def test_an_unreadable_host_mirror_cannot_top_up_an_existing_hold(
 
 def test_an_unresolved_host_population_is_not_reported_converged(tmp_path: Path):
     tier, host, _data = _occupied(tmp_path)
-    assert tier._ledger.release(MOVER) == 2
+    assert tier._ledger.release(MOVER, certificate=tier._ledger.certify_release(MOVER)) == 2
     directory = host.held_dir / MIRROR
     host_names = _names(directory)
     retained = tmp_path / "retained-host-holder"
@@ -197,7 +197,7 @@ def test_a_failed_mirror_trim_stays_unconverged_until_retry(
 def test_a_partial_orphan_release_stays_unconverged_until_retry(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tier, host, _data = _occupied(tmp_path)
-    assert tier._ledger.release(MOVER) == 2
+    assert tier._ledger.release(MOVER, certificate=tier._ledger.certify_release(MOVER)) == 2
     directory = host.held_dir / MIRROR
     retained_name = min(_names(directory))
     real_rename = os.rename
@@ -229,7 +229,7 @@ def test_a_partial_orphan_release_stays_unconverged_until_retry(
 def test_an_unreadable_orphan_mirror_retains_its_token_names(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tier, host, _data = _occupied(tmp_path)
-    assert tier._ledger.release(MOVER) == 2
+    assert tier._ledger.release(MOVER, certificate=tier._ledger.certify_release(MOVER)) == 2
     directory = host.held_dir / MIRROR
     host_names = _names(directory)
     with monkeypatch.context() as patch:

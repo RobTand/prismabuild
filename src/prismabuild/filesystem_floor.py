@@ -59,6 +59,8 @@ variable :data:`MODE_ENV` overrides it for one process.
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 import argparse
 from collections.abc import Iterable, Mapping
 from contextlib import ExitStack, contextmanager
@@ -1036,7 +1038,8 @@ def operation(queue_root, *, used_paths: Iterable = (), growth_gib: Mapping | No
     finally:
         for ledger, holder, owner in reversed(taken):
             try:
-                ledger.release(holder)
+                if not immutable_files.confirmed_metadata_absence(ledger.held_dir / holder):
+                    ledger.release(holder, certificate=ledger.certify_release(holder))
                 owner.unlink(missing_ok=True)
             except OSError as exc:
                 _log(f"{label}: {holder} not released ({exc}); the reaper will")
@@ -1078,7 +1081,7 @@ def reap_operations(queue_root, *, now: float | None = None) -> list[str]:
                                        or _process_start(int(owner["pid"]))
                                        != owner.get("pid_start"))))
                 if gone:
-                    ledger.release(str(owner["holder"]))
+                    ledger.release(str(owner["holder"]), certificate=ledger.certify_release(str(owner["holder"])))
                     path.unlink(missing_ok=True)
                     reaped.append(str(owner["holder"]))
             except (FloorError, OSError, KeyError, ValueError, TypeError) as exc:

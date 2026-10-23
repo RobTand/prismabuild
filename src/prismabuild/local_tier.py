@@ -86,6 +86,6 @@ def reserve(queue, set_id, hosts, size):
                 acquired.append(ledger)
     except BaseException:
         for ledger in reversed(acquired):
-            ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED)
+            ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(set_id))
         raise
     return acquired

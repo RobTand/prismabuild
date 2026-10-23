@@ -383,7 +383,7 @@ def evict_resident_copy(store, set_id, host, spec, *, now=None):
             shutil.rmtree(tree)
             resident_sets.fsync_directory(root)
         # Capacity is released only once ALL local bytes have been deleted.
-        pool.PoolQueue(store.queue_root).tier(local_tier.local_resident_tier_id(host)).egress(set_id)
+        pool.PoolQueue(store.queue_root).tier(local_tier.local_resident_tier_id(host)).egress(set_id, certificate=pool.PoolQueue(store.queue_root).tier(local_tier.local_resident_tier_id(host)).certify_release(set_id))
         with local_tier.host_lock(root):
             store.write_copy(set_id, host, {**current, "state": "absent", "bytes": 0,
                 "verification": [], "completed_unix": None, "local_root": None})

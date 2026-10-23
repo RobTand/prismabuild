@@ -334,7 +334,7 @@ def _run_movers(queue: pool.PoolQueue, stage: Path, count: int, *,
                 ready.unlink()
                 for holder in own:
                     if ledger.holdings(holder):
-                        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
+                        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(holder))
                 done = queue.records.item_path(pool.record_store.DONE, mover)
                 done.parent.mkdir(parents=True, exist_ok=True)
                 done.write_text(json.dumps({**item, "status": "done"}))

@@ -159,12 +159,12 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
         record(row, reason, evidence)
         if row.get("action_key") == head:
             assert reason == "reservation_unavailable_withholding"
-            ledger.release(holder)
+            ledger.release(holder, certificate=ledger.certify_release(holder))
 
     def carry(records, row, **kwargs):
         observations.append(("carry", busy))
         if not whole_box_already_held:
-            ledger.release(holder)
+            ledger.release(holder, certificate=ledger.certify_release(holder))
         return carried_lookup(records, row, **kwargs)
 
     def room(row, **kwargs):

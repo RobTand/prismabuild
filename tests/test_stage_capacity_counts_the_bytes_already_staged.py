@@ -153,7 +153,7 @@ def test_a_release_returns_the_supply_to_what_zfs_reports(tmp_path):
     assert ledger.take(MOVER, {KIND: 200})
     _landed(queue, MOVER, 200)
     _cycle(queue, tmp_path, 400 * GIB)
-    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)                      # the egress deleted the bytes
+    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(MOVER))                      # the egress deleted the bytes
     record = _cycle(queue, tmp_path, 600 * GIB)
     assert ledger.mint_supply()[KIND] == 600
     assert ledger.free_supply()[KIND] == 600

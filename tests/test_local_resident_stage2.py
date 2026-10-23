@@ -40,7 +40,7 @@ def test_phase2_local_serving_validates_in_attempt_outcomes(tmp_path):
 def test_lease_pass_skips_absent_sets_with_no_tree_and_no_tokens(tmp_path, monkeypatch):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
-    pool.PoolQueue(store.queue_root).tier('local:test-host').release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
+    pool.PoolQueue(store.queue_root).tier('local:test-host').release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED, certificate=pool.PoolQueue(store.queue_root).tier('local:test-host').certify_release(record['set_id']))
     writes = []
     original = store.write_copy
 

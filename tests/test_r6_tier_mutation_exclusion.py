@@ -132,7 +132,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         # of any lock.  Pre-R6 it takes no guard and lands mid-scan;
         # fixed code blocks it on the new guard outside the apply.
         helper_attempted.set()
-        queue.tier(TIER).release_unspent(HOLDER_H, authority=tier_holdings.Unspent.NEVER_STARTED)
+        queue.tier(TIER).release_unspent(HOLDER_H, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(HOLDER_H))
         helper_done.set()
 
     real_glob = pool.immutable_files.match_optional
@@ -565,7 +565,7 @@ def test_r6_commit_and_abandon_complete_under_contention(
     # HOLDER_X already holds 1 and free holds 0: the second begin must
     # decline rather than invent capacity.
     assert handle_b is None
-    assert ledger.release_unspent(HOLDER_X, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+    assert ledger.release_unspent(HOLDER_X, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(HOLDER_X)) == 1
     handle_c = ledger.begin_take(HOLDER_X, {KIND: 1})
     assert handle_c is not None
     returned: dict = {}
@@ -737,7 +737,7 @@ def test_host_nested_instances_retain_process_exclusion(tmp_path: Path):
             assert handle is not None
             assert other.commit_acquire(HOLDER_H, handle) == 1
             assert other.transfer(HOLDER_H, HOLDER_X) == 1
-            assert other.release(HOLDER_X) == 1
+            assert other.release(HOLDER_X, certificate=other.certify_release(HOLDER_X)) == 1
         assert _process_host_begin(ledger) == "None", (
             "nested completion closed the outer host-owner exclusion")
     handle = _process_host_begin(ledger)
@@ -815,13 +815,13 @@ def test_host_completion_and_mint_mutators_wait_for_the_owner(
             elif operation == "transfer-subset":
                 result["value"] = peer.transfer_tokens(HOLDER_H, CLAIM_KEY, [held_name])
             elif operation == "release":
-                result["value"] = peer.release(HOLDER_H)
+                result["value"] = peer.release(HOLDER_H, certificate=peer.certify_release(HOLDER_H))
             elif operation == "release-count":
-                result["value"] = peer.release_count(HOLDER_H, {"spool_gb": 1})
+                result["value"] = peer.release_count(HOLDER_H, {"spool_gb": 1}, certificate=peer.certify_release(HOLDER_H))
             elif operation == "release-kinds":
-                result["value"] = peer.release_kinds(HOLDER_H, {"spool_gb"})
+                result["value"] = peer.release_kinds(HOLDER_H, {"spool_gb"}, certificate=peer.certify_release(HOLDER_H))
             elif operation == "release-except":
-                result["value"] = peer.release_except(HOLDER_H, {held_name})
+                result["value"] = peer.release_except(HOLDER_H, {held_name}, certificate=peer.certify_release(HOLDER_H))
             elif operation == "grow":
                 result["value"] = peer.ensure_capacity({"cpu": 4, "spool_gb": 3})
             elif operation == "shrink":
@@ -890,7 +890,7 @@ def test_host_release_cannot_land_between_decision_and_private_take(
     def release():
         started.set()
         try:
-            assert queue.ledger(ledger.host).release(HOLDER_H) == 1
+            assert queue.ledger(ledger.host).release(HOLDER_H, certificate=queue.ledger(ledger.host).certify_release(HOLDER_H)) == 1
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -965,5 +965,5 @@ def test_host_mutation_scope_never_reacquires_outer_admission(
         with ledger._mutation_locked(blocking=False) as acquired:
             assert acquired
             assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
-            assert ledger.release(HOLDER_H) == 1
+            assert ledger.release(HOLDER_H, certificate=ledger.certify_release(HOLDER_H)) == 1
 

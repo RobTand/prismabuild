@@ -51,6 +51,6 @@ def test_ambiguous_widowed_lease_keeps_all_ownership_evidence(tmp_path, capsys):
     assert "ambiguous claim holder" in capsys.readouterr().err
 
     # Once the conflicting evidence is resolved, recovery can complete.
-    assert foreign.release(KEY) == 1
+    assert foreign.release(KEY, certificate=foreign.certify_release(KEY)) == 1
     assert queue.sweep_widowed_leases(timeout_s=60) == [KEY]
     assert local.held() == {}

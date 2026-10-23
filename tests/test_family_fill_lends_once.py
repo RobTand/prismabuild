@@ -216,7 +216,7 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     assert other["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 
     # The lender keeps only half of what the two live borrows drew.
-    assert ledger.release_unspent(fam.MOVER, authority=tier_holdings.Unspent.NEVER_STARTED) == held
+    assert ledger.release_unspent(fam.MOVER, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(fam.MOVER)) == held
     assert ledger.take(fam.MOVER, {fam.FILL: 50})
     assert ledger.holdings(fam.MOVER).get(fam.FILL) == 50
 

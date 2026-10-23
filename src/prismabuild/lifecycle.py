@@ -491,6 +491,9 @@ def _worker_finish(
     # Keep the live record itself so the terminal retains that annotation;
     # only a caller-owned fallback snapshot needs a private copy.
     effective_record = record if record is not None else dict(claim_snapshot or {})
+    if record is None and claim_snapshot is None:
+        # A widowed lease is durable custody, never a key-only "no checkout" stub.
+        effective_record = record_store.read_document(queue.records.lease_path(action_key)) or effective_record
     holder = queue.resolve_claim_holder(action_key, effective_record)
     if holder is not None:
         effective_record["claimed_host"] = holder
@@ -558,7 +561,7 @@ def _worker_finish(
         # ambiguous.  The snapshot carries ``published_unix``, which is
         # what makes the question askable here at all.
         snapshot = dict(effective_record)
-        queue._release_reservation(action_key, host=holder)
+        queue._release_reservation(action_key, host=holder, claim_snapshot=effective_record)
         queue.records.lease_path(action_key).unlink(missing_ok=True)
         try:
             covered = queue.terminal_outcome_covers(
@@ -794,7 +797,7 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                   file=sys.stderr)
             return (queue.records.attempt_path(record, plan.attempt)
                     if transition is Transition.FINISH else None)
-    if record.get("checkout_snapshot") is None and "checkout_registrations" not in record:
+    if record.get("checkout_snapshot") is None and not record.get("checkout_registrations"):
         # Preserve the existing crash boundary for claims without checkouts.
         # Checkout-bearing claims keep their live authority through return.
         queue.records.lease_path(key).unlink(missing_ok=True)
@@ -810,9 +813,9 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
     holder = (plan.holder if isinstance(plan.holder, str) else socket.gethostname()
               ) if transition in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED} or isinstance(plan, CancellationRelease) else plan.holder
     if transition in {Transition.FINISH, Transition.EXPIRE}:
-        queue._release_reservation(key, host=holder, keep_tier=keep_tier, cleanup_owner=tombstone)
+        queue._release_reservation(key, host=holder, keep_tier=keep_tier, cleanup_owner=tombstone, claim_snapshot=plan.original)
     else:
-        queue._release_reservation(key, host=holder, cleanup_owner=tombstone)
+        queue._release_reservation(key, host=holder, cleanup_owner=tombstone, claim_snapshot=plan.original)
     if record.get("checkout_snapshot") is not None or "checkout_registrations" in record:
         with queue.action_transition_lock(key):
             lease = record_store.read_document(queue.records.lease_path(key))
@@ -966,7 +969,7 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
             # sweep) walks the tier's held keys, so a key released
             # while its files remain is capacity no mechanism can
             # ever take back.
-            keep_tier=queue.pin_holds_tier_tokens(outcome, key))
+            keep_tier=queue.pin_holds_tier_tokens(outcome, key), claim_snapshot=record)
         path.unlink(missing_ok=True)
         queue.records.lease_path(key).unlink(missing_ok=True)
         return None
@@ -1313,7 +1316,7 @@ def _sweep_finish_tombstones(
                         # the files on the stage with nothing holding them.
                         queue._release_reservation(
                             key, host=holders[0],
-                            keep_tier=queue._filed_pin_holds(key), cleanup_owner=tombstone)
+                            keep_tier=queue._filed_pin_holds(key), cleanup_owner=tombstone, claim_snapshot=record)
                         if queue.claim_reservation_hosts(key):
                             continue  # a partial return still needs this owner
                     lease = record_store.read_document(queue.records.lease_path(key))
@@ -1687,7 +1690,7 @@ def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
             # a filed ending that pins must leave them alone.
             _legal_destination(Transition.RETIRE_LEASE, "existing")
             queue._release_reservation(key, host=host,
-                                     keep_tier=queue._filed_pin_holds(key))
+                                     keep_tier=queue._filed_pin_holds(key), claim_snapshot=record)
             lease.unlink(missing_ok=True)
             swept.append(key)
     return swept
@@ -1855,11 +1858,11 @@ def _reclaim_terminal(queue, action_key: str, *,
         # those too.
         return {"action_key": key, "released": queue._release_reservation(
                     key, host=None, reclaim_tier=True,
-                    cleanup_owner=queue.records.item_path(state, key)),
+                    cleanup_owner=queue.records.item_path(state, key), claim_snapshot=terminal),
                 "hosts": []}
 
     released = queue._release_reservation(
-        key, host=hosts[0], cleanup_owner=queue.records.item_path(state, key))
+        key, host=hosts[0], cleanup_owner=queue.records.item_path(state, key), claim_snapshot=terminal)
     return {"action_key": key, "released": released, "hosts": hosts}
 
 

@@ -384,7 +384,7 @@ def test_a_holder_freezes_the_live_offer_until_it_is_released(
     _scratch_holder(queue, second, 100)
     assert queue.claim(owner="w2", capacity=offer) is None
 
-    queue.ledger().release(first)
+    queue.ledger().release(first, certificate=queue.ledger().certify_release(first))
     assert supervise.declared_shape("boxa", 0, shape) == shape
     assert len(stat.calls) == calls + 1
     offer = _worker_offer(shape[1], queue.ledger())
@@ -673,7 +673,7 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
     assert "measurement waits" not in capsys.readouterr().out
 
     # The holder finishes and removes its scratch; the next tick measures.
-    queue.ledger().release(first)
+    queue.ledger().release(first, certificate=queue.ledger().certify_release(first))
     stat.f_bavail = 250 * GIB // 4096
     assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "200"]
     assert len(stat.calls) == calls + 1

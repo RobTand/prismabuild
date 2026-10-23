@@ -265,7 +265,7 @@ def test_an_older_terminal_generation_does_not_block_a_fresh_submission(
     assert claimed["published_unix"] == fresh["published_unix"]
 
 
-def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
+def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue, monkeypatch) -> None:
     """The claimant died between the rename and its first heartbeat.
 
     "No lease" alone is not enough to call it dead -- a claim made microseconds
@@ -280,8 +280,8 @@ def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
     queue.records.lease_path(KEY_A).unlink()
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     record = json.loads(path.read_bytes())
-    record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
-    path.write_text(json.dumps(record))
+    now = pool._now()
+    monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 60.0)
     assert queue.reap_stale() == [KEY_A]
 
 
@@ -1130,7 +1130,7 @@ def test_schema_strings_keep_the_published_namespace() -> None:
         assert schema.startswith("prismaquant.prismabuild.")
 
 
-def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
+def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path, monkeypatch):
     """The rename/write_lease window must not look like a dead claimant.
 
     claim() renames the item and only then writes the lease.  A reaper landing
@@ -1163,8 +1163,8 @@ def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
     # A claim old enough to be genuinely dead is still reaped.
     stale = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(stale.read_text())
-    record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
-    stale.write_text(json.dumps(record))
+    now = pool._now()
+    monkeypatch.setattr(pool, "_now", lambda: now + pool.HEARTBEAT_S + 60.0)
     assert queue.reap_stale() == [key]
     assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is not None
 
@@ -1451,7 +1451,7 @@ def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
     # Retiring below what is already held cannot delete a held token.
     ledger.retire_free_capacity({"mem_gb": 1})
     assert ledger.capacity()["mem_gb"] >= 6
-    assert ledger.release("running-action") == 7
+    assert ledger.release("running-action", certificate=ledger.certify_release("running-action")) == 7
 
 
 def _vanishing(monkeypatch, victim):
@@ -1485,7 +1485,7 @@ def test_release_survives_the_holder_vanishing_after_its_is_dir_check(tmp_path, 
     ledger.ensure_capacity({"mem_gb": 4})
     assert ledger.acquire("act", {"mem_gb": 2})
     _vanishing(monkeypatch, ledger.held_dir / "act")
-    assert ledger.release("act") == 0        # not FileNotFoundError
+    assert ledger.release("act", certificate=ledger.certify_release("act")) == 0        # not FileNotFoundError
 
 
 def test_every_ledger_scan_survives_the_held_tree_vanishing(tmp_path, monkeypatch):

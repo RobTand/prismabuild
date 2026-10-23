@@ -62,7 +62,7 @@ def test_turnover_during_a_capacity_scan_mints_no_duplicate(
         if path == ledger.held_dir:
             # The free listing is already taken; the held token becomes free
             # while held/ is being scanned, so neither listing shows it.
-            ledger.release(KEY_A)
+            ledger.release(KEY_A, certificate=ledger.certify_release(KEY_A))
         return original_scan(path)
 
     def open_token(path, flags, *args, **kwargs):
@@ -151,6 +151,7 @@ def test_a_missed_adoption_leaves_no_permanent_duplicate(
     holder = ledger.held_dir / KEY_A
     holder.mkdir(parents=True, exist_ok=True)
     ledger.free_dir.mkdir(parents=True, exist_ok=True)
+    ledger._register_reservation(KEY_A, "legacy-component-fixture")
     (holder / "cpu-0000").write_bytes(b"")
     assert not ledger.minted_dir.exists()
     assert ledger.capacity() == {"cpu": 1}
@@ -175,7 +176,7 @@ def test_a_missed_adoption_leaves_no_permanent_duplicate(
 
     # The holder finishes. Nothing removed a token it was using, and the
     # duplicate, if there was one, is gone.
-    assert ledger.release(KEY_A) == 1
+    assert ledger.release(KEY_A, certificate=ledger.certify_release(KEY_A)) == 1
     assert ledger.capacity() == {"cpu": 1}
     free, held = _token_names(ledger)
     assert free == ["cpu-0000"] and held == []

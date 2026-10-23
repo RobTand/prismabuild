@@ -155,8 +155,8 @@ def test_unknown_acquisition_and_double_release_preserve_capacity(tmp_path: Path
     assert ledger.abandon_acquire("claiming.nobody") == 0
     assert ledger.available() == dict(CAPACITY)
     assert ledger.acquire("f" * 64, {"cpu": 1, "mem_gb": 1}) is True
-    assert ledger.release("f" * 64) == 2
-    assert ledger.release("f" * 64) == 0
+    assert ledger.release("f" * 64, certificate=ledger.certify_release("f" * 64)) == 2
+    assert ledger.release("f" * 64, certificate=ledger.certify_release("f" * 64)) == 0
     assert ledger.available() == dict(CAPACITY)
 
 

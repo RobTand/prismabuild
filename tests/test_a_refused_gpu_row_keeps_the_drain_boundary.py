@@ -76,7 +76,7 @@ def _release_when(monkeypatch, queue: pool.PoolQueue, key: str, reason_prefix: s
         if item.get("action_key") == key:
             seen.append(reason)
             if reason.startswith(reason_prefix) and holder in queue.ledger().held_keys():
-                queue.ledger().release(holder)
+                queue.ledger().release(holder, certificate=queue.ledger().certify_release(holder))
 
     monkeypatch.setattr(queue, "record_denial", record)
     return seen

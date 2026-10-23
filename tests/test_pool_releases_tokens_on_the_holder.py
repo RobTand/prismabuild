@@ -229,7 +229,7 @@ def test_with_no_evidence_at_all_no_holder_is_invented(
     )
     _lose_the_record_rewrite(queue)
     queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
-    assert queue.ledger(HELD_BY).release(KEY) == 1
+    assert queue.ledger(HELD_BY).release(KEY, certificate=queue.ledger(HELD_BY).certify_release(KEY)) == 1
 
     _reap_here(queue)
 

@@ -1203,7 +1203,7 @@ def drop_prior_ram_epochs(
                                    "tier_id": tier_id, "holder": key,
                                    "reason": str(exc)})
                     continue
-                if claimed:
+                if claimed or queue.records.claim_blocked(key):
                     continue
                 receipt = queue.move_record(key)
                 epoch = (str(receipt.get("epoch") or "")
@@ -1217,7 +1217,7 @@ def drop_prior_ram_epochs(
                 # one -- an order nothing else in the tree takes, and one
                 # the "mint is a leaf" analysis does not cover.
                 try:
-                    released = queue.tier(tier_id).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+                    released = queue.tier(tier_id).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(tier_id).certify_release(key))
                 except (OSError, pool.PoolContractError):
                     released = 0
             # Guard dropped.  A holder reaches one tier, so the rest is
@@ -1229,7 +1229,7 @@ def drop_prior_ram_epochs(
                 if other_tier == tier_id:
                     continue
                 try:
-                    released += queue.tier(other_tier).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+                    released += queue.tier(other_tier).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(other_tier).certify_release(key))
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
             events.append({"event": "ram-ghost-tokens-released",

@@ -129,6 +129,7 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
     assert live is not None
     live["resource_scope"] = control
     pool.immutable_files.write_json_atomic(path, live)
+    q.write_lease(owner, owner=live["claimed_by"], claim_snapshot=live)
     return control
 
 
@@ -1009,7 +1010,7 @@ def test_an_unfunded_successor_keeps_its_intent_and_finishes_later(
     assert [e["event"] for e in events] == [
         "output-materialization-intent-pending"], events
 
-    assert world.ledger.release_unspent(squatter, authority=tier_holdings.Unspent.NEVER_STARTED) >= 1
+    assert world.ledger.release_unspent(squatter, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=world.ledger.certify_release(squatter)) >= 1
     assert po.refill_window(world.q, world.inst, world.template,
                             tier=TIER).get("ok") is True
     finished = world.ensure("b1")

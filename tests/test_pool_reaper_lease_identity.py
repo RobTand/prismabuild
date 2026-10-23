@@ -31,9 +31,9 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
     )
     # Reconstruct a legacy handoff, then inject only the old claim observation.
     # The durable claim, lease and reservation on disk belong to the successor.
+    queue.ledger().release(key, certificate=queue.ledger().certify_release(key))
     claim_path.unlink()
     lease_path.unlink()
-    queue.ledger().release(key)
     publish(key)
     newer = queue.claim(owner='original' if reused_owner else 'successor', capacity=resources)
     assert not claim_identity.same_claim(first, newer)

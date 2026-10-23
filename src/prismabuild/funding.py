@@ -3788,7 +3788,7 @@ class FundingLedger:
         if outcome is not True:
             return events
         try:
-            freed = int(self.queue.tier(scan_tier).release_unspent_best_effort(mover_name, authority=tier_holdings.Unspent.NEVER_STARTED))
+            freed = int(self.queue.tier(scan_tier).release_unspent_best_effort(mover_name, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=self.queue.tier(scan_tier).certify_release(mover_name)))
             # The ordinary release can swallow an I/O error or return after
             # only some token moves. Its count is not proof of an empty holder.
             if self.queue.tier(scan_tier).holder_state(mover_name):
@@ -4201,7 +4201,7 @@ class FundingLedger:
                     continue
                 count = len(set(tokens) & held)
                 try:
-                    ledger.release_unspent(mover, authority=tier_holdings.Unspent.UNUSED_GRANT)
+                    ledger.release_unspent(mover, authority=tier_holdings.Unspent.UNUSED_GRANT, certificate=ledger.certify_release(mover))
                 except (OSError, PoolContractError, ValueError):
                     events.append("prelaunch-unknown-evidence")
                     continue

@@ -87,7 +87,7 @@ def test_gpu_eviction_crosses_bands_and_waiter_follows_retry(guest_fleet, retry_
     taken = fleet.claim()
     assert taken["action_key"] == gpu
     gpu_claim = taken
-    fleet.queue.ledger("cpuhost").release("f" * 64)
+    fleet.queue.ledger("cpuhost").release("f" * 64, certificate=fleet.queue.ledger("cpuhost").certify_release("f" * 64))
     taken = fleet.claim("cpuhost")
     assert taken["action_key"] == key and not taken.get("cpu_guest")
     fleet.queue.finish(key, status=retry_status,
@@ -169,7 +169,7 @@ def test_two_evictions_end_guest_eligibility_even_with_larger_budget(guest_fleet
     assert denial["reason"] == "guest_retry_budget_exhausted"
     path = fleet.queue.root / pool.WORKERS / "cpuhost.json"
     if cpu_host_state == "live":
-        fleet.queue.ledger("cpuhost").release("f" * 64)
+        fleet.queue.ledger("cpuhost").release("f" * 64, certificate=fleet.queue.ledger("cpuhost").certify_release("f" * 64))
         retry = fleet.claim("cpuhost")
     else:
         if cpu_host_state == "absent":

@@ -8,7 +8,7 @@ from test_gpu_evicts_cpu_guests import guest_fleet
 @pytest.mark.parametrize('host', ['cpuhost', 'sparky'])
 def test_idle_sample_must_remain_fresh_after_restartability_reads(guest_fleet, monkeypatch, host):
     fleet = guest_fleet
-    fleet.queue.ledger('cpuhost').release('f' * 64)
+    fleet.queue.ledger('cpuhost').release('f' * 64, certificate=fleet.queue.ledger('cpuhost').certify_release('f' * 64))
     offer = pool.record_store.read_document(fleet.queue.root / pool.WORKERS / 'sparky.json')
     stamp = offer['observed_detail']['gpu_sampled_unix']
     clock = [stamp]

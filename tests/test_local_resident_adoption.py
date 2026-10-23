@@ -78,7 +78,7 @@ def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect):
     store, record, spec = world(tmp_path)
     set_id = record["set_id"]
     ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
-    ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED)  # This fixture has neither local bytes nor an existing hold.
+    ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(set_id))  # This fixture has neither local bytes nor an existing hold.
     source = tmp_path / "manual"
     source.mkdir()
     payload = b"corrupt" if defect == "wrong_bytes" else b"weights"

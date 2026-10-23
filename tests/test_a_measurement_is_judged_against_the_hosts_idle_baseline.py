@@ -172,7 +172,7 @@ def test_a_sample_across_a_holders_tail_is_not_idle(tmp_path, monkeypatch) -> No
     assert decision["baseline"]["exceeds"] is True
     assert decide(0.4, 1e-3) is None
     assert controller.last_decision["reason"] == "measurement_holder"
-    ledger.release("0" * 64)
+    ledger.release("0" * 64, certificate=ledger.certify_release("0" * 64))
     assert decide(0.4, 60.) is None
     decision = controller.last_decision
     assert decision["reason"] == "measurement_host_not_idle"

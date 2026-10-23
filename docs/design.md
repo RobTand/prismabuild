@@ -20941,17 +20941,33 @@ that creates a scope cannot invalidate an earlier execute's proven unlink.
 The proof must match its registration's durable completion identity; a caller
 cannot substitute another execute's proof or a foreign nonce.
 
+`materialize.certify_checkout_cleanup` is the sole release certificate mint.
+Host and tier return primitives require its process-local `ReleaseCertificate`,
+bound to the durable reservation nonce and exact claim's registration envelope.
+The primitive rechecks that envelope and retains the transition exclusion through
+the token move. A stale, foreign or missing certificate returns no capacity.
+A reservation without a checkout also has a durable empty registration list;
+its certificate comes through the same mint. Private acquisition rollback names
+its own handle nonce. A predecessor's lease blocks successor admission, and
+rollback can remove only its own lease. RAM ghost-token cleanup preserves lease
+and finishing custody and uses certified primitives.
+
+Each creation intent names its path and parent device/inode before mkdir.
+An unbound intent certifies only when an lstat relative to that held parent
+returns ENOENT. An existing unbound path retains custody for manual diagnosis;
+recovery never assumes that an unregistered inode belongs to the attempt.
+
 `materialize.certify_checkout_cleanup` is the sole checkout certification
 function. Cleanup, deferral, recovery and the reservation-return boundary use
 it. It checks every durable registration and accepts a result only for that
 execution UUID, registered path/device/inode and exact attempt. Caller details
-cannot replace the list. Missing or contradictory authority, an unbound creation
-intent, or a missing tree without persisted unlink proof retains custody.
+cannot replace the list. Missing or contradictory authority, an existing unbound creation
+path, or a missing registered tree without persisted unlink proof retains custody.
 A checkout's lease remains until after the guarded reservation return, and
 only that exact claim's lease is removed. Final return certification reads
 custody without replacing a finishing tombstone or its checked identity.
 Claims without checkouts keep their existing crash-recovery boundary.
-Acquisition rollback is earlier than checkout creation and has no checkout custody.
+Acquisition rollback names the exact admission nonce and cannot return another claim's custody.
 
 Removal keeps the original directory descriptor open through final unlink.
 It checks the name against that identity before rmdir and then requires the

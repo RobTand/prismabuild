@@ -129,7 +129,7 @@ def test_memory_and_gpu_are_never_discounted_by_cpu_headroom(rig):
     # Fill the remaining memory and GPU with a real token reservation.
     assert queue.ledger().acquire('b' * 64, {'mem_gb': 3, 'gpu': 1})
     assert claim() is None
-    queue.ledger().release('b' * 64)
+    queue.ledger().release('b' * 64, certificate=queue.ledger().certify_release('b' * 64))
     second = claim()
     assert second
     assert queue.ledger().held()['mem_gb'] == 2

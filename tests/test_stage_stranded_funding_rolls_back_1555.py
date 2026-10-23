@@ -417,7 +417,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
                 if key == mover:
                     observed_faults.append("token-release")
                     raise OSError("injected token release failure")
-                return release(self, key)
+                return release(self, key, **kwargs)
 
             patch.setattr(pool.ResourceLedger, "release", fail_release)
         else:
@@ -476,7 +476,7 @@ def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeyp
     def fail_release(self, key):
         if key == mover:
             raise OSError("injected legacy token release failure")
-        return release(self, key)
+        return release(self, key, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(pool.ResourceLedger, "release", fail_release)
@@ -564,10 +564,10 @@ def test_partial_token_release_retries_without_settling_marker(tmp_path, monkeyp
     assert ledger.holdings(mover).get(KIND, 0) == 2
     release = pool.ResourceLedger.release
 
-    def short_release(self, key):
+    def short_release(self, key, **kwargs):
         if key == mover:
-            return sum(self.release_count(key, {KIND: 1}).values())
-        return release(self, key)
+            return sum(self.release_count(key, {KIND: 1}, **kwargs).values())
+        return release(self, key, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(pool.ResourceLedger, "release", short_release)

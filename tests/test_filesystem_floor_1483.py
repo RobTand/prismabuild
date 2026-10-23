@@ -254,7 +254,7 @@ def test_release_needs_no_floor_and_refresh_returns_the_headroom(tmp_path, enfor
     assert ledger.acquire("a" * 64, {"spool_gb": 2})
     _leave(queue, binding["key"], 0)
     assert not ledger.acquire("b" * 64, {"spool_gb": 1})
-    assert ledger.release("a" * 64) == 2
+    assert ledger.release("a" * 64, certificate=ledger.certify_release("a" * 64)) == 2
     ff.refresh_binding(queue.root, binding)
     assert ledger.acquire("b" * 64, {"spool_gb": 1})
 
@@ -384,7 +384,7 @@ def test_zfs_pool_is_keyed_by_guid_sampled_usable_and_admits(enforce):
         _leave(queue, binding["key"], 0)
         assert not ledger.acquire("b" * 64, {"spool_gb": 1})
         assert ledger.last_token_shortage["reason"] == "below_floor"
-        assert ledger.release("a" * 64) == 1
+        assert ledger.release("a" * 64, certificate=ledger.certify_release("a" * 64)) == 1
         ff.refresh_binding(queue.root, binding)
         assert ledger.acquire("b" * 64, {"spool_gb": 1})
     finally:
@@ -453,7 +453,7 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
     owner = str(world.inst["owner_action_key"])
     # Empty the owner's window, as a retire returning its tokens would, so
     # the refill has room to take.
-    world.ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED)
+    world.ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=world.ledger.certify_release(owner))
     refill = po.refill_window(world.q, world.inst, world.template, tier=restage.TIER)
     assert refill.get("acquired", 0) == 0, refill
     assert world.ledger.holdings(owner) == {}
@@ -638,7 +638,7 @@ def _contend(queue_root: str, tier: str, host: str, rounds: int, errors, wins) -
             if takes[which](key, {kinds[which]: 1}):
                 with wins.get_lock():
                     wins.value += 1
-                returns[which](key)
+                returns[which](key, certificate=(host_ledger if which == 0 else tier_owner).certify_release(key))
             ff.refresh_local(queue_root, force=True)
     except Exception as exc:                                    # noqa: BLE001
         errors.put(repr(exc))

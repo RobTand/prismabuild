@@ -89,6 +89,8 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         pool.immutable_files.write_json_atomic(path, record)
     intent_path = q.records.item_path(pool.record_store.INTENT, KEY)
     if forget_claimed_host:
+        ledger = q.ledger(HELD_BY)
+        ledger.unbind_unstarted_claim(KEY, certificate=ledger.certify_release(KEY))
         # The shape of a claim lost between the rename and the record rewrite:
         # the claiming box never got to name itself in the record.
         record = json.loads(path.read_text())
@@ -102,7 +104,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
         # rename's own effect and name the box exactly, and since #272 the
         # recovery reads them before it reads the marker.  A claim really has
         # to have left nothing behind for the headline below to be reached.
-        q.ledger(HELD_BY).release(KEY)
+        q.ledger(HELD_BY).release(KEY, certificate=q.ledger(HELD_BY).certify_release(KEY))
 
     # Age the claim by moving the reaper's clock, not the records: the grace
     # for a lease that has not arrived yet is measured against ``claimed_unix``

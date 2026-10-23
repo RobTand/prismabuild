@@ -68,7 +68,7 @@ def test_a_busy_row_keeps_the_drain_boundary_when_its_episode_expired(tmp_path, 
 
     # The drain outlives the carry ceiling, then the holder finishes.
     _age_the_withhold_episode(queue, KEY_A, pool.WITHHOLD_CEILING_S + 1.0)
-    ledger.release(KEY_H)
+    ledger.release(KEY_H, certificate=ledger.certify_release(KEY_H))
 
     with held_transition(queue, KEY_A):
         # Another loop is deciding the head row at the boundary: this pass must
@@ -108,7 +108,7 @@ def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch
 
     def release_at_denial_read():
         records = history()
-        ledger.release(KEY_H)
+        ledger.release(KEY_H, certificate=ledger.certify_release(KEY_H))
         return records
 
     monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)
@@ -151,7 +151,7 @@ def test_a_malformed_busy_row_keeps_no_room_and_ends_no_pass(tmp_path, monkeypat
 
     def release_at_denial_read():
         records = history()
-        ledger.release(KEY_H)
+        ledger.release(KEY_H, certificate=ledger.certify_release(KEY_H))
         return records
 
     monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)

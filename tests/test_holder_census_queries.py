@@ -54,7 +54,7 @@ def test_private_and_mirror_tokens_remain_real_through_commit_and_release(tmp_pa
     assert ledger.commit_acquire(KEY, handle) == 3
     assert ledger.held_keys() == [KEY, 'ram-host:fill']
     assert ledger.holder_tokens(KEY) == {'cpu': 1, 'mem_gb': 2}
-    assert ledger.release(KEY) == 3
+    assert ledger.release(KEY, certificate=ledger.certify_release(KEY)) == 3
     assert queue.tier('ram:' + str(ledger.host))._release_host('fill') == 3
     assert census.token_totals() == ledger.held() == {}
     assert ledger.available() == CAPACITY
@@ -70,7 +70,7 @@ def test_legacy_cpu_allocation_survives_absent_or_empty_metadata(tmp_path, monke
         marker.write_bytes(b'' if damage == 'empty_bytes' else b'{}')
     assert ledger.cpu_allocation(KEY, TIERS) == {'preferred': [8], 'fallback': []}
     assert ledger.held() == {'cpu': 1}
-    assert ledger.release(KEY) == 1
+    assert ledger.release(KEY, certificate=ledger.certify_release(KEY)) == 1
     assert ledger.available() == CAPACITY
 
 
@@ -94,7 +94,7 @@ def test_cpu_allocation_errors_stay_strict_but_supplied_empty_metadata_skips_the
         ledger.cpu_allocation(KEY, TIERS)
     assert ledger.cpu_allocation(KEY, TIERS, metadata={}) == {'preferred': [8], 'fallback': []}
     assert ledger.held() == {'cpu': 1}
-    assert ledger.release(KEY) == 1
+    assert ledger.release(KEY, certificate=ledger.certify_release(KEY)) == 1
     assert ledger.available() == CAPACITY
 
 
@@ -160,5 +160,5 @@ def test_gpu_query_keeps_unreadable_metadata_conservative_without_losing_other_t
     marker.write_bytes(b'{')
     assert ledger.holds_gpu(KEY) is False
     assert ledger.held() == {'cpu': 1}
-    assert ledger.release(KEY) == 1
+    assert ledger.release(KEY, certificate=ledger.certify_release(KEY)) == 1
     assert ledger.available() == CAPACITY

@@ -109,9 +109,9 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
     # A second claim of the same key without a reaper in between: the claim
     # was concluded by an operator's reset and re-claimed, so no attempt was
     # archived for attempt 1.
+    queue.ledger().release(KEY_A, certificate=queue.ledger().certify_release(KEY_A))
     queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()
     queue.records.lease_path(KEY_A).unlink()
-    queue.ledger().release(KEY_A)
     ActionRows(queue).publish(
         KEY_A,
         cas_root=queue.root / 'cas',

@@ -152,7 +152,7 @@ def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
     ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
     # Remove the publication hold for this absent, byte-less fixture. A
     # refused new attempt must not create a fresh occupancy reservation.
-    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(record['set_id']))
     with pytest.raises(ValueError, match="resident lease expired"):
         local_resident.copy(store, record["set_id"], "test-host", spec)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
@@ -165,7 +165,7 @@ def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
     ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
-    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(record['set_id']))
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")

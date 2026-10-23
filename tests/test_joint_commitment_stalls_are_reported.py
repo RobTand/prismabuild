@@ -183,7 +183,7 @@ def test_an_over_committed_tier_is_reported_every_cycle_while_it_lasts(
     assert commitment["over_committed_gib"] == 10 + READER_FOOTPRINT - 20
     assert commitment["waiting"] == []
 
-    queue.tier(TIER).release_unspent(STATIC, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(STATIC, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(STATIC))
     events = tier_loop.residency_window(queue, tiers=_tiers(stage))
     assert _over_committed(events) == []
     assert _record(queue)["over_committed_gib"] == 0

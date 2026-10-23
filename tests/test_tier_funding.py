@@ -301,7 +301,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     got = queue.claim(tags=["dl380g10"], owner="w-small")
     assert got is not None and got["action_key"] == small
     queue.finish(small, status="executed")
-    assert int(ledger.release_unspent(grant_dum, authority=tier_holdings.Unspent.NEVER_STARTED)) == 2
+    assert int(ledger.release_unspent(grant_dum, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(grant_dum))) == 2
 
     # The funded mover then claims its fence with no new money: the same
     # scan denies the 4 GiB stealer and admits the mover behind it.
@@ -356,7 +356,7 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     stage_ledger = queue.tier(TIER)
     assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
 
-    assert ram_ledger.release_unspent('squatter', authority=tier_holdings.Unspent.NEVER_STARTED) == 4
+    assert ram_ledger.release_unspent('squatter', authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ram_ledger.certify_release('squatter')) == 4
     got = queue.claim(tags=["dl380g10"], owner="w-retry-2")
     assert got is not None and got["action_key"] == mover
     # Same generation, spent exactly once: still exactly 2, not 4.
@@ -732,10 +732,10 @@ def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
     # Fully held under the same publication: still no cover.
     assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # One bound token gone: nothing.
-    assert ledger.release_unspent(mover, keep=bound[1:], authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+    assert ledger.release_unspent(mover, keep=bound[1:], authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(mover)) == 1
     assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # All gone: still nothing.
-    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(mover)) == 1
     assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     queue.finish(mover, status="executed")
 

@@ -277,7 +277,7 @@ class ResidentSets:
                 # Once the immutable body exists, recovery owns its reservations.
                 if not path.exists():
                     for ledger in acquired:
-                        ledger.release(set_id)
+                        ledger.release(set_id, certificate=ledger.certify_release(set_id))
                 raise
         return record
 

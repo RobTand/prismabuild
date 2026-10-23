@@ -342,7 +342,7 @@ def test_a_resolved_price_with_no_free_fill_is_an_admission_refusal(tmp_path):
     assert not (spool._group("b1") / "receipt.json").exists()
     assert spool.submit_group("b1", entries)["export_key"] == handle["export_key"]
     assert (spool._group("b1") / "export.json").read_bytes() == record
-    ledger.release_unspent(stranger, authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(stranger, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(stranger))
     execute_export(spool, handle, destination, b"hello", rate=7)
 
 

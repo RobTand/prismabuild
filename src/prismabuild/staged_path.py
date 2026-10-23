@@ -2329,7 +2329,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             if other_tier == tier_id:
                 continue
             try:
-                released += queue.tier(other_tier).egress_best_effort(mover_action_key)
+                released += queue.tier(other_tier).egress_best_effort(mover_action_key, certificate=queue.tier(other_tier).certify_release(mover_action_key))
             except (OSError, pool.PoolContractError):
                 continue
     if not errors and not deferred and not declined:

@@ -147,7 +147,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
     assert _sample(text, STAGED) == "1"
 
     ledger = queue.tier(STAGE_TIER)
-    text = scrapes.after('tokens released', lambda: ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED))
+    text = scrapes.after('tokens released', lambda: ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(MOVER)))
     assert _sample(text, STAGED) == "0"
     text = scrapes.after('tokens taken again', lambda: ledger.take(MOVER, {'stage_gib': 1}))
     assert _sample(text, STAGED) == "1"

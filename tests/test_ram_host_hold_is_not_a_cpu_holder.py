@@ -121,7 +121,7 @@ def test_an_unknown_memory_reservation_blocks_until_released(tmp_path, monkeypat
     assert ledger.held() == {'mem_gb': 1}
     assert ledger.available()['cpu'] == CAPACITY['cpu']
 
-    assert (ledger.release(key) if committed else ledger.abandon_acquire(handle)) == 1
+    assert (ledger.release(key, certificate=ledger.certify_release(key)) if committed else ledger.abandon_acquire(handle)) == 1
     with controller.locked():
         assert controller.decision(item, {'cpu': 1, 'mem_gb': 1}) is not None
     assert not ledger.held()

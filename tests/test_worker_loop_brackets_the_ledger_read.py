@@ -89,7 +89,7 @@ def test_a_sibling_release_inside_the_reading_is_not_counted_twice(tmp_path):
     # tokens back -- while this loop is between its two readings.  Everything
     # after this line reads a box the sibling has already left.
     def meminfo():
-        queue.ledger(host).release(SIBLING)
+        queue.ledger(host).release(SIBLING, certificate=queue.ledger(host).certify_release(SIBLING))
         return FREE_AFTER_RELEASE_GB
 
     worker = _module()

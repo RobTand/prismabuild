@@ -583,7 +583,7 @@ def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     # Cleanup retires the row's holdings through the ordinary ledger path.
     assert q.claim(owner="w-rel") is None
     assert q.records.item_path(pool.record_store.READY, mover).exists()
-    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(mover)) == 1
 
 
 def test_fault_intent_transfer_claim_recover_via_finish_reaper(
@@ -855,8 +855,8 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
             q.records.item(pool.record_store.READY, mover),
         ) or {}, KIND, 1).credit == (0, None)
     # Cleanup: release mover + owner holdings via normal paths preserves sum.
-    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
-    assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED) == held_before
+    assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(mover)) == 1
+    assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(owner)) == held_before
     assert ledger.free_supply().get(KIND, 0) == cap
 
 
@@ -1074,7 +1074,7 @@ def test_unreadable_census_finish_retains(tmp_path: Path, broker) -> None:
     # frees the unspent grant (no strand); sum preserved throughout.
     intents, unknown = q.funding.output_census(owner)
     assert unknown is False and intents == []
-    assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED) == 2
+    assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(owner)) == 2
     assert ledger.free_supply().get(KIND, 0) == cap
 
 
@@ -1854,9 +1854,9 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     selective: list[str] = []
     concluding = pool.PoolQueue._release_reservation
 
-    def _watch(self, action_key, *, host=None, keep_tier=False):
+    def _watch(self, action_key, *, host=None, keep_tier=False, **kwargs):
         selective.append(str(action_key))
-        return concluding(self, action_key, host=host, keep_tier=keep_tier)
+        return concluding(self, action_key, host=host, keep_tier=keep_tier, **kwargs)
 
     monkeypatch.setattr(pool.PoolQueue, "_release_reservation", _watch)
 

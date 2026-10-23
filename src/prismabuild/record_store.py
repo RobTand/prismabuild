@@ -2198,7 +2198,10 @@ class RecordStore:
             if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))))
 
     def claim_blocked(self, key: str) -> bool:
-        return _claimed_name_blocks(os.listdir(self.dir(CLAIMED)), key)
+        names = os.listdir(self.dir(CLAIMED))
+        # A widowed lease is the sole durable checkout custody after claim loss.
+        # Even a completed lease waits for its owner to certify and retire it.
+        return _claimed_name_blocks(names, key) or f"{key}.lease" in names
 
     def require_terminal_directory(self, state: str) -> None:
         directory = self.dir(state)

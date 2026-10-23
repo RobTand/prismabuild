@@ -117,9 +117,9 @@ def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(
         old_scope, old_process, old_started = _owned_scope(queue, item, stack)
         # Reproduce the retained legacy/operator handoff covered by the original
         # late-scope tests: claim ownership moved, but the old exact scope lives.
+        queue.ledger().release(KEY, certificate=queue.ledger().certify_release(KEY))
         queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
         queue.records.lease_path(KEY).unlink()
-        queue.ledger().release(KEY)
         _publication(queue, tmp_path)
         successor = queue.claim(owner="successor", capacity={"cpu": 1})
         assert successor is not None

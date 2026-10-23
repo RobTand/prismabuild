@@ -2043,7 +2043,7 @@ def test_refill_does_not_block_spending_held_credit(
     inst = _bind(q, template, owner, cas_root)
     ledger = q.tier(TIER)
     _announce_tier(q, tmp_path / "stage")
-    assert ledger.release_unspent(owner, counts={KIND: 1}, authority=tier_holdings.Unspent.NEVER_STARTED) == {KIND: 1}
+    assert ledger.release_unspent(owner, counts={KIND: 1}, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(owner)) == {KIND: 1}
     if contended:
         # The production nonblocking mint guard makes begin_acquire return
         # None under contention, even when the availability read was >0.
@@ -2091,7 +2091,7 @@ def test_refill_without_held_minimum_still_refuses(
     q = _queue(tmp_path)
     inst = _bind(q, template, owner, cas_root)
     ledger = q.tier(TIER)
-    ledger.release_unspent(owner, counts={KIND: 2 - held}, authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(owner, counts={KIND: 2 - held}, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(owner))
     assert ledger.take(_hexkey('squatter'), {KIND: 4 - held})
     before = _tier_census(ledger)
     result = po.refill_window(q, inst, template, tier=TIER)

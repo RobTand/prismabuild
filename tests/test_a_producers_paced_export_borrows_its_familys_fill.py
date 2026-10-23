@@ -140,7 +140,7 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
 
     # The mover lands and releases before the export ends: the terminal
     # record names it and the overcommit it left.
-    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(MOVER))
     queue.finish(export_key, status="executed", claim_snapshot=claim)
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, export_key))
     ended = done["tier_fill_borrowed"][fx.TIER]

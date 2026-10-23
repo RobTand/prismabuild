@@ -56,6 +56,9 @@ class TierLedger:
             records.root / record_store.TIER_RESERVATIONS, host=self.tier_id,
             mutation_guard=self.mutation_lock, tier_census=True)
 
+    def certify_release(self, holder, **kwargs):
+        return self._ledger.certify_release(holder, **kwargs)
+
     @property
     def paths(self) -> TierPaths:
         ledger = self._ledger
@@ -166,20 +169,9 @@ class TierLedger:
         return self._ledger.available()
 
     @staticmethod
-    def _return_taken(ledger: ResourceLedger, holder: str, names: Sequence[str]) -> int:
-        try:
-            ledger.free_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return 0
-        returned = 0
-        for name in names:
-            try:
-                os.rename(ledger.held_dir / holder / name, ledger.free_dir / name)
-            except OSError:
-                continue
-            returned += 1
-        ledger._drop_empty_holder(ledger.held_dir / holder)
-        return returned
+    def _return_taken(ledger: ResourceLedger, holder: str, names: Sequence[str], *, certificate) -> int:
+        keep = {p.name for p in immutable_files.match_optional(ledger.held_dir / holder, "*-*")} - set(names)
+        return ledger.release_except(holder, keep, certificate=certificate)
 
     def _take_from(self, ledger: ResourceLedger, holder: str,
                    demand: Mapping[str, int], *,
@@ -199,11 +191,11 @@ class TierLedger:
                     ledger.abandon_acquire(handle)
                 except (OSError, PoolContractError, ValueError):
                     pass
-                self._return_taken(ledger, holder, names)
+                self._return_taken(ledger, holder, names, certificate=ledger.certify_release(holder, nonce=handle))
                 raise
             if moved < wanted:
                 ledger.abandon_acquire(handle)
-                self._return_taken(ledger, holder, names)
+                self._return_taken(ledger, holder, names, certificate=ledger.certify_release(holder, nonce=handle))
                 return False
             if moved_tokens is not None:
                 moved_tokens.extend(names)
@@ -272,26 +264,26 @@ class TierLedger:
 
     def release_unspent(self, holder: str, *, authority: Unspent,
                         keep: Container[str] | None = None,
-                        counts: Mapping[str, int] | None = None) -> int | dict[str, int]:
+                        counts: Mapping[str, int] | None = None, certificate=None) -> int | dict[str, int]:
         if counts is not None:
-            released = self._ledger.release_count(holder, counts)
+            released = self._ledger.release_count(holder, counts, certificate=certificate)
         elif keep is not None:
-            released = self._ledger.release_except(holder, keep)
+            released = self._ledger.release_except(holder, keep, certificate=certificate)
         else:
-            released = self._ledger.release(holder)
+            released = self._ledger.release(holder, certificate=certificate)
         if storage_tiers.tier_kind_of(self.tier_id) == "ram":
             self._trim_host_to_occupancy(holder)
         return released
 
-    def egress(self, holder: str) -> int:
+    def egress(self, holder: str, *, certificate=None) -> int:
         """Return a whole holder after the consumer proves physical egress."""
-        released = self._ledger.release(holder)
+        released = self._ledger.release(holder, certificate=certificate)
         if storage_tiers.tier_kind_of(self.tier_id) == "ram":
             self._trim_host_to_occupancy(holder)
         return released
 
-    def release_rates(self, holder: str) -> int:
-        return self._ledger.release_kinds(holder, RATE_KINDS)
+    def release_rates(self, holder: str, *, certificate=None) -> int:
+        return self._ledger.release_kinds(holder, RATE_KINDS, certificate=certificate)
 
     def reclaim_idle_rates(self) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
@@ -345,7 +337,7 @@ class TierLedger:
 
     def _release_host(self, grant: str) -> int:
         try:
-            return int(self._host_ledgers(self._ram_host()).release(storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant)))
+            return int(self._host_ledgers(self._ram_host()).release(storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant), certificate=self._host_ledgers(self._ram_host()).certify_release(storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant))))
         except (OSError, PoolContractError, ValueError):
             return 0
 
@@ -354,7 +346,8 @@ class TierLedger:
             ledger = self._host_ledgers(self._ram_host())
             with ledger._mutation_locked():
                 return self._return_taken(
-                    ledger, storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant), names)
+                    ledger, storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant), names,
+                    certificate=ledger.certify_release(storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant)))
         except (OSError, PoolContractError, ValueError):
             return 0
 
@@ -368,7 +361,7 @@ class TierLedger:
             current = int(ledger.holder_tokens(mirror).get("mem_gb", 0))
             if current <= target:
                 return 0
-            returned = ledger.release_count(mirror, {"mem_gb": current - target})
+            returned = ledger.release_count(mirror, {"mem_gb": current - target}, certificate=ledger.certify_release(mirror))
             return int(returned.get("mem_gb", 0))
         except (OSError, PoolContractError, ValueError):
             return 0
@@ -402,22 +395,24 @@ class TierLedger:
 
     def cancel_fence(self, holder: str) -> dict[str, int]:
         try:
-            outcome = {'released': int(self._ledger.release(str(holder)))}
+            outcome = {'released': int(self._ledger.release(str(holder), certificate=self._ledger.certify_release(str(holder))))}
         except (OSError, ValueError):
             outcome = {'released': 0}
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
             self._trim_host_to_occupancy(str(holder))
         return outcome
 
-    def release_unspent_best_effort(self, holder: str, *, authority: Unspent) -> int:
-        return self._release_best_effort(holder)
+    def release_unspent_best_effort(self, holder: str, *, authority: Unspent, certificate=None) -> int:
+        return self._release_best_effort(holder, certificate=certificate)
 
-    def egress_best_effort(self, holder: str) -> int:
-        return self._release_best_effort(holder)
+    def egress_best_effort(self, holder: str, *, certificate=None) -> int:
+        return self._release_best_effort(holder, certificate=certificate)
 
-    def _release_best_effort(self, holder: str) -> int:
+    def _release_best_effort(self, holder: str, *, certificate=None) -> int:
+        from .materialize import ReleaseCertificate
+        ReleaseCertificate.require(certificate, self._ledger, str(holder))
         try:
-            released = int(self._ledger.release(str(holder)))
+            released = int(self._ledger.release(str(holder), certificate=certificate))
         except (OSError, PoolContractError, ValueError):
             released = 0
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
@@ -463,7 +458,7 @@ class TierLedger:
                                'gib': target, 'detail': detail}
             return True, None
         try:
-            released_counts = ledger.release_count(mirror, {'mem_gb': current - target})
+            released_counts = ledger.release_count(mirror, {'mem_gb': current - target}, certificate=ledger.certify_release(mirror))
         except (OSError, PoolContractError, ValueError) as exc:
             return False, {'reason': 'ram-host-hold-missing', 'holder': mirror,
                            'gib': target, 'detail': f'trim failed: {exc!r}'}
@@ -509,7 +504,7 @@ class TierLedger:
                 continue
             try:
                 tokens = self._host_mirror_tokens(host_ledger, holder)
-                released = host_ledger.release(holder)
+                released = host_ledger.release(holder, certificate=host_ledger.certify_release(holder))
             except (OSError, PoolContractError, ValueError):
                 converged = False
                 continue
@@ -627,7 +622,7 @@ class TierLedger:
         ledger = self._ledger
         destroyed = ledger.retire_held(action_key, destroy)
         shortfall = {kind: int(count) - int(destroyed.get(kind, 0)) for kind, count in destroy.items() if int(count) - int(destroyed.get(kind, 0)) > 0}
-        released = ledger.release_count(action_key, free)
+        released = ledger.release_count(action_key, free, certificate=ledger.certify_release(action_key))
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
             self._trim_host_to_occupancy(action_key)
         return {'destroyed': destroyed, 'released': released, 'shortfall': shortfall}
@@ -655,7 +650,7 @@ def release_rates_all(queue, holder: str) -> int:
     released = 0
     for tier_id in ids(queue.records):
         try:
-            released += queue.tier(tier_id).release_rates(holder)
+            released += queue.tier(tier_id).release_rates(holder, certificate=queue.tier(tier_id).certify_release(holder))
         except (OSError, PoolContractError):
             continue
     return released
@@ -665,7 +660,7 @@ def release_unspent_all(queue, holder: str, *, authority: Unspent) -> int:
     released = 0
     for tier_id in ids(queue.records):
         try:
-            released += queue.tier(tier_id).release_unspent(holder, authority=authority)
+            released += queue.tier(tier_id).release_unspent(holder, authority=authority, certificate=queue.tier(tier_id).certify_release(holder))
         except (OSError, PoolContractError):
             continue
     return released
@@ -675,7 +670,7 @@ def egress_all(queue, holder: str) -> int:
     released = 0
     for tier_id in ids(queue.records):
         try:
-            released += queue.tier(tier_id).egress(holder)
+            released += queue.tier(tier_id).egress(holder, certificate=queue.tier(tier_id).certify_release(holder))
         except (OSError, PoolContractError):
             continue
     return released

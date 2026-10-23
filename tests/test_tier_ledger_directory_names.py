@@ -125,7 +125,7 @@ def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, 
         if change == "acquire":
             assert held.take(OTHER, {KIND: 1})
         elif change == "release":
-            assert held.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+            assert held.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=held.certify_release(MOVER)) == 1
         elif change == "grow":
             held.grow_supply({KIND: 6})
         elif change == "shrink":

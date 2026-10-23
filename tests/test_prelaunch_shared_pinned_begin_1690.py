@@ -526,7 +526,7 @@ def _prepared_shared_recovery(tmp_path):
         80 * storage_tiers.GIB, 120 * storage_tiers.GIB)
     assert not residency_map.read_fragments(
         queue.records.residency_fragment_root(), namespace)
-    assert ledger.release_unspent(movers[2], authority=tier_holdings.Unspent.NEVER_STARTED) == 40
+    assert ledger.release_unspent(movers[2], authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(movers[2])) == 40
     queue.records.item_path(pool.record_store.READY, movers[2]).unlink()
     found = pg.census(queue, TIER, unit.unit, unit.holder,
                       unit.demand_gib, movers)
@@ -560,7 +560,7 @@ def test_shared_recovery_preserves_request_amount_and_admits(
             assert stall["blocked_gib"] == stall["need_gib"] == 40
             assert stall["decline_reason"] == decline["reason"]
         assert ledger.free_supply()['stage_gib'] == 19
-        assert ledger.release_unspent('recovery-obstruction', authority=tier_holdings.Unspent.NEVER_STARTED) == 50
+        assert ledger.release_unspent('recovery-obstruction', authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release('recovery-obstruction')) == 50
 
     free_before = ledger.free_supply()['stage_gib']
     events = tier_loop.residency_window(queue, tiers=tiers)

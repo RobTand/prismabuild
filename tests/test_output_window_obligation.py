@@ -77,7 +77,7 @@ def test_a_window_retirement_returned_to_free_is_owed(owner) -> None:
     """The gap between a retirement and the owner's refill."""
 
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     assert queue.tier(TIER).holdings(key) == {}
     owed = po.unheld_window_gib(queue, TIER)
     assert owed == {"gib": 2, "owners": {key: 2}, "unknown": [],
@@ -86,7 +86,7 @@ def test_a_window_retirement_returned_to_free_is_owed(owner) -> None:
 
 def test_a_finished_owner_is_owed_nothing(owner) -> None:
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     queue.finish(key, status="executed")
     assert po.unheld_window_gib(queue, TIER) == {
         "gib": 0, "owners": {}, "unknown": [], "bounded": []}
@@ -96,7 +96,7 @@ def test_a_dead_owners_torn_records_are_never_read(owner) -> None:
     """Liveness is checked before any record, so a dead scope costs nothing."""
 
     queue, key, bound, template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     queue.finish(key, status="executed")
     _tear(po.template_path(queue.root, template))
     _tear(bl.scope_dir(queue.root, bound["instance"]) / "instance.json")
@@ -105,7 +105,7 @@ def test_a_dead_owners_torn_records_are_never_read(owner) -> None:
 
 def test_another_tier_is_owed_nothing(owner) -> None:
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     assert po.unheld_window_gib(queue, "prismabuild-stage:elsewhere")["gib"] == 0
 
 
@@ -114,7 +114,7 @@ def test_a_batch_census_it_cannot_read_charges_the_upper_bound(
     """Outstanding batch tokens only lower the debt, so unknown counts none."""
 
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     # ``queue`` is an AdmittedQueueFixture: it forwards attribute reads to the
     # real queue, so the method to replace belongs to PoolQueue, not to the
     # wrapper class (the fixture says fault injection targets the real owner).
@@ -127,7 +127,7 @@ def test_a_batch_census_it_cannot_read_charges_the_upper_bound(
 
 def test_a_live_owners_unreadable_template_is_unknown_not_zero(owner) -> None:
     queue, key, _bound, template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     _tear(po.template_path(queue.root, template))
     owed = po.unheld_window_gib(queue, TIER)
     assert owed["gib"] is None, owed
@@ -151,7 +151,7 @@ def test_the_gate_counts_output_only_when_enforced() -> None:
 
 def test_the_tier_loop_obligation_is_off_by_default(owner, monkeypatch) -> None:
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
     assert tier_loop.output_obligation(queue, TIER) == (
         0, False, window_credit.OUTPUT_UNENFORCED_NOTE, "")
@@ -162,7 +162,7 @@ def test_the_tier_loop_obligation_is_off_by_default(owner, monkeypatch) -> None:
 
 def test_the_tier_loop_obligation_counts_the_owed_window(owner, monkeypatch) -> None:
     queue, key, _bound, _template = owner
-    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(key))
     monkeypatch.setenv(tier_loop.OUTPUT_WINDOWS_ENV, "1")
     assert tier_loop.output_obligation(queue, TIER) == (2, True, "", "")
 

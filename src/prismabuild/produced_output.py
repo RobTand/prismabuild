@@ -5659,7 +5659,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
                 try:
-                    released += queue.tier(tier).egress(holder)
+                    released += queue.tier(tier).egress(holder, certificate=queue.tier(tier).certify_release(holder))
                 except Exception as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Holders are empty post-transfer by construction; leftovers

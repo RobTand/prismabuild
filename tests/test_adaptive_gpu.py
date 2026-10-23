@@ -1045,7 +1045,7 @@ def test_only_a_non_mirror_holder_leaves_a_gpu_measurement_tail(gpu_rig, memory_
         assert ledger.held() == {'mem_gb': 1}
         assert queue.tier('ram:' + str(ledger.host))._release_host('mirror') == 1
     else:
-        assert ledger.release('a' * 64) == 1
+        assert ledger.release('a' * 64, certificate=ledger.certify_release('a' * 64)) == 1
     tick()
     measurement = ('measurement', True, False, adaptive_gpu.GIB)
     retry = adaptive_gpu.Controller(ledger, sampler=sample.copy)

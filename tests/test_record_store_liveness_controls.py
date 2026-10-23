@@ -103,7 +103,7 @@ def test_uncertain_reclaim_keeps_actual_reservation(tmp_path, monkeypatch, state
 @pytest.mark.parametrize('error', [errno.EIO, errno.ESTALE])
 def test_unreadable_claim_keeps_the_actual_output_window_obligation(owner, monkeypatch, error):
     queue, key, _bound, _template = owner
-    queue.tier('prismabuild-stage:dl380g10').release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
+    queue.tier('prismabuild-stage:dl380g10').release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier('prismabuild-stage:dl380g10').certify_release(key))
     assert po.unheld_window_gib(queue, 'prismabuild-stage:dl380g10')['gib'] == 2
     seen = _unreadable_stat(
         monkeypatch,

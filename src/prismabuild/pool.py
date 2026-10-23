@@ -3489,7 +3489,7 @@ def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | Non
     return int(usec), host, int(pid)
 
 
-def _guarded_mutation(*, blocking: bool):
+def _guarded_mutation(*, blocking: bool, releasing: bool = False):
     """Run a ``ResourceLedger`` mutator under its mutation exclusion.
 
     Tier ledgers built by :meth:`PoolQueue.tier` carry the tier's
@@ -3522,14 +3522,21 @@ def _guarded_mutation(*, blocking: bool):
     def decorator(fn):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
-            with self._mutation_locked(blocking=blocking) as acquired:
-                if not acquired:
-                    if not blocking:
-                        self.last_token_shortage = {
-                            "resource": "ledger_lock", "requested": 0,
-                            "available": 0, "reason": "mutation_lock_busy"}
-                    return None
-                return fn(self, *args, **kwargs)
+            certificate_guard = (
+                materialize.ReleaseCertificate.returning(
+                    kwargs.get("certificate"), self,
+                    args[0] if args else kwargs["action_key"])
+                if releasing
+                else nullcontext())
+            with certificate_guard:
+                with self._mutation_locked(blocking=blocking) as acquired:
+                    if not acquired:
+                        if not blocking:
+                            self.last_token_shortage = {
+                                "resource": "ledger_lock", "requested": 0,
+                                "available": 0, "reason": "mutation_lock_busy"}
+                        return None
+                    return fn(self, *args, **kwargs)
         return wrapper
     return decorator
 
@@ -3596,6 +3603,75 @@ class ResourceLedger:
         self._mutation_lock = (
             None if mutation_guard is not None
             else posix_lock.canonical(self.base / ".mutation.lock"))
+
+    @property
+    def release_records(self):
+        return record_store.RecordStore(self.root.parent)
+
+    def release_owner_path(self, action_key):
+        return self.base / "release-owners" / (action_key + ".json")
+
+    def acquisition_receipt_path(self, action_key, nonce):
+        return self.base / "release-receipts" / action_key / (nonce + ".json")
+
+    def _register_reservation(self, action_key, acquisition_nonce):
+        path = self.release_owner_path(action_key)
+        current = record_store.read_document(path)
+        if current is None or not self.holder_tokens(action_key):
+            current = {"action_key": action_key,
+                       "checkout_registrations": [], "claim": None}
+        # Any addition invalidates previously minted capabilities, even if a
+        # returned token name is taken again while another token stays held.
+        current["nonce"] = uuid.uuid4().hex
+        current["acquisition_nonce"] = acquisition_nonce
+        self.release_records.replace_record_at(path, current)
+        return current
+
+    def bind_release_claim(self, action_key, claim):
+        path = self.release_owner_path(action_key)
+        current = record_store.read_document(path)
+        if current is None:
+            return
+        identity = {k: v for k, v in lifetime_fence.attempt_identity(claim).items()
+                    if k not in ("nonce", "scope_id")}
+        if current.get("claim") is not None and current["claim"] != identity:
+            raise PoolContractError("reservation belongs to another claim")
+        current["claim"] = identity
+        current["checkout_snapshot"] = claim.get("checkout_snapshot")
+        self.release_records.replace_record_at(path, current)
+
+    @_guarded_mutation(blocking=True, releasing=True)
+    def unbind_unstarted_claim(self, action_key, *, certificate=None):
+        materialize.ReleaseCertificate.require(certificate, self, action_key)
+        owner = record_store.read_document(certificate._owner_path)
+        if owner is None or owner.get("checkout_registrations") != []:
+            raise PoolContractError("unstarted rollback has checkout custody")
+        path = self.release_owner_path(action_key)
+        current = record_store.read_document(path)
+        if current.get("claim") is not None:
+            current.update(claim=None, checkout_snapshot=None, nonce=uuid.uuid4().hex)
+            self.release_records.replace_record_at(path, current)
+
+    def certify_release(self, action_key, *, claim_snapshot=None, nonce=None, owner_path=None):
+        queue = PoolQueue(self.release_records.root)
+        custody_key = (action_key.removeprefix(storage_tiers.RAM_HOST_MEMORY_PREFIX)
+                       if action_key.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX) else action_key)
+        owner = owner_path
+        if owner is None:
+            owner = queue.records.lease_path(custody_key)
+            if not owner.exists():
+                owner = queue.records.item_path(CLAIMED, custody_key)
+        record = claim_snapshot or record_store.read_document(owner)
+        if record is None:
+            record = record_store.read_document(self.release_owner_path(action_key)) or {"action_key": action_key}
+        result = materialize.certify_checkout_cleanup(
+            queue, record, owner_path=owner, recover=False,
+            local_checkout_root=LOCAL_CHECKOUT_ROOT, release_ledger=self,
+            reservation_nonce=nonce, release_holder=action_key,
+            release_custody_key=custody_key, select_owner=claim_snapshot is None)
+        if not result.get("complete") or "certificate" not in result:
+            raise PoolContractError("release certificate not certified: " + str(result.get("error", "")))
+        return result["certificate"]
 
     def _mutation_locked(self, *, blocking: bool = True):
         """Retain the same owner exclusion every token mutator uses.
@@ -4182,8 +4258,8 @@ class ResourceLedger:
         except OSError:
             pass
 
-    @_guarded_mutation(blocking=True)
-    def release_count(self, action_key: str, counts: Mapping[str, int]) -> dict[str, int]:
+    @_guarded_mutation(blocking=True, releasing=True)
+    def release_count(self, action_key: str, counts: Mapping[str, int], *, certificate=None) -> dict[str, int]:
         """Return up to ``counts`` held tokens per kind to free, counting actuals.
 
         The count-capped sibling of :meth:`release`: an egress that must
@@ -4192,6 +4268,7 @@ class ResourceLedger:
         gone; only actual renames are returned.
         """
 
+        materialize.ReleaseCertificate.require(certificate, self, action_key)
         released: dict[str, int] = {}
         holder = self.held_dir / action_key
         if not holder.is_dir():
@@ -4205,6 +4282,8 @@ class ResourceLedger:
             for token in sorted(immutable_files.match_optional(holder, f"{kind}-*")):
                 if taken >= want:
                     break
+                if not certificate.permits(token.name):
+                    continue
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                     continue
                 try:
@@ -4602,6 +4681,15 @@ class ResourceLedger:
         destination = self.held_dir / action_key
         if not source.is_dir():
             return 0
+        reservation = self._register_reservation(action_key, handle)
+        # Freeze precisely this take's token names before the partial move.
+        # A rollback capability for this nonce can return only these names.
+        names = [p.name for p in immutable_files.scan_optional(source)
+                 if p.name not in (cpu_admission.METADATA, gpu_admission.METADATA)]
+        self.release_records.replace_record_at(
+            self.acquisition_receipt_path(action_key, handle),
+            {"action_key": action_key, "nonce": handle,
+             "reservation_nonce": reservation["nonce"], "token_names": names})
         moved = 0
         destination.mkdir(parents=True, exist_ok=True)
         for token in immutable_files.scan_optional(source):
@@ -4670,6 +4758,7 @@ class ResourceLedger:
         if not source.is_dir():
             return 0
         moved = 0
+        self._register_reservation(str(to_key), uuid.uuid4().hex)
         destination.mkdir(parents=True, exist_ok=True)
         for token in immutable_files.scan_optional(source):
             landing = destination / token.name
@@ -4745,6 +4834,7 @@ class ResourceLedger:
         if not source.is_dir():
             return 0
         moved = 0
+        self._register_reservation(str(to_key), uuid.uuid4().hex)
         destination.mkdir(parents=True, exist_ok=True)
         for token in sorted(immutable_files.scan_optional(source), key=lambda entry: entry.name):
             if moved >= count:
@@ -4824,6 +4914,7 @@ class ResourceLedger:
             checked.append(name)
         source = self.held_dir / str(from_key)
         destination = self.held_dir / str(to_key)
+        self._register_reservation(str(to_key), uuid.uuid4().hex)
         destination.mkdir(parents=True, exist_ok=True)
         done = 0
         for name in checked:
@@ -4931,6 +5022,8 @@ class ResourceLedger:
         sweep, never reported as freed.
         """
 
+        if not holder_census.is_private_holder(handle):
+            raise PoolContractError("acquisition rollback requires its own private claim nonce")
         return self._empty_into_free(self.held_dir / handle)
 
     def acquire(self, action_key: str, demand: Mapping[str, int]) -> bool:
@@ -4962,7 +5055,7 @@ class ResourceLedger:
             wanted = sum(int(v) for v in demand.values() if int(v) > 0)
             if self.commit_acquire(action_key, handle) < wanted:
                 self.abandon_acquire(handle)
-                self.release(action_key)
+                self.release(action_key, certificate=self.certify_release(action_key, nonce=handle))
                 return False
             return True
 
@@ -5016,14 +5109,15 @@ class ResourceLedger:
             swept.append(holder.name)
         return swept
 
-    @_guarded_mutation(blocking=True)
-    def release(self, action_key: str) -> int:
+    @_guarded_mutation(blocking=True, releasing=True)
+    def release(self, action_key: str, *, certificate=None) -> int:
         """Return every token held for this action.  Safe to call twice."""
 
-        return self._empty_into_free(self.held_dir / action_key)
+        materialize.ReleaseCertificate.require(certificate, self, action_key)
+        return self._empty_into_free(self.held_dir / action_key, certificate=certificate)
 
-    @_guarded_mutation(blocking=True)
-    def release_kinds(self, action_key: str, kinds: Container[str]) -> int:
+    @_guarded_mutation(blocking=True, releasing=True)
+    def release_kinds(self, action_key: str, kinds: Container[str], *, certificate=None) -> int:
         """Return only the named kinds, leaving the holder's others held.
 
         A residency pin is *occupancy*: those bytes are on the device and must
@@ -5039,12 +5133,15 @@ class ResourceLedger:
         the next sweep rather than costing the caller its own ending.
         """
 
+        materialize.ReleaseCertificate.require(certificate, self, action_key)
         holder = self.held_dir / action_key
         if not holder.is_dir():
             return 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
         released = 0
         for token in immutable_files.scan_optional(holder):
+            if certificate is not None and not certificate.permits(token.name):
+                continue
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 continue
             if token.name.rsplit("-", 1)[0] not in kinds:
@@ -5056,8 +5153,8 @@ class ResourceLedger:
             released += 1
         return released
 
-    @_guarded_mutation(blocking=True)
-    def release_except(self, action_key: str, keep_names: Container[str]) -> int:
+    @_guarded_mutation(blocking=True, releasing=True)
+    def release_except(self, action_key: str, keep_names: Container[str], *, certificate=None) -> int:
         """Return every token except the named ones; count returned.
 
         Funded-claim rollback (liveness lane): unwinding a claim whose fence
@@ -5074,6 +5171,7 @@ class ResourceLedger:
         shared-cache lane owns.
         """
 
+        materialize.ReleaseCertificate.require(certificate, self, action_key)
         keep = set(keep_names)
         holder = self.held_dir / action_key
         if not holder.is_dir():
@@ -5081,6 +5179,8 @@ class ResourceLedger:
         self.free_dir.mkdir(parents=True, exist_ok=True)
         released = 0
         for token in immutable_files.scan_optional(holder):
+            if certificate is not None and not certificate.permits(token.name):
+                continue
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 continue
             if token.name in keep:
@@ -5092,7 +5192,7 @@ class ResourceLedger:
             released += 1
         return released
 
-    def _empty_into_free(self, holder: Path) -> int:
+    def _empty_into_free(self, holder: Path, *, certificate=None) -> int:
         """Return physical tokens before removing their adaptive metadata.
 
         A failed metadata unlink must not prevent physical capacity from
@@ -5105,31 +5205,38 @@ class ResourceLedger:
         ``sweep_stale_acquisitions`` -- takes it); takes nothing itself.
         """
 
-        if not holder.is_dir():
-            return 0
-        released = 0
-        metadata = []
-        incomplete = False
-        self.free_dir.mkdir(parents=True, exist_ok=True)
-        for token in immutable_files.scan_optional(holder):
-            if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
-                metadata.append(token)
-                continue
+        with ExitStack() as guards:
+            if not holder_census.is_private_holder(holder.name):
+                guards.enter_context(materialize.ReleaseCertificate.returning(certificate, self, holder.name))
+                guards.enter_context(self._mutation_locked())
+            if not holder.is_dir():
+                return 0
+            released = 0
+            metadata = []
+            incomplete = False
+            self.free_dir.mkdir(parents=True, exist_ok=True)
+            for token in immutable_files.scan_optional(holder):
+                if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
+                    metadata.append(token)
+                    continue
+                if certificate is not None and not certificate.permits(token.name):
+                    incomplete = True
+                    continue
+                try:
+                    os.rename(token, self.free_dir / token.name)
+                except OSError:
+                    incomplete = True
+                    continue
+                released += 1
+            if incomplete:
+                return released
+            for marker in metadata:
+                marker.unlink(missing_ok=True)
             try:
-                os.rename(token, self.free_dir / token.name)
+                holder.rmdir()
             except OSError:
-                incomplete = True
-                continue
-            released += 1
-        if incomplete:
+                pass
             return released
-        for marker in metadata:
-            marker.unlink(missing_ok=True)
-        try:
-            holder.rmdir()
-        except OSError:
-            pass
-        return released
 
     def holder_census(self) -> holder_census.HolderCensus:
         """Fresh holder observations with this ledger's existing read adapters."""
@@ -5263,9 +5370,12 @@ class _ClaimReservation:
         self.host_committed = False
         self.tier_handles: dict[str, str] = {}
         self.tier_funded: dict[str, dict[str, object]] = {}
+        self.claim_snapshot = None
 
     def commit_host(self) -> int:
         assert self.ledger is not None and self.host_handle is not None
+        if self.ledger.holder_tokens(self.action_key):
+            raise PoolContractError("predecessor reservation retains custody")
         filed = self.ledger.commit_acquire(self.action_key, self.host_handle)
         self.host_committed = True
         return filed
@@ -5297,13 +5407,27 @@ class _ClaimReservation:
                 ledger = self.queue.tier(tier_id)
             except (OSError, PoolContractError, ValueError):
                 continue
+            handle = self.tier_handles.get(tier_id)
+            receipt = (None if handle is None else record_store.read_document(
+                ledger._ledger.acquisition_receipt_path(self.action_key, handle)))
+            if receipt is None:
+                if self.claim_snapshot is not None:
+                    try:
+                        certificate = ledger.certify_release(self.action_key, claim_snapshot=self.claim_snapshot)
+                        ledger._ledger.unbind_unstarted_claim(self.action_key, certificate=certificate)
+                    except (OSError, PoolContractError, ValueError):
+                        pass
+                continue  # The fence stays held; no private remainder was taken.
             entry = self.tier_funded.get(tier_id)
             names = (entry.get("tokens") if isinstance(entry, dict) else None)
             try:
+                certificate = ledger.certify_release(
+                    self.action_key, nonce=self.tier_handles[tier_id], claim_snapshot=self.claim_snapshot)
                 if isinstance(names, list) and names:
-                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
+                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.CLAIM_ROLLBACK, certificate=certificate)
                 else:
-                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
+                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.CLAIM_ROLLBACK, certificate=certificate)
+                ledger._ledger.unbind_unstarted_claim(self.action_key, certificate=certificate)
             except (OSError, PoolContractError, ValueError):
                 continue
 
@@ -5320,10 +5444,13 @@ class _ClaimReservation:
             # An uncertain probe stays spent, even if the private tokens returned.
             return
         if exit is _ClaimExit.DROP_EXACT_CLAIM:
-            if self.ledger is not None:
-                self.ledger.release(self.action_key)
-            # A concluding claim retains names an outstanding output intent owns.
-            self.queue._release_reservation(self.action_key, host=None)
+            if self.ledger is not None and self.host_handle is not None:
+                self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
+                    self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
+            # Only this admission's receipts can be returned, never a predecessor's hold.
+            self.queue._release_reservation(self.action_key, host=None,
+                                            reservation_nonces=self.tier_handles)
+            self._return_funded_remainder()
             return
         if exit is _ClaimExit.QUEUED_REFUSAL:
             self.reset_tier_take()
@@ -5332,7 +5459,8 @@ class _ClaimReservation:
         if self.ledger is not None and self.host_handle is not None:
             self.ledger.abandon_acquire(self.host_handle)
             if exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}:
-                self.ledger.release(self.action_key)
+                self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
+                    self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
             self._return_borrow()
             self.return_unlaunched_probe()
         if exit in {_ClaimExit.RENAME_LOST, _ClaimExit.RENAMED_REFUSAL,
@@ -5345,7 +5473,11 @@ class _ClaimReservation:
             assert moved is not None
             if exit is _ClaimExit.PERSISTED_RETRY:
                 with suppress(Exception):
-                    self.queue.records.lease_path(self.action_key).unlink()
+                    lease_path = self.queue.records.lease_path(self.action_key)
+                    lease = record_store.read_document(lease_path)
+                    if (lease is not None and self.claim_snapshot is not None
+                            and claim_identity.same_claim(lease, self.claim_snapshot)):
+                        lease_path.unlink()
                 try:
                     self.queue.records.replace_record_at(moved.claimed_path, moved.record)
                 except (OSError, PoolContractError, ValueError):
@@ -12050,9 +12182,8 @@ class PoolQueue:
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
-        if claim.get("checkout_snapshot") is not None:
-            for field in ("claimed_by", "claimed_host", "attempts"):
-                lease[field] = claim[field]
+        for field in ("claimed_by", "claimed_host", "attempts"):
+            lease[field] = claim[field]
         previous = record_store.read_document(self.records.lease_path(action_key))
         if previous is not None and "checkout_registrations" in previous:
             # Registration is lease-owned. A stale heartbeat cannot erase an
@@ -12708,7 +12839,9 @@ class PoolQueue:
     @_serialized_key
     def _release_reservation(self, action_key: str, *, host: str | None,
                              keep_tier: bool = False, cleanup_owner: Path | None = None,
-                             reclaim_tier: bool = False) -> int:
+                             reclaim_tier: bool = False,
+                             claim_snapshot: Mapping[str, object] | None = None,
+                             reservation_nonces: Mapping[str, str] | None = None) -> int:
         """Give a concluded claim's capacity back: host tokens, then tier tokens.
 
         Every path that concludes a claim -- finish, the reapers, withdrawal,
@@ -12750,13 +12883,35 @@ class PoolQueue:
         custody = record_store.read_document(owner)
         if custody is None and owner.exists():
             raise PoolContractError("checkout custody owner is unreadable; reservation retained")
+        if custody is None:
+            empty = True
+            for namespace in (RESERVATIONS, record_store.TIER_RESERVATIONS):
+                base = self.root / namespace
+                try:
+                    names = self.records.required_directory_names_at(base)
+                except FileNotFoundError:
+                    names = ()
+                for name in names:
+                    for holder in (action_key, storage_tiers.RAM_HOST_MEMORY_PREFIX + action_key):
+                        if not immutable_files.confirmed_metadata_absence(base / name / "held" / holder):
+                            empty = False
+            if empty:
+                return 0  # Already returned; this does not certify absent custody.
+
+        if claim_snapshot is not None and custody is not None and not claim_identity.same_claim(custody, claim_snapshot):
+            raise PoolContractError("release belongs to another claim; reservation retained")
         custody = custody or {"action_key": action_key}
         certification = materialize.certify_checkout_cleanup(
             self, custody, owner_path=owner, recover=False,
             local_checkout_root=LOCAL_CHECKOUT_ROOT)
         if not certification["complete"]:
             raise PoolContractError("checkout cleanup is not certified; reservation retained")
-        released = self.ledger(host).release(action_key) if host is not None else 0
+        released = 0
+        if host is not None:
+            ledger = self.ledger(host)
+            if not immutable_files.confirmed_metadata_absence(ledger.held_dir / action_key):
+                released = ledger.release(action_key, certificate=ledger.certify_release(
+                    action_key, claim_snapshot=custody, owner_path=owner))
         if reclaim_tier:
             return released + tier_holdings.egress_all(self, action_key)
         if keep_tier:
@@ -12789,6 +12944,8 @@ class PoolQueue:
                 return census[0]
 
             for tier_id in tier_holdings.ids(self.records):
+                if reservation_nonces is not None and tier_id not in reservation_nonces:
+                    continue
                 try:
                     ledger = self.tier(tier_id)
                 except (OSError, PoolContractError):
@@ -12803,9 +12960,11 @@ class PoolQueue:
                     if unknown:
                         continue
                     if keep:
-                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
+                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody, owner_path=owner,
+                                                nonce=None if reservation_nonces is None else reservation_nonces[tier_id]))
                     else:
-                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
+                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody, owner_path=owner,
+                                                nonce=None if reservation_nonces is None else reservation_nonces[tier_id]))
                 except (OSError, PoolContractError, ValueError):
                     continue
             return released + tier_released
@@ -15097,7 +15256,7 @@ class PoolQueue:
         result = self._cleanup_payload_containers(record, reason=reason, scope_only=scope_only)
         if not result["complete"]:
             return result
-        if "checkout_registrations" in record or record.get("checkout_snapshot") is not None:
+        if record.get("checkout_registrations") or record.get("checkout_snapshot") is not None:
             checkout = materialize.certify_checkout_cleanup(
                 self, record, proof=checkout_proof, local_checkout_root=LOCAL_CHECKOUT_ROOT,
                 owner_path=(self.records.late_finish_path(record) if scope_only else scratch_owner_path))
@@ -18688,8 +18847,8 @@ class PoolQueue:
             self.record_denial(item, "lifetime_fence_unreadable", {"error": str(exc)})
             return None
         claimed = self._build_claim_record(committed, scan_pass)
-        if claimed.get("checkout_snapshot") is not None:
-            claimed["checkout_registrations"] = []
+        claimed["checkout_registrations"] = []
+        reservation.claim_snapshot = claimed
         if reservation.tier_funded:
             # Re-verify each funding against the renamed record before
             # persisting: the claim holds this key's transition lock,
@@ -18773,6 +18932,14 @@ class PoolQueue:
                 "adaptive_cpu": adaptive is not None,
                 "adaptive_gpu": adaptive_gpu is not None,
             })
+            return None
+        try:
+            if reservation.ledger is not None:
+                reservation.ledger.bind_release_claim(key, claimed)
+            for tier_id in reservation.tier_demand:
+                self.tier(tier_id)._ledger.bind_release_claim(key, claimed)
+        except (OSError, PoolContractError, ValueError):
+            reservation.abandon(_ClaimExit.UNCERTAIN)
             return None
         try:
             self.write_lease(
@@ -21809,7 +21976,7 @@ class PoolQueue:
                     raise PoolContractError("checkout cleanup has no durable registration")
                 entries.append(dict(registration))
             elif cleanup is None:
-                if "path" in entries[index] and entries[index] != registration:
+                if "inode" in entries[index] and entries[index] != registration:
                     raise PoolContractError("checkout registration is immutable")
                 entries[index] = dict(registration)
             else:
@@ -21863,7 +22030,15 @@ class PoolQueue:
         checkout_cleanup: dict[str, object] = {}
         registration = None
         if item.get("checkout_snapshot") is not None:
+            LOCAL_CHECKOUT_ROOT.mkdir(parents=True, exist_ok=True)
+            parent = os.open(LOCAL_CHECKOUT_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                parent_info = os.fstat(parent)
+            finally:
+                os.close(parent)
             registration = {
+                "path": str(LOCAL_CHECKOUT_ROOT / (str(item["action_key"])[:12] + "." + uuid.uuid4().hex[:8])),
+                "parent_device": parent_info.st_dev, "parent_inode": parent_info.st_ino,
                 "execution_id": uuid.uuid4().hex,
                 "claim": {k: v for k, v in lifetime_fence.attempt_identity(item).items()
                           if k not in ("nonce", "scope_id")},
@@ -21883,6 +22058,7 @@ class PoolQueue:
         if registration is not None:
             fence["cleanup"] = checkout_cleanup
             fence["on_temporary"] = register_checkout
+            fence["checkout_intent"] = registration
         try:
             with _execution_checkout(item, **fence) as checkout_root:
                 if life is None:

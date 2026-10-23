@@ -116,8 +116,8 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     _cycles(queue, tiers, 10)
     ledger = queue.tier(TIER)
     for mover in movers[:-1]:
-        ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED)
-    ledger.release_unspent(unit.holder, authority=tier_holdings.Unspent.NEVER_STARTED)
+        ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(mover))
+    ledger.release_unspent(unit.holder, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(unit.holder))
     before = {'group files': _group_files(queue, consumer), 'holder tokens': _holder_tokens(queue, unit.holder), 'mover tokens': {m[:8]: int(ledger.holdings(m).get('stage_gib', 0)) for m in movers}}
     seen = _cycles(queue, tiers, 15)
     state = {'before': before, 'group files after': _group_files(queue, consumer), 'holder tokens after': _holder_tokens(queue, unit.holder), 'mover tokens after': {m[:8]: int(ledger.holdings(m).get('stage_gib', 0)) for m in movers}, 'events': sorted(set(_names(seen)))}
@@ -168,7 +168,7 @@ def test_a_committed_unit_that_owns_nothing_still_obliges_its_peak(
     assert "committed.json" in " ".join(_group_files(queue, first))
     ledger = queue.tier(TIER)
     for holder in list(ledger.holders()):          # complete token loss
-        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
+        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(holder))
     assert _held(queue) == {} or not any(_held(queue).values())
     totals, detail = prelaunch_tier.obligations(_units(queue, first), _held(queue),
                                                 "stage_gib")
@@ -210,7 +210,7 @@ def test_a_rival_waits_while_a_committed_group_recovers_its_tokens(
     gib_of = {leg["mover_key"]: int(leg["stage_gib"]) for leg in unit.legs}
     ledger = queue.tier(TIER)
     for holder in [unit.holder] + list(gib_of):
-        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
+        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=ledger.certify_release(holder))
     rival_key = _hexkey("gate-rival")
     specs = [("p0", 40, True, 1), ("p1", 10, False, 1), ("p2", 10, False, 1)]
     _publish_ranked(queue, _declared_plan(queue, rival_key, specs, tag="rival"),

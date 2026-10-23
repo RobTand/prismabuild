@@ -223,7 +223,7 @@ def test_a_holder_released_between_bounds_is_not_counted_from_the_census_snapsho
         observed.append(holder)
         result = bound(holder, **kwargs)
         if holder == first:
-            ledger.release(departing)
+            ledger.release(departing, certificate=ledger.certify_release(departing))
         return result
 
     queue.holder_bound = release_after_first

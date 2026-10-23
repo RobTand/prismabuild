@@ -49,7 +49,7 @@ def _recovering(tmp_path: Path):
     published = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                  _leg(plan, first), float(row["published_unix"]))
     assert published.status == "published"
-    queue.tier(TIER).release_unspent(first, authority=tier_holdings.Unspent.NEVER_STARTED)       # the fence leaves, the record stays
+    queue.tier(TIER).release_unspent(first, authority=tier_holdings.Unspent.NEVER_STARTED, certificate=queue.tier(TIER).certify_release(first))       # the fence leaves, the record stays
     for _ in range(8):
         outcome = pg.reconcile(queue, TIER, unit, holder, 4, [first, second],
                                writer_is_me=True)

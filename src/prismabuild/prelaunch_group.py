@@ -785,7 +785,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT, certificate=ledger.certify_release(str(holder)))
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-short"
@@ -820,14 +820,14 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT, certificate=ledger.certify_release(str(holder)))
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-overfull")
         return ReconcileOutcome("overfull", events, False, found)
     if found.h > 0:
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT, certificate=ledger.certify_release(str(holder)))
         except (OSError, pool.PoolContractError, ValueError):
             return ReconcileOutcome(
                 "unknown", events + ["prelaunch-unknown-evidence"],
@@ -934,7 +934,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         events.append("prelaunch-unknown-evidence")
         intent = None
     try:
-        holder_freed = int(ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT))
+        holder_freed = int(ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT, certificate=ledger.certify_release(str(holder))))
     except (OSError, pool.PoolContractError, ValueError):
         holder_freed = 0
         events.append("prelaunch-unknown-evidence")

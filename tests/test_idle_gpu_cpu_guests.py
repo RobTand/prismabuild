@@ -17,7 +17,7 @@ def _guest_offer(fleet, **changes):
 
 
 def _cpu_available(fleet):
-    fleet.queue.ledger('cpuhost').release('f' * 64)
+    fleet.queue.ledger('cpuhost').release('f' * 64, certificate=fleet.queue.ledger('cpuhost').certify_release('f' * 64))
 
 
 def _placement_denial(fleet, key, host):
