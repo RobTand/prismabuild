@@ -882,6 +882,8 @@ class Authority:
         with self.lock:
             record=self.records[scope]
             if record.get('gpu_record') is not None:return record['gpu_record']
+            if record.get('released_unix') or record.get('settled_unix'):
+                raise ValueError('GPU observation scope settled')
             if time.monotonic()>=deadline:raise ValueError('GPU observation deadline elapsed')
             prior=record.get('resource_telemetry') or {}
             telemetry={'gpu_uuids':list(prior.get('gpu_uuids',[])),

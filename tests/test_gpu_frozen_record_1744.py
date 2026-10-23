@@ -51,6 +51,9 @@ def test_lost_reply_uses_committed_record_across_readers(generic_gpu, monkeypatc
         result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                                      resource_demand=queue.demand_of(item))
         assert result['receipt']['resource_telemetry']['gpu_use'] == ('used' if state == 'used' else 'unobserved')
+    scope = {'nonce': os.environ[pb.ACTION_NONCE_ENV], 'scope_id': os.environ[pb.ACTION_SCOPE_ENV]}
+    item['resource_scope'] = scope
+    queue.records.replace_record_at(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']), item)
     stdout = '' if state == 'zero' else json.dumps(result) + '\n'
     telemetry = {} if state == 'absent' else {'gpu_record': captured[0]}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
@@ -58,6 +61,8 @@ def test_lost_reply_uses_committed_record_across_readers(generic_gpu, monkeypatc
     path = queue.finish(item['action_key'], status='failed' if state == 'zero' else 'executed',
         detail={'returncode': 1 if state == 'zero' else 0, 'stdout': stdout, 'stderr': ''}, claim_snapshot=item)
     terminal = json.loads(path.read_text())
+    if state != 'zero':
+        assert terminal['detail']['resource_telemetry'] == result['receipt']['resource_telemetry']
     expected = 'unobserved' if state == 'absent' else state
     assert terminal['detail']['gpu_use'] == expected
     assert (path.parent.name == pool.record_store.FAILED) == (state == 'zero')
@@ -91,6 +96,8 @@ def test_worker_redelivery_is_identical_and_never_resamples(monitored, monkeypat
     samples = len(gpu.samples)
     again = a.handle(a.uid, pid, _query(request, time.monotonic() - 1))
     assert again == reply
+    with pytest.raises(PermissionError, match='launched worker'):
+        a.handle(a.uid, pid + 1, _query(request))
     assert (leaf.read_bytes(), leaf.stat().st_mtime_ns) == before
     assert len(gpu.samples) == samples
     live.poll_once()
@@ -205,3 +212,14 @@ def test_broker_restart_recovers_commit_before_private_update(monitored, monkeyp
     state.write_text(json.dumps(private))
     restored = type(a)(a.state_dir, a.uid, backend, max_memory_bytes=a.max_memory_bytes)
     assert restored.records[record['scope_id']]['gpu_record'] == expected
+
+
+def test_settled_scope_cannot_gain_a_late_mirror(monitored, monkeypatch):
+    a, backend, rows, _, monitor = monitored
+    request, record, path = rows[0]
+    for op in ['stop', 'release']:
+        a.handle(a.uid, 1, {'op': op, 'action_key': request['action_key'],
+                           'nonce': request['nonce'], 'token': record['token']})
+    with pytest.raises(ValueError, match='settled'):
+        a.freeze_gpu_record(record['scope_id'], time.monotonic() + 10, final_succeeded=False)
+    assert not (a.gpu_evidence_dir / (record['scope_id'] + '.json')).exists()
