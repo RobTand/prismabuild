@@ -1,10 +1,36 @@
 """An abandoned claim cannot return a later claimant's borrow."""
 from pathlib import Path
 import os
+import json
 import pytest
 from test_adaptive_cpu import rig
 from test_cpu_lending import loan_rig
 from prismabuild import pool
+
+
+@pytest.mark.parametrize('field,value', [('priority', 0), ('cpu_qos', 'protected')])
+def test_changed_publication_unwinds_before_claim_commit(rig, monkeypatch, field, value):
+    from prismabuild import adaptive_cpu
+    queue, clock, state, donor, first, publish, claim, telemetry = rig
+    key = f'{2:064x}'
+    ready = queue.records.item_path(pool.record_store.READY, key)
+    original = os.rename
+    before = queue.ledger().held()
+    marker = adaptive_cpu.local_state_base(queue.ledger().base) / 'last-borrow.json'
+    previous = adaptive_cpu.read_json(marker)
+    def republish(source, target):
+        if Path(source) == ready:
+            row = json.loads(ready.read_text())
+            row[field] = value
+            queue.records.replace_record_at(ready, row)
+        return original(source, target)
+    monkeypatch.setattr(pool.os, 'rename', republish)
+    assert claim() is None
+    assert ready.exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.lease_path(key).exists()
+    assert queue.ledger().held() == before
+    assert adaptive_cpu.read_json(marker) == previous
 
 
 def test_exception_after_borrow_return_does_not_return_a_peers_borrow(rig, monkeypatch):

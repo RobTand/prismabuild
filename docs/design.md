@@ -6749,8 +6749,11 @@ like priority. READY and ending records retain the declaration. Claims retain
 `cpu_qos_selected` and `cpu_weight`, so a protected attempt and an opportunistic
 attempt remain distinguishable even when the cached result identity agrees.
 An attachment to an existing attempt preserves that attempt's selected class.
-Explicit declarations require the `cpu-qos-v1` worker tag. All admission loops
-on a host must adopt the new runtime before any cap above zero.
+Explicit declarations require the `cpu-qos-v1` worker tag. Drain the whole host
+and upgrade every broker and admission loop before the first offer of this tag,
+including at cap 0: opted work already runs at weight 10 without borrowing.
+Before restoring an older runtime, disable new opportunistic publication and
+drain every opportunistic attempt, including attempts that borrowed no CPUs.
 
 Protected actions neither lend nor borrow assigned IDs. Only opted-in donors
 with complete fresh telemetry can lend preferred IDs. A CPU can have at most
@@ -6793,7 +6796,9 @@ capabilities. Persisted metadata cannot reconstruct a grant.
 Rollout compares matched, post-retier cohorts for at least one hour and 100
 useful distinct successful jobs per period. Count jobs/hour and CPU-seconds,
 exclude cached duplicate results and failed or retried starts, and retain sample
-counts. Track normal-priority x86 publication-to-claim wait p95, host PSI avg60,
+counts. Record lending refusals by reason, observation cadence and the cap on
+every admission loop; mismatched caps reset history and keep lending closed.
+Track normal-priority x86 publication-to-claim wait p95, host PSI avg60,
 protected elapsed-time p95, unexpected OOMs, and each named TL timing-test flake
 rate. Promotion requires at least 5% useful-throughput gain in the eligible
 cohort, at most 5% protected p95 regression, normal-priority x86 wait p95 below

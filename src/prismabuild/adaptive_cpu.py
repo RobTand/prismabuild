@@ -1950,7 +1950,13 @@ class Controller:
                 # Keep the existing held/foreign denial evidence when there
                 # isn't enough eligible room. Never wait on the first busy
                 # token when a later idle one can satisfy this whole claim.
-                predicted = self._predicted_cpus(declared)
+                # Attribution uses the physical free-token ordinals even when
+                # an orphan borrower still occupies them. These IDs explain
+                # which holders must drain; they never authorize acquisition.
+                predicted = self.ledger.cpu_ids(
+                    self.ledger._census_glob(self.ledger.free_dir, 'cpu-*'), self.tiers)[:declared]
+                if len(predicted) != declared:
+                    predicted = None
             if predicted is None:
                 return refuse("host_pressure_unproven", fresh=fresh)
             # Held and foreign are recorded apart (#1160): a CPU a pool holder
@@ -2096,7 +2102,8 @@ class Controller:
             donor_eligibility = cpu_lending.opportunistic_eligibility(
                 meta, _sealed_request(meta.get('opportunistic_policy', {})),
                 measurement=bool(meta.get('measurement')),
-                owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'), running=True)
+                owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'),
+                running=True, holder_key=holder.name)
             donor = donor_eligibility is not None
             if donor:
                 cpu_lending.require_opportunistic(donor_eligibility)

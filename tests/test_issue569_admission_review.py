@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from prismabuild import pool  # noqa: E402
 from gpu_capacity_fixture import idle_gpu_sample
+from test_cpu_lending import loan_rig
 
 
 def host_sample(cpus, busy_by_cpu, psi_some, *, interval=10.):
@@ -152,16 +153,16 @@ def light_preferred_box(tmp_path, monkeypatch, psi_some):
     return queue, capacity, tiers, cpu_sampler
 
 
-def test_low_some_control_still_borrows_the_proven_idle_preferred_cpu(tmp_path, monkeypatch):
+def test_low_some_control_still_borrows_the_proven_idle_preferred_cpu(loan_rig):
     """With pressure low, the proven-idle preferred CPU is shared first, as
     designed: this is the unchanged preferred-before-fallback behavior."""
     from prismabuild import adaptive_cpu
-    queue, capacity, tiers, cpu_sampler = light_preferred_box(tmp_path, monkeypatch, 0.)
-    item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
-    assert item is not None
-    assert item['cpu_allocation'] == {'preferred': [0], 'fallback': []}
+    ledger, tiers, controller, donor, item, decision = loan_rig
+    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=decision, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(item['action_key'], handle)
     meta = adaptive_cpu.read_json(
-        queue.ledger().held_dir / item['action_key'] / adaptive_cpu.METADATA)
+        ledger.held_dir / item['action_key'] / adaptive_cpu.METADATA)
+    assert meta['allocation'] == {'preferred': [0], 'fallback': []}
     assert meta['borrowing'] is True
     assert meta['borrowed_cpu'] == 1
 

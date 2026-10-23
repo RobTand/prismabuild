@@ -142,13 +142,14 @@ def _qos_inputs(item):
                            'published_unix', 'attempts', 'cas_root')})
 
 
-def opportunistic_eligibility(item, action, *, measurement, owner, allowance, running=False):
+def opportunistic_eligibility(item, action, *, measurement, owner, allowance, running=False, holder_key=None):
     """The sole eligibility decision. Priority alone never opts work in."""
     original = item
     if running:
         policy = item.get('opportunistic_policy')
         if (not isinstance(policy, dict) or item.get('cpu_qos') != 'opportunistic'
-                or item.get('cpu_weight') != 10 or not item.get('shape')):
+                or item.get('cpu_weight') != 10 or not item.get('shape')
+                or policy.get('action_key') != holder_key):
             return None
         item = policy
     if (item.get('cpu_qos') != 'opportunistic' or item.get('priority') != -10
@@ -319,11 +320,18 @@ def require_cpu_loan(metadata, *, current=True):
     return record
 
 
-def require_selected_cpu_policy(metadata, record):
+def selected_cpu_policy_matches(metadata, record):
     if metadata is not None and metadata.get('cpu_qos') == 'opportunistic':
-        selected = require_opportunistic(metadata.get('_eligibility'))
-        if selected != _qos_inputs(record):
-            raise ValueError('CPU eligibility differs from winning publication')
+        try:
+            return require_opportunistic(metadata.get('_eligibility')) == _qos_inputs(record)
+        except ValueError:
+            return False
+    return True
+
+
+def require_selected_cpu_policy(metadata, record):
+    if not selected_cpu_policy_matches(metadata, record):
+        raise ValueError('CPU eligibility differs from winning publication')
 
 
 def cpu_admission_record(metadata):

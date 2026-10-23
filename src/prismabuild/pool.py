@@ -3744,7 +3744,7 @@ class ResourceLedger:
                                for tier in ('preferred', 'fallback'))):
                     return []
                 assigned.update(allocation['preferred'] + allocation['fallback'])
-            elif not reservation.physical_cpu_count and reservation.has_contents:
+            elif reservation.has_contents or not holder.name.startswith(ACQUIRING_PREFIX):
                 # A missing affinity record cannot prove a returned token is
                 # disjoint from a surviving borrower or funded dependent.
                 if tiers is not None or record_store.read_document(self.base / 'cpu-map.json'):
@@ -4519,6 +4519,13 @@ class ResourceLedger:
                         # measured, or unmeasured with the default.
                         "basis": allowance.get("basis")}
                 immutable_files.write_json_atomic(destination / cpu_admission.METADATA, metadata)
+            elif adaptive is None:
+                static_tiers = cpu_tiers or record_store.read_document(self.base / 'cpu-map.json')
+                if static_tiers is not None:
+                    immutable_files.write_json_atomic(destination / cpu_admission.METADATA, {
+                        'declared_cpu': wanted.get('cpu', 0), 'cpu_qos': 'protected',
+                        'cpu_weight': 100, 'borrowed_cpu': 0,
+                        'allocation': self.cpu_allocation(handle, static_tiers)})
         except _Insufficient:
             self._empty_into_free(destination)
             return None
@@ -14765,7 +14772,8 @@ class PoolQueue:
         if weight == 10:
             eligibility = cpu_admission.cpu_lending.opportunistic_eligibility(
                 cpu_meta, action, measurement=bool(cpu_meta.get('measurement')),
-                owner=cpu_meta.get('funded_by'), allowance=cpu_meta.get('dependent_allowance'), running=True)
+                owner=cpu_meta.get('funded_by'), allowance=cpu_meta.get('dependent_allowance'),
+                running=True, holder_key=key)
             cpu_admission.cpu_lending.require_opportunistic(eligibility)
         scope = resource_scope.ResourceScope(
             key, uuid.uuid4().hex, memory * 1024 ** 3,
@@ -18080,6 +18088,7 @@ class PoolQueue:
                     and self._preemption_proof_binding(moved) != backfill_binding)
                 or not self._placement_matches(moved, tags=tagset, has_gpu=has_gpu)
                 or self.demand_of(moved) != sealed_demand
+                or not cpu_admission.cpu_lending.selected_cpu_policy_matches(host.adaptive, moved)
                 or (scratch_intent is not None and (
                     not self._scratch_record_matches(moved_record, item, scratch_intent)
                     or scratch_evidence["selected_host"] != socket.gethostname()))):

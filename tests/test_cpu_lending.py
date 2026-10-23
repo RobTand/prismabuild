@@ -95,7 +95,7 @@ def test_history_resets_on_lost_identity_or_coverage(fault):
 
 
 @pytest.fixture
-def loan_rig(tmp_path, monkeypatch):
+def loan_rig(tmp_path, monkeypatch, request):
     clock = [100.]
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
     monkeypatch.setattr(adaptive_cpu, '_sealed_request', lambda item:
@@ -108,7 +108,8 @@ def loan_rig(tmp_path, monkeypatch):
     def item(key, cpu):
         return {'action_key': key * 64, 'cpu_qos': 'opportunistic', 'priority': -10,
                 'resources': {'cpu': cpu}}
-    donor, candidate = item('a', 4), item('b', 1)
+    donor_width, candidate_width = getattr(request, 'param', (4, 1))
+    donor, candidate = item('a', donor_width), item('b', candidate_width)
     metadata = controller.decision(donor, donor['resources'], identity=('donor', False), owner=None)
     handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
                                   adaptive=metadata, cpu_tiers=tiers)
@@ -300,17 +301,36 @@ def test_rollback_uses_frozen_grant_after_priority_changes(loan_rig):
 
 
 @pytest.mark.parametrize('private', [False, True])
+@pytest.mark.parametrize('loan_rig', [(4, 1), (3, 2)], indirect=True)
 def test_missing_borrower_affinity_never_makes_returned_tokens_free(loan_rig, private):
     ledger, tiers, controller, donor, item, metadata = loan_rig
-    handle = ledger.begin_acquire(item['action_key'], {'cpu': 1, 'mem_gb': 1},
-                                 adaptive=None, cpu_tiers=tiers)
-    assert handle
-    # Reproduce a borrower whose only durable token is memory and whose CPU
-    # metadata became unreadable. Unknown affinity must close static selection.
-    cpu_token = next((ledger.held_dir / handle).glob('cpu-*'))
-    cpu_token.rename(ledger.free_dir / cpu_token.name)
+    handle = ledger.begin_acquire(item['action_key'], item['resources'],
+                                 adaptive=metadata, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(item['action_key'], handle)
+    ledger.release(donor['action_key'])
+    (ledger.held_dir / item['action_key'] / adaptive_cpu.METADATA).unlink()
     acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
     assert acquire('e' * 64, {'cpu': 1}, cpu_tiers=tiers) is None
+
+
+def test_static_cpu_less_holder_records_proven_empty_affinity(loan_rig):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    handle = ledger.begin_acquire('e' * 64, {'mem_gb': 1}, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire('e' * 64, handle)
+    saved = adaptive_cpu.read_json(ledger.held_dir / ('e' * 64) / adaptive_cpu.METADATA)
+    assert saved['allocation'] == {'preferred': [], 'fallback': []}
+    assert ledger.begin_acquire('f' * 64, {'cpu': 1}, cpu_tiers=tiers)
+
+
+def test_running_donor_policy_must_name_its_actual_holder(loan_rig):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    saved = adaptive_cpu.read_json(ledger.held_dir / donor['action_key'] / adaptive_cpu.METADATA)
+    action = {'task': {'task_class': 'generation'}, 'params': {}}
+    options = dict(measurement=False, owner=None, allowance=None,
+                   running=True, holder_key=donor['action_key'])
+    assert cpu_lending.opportunistic_eligibility(saved, action, **options)
+    saved['opportunistic_policy']['action_key'] = 'f' * 64
+    assert cpu_lending.opportunistic_eligibility(saved, action, **options) is None
 
 
 @pytest.mark.parametrize('fault', ['default', 'priority', 'measurement', 'exclusive', 'funded', 'legacy_donor'])

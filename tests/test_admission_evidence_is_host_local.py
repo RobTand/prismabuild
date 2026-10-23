@@ -28,6 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools/fleet'))
 from prismabuild import adaptive_cpu, adaptive_gpu, adaptive_snapshot, pool
+from test_adaptive_cpu import rig as lending_queue_rig
 
 
 @pytest.fixture(autouse=True)
@@ -45,38 +46,16 @@ def _await_publishers():
 
 
 @pytest.fixture
-def cpu_rig(tmp_path, monkeypatch):
+def cpu_rig(lending_queue_rig):
     """A two-CPU box whose first holder reserved both CPUs and uses a fraction."""
-    clock = [100.]
-    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
-    state = {'busy_cpus': 0., 'psi_some': 0.}
-    cpu_sampler = lambda: dict(
-        sampled_unix=clock[0], cpu_count=2, interval_s=1., **state)
-    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    queue = pool.PoolQueue(tmp_path / 'queue')
-    tiers = {'preferred': [0], 'fallback': [1]}
-
-    def publish(index, cpu=1):
-        key = f'{index:064x}'
-        queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
-                      checkout_root=str(tmp_path), worker_script='worker.py',
-                      resources={'cpu': cpu, 'mem_gb': 1})
-        return key
-
-    def claim():
-        return queue.claim(capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1},
-                           cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
-
+    queue, clock, state, key, first, publish, claim, telemetry = lending_queue_rig
+    adaptive_cpu.local_telemetry_path(queue.ledger().base, key).unlink()
+    adaptive_cpu.write_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'jobs.json', {})
     def record(key, cpu):
         return {'action_key': key, 'sampled_unix': clock[0], 'cpu_seconds': cpu,
                 'wall_seconds': clock[0] - 100, 'memory_current_bytes': 100,
                 'memory_peak_bytes': 100, 'complete': True}
 
-    key = publish(1, cpu=2)
-    first = claim()
-    assert first
-    state['busy_cpus'] = .1
-    publish(2)
     return queue, clock, key, first, claim, record
 
 

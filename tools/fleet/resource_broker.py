@@ -643,7 +643,10 @@ class Authority:
                     _atomic(self.state_dir/(scope+'.json'),record)
                 if (not record.get('released_unix') and not record.get('pending')
                         and (not record.get('stopped_unix') or self.backend.exists(scope))):
-                    self.backend.verify_cpu_weight(scope,cpu_weight)
+                    try:self.backend.verify_cpu_weight(scope,cpu_weight)
+                    except FileNotFoundError:
+                        if not record.get('stopped_unix'):
+                            raise ValueError('scope disappeared before CPU weight verification') from None
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
@@ -1206,8 +1209,8 @@ class Authority:
             if record is None or record.get('uid')!=uid:raise PermissionError('unknown scope owner')
             if record.get('released_unix'):raise ValueError('attempt is released')
             if op=='container_begin':
-                self.backend.verify_cpu_weight(scope,record.get('cpu_weight',100))
                 if record.get('stopped_unix'):raise ValueError('attempt is stopped')
+                self.backend.verify_cpu_weight(scope,record.get('cpu_weight',100))
                 # This check grants only conservative intent registration, not
                 # process migration or a kill capability. A vanished peer
                 # cannot make another scope runnable or clear an intent.

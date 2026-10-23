@@ -680,6 +680,24 @@ def test_creation_recovery_returns_same_authority_without_recreating(authority):
         a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create','memory_max_bytes':1})
 
 
+@pytest.mark.parametrize('stopped', [False, True])
+def test_disappearing_scope_preserves_stopped_recovery_contract(authority, monkeypatch, stopped):
+    a,b=authority;request,record=create(a)
+    if stopped:
+        a.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+    def vanished(scope, expected):
+        raise FileNotFoundError('scope disappeared')
+    monkeypatch.setattr(b,'verify_cpu_weight',vanished)
+    if stopped:
+        recovered=a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+        assert recovered['stopped_unix']
+        with pytest.raises(ValueError,match='stopped'):
+            a.container(os.getuid(),os.getpid(),{'op':'container_begin','scope_id':record['scope_id']})
+    else:
+        with pytest.raises(ValueError,match='scope disappeared'):
+            a.handle(os.getuid(),os.getpid(),{**request,'op':'recover_create'})
+
+
 def test_absent_creation_recovery_fences_a_delayed_create_across_restart(authority):
     a,b=authority
     request={'op':'create','action_key':'a'*64,'nonce':'b'*32,'memory_max_bytes':64*1024**2}
