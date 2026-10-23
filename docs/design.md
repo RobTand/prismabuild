@@ -20953,6 +20953,10 @@ rollback can remove only its own lease. RAM ghost-token cleanup preserves lease
 and finishing custody and uses certified primitives.
 
 Each creation intent names its path and parent device/inode before mkdir.
+Intent publication, directory creation and inode binding share the claim key's
+transition exclusion. A finisher cannot certify ENOENT while that creator can
+still make the directory. A creator whose claim already retired refuses before
+mkdir. The exclusion ends before Git materialization begins.
 An unbound intent certifies only when an lstat relative to that held parent
 returns ENOENT. An existing unbound path retains custody for manual diagnosis;
 recovery never assumes that an unregistered inode belongs to the attempt.

@@ -22053,9 +22053,16 @@ class PoolQueue:
                 "claim": {k: v for k, v in lifetime_fence.attempt_identity(item).items()
                           if k not in ("nonce", "scope_id")},
             }
-            # Persist intent before creation. A crash before the inode is
-            # registered leaves explicit uncertainty instead of an empty list.
-            self._write_checkout_registration(item, registration)
+
+        @contextmanager
+        def checkout_creation():
+            # A finisher cannot certify ENOENT while this execute can still
+            # create the tree. A retired claim refuses before mkdir begins.
+            with self.action_transition_lock(str(item["action_key"])) as acquired:
+                if not acquired:
+                    raise PoolContractError("checkout creation custody is busy")
+                self._write_checkout_registration(item, registration)
+                yield
 
         def register_checkout(temporary):
             registration.update({k: checkout_cleanup[k] for k in ("path", "device", "inode")})
@@ -22069,6 +22076,7 @@ class PoolQueue:
             fence["cleanup"] = checkout_cleanup
             fence["on_temporary"] = register_checkout
             fence["checkout_intent"] = registration
+            fence["creation_guard"] = checkout_creation
         try:
             with _execution_checkout(item, **fence) as checkout_root:
                 if life is None:

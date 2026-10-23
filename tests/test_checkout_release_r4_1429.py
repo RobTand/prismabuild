@@ -453,3 +453,54 @@ def test_missing_custody_cannot_turn_a_bound_reservation_into_an_empty_fence(tmp
     with pytest.raises(pool.PoolContractError, match="certif"):
         queue._release_reservation(key, host=queue.ledger().host)
     assert queue.ledger().held_keys() == [key]
+
+
+def test_creation_intent_cannot_certify_while_its_creator_can_still_create(
+        tmp_path, broker, monkeypatch):
+    import threading
+
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    key = action["action_key"]
+    root = tmp_path / "materialized"
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", root)
+    item = claim(queue)
+    first = _execute(queue, item)
+    original = materialize._new_owned_checkout
+    entered, resume = threading.Event(), threading.Event()
+    errors = []
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert resume.wait(10), "creator was not resumed"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(materialize, "_new_owned_checkout", delayed)
+
+    def again():
+        try:
+            _execute(queue, item)
+        except pool.PoolContractError as exc:
+            errors.append(type(exc).__name__)
+
+    thread = threading.Thread(target=again)
+    thread.start()
+    try:
+        assert entered.wait(10), "creator did not reach mkdir"
+        # A free key permits the old finisher to certify ENOENT before the
+        # pending creator makes its directory. A guarded creation must finish
+        # binding its inode before that finisher can examine the intent.
+        with queue.action_transition_lock(key, blocking=False) as unguarded:
+            if unguarded:
+                _finish(queue, item, first)
+        monkeypatch.setattr(materialize.owned_tree, "remove_tree", _refuse)
+    finally:
+        resume.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert errors == ["PoolContractError"]
+    if not unguarded:
+        _finish(queue, item, first)
+    trees = [path for path in root.iterdir()
+             if path.is_dir() and materialize.CHECKOUT_TREE.fullmatch(path.name)]
+    assert trees
+    assert queue.ledger().held_keys() == [key], "pending creation borrowed a never-created proof"

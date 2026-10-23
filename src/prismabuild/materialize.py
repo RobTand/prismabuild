@@ -21,7 +21,7 @@ Stdlib only, like everything a worker node has to import.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import math
 import os
 from pathlib import Path
@@ -319,6 +319,7 @@ def _execution_checkout(
     cleanup_deadline_unix: float | None = None,
     cleanup: dict[str, object] | None = None,
     checkout_intent: Mapping[str, object] | None = None,
+    creation_guard=None,
 ) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
 
@@ -336,6 +337,8 @@ def _execution_checkout(
             unchanged for the caller that does not need it.
         deadline_unix: With it, every Git call and the link check end before
             this instant or raise :class:`MaterializationDeadline` (#1429).
+        creation_guard: Holds intent publication, mkdir and inode registration
+            in one custody transition. Released before Git materialization.
         cleanup_deadline_unix: With it, the final removal stops there and
             records the rest as a leak.  Without either, the calls are the
             ones every other transport has always made.
@@ -363,116 +366,120 @@ def _execution_checkout(
             "PRISMABUILD_LOCAL_CHECKOUT_ROOT must be an absolute non-root path"
         )
     base.mkdir(parents=True, exist_ok=True)
-    temporary, owner_lock = _new_owned_checkout(
-        base, f"{str(item['action_key'])[:12]}.",
-        **({} if checkout_intent is None else {
-            "name": Path(checkout_intent["path"]).name,
-            "parent_identity": (checkout_intent["parent_device"], checkout_intent["parent_inode"])}))
-    expected = None
-    if cleanup is not None:
-        identity = temporary.stat(follow_symlinks=False)
-        expected = (identity.st_dev, identity.st_ino)
-        cleanup.update(path=str(temporary), device=identity.st_dev, inode=identity.st_ino,
-                       complete=False, ended_unix=None)
-    repository = temporary / "checkout"
-    bounded = {} if deadline_unix is None else {"deadline_unix": deadline_unix}
-    try:
-        if on_temporary is not None:
-            on_temporary(temporary)
-        _run_materializer_git(
-            ["git", "init", "-q", str(repository)],
-            where="initialize materialized checkout",
-            **bounded,
-        )
-        heads = _run_materializer_git(
-            ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
-            where="read checkout snapshot bundle",
-            **bounded,
-        )
-        commit = str(snapshot["commit"])
-        advertised = {
-            fields[1]: fields[0]
-            for line in heads.splitlines()
-            if len(fields := line.split(maxsplit=1)) == 2
-        }
-        sealed = [name for name, oid in advertised.items() if oid == commit]
-        if not sealed:
-            raise MaterializationContractError(
-                "checkout snapshot bundle does not advertise its sealed commit"
-            )
-        refspecs = [sealed[0]]
-        # A v2 record names branches the action will spell -- ``master...HEAD``
-        # in a diff-derived gate.  The record and the bundle travel separately,
-        # so the record alone cannot be the authority for where a branch
-        # points: creating ``refs/heads/master`` at an id nothing in the bundle
-        # reaches would make every later comparison a silent lie rather than a
-        # refusal.  Both must say the same thing before either is used.
-        for name, sealed_id in sorted(dict(snapshot.get("refs") or {}).items()):
-            qualified = f"refs/heads/{name}"
-            if advertised.get(qualified) != sealed_id:
-                raise MaterializationContractError(
-                    f"checkout snapshot bundle contradicts sealed ref {name!r}"
-                )
-            refspecs.append(f"{qualified}:{qualified}")
-        # ``git init`` leaves HEAD a symref to the unborn default branch, and
-        # ``git fetch`` refuses to update the branch HEAD points at -- which is
-        # exactly ``master`` on the checkout whose gate this exists for.  Point
-        # HEAD at the snapshot's own reserved name, which no record may claim,
-        # before fetching anything.  Only a record that names branches needs
-        # this: the sealed ref is fetched as a bare refspec into FETCH_HEAD and
-        # updates no local branch, so a v1 record runs the same Git commands it
-        # always did.
-        if len(refspecs) > 1:
+    with ExitStack() as creating:
+        if creation_guard is not None:
+            creating.enter_context(creation_guard())
+        temporary, owner_lock = _new_owned_checkout(
+            base, f"{str(item['action_key'])[:12]}.",
+            **({} if checkout_intent is None else {
+                "name": Path(checkout_intent["path"]).name,
+                "parent_identity": (checkout_intent["parent_device"], checkout_intent["parent_inode"])}))
+        expected = None
+        if cleanup is not None:
+            identity = temporary.stat(follow_symlinks=False)
+            expected = (identity.st_dev, identity.st_ino)
+            cleanup.update(path=str(temporary), device=identity.st_dev, inode=identity.st_ino,
+                           complete=False, ended_unix=None)
+        repository = temporary / "checkout"
+        bounded = {} if deadline_unix is None else {"deadline_unix": deadline_unix}
+        try:
+            if on_temporary is not None:
+                on_temporary(temporary)
+            creating.close()
             _run_materializer_git(
-                [
-                    "git", "-C", str(repository), "symbolic-ref", "HEAD",
-                    f"refs/heads/"
-                    f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
-                ],
-                where="detach materialized HEAD from a fetched branch",
+                ["git", "init", "-q", str(repository)],
+                where="initialize materialized checkout",
                 **bounded,
             )
-        _run_materializer_git(
-            [
-                "git", "-C", str(repository), "fetch", "-q", "--no-tags",
-                str(bundle), *refspecs,
-            ],
-            where="fetch checkout snapshot bundle",
-            **bounded,
-        )
-        _run_materializer_git(
-            [
-                "git",
-                "-c", "core.autocrlf=false",
-                "-c", "core.attributesFile=/dev/null",
-                "-C", str(repository), "checkout", "-q", "--detach", commit,
-            ],
-            where="check out sealed commit",
-            environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
-            **bounded,
-        )
-        _require_contained_materialized_links(repository, **bounded)
-        subdirectory = repository / str(snapshot["subdirectory"])
-        if not subdirectory.is_dir():
-            raise MaterializationContractError(
-                "checkout snapshot subdirectory is absent after materialization"
+            heads = _run_materializer_git(
+                ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
+                where="read checkout snapshot bundle",
+                **bounded,
             )
-        yield subdirectory
-    finally:
-        # The path was created by mkdtemp below a validated local-only root;
-        # never widen this cleanup to the root itself. A root-owned container
-        # dropping can leave residue inside this bounded root, but cleanup
-        # failure must not change an already-published action into a failure.
-        try:
-            verdict = _cleanup_execution_checkout(
-                base, temporary, item,
-                **({} if expected is None else {"expect": expected}),
-                **({} if cleanup_deadline_unix is None
-                   else {"deadline_unix": cleanup_deadline_unix}))
-            if cleanup is not None:
-                cleanup.update(verdict)
+            commit = str(snapshot["commit"])
+            advertised = {
+                fields[1]: fields[0]
+                for line in heads.splitlines()
+                if len(fields := line.split(maxsplit=1)) == 2
+            }
+            sealed = [name for name, oid in advertised.items() if oid == commit]
+            if not sealed:
+                raise MaterializationContractError(
+                    "checkout snapshot bundle does not advertise its sealed commit"
+                )
+            refspecs = [sealed[0]]
+            # A v2 record names branches the action will spell -- ``master...HEAD``
+            # in a diff-derived gate.  The record and the bundle travel separately,
+            # so the record alone cannot be the authority for where a branch
+            # points: creating ``refs/heads/master`` at an id nothing in the bundle
+            # reaches would make every later comparison a silent lie rather than a
+            # refusal.  Both must say the same thing before either is used.
+            for name, sealed_id in sorted(dict(snapshot.get("refs") or {}).items()):
+                qualified = f"refs/heads/{name}"
+                if advertised.get(qualified) != sealed_id:
+                    raise MaterializationContractError(
+                        f"checkout snapshot bundle contradicts sealed ref {name!r}"
+                    )
+                refspecs.append(f"{qualified}:{qualified}")
+            # ``git init`` leaves HEAD a symref to the unborn default branch, and
+            # ``git fetch`` refuses to update the branch HEAD points at -- which is
+            # exactly ``master`` on the checkout whose gate this exists for.  Point
+            # HEAD at the snapshot's own reserved name, which no record may claim,
+            # before fetching anything.  Only a record that names branches needs
+            # this: the sealed ref is fetched as a bare refspec into FETCH_HEAD and
+            # updates no local branch, so a v1 record runs the same Git commands it
+            # always did.
+            if len(refspecs) > 1:
+                _run_materializer_git(
+                    [
+                        "git", "-C", str(repository), "symbolic-ref", "HEAD",
+                        f"refs/heads/"
+                        f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
+                    ],
+                    where="detach materialized HEAD from a fetched branch",
+                    **bounded,
+                )
+            _run_materializer_git(
+                [
+                    "git", "-C", str(repository), "fetch", "-q", "--no-tags",
+                    str(bundle), *refspecs,
+                ],
+                where="fetch checkout snapshot bundle",
+                **bounded,
+            )
+            _run_materializer_git(
+                [
+                    "git",
+                    "-c", "core.autocrlf=false",
+                    "-c", "core.attributesFile=/dev/null",
+                    "-C", str(repository), "checkout", "-q", "--detach", commit,
+                ],
+                where="check out sealed commit",
+                environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+                **bounded,
+            )
+            _require_contained_materialized_links(repository, **bounded)
+            subdirectory = repository / str(snapshot["subdirectory"])
+            if not subdirectory.is_dir():
+                raise MaterializationContractError(
+                    "checkout snapshot subdirectory is absent after materialization"
+                )
+            yield subdirectory
         finally:
-            _release_checkout(base, temporary, owner_lock)
+            # The path was created by mkdtemp below a validated local-only root;
+            # never widen this cleanup to the root itself. A root-owned container
+            # dropping can leave residue inside this bounded root, but cleanup
+            # failure must not change an already-published action into a failure.
+            try:
+                verdict = _cleanup_execution_checkout(
+                    base, temporary, item,
+                    **({} if expected is None else {"expect": expected}),
+                    **({} if cleanup_deadline_unix is None
+                       else {"deadline_unix": cleanup_deadline_unix}))
+                if cleanup is not None:
+                    cleanup.update(verdict)
+            finally:
+                _release_checkout(base, temporary, owner_lock)
 
 
 
