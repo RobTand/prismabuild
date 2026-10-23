@@ -74,6 +74,31 @@ def _later(seconds: float = WINDOW_S + 60) -> float:
     return time.time() + seconds
 
 
+def test_final_unlink_proves_the_original_open_inode_is_gone(tmp_path, monkeypatch):
+    root = tmp_path / "parent"
+    root.mkdir()
+    original = root / "original"
+    original.mkdir()
+    identity = original.stat()
+    retained = root / "retained"
+    remove = os.rmdir
+
+    def swap_at_unlink(name, *, dir_fd=None):
+        if name == "original":
+            original.rename(retained)
+            original.mkdir()
+        return remove(name, dir_fd=dir_fd)
+
+    parent = os.open(root, FLAGS)
+    try:
+        monkeypatch.setattr(owned_tree.os, "rmdir", swap_at_unlink)
+        with pytest.raises(OSError, match="original directory remains linked"):
+            owned_tree.remove_tree(parent, "original", expect=(identity.st_dev, identity.st_ino))
+    finally:
+        os.close(parent)
+    assert retained.stat().st_ino == identity.st_ino
+
+
 def test_a_live_owner_is_never_reaped_at_any_age(parent):
     lock = parent.own("pb-livelive")
     try:

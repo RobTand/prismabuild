@@ -20928,6 +20928,31 @@ normal reaper or drain-time pending-finish pass. Successful cleanup requeues
 without charging an execution; a covered withdrawal stays cancelled. Requeue
 removes the old claim's checkout proof and lifetime evidence.
 
+Every pool snapshot checkout has custody, including an unfenced snapshot.
+Checkout custody is an append-only registration list for the claim. Each execute
+first persists an intent, then binds its execution UUID, path, device and inode
+before materialization. The lease is the durable live authority and the claim
+mirrors it. Heartbeats preserve that authority; a second execute cannot replace
+the first registration or erase a newer cleanup debt. The full envelope travels
+with the lease for recovery after claim loss and with an exact late-finish
+journal for successor isolation.
+
+`materialize.certify_checkout_cleanup` is the sole checkout certification
+function. Cleanup, deferral, recovery and the reservation-return boundary use
+it. It checks every durable registration and accepts a result only for that
+execution UUID, registered path/device/inode and exact attempt. Caller details
+cannot replace the list. Missing or contradictory authority, an unbound creation
+intent, or a missing tree without persisted unlink proof retains custody.
+The lease remains until after the guarded reservation return. Acquisition
+rollback is earlier than checkout creation and has no checkout custody.
+
+Removal keeps the original directory descriptor open through final unlink.
+It checks the name against that identity before rmdir and then requires the
+same open inode's link count to be zero. A name swapped after traversal or
+immediately before rmdir cannot certify a surviving registered inode. Completed
+unlink evidence remains bound to its registration across retries and restarts;
+all registered trees must certify before any host or tier tokens return.
+
 This is source support for SC-01, ID-02, ID-08 and SM-01 of the staged-read
 contract. It does not change their wider requirement status. No generation
 is deployed by this port. A person's settlement decision, deployment and

@@ -144,15 +144,22 @@ def remove_tree(dir_fd: int, name: str, *, keep: str | None = None,
                 os.unlink(keep, dir_fd=top)
             except FileNotFoundError:
                 pass
+        if left:
+            raise OSError(errno.ENOTEMPTY, f"{name}: {left} entries could not be removed")
+        if check is not None:
+            check()
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+            raise OSError(errno.ESTALE, f"{name} was replaced during removal")
+        os.rmdir(name, dir_fd=dir_fd)
+        # The name alone is not proof: it can have been swapped after stat.
+        # Keep the original open until the kernel proves that inode unlinked.
+        if os.fstat(top).st_nlink != 0:
+            raise OSError(errno.ESTALE, f"{name}: original directory remains linked")
     except RecursionError:
         raise OSError(errno.ELOOP, f"{name} is nested too deeply") from None
     finally:
         os.close(top)
-    if left:
-        raise OSError(errno.ENOTEMPTY, f"{name}: {left} entries could not be removed")
-    if check is not None:
-        check()
-    os.rmdir(name, dir_fd=dir_fd)
 
 
 def _mount_id_of(fd: int) -> int:

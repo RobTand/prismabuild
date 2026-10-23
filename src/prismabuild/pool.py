@@ -7287,7 +7287,7 @@ class PoolQueue:
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
         "finish_pending", "resource_scope_intent", "scratch_declaration_record",
-        "checkout_cleanup", "lifetime_evidence",
+        "checkout_cleanup", "checkout_registrations", "lifetime_evidence",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -12044,10 +12044,22 @@ class PoolQueue:
             invalid=AmbiguousClaimHolder,
         )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix", "scratch_declaration_record",
+                      "claimed_unix", "published_unix",
+                      "lifetime_fence_s", "checkout_snapshot", "checkout_registrations", "checkout_cleanup",
+                      "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
+        if claim.get("checkout_snapshot") is not None:
+            for field in ("claimed_by", "claimed_host", "attempts"):
+                lease[field] = claim[field]
+        previous = record_store.read_document(self.records.lease_path(action_key))
+        if previous is not None and "checkout_registrations" in previous:
+            # Registration is lease-owned. A stale heartbeat cannot erase an
+            # execute that durably registered before its claim mirror landed.
+            lease["checkout_registrations"] = previous["checkout_registrations"]
+            if "checkout_cleanup" in previous:
+                lease["checkout_cleanup"] = previous["checkout_cleanup"]
         self.records.replace_record_at(self.records.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
@@ -12693,8 +12705,10 @@ class PoolQueue:
                 return True
         return False
 
+    @_serialized_key
     def _release_reservation(self, action_key: str, *, host: str | None,
-                             keep_tier: bool = False) -> int:
+                             keep_tier: bool = False, cleanup_owner: Path | None = None,
+                             reclaim_tier: bool = False) -> int:
         """Give a concluded claim's capacity back: host tokens, then tier tokens.
 
         Every path that concludes a claim -- finish, the reapers, withdrawal,
@@ -12728,7 +12742,23 @@ class PoolQueue:
         over-admission happens first.
         """
 
+        owner = self.records.lease_path(action_key)
+        if not owner.exists():
+            owner = self.records.item_path(CLAIMED, action_key)
+        if not owner.exists() and cleanup_owner is not None:
+            owner = cleanup_owner
+        custody = record_store.read_document(owner)
+        if custody is None and owner.exists():
+            raise PoolContractError("checkout custody owner is unreadable; reservation retained")
+        custody = custody or {"action_key": action_key}
+        certification = materialize.certify_checkout_cleanup(
+            self, custody, owner_path=owner, recover=False,
+            local_checkout_root=LOCAL_CHECKOUT_ROOT)
+        if not certification["complete"]:
+            raise PoolContractError("checkout cleanup is not certified; reservation retained")
         released = self.ledger(host).release(action_key) if host is not None else 0
+        if reclaim_tier:
+            return released + tier_holdings.egress_all(self, action_key)
         if keep_tier:
             # The host tokens go -- the box is free for other work the instant
             # the copy stops -- and the tier tokens that price *occupancy* stay,
@@ -15046,6 +15076,7 @@ class PoolQueue:
     def cleanup_action_containers(
         self, record: Mapping[str, object], *, reason: str = "completion",
         scope_only: bool = False, scratch_owner_path: Path | None = None,
+        checkout_proof: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         """Existing cleanup owner: containment, then durable scratch cleanup."""
         if scratch_owner_path is not None and scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
@@ -15066,11 +15097,10 @@ class PoolQueue:
         result = self._cleanup_payload_containers(record, reason=reason, scope_only=scope_only)
         if not result["complete"]:
             return result
-        if record.get("lifetime_fence_s") is not None and record.get("checkout_snapshot") is not None:
-            checkout = materialize.settle_checkout_cleanup(
-                record, local_checkout_root=LOCAL_CHECKOUT_ROOT)
-            if isinstance(record, dict):
-                record["checkout_cleanup"] = checkout
+        if "checkout_registrations" in record or record.get("checkout_snapshot") is not None:
+            checkout = materialize.certify_checkout_cleanup(
+                self, record, proof=checkout_proof, local_checkout_root=LOCAL_CHECKOUT_ROOT,
+                owner_path=(self.records.late_finish_path(record) if scope_only else scratch_owner_path))
             result = {**result, "checkout_cleanup": checkout,
                       "complete": checkout.get("complete") is True}
             if not result["complete"]:
@@ -15367,7 +15397,8 @@ class PoolQueue:
         settled_unix = scope_cleanup.get("checked_unix") if contained else _now()
         checkout = record.get("checkout_cleanup")
         snapshot = record.get("checkout_snapshot") is not None
-        checkout_complete = not snapshot or materialize.checkout_cleanup_proven(record)
+        checkout_complete = materialize.certify_checkout_cleanup(
+            self, record, recover=False, local_checkout_root=LOCAL_CHECKOUT_ROOT)["complete"]
         cleanup_end = max(settled_unix, _now())
         if snapshot and isinstance(checkout, Mapping):
             finished_detail["checkout_cleanup"] = dict(checkout)
@@ -18657,6 +18688,8 @@ class PoolQueue:
             self.record_denial(item, "lifetime_fence_unreadable", {"error": str(exc)})
             return None
         claimed = self._build_claim_record(committed, scan_pass)
+        if claimed.get("checkout_snapshot") is not None:
+            claimed["checkout_registrations"] = []
         if reservation.tier_funded:
             # Re-verify each funding against the renamed record before
             # persisting: the claim holds this key's transition lock,
@@ -21740,6 +21773,48 @@ class PoolQueue:
 
     # -- execution ------------------------------------------------------
 
+    def _write_checkout_registration(self, item, registration, *, cleanup=None) -> None:
+        """Publish one execute's custody to the lease before its claim mirror."""
+        key = str(item["action_key"])
+        with self.action_transition_lock(key):
+            lease_path = self.records.lease_path(key)
+            lease = record_store.read_document(lease_path)
+            claim_path = self.records.item_path(CLAIMED, key)
+            live = record_store.read_document(claim_path)
+            if (lease is None or live is None or not claim_identity.same_claim(live, item)
+                    or not claim_identity.same_claim(lease, item)):
+                if cleanup is not None:
+                    # The old worker may finish only its own journal. Never
+                    # write the successor's lease or checkout registrations.
+                    item["checkout_registrations"] = [
+                        {**entry, "cleanup": dict(cleanup)}
+                        if entry["execution_id"] == registration["execution_id"] else entry
+                        for entry in item["checkout_registrations"]]
+                    return
+                raise PoolContractError("checkout registration owner changed")
+            entries = [dict(entry) for entry in lease["checkout_registrations"]]
+            index = next((i for i, entry in enumerate(entries)
+                          if entry["execution_id"] == registration["execution_id"]), None)
+            if index is None:
+                if cleanup is not None:
+                    raise PoolContractError("checkout cleanup has no durable registration")
+                entries.append(dict(registration))
+            elif cleanup is None:
+                if "path" in entries[index] and entries[index] != registration:
+                    raise PoolContractError("checkout registration is immutable")
+                entries[index] = dict(registration)
+            else:
+                if {k: v for k, v in entries[index].items() if k != "cleanup"} != registration:
+                    raise PoolContractError("checkout cleanup registration differs")
+                entries[index]["cleanup"] = dict(cleanup)
+                lease["checkout_cleanup"] = dict(cleanup)
+                live["checkout_cleanup"] = dict(cleanup)
+            lease["checkout_registrations"] = entries
+            live["checkout_registrations"] = entries
+            self.records.replace_record_at(lease_path, lease)
+            self.records.replace_record_at(claim_path, live)
+            item["checkout_registrations"] = entries
+
     def execute(
         self,
         item: Mapping[str, object],
@@ -21772,14 +21847,32 @@ class PoolQueue:
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
         # An opted-in action (#1429) is materialized under the stop instant
-        # and its tree is removed under the deadline.  Absent, the checkout
-        # runs the calls it always did.
+        # and its tree is removed under the deadline. Every snapshot, including
+        # an unfenced one, durably registers its checkout before Git runs.
         life = _lifetime_log(item)
         checkout_cleanup: dict[str, object] = {}
+        registration = None
+        if item.get("checkout_snapshot") is not None:
+            registration = {
+                "execution_id": uuid.uuid4().hex,
+                "claim": {k: v for k, v in lifetime_fence.attempt_identity(item).items()
+                          if k not in ("nonce", "scope_id")},
+            }
+            # Persist intent before creation. A crash before the inode is
+            # registered leaves explicit uncertainty instead of an empty list.
+            self._write_checkout_registration(item, registration)
+
+        def register_checkout(temporary):
+            registration.update({k: checkout_cleanup[k] for k in ("path", "device", "inode")})
+            self._write_checkout_registration(item, registration)
+            checkout_cleanup["registration"] = dict(registration)
+
         fence = ({} if life is None else {
             "deadline_unix": life.clock.stop_unix,
-            "cleanup_deadline_unix": life.clock.deadline_unix,
-            "cleanup": checkout_cleanup})
+            "cleanup_deadline_unix": life.clock.deadline_unix})
+        if registration is not None:
+            fence["cleanup"] = checkout_cleanup
+            fence["on_temporary"] = register_checkout
         try:
             with _execution_checkout(item, **fence) as checkout_root:
                 if life is None:
@@ -21829,25 +21922,14 @@ class PoolQueue:
                 # debt. Preserve that verdict even when preparation raises.
                 life.claim = lifetime_fence.attempt_identity(item)
                 item["lifetime_evidence"] = life.as_record()
-                if item.get("checkout_snapshot") is not None:
-                    checkout_cleanup["claim"] = life.claim
-                    item["checkout_cleanup"] = dict(checkout_cleanup)
-                if item.get("checkout_snapshot") is not None:
-                    key = str(item["action_key"])
-                    with self.action_transition_lock(key):
-                        path = self.records.item_path(CLAIMED, key)
-                        live = record_store.read_document(path)
-                        if (live is not None and claim_identity.same_claim(live, item)
-                                and lifetime_fence.attempt_identity(live) == life.claim):
-                            claim_identity.check_lease_identity(
-                                key, live, record_store.read_document(self.records.lease_path(key)),
-                                invalid=AmbiguousClaimHolder)
-                            live["checkout_cleanup"] = item["checkout_cleanup"]
-                            self.records.replace_record_at(path, live)
+            if registration is not None:
+                checkout_cleanup["claim"] = lifetime_fence.attempt_identity(item)
+                self._write_checkout_registration(item, registration, cleanup=checkout_cleanup)
+                item["checkout_cleanup"] = dict(checkout_cleanup)
         if life is not None:
             outcome["lifetime_evidence"] = item["lifetime_evidence"]
-            if item.get("checkout_snapshot") is not None:
-                outcome["checkout_cleanup"] = item["checkout_cleanup"]
+        if registration is not None:
+            outcome["checkout_cleanup"] = item["checkout_cleanup"]
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's

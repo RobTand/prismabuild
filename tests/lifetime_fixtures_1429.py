@@ -107,7 +107,7 @@ def claim(queue: AdmittedQueueFixture) -> dict:
     return item
 
 
-def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float = FENCE_S,
+def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float | None = FENCE_S,
                           max_attempts: int = 1):
     """A fenced action whose checkout is a materialized snapshot."""
 
@@ -136,7 +136,7 @@ def fenced_snapshot_queue(tmp_path: Path, *, fence_s: float = FENCE_S,
         "code_closure": pb.build_code_closure(source, [stamp_name]),
         "params": {"command": [sys.executable, "task.py"], "cwd": ".",
                    "demand": {"cpu": 1, "mem_gb": 1}, "checkout_snapshot": snapshot,
-                   **lifetime_param(fence_s)},
+                   **({} if fence_s is None else lifetime_param(fence_s))},
         "environment": {"variables": {}, "toolchain": {}},
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
@@ -165,7 +165,7 @@ def publish_fenced(fleet, name: str, *, fence_s: float = FENCE_S, extra_variable
                  "working_directory": ".", "result_path": name},
         "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
         "params": {"gpu_exclusive": False, "execution_timeout_s": 120,
-                   **lifetime_param(fence_s)},
+                   **({} if fence_s is None else lifetime_param(fence_s))},
         "environment": {"variables": dict(extra_variables or {}), "toolchain": {
             **pb.executable_toolchain_contract(sys.executable),
             "system": platform.system(), "machine": platform.machine(),

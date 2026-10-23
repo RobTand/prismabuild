@@ -494,15 +494,10 @@ def _worker_finish(
     holder = queue.resolve_claim_holder(action_key, effective_record)
     if holder is not None:
         effective_record["claimed_host"] = holder
-    checkout = (detail or {}).get("checkout_cleanup")
-    if (effective_record.get("lifetime_fence_s") is not None
-            and isinstance(checkout, Mapping)):
-        from . import lifetime_fence, materialize
-        if (not materialize.checkout_cleanup_proven(effective_record)
-                and checkout.get("claim") == lifetime_fence.attempt_identity(effective_record)):
-            effective_record["checkout_cleanup"] = dict(checkout)
     container_cleanup = queue.cleanup_action_containers(
-        effective_record, reason=str((detail or {}).get("termination_reason") or status))
+        effective_record, reason=str((detail or {}).get("termination_reason") or status),
+        **({"checkout_proof": detail["checkout_cleanup"]}
+           if isinstance((detail or {}).get("checkout_cleanup"), Mapping) else {}))
     if not container_cleanup["complete"]:
         # A detached container is still the action even after its launcher
         # has returned.  Keep the claim as the durable owner of both the
@@ -799,7 +794,6 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                   file=sys.stderr)
             return (queue.records.attempt_path(record, plan.attempt)
                     if transition is Transition.FINISH else None)
-    queue.records.lease_path(key).unlink(missing_ok=True)
     if transition is Transition.EXPIRE and disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
         with suppress(Exception):
             queue.note_fill_borrow_end(record)
@@ -812,9 +806,10 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
     holder = (plan.holder if isinstance(plan.holder, str) else socket.gethostname()
               ) if transition in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED} or isinstance(plan, CancellationRelease) else plan.holder
     if transition in {Transition.FINISH, Transition.EXPIRE}:
-        queue._release_reservation(key, host=holder, keep_tier=keep_tier)
+        queue._release_reservation(key, host=holder, keep_tier=keep_tier, cleanup_owner=tombstone)
     else:
-        queue._release_reservation(key, host=holder)
+        queue._release_reservation(key, host=holder, cleanup_owner=tombstone)
+    queue.records.lease_path(key).unlink(missing_ok=True)
     if record.get("lifetime_fence_s") is not None:
         queue._stamp_lifetime_release(record, key, holder=holder)
     if cancelled:
@@ -1310,7 +1305,7 @@ def _sweep_finish_tombstones(
                         # the files on the stage with nothing holding them.
                         queue._release_reservation(
                             key, host=holders[0],
-                            keep_tier=queue._filed_pin_holds(key))
+                            keep_tier=queue._filed_pin_holds(key), cleanup_owner=tombstone)
                         if queue.claim_reservation_hosts(key):
                             continue  # a partial return still needs this owner
                     lease = record_store.read_document(queue.records.lease_path(key))
@@ -1745,9 +1740,9 @@ def _defer_launch(queue, item: Mapping[str, object]) -> Path | None:
         record["claimed_host"] = host
     if queue.withdrawal_covers(record, action_key=key) is not None:
         return queue.finish(key, status=WITHDRAWN, claim_snapshot=record)
-    if record.get("lifetime_fence_s") is not None and record.get("checkout_snapshot") is not None:
-        checkout = materialize.settle_checkout_cleanup(
-            record, local_checkout_root=pool.LOCAL_CHECKOUT_ROOT)
+    if record.get("checkout_snapshot") is not None or "checkout_registrations" in record:
+        checkout = materialize.certify_checkout_cleanup(
+            queue, record, local_checkout_root=pool.LOCAL_CHECKOUT_ROOT)
         record["checkout_cleanup"] = checkout
         if checkout.get("complete") is not True:
             queue._note_cleanup_attempt(record, read_claim, checkout)
@@ -1850,10 +1845,13 @@ def _reclaim_terminal(queue, action_key: str, *,
         # No box holds it; a tier still may (a mover's stage tokens), and
         # an operator asking for a terminal key's reservation back means
         # those too.
-        return {"action_key": key, "released": tier_holdings.egress_all(queue, key),
+        return {"action_key": key, "released": queue._release_reservation(
+                    key, host=None, reclaim_tier=True,
+                    cleanup_owner=queue.records.item_path(state, key)),
                 "hosts": []}
 
-    released = queue._release_reservation(key, host=hosts[0])
+    released = queue._release_reservation(
+        key, host=hosts[0], cleanup_owner=queue.records.item_path(state, key))
     return {"action_key": key, "released": released, "hosts": hosts}
 
 

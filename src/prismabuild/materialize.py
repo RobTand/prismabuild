@@ -162,7 +162,8 @@ def _cleanup_execution_checkout(
         error = error or f"cannot verify removal: {exc}"
     if remains and not error:
         error = "materialized checkout still exists after recursive cleanup"
-    verdict = {"complete": not error, "ended_unix": _now(), "error": error}
+    verdict = {"complete": not error, "ended_unix": _now(), "error": error,
+               "unlinked": not error and expect is not None}
     if not error:
         return verdict
 
@@ -462,49 +463,109 @@ def _execution_checkout(
 
 
 
-def checkout_cleanup_proven(record: Mapping[str, object]) -> bool:
-    """Whether this exact attempt has a completed, timestamped checkout proof."""
-    from . import lifetime_fence
-
-    proof = record.get("checkout_cleanup")
-    if not isinstance(proof, Mapping) or proof.get("claim") != lifetime_fence.attempt_identity(record):
-        return False
-    ended = proof.get("ended_unix")
-    return (proof.get("complete") is True and type(ended) in (int, float)
-            and math.isfinite(ended))
-
-
-def settle_checkout_cleanup(
-    record: Mapping[str, object], *, local_checkout_root: Path,
+def certify_checkout_cleanup(
+    queue, record: Mapping[str, object], *, proof: Mapping[str, object] | None = None,
+    owner_path: Path | None = None, recover: bool = True,
+    local_checkout_root: Path,
 ) -> dict[str, object]:
-    """Retry only the registered tree of an exact fenced snapshot attempt.
+    """Certify every registered inode from its durable custody owner.
 
-    A timer never returns resources. Missing proof, a foreign attempt, or a
-    replacement inode retains them. A later successful retry records its own
-    completion time, so settlement after the fence remains UNKNOWN.
+    This is the single checkout certification boundary, including immediately
+    before any reservation return. A caller's result is only a candidate for
+    the exact registered execute; it cannot replace the registration list.
     """
-    from . import lifetime_fence
+    from . import claim_identity, lifetime_fence, record_store
 
-    proof = record.get("checkout_cleanup")
-    if not isinstance(proof, Mapping) or proof.get("claim") != lifetime_fence.attempt_identity(record):
-        return {"complete": False, "error": "checkout cleanup proof missing or belongs to another attempt"}
-    if proof.get("complete") is True:
-        if not checkout_cleanup_proven(record):
-            return {**proof, "complete": False, "error": "checkout cleanup has no completion time"}
-        return dict(proof)
     try:
-        path = Path(str(proof.get("path") or ""))
-        if (path.parent != local_checkout_root or not CHECKOUT_TREE.fullmatch(path.name)
-                or not path.name.startswith(str(record["action_key"])[:12] + ".")
-                or type(proof.get("device")) is not int or type(proof.get("inode")) is not int):
-            raise ValueError("checkout cleanup path or inode is not registered")
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            return {**proof, "complete": False, "error": "registered checkout vanished without removal proof"}
-        verdict = _cleanup_execution_checkout(
-            local_checkout_root, path, record,
-            expect=(proof["device"], proof["inode"]))
-        return {**proof, **verdict}
-    except (OSError, ValueError) as exc:
-        return {**proof, "complete": False, "error": str(exc)}
+        key = str(record.get("action_key") or "")
+        with queue.action_transition_lock(key):
+            path = owner_path
+            if path is None:
+                path = queue.records.lease_path(key)
+                if not path.exists():
+                    path = queue.records.item_path(record_store.CLAIMED, key)
+            owner = record_store.read_document(path)
+            if not any(observed.get("checkout_snapshot") is not None
+                       or "checkout_registrations" in observed for observed in (record, owner or {})):
+                return {"complete": True, "used": False}
+            if (owner is None or not claim_identity.same_claim(owner, record)
+                    or lifetime_fence.attempt_identity(owner) != lifetime_fence.attempt_identity(record)):
+                return {"complete": False, "used": True, "error": "durable checkout owner unavailable"}
+            registrations = owner.get("checkout_registrations")
+            if not isinstance(registrations, list):
+                return {"complete": False, "used": True, "error": "durable checkout registrations missing"}
+            claim = lifetime_fence.attempt_identity(owner)
+            base_claim = {k: claim[k] for k in claim if k not in ("nonce", "scope_id")}
+            candidates = (owner.get("checkout_cleanup"), record.get("checkout_cleanup"), proof)
+            updated = []
+            failures = []
+            ended = []
+            seen = set()
+            last = {}
+            for entry in registrations:
+                if not isinstance(entry, dict):
+                    return {"complete": False, "used": True, "error": "invalid checkout registration"}
+                registration = {k: v for k, v in entry.items() if k != "cleanup"}
+                directory = Path(str(registration.get("path") or ""))
+                execution = registration.get("execution_id")
+                if (not isinstance(execution, str) or not re.fullmatch(r"[0-9a-f]{32}", execution)
+                        or execution in seen or registration.get("claim") != base_claim
+                        or directory.parent != local_checkout_root
+                        or not CHECKOUT_TREE.fullmatch(directory.name)
+                        or not directory.name.startswith(key[:12] + ".")
+                        or type(registration.get("device")) is not int
+                        or type(registration.get("inode")) is not int):
+                    return {"complete": False, "used": True, "error": "checkout registration identity differs"}
+                seen.add(execution)
+                valid = None
+                for candidate in (entry.get("cleanup"), *candidates):
+                    if not isinstance(candidate, Mapping):
+                        continue
+                    timestamp = candidate.get("ended_unix")
+                    if (candidate.get("complete") is True and candidate.get("unlinked") is True
+                            and candidate.get("claim") == claim
+                            and candidate.get("registration") == registration
+                            and all(candidate.get(k) == registration[k] for k in ("path", "device", "inode"))
+                            and type(timestamp) in (int, float) and math.isfinite(timestamp)):
+                        valid = dict(candidate)
+                        break
+                if valid is None and recover:
+                    try:
+                        directory.lstat()
+                    except OSError as exc:
+                        valid = {"complete": False, "error": f"registered checkout has no unlink proof: {exc}"}
+                    else:
+                        verdict = _cleanup_execution_checkout(
+                            local_checkout_root, directory, owner,
+                            expect=(registration["device"], registration["inode"]))
+                        valid = {**registration, **verdict, "claim": claim,
+                                 "registration": registration}
+                if valid is None:
+                    valid = {"complete": False, "error": "registered checkout unlink proof missing"}
+                if valid.get("complete") is not True:
+                    failures.append(str(valid.get("error") or "checkout cleanup unproved"))
+                else:
+                    ended.append(valid["ended_unix"])
+                updated.append({**registration, "cleanup": valid})
+                last = valid
+            result = {**last, "complete": not failures,
+                      "ended_unix": max(ended, default=_now()), "error": "; ".join(failures)}
+            owner["checkout_registrations"] = updated
+            owner["checkout_cleanup"] = result
+            queue.records.replace_record_at(path, owner)
+            if isinstance(record, dict):
+                record["checkout_registrations"] = updated
+                record["checkout_cleanup"] = result
+            # A live lease owns the list. Keep its claim mirror current without
+            # ever writing a successor or a separate late-finish journal.
+            if owner_path is None:
+                mirror = queue.records.item_path(record_store.CLAIMED, key)
+                live = record_store.read_document(mirror)
+                if live is not None and claim_identity.same_claim(live, owner):
+                    live["checkout_registrations"] = updated
+                    live["checkout_cleanup"] = result
+                    queue.records.replace_record_at(mirror, live)
+            return result
+    except (OSError, ValueError, TypeError, KeyError, record_store.PoolContractError) as exc:
+        return {"complete": False, "used": True,
+                "error": f"checkout certification failed: {type(exc).__name__}: {exc}"}
