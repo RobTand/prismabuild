@@ -4665,6 +4665,52 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
+## Operator holds on new claims
+
+The published `pbhold.py` sets, lists and releases one atomic
+`holds/<host>.json` record under the queue root. Its `prismabuild.host_hold.v1`
+schema carries `owner`, `reason`,
+`created_unix` and `expires_unix`. The lifetime is positive and at most 12 hours.
+Operator mutations serialize on the host's adjacent permanent POSIX lock.
+A different owner cannot replace or release an active hold without `--force`
+and an explicit reason. An expired record may be replaced by a new owner.
+Releasing an expired record still requires its recorded owner or a forced override.
+Every `--force` override requires an explicit reason.
+An absent record leaves admission open. An unreadable, nonregular or malformed
+record holds the host, failing closed. A valid expired hold reopens admission,
+subject to the independent maintenance gate. Its expiry is logged once per
+record per queue instance. Admission readers do not remove records.
+
+Every claim route consults the host's hold record through `PoolQueue.claim_hold`.
+`claim` checks before admission side effects, and `_rename_and_commit_claim` checks
+again under the per-key transition lock, unwinding reservations if a hold
+arrived during the pass. Ordinary CPU, GPU and restartable CPU guest claims
+all cross that boundary. The last read and rename are not atomic with an
+operator write; a claim already past that boundary may finish normally.
+Running actions continue with their reservations and cleanup unchanged.
+
+The operator hold is independent of the upgrade maintenance drain. Either
+control parks the worker loop's new claims. The maintenance gate is checked
+before queue reads, including the hold record. A closed gate skips that hold
+read. Saved-finish retries continue,
+and the worker publishes fresh offers with declared capability intact and zero
+observed capacity. Holds add
+an optional `hold` object to the offer when the maintenance gate is open.
+Under a closed gate, the offer carries the maintenance drain fields.
+Census and metrics use the worker's published `hold` observation and report
+`held` with zero observed capacity when that observation is present. They do
+not read hold records, preserving the idle metrics contract of no record reads
+or directory listings on an unchanged queue. Their hold view changes when the
+worker republishes its offer. `pbstatus` explicitly requests
+`authoritative_holds=True` from `census.action_rows`, which passes it to
+`census.offers`. That path reads each host's current hold record and reports
+`state: held`, `held: true`, zero observed capacity and hold details, including
+read errors, even before the next worker poll or while maintenance is closed.
+An expired or released hold is absent from this authoritative view regardless
+of the last offer. A stale worker stays
+unhealthy while its hold remains visible. Releasing either control leaves the
+other intact; operator holds never read or write the host's maintenance gate.
+
 ## Automatic client convergence
 
 Worker membership uses this same broker maintenance gate and the existing

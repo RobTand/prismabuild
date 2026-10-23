@@ -16,6 +16,7 @@ from typing import Generic, Literal, TypeVar
 from . import (core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
+from . import host_hold
 read_cache = kept_reads
 
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
@@ -450,8 +451,9 @@ def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> 
     return [by_host[host] for host in sorted(by_host)]
 
 def offers(queue_root: str | Path, *, reader=None,
-           captured: OfferCapture | None = None) -> Section[dict]:
-    """Worker offers and their conditional admission samples, independently read."""
+           captured: OfferCapture | None = None,
+           authoritative_holds: bool = False) -> Section[dict]:
+    """Worker observations; explicit operator views can refresh hold authority."""
     queue = pool.PoolQueue(Path(queue_root).absolute())
     if captured is None:
         workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS, reader=reader)
@@ -490,6 +492,12 @@ def offers(queue_root: str | Path, *, reader=None,
         # is read with none of this, so a drain that stopped announcing
         # still reads as the loop having stopped.
         drain = _offer_drain(offer) if fresh else None
+        hold = offer.get("hold")
+        if authoritative_holds:
+            record = host_hold.read_host_hold(queue.root, host, now=now)
+            hold = record.fields() if record is not None and not record.expired else None
+        if not isinstance(hold, Mapping):
+            hold = None
         if drain is not None:
             state = "draining"
             note = "draining for maintenance"
@@ -508,11 +516,18 @@ def offers(queue_root: str | Path, *, reader=None,
                 state = "retired"
                 note = (f"offer unrefreshed for {age / 86400:.1f} days; "
                         "box treated as retired (record kept)")
+        if hold is not None:
+            state = "held"
+            hold_note = hold.get("error") or (
+                f"operator hold; owner {hold.get('owner')}; {hold.get('reason')}; "
+                f"expires {hold.get('expires_unix')}")
+            note = f"{note}; {hold_note}" if note else hold_note
         nodes.append({
             "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
             "offer_clock_skew_s": timing.clock_skew_s,
-            "observed_capacity": offer.get("observed_capacity"),
+            "observed_capacity": ({kind: 0 for kind in offer["capacity"]}
+                                  if hold is not None else offer.get("observed_capacity")),
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
             "container_class_verdict": offer.get("container_class_verdict"),
@@ -525,6 +540,8 @@ def offers(queue_root: str | Path, *, reader=None,
             "drain_owner": drain["owner"] if drain else None,
             "drain_reason": drain["reason"] if drain else None,
             "drain_changed_unix": drain["changed_unix"] if drain else None,
+            "held": hold is not None,
+            "hold": dict(hold) if hold is not None else None,
             "reason": note,
             "admission": {
                 "cpu": _admission_sample(admission[host]['cpu'], now=now,
@@ -543,7 +560,8 @@ def offers(queue_root: str | Path, *, reader=None,
                         if isinstance(value, Exception))])
 
 
-def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
+def action_rows(queue_root: str | Path, *, reader=None,
+                authoritative_holds: bool = False) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -583,7 +601,8 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
     # spend the signal that says the mount did not answer.
     unreadable = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     observed = offers(queue_root, reader=reader,
-                      captured=OfferCapture(workers, worker_notes, admission, now))
+                      captured=OfferCapture(workers, worker_notes, admission, now),
+                      authoritative_holds=authoritative_holds)
     nodes, live = observed.value["nodes"], observed.value["live"]
     notes.extend(observed.value["notes"][len(worker_notes):])
     unreadable.extend(observed.value["unreadable"][len(worker_notes):])
