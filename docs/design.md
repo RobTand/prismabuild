@@ -19011,6 +19011,18 @@ tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-
 `gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
 nothing.
 
+The shared submission gate checks sealed intent even when a compiled producer
+supplies different queue resources or tags. Under enforcement, a row that adds
+GPU intent through demand, required tags or `needs_gpu` to a sealed CPU job is
+refused before evidence authorization or runnable publication: no receipt or
+exception for that CPU identity can bind the added GPU placement. This compares
+GPU intent, not exact resource counts or tag lists. Record-only permission and
+the enforcement setting are unchanged.
+
+Decomposed `common` accepts `d38_namespace` as shared key material. It rejects
+`d38_receipt` and `d38_exception`, since each binds one child identity. Ordinary
+campaign rows retain both evidence options.
+
 **Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
 job's params before the key is computed, so a changed namespace is a changed job; absent,
 keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its

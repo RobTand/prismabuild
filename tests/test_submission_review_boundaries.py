@@ -120,9 +120,12 @@ def test_compiled_producer_retains_d38_reason_without_a_display(tmp_path, monkey
     d38_config.write_text('{"d38_enforce": true}')
     cas = core.PrismaBuildCAS(store.cas_root)
     action = _runnable_action(tmp_path, cas)
+    body = {key: value for key, value in action.items() if key != "action_key"}
+    body["params"] = {**action["params"], "demand": {"cpu": 1, "mem_gb": 1, "gpu": 1}}
+    action = core.seal_action(body)
     with pytest.raises(fleet_submit.SubmitRefused) as error:
         fleet_submit.submit(action, cas=cas, request_path=cas.publish_action_request(action),
-            transport="pool", needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
+            transport="pool", needs_gpu=True, resources={"cpu": 1, "mem_gb": 1, "gpu": 1},
             queue_root=store.queue_root, checkout_root=tmp_path)
     assert "D38 refuses GPU publication:" in str(error.value)
     assert "namespace descriptor" in str(error.value)
