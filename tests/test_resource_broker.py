@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import socket
 import threading
+import time
 from types import SimpleNamespace
 import pytest
 
@@ -717,3 +718,81 @@ def test_unsupported_creation_protocol_never_creates_authority(authority,version
         a.handle(os.getuid(),os.getpid(),{'op':'create','action_key':'a'*64,'nonce':'b'*32,
                  'memory_max_bytes':64*1024**2,'recovery_protocol':version})
     assert not a.records and not b.groups
+
+
+@pytest.mark.parametrize('unavailable', [False, True])
+def test_host_sampler_work_is_inside_next_observation_bound_1946(monitored, monkeypatch, unavailable):
+    """A one-second observation deadline is not one second AFTER sample work.
+
+    The half-second bounded fixture workload leaves half a second of slack.
+    The 0.3s scheduling allowance is not a proposed production budget; slice 0
+    must qualify actual latency separately. All waiting is interruptible.
+    """
+    import threading
+    _, _, _, _, monitor = monitored
+    starts = []
+    second = threading.Event()
+    first = threading.Event()
+
+    def bounded_sample():
+        starts.append(time.monotonic())
+        first.set()
+        if len(starts) == 2:
+            second.set()
+        monitor.stopping.wait(0.5)
+        if unavailable:
+            raise OSError('fixture vendor telemetry unavailable')
+
+    monkeypatch.setattr(monitor, 'poll_once', bounded_sample)
+    monitor.start()
+    try:
+        assert first.wait(2), 'host sampler did not start'
+        assert second.wait(1.3), (
+            'sample work extends the one-second next-observation bound')
+        assert starts[1] - starts[0] <= 1.3
+    finally:
+        monitor.close()
+
+
+def test_local_oom_wakes_enforcement_without_waiting_for_vendor_sample_1946(monitored, monkeypatch):
+    """Ordinary-file notification fixture, not real cgroup/GPU qualification.
+
+    A long numeric cadence deliberately isolates notification from sampling.
+    Local file notifications must be armed before initial sampling completes.
+    The production cgroupfs path must use pollable counters where supported;
+    this fixture's writable files exercise the local file adapter instead.
+    """
+    import threading
+    a, b, rows, _, monitor = monitored
+    _, record, path = rows[0]
+    baseline = threading.Event()
+    stopped = threading.Event()
+    original_poll = monitor.poll_once
+    original_stop = b.stop
+
+    def initial_sample():
+        result = original_poll()
+        baseline.set()
+        return result
+
+    def observed_stop(scope):
+        original_stop(scope)
+        if scope == record['scope_id']:
+            stopped.set()
+
+    monitor.interval_s = 10.0
+    monkeypatch.setattr(monitor, 'poll_once', initial_sample)
+    monkeypatch.setattr(b, 'stop', observed_stop)
+    monitor.start()
+    try:
+        assert baseline.wait(2), 'initial authoritative sample did not finish'
+        (path / 'memory.events.local').write_text('oom 1\n')
+        assert stopped.wait(2), (
+            'local OOM notification was left waiting for the numeric sample timer')
+        assert b.stopped == [record['scope_id']]
+        assert a.records[record['scope_id']]['stop_reason'] == 'memory_limit_oom'
+        assert not a.records[rows[1][1]['scope_id']].get('stop_reason')
+    finally:
+        monitor.close()
+        assert not monitor.thread.is_alive(), 'notification shutdown leaked the host sampler'
+        assert b.stopped in ([], [record['scope_id']])
