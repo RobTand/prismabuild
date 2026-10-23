@@ -14,6 +14,108 @@
 # then waits for each current action and cleanup. Never signal payload groups
 # or impose a shutdown deadline that can strand a claim.
 set -euo pipefail
+system_mode=false
+print_only=false
+cap_slice=
+cap_cpus=
+cap_memory=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --system) system_mode=true; shift ;;
+        --slice|--cpus|--memory-gb)
+            if [ "$#" -lt 2 ]; then echo "missing value for $1" >&2; exit 2; fi
+            case "$1" in
+                --slice) cap_slice=$2 ;;
+                --cpus) cap_cpus=$2 ;;
+                --memory-gb) cap_memory=$2 ;;
+            esac
+            shift 2 ;;
+        --print) print_only=true; shift ;;
+        --help) echo 'Usage: install_supervisor_unit.sh [--system --slice NAME.slice --cpus CPU-LIST --memory-gb N] [--print]'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+if $system_mode; then
+    if [[ ! $cap_slice =~ ^[A-Za-z0-9_]+\.slice$ || ! $cap_cpus =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ || ! $cap_memory =~ ^[1-9][0-9]*$ ]]; then
+        echo 'system mode requires a top-level --slice, --cpus and --memory-gb' >&2
+        exit 2
+    fi
+    system_units() {
+        cat <<UNIT
+# $cap_slice
+[Unit]
+Description=PrismaBuild aggregate host cap
+[Slice]
+AllowedCPUs=$cap_cpus
+MemoryMax=${cap_memory}G
+MemorySwapMax=0
+CPUAccounting=yes
+MemoryAccounting=yes
+UNIT
+    }
+    broker_dropin() {
+        cat <<UNIT
+[Service]
+Slice=$cap_slice
+AllowedCPUs=$cap_cpus
+Environment=PB_SCOPE_PARENT=$cap_slice
+UNIT
+    }
+    supervisor_unit() {
+        cat <<UNIT
+[Unit]
+Description=PrismaBuild per-box worker supervisor
+After=network-online.target remote-fs.target prismabuild-resource-broker.service
+RequiresMountsFor=/mnt/shared
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+User=rob
+Slice=$cap_slice
+AllowedCPUs=$cap_cpus
+ExecStart=/usr/bin/python3 /mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure --systemd
+Restart=always
+RestartSec=30
+KillMode=process
+TimeoutStopSec=infinity
+SendSIGKILL=no
+StandardOutput=append:/home/rob/tmp/pb-supervisor.log
+StandardError=append:/home/rob/tmp/pb-supervisor.log
+[Install]
+WantedBy=multi-user.target
+UNIT
+    }
+    if $print_only; then
+        system_units
+        broker_dropin
+        supervisor_unit
+        exit 0
+    fi
+    if [ "$(id -u)" -ne 0 ]; then echo 'system mode must run as root' >&2; exit 1; fi
+    if systemctl is-active --quiet prismabuild-supervisor.service || systemctl is-active --quiet prismabuild-resource-broker.service; then
+        echo 'drain this host and stop supervisor and broker before installing the cap' >&2
+        exit 1
+    fi
+    if [ -e /home/rob/.config/systemd/user/prismabuild-supervisor.service ]; then
+        echo 'disable and remove the old user supervisor unit before switching to system mode' >&2
+        exit 1
+    fi
+    install -d /etc/systemd/system/prismabuild-resource-broker.service.d
+    install -d -o rob -g rob /home/rob/tmp
+    for unit_file in "$cap_slice" prismabuild-supervisor.service prismabuild-resource-broker.service.d/10-host-cap.conf; do
+        if [ -e "/etc/systemd/system/$unit_file" ]; then cp -a "/etc/systemd/system/$unit_file" "/etc/systemd/system/$unit_file.backup-$(date +%s)"; fi
+    done
+    system_units > "/etc/systemd/system/$cap_slice"
+    broker_dropin > /etc/systemd/system/prismabuild-resource-broker.service.d/10-host-cap.conf
+    supervisor_unit > /etc/systemd/system/prismabuild-supervisor.service
+    systemctl daemon-reload
+    systemctl enable --now "$cap_slice" prismabuild-resource-broker.service prismabuild-supervisor.service
+    exit 0
+fi
+if $print_only || [ -n "$cap_slice$cap_cpus$cap_memory" ]; then
+    echo '--print and cap arguments require --system' >&2
+    exit 2
+fi
 if [ "$(id -u)" -eq 0 ]; then
     echo 'install_supervisor_unit.sh runs as rob, not root' >&2
     exit 1

@@ -514,6 +514,10 @@ def _memory_bytes(value: str) -> int:
                            "g": 1024**3}[match[2].lower()]
 
 
+def _docker_scope_identity(kernel_unit: str) -> str:
+    return 'prismabuild-' + kernel_unit.split('-', 1)[1]
+
+
 def _resource_scope() -> tuple[str, int] | None:
     """Use kernel ancestry, never caller env, for the PB attempt boundary."""
     proc = Path("/proc/self/cgroup")
@@ -528,7 +532,11 @@ def _resource_scope() -> tuple[str, int] | None:
                 continue
             relative = Path(line[3:].lstrip("/"))
             for parent in (relative, *relative.parents):
-                if SCOPE_RE.fullmatch(parent.name):
+                slice_name = parent.parent.name
+                prefix = slice_name.removesuffix('.slice')
+                if (re.fullmatch(r'[A-Za-z0-9_]+\.slice', slice_name)
+                        and parent.name.startswith(prefix + '-')
+                        and SCOPE_RE.fullmatch(_docker_scope_identity(parent.name))):
                     limit = int((root / parent / "memory.max").read_text())
                     if limit <= 0:
                         raise ValueError("memory.max is not a positive limit")
@@ -608,7 +616,7 @@ def _owned_exec(real: str, globals: list[str], sub: list[str], scope: tuple[str,
         labels = row.get("Config", {}).get("Labels") or {}
         cid = row.get("Id", "")
         if (not re.fullmatch(r"[a-f0-9]{64}", cid)
-                or labels.get(SCOPE_LABEL) != scope[0]
+                or labels.get(SCOPE_LABEL) != _docker_scope_identity(scope[0])
                 or labels.get(LABEL) != os.environ.get(OWNER_ENV)
                 or row.get("HostConfig", {}).get("CgroupParent") != scope[0]
                 or row.get("State", {}).get("Running") is not True):
@@ -631,7 +639,7 @@ def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
     if os.environ.get("PRISMABUILD_DOCKER_TESTING") == "1":
         endpoint = Path(os.environ.get("PRISMABUILD_RESOURCE_SOCKET") or endpoint)
     request = {"op": "container_begin" if ticket is None else "container_end",
-               "scope_id": scope}
+               "scope_id": _docker_scope_identity(scope)}
     if ticket is not None:
         request["ticket"] = ticket
     try:
@@ -687,7 +695,7 @@ def _owned_by_this_attempt(row: dict, owner: str, scope, nonce: str) -> bool:
     if labels.get(LABEL) != owner or labels.get(SHIM_LABEL) != nonce:
         return False
     if scope is not None:
-        if (labels.get(SCOPE_LABEL) != scope[0]
+        if (labels.get(SCOPE_LABEL) != _docker_scope_identity(scope[0])
                 or (row.get("HostConfig") or {}).get("CgroupParent") != scope[0]):
             return False
     return True
@@ -946,7 +954,7 @@ def _run_relayed(real: str, args: list[str], environment: dict, *, owner: str,
         proved = outcome in ("stopped", "killed")
         _write_receipt(receipt_path, {
             "schema": RECEIPT_SCHEMA, "owner": owner, "nonce": nonce,
-            "scope": scope[0] if scope else None,
+            "scope": _docker_scope_identity(scope[0]) if scope else None,
             "container_id": cid, "found_by": found_by, "outcome": outcome,
             "signals": [{"signal": int(n), "at_unix": t} for n, t in received],
             "started_unix": started, "finished_unix": time.time(),
@@ -1071,7 +1079,7 @@ def main() -> int:
         containment = []
         if scope:
             unit, limit = scope
-            labels += ["--label", f"{SCOPE_LABEL}={unit}"]
+            labels += ["--label", f"{SCOPE_LABEL}={_docker_scope_identity(unit)}"]
             memory_options = [value for index, value in enumerate(options)
                               if index and options[index - 1] == "--memory"]
             limit = int(memory_options[-1]) if memory_options else limit

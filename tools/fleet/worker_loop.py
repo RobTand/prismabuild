@@ -889,6 +889,14 @@ def observed_claim_capacity(queue, *, args, base_declared, observer,
     held = queue.ledger().held
     capacity = (dict(declared) if observer is None else
                 observer.offer(declared, held, **overrides))
+    from prismabuild import host_cap, fleet_roster
+    box = fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,))
+    args.host_cap_detail = {}
+    capacity = host_cap.enforce_host_cap(capacity, box, held, detail=args.host_cap_detail)
+    if box is not None and "cap" in box.entry:
+        cap = host_cap.HostCap.parse(box.entry["cap"])
+        declared["cpu"] = min(declared.get("cpu", 0), len(cap.cpus))
+        declared["mem_gb"] = min(declared.get("mem_gb", 0), cap.mem_gb)
     return declared, capacity, known_physical_gpus
 
 
@@ -909,6 +917,8 @@ def private_claim_parameters(queue):
     _declared, capacity, _gpus = observed_claim_capacity(
         queue, args=args, base_declared=base, observer=observer,
         gpu_sample=None, known_physical_gpus=0)
+    if args.host_cap_detail.get("host_cap_refusal"):
+        raise pool.PoolContractError(args.host_cap_detail["host_cap_refusal"])
     return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True}
 
 
@@ -1227,6 +1237,12 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             continue
         loaded_commit = decision.identity.commit
         offered = offered_tags(host)
+        from prismabuild import fleet_roster
+        box = fleet_roster.Roster.for_host(host, roots=(RUNTIME_ROOT,))
+        if box is not None and fleet_roster.box_status(box.key, box.entry)[0] == fleet_roster.ENROLLING:
+            offered = [*offered, "enrolling-only:" + box.key]
+            if box.entry.get("_alias"):
+                offered.append("enrolling-only:" + box.entry["_alias"])
         if not swept_dead_offers:
             swept_dead_offers = True
             swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
@@ -1466,6 +1482,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         # inputs and independent current device identity refresh outside the
         # admission lock. The publisher receives this poll's captured detail.
         observed_detail = scratch_observed_detail(observer, profile_inputs)
+        observed_detail.update(getattr(args, "host_cap_detail", {}))
         capabilities = capability_eligibility.OfferCapabilities(
             images=capability_eligibility.ImageAnswers.from_observed(
                 observed_images, class_verdict),
@@ -1639,6 +1656,20 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             claim_images, claim_snapshot, _class_verdict = image_observation(
                 inventory, class_policy, max_age_s=container_images.CLAIM_FRESHNESS_S)
         try:
+            if getattr(args, "host_cap_detail", {}).get("host_cap_refusal"):
+                if args.once:
+                    return role_session.ROLE_DEFERRED_EXIT
+                stop.wait(args.poll_s)
+                continue
+
+            def claim_admission_open():
+                if role_session.read_maintenance_gate() is not None:
+                    return False
+                from prismabuild import host_cap
+                detail = {}
+                fresh = host_cap.enforce_host_cap(capacity, box, queue.ledger().held, detail=detail)
+                return "host_cap_refusal" not in detail and fresh == capacity
+
             outcome = queue.serve_once(
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
@@ -1649,7 +1680,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 # Re-checked under the per-key transition lock just before
                 # the claim rename, so a resign drain that began after this
                 # poll's gate check still refuses the claim deterministically.
-                admission_open=lambda: role_session.read_maintenance_gate() is None,
+                admission_open=claim_admission_open,
                 # Membership handoffs settle in the box's sweep turn, so
                 # settlement does not depend on the requester surviving
                 # (``settle_membership``).

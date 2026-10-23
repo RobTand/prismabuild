@@ -306,8 +306,12 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
     initial = {}
     for scope in scopes:
         path = Path(scope.cgroup_path)
-        if scope.scope_id in expected or path != cgroup_root / "prismabuild.slice" / scope.scope_id:
-            raise ValueError("scope must be an exact unique child of prismabuild.slice")
+        parent = path.parent.name
+        kernel_unit = parent.removesuffix('.slice') + '-' + scope.scope_id.removeprefix('prismabuild-')
+        if (scope.scope_id in expected or SCOPE_RE.fullmatch(scope.scope_id) is None
+                or re.fullmatch(r'[A-Za-z0-9_]+\.slice', parent) is None
+                or path != cgroup_root / parent / kernel_unit):
+            raise ValueError("scope must be an exact unique child of its system slice")
         expected[scope.scope_id] = scope
         try:
             stat = path.stat()

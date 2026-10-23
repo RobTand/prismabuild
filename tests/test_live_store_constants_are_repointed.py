@@ -93,6 +93,9 @@ ENV_BACKED: dict[tuple[str, str], str] = {
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("supervise", "SYSTEMD_SYSTEM_UNIT"): (
+        "installed system supervisor unit; repointed so tests do not read host configuration"
+    ),
     ("supervise", "SYSTEMD_UNIT"): (
         "user service file under the home directory; repointed so tests do not "
         "depend on or modify the installed supervisor service"

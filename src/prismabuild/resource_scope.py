@@ -358,6 +358,17 @@ _PROXY_PACKAGE_DEPENDENCIES = (
 )
 
 
+def scope_path_matches(path: str | Path, unit: str) -> bool:
+    """Keep broker identity stable across a host's configured system parent."""
+    path = Path(path)
+    parent = path.parent.name
+    if (SCOPE_RE.fullmatch(unit) is None
+            or re.fullmatch(r'[A-Za-z0-9_]+\.slice', parent) is None):
+        return False
+    kernel_unit = parent[:-6] + '-' + unit.removeprefix('prismabuild-')
+    return path == Path('/sys/fs/cgroup') / parent / kernel_unit
+
+
 def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
     """Pure identity half of pool scope recovery; no host check or broker RPC."""
     from .produced_output import _broker_scope_id
@@ -370,7 +381,8 @@ def _checked_control_identity(action_key: str, control: object) -> tuple[str, st
         raise ValueError("invalid resource scope recovery identity")
     unit = _broker_scope_id(action_key, nonce)
     if (control.get("action_key") != action_key or control.get("scope_id") != unit
-            or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
+            or not isinstance(control.get("cgroup_path"), str)
+            or not scope_path_matches(control["cgroup_path"], unit)
             or control.get("socket_path") != str(BROKER_SOCKET)
             or not isinstance(control.get("token"), str)
             or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None):
@@ -462,7 +474,7 @@ class ResourceScope:
         expected = _expected_scope_id(self.action_key, self.nonce)
         if (not isinstance(unit, str) or unit != expected
                 or not isinstance(token, str) or re.fullmatch('[a-f0-9]{64}', token) is None
-                or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):
+                or not scope_path_matches(path, unit)):
             raise OSError('resource broker returned an invalid scope identity')
         acknowledged_gpu = response.get('gpu_memory_max_bytes')
         if (acknowledged_gpu is not None and (type(acknowledged_gpu) is not int
