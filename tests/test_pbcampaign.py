@@ -485,6 +485,53 @@ def test_retry_safe_on_a_row_is_sealed_into_the_action_key(
     assert _one_json_line(capsys.readouterr())["action_key"] == retry_safe_key
 
 
+@pytest.mark.parametrize('placement', [
+    {'tags': ['gb10']}, {'measurement': True, 'host_class': 'gb10'},
+])
+def test_gb10_preflight_normalizes_before_subset_policy_and_refuses_all_rows(
+        tmp_path, monkeypatch, placement):
+    # These are all accepted row shapes, including numeric strings and the
+    # same effective default/exclusive floor as direct submission.
+    valid = [
+        {'demand': {'gpu': 1, 'mem_gb': 104}, 'gpu_memory_gb': '100'},
+        {'demand': {'gpu': 1, 'mem_gb': '104'}, 'gpu_memory_gb': 100},
+        {'demand': {'gpu': 1, 'mem_gb': '104'}, 'gpu_memory_gb': '104'},
+        {'demand': {'gpu': 1, 'mem_gb': 80}, 'gpu_memory_gb': 64},
+        {'demand': {'gpu': 1, 'mem_gb': 104}},
+        {'demand': {'gpu': 1}, 'gpu_memory_gb': 1},
+        {'exclusive': True, 'demand': {'mem_gb': '4'}, 'gpu_memory_gb': '16'},
+    ]
+    for fields in valid:
+        row = {'argv': ['true'], **placement, **fields}
+        assert pbcampaign.load_manifest(_manifest(tmp_path, [row]), transport='pool') == [row]
+    # Unrelated exclusive numeric-string demand and discrete budgets keep
+    # their existing semantics; neither is evidence of unified placement.
+    for fields in [
+        {'exclusive': True, 'demand': {'mem_gb': '16'}},
+        {'tags': ['discrete'], 'demand': {'gpu': 1, 'mem_gb': 64}, 'gpu_memory_gb': 104},
+    ]:
+        row = {'argv': ['true'], **fields}
+        assert pbcampaign.load_manifest(_manifest(tmp_path, [row]), transport='pool') == [row]
+
+    submitted = []
+
+    def forbidden_submit(*args, **kw):
+        submitted.append((args, kw))
+        pytest.fail('campaign reached submission before rejecting the excessive GB10 cap')
+
+    monkeypatch.setattr(pbcampaign.submission, 'submit_request', forbidden_submit)
+    manifest = _manifest(tmp_path, [
+        {'argv': ['true']},
+        {'argv': ['true'], **placement, 'demand': {'gpu': 1, 'mem_gb': '104'},
+         'gpu_memory_gb': '105'},
+    ])
+    with pytest.raises(SystemExit) as error:
+        pbcampaign.main(['--transport', 'pool', '--detach', manifest])
+    diagnostic = str(error.value).lower()
+    assert all(word in diagnostic for word in ('row 1', '105', '104', 'subset', 'mem_gb'))
+    assert submitted == []
+
+
 def test_pool_measurement_row_uses_supported_local_scope(tmp_path):
     manifest = _manifest(tmp_path, [{'argv': ['true'], 'measurement': True}])
     rows = pbcampaign.load_manifest(manifest, transport='pool')

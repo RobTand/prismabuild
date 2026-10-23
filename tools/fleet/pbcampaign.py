@@ -562,11 +562,17 @@ def _require_submittable_row(row, *, index: int, transport: str) -> None:
     except SubmissionRefused as exc:
         raise ManifestError(f"row {index}: {exc}") from None
     try:
-        demand = row.get("demand") or {}
         submission.require_gpu_memory_scope(
             gpu_memory_gb=row.get("gpu_memory_gb"),
-            gpu=bool(row.get("exclusive") or int(demand.get("gpu", 0))),
+            gpu=bool(row.get("gpu") or row.get("exclusive")
+                     or int(normalized_demand.get("gpu", 0))),
             transport=transport,
+        )
+        from prismabuild._gpu_submission_policy import _require_gb10_memory_subset
+        _require_gb10_memory_subset(
+            demand=normalized_demand, gpu_memory_gb=row.get("gpu_memory_gb"),
+            tags=row.get("tags") or (), host_class=row.get("host_class"),
+            gpu=bool(row.get("gpu")), exclusive=bool(row.get("exclusive")),
         )
     except ValueError as exc:
         raise ManifestError(f"row {index}: {exc}") from None
