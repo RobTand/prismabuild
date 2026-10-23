@@ -6,7 +6,7 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation
 from prismabuild import materialize, pool, record_store, resource_scope
-from lifetime_fixtures_1429 import claim, fenced_snapshot_queue
+from lifetime_fixtures_1429 import claim, fenced_snapshot_queue, wait_for
 from test_lifetime_contract_1429 import _execute, _finish, broker, Skew
 
 
@@ -268,10 +268,16 @@ def test_unfenced_snapshot_also_retains_exact_checkout_custody(tmp_path, broker,
         {k: v for k, v in e.items() if k != "cleanup"} for e in item["checkout_registrations"]]
     assert all(e["cleanup"]["complete"] is False for e in durable)
     monkeypatch.setattr(materialize.owned_tree, "remove_tree", original)
-    if entry == "widow":
-        queue.sweep_widowed_leases(timeout_s=pool.LEASE_TIMEOUT_S)
-    else:
-        queue.reap_stale()
+    def recovered():
+        if entry == "widow":
+            queue.sweep_widowed_leases(timeout_s=pool.LEASE_TIMEOUT_S)
+        else:
+            queue.reap_stale()
+        return not checkout.exists()
+
+    # Broker stop/export and checkout recovery can require separate passes;
+    # the fixture's opaque predicate has no shared notification channel.
+    assert wait_for(recovered)
     assert not checkout.exists()
     assert queue.ledger().held_keys() == []
     assert not queue.records.lease_path(key).exists()
@@ -311,4 +317,28 @@ def test_proven_checkout_without_lease_finishes_from_its_exact_claim(
     queue.records.lease_path(key).unlink()
     assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
     assert not queue.records.item_path(pool.CLAIMED, key).exists()
+    assert queue.ledger().held_keys() == []
+
+
+def test_each_execute_keeps_its_own_completion_incarnation(tmp_path, broker, monkeypatch):
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    key = action["action_key"]
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    item = claim(queue)
+    git = materialize._run_materializer_git
+
+    def refuse_git(*args, **kwargs):
+        raise materialize.MaterializationError("first execute fails before scope creation")
+
+    monkeypatch.setattr(materialize, "_run_materializer_git", refuse_git)
+    with pytest.raises(materialize.MaterializationError):
+        _execute(queue, item)
+    first = item["checkout_registrations"][0]
+    assert first["cleanup"]["unlinked"] is True
+    assert first["cleanup"]["claim"]["nonce"] is None
+    monkeypatch.setattr(materialize, "_run_materializer_git", git)
+    outcome = _execute(queue, item)
+    assert outcome["checkout_cleanup"]["claim"]["nonce"] is not None
+    assert len(item["checkout_registrations"]) == 2
+    assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
     assert queue.ledger().held_keys() == []

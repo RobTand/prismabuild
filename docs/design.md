@@ -20935,7 +20935,11 @@ before materialization. The lease is the durable live authority and the claim
 mirrors it. Heartbeats preserve that authority; a second execute cannot replace
 the first registration or erase a newer cleanup debt. The full envelope travels
 with the lease for recovery after claim loss and with an exact late-finish
-journal for successor isolation.
+journal for successor isolation. Each completed execute also persists its own
+completion claim, including the scope nonce at that completion. A later execute
+that creates a scope cannot invalidate an earlier execute's proven unlink.
+The proof must match its registration's durable completion identity; a caller
+cannot substitute another execute's proof or a foreign nonce.
 
 `materialize.certify_checkout_cleanup` is the sole checkout certification
 function. Cleanup, deferral, recovery and the reservation-return boundary use

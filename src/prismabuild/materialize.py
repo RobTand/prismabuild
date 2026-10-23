@@ -508,7 +508,15 @@ def certify_checkout_cleanup(
             for entry in registrations:
                 if not isinstance(entry, dict):
                     return {"complete": False, "used": True, "error": "invalid checkout registration"}
-                registration = {k: v for k, v in entry.items() if k != "cleanup"}
+                registration = {k: v for k, v in entry.items()
+                                if k not in ("cleanup", "completion_claim")}
+                execution_claim = entry.get("completion_claim", claim)
+                if (not isinstance(execution_claim, Mapping)
+                        or set(execution_claim) != set(claim)
+                        or {k: v for k, v in execution_claim.items()
+                            if k not in ("nonce", "scope_id")} != base_claim):
+                    return {"complete": False, "used": True,
+                            "error": "checkout completion incarnation differs"}
                 directory = Path(str(registration.get("path") or ""))
                 execution = registration.get("execution_id")
                 if (not isinstance(execution, str) or not re.fullmatch(r"[0-9a-f]{32}", execution)
@@ -526,7 +534,7 @@ def certify_checkout_cleanup(
                         continue
                     timestamp = candidate.get("ended_unix")
                     if (candidate.get("complete") is True and candidate.get("unlinked") is True
-                            and candidate.get("claim") == claim
+                            and candidate.get("claim") == execution_claim
                             and candidate.get("registration") == registration
                             and all(candidate.get(k) == registration[k] for k in ("path", "device", "inode"))
                             and type(timestamp) in (int, float) and math.isfinite(timestamp)):
@@ -541,7 +549,7 @@ def certify_checkout_cleanup(
                         verdict = _cleanup_execution_checkout(
                             local_checkout_root, directory, owner,
                             expect=(registration["device"], registration["inode"]))
-                        valid = {**registration, **verdict, "claim": claim,
+                        valid = {**registration, **verdict, "claim": dict(execution_claim),
                                  "registration": registration}
                 if valid is None:
                     valid = {"complete": False, "error": "registered checkout unlink proof missing"}
@@ -549,7 +557,8 @@ def certify_checkout_cleanup(
                     failures.append(str(valid.get("error") or "checkout cleanup unproved"))
                 else:
                     ended.append(valid["ended_unix"])
-                updated.append({**registration, "cleanup": valid})
+                updated.append({**registration, "completion_claim": dict(execution_claim),
+                                "cleanup": valid})
                 last = valid
             result = {**last, "complete": not failures,
                       "ended_unix": max(ended, default=_now()), "error": "; ".join(failures)}

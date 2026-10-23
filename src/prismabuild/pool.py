@@ -21776,6 +21776,15 @@ class PoolQueue:
     def _write_checkout_registration(self, item, registration, *, cleanup=None) -> None:
         """Publish one execute's custody to the lease before its claim mirror."""
         key = str(item["action_key"])
+
+        def completed_entry(entry):
+            execution_claim = lifetime_fence.attempt_identity(item)
+            if (cleanup.get("claim") != execution_claim
+                    or ("completion_claim" in entry
+                        and entry["completion_claim"] != execution_claim)):
+                raise PoolContractError("checkout completion incarnation differs")
+            return {**entry, "completion_claim": execution_claim, "cleanup": dict(cleanup)}
+
         with self.action_transition_lock(key):
             lease_path = self.records.lease_path(key)
             lease = record_store.read_document(lease_path)
@@ -21787,7 +21796,7 @@ class PoolQueue:
                     # The old worker may finish only its own journal. Never
                     # write the successor's lease or checkout registrations.
                     item["checkout_registrations"] = [
-                        {**entry, "cleanup": dict(cleanup)}
+                        completed_entry(entry)
                         if entry["execution_id"] == registration["execution_id"] else entry
                         for entry in item["checkout_registrations"]]
                     return
@@ -21804,9 +21813,10 @@ class PoolQueue:
                     raise PoolContractError("checkout registration is immutable")
                 entries[index] = dict(registration)
             else:
-                if {k: v for k, v in entries[index].items() if k != "cleanup"} != registration:
+                if {k: v for k, v in entries[index].items()
+                    if k not in ("cleanup", "completion_claim")} != registration:
                     raise PoolContractError("checkout cleanup registration differs")
-                entries[index]["cleanup"] = dict(cleanup)
+                entries[index] = completed_entry(entries[index])
                 lease["checkout_cleanup"] = dict(cleanup)
                 live["checkout_cleanup"] = dict(cleanup)
             lease["checkout_registrations"] = entries
