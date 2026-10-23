@@ -65,7 +65,8 @@ def generic_gpu(tmp_path, monkeypatch):
 
 def _broker_final(monkeypatch, queue, telemetry):
     item = json.loads(next(queue.records.dir(pool.record_store.CLAIMED).glob('*.json')).read_text())
-    telemetry = {'gpu_record': frozen_gpu(telemetry, action_key=item['action_key'])}
+    telemetry = {'gpu_record': frozen_gpu(telemetry, action_key=item['action_key'],
+        nonce=(item.get('resource_scope') or {}).get('nonce'))}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
         'complete': True, 'resource_scope': {'telemetry': dict(telemetry)}})
 

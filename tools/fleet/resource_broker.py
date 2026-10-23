@@ -446,6 +446,9 @@ class Authority:
                 raise ValueError('invalid stored resource owner')
             self.records[path.stem]=record
         self._restore_maintenance()
+        for scope,record in self.records.items():
+            if record.get('gpu_observation_started') is not None and record.get('gpu_record') is None:
+                self.restore_gpu_record(scope,record)
 
     def _private_maintenance_parent(self):
         parent=self.maintenance_state_path.parent
@@ -902,6 +905,31 @@ class Authority:
             _atomic(self.state_dir/(scope+'.json'),record)
             return frozen
 
+    def restore_gpu_record(self,scope,record):
+        """Recover a commit that preceded a crash before private-state update."""
+        try:
+            directory_fd=os.open(self.gpu_evidence_dir,
+                os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        except FileNotFoundError:return
+        try:
+            info=os.fstat(directory_fd)
+            if info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                raise ValueError('unsafe GPU evidence directory')
+            try:fd=os.open(scope+'.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory_fd)
+            except FileNotFoundError:return
+            with os.fdopen(fd) as source:
+                info=os.fstat(source.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid()
+                        or info.st_mode&0o222 or info.st_size>65536):
+                    raise ValueError('unsafe frozen GPU record')
+                frozen=json.load(source)
+            if (any(frozen.get(key)!=record[key] for key in ('action_key','nonce','scope_id'))
+                    or frozen.get('deadline_monotonic')!=record.get('gpu_observation_deadline')):
+                raise ValueError('frozen GPU record belongs to another attempt')
+            record['gpu_record']=frozen
+            _atomic(self.state_dir/(scope+'.json'),record)
+        finally:os.close(directory_fd)
+
     def remove_gpu_record(self,scope):
         """Settlement ends the public mirror's recovery lifetime."""
         directory=self.gpu_evidence_dir
@@ -1155,6 +1183,7 @@ class Authority:
         """
         released=dict(record)
         released['released_unix']=time.time()
+        self.remove_gpu_record(scope)
         released['maintenance_cleanup']=VANISHED_CLEANUP_REASON
         _atomic(self.state_dir/(scope+'.json'),released)
         self.records[scope]=released
@@ -1397,7 +1426,7 @@ class ResourceMonitor:
             records={scope:records[scope]} if scope in records else {}
             snapshot,_=self._sample_gpu(records,final_scope=scope)
             return self.authority.freeze_gpu_record(scope,deadline,
-                final_succeeded=snapshot is not None and snapshot.gpu_query_complete is True)
+                final_succeeded=snapshot is not None and snapshot.as_dict().get('gpu_query_complete') is True)
         finally:self.final_lock.release()
 
     def _payload_live(self,record):

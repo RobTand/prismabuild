@@ -66,6 +66,9 @@ def test_lost_reply_uses_committed_record_across_readers(generic_gpu, monkeypatc
     assert action_client.outcome_summary(queue, path, terminal)['succeeded'] == (state != 'zero')
     assert action_client.report_pool_outcome(queue, item['action_key'], wait_s=0,
                                             generation=item['published_unix']) == (1 if state == 'zero' else 0)
+    verified = action_result.read_verified_ending_result(queue, item['action_key'],
+        published_unix=item['published_unix'], attempt=1)
+    assert verified['record']['detail']['gpu_use'] == expected
     if state == 'absent':
         assert terminal['detail']['gpu_use_reason'] == 'final_observation_failed'
 
@@ -183,3 +186,16 @@ def test_live_telemetry_is_not_a_judgment_route():
                   and node.name == '_retain_gpu_observation')
     assert 'gpu_record' in ast.get_source_segment(source, retain)
     assert 'gpu_evidence_dir' not in ast.get_source_segment(source, retain)
+
+
+def test_broker_restart_recovers_commit_before_private_update(monitored, monkeypatch):
+    a, backend, rows, _, monitor = monitored
+    request, record, path = rows[0]
+    pid = worker_peer(a, record, monkeypatch)
+    expected = a.handle(a.uid, pid, _query(request))['gpu_record']
+    state = a.state_dir / (record['scope_id'] + '.json')
+    private = json.loads(state.read_text())
+    del private['gpu_record']
+    state.write_text(json.dumps(private))
+    restored = type(a)(a.state_dir, a.uid, backend, max_memory_bytes=a.max_memory_bytes)
+    assert restored.records[record['scope_id']]['gpu_record'] == expected
