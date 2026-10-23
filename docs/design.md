@@ -6212,23 +6212,40 @@ require at least two samples separated by the configured monitor interval.
 
 The PB lead's ruling on #1743's truncated text defines three outcomes:
 
-- `used`: at least one distinct GPU UUID was attributed to the payload scope.
-- `zero`: a successful GPU process sample covered the payload's lifetime and
-  found no attributed GPU process. Only this outcome blocks a new receipt and
-  becomes terminal `failed: zero_gpu_devices_used` in `Pool.finish`, without
-  automatic retry.
-- `unobserved`: no successful sample covered the payload's lifetime, or the GPU
-  sampler failed (including nvidia-smi timeouts). A successful payload may
-  publish a receipt. Terminal records, census and pbstatus expose `gpu_use`
-  and its reason. Sampler failures remain unobserved unless a UUID was seen.
+- `used`: any successful sample of the attempt, including the final observation,
+  attributed at least one distinct GPU UUID to the payload scope. Earlier use
+  remains used if a later sample or RPC fails.
+- `zero`: every attempted sample succeeded, including the final observation;
+  at least one successful sample covered the payload's lifetime; and none
+  attributed a GPU UUID. Only zero blocks a new receipt and becomes terminal
+  `failed: zero_gpu_devices_used` in `Pool.finish`, without automatic retry.
+- `unobserved`: no sample showed use, and either a sample failed or no successful
+  sample covered the payload's lifetime. Allow the receipt and expose the reason
+  in terminal records, census and pbstatus: `final_observation_failed` for a
+  failed final RPC or sample, `sampler_error` for an earlier failed sample, or
+  `no_sample_during_lifetime` for absent coverage. An early zero followed by a
+  failed final observation is unobserved: GPU work could have started later.
 
-Core hashes the observation into the receipt's optional `resource_telemetry`
+The broker retains raw attempt evidence: the union of UUIDs from successful
+samples, whether any sample failed, lifetime coverage, and final-sample success.
+Core and Pool use one judgment over that evidence. A protected root-owned
+`gpu-observations/<scope>.json` beside the broker socket mirrors only action,
+nonce, scope and sampling evidence, without tokens or process identities. Like
+private broker attempt records it is retained for recovery until `/run` clears.
+Core may recover earlier positive use there if the final RPC fails. Recovery
+opens each ancestor and leaf without following symlinks, verifies root ownership
+and write protection, caps input at 64 KiB, and checks the attempt identity.
+A payload which could make the broker RPC fail could only turn the run visibly
+`unobserved`, never `used`; an earlier successful UUID attribution still wins.
+Sampler failures never erase successful UUIDs or invent positive attribution.
+
+Core hashes the final judgment into the receipt's optional `resource_telemetry`
 field and validates it on lookup. CPU receipts retain their existing shape.
 Old receipts without GPU telemetry retain an unobserved execution. Cache hits
 require a verified CAS receipt and carry its original observation, never the
 replay scope's idle sample. A verified receipt bound to the current attempt's
-nonce and scope seals its successful publication judgment. A recovered broker
-RPC cannot retroactively turn that receipt into a terminal zero-use failure.
+nonce and scope seals the judgment through its final observation. Pool honors
+that judgment; later cleanup samples cannot retroactively reinterpret it.
 Unsampled short CUDA contexts are unobserved.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand

@@ -14,8 +14,8 @@ from test_resource_broker import authority, monitored  # noqa: F401
 from test_pool_resource_scope import scoped  # noqa: F401
 
 MIB, GIB = 1024 ** 2, 1024 ** 3
-ZERO = {'gpu_devices_used': 0, 'gpu_uuids': [], 'gpu_use': 'zero',
-        'gpu_use_reason': 'successful_payload_sample'}
+ZERO = {'gpu_devices_used': 0, 'gpu_uuids': [], 'gpu_evidence': {
+    'sample_failed': False, 'live_sample': True, 'final_succeeded': True}}
 
 
 # -- Finding 1: generic producers (demand only in pool resources) -------------
@@ -233,10 +233,9 @@ def test_unsampled_short_gpu_use_is_not_a_terminal_zero(generic_gpu, monitored, 
                                   'resource_telemetry': dict(final)},
                           claim_snapshot=item)
     terminal = json.loads(path_t.read_text())
-    assert final['gpu_use'] == 'unobserved'
-    assert final['gpu_devices_used'] is None
+    assert pb.gpu_execution_judgment(final)['gpu_use'] == 'unobserved'
     assert terminal['detail']['gpu_use'] == 'unobserved'
-    assert terminal['detail']['gpu_use_reason'] == 'no_payload_sample'
+    assert terminal['detail']['gpu_use_reason'] == 'no_sample_during_lifetime'
     assert path_t.parent.name != pool.record_store.FAILED
 
 
@@ -265,8 +264,9 @@ def test_broker_core_and_pool_agree_on_all_three_outcomes(generic_gpu, monitored
             raise subprocess.TimeoutExpired('nvidia-smi', 1.)
         monkeypatch.setattr(gpu, 'collect', timeout)
     live.poll_once()
+    live.observe_gpu(rec['scope_id'])
     observation = a.records[rec['scope_id']]['resource_telemetry']
-    assert observation['gpu_use'] == outcome
+    assert pb.gpu_execution_judgment(observation)['gpu_use'] == outcome
     monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
         'resource_telemetry': observation, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
         'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
@@ -286,7 +286,7 @@ def test_broker_core_and_pool_agree_on_all_three_outcomes(generic_gpu, monitored
     assert terminal['status'] == ('failed' if outcome == 'zero' else 'executed')
     assert terminal['detail']['gpu_use'] == outcome
     if outcome == 'unobserved':
-        assert terminal['detail']['gpu_use_reason'] == 'gpu_sampler_failed'
+        assert terminal['detail']['gpu_use_reason'] == 'final_observation_failed'
 
 
 def test_sealed_cpu_demand_overrides_gpu_fallback(generic_gpu, monkeypatch):

@@ -33,12 +33,12 @@ def test_attributed_gpu_uuid_union_survives_empty_samples(monitored, tmp_path, m
     monkeypatch.setattr(monitor, '_payload_live', lambda row: True)
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
-    assert status['resource_telemetry']['gpu_devices_used'] is None
+    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_devices_used'] is None
     query(monkeypatch, '20, GPU-visible, 1\n')
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
-    assert status['resource_telemetry']['gpu_use'] == 'unobserved'
-    assert status['resource_telemetry']['gpu_use_reason'] == 'gpu_sampler_failed'
+    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_use'] == 'unobserved'
+    assert pb.gpu_execution_judgment(status['resource_telemetry'])['gpu_use_reason'] == 'sampler_error'
     query(monkeypatch, '10, GPU-first, [N/A]\n11, GPU-first, 1\n10, GPU-second, 2\n20, GPU-visible, 3\n')
     monitor.poll_once()
     query(monkeypatch, '')
@@ -53,7 +53,7 @@ def test_gpu_observation_requires_exact_peer_scope_and_kernel_identity(monitored
     request, record, path = rows[0]
     telemetry = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-observed']}
     a.records[record['scope_id']]['resource_telemetry'] = telemetry
-    monkeypatch.setattr(a, 'gpu_observer', lambda: None)
+    monkeypatch.setattr(a, 'gpu_observer', lambda scope: None)
     peer = Path('/proc/123456789/cgroup')
     membership = '/prismabuild.slice/' + record['scope_id']
     group = membership + '-foreign/payload'
@@ -86,8 +86,9 @@ def test_pool_finish_adjudicates_gpu_use(scoped, count, monkeypatch):
     queue, item, calls = scoped
     detail = {'status': 'executed', 'returncode': 0, 'stdout': '', 'stderr': '',
               'resource_telemetry': {'gpu_devices_used': count}}
-    final = {'gpu_devices_used': count, 'gpu_use': 'unobserved' if count is None else 'used' if count else 'zero',
-             'gpu_use_reason': 'no_payload_sample' if count is None else 'successful_payload_sample'}
+    final = {'gpu_devices_used': count or 0, 'gpu_uuids': ['GPU-used'] if count else [],
+             'gpu_evidence': {'sample_failed': False, 'live_sample': count is not None,
+                              'final_succeeded': True}}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
         'complete': True, 'resource_scope': {'telemetry': final}})
     path = queue.finish(item['action_key'], status='executed', detail=detail,
@@ -124,7 +125,7 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
     nonce = 'a' * 32
     scope = 'prismabuild-job' + pb.raw_sha256((action['action_key'] + nonce).encode())[:32] + '.slice'
     telemetry = {'gpu_devices_used': count, 'gpu_uuids': [f'GPU-{i}' for i in range(count)],
-                 'gpu_use': 'used' if count else 'zero', 'gpu_use_reason': 'successful_payload_sample'}
+                 'gpu_evidence': {'sample_failed': False, 'live_sample': True, 'final_succeeded': True}}
     monkeypatch.setenv(pb.ACTION_NONCE_ENV, nonce)
     monkeypatch.setenv(pb.ACTION_SCOPE_ENV, scope)
     monkeypatch.setenv('PRISMABUILD_READER_HELPER_ROOT', str(Path(pb.__file__).resolve().parents[2]))
@@ -151,7 +152,7 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         assert not status_file.exists()
     else:
         first = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout)
-        recorded = {**telemetry, 'scope_id': scope, 'nonce': nonce}
+        recorded = {**pb.gpu_execution_judgment(telemetry), 'scope_id': scope, 'nonce': nonce}
         assert first['receipt']['resource_telemetry'] == recorded
         assert client.cas_receipt_self_check(first['receipt']) is None
         assert cas.lookup(action)['resource_telemetry'] == recorded

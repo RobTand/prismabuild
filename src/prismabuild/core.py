@@ -3837,7 +3837,7 @@ class PrismaBuildCAS:
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
         if _action_needs_gpu(normalized) and resource_telemetry is None:
-            resource_telemetry = _unobserved_gpu_use("no_execution_observation")
+            resource_telemetry = _unobserved_gpu_use("no_sample_during_lifetime")
         if resource_telemetry is not None:
             resource_telemetry = _validate_gpu_execution_observation(resource_telemetry)
             if resource_telemetry["gpu_devices_used"] == 0:
@@ -6155,7 +6155,7 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
     raw = _exact_mapping(value, keys=fields | ({"gpu_use", "gpu_use_reason"} if modern else set()),
                          where="GPU execution observation")
     state = raw.get("gpu_use")
-    if modern and state not in {"used", "zero", "unobserved"}:
+    if modern and (not isinstance(state, str) or state not in {"used", "zero", "unobserved"}):
         _fail("invalid GPU use outcome")
     count = raw["gpu_devices_used"]
     if state != "unobserved" or count is not None:
@@ -6187,6 +6187,77 @@ def _unobserved_gpu_use(reason: str, *, bind_scope: bool = False) -> dict[str, o
         nonce = scope = None
     return {"gpu_use": "unobserved", "gpu_use_reason": reason,
             "gpu_devices_used": None, "gpu_uuids": [], "scope_id": scope, "nonce": nonce}
+
+
+def gpu_execution_judgment(telemetry: Mapping[str, object]) -> dict[str, object]:
+    """One outcome from the broker's complete-attempt sampling evidence."""
+    uuids = telemetry.get("gpu_uuids", [])
+    if (not isinstance(uuids, list) or any(not isinstance(value, str) or not value for value in uuids)
+            or uuids != sorted(set(uuids))):
+        _fail("GPU UUID evidence must be distinct and sorted")
+    evidence = telemetry.get("gpu_evidence")
+    if evidence is None:
+        evidence = {"sample_failed": False, "live_sample": False, "final_succeeded": None}
+    evidence = _exact_mapping(evidence, keys={"sample_failed", "live_sample", "final_succeeded"},
+                              where="GPU attempt evidence")
+    if (type(evidence["sample_failed"]) is not bool or type(evidence["live_sample"]) is not bool
+            or (evidence["final_succeeded"] is not None and type(evidence["final_succeeded"]) is not bool)):
+        _fail("invalid GPU sampling evidence")
+    if uuids:
+        state, reason = "used", "attributed_gpu_uuid"
+    elif evidence["final_succeeded"] is False:
+        state, reason = "unobserved", "final_observation_failed"
+    elif evidence["sample_failed"]:
+        state, reason = "unobserved", "sampler_error"
+    elif not evidence["live_sample"]:
+        state, reason = "unobserved", "no_sample_during_lifetime"
+    elif evidence["final_succeeded"] is not True:
+        state, reason = "unobserved", "final_observation_failed"
+    else:
+        state, reason = "zero", "successful_payload_sample"
+    return {"gpu_use": state, "gpu_use_reason": reason, "gpu_uuids": list(uuids),
+            "gpu_devices_used": None if state == "unobserved" else len(uuids)}
+
+
+def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, object]:
+    """Recover only root-owned evidence when the final broker RPC is unavailable."""
+    scope, nonce = os.environ[ACTION_SCOPE_ENV], os.environ[ACTION_NONCE_ENV]
+    if not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope):
+        _fail("invalid GPU observation scope")
+    endpoint = Path(os.environ.get("PRISMABUILD_RESOURCE_BROKER_SOCKET", "/run/prismabuild/resources.sock"))
+    path = immutable_files.absolute_nofollow_path(
+        endpoint.parent / "gpu-observations" / (scope + ".json"), where="broker GPU evidence")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(path.anchor, flags | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:]:
+            info = os.fstat(descriptor)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                _fail("broker GPU evidence ancestry is not root-owned and protected")
+            child = os.open(part, flags | (os.O_DIRECTORY if part != path.name else 0), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o222
+                or info.st_size > 65536):
+            _fail("broker GPU evidence is not a bounded root-owned read-only file")
+        raw = bytearray()
+        while len(raw) <= 65536:
+            chunk = os.read(descriptor, 65537 - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if len(raw) > 65536 or os.fstat(descriptor) != info:
+            _fail("broker GPU evidence changed or exceeds 64 KiB")
+    finally:
+        os.close(descriptor)
+    evidence = _exact_mapping(digest_primitives.decode_strict_json(bytes(raw), where="broker GPU evidence"),
+                              keys={"action_key", "nonce", "scope_id", "resource_telemetry"},
+                              where="broker GPU evidence")
+    if (evidence["action_key"] != action["action_key"] or evidence["nonce"] != nonce
+            or evidence["scope_id"] != scope):
+        _fail("broker GPU evidence belongs to another attempt")
+    return evidence["resource_telemetry"]
 
 
 def _gpu_broker_request(action: Mapping[str, object], op: str, **fields: object) -> Mapping[str, object]:
@@ -6226,14 +6297,21 @@ def _gpu_execution_observation(action: Mapping[str, object],
         return None
     try:
         response = _gpu_broker_request(action, "gpu_observation")
-        if ("gpu_use" not in response["resource_telemetry"]
-                and not response["resource_telemetry"].get("gpu_devices_used")):
-            return _unobserved_gpu_use("legacy_observation_without_payload_sample", bind_scope=True)
-        observation = _validate_gpu_execution_observation({**response["resource_telemetry"],
-                                                          "nonce": response["nonce"],
+        judgment = gpu_execution_judgment(response["resource_telemetry"])
+        observation = _validate_gpu_execution_observation({**judgment, "nonce": response["nonce"],
                                                           "scope_id": response["scope_id"]})
     except (OSError, ValueError, KeyError, TypeError, ActionContractError):
-        return _unobserved_gpu_use("broker_observation_unavailable", bind_scope=True)
+        # The RPC itself is an attempted observation. Earlier successful use
+        # still wins, but an earlier zero can never prove the failed interval.
+        try:
+            previous = dict(_read_broker_gpu_evidence(action))
+            previous["gpu_evidence"] = {**previous.get("gpu_evidence", {}),
+                                        "sample_failed": True, "final_succeeded": False}
+            judgment = gpu_execution_judgment(previous)
+            observation = _validate_gpu_execution_observation({**judgment,
+                "nonce": os.environ[ACTION_NONCE_ENV], "scope_id": os.environ[ACTION_SCOPE_ENV]})
+        except (OSError, ValueError, KeyError, TypeError, ActionContractError):
+            observation = _unobserved_gpu_use("final_observation_failed", bind_scope=True)
     if observation["gpu_devices_used"] == 0:
         raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope; no receipt was published")
     return observation

@@ -280,28 +280,23 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     detail.pop("cached_execution", None)
     detail.pop("resource_telemetry", None)
     receipt = cas.lookup(action) if status in {"executed", "cache_hit"} and cas and action else None
-    observation = dict((receipt.get("resource_telemetry") or {})
-                       if receipt and status == "cache_hit" else telemetry)
     execution = receipt.get("resource_telemetry") or {} if receipt else {}
     scope = record.get("resource_scope") or {}
-    if (status != "cache_hit" and observation.get("gpu_use") == "zero"
-            and execution.get("nonce") is not None
-            and execution.get("nonce") == scope.get("nonce")
-            and execution.get("scope_id") == scope.get("scope_id")):
-        # Publication seals the current execution's successful judgment. A
-        # later recovered RPC cannot turn its unobserved receipt into failure.
-        observation.update(execution)
-    state = observation.get("gpu_use")
+    bound = (execution.get("nonce") is not None and execution.get("nonce") == scope.get("nonce")
+             and execution.get("scope_id") == scope.get("scope_id"))
+    if receipt and (status == "cache_hit" or bound):
+        # The receipt seals the final observation of this attempt. Cleanup
+        # samples cannot reinterpret it after successful publication.
+        observation = dict(execution)
+        judgment = observation if "gpu_use" in observation else pb.gpu_execution_judgment(observation)
+    else:
+        observation = dict(telemetry)
+        judgment = pb.gpu_execution_judgment(observation)
+    observation.update(judgment)
+    state, reason = observation["gpu_use"], observation["gpu_use_reason"]
     if status == "cache_hit" and receipt is None:
         status = "failed"
         detail.update(status="failed", returncode=1, termination_reason="cache_receipt_unavailable")
-    if state is None:
-        # Older receipts can prove positive UUID use, but an old zero count
-        # contains no evidence that a sample covered the payload's lifetime.
-        state = "used" if observation.get("gpu_devices_used", 0) else "unobserved"
-    reason = observation.get("gpu_use_reason") or (
-        "cached_execution_observation" if receipt else "no_payload_sample")
-    observation.update(gpu_use=state, gpu_use_reason=reason)
     detail.update(resource_telemetry=observation, gpu_use=state, gpu_use_reason=reason)
     zero_gpu = state == "zero" and observation.get("gpu_devices_used") == 0
     if zero_gpu and status in {"executed", "cache_hit", "failed"}:

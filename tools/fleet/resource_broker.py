@@ -415,6 +415,7 @@ class Authority:
     def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None):
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={}
+        self.gpu_evidence_dir=self.state_dir.parent/'gpu-observations'
         # The worker reads this volatile v1 mirror.  The canonical authority is
         # separate so clearing /run at boot cannot turn a named hold into an
         # admission grant.
@@ -838,7 +839,7 @@ class Authority:
         # UUIDs, but cannot establish a zero-use payload lifetime.
         observer=getattr(self,'gpu_observer',None)
         if observer is None:raise ValueError('GPU observation monitor unavailable')
-        observer()
+        observer(scope)
         with self.lock:
             record=self.records.get(scope)
             if record is None or record.get('released_unix'):raise ValueError('GPU observation scope unavailable')
@@ -847,8 +848,8 @@ class Authority:
                 raise ValueError('GPU observation kernel scope changed')
             return {'ok':True,'scope_id':scope,'nonce':nonce,
                     'resource_telemetry':dict(record.get('resource_telemetry') or {
-                        'gpu_use':'unobserved','gpu_use_reason':'no_payload_sample',
-                        'gpu_devices_used':None,'gpu_uuids':[]})}
+                        'gpu_devices_used':0,'gpu_uuids':[],
+                        'gpu_evidence':{'sample_failed':False,'live_sample':False,'final_succeeded':False}})}
 
     def admin(self,uid,request):
         """Operate the one gate that stops this host, as a claim with a holder.
@@ -1321,17 +1322,17 @@ class ResourceMonitor:
         with self.sample_lock:
             return self._poll_once()
 
-    def observe_gpu(self):
+    def observe_gpu(self,scope):
         """Collect attribution without OOM checks, Guard counters or stop calls."""
         with self.sample_lock:
-            snapshot,_=self._sample_gpu(self._records())
+            snapshot,_=self._sample_gpu(self._records(),final_scope=scope)
             return snapshot
 
     def _payload_live(self,record):
         child=record.get('gpu_payload')
         return child is not None and self.authority._live_process(child['pid'])==child
 
-    def _sample_gpu(self,records):
+    def _sample_gpu(self,records,*,final_scope=None):
         scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
                     **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
                        if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
@@ -1348,12 +1349,12 @@ class ResourceMonitor:
         except (OSError,ValueError,subprocess.TimeoutExpired):
             self._retain_gpu_observation(records,{'gpu_query_complete':False,'jobs':[
                 {'scope_id':scope,'cgroup_identity':record['cgroup_identity'],'processes':[]}
-                for scope,record in records.items()]},live)
+                for scope,record in records.items()]},live,final_scope)
             return None,device_readings
-        self._retain_gpu_observation(records,snapshot.as_dict(),live)
+        self._retain_gpu_observation(records,snapshot.as_dict(),live,final_scope)
         return snapshot,device_readings
 
-    def _retain_gpu_observation(self,records,snapshot,live):
+    def _retain_gpu_observation(self,records,snapshot,live,final_scope):
         """Union only UUIDs attributed to this unchanged kernel scope."""
         for job in snapshot.get('jobs',()):
             scope=job.get('scope_id');expected=records.get(scope)
@@ -1369,19 +1370,26 @@ class ResourceMonitor:
                 if (info.st_dev,info.st_ino)!=tuple(identity):continue
                 prior=current.get('resource_telemetry') or {}
                 uuids=set(prior.get('gpu_uuids',()))
-                uuids.update(row['gpu_uuid'] for row in job.get('processes',()))
-                covered=scope in live and self._payload_live(expected)
-                if snapshot.get('gpu_query_complete') is not True:
-                    current['gpu_sampler_failed']=True
-                elif covered:
-                    current['gpu_payload_samples']=current.get('gpu_payload_samples',0)+1
-                if uuids:state,reason='used','attributed_gpu_uuid'
-                elif current.get('gpu_sampler_failed'):state,reason='unobserved','gpu_sampler_failed'
-                elif current.get('gpu_payload_samples',0)>0:state,reason='zero','successful_payload_sample'
-                else:state,reason='unobserved','no_payload_sample'
-                current['resource_telemetry']={'gpu_use':state,'gpu_use_reason':reason,
-                    'gpu_devices_used':len(uuids) if state!='unobserved' else None,'gpu_uuids':sorted(uuids)}
+                evidence=dict(prior.get('gpu_evidence') or {
+                    'sample_failed':False,'live_sample':False,'final_succeeded':None})
+                succeeded=snapshot.get('gpu_query_complete') is True
+                if succeeded:
+                    uuids.update(row['gpu_uuid'] for row in job.get('processes',()))
+                    if scope in live and self._payload_live(expected):evidence['live_sample']=True
+                else:evidence['sample_failed']=True
+                if scope==final_scope:evidence['final_succeeded']=succeeded
+                current['resource_telemetry']={'gpu_devices_used':len(uuids),'gpu_uuids':sorted(uuids),
+                                               'gpu_evidence':evidence}
                 _atomic(self.authority.state_dir/(scope+'.json'),current)
+                # This mirror contains no token or process identity. Root owns
+                # its directory and read-only leaf; the payload may only read.
+                directory=self.authority.gpu_evidence_dir
+                directory.mkdir(mode=0o755,exist_ok=True)
+                info=directory.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
+                    raise ValueError('unsafe GPU evidence directory')
+                _atomic(directory/(scope+'.json'),{key:current[key] for key in
+                    ('action_key','nonce','scope_id','resource_telemetry')},mode=0o444)
 
     def _poll_once(self):
         records=self._records();stopped=[];errors=[]
@@ -1605,6 +1613,7 @@ def main():
     authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
                         maintenance_state=args.maintenance_state)
     endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
+    authority.gpu_evidence_dir=endpoint.parent/'gpu-observations'
     if endpoint.exists():
         # systemd owns one broker; refuse an active endpoint rather than take it.
         probe=socket.socket(socket.AF_UNIX)
