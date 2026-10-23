@@ -35,7 +35,7 @@ from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
-from prismabuild import residency_plan
+from prismabuild import batch_ledger, output_contract, residency_plan
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
     STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
@@ -785,9 +785,19 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                  residency_plan.registry_root(queue)):
         for path in tree(root):
             record(path, mover=root != residency_plan.registry_root(queue))
-    for path in tree(Path(residency_root or queue.root / pool.record_store.RESIDENCY)):
+    residency = Path(residency_root or queue.root / pool.record_store.RESIDENCY)
+    for path in tree(residency):
         value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
-        if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
+        relative = path.relative_to(residency).parts
+        if (len(relative) == 4
+                and relative[0] == output_contract.OUTPUT_SCOPES_SUBDIR
+                and relative[3] == "commitments.json"):
+            template, _, nonce = relative[2].rpartition(".")
+            output_contract.output_key(relative[1], where="commitments owner")
+            output_contract.output_name(template, where="commitments template")
+            output_contract.output_nonce(nonce, where="commitments attempt")
+            batch_ledger.validate_commitments_document(value)
+        elif not isinstance(value, dict) or not isinstance(value.get("schema"), str):
             raise ValueError(f"{path}: reference record is unreadable")
         direct(value)
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
