@@ -126,6 +126,13 @@ def ewb_analyze(raw):
     for name in raw["roles"]:
         samples = [(s["monotonic"], s["roles"][name]) for s in raw["samples"]
                    if name in s["roles"] and "error" not in s["roles"][name]]
+        role = raw["roles"][name]
+        initial = role.get("initial")
+        # Legacy captures without an initial snapshot use the first verified
+        # sample. An explicitly unavailable initial identity stays unavailable.
+        identity = (initial.get("start_ticks") if initial is not None else
+                    samples[0][1]["start_ticks"] if samples else None)
+        samples = [(t, s) for t, s in samples if identity is not None and s["start_ticks"] == identity]
         segments = []
         for (t0, a), (t1, b) in zip(samples, samples[1:]):
             if a["start_ticks"] != b["start_ticks"] or t1 <= t0:
@@ -330,6 +337,11 @@ class EventWaitCapture:
                         for name in ("cpu.stat", "io.stat", "memory.current", "cpu.pressure", "memory.pressure"):
                             value = self.read(root / name, 16384)
                             counters["cgroup"][name] = value.decode() if value is not None else None
+        final_stat = self.read(base / "stat", 16384)
+        if final_stat is None:
+            return {"error": "process identity unavailable after counter read"}
+        if int(final_stat.decode().rsplit(")", 1)[1].split()[19]) != counters["start_ticks"]:
+            return {"error": "process identity changed during counter read"}
         return counters
 
     def sample(self):
@@ -392,13 +404,14 @@ class EventWaitCapture:
             name, value = role.split("=", 1)
             pid = int(value)
             command = self.read(Path("/proc") / str(pid) / "cmdline")
-            if command is None:
-                raise ValueError(f"role {name} unavailable")
-            argv = command.decode().rstrip("\0").split("\0")
+            argv = command.decode().rstrip("\0").split("\0") if command is not None else []
             snapshot = self.role_sample(pid)
             self.raw["roles"][name] = {"pid": pid, "argv": argv, "initial": snapshot,
-                                      "uptime_s": time.clock_gettime(time.CLOCK_BOOTTIME) - snapshot["start_ticks"] / self.raw["clock_ticks"],
+                                      "uptime_s": (time.clock_gettime(time.CLOCK_BOOTTIME) - snapshot["start_ticks"] / self.raw["clock_ticks"]
+                                                   if "start_ticks" in snapshot else None),
                                       "runtime_paths": [arg for arg in argv if "/runtime-generations/" in arg]}
+            if command is None:
+                self.raw["roles"][name]["error"] = "initial cmdline unavailable"
         self.raw["startup_queue"] = self.census()
         self.sample()
         deadline = self.raw["started_monotonic"] + self.args.duration_s
@@ -440,24 +453,65 @@ class EventWaitCapture:
 def ewb_trace(pid, seconds):
     """Optional privileged attachment, always separate from latency capture."""
     started = time.monotonic()
+    limits, output = [], {"stdout": bytearray(), "stderr": bytearray()}
+    child = None
+    selector = selectors.DefaultSelector()
     try:
-        child = subprocess.Popen(["strace", "-c", "-p", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        child = subprocess.Popen(["strace", "-c", "-p", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for name, pipe in (("stdout", child.stdout), ("stderr", child.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        deadline, stage = started + seconds, 0
+        while selector.get_map() or child.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                if stage == 0:
+                    if child.poll() is None:
+                        child.send_signal(signal.SIGINT)
+                    deadline, stage = now + 5, 1
+                elif stage == 1:
+                    if child.poll() is None:
+                        child.kill()
+                    deadline, stage = now + 1, 2
+                else:
+                    limits.append("trace_teardown")
+                    break
+            for key, _ in selector.select(max(0, min(.1, deadline - time.monotonic()))):
+                data = os.read(key.fileobj.fileno(), 8192)
+                if not data:
+                    selector.unregister(key.fileobj)
+                    continue
+                remaining = 65536 - sum(len(value) for value in output.values())
+                output[key.data].extend(data[:remaining])
+                if len(data) > remaining and "trace_output_bytes" not in limits:
+                    limits.append("trace_output_bytes")
+        # Never wait on a pipe held by a descendant, or signal the observed PID.
         try:
-            stdout, stderr = child.communicate(timeout=seconds)
+            child.wait(timeout=1)
         except subprocess.TimeoutExpired:
-            child.send_signal(signal.SIGINT)
-            try:
-                stdout, stderr = child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                stdout, stderr = child.communicate()
+            if "trace_teardown" not in limits:
+                limits.append("trace_teardown")
         duration = time.monotonic() - started
+        # Dropping incomplete UTF-8 avoids replacement characters expanding the
+        # retained byte budget. Truncation is explicitly not a syscall sample.
+        stdout, stderr = (bytes(output[name]).decode(errors="ignore") for name in ("stdout", "stderr"))
         total = next((line.split() for line in stderr.splitlines() if line.endswith(" total")), None)
         return {"pid": pid, "duration_s": duration, "returncode": child.returncode,
-                "stdout": stdout, "stderr": stderr,
-                "syscalls_per_min": int(total[3]) * 60 / duration if total else None}
+                "stdout": stdout, "stderr": stderr, "limits_hit": limits,
+                "syscalls_per_min": int(total[3]) * 60 / duration if total and not limits else None}
     except OSError as exc:
         return {"pid": pid, "unavailable": str(exc), "syscalls_per_min": None}
+    finally:
+        selector.close()
+        if child is not None:
+            if child.poll() is None:
+                child.kill()
+                try:
+                    child.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            child.stdout.close()
+            child.stderr.close()
 
 
 def ewb_compare(left, right):
