@@ -2008,7 +2008,7 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
                         nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
                     if isinstance(observation, dict) and ("gpu_use" in observation or "gpu_record" in observation)
                     else None)
-    except pb.ActionContractError as exc:
+    except Exception as exc:
         return _unreadable_row(entry, f"invalid GPU evidence: {exc}")
     slurm = detail.get("slurm")
     slurm = slurm if isinstance(slurm, dict) else {}

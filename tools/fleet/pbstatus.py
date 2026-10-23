@@ -901,7 +901,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             gpu_use = _gpu_use_text(pb.gpu_execution_judgment(ending.get("gpu_record"))
                                     if ending.get("gpu_use") is not None else None,
                                     cache_note=ending.get("gpu_cache_note"))
-        except pb.ActionContractError as exc:
+        except Exception as exc:
             gpu_use = UNKNOWN
             reason = f"invalid GPU evidence: {exc}"
         rows.append((
