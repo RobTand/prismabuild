@@ -3739,9 +3739,13 @@ class ResourceLedger:
             metadata = reservation.metadata
             allocation = metadata.get('allocation')
             if allocation is not None:
-                if (not isinstance(allocation, Mapping)
-                        or any(not isinstance(allocation.get(tier), list)
-                               for tier in ('preferred', 'fallback'))):
+                if tiers is None:
+                    tiers = record_store.read_document(self.base / 'cpu-map.json')
+                if tiers is None:
+                    raise PoolContractError('CPU allocation selection needs a topology')
+                try:
+                    allocation = self.cpu_allocation(holder.name, tiers, metadata=metadata)
+                except PoolContractError:
                     return []
                 assigned.update(allocation['preferred'] + allocation['fallback'])
             elif reservation.has_contents or not holder.name.startswith(ACQUIRING_PREFIX):
@@ -3749,10 +3753,6 @@ class ResourceLedger:
                 # disjoint from a surviving borrower or funded dependent.
                 if tiers is not None or record_store.read_document(self.base / 'cpu-map.json'):
                     return []
-        if assigned and tiers is None:
-            tiers = record_store.read_document(self.base / 'cpu-map.json')
-            if tiers is None:
-                raise PoolContractError('borrowed CPU selection needs a topology')
         if eligible_cpus is None and not assigned:
             return tokens
         if tiers is None:

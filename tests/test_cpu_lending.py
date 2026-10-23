@@ -302,13 +302,20 @@ def test_rollback_uses_frozen_grant_after_priority_changes(loan_rig):
 
 @pytest.mark.parametrize('private', [False, True])
 @pytest.mark.parametrize('loan_rig', [(4, 1), (3, 2)], indirect=True)
-def test_missing_borrower_affinity_never_makes_returned_tokens_free(loan_rig, private):
+@pytest.mark.parametrize('fault', ['missing', 'wrong_type', 'wrong_tier'])
+def test_missing_borrower_affinity_never_makes_returned_tokens_free(loan_rig, private, fault):
     ledger, tiers, controller, donor, item, metadata = loan_rig
     handle = ledger.begin_acquire(item['action_key'], item['resources'],
                                  adaptive=metadata, cpu_tiers=tiers)
     assert handle and ledger.commit_acquire(item['action_key'], handle)
     ledger.release(donor['action_key'])
-    (ledger.held_dir / item['action_key'] / adaptive_cpu.METADATA).unlink()
+    path = ledger.held_dir / item['action_key'] / adaptive_cpu.METADATA
+    if fault == 'missing':
+        path.unlink()
+    else:
+        saved = adaptive_cpu.read_json(path)
+        saved['allocation']['preferred'] = ['0'] if fault == 'wrong_type' else [4]
+        adaptive_cpu.write_json(path, saved)
     acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
     assert acquire('e' * 64, {'cpu': 1}, cpu_tiers=tiers) is None
 
