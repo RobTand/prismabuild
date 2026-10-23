@@ -276,6 +276,10 @@ def _claim(queue: pool.PoolQueue, key: str) -> None:
     source.unlink()
     item.update({"action_key": key, "claimed_unix": 1000.0,
                  "claimed_by": "worker", "claimed_host": "sparky"})
+    if item.get("checkout_snapshot") is not None:
+        # This simulated worker never materializes a checkout. Match the
+        # empty custody envelope that a real fresh claim persists.
+        item["checkout_registrations"] = []
     queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
 
 

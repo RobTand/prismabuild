@@ -297,3 +297,18 @@ def test_new_name_after_proven_unlink_does_not_erase_exact_cleanup(tmp_path, bro
     assert outcome["checkout_cleanup"]["unlinked"] is True
     assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
     assert queue.ledger().held_keys() == []
+
+
+@pytest.mark.parametrize("fence_s", [300.0, None])
+def test_proven_checkout_without_lease_finishes_from_its_exact_claim(
+        tmp_path, broker, monkeypatch, fence_s):
+    queue, action, _ = fenced_snapshot_queue(tmp_path, fence_s=fence_s)
+    key = action["action_key"]
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    item = claim(queue)
+    outcome = _execute(queue, item)
+    assert outcome["checkout_cleanup"]["unlinked"] is True
+    queue.records.lease_path(key).unlink()
+    assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
+    assert not queue.records.item_path(pool.CLAIMED, key).exists()
+    assert queue.ledger().held_keys() == []

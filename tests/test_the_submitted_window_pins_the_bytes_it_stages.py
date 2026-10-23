@@ -363,6 +363,7 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     stale = dict(claim)
     pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, mover), stale)
     pool.immutable_files.write_json_atomic(queue.records.lease_path(mover), {
+        **stale, "schema": pool.POOL_LEASE_SCHEMA_V1,
         "owner": stale.get("claimed_by"), "action_key": mover,
         "attempt": stale.get("attempt", 1),
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})

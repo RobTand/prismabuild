@@ -555,13 +555,16 @@ def certify_checkout_cleanup(
                       "ended_unix": max(ended, default=_now()), "error": "; ".join(failures)}
             owner["checkout_registrations"] = updated
             owner["checkout_cleanup"] = result
-            queue.records.replace_record_at(path, owner)
+            # A final return is a read-only certification. Replacing its
+            # finishing tombstone would invalidate the finisher's identity.
+            if recover:
+                queue.records.replace_record_at(path, owner)
             if isinstance(record, dict):
                 record["checkout_registrations"] = updated
                 record["checkout_cleanup"] = result
             # A live lease owns the list. Keep its claim mirror current without
             # ever writing a successor or a separate late-finish journal.
-            if owner_path is None:
+            if recover and owner_path is None:
                 mirror = queue.records.item_path(record_store.CLAIMED, key)
                 live = record_store.read_document(mirror)
                 if live is not None and claim_identity.same_claim(live, owner):

@@ -794,6 +794,10 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                   file=sys.stderr)
             return (queue.records.attempt_path(record, plan.attempt)
                     if transition is Transition.FINISH else None)
+    if record.get("checkout_snapshot") is None and "checkout_registrations" not in record:
+        # Preserve the existing crash boundary for claims without checkouts.
+        # Checkout-bearing claims keep their live authority through return.
+        queue.records.lease_path(key).unlink(missing_ok=True)
     if transition is Transition.EXPIRE and disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
         with suppress(Exception):
             queue.note_fill_borrow_end(record)
@@ -809,7 +813,11 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
         queue._release_reservation(key, host=holder, keep_tier=keep_tier, cleanup_owner=tombstone)
     else:
         queue._release_reservation(key, host=holder, cleanup_owner=tombstone)
-    queue.records.lease_path(key).unlink(missing_ok=True)
+    if record.get("checkout_snapshot") is not None or "checkout_registrations" in record:
+        with queue.action_transition_lock(key):
+            lease = record_store.read_document(queue.records.lease_path(key))
+            if lease is not None and claim_identity.same_claim(lease, plan.original):
+                queue.records.lease_path(key).unlink(missing_ok=True)
     if record.get("lifetime_fence_s") is not None:
         queue._stamp_lifetime_release(record, key, holder=holder)
     if cancelled:

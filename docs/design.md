@@ -20943,8 +20943,11 @@ it. It checks every durable registration and accepts a result only for that
 execution UUID, registered path/device/inode and exact attempt. Caller details
 cannot replace the list. Missing or contradictory authority, an unbound creation
 intent, or a missing tree without persisted unlink proof retains custody.
-The lease remains until after the guarded reservation return. Acquisition
-rollback is earlier than checkout creation and has no checkout custody.
+A checkout's lease remains until after the guarded reservation return, and
+only that exact claim's lease is removed. Final return certification reads
+custody without replacing a finishing tombstone or its checked identity.
+Claims without checkouts keep their existing crash-recovery boundary.
+Acquisition rollback is earlier than checkout creation and has no checkout custody.
 
 Removal keeps the original directory descriptor open through final unlink.
 It checks the name against that identity before rmdir and then requires the
