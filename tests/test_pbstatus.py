@@ -759,13 +759,22 @@ def test_a_purged_job_reads_as_unknown_rather_than_none(fleet, capsys) -> None:
     assert pbstatus.UNKNOWN in lines[1]
 
 
-@pytest.mark.parametrize('reason', ['final_observation_failed', 'sampler_error', 'no_sample_during_lifetime'])
+@pytest.mark.parametrize('reason', ['final_observation_failed', 'sampler_error', 'no_sample_during_lifetime',
+                                    'sampler_in_flight_at_freeze', 'final_census_skipped'])
 def test_unobserved_gpu_use_and_reason_reach_census_and_status(fleet, capsys, reason):
     key = 'e5' * 32
     _pool_ending(fleet, key)
     path = fleet['queue'] / pool.record_store.DONE / f'{key}.json'
     record = json.loads(path.read_text())
-    record['detail'].update(gpu_use='unobserved', gpu_use_reason=reason)
+    from gpu_evidence_fixtures import frozen_gpu
+    from prismabuild import core as pb
+    flags = {'sample_failed': reason == 'sampler_error',
+             'live_sample': reason != 'no_sample_during_lifetime',
+             'final_succeeded': reason in {'sampler_error', 'no_sample_during_lifetime'}}
+    if reason in {'sampler_in_flight_at_freeze', 'final_census_skipped'}:
+        flags['final_reason'] = reason
+    judgment = pb.gpu_execution_judgment(frozen_gpu({'gpu_evidence': flags}, action_key=key))
+    record['detail'].update(resource_telemetry=judgment.as_dict(), gpu_use='unobserved', gpu_use_reason=reason)
     path.write_text(json.dumps(record))
     row = next(row for row in _run_json(fleet, capsys)['endings'] if row['action_key'] == key)
     assert row['gpu_use'] == 'unobserved'

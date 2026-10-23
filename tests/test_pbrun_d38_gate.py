@@ -254,9 +254,11 @@ def _publish_receipt(tmp_path: Path, cas, target: dict, *, tag: str = "a",
     observation = None
     if gpu:
         nonce = "a" * 32
-        observation = {"gpu_devices_used": 1, "gpu_uuids": ["GPU-preflight-fixture"],
-                       "nonce": nonce, "scope_id": "prismabuild-job" +
-                       pb.raw_sha256((key + nonce).encode())[:32] + ".slice"}
+        from gpu_evidence_fixtures import frozen_gpu
+        observation = pb.gpu_execution_judgment(frozen_gpu({
+            'gpu_uuids': ['GPU-preflight-fixture'], 'gpu_evidence': {
+                'sample_failed': False, 'live_sample': True, 'final_succeeded': True}},
+            action_key=key, nonce=nonce))
     cas.publish_result(action, out, attestation=attestation,
                        return_execution_receipt=True, resource_telemetry=observation)
     return key
