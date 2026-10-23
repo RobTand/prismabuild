@@ -68,6 +68,12 @@ def test_cleanup_proof_from_another_attempt_never_returns_tokens(
     outcome = _execute(queue, item)
     assert outcome["status"] == "executed"
     valid = outcome["checkout_cleanup"]
+    # Simulate loss of the durable proof too: a real stored completion remains
+    # authoritative even when caller detail is missing or belongs elsewhere.
+    path = queue.records.item_path(pool.CLAIMED, item["action_key"])
+    durable = record_store.read_document(path)
+    durable.pop("checkout_cleanup")
+    queue.records.replace_record_at(path, durable)
     if field is None:
         outcome.pop("checkout_cleanup")
     elif field == "ended_unix":

@@ -20918,7 +20918,10 @@ Initial checkout removal checks the registered device and inode, just as
 recovery does. A replacement path cannot stand in for the original checkout.
 Execution binds and persists the checkout verdict in its finally path, so
 ordinary materialization and prelaunch exceptions supply the same exact-attempt
-proof to finish as successful payloads. The existing lifecycle owner retains
+proof to finish as successful payloads. Proven durable cleanup is authoritative
+when later caller detail is missing, foreign or incomplete. Execution-phase
+metadata travels with the outcome; release evidence is still filed only after
+the ledger return. The existing lifecycle owner retains
 an unstarted maintenance deferral in `finish_pending` with status `defer` while
 checkout cleanup is unproved. The owner host retries that policy through the
 normal reaper or drain-time pending-finish pass. Successful cleanup requeues

@@ -460,6 +460,18 @@ def _execution_checkout(
 
 
 
+def checkout_cleanup_proven(record: Mapping[str, object]) -> bool:
+    """Whether this exact attempt has a completed, timestamped checkout proof."""
+    from . import lifetime_fence
+
+    proof = record.get("checkout_cleanup")
+    if not isinstance(proof, Mapping) or proof.get("claim") != lifetime_fence.attempt_identity(record):
+        return False
+    ended = proof.get("ended_unix")
+    return (proof.get("complete") is True and type(ended) in (int, float)
+            and math.isfinite(ended))
+
+
 def settle_checkout_cleanup(
     record: Mapping[str, object], *, local_checkout_root: Path,
 ) -> dict[str, object]:
@@ -475,8 +487,7 @@ def settle_checkout_cleanup(
     if not isinstance(proof, Mapping) or proof.get("claim") != lifetime_fence.attempt_identity(record):
         return {"complete": False, "error": "checkout cleanup proof missing or belongs to another attempt"}
     if proof.get("complete") is True:
-        ended = proof.get("ended_unix")
-        if type(ended) not in (int, float) or not math.isfinite(ended):
+        if not checkout_cleanup_proven(record):
             return {**proof, "complete": False, "error": "checkout cleanup has no completion time"}
         return dict(proof)
     try:

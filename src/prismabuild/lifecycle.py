@@ -497,8 +497,9 @@ def _worker_finish(
     checkout = (detail or {}).get("checkout_cleanup")
     if (effective_record.get("lifetime_fence_s") is not None
             and isinstance(checkout, Mapping)):
-        from . import lifetime_fence
-        if checkout.get("claim") == lifetime_fence.attempt_identity(effective_record):
+        from . import lifetime_fence, materialize
+        if (not materialize.checkout_cleanup_proven(effective_record)
+                and checkout.get("claim") == lifetime_fence.attempt_identity(effective_record)):
             effective_record["checkout_cleanup"] = dict(checkout)
     container_cleanup = queue.cleanup_action_containers(
         effective_record, reason=str((detail or {}).get("termination_reason") or status))

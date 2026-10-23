@@ -15367,9 +15367,7 @@ class PoolQueue:
         settled_unix = scope_cleanup.get("checked_unix") if contained else _now()
         checkout = record.get("checkout_cleanup")
         snapshot = record.get("checkout_snapshot") is not None
-        checkout_complete = (not snapshot or isinstance(checkout, Mapping)
-                             and checkout.get("claim") == lifetime_fence.attempt_identity(record)
-                             and checkout.get("complete") is True)
+        checkout_complete = not snapshot or materialize.checkout_cleanup_proven(record)
         cleanup_end = max(settled_unix, _now())
         if snapshot and isinstance(checkout, Mapping):
             finished_detail["checkout_cleanup"] = dict(checkout)
@@ -21834,19 +21832,18 @@ class PoolQueue:
                 if item.get("checkout_snapshot") is not None:
                     checkout_cleanup["claim"] = life.claim
                     item["checkout_cleanup"] = dict(checkout_cleanup)
-                key = str(item["action_key"])
-                with self.action_transition_lock(key):
-                    path = self.records.item_path(CLAIMED, key)
-                    live = record_store.read_document(path)
-                    if (live is not None and claim_identity.same_claim(live, item)
-                            and lifetime_fence.attempt_identity(live) == life.claim):
-                        claim_identity.check_lease_identity(
-                            key, live, record_store.read_document(self.records.lease_path(key)),
-                            invalid=AmbiguousClaimHolder)
-                        live["lifetime_evidence"] = item["lifetime_evidence"]
-                        if item.get("checkout_snapshot") is not None:
+                if item.get("checkout_snapshot") is not None:
+                    key = str(item["action_key"])
+                    with self.action_transition_lock(key):
+                        path = self.records.item_path(CLAIMED, key)
+                        live = record_store.read_document(path)
+                        if (live is not None and claim_identity.same_claim(live, item)
+                                and lifetime_fence.attempt_identity(live) == life.claim):
+                            claim_identity.check_lease_identity(
+                                key, live, record_store.read_document(self.records.lease_path(key)),
+                                invalid=AmbiguousClaimHolder)
                             live["checkout_cleanup"] = item["checkout_cleanup"]
-                        self.records.replace_record_at(path, live)
+                            self.records.replace_record_at(path, live)
         if life is not None:
             outcome["lifetime_evidence"] = item["lifetime_evidence"]
             if item.get("checkout_snapshot") is not None:

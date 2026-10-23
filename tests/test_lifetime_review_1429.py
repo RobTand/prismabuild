@@ -222,3 +222,23 @@ def test_prelaunch_exception_after_scope_creation_releases_on_exact_proof(
     assert terminal["checkout_cleanup"]["claim"]["nonce"]
     assert queue.ledger().held_keys() == []
     assert not broker.kernel.groups
+
+
+@pytest.mark.parametrize("fault", ["missing", "foreign", "incomplete"])
+def test_proven_durable_cleanup_survives_stale_caller_detail(tmp_path, broker, monkeypatch, fault):
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    key = action["action_key"]
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    item = claim(queue)
+    outcome = _execute(queue, item)
+    proven = dict(outcome["checkout_cleanup"])
+    if fault == "missing":
+        outcome.pop("checkout_cleanup")
+    elif fault == "foreign":
+        outcome["checkout_cleanup"] = {**proven, "claim": {**proven["claim"], "nonce": "foreign"}}
+    else:
+        outcome["checkout_cleanup"] = {**proven, "complete": False, "ended_unix": None}
+    destination = _finish(queue, item, outcome)
+    assert destination == queue.records.item_path(pool.DONE, key)
+    assert queue.ledger().held_keys() == []
+    assert record_store.read_document(destination)["checkout_cleanup"] == proven
