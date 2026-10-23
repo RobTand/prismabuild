@@ -427,7 +427,7 @@ tests/test_queue_bell_installed_coverage.py::test_keyless_withdrawal_subtree_inv
 tests/test_queue_bell_installed_coverage.py::test_keyless_withdrawal_subtree_invalidates_an_observed_deletion.pause_keyless_install wait 1 #2035
 tests/test_queue_bell_lazy_coverage.py::test_populated_lazy_root_loses_observed_deletion wait 2 #2035
 tests/test_queue_bell_lazy_coverage.py::test_populated_lazy_root_loses_observed_deletion.pause_before_install wait 1 #2035
-tests/test_queue_bell_v1_compat.py::_v1_exchange wait 1 #2035
+tests/test_queue_bell_v1_compat.py::_v1_exchange wait 1 #2057
 tests/test_queue_bell_v2.py::test_v2_caps_timeout_and_coverage_change_wakes_pending_waiter wait 1 #2035
 tests/test_queue_bell_v2.py::test_v2_declares_covered_topics_and_projects_v1_events wait 1 #2035
 tests/test_queue_bell_v2.py::test_v2_disconnect_releases_subscription_without_renewal join 1 #2035
@@ -605,6 +605,7 @@ tests/test_two_phase_movers_of_one_staged_name_both_complete.py::test_a_held_fir
 tests/test_two_phase_movers_of_one_staged_name_both_complete.py::test_a_landed_name_is_vouched_while_the_copy_lands_nothing join 1 #2035
 tests/test_two_phase_movers_of_one_staged_name_both_complete.py::test_a_landed_name_is_vouched_while_the_copy_lands_nothing sleep 2 #2035
 tests/test_two_phase_movers_of_one_staged_name_both_complete.py::test_a_landed_name_is_vouched_while_the_copy_lands_nothing wait 1 #2035
+tests/test_wedged_probe_names_its_stuck_child.py::_await_child_state sleep 1 #2035
 tests/test_window_progress_protection.py::test_competing_claim_race_stays_exact join 1 #2035
 tests/test_withdraw_end_to_end.py::_await sleep 1 #2035
 tests/test_worker_disk_metadata_admission.py::test_worker_disk_metadata_offer_serializes_tagged_actions_only.execute wait 1 #2035
