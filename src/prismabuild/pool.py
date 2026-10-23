@@ -12189,8 +12189,9 @@ class PoolQueue:
             raise PoolContractError("claim changed before heartbeat publication")
         previous = record_store.read_document(self.records.lease_path(action_key))
         if previous is not None and self._heartbeat_conflicts(claim, previous):
-            self._recover_stale_heartbeat_lease(action_key, claim)
-            raise PoolContractError("foreign heartbeat custody observed; retry admission after cleanup")
+            if self._heartbeat_cleanup_due(previous):
+                self._recover_stale_heartbeat_lease(action_key, claim)
+            raise AmbiguousClaimHolder("foreign heartbeat lease custody observed; retry admission after cleanup")
         # A stale claim read must not erase the successor lease's ownership
         # evidence, including the evidence used by finish's cleanup guard.
         claim_identity.check_lease_identity(
