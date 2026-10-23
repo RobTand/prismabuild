@@ -6178,9 +6178,15 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
     return result
 
 
-def _unobserved_gpu_use(reason: str) -> dict[str, object]:
+def _unobserved_gpu_use(reason: str, *, bind_scope: bool = False) -> dict[str, object]:
+    nonce = os.environ.get(ACTION_NONCE_ENV) if bind_scope else None
+    scope = os.environ.get(ACTION_SCOPE_ENV) if bind_scope else None
+    if (not isinstance(nonce, str) or not re.fullmatch(r"[a-f0-9]{32}", nonce)
+            or not isinstance(scope, str)
+            or not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope)):
+        nonce = scope = None
     return {"gpu_use": "unobserved", "gpu_use_reason": reason,
-            "gpu_devices_used": None, "gpu_uuids": [], "scope_id": None, "nonce": None}
+            "gpu_devices_used": None, "gpu_uuids": [], "scope_id": scope, "nonce": nonce}
 
 
 def _gpu_broker_request(action: Mapping[str, object], op: str, **fields: object) -> Mapping[str, object]:
@@ -6222,12 +6228,12 @@ def _gpu_execution_observation(action: Mapping[str, object],
         response = _gpu_broker_request(action, "gpu_observation")
         if ("gpu_use" not in response["resource_telemetry"]
                 and not response["resource_telemetry"].get("gpu_devices_used")):
-            return _unobserved_gpu_use("legacy_observation_without_payload_sample")
+            return _unobserved_gpu_use("legacy_observation_without_payload_sample", bind_scope=True)
         observation = _validate_gpu_execution_observation({**response["resource_telemetry"],
                                                           "nonce": response["nonce"],
                                                           "scope_id": response["scope_id"]})
     except (OSError, ValueError, KeyError, TypeError, ActionContractError):
-        return _unobserved_gpu_use("broker_observation_unavailable")
+        return _unobserved_gpu_use("broker_observation_unavailable", bind_scope=True)
     if observation["gpu_devices_used"] == 0:
         raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope; no receipt was published")
     return observation

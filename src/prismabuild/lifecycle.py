@@ -279,8 +279,18 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     # claim nor its GPU fields can select evidence for a terminal verdict.
     detail.pop("cached_execution", None)
     detail.pop("resource_telemetry", None)
-    receipt = cas.lookup(action) if status == "cache_hit" and cas and action else None
-    observation = dict((receipt.get("resource_telemetry") or {}) if receipt else telemetry)
+    receipt = cas.lookup(action) if status in {"executed", "cache_hit"} and cas and action else None
+    observation = dict((receipt.get("resource_telemetry") or {})
+                       if receipt and status == "cache_hit" else telemetry)
+    execution = receipt.get("resource_telemetry") or {} if receipt else {}
+    scope = record.get("resource_scope") or {}
+    if (status != "cache_hit" and observation.get("gpu_use") == "zero"
+            and execution.get("nonce") is not None
+            and execution.get("nonce") == scope.get("nonce")
+            and execution.get("scope_id") == scope.get("scope_id")):
+        # Publication seals the current execution's successful judgment. A
+        # later recovered RPC cannot turn its unobserved receipt into failure.
+        observation.update(execution)
     state = observation.get("gpu_use")
     if status == "cache_hit" and receipt is None:
         status = "failed"

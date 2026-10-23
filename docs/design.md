@@ -6226,7 +6226,10 @@ Core hashes the observation into the receipt's optional `resource_telemetry`
 field and validates it on lookup. CPU receipts retain their existing shape.
 Old receipts without GPU telemetry retain an unobserved execution. Cache hits
 require a verified CAS receipt and carry its original observation, never the
-replay scope's idle sample. Unsampled short CUDA contexts are unobserved.
+replay scope's idle sample. A verified receipt bound to the current attempt's
+nonce and scope seals its successful publication judgment. A recovered broker
+RPC cannot retroactively turn that receipt into a terminal zero-use failure.
+Unsampled short CUDA contexts are unobserved.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand
 does not imply `gb10`, even when submitted from a GPU host. Portable CPU work
