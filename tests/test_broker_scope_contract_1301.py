@@ -58,6 +58,7 @@ def test_validator_accepts_what_the_broker_issues() -> None:
         action_key=key,
         nonce=nonce,
         gpu_memory_max_bytes=None,
+        cpu_weight=100,
         _explicit_gpu_budget=False,
     )
     issued = broker.scope_id(key, nonce)

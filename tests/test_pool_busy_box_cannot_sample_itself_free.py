@@ -54,7 +54,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from prismabuild import adaptive_cpu, pool  # noqa: E402
 
-TIERS = {"preferred": [0], "fallback": [1]}
+TIERS = {"preferred": [0], "fallback": [1, 2]}
 CAPACITY = {"cpu": 2, "mem_gb": 8}
 
 
@@ -71,16 +71,37 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: clock[0])
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", False))
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request', lambda item:
+                        {'task': {'task_class': 'generation'}, 'params': {}})
 
     def counters(cpus):
         # A genuinely idle box: busy jiffies never advance, total does.
         ticks = int(clock[0] * 100)
         return {"cpus": {str(c): [1000, ticks] for c in sorted(cpus)},
-                "psi_total": 0, "sampled_unix": clock[0]}
+                "psi_total": 0, "psi_avg10": 0., "psi_avg60": 0., "sampled_unix": clock[0]}
 
     monkeypatch.setattr(adaptive_cpu, "counters", counters)
 
     queue = pool.PoolQueue(tmp_path / "queue")
+    ledger = queue.ledger()
+    ledger.ensure_capacity(CAPACITY)
+    ledger.configure_cpu_tiers(TIERS)
+    controller = adaptive_cpu.Controller(ledger, TIERS, ramp_cap=2)
+    state = {}
+    for stamp in range(969, 1001):
+        state = adaptive_cpu.cpu_lending.advance_lending_history(
+            state, dict(sampled_unix=stamp, interval_s=1., cpu_count=3,
+                        per_cpu_busy={str(c): 0. for c in controller.cpus},
+                        psi_some=0., psi_avg10=0., psi_avg60=0.),
+            identity=controller._lending_identity, cpus=controller.cpus,
+            preferred=TIERS['preferred'], now=stamp, cap=2)
+    controller.write_state('cpu-lending.json', state)
+    controller.write_state('cpu-sample.json', counters(controller.cpus))
+    for n in range(3):
+        key = f'{100 + n:064x}'
+        assert adaptive_cpu.record_completion(ledger, {'action_key': key}, {
+            'action_key': key, 'nonce': str(n), 'sampled_unix': clock[0],
+            'complete': True, 'cpu_seconds': .1, 'wall_seconds': 1., 'memory_peak_bytes': 100})
     index = [0]
 
     def publish(cpu: int = 1, memory: int = 1) -> str:
@@ -88,12 +109,14 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         key = f"{index[0]:064x}"
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                       checkout_root=str(tmp_path), worker_script="worker.py",
-                      resources={"cpu": cpu, "mem_gb": memory})
+                      resources={"cpu": cpu, "mem_gb": memory},
+                      cpu_qos='opportunistic', priority=-10)
         return key
 
     def claim():
         return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
-                           adaptive_cpu=True)
+                           adaptive_cpu=True, cpu_lending_ramp_cap=2,
+                           tags=[pool.contracts.CPU_QOS_TAG])
 
     def telemetry(key: str, *, cpu: float = 0.1) -> None:
         adaptive_cpu.write_json(

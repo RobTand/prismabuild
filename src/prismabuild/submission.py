@@ -7048,7 +7048,7 @@ def row_publication(args: SubmissionRequest, store: FleetStore) -> RowPublicatio
         worker_script=store.runtime_root / "tools" / "prismabuild_worker.py",
         priority=args.priority, max_attempts=args.max_attempts,
         retry_safe=args.retry_safe, priority_reason=getattr(args, "priority_reason", None),
-        cpu_qos=args.cpu_qos)
+        cpu_qos=getattr(args, 'cpu_qos', 'protected'))
 
 
 def filing_options(args: SubmissionRequest) -> residency_plan.FilingOptions:
