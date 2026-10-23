@@ -87,7 +87,11 @@ def _bundle_cache_session(address: str, *, bounded_wait: bool):
             ancestor = candidate
             while not ancestor.exists():
                 ancestor = ancestor.parent
-            local_scratch.root_identity(str(ancestor.resolve()))
+            ancestor_fd = os.open(ancestor.resolve(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                local_scratch._descriptor_identity(ancestor_fd)
+            finally:
+                os.close(ancestor_fd)
             candidate.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(candidate, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             held.callback(os.close, fd)
