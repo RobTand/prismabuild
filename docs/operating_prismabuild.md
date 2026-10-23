@@ -2628,6 +2628,7 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
 Choose an expiry in the next 12 hours. An expired hold permits claims again
 and the loop logs its expiry once. Running actions continue. A different
 owner's active hold cannot be changed or released without `--force --reason`.
+Releasing an expired record also requires its recorded owner or this override.
 An unreadable hold requires the same override to repair or release it.
 `--queue-root` selects a private queue for fixtures. Holds live in the shared
 queue, require no root, and never open or close the client-upgrade drain.

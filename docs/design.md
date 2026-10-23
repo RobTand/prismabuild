@@ -4674,6 +4674,7 @@ root. Its `prismabuild.host_hold.v1` schema carries `owner`, `reason`,
 Operator mutations serialize on the host's adjacent permanent POSIX lock.
 A different owner cannot replace or release an active hold without `--force`
 and an explicit reason. An expired record may be replaced by a new owner.
+Releasing an expired record still requires its recorded owner or a forced override.
 Missing records permit claims; unreadable, nonregular or malformed records
 hold the host. Expired valid records are ignored and logged once per record
 per queue instance. Records are not removed by admission readers.

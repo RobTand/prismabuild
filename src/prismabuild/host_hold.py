@@ -82,7 +82,7 @@ def change_host_hold(queue_root: Path, host: str, *, owner: str,
             raise ValueError("expiry must be in the next 12 hours")
     with posix_lock.held(path.with_suffix(".lock")):
         previous = read_host_hold(queue_root, host, now=now)
-        if (previous is not None and not previous.expired
+        if (previous is not None and (release or not previous.expired)
                 and (previous.error or previous.owner != owner) and not force):
             raise ValueError("hold belongs to another owner or is unreadable; use --force --reason")
         if release:

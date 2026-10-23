@@ -153,6 +153,19 @@ def test_only_the_owner_can_release_or_replace_and_force_needs_a_reason(tmp_path
     host_hold.change_host_hold(tmp_path, HOST, owner="operator", release=True)
 
 
+def test_expired_hold_release_still_requires_its_recorded_owner(tmp_path):
+    host_hold.change_host_hold(tmp_path, HOST, owner="original", reason="load",
+                              now=100, expires_unix=200)
+    path = host_hold.host_hold_path(tmp_path, HOST)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="another owner"):
+        host_hold.change_host_hold(tmp_path, HOST, owner="other", release=True, now=300)
+    assert path.read_bytes() == before
+    assert host_hold.read_host_hold(tmp_path, HOST, now=300).expired
+    host_hold.change_host_hold(tmp_path, HOST, owner="original", release=True, now=300)
+    assert not path.exists()
+
+
 @pytest.mark.parametrize("seconds", [-1, 0, 43201, float("inf"), float("nan"), True])
 def test_expiry_must_be_finite_future_and_at_most_twelve_hours(tmp_path, seconds):
     with pytest.raises(ValueError):
