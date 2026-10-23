@@ -1,5 +1,86 @@
 # #1946 local producer evidence and remaining populations
 
+## O5 qualification disposition (this assigned slice)
+
+Inspected checkout: `f291a4b2dd37eac39d8e7afb7f7de3a0c5b23cc5`.
+The implementation evidence below is inherited; this slice does not rerun or
+upgrade it to live qualification. The existing qualification dependency is
+tracked by **#2176**; no duplicate issue or infrastructure repair is introduced.
+
+The supplied runner admits two CPU-only fixture lanes (2 CPUs, 4 GiB per
+command), not an isolated real-broker/kernel/GPU qualification lane. A bounded,
+read-only preflight and the mandatory repository guards ran inside those
+admitted actions, without recursive submission. Both preflights observed Linux
+cgroup v2 and a payload under a PrismaBuild job slice. Both reported
+`os.access('/sys/fs/cgroup', os.W_OK) == False`, while the mount itself was not
+read-only. This does **not** establish whether some other subtree could be
+delegated; no writable, explicitly isolated broker subtree or permitted PID
+reuse facility was identified by the supplied environment. No cgroup limits,
+process identities, broker sockets or production services were mutated.
+A job's existing containment is not evidence that it is safe to use that
+containment or its parent as a destructive broker fixture.
+
+| Required population | Completed in this slice | Disposition |
+| --- | --- | --- |
+| Real delegated-cgroup OOM and full-scope empty | 0 | Unverified; isolated delegated broker lane not supplied |
+| Forced PID reuse with replacement-identity safety | 0 | Unverified; isolated PID lifecycle lane not supplied |
+| Real broker stale socket endpoint, connection loss and restart | 0 | Unverified; isolated broker lifecycle lane not supplied |
+| Real broker equal-capacity freshness/proof recovery | 0 | Unverified; fixture evidence below is not live integration |
+| Real GPU vendor observation and sampler bounds | 0 | Unverified; both admissions explicitly have no GPU |
+| Slice-0 baseline and performance budgets | 0 reviewed records | Not supplied; activation remains gated |
+
+No required population was silently skipped or treated as passed. There were
+**109 guard tests passed per arm, zero failures, zero skips, zero warnings**.
+These guards do not test the missing populations or establish sampler budgets.
+No missing executable was encountered: the preflight and guards needed only
+Python/pytest. GPU executables were not probed or run under CPU-only admission.
+
+### Commands and retained attribution
+
+Exact command submitted to each arm (`arm` for aarch64, default for x86):
+
+```sh
+python -c 'import json, os, pathlib, platform; p=pathlib.Path("/sys/fs/cgroup"); print(json.dumps({"purpose":"read-only O5 lane preflight; no kernel or GPU scenario executed", "machine":platform.machine(), "python":platform.python_version(), "cgroup_membership":pathlib.Path("/proc/self/cgroup").read_text(), "cgroup_v2_visible":(p/"cgroup.controllers").exists(), "cgroup_mount_writable":os.access(p, os.W_OK), "cgroup_mount_readonly":bool(os.statvfs(p).f_flag & os.ST_RDONLY) if p.exists() else None, "gpu_qualification":"not attempted: supplied admission is no-GPU", "isolated_broker_lane":"not supplied by test environment", "slice_0_budget_evidence":"not supplied"}, sort_keys=True))'; python -m pytest tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"
+```
+
+Both commands exited 0. Retained stdout was read back using
+`read_test_artifact`. It records Python 3.14.4/x86_64 and Python 3.12.3/aarch64,
+respectively, CPU affinity, native-thread limits of 1, selected-source hashes,
+and terminal pytest exit status. Operation and receipt digests below attribute
+these preflight/guard runs only. The cgroup job-slice names in stdout are
+containment observations, **not** authenticated action/attempt keys. Published
+runtime identity, real-scenario action/attempt keys, logs, terminal records and
+CAS receipts were not supplied or generated for the missing populations.
+No identity or receipt is inferred from a containment name or guard success.
+
+x86:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"28e3d96599c6c6694fc24806f8228a1d1fad9c8ddebe42b2b0fcd16304e33c12","size":2280}},"operation":"7f5b5578c17c38459a5efb05d44eff300bfb00ee3a1aa636e6cd21657bd070bc","receipt":"47073d92b9262598d5cbcf5544c13d2722f85c798878ac01a42f4913f3750bdc"}]
+
+ARM:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"4e5661f3409e1616d7acbcb01487ccf872ba762506486228b72d9aa08d675b93","size":2280}},"operation":"1b834538c7303a6f3610670713817017781c92a47a3d0f9788ad513f91e0e3eb","receipt":"ed233db0cd1e11754a7dc5c68ef7c7102162061a1052727c6010f8db1d04410d"}]
+
+### Prerequisite to resume qualification
+
+TrustLadder must supply an admitted, explicitly isolated real-broker lane with
+an owned delegated cgroup subtree and safe teardown, isolated PID-reuse and
+socket-lifecycle facilities, and a GPU-reserving action for real vendor work.
+That lane must retain source/published identity, resource admission,
+action/attempt keys, scenario observations, terminal outcomes, logs and CAS
+receipts. Required failures, unavailable populations and sampler measurements
+must be reported independently of fake-vendor and ordinary-file fixtures.
+Slice-0 baseline/budget evidence must be reviewed before activation. None of
+this authorizes publication, canary, rollback, production service mutation or
+runtime activation. No credential or host-privilege request is justified by
+the available evidence alone; #2176 remains the existing lane dependency.
+
+## Inherited implementation/fixture report
+
+The following records predate this qualification-only slice and retain their
+original identities and evidence boundaries.
+
+
 ## Identity and scope
 
 Working base: `f018a6039a3078395b3aa985ffecb21b1d2134ff`. These results are
