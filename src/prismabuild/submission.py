@@ -1607,6 +1607,8 @@ store: FleetStore, display: DisplaySink = discard_display) -> tuple[list[str], d
     command, requirements, bound_caller = command_dependency_contract(
         cwd, command, repository_root=repository_root or cwd,
         environment=environment, caller_environment=caller_environment)
+    if offer_queue is not None and not needs_gpu:
+        return ([local_dependencies.TAG] if requirements else []), requirements, command, bound_caller
     if offer_queue is not None and needs_gpu:
         try:
             roster = fleet_roster.Roster.read(store.roster_path)

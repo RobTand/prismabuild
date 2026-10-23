@@ -6219,8 +6219,11 @@ An unsampled short GPU use may fall between censuses; this signal proves
 observed scope attribution, not a trace of every GPU kernel.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand
-does not imply `gb10`, even when submitted from a GPU host. Explicit placement
-and genuine box-local dependency constraints retain their existing rules.
+does not imply `gb10`, even when submitted from a GPU host. Portable CPU work
+with external paths retains `local-dependency-v1` and the same per-worker
+dependency checks, without acquiring a GPU class or submitting-host pin.
+Explicit placement and executions without a transported checkout retain their
+existing rules.
 This source change and CPU fixtures establish no runtime deployment or live
 GPU qualification. SM-01 terminal consistency is tested at the component level;
 ID-08 deployment and ACC-02 live workload qualification remain separate gates.

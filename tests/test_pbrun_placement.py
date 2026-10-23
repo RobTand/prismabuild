@@ -2324,7 +2324,7 @@ def test_device_free_submission_skips_gpu_class_and_attaches_open_child(class_su
     cas = core_module.PrismaBuildCAS(root / "attachment-cas")
     cas.publish_action_request(action)
     publication = dict(action_key=action["action_key"], cas_root=cas.root,
-                       checkout_root=root / "checkout", worker_script=REPOSITORY / "tools/prismabuild_worker.py",
+                       checkout_root=root / "checkout", worker_script=Path(__file__).resolve().parents[1] / "tools/prismabuild_worker.py",
                        tags=[], needs_gpu=False, resources=action["params"]["demand"])
     first, generation = submit_core.publish_or_attach(queue, publication, key=action["action_key"])
     again, attached = submit_core.publish_or_attach(queue, publication, key=action["action_key"])

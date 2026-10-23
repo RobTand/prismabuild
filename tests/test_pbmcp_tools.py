@@ -250,7 +250,9 @@ def test_verify_claim_checks_gpu_execution_evidence(session: pbmcp.Session, flee
         "nonce": "a" * 32, "scope_id": "prismabuild-job" + "b" * 32 + ".slice"}
     receipt["receipt_sha256"] = pbmcp.pb.canonical_sha256({key: value for key, value in receipt.items()
                                                         if key != "receipt_sha256"})
+    receipt_path.chmod(0o644)
     receipt_path.write_text(json.dumps(receipt))
+    receipt_path.chmod(0o444)
     body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)})
     assert body["checks"]["receipt_self_consistent"] is (count > 0)
     assert body["checks_passed"] is (count > 0)
