@@ -632,7 +632,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         def __init__(self):
             self.groups = {}
 
-        def create(self, scope, budget):
+        def create(self, scope, budget, cpu_weight=100):
             self.groups[scope] = {"populated": False}
             return {"cgroup_path": f"/sys/fs/cgroup/prismabuild.slice/{scope}"}
 

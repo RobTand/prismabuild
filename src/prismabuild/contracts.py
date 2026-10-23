@@ -23,6 +23,7 @@ DEPENDENCY_DIGEST_TAG = "dependency-digest-v1"
 SCRATCH_IO_TAG = "local-scratch-io-v1"
 SCRATCH_LIFETIME_TAG = "scratch-lifetime-v1"
 GANG_TAG = "gang-v1"
+CPU_QOS_TAG = "cpu-qos-v1"
 PUBLICATION_CANARY_TAG = "publication-canary-slot-v1"
 
 
@@ -42,6 +43,7 @@ class Publication:
     scratch_lifetime: bool = False
     gang: bool = False
     canary: bool = False
+    opportunistic_cpu: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class WorkerFacts:
     """Enablement of code loaded by a worker, never current availability."""
 
     gang_admission: bool = False
+    adaptive_cpu: bool = False
     loaded_generation: str = ""
 
 
@@ -70,6 +73,9 @@ class Contract:
 
 
 CONTRACTS = (
+    Contract(CPU_QOS_TAG, lambda p: p.opportunistic_cpu,
+             offered=lambda w: w.adaptive_cpu,
+             remedy="Load the CPU QoS runtime and enable adaptive CPU admission."),
     Contract(PROGRESS_TAG, lambda p: p.progress is not None),
     Contract(PROGRESS_HELPER_TAG, lambda p: p.progress is not None),
     Contract(PROGRESS_CYCLE_TAG,

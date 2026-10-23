@@ -1,0 +1,249 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/submission_types.py",
+      "owner": "<module>",
+      "fields": [
+        "after",
+        "as_sealed_by",
+        "d38_exception",
+        "d38_receipt",
+        "detach",
+        "gang_group",
+        "gang_index",
+        "gang_size",
+        "priority",
+        "priority_reason",
+        "produced_output_template",
+        "progress_policy",
+        "reason",
+        "release_origin_consumer",
+        "supersedes",
+        "transport",
+        "withdraw"
+      ],
+      "binding": "_COMMON_CONTROL_FIELDS"
+    },
+    "count": 1,
+    "reason": "Keep cpu_qos as explicit submission control policy outside sealed action identity."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/action_edges.py",
+      "owner": "<module>",
+      "fields": [
+        "d38_exception",
+        "d38_receipt",
+        "priority_reason",
+        "residency_prefetch_depth_gib",
+        "residency_read_mb_s",
+        "residency_share",
+        "retry_scope"
+      ],
+      "binding": "_OPTIONAL_PUBLICATION_KEYS"
+    },
+    "count": 1,
+    "reason": "Preserve the optional cpu_qos declaration when publishing dependency rows."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "tools/fleet/resource_broker.py",
+      "owner": "Authority.handle",
+      "unresolved": "{'op', 'action_key', 'nonce', 'memory_max_bytes', 'gpu_memory_max_bytes', 'recovery_protocol'} if op == 'create' else {'op', 'action_key', 'nonce', 'memory_max_bytes', 'gpu_memory_max_bytes'} if op == 'recover_create' else {'op', 'action_key', 'nonce', 'token', 'evidence'} if op == 'settle' else {'op', 'action_key', 'nonce', 'token', 'reason', 'memory_max_bytes'}",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Accept cpu_weight only on create and recover_create, binding the durable attempt to exactly 10 or 100."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.free_cpu_tokens",
+      "unresolved": "set(eligible_cpus)",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Validate exact preferred/fallback allocation shape and exclude all assigned IDs when selecting free physical CPU tokens."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/submission_types.py",
+      "owner": "<module>",
+      "fields": [
+        "after",
+        "as_sealed_by",
+        "cpu_qos",
+        "d38_exception",
+        "d38_receipt",
+        "detach",
+        "gang_group",
+        "gang_index",
+        "gang_size",
+        "priority",
+        "priority_reason",
+        "produced_output_template",
+        "progress_policy",
+        "reason",
+        "release_origin_consumer",
+        "supersedes",
+        "transport",
+        "withdraw"
+      ],
+      "binding": "_COMMON_CONTROL_FIELDS"
+    },
+    "count": 1,
+    "reason": "Keep cpu_qos as explicit submission control policy outside sealed action identity."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/cpu_lending.py",
+      "owner": "<module>",
+      "fields": [
+        "borrowable_cpus",
+        "borrowing",
+        "cpu_qos",
+        "cpu_weight",
+        "declared_cpu",
+        "dependent_allowance",
+        "eligible_cpus",
+        "funded",
+        "funded_by",
+        "measurement",
+        "opportunistic_policy",
+        "preferred_borrow",
+        "sampled_unix",
+        "serves_measurement",
+        "shape",
+        "unbounded_cpu"
+      ],
+      "binding": "_LOAN_FIELDS"
+    },
+    "count": 1,
+    "reason": "Freeze every lending, measurement, funding and affinity input in the registered single-use loan grant."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/action_edges.py",
+      "owner": "<module>",
+      "fields": [
+        "cpu_qos",
+        "d38_exception",
+        "d38_receipt",
+        "priority_reason",
+        "residency_prefetch_depth_gib",
+        "residency_read_mb_s",
+        "residency_share",
+        "retry_scope"
+      ],
+      "binding": "_OPTIONAL_PUBLICATION_KEYS"
+    },
+    "count": 1,
+    "reason": "Preserve the optional cpu_qos declaration when publishing dependency rows."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/fleet/resource_broker.py",
+      "owner": "Authority.handle",
+      "unresolved": "{'op', 'action_key', 'nonce', 'memory_max_bytes', 'gpu_memory_max_bytes', 'cpu_weight', 'recovery_protocol'} if op == 'create' else {'op', 'action_key', 'nonce', 'memory_max_bytes', 'gpu_memory_max_bytes', 'cpu_weight'} if op == 'recover_create' else {'op', 'action_key', 'nonce', 'token', 'evidence'} if op == 'settle' else {'op', 'action_key', 'nonce', 'token', 'reason', 'memory_max_bytes'}",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Accept cpu_weight only on create and recover_create, binding the durable attempt to exactly 10 or 100."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.free_cpu_tokens",
+      "unresolved": "(set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None else set(eligible_cpus)) - assigned",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Validate exact preferred/fallback allocation shape and exclude all assigned IDs when selecting free physical CPU tokens."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/refresh_compat_runtime.py",
+      "owner": "validate_delta",
+      "fields": [
+        "active_cpu_cost",
+        "admitted_unix",
+        "allocation",
+        "borrowable_cpus",
+        "borrowed_cpu",
+        "borrowing",
+        "cost",
+        "cpu_qos",
+        "cpu_weight",
+        "declared_cpu",
+        "dependent_allowance",
+        "eligible_cpus",
+        "host_busy_cpus",
+        "host_psi_some",
+        "idle_baseline",
+        "measurement",
+        "opportunistic_policy",
+        "pending_cpu_cost",
+        "preferred_borrow",
+        "sampled_unix",
+        "serves_measurement",
+        "shape",
+        "unbounded_cpu"
+      ]
+    },
+    "count": 1,
+    "reason": "Strictly limit CPU metadata golden adoption to the exact real registered-loan fixture fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.cpu_allocation",
+      "fields": [
+        "fallback",
+        "preferred"
+      ]
+    },
+    "count": 1,
+    "reason": "Validate exact preferred/fallback allocation shape and exclude all assigned IDs when selecting free physical CPU tokens."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/cpu_lending.py",
+      "owner": "advance_lending_history",
+      "unresolved": "{str(c) for c in cpus}"
+    },
+    "count": 1,
+    "reason": "Freeze every lending, measurement, funding and affinity input in the registered single-use loan grant."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/refresh_compat_runtime.py",
+      "owner": "validate_delta",
+      "unresolved": "set(after)"
+    },
+    "count": 1,
+    "reason": "Strictly limit CPU metadata golden adoption to the exact real registered-loan fixture fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/refresh_compat_runtime.py",
+      "owner": "validate_delta",
+      "unresolved": "set(before)"
+    },
+    "count": 1,
+    "reason": "Strictly limit CPU metadata golden adoption to the exact real registered-loan fixture fields."
+  }
+]

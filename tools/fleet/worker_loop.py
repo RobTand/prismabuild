@@ -723,6 +723,8 @@ def build_parser() -> argparse.ArgumentParser:
                     default=os.environ.get("PRISMABUILD_GANG_ADMISSION") == "1",
                     help="offer the gang-v1 capability and admit gang members "
                          "(#1517; default off, or PRISMABUILD_GANG_ADMISSION=1)")
+    ap.add_argument("--cpu-lending-ramp-cap", type=int, choices=range(5), default=0,
+                    help="maximum outstanding opportunistic borrowed CPU IDs; default 0 disables new loans, Sparks allow at most 2")
     ap.add_argument("--assume-idle", action="store_true",
                     help="offer declared CPU and host memory without observing "
                          "them (debug); GPU evidence remains mandatory")
@@ -1107,6 +1109,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             tags.append("cpu")
         tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
             gang_admission=args.gang_admission,
+            adaptive_cpu=not args.assume_idle,
             loaded_generation=(loaded.generation if isinstance(
                 loaded, generation_receipt.RuntimeIdentity) else ""))))
         return tags
@@ -1643,6 +1646,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
+                cpu_lending_ramp_cap=args.cpu_lending_ramp_cap,
                 ready=discovery.snapshot, observed_images=claim_images,
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),

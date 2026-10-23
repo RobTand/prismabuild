@@ -6734,13 +6734,74 @@ identity retains command, code, environment, inputs, parameters and resources,
 while excluding result bookkeeping. Custom or unverifiable launch shapes never
 borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 
-When preferred tokens are exhausted, freshly attributed low use may make a
-running generation action's preferred CPU IDs lendable. Admission shares those
-IDs before consuming free fallback CPUs. If total free tokens are insufficient,
-the same evidence may lend reserved IDs, but only while the fresh host sample
-shows enough aggregate headroom. Unknown startup intervals are charged in full,
-protected and excluded from the lending set. CPUs assigned to any busy, unknown
-or measurement action remain protected.
+CPU lending is opt-in (#2156). `pbrun --cpu-qos protected|opportunistic`
+defaults to `protected`. Only an explicit opportunistic declaration at effective
+priority -10, for a known generation action, is eligible. Measurements, unknown
+or legacy shapes, exclusive GPU work, and funded dependent CPU allocations are
+protected. Priority changes before claim invalidate eligibility. The claim
+retains its selected class and weight for the attempt. Reprioritizing a running
+row does not change the scope. TL integration shards, including sweep_live
+max_lag, startup polling, CPU-overlap timing, and release-queue timing checks,
+use the protected default. `pbtest` does not opt its shards in.
+
+`cpu_qos` is queue execution policy, outside the action-result cache identity,
+like priority. READY and ending records retain the declaration. Claims retain
+`cpu_qos_selected` and `cpu_weight`, so a protected attempt and an opportunistic
+attempt remain distinguishable even when the cached result identity agrees.
+An attachment to an existing attempt preserves that attempt's selected class.
+Explicit declarations require the `cpu-qos-v1` worker tag. All admission loops
+on a host must adopt the new runtime before any cap above zero.
+
+Protected actions neither lend nor borrow assigned IDs. Only opted-in donors
+with complete fresh telemetry can lend preferred IDs. A CPU can have at most
+two live assignments, with at most two borrowed claimants per host. After a
+donor exits, a live borrower's assigned ID remains excluded from free-token
+prediction and acquisition until the borrower drains. SMT remains ordinary
+fallback on x86, never a new lending target. The Sparks retain their configured
+P-core mask, without E-cores or mask widening.
+
+`cpu-lending.json` is authoritative host-local state under the existing admission
+lock. Per-CPU busy EMA uses `alpha = 1 - exp(-elapsed / 30)`, a 30-second time
+constant. CPU-map changes, boot changes, counter resets, nonfinite readings,
+and telemetry gaps discard history. New loans need 30 seconds of continuous
+fresh observations. A proposed borrowed preferred ID needs both raw and EMA
+busy below 50%. The larger preferred raw or EMA sum, plus startup demand and
+the candidate's full expected cost, must fit 85% of preferred capacity. Mixed
+preferred and fallback usage grants no assumed per-tier discount. Existing
+95% raw whole-mask and projected-cost gates remain in force, as do the 25%
+shape margin, three-sample minimum, one-day expiry, and once-per-sample loan.
+
+The lending gate closes at CPU PSI some interval >= 0.10, avg10 >= 10%, or a
+preferred raw-budget breach. Unknown or stale PSI also closes the gate. It
+reopens only after avg10 and avg60 both stay below 5% for 30 seconds. PSI
+averages are percent values; the interval remains a fraction. After reopening, each healthy
+10-second observation period can add at most one borrowed affinity ID to the
+future-admission budget. A breach halves that budget. The operator setting
+`worker_loop --cpu-lending-ramp-cap` defaults to 0, disabling new loans. Valid
+caps are 0 through 4 with more than ten preferred CPUs, and 0 through 2 otherwise.
+Invalid settings disable lending. The initial rollout uses caps 2 then 4 on
+dl380g10, and 1 then 2 on one Spark at a time.
+
+Existing loans retain their affinity and low weight until completion. CPU
+pressure never kills a test or widens its affinity. The broker sets cpu.weight
+10 for opportunistic scopes and 100 for protected scopes. Weight controls
+relative service during contention, not a CPU quota or a latency guarantee.
+Eligibility and loan grants are process-local registered capabilities. Both
+ordinary and private acquisition refuse forged, copied, deserialized, or stale
+capabilities. Persisted metadata cannot reconstruct a grant.
+
+Rollout compares matched, post-retier cohorts for at least one hour and 100
+useful distinct successful jobs per period. Count jobs/hour and CPU-seconds,
+exclude cached duplicate results and failed or retried starts, and retain sample
+counts. Track normal-priority x86 publication-to-claim wait p95, host PSI avg60,
+protected elapsed-time p95, unexpected OOMs, and each named TL timing-test flake
+rate. Promotion requires at least 5% useful-throughput gain in the eligible
+cohort, at most 5% protected p95 regression, normal-priority x86 wait p95 below
+600 seconds without a material baseline regression, and no increase in OOMs or
+named timing failures. Sparse periods are inconclusive. Set the cap to 0 on a
+sustained pressure or SLA breach and let existing scopes drain. Broker rollout
+requires a drained canary and version support; this source change does not
+claim deployment or measured throughput gains.
 
 A measurement holds its host alone, with one exception (#982): an action whose
 sealed request names the holder in `params.produced_spool.owner` -- the spool
@@ -6950,8 +7011,13 @@ ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
 
-The pool persists the creation key, nonce, memory budget and broker endpoint in
-both claim and lease before requesting a scope. A lost reply is reconciled by
+The pool persists the creation key, nonce, memory budget, selected CPU weight,
+and broker endpoint in both claim and lease before requesting a scope.
+`create` and `recover_create` bind CPU weight immutably to that attempt. The
+broker validates exactly 10 or 100, applies the value through systemd, and reads
+actual `cpu.weight` before creation acknowledgement, recovery, and launch.
+An opportunistic request without an exact acknowledgement refuses launch.
+Legacy protected creation defaults to 100. A lost reply is reconciled by
 `recover_create` using that exact identity, without creating a kernel group.
 When the group and authority are absent, recovery persists a cancelled attempt
 tombstone before reporting absence, so a delayed original create cannot revive

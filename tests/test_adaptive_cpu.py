@@ -11,7 +11,8 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from prismabuild import pool
+from prismabuild import pool, adaptive_cpu
+from test_cpu_lending import loan_rig, observation
 
 
 def test_host_cpu_pressure_stops_even_physically_free_admissions(tmp_path, monkeypatch):
@@ -37,19 +38,40 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
     state = {'busy_cpus': .1, 'psi_some': 0.}
     cpu_sampler = lambda: dict(
-        sampled_unix=clock[0], cpu_count=2, interval_s=1., **state)
+        sampled_unix=clock[0], cpu_count=3, interval_s=1.,
+        per_cpu_busy={'0': min(1., state['busy_cpus']), '1': 0., '2': 0.},
+        psi_avg10=0., psi_avg60=0., **state)
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     queue = pool.PoolQueue(tmp_path / 'queue')
-    tiers = {'preferred': [0], 'fallback': [1]}
+    tiers = {'preferred': [0], 'fallback': [1, 2]}
     capacity = {'cpu': 2, 'mem_gb': 4, 'gpu': 1}
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request', lambda item:
+                        {'task': {'task_class': 'generation'}, 'params': {}})
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    ledger.configure_cpu_tiers(tiers)
+    controller = adaptive_cpu.Controller(ledger, tiers, sampler=cpu_sampler, ramp_cap=2)
+    history = {}
+    for stamp in range(69, 100):
+        history = adaptive_cpu.cpu_lending.advance_lending_history(
+            history, {**cpu_sampler(), 'sampled_unix': stamp}, identity=controller._lending_identity,
+            cpus=controller.cpus, preferred=tiers['preferred'], now=stamp, cap=2)
+    controller.write_state('cpu-lending.json', history)
+    for index in range(3):
+        completed_key = f'{index + 100:064x}'
+        assert adaptive_cpu.record_completion(ledger, {'action_key': completed_key}, {
+            'action_key': completed_key, 'complete': True, 'sampled_unix': clock[0],
+            'nonce': str(index), 'cpu_seconds': .1, 'wall_seconds': 1., 'memory_peak_bytes': 100})
     def publish(index, cpu=1, memory=1, gpu=0):
         key = f'{index:064x}'
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                       checkout_root=str(tmp_path), worker_script='worker.py',
-                      resources={'cpu': cpu, 'mem_gb': memory, 'gpu': gpu})
+                      resources={'cpu': cpu, 'mem_gb': memory, 'gpu': gpu},
+                      priority=-10, cpu_qos='opportunistic')
         return key
     def claim(*, cpu_sampler=cpu_sampler):
-        return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+        return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                           tags=[pool.contracts.CPU_QOS_TAG], cpu_lending_ramp_cap=2)
     def telemetry(key, *, cpu=.1, complete=True):
         adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
             'action_key': key, 'sampled_unix': clock[0], 'cpu_seconds': cpu,
@@ -278,6 +300,7 @@ def test_shape_is_bound_to_code_inputs_environment_and_command(tmp_path):
 def test_short_completions_learn_cpu_and_memory_without_reserving_more_memory(rig):
     from prismabuild import adaptive_cpu
     queue, clock, state, key, first, publish, claim, telemetry = rig
+    initial = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json')['shape']['samples']
     for index in range(3):
         sample = {'action_key': key, 'nonce': str(index), 'complete': True,
                   'sampled_unix': clock[0], 'cpu_seconds': .01,
@@ -286,7 +309,7 @@ def test_short_completions_learn_cpu_and_memory_without_reserving_more_memory(ri
         assert not adaptive_cpu.record_completion(queue.ledger(), first, sample)
     learned = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json')['shape']
     assert learned['cpu'] == pytest.approx(.125)
-    assert learned['samples'] == 3
+    assert learned['samples'] == initial + 3
     assert learned['memory_peak_bytes'] == 1234
     assert queue.ledger().capacity()['mem_gb'] == 4
     sample['complete'] = False
@@ -328,138 +351,35 @@ def test_pbrun_shape_ignores_only_generated_bookkeeping(tmp_path, monkeypatch):
     assert adaptive_cpu.shape_key(item) != original
 
 
-def test_proven_idle_preferred_is_borrowed_before_free_fallback(tmp_path, monkeypatch):
-    from prismabuild import adaptive_cpu
-    queue = pool.PoolQueue(tmp_path / 'queue')
-    clock = [100.]
-    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
-    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    cpu_sampler = lambda: {
-        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .1, 'psi_some': 0.}
-    tiers = {'preferred': [0], 'fallback': [1]}
-    def claim():
-        return queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
-                           adaptive_cpu=True, cpu_sampler=cpu_sampler)
-    key = 'a' * 64
-    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources={'cpu': 1, 'mem_gb': 1})
-    assert claim()['cpu_allocation'] == {'preferred': [0], 'fallback': []}
-    queue.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources={'cpu': 1, 'mem_gb': 1})
-    for elapsed in (1, 2):
-        clock[0] = 100 + elapsed
-        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
-            'action_key': key, 'complete': True, 'sampled_unix': clock[0],
-            'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
-        if elapsed == 1:
-            # Prime attribution without admitting a second action; the
-            # controller is the same one the queue invokes under its lock.
-            controller = adaptive_cpu.Controller(queue.ledger(), tiers, sampler=cpu_sampler)
-            with controller.locked():
-                controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')},
-                                    {'cpu': 2})
-    second = claim()
-    assert second['cpu_allocation'] == {'preferred': [0], 'fallback': []}
-    assert queue.ledger().free_preferred(tiers) == 0
-    assert queue.ledger().available()['cpu'] == 1  # SMT remains unused
+def test_proven_idle_preferred_is_borrowed_before_free_fallback(loan_rig):
+    ledger, tiers, controller, donor, candidate, metadata = loan_rig
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=metadata, cpu_tiers=tiers)
+    assert handle
+    assert ledger.cpu_allocation(handle, tiers) == {'preferred': [0], 'fallback': []}
+    assert ledger.free_preferred(tiers) == 0
+    assert ledger.available()['cpu'] == len(tiers['fallback'])
 
 
-def test_a_spent_sample_admits_on_free_tokens_instead_of_refusing(tmp_path, monkeypatch):
-    """A preferred borrow is a preference; free tokens that cover the demand win.
-
-    Sparky, 2026-09-23 (#924): CPU-only actions were refused
-    ``borrow_evidence_unavailable`` for about 30 minutes with fresh evidence and
-    ten free CPU tokens against a demand of one or two.  The only failing
-    condition was that the sample's single borrow had already been spent, so
-    each item waited one sample interval before it ran on tokens it could have
-    taken at once.  The freshness rule forbids a second *borrow* against one
-    sample; taking free tokens is not a borrow.
-    """
-    from prismabuild import adaptive_cpu
-    queue = pool.PoolQueue(tmp_path / 'queue')
-    clock = [100.]
-    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
-    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    cpu_sampler = lambda: {
-        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .1, 'psi_some': 0.}
-    tiers = {'preferred': [0], 'fallback': [1]}
-    def claim():
-        return queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
-                           adaptive_cpu=True, cpu_sampler=cpu_sampler)
-    key = 'a' * 64
-    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources={'cpu': 1, 'mem_gb': 1})
-    assert claim()['cpu_allocation'] == {'preferred': [0], 'fallback': []}
-    queue.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources={'cpu': 1, 'mem_gb': 1})
-    controller = adaptive_cpu.Controller(queue.ledger(), tiers, sampler=cpu_sampler)
-    for elapsed in (1, 2):
-        clock[0] = 100 + elapsed
-        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
-            'action_key': key, 'complete': True, 'sampled_unix': clock[0],
-            'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
-        with controller.locked():
-            decision = controller.decision(
-                {'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')}, {'cpu': 1})
-            controller._host_sample = None
-    # The holder lends its preferred CPU, so this sample would authorize a
-    # borrow ...
+def test_a_spent_sample_admits_on_free_tokens_instead_of_refusing(loan_rig):
+    ledger, tiers, controller, donor, candidate, decision = loan_rig
     assert decision['borrowing'] and decision['preferred_borrow'] == 1
-    # ... had another claim not already spent it.
-    controller.write_state('last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
-    with controller.locked():
-        spent = controller.decision(
-            {'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')}, {'cpu': 1})
-    assert spent is not None, controller.last_decision
-    assert spent['borrowing'] is False and spent['preferred_borrow'] == 0
-
-    second = claim()
-    assert second is not None and second['action_key'] == 'b' * 64
-    assert second['cpu_allocation'] == {'preferred': [], 'fallback': [1]}
-    # The peer's borrow record is untouched: nothing was borrowed here.
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
-        'sampled_unix': clock[0], 'borrow_id': 'peer'}
+    peer = {'sampled_unix': decision['sampled_unix'], 'borrow_id': 'peer'}
+    controller.write_state('last-borrow.json', peer)
+    spent = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
+    assert spent is not None and not spent['borrowing'] and spent['preferred_borrow'] == 0
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=spent, cpu_tiers=tiers)
+    assert handle
+    assert ledger.cpu_allocation(handle, tiers) == {'preferred': [], 'fallback': [4]}
+    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == peer
 
 
-def test_a_spent_sample_still_refuses_a_borrow_the_demand_needs(tmp_path, monkeypatch):
-    """The relaxation above is bounded by free tokens, never by the borrow."""
+def test_a_spent_sample_still_refuses_a_borrow_the_demand_needs(rig):
     from prismabuild import adaptive_cpu
-    queue = pool.PoolQueue(tmp_path / 'queue')
-    clock = [100.]
-    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
-    monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    cpu_sampler = lambda: {
-        'sampled_unix': clock[0], 'cpu_count': 2, 'interval_s': 1.,
-        'busy_cpus': .1, 'psi_some': 0.}
-    tiers = {'preferred': [0], 'fallback': [1]}
-    key = 'a' * 64
-    queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
-                  checkout_root=str(tmp_path), worker_script='worker.py',
-                  resources={'cpu': 2, 'mem_gb': 1})
-    assert queue.claim(capacity={'cpu': 2, 'mem_gb': 4}, cpu_tiers=tiers,
-                       adaptive_cpu=True, cpu_sampler=cpu_sampler) is not None
-    controller = adaptive_cpu.Controller(queue.ledger(), tiers, sampler=cpu_sampler)
-    for elapsed in (1, 2):
-        clock[0] = 100 + elapsed
-        adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), {
-            'action_key': key, 'complete': True, 'sampled_unix': clock[0],
-            'cpu_seconds': elapsed * .1, 'wall_seconds': elapsed})
-        with controller.locked():
-            controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')},
-                                {'cpu': 1})
-            controller._host_sample = None
-    controller.write_state('last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
-    with controller.locked():
-        assert controller.decision({'action_key': 'b' * 64, 'cas_root': str(tmp_path / 'cas')},
-                                   {'cpu': 1}) is None
-    assert controller.last_decision['reason'] == 'borrow_evidence_unavailable'
-    assert controller.last_decision['available_cpu'] == 0
+    queue, clock, state, key, first, publish, claim, telemetry = rig
+    base = adaptive_cpu.local_state_base(queue.ledger().base)
+    adaptive_cpu.write_json(base / 'last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
+    assert claim() is None
+    assert queue.ledger().available().get('cpu', 0) == 0
 
 
 @pytest.mark.parametrize('measurement', [False, True])
@@ -662,36 +582,25 @@ def test_a_peer_taking_admission_after_the_lease_cannot_reuse_the_borrowed_sampl
     assert third is None, 'one host sample authorized a second borrow'
 
 
-def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(rig):
-    """The restore is this decision's own record or nothing.
-
-    A claimant whose rename is lost gives its borrow back.  If it gave back a
-    record another loop had since written, that newer sample would be free to
-    authorize a second borrow -- the burst the freshness rule forbids, arrived
-    at from the other direction.
-    """
-
+def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(loan_rig, monkeypatch):
     from prismabuild import adaptive_cpu
-
-    queue, clock, state, key, first, publish, claim, telemetry = rig
-    controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [0], 'fallback': [1]})
-    spent = {'borrowing': True, 'sampled_unix': clock[0]}
+    ledger, tiers, controller, donor, candidate, spent = loan_rig
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=spent, cpu_tiers=tiers)
+    assert handle
     previous = controller.admitted(spent)
-    assert previous == {}
-
-    # Another loop borrows against a later sample before the lost claimant
-    # gets around to returning its own.
-    newer = {'borrowing': True, 'sampled_unix': clock[0] + 1}
-    controller.admitted(newer)
-
+    ledger.abandon_acquire(handle)
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 132.)
+    controller._host_sample = observation(132.)
+    newer = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
+    assert newer and newer['borrowing']
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=newer, cpu_tiers=tiers)
+    assert handle
+    newer_previous = controller.admitted(newer)
     controller.withdrew(spent, previous)
     assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
-        'sampled_unix': newer['sampled_unix'],
-        'borrow_id': newer['borrow_id']}, 'an older restore took the newer borrow'
-
-    controller.withdrew(newer, {'sampled_unix': spent['sampled_unix']})
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
-        'sampled_unix': spent['sampled_unix']}, 'a record still its own was not restored'
+        'sampled_unix': newer['sampled_unix'], 'borrow_id': newer['borrow_id']}
+    controller.withdrew(newer, newer_previous)
+    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == newer_previous
 
 def _host_sample(cpus, busy_by_cpu, psi_some, *, interval=10.):
     """A fresh host sample with per-CPU occupancy, as the real sampler files it.

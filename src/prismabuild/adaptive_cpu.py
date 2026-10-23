@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 
-from . import adaptive_snapshot
+from . import adaptive_snapshot, cpu_lending
 from . import flock_owner
 from .holder_census import CPU_METADATA, HolderCensus
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
@@ -336,13 +336,16 @@ def counters(cpus):
                        if line.startswith('some '))
         except StopIteration:
             return None
-        pressure = int(dict(part.split('=') for part in psi.split()[1:])['total'])
+        psi_fields = dict(part.split('=') for part in psi.split()[1:])
+        pressure = int(psi_fields['total'])
+        avg10, avg60 = float(psi_fields['avg10']), float(psi_fields['avg60'])
     except (OSError, ValueError, StopIteration):
         return None
     if len(values) != len(cpus):
         return None
     return {'cpus': values, 'irq_cpus': interrupts,
-            'psi_total': pressure, 'sampled_unix': time.time()}
+            'psi_total': pressure, 'psi_avg10': avg10, 'psi_avg60': avg60,
+            'sampled_unix': time.time()}
 
 
 def _irq_ticks(previous, current, busy):
@@ -669,7 +672,8 @@ class AdmissionGate:
             except (OSError, RuntimeError) as exc:
                 raise AdmissionUnavailable(str(exc)) from exc
             flock_owner.record_holder(descriptor)
-            yield
+            with cpu_lending.lending_admission_epoch():
+                yield
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -1424,7 +1428,7 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS,
 
 class Controller:
     def __init__(self, ledger, tiers, *,
-                 sampler: Callable[[], dict[str, object]] | None = None):
+                 sampler: Callable[[], dict[str, object]] | None = None, ramp_cap: int = 0):
         self.ledger = ledger
         self.tiers = tiers
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
@@ -1436,6 +1440,10 @@ class Controller:
         # measurement_foreign_ambient refusal, never a decision input.
         self._foreign_pid_cache = None
         self._sampler = sampler
+        self._lending_identity = {
+            'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'tiers': tiers, 'ramp_cap': cpu_lending.lending_ramp_cap(len(tiers['preferred']), ramp_cap)}
+        self._ramp_cap = cpu_lending.lending_ramp_cap(len(tiers['preferred']), ramp_cap)
 
     def idle(self, sample, holders):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
@@ -1689,6 +1697,8 @@ class Controller:
                 observation = {'sampled_unix': current['sampled_unix'],
                                'busy_cpus': sum(busy / total for busy, total in deltas),
                                'psi_some': min(1., psi_delta / (elapsed * 1e6)),
+                               'psi_avg10': current.get('psi_avg10'),
+                               'psi_avg60': current.get('psi_avg60'),
                                'cpu_count': len(self.cpus), 'interval_s': elapsed,
                                'per_cpu_busy': {key: busy / total for key, (busy, total)
                                                 in zip(current['cpus'], deltas)}}
@@ -1779,6 +1789,11 @@ class Controller:
             self._host_sample = self.sample()
         sample = self._host_sample
         now = time.time()
+        history = cpu_lending.advance_lending_history(
+            read_json(self.base / 'cpu-lending.json'), sample,
+            identity=self._lending_identity, cpus=self.cpus,
+            preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
+        self.write_state('cpu-lending.json', history)
         def refuse(reason, **values):
             # The claimant publishes this exact decision after it releases
             # admission.  Do not sample or reread state for diagnostics.
@@ -1819,6 +1834,13 @@ class Controller:
         shape, measurement = action_identity(item) if identity is None else identity
         declared = int(demand.get('cpu', 0))
         unbounded_cpu = not declared
+        resolved_owner = dependent_owner(item) if owner is _UNREAD else owner
+        eligibility = cpu_lending.opportunistic_eligibility(
+            item, _sealed_request(item), measurement=measurement,
+            owner=resolved_owner, allowance=allowance)
+        if not shape or declared >= len(self.cpus):
+            eligibility = None
+        qos = 'opportunistic' if eligibility is not None else 'protected'
         # Measurements, unbounded demand and full-width reservations need the
         # host idle.  "Idle" is judged against the host's own idle history
         # (#997), which every fresh decision feeds, not a fixed fraction of
@@ -1860,7 +1882,12 @@ class Controller:
         # claim's real selection in step: the lending path below can hand a
         # claim a *held* CPU, which that proof never saw.
         pressure_override = False
-        eligible_cpus = None
+        occupied = set()
+        for holder in holders:
+            allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+            occupied.update(allocation['preferred'] + allocation['fallback'])
+        # Also excludes an orphaned borrowed ID whose donor token is free.
+        eligible_cpus = [cpu for cpu in self.cpus if cpu not in occupied]
         # The exclusive needs are judged on PSI by the idle baseline below,
         # which carries ``psi_some``: a pinned neighbour's local contention, or
         # the host's own housekeeping, is not a reason to refuse them unless it
@@ -1986,6 +2013,8 @@ class Controller:
         lending_cpus = set()
         protected_cpus = set()
         active_cost = 0.
+        assignments = {}
+        outstanding = borrowers = 0
         for holder in holders:
             reservation = census.cpu(holder.name)
             meta = reservation.metadata
@@ -2060,11 +2089,22 @@ class Controller:
             # the ledger's own read and its own refusal on a torn record.
             allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
             assigned = set(allocation['preferred'] + allocation['fallback'])
+            for cpu_id in assigned:
+                assignments[cpu_id] = assignments.get(cpu_id, 0) + 1
+            outstanding += meta.get('borrowed_cpu', 0)
+            borrowers += int(bool(meta.get('borrowed_cpu')))
+            donor_eligibility = cpu_lending.opportunistic_eligibility(
+                meta, _sealed_request(meta.get('opportunistic_policy', {})),
+                measurement=bool(meta.get('measurement')),
+                owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'), running=True)
+            donor = donor_eligibility is not None
+            if donor:
+                cpu_lending.require_opportunistic(donor_eligibility)
             # A measurement's CPUs are never lent, not even to its own
             # dependents (#982): they are admitted beside it, on free tokens.
             # Nor are CPUs a dependent runs on from its producer's allowance
             # (#985): they are the producer's reservation, not idle credit.
-            if (cpu is not None and meta.get('shape') and not meta.get('measurement')
+            if (donor and cpu is not None and meta.get('shape') and not meta.get('measurement')
                     and not meta.get('funded_by') and cost < reserved):
                 lending_cpus.update(assigned)
             else:
@@ -2075,7 +2115,7 @@ class Controller:
             # same headroom in concurrent admissions.
             if cpu is None:
                 pending += cost
-            elif (meta.get('shape') and not meta.get('measurement')
+            elif (donor and meta.get('shape') and not meta.get('measurement')
                   and not meta.get('funded_by') and cost < reserved):
                 lendable = True
         self.write_state('jobs.json', next_recent)
@@ -2097,10 +2137,12 @@ class Controller:
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
             return refuse("projected_cpu_cost", pending_cpu_cost=pending,
                           active_cpu_cost=active_cost, requested_cpu_cost=cost)
-        available = self.ledger.available().get('cpu', 0)
+        available = len(self.ledger.free_cpu_tokens(self.tiers, eligible_cpus=eligible_cpus))
         borrowable = lending_cpus - protected_cpus
-        can_borrow = fresh and shape and not measurement and lendable
-        preferred_borrow = (min(max(0, declared - self.ledger.free_preferred(self.tiers)),
+        can_borrow = fresh and shape and eligibility is not None and lendable
+        preferred_borrow = (min(max(0, declared - sum(cpu in self.tiers['preferred'] for cpu in
+                                    (self.ledger.free_cpu_allocation(available, self.tiers,
+                                         eligible_cpus=eligible_cpus) or []))),
                                 len(borrowable & set(self.tiers['preferred'])))
                             if can_borrow else 0)
         borrowing = available < declared or preferred_borrow > 0
@@ -2123,7 +2165,7 @@ class Controller:
             borrowing = False
         if borrowing:
             last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
-            authorized = (fresh and shape and not measurement and lendable
+            authorized = (can_borrow
                           and len(borrowable) >= declared - available
                           and sample['sampled_unix'] > last)
             if not authorized and available >= declared:
@@ -2142,7 +2184,9 @@ class Controller:
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
                               last_borrow_sampled_unix=last)
         self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
-        return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
+        metadata = {'declared_cpu': declared, 'cost': cost, 'shape': shape,
+                'cpu_qos': qos, 'cpu_weight': 10 if eligibility is not None else 100,
+                '_eligibility': eligibility,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
                 'dependent_allowance': dict(allowance) if allowance else None,
@@ -2155,14 +2199,33 @@ class Controller:
                 'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
                 'host_busy_cpus': sample.get('busy_cpus'), 'host_psi_some': sample.get('psi_some'),
                 'active_cpu_cost': active_cost, 'pending_cpu_cost': pending,
-                'borrowable_cpus': sorted(borrowable, key=lambda c: sample.get('per_cpu_busy', {}).get(str(c), 0.))}
+                'borrowable_cpus': sorted(borrowable, key=lambda c: sample.get('per_cpu_busy', {}).get(str(c), 0.))
+                                   if borrowing else []}
+        if eligibility is not None:
+            metadata['opportunistic_policy'] = {
+                **cpu_lending.require_opportunistic(eligibility), 'task_class': 'generation'}
+        if borrowing:
+            grant = cpu_lending.decide_cpu_loan(
+                eligibility, metadata, ledger=self.ledger, demand=demand, tiers=self.tiers,
+                history=history, sample=sample, assignments=assignments,
+                outstanding=outstanding, borrowers=borrowers, pending=pending, cost=cost,
+                state_path=self.base / 'cpu-lending.json')
+            if grant is None:
+                if available < declared:
+                    return refuse('cpu_lending_closed', lending=history)
+                metadata.update(borrowing=False, preferred_borrow=0, borrowable_cpus=[])
+            else:
+                metadata['_loan_grant'] = grant
+        return metadata
 
     def admitted(self, metadata):
         """Spend the sample's borrow freshness; answer what it replaced."""
         if not metadata.get('borrowing'):
             return None
+        grant = cpu_lending.spend_cpu_loan(metadata)
         previous = read_json(self.base / 'last-borrow.json')
         metadata['borrow_id'] = uuid.uuid4().hex
+        grant['borrow_id'], grant['previous'] = metadata['borrow_id'], previous
         self.write_state('last-borrow.json', {
             'sampled_unix': metadata['sampled_unix'], 'borrow_id': metadata['borrow_id']})
         return previous
@@ -2184,17 +2247,19 @@ class Controller:
         """
         if not metadata.get('borrowing'):
             return
+        grant = cpu_lending.require_cpu_loan(metadata, current=False)
         # A host sample can be returned and borrowed again. Its timestamp is
         # not the owner of that later borrow. Retire this caller's authority
         # before I/O too: a write followed by an exception is still a return.
-        borrow_id = metadata.pop('borrow_id', None)
+        borrow_id = grant.pop('borrow_id', None)
+        metadata.pop('borrow_id', None)
         if not borrow_id:
             return
         current = read_json(self.base / 'last-borrow.json')
         if (current.get('borrow_id') != borrow_id
-                or current.get('sampled_unix') != metadata.get('sampled_unix')):
+                or current.get('sampled_unix') != grant['fields']['sampled_unix']):
             return
-        self.write_state('last-borrow.json', previous or {})
+        self.write_state('last-borrow.json', grant['previous'] or {})
 
 
 def learn_export(ledger, template_sha256, owner, published_unix, landing_s, family=None):

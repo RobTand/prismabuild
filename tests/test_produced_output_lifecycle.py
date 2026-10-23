@@ -311,7 +311,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         def __init__(self):
             self.groups = {}
 
-        def create(self, scope, budget):
+        def create(self, scope, budget, cpu_weight=100):
             self.groups[scope] = {"populated": False}
             return {"cgroup_path": f"/sys/fs/cgroup/prismabuild.slice/{scope}"}
 

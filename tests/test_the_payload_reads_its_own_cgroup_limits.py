@@ -52,7 +52,7 @@ def _backend(root: Path, monkeypatch):
             if not (root / 'prismabuild.slice' / 'memory.max').exists():
                 _kernel_file(root / 'prismabuild.slice' / 'memory.max', 'max\n')
             for name, text in {
-                    'memory.max': 'max\n', 'memory.high': 'max\n',
+                    'memory.max': 'max\n', 'memory.high': 'max\n', 'cpu.weight': '100\n',
                     'memory.oom.group': '0\n', 'cgroup.controllers': 'cpu memory\n',
                     'cgroup.subtree_control': '', 'cgroup.events': 'populated 0\n',
                     'memory.events': 'oom_kill 0\n', 'memory.events.local': 'oom 0\n',
@@ -61,6 +61,8 @@ def _backend(root: Path, monkeypatch):
         elif argv[0] == 'set-property':
             group = root / 'prismabuild.slice' / argv[2]
             for item in argv[3:]:
+                if item.startswith('CPUWeight='):
+                    (group / 'cpu.weight').write_text(item.split('=', 1)[1] + '\n')
                 if item.startswith('MemoryMax='):
                     (group / 'memory.max').write_text(item.split('=', 1)[1] + '\n')
 
@@ -125,3 +127,13 @@ def test_a_leaf_whose_mode_does_not_take_is_refused(tmp_path, monkeypatch, broke
     monkeypatch.setattr(broker.os, 'chmod', lambda *args, **kwargs: None)
     with pytest.raises(ValueError, match='payload cgroup'):
         backend.create(SCOPE, BUDGET)
+
+@pytest.mark.parametrize('weight', [10, 100])
+def test_systemd_weight_is_applied_and_read_from_cgroup(tmp_path, monkeypatch, weight):
+    _, backend = _backend(tmp_path, monkeypatch)
+    backend.create(SCOPE, BUDGET, cpu_weight=weight)
+    group = backend.path(SCOPE)
+    assert (group / 'cpu.weight').read_text().strip() == str(weight)
+    (group / 'cpu.weight').write_text('9')
+    with pytest.raises(ValueError, match='CPU weight'):
+        backend.verify_cpu_weight(SCOPE, weight)

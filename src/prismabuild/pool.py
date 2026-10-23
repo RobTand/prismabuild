@@ -3690,7 +3690,16 @@ class ResourceLedger:
         if metadata is None:
             metadata = self.holder_census().cpu_record(holder).value
         if metadata is not None and "allocation" in metadata:
-            return metadata["allocation"]
+            allocation = metadata['allocation']
+            if (not isinstance(allocation, Mapping)
+                    or set(allocation) != {'preferred', 'fallback'}
+                    or any(not isinstance(allocation[tier], list)
+                           or any(type(cpu) is not int or cpu not in tiers[tier] for cpu in allocation[tier])
+                           for tier in ('preferred', 'fallback'))
+                    or len(allocation['preferred'] + allocation['fallback'])
+                       != len(set(allocation['preferred'] + allocation['fallback']))):
+                raise PoolContractError('invalid held CPU allocation')
+            return allocation
         cpus = self.cpu_ids(immutable_files.match_optional(self.held_dir / holder, "cpu-*"), tiers)
         return {kind: [c for c in tiers[kind] if c in cpus]
                 for kind in ("preferred", "fallback")}
@@ -3723,11 +3732,33 @@ class ResourceLedger:
         static and old adaptive decisions keep the original ordered selection.
         """
         tokens = immutable_files.match_optional(self.free_dir, "cpu-*")
-        if eligible_cpus is None:
+        census = self.holder_census()
+        assigned = set()
+        for holder in census.non_mirror_holders:
+            reservation = census.cpu(holder.name)
+            metadata = reservation.metadata
+            allocation = metadata.get('allocation')
+            if allocation is not None:
+                if (not isinstance(allocation, Mapping)
+                        or any(not isinstance(allocation.get(tier), list)
+                               for tier in ('preferred', 'fallback'))):
+                    return []
+                assigned.update(allocation['preferred'] + allocation['fallback'])
+            elif not reservation.physical_cpu_count and reservation.has_contents:
+                # A missing affinity record cannot prove a returned token is
+                # disjoint from a surviving borrower or funded dependent.
+                if tiers is not None or record_store.read_document(self.base / 'cpu-map.json'):
+                    return []
+        if assigned and tiers is None:
+            tiers = record_store.read_document(self.base / 'cpu-map.json')
+            if tiers is None:
+                raise PoolContractError('borrowed CPU selection needs a topology')
+        if eligible_cpus is None and not assigned:
             return tokens
         if tiers is None:
             raise PoolContractError('eligible CPU selection needs a topology')
-        allowed = set(eligible_cpus)
+        allowed = (set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None
+                   else set(eligible_cpus)) - assigned
         return [token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers)) if cpu in allowed]
 
     def free_cpu_allocation(self, need: int, tiers: Mapping, *, eligible_cpus=None) -> list[int] | None:
@@ -3744,7 +3775,7 @@ class ResourceLedger:
 
     def free_preferred(self, tiers: Mapping) -> int:
         return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
-                   for token in immutable_files.match_optional(self.free_dir, "cpu-*"))
+                   for token in self.free_cpu_tokens(tiers))
 
     @_guarded_mutation(blocking=True)
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
@@ -4296,6 +4327,12 @@ class ResourceLedger:
         mode ``off`` (the default) this is exactly the locked acquisition.
         """
 
+        try:
+            cpu_admission.cpu_lending.require_cpu_acquisition(
+                adaptive, ledger=self, key=action_key, demand=demand, tiers=cpu_tiers)
+        except cpu_admission.cpu_lending.CpuLendingChanged as exc:
+            self.last_token_shortage = {'resource': 'cpu', 'reason': str(exc)}
+            return None
         kwargs = {"adaptive": adaptive, "cpu_tiers": cpu_tiers,
                   "adaptive_gpu": adaptive_gpu}
         try:
@@ -4364,6 +4401,12 @@ class ResourceLedger:
         never a new vocabulary.
         """
 
+        try:
+            cpu_admission.cpu_lending.require_cpu_acquisition(
+                adaptive, ledger=self, key=action_key, demand=demand, tiers=cpu_tiers, begin=True)
+        except cpu_admission.cpu_lending.CpuLendingChanged as exc:
+            self.last_token_shortage = {'resource': 'cpu', 'reason': str(exc)}
+            return None
         self.last_token_shortage = None
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
         handle = (
@@ -4439,7 +4482,7 @@ class ResourceLedger:
                     raise _Insufficient("cpu")
                 for tier in allocation:
                     allocation[tier] = [c for c in cpu_tiers[tier] if c in assigned]
-                metadata = dict(adaptive, allocation=allocation,
+                metadata = dict(cpu_admission.cpu_lending.cpu_admission_record(adaptive), allocation=allocation,
                                 borrowed_cpu=0 if funded else max(
                                     0, len(assigned) - len(
                                         immutable_files.match_optional(destination, "cpu-*"),
@@ -4495,6 +4538,7 @@ class ResourceLedger:
             # five-minute reservation at a time.
             self._empty_into_free(destination)
             raise
+        cpu_admission.cpu_lending.finish_cpu_acquisition(adaptive)
         return handle
 
     @_guarded_mutation(blocking=True)
@@ -6532,6 +6576,7 @@ class PoolQueue:
         tags: Sequence[str] = (),
         needs_gpu: bool = False,
         priority: int = 0,
+        cpu_qos: str = "protected",
         priority_reason: str | None = None,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -6636,6 +6681,7 @@ class PoolQueue:
         except _gang.GangContractError as exc:
             raise PoolContractError(str(exc)) from exc
         declared_contracts = contracts.declared_contract_tags(contracts.Publication(
+            opportunistic_cpu=cpu_qos == "opportunistic",
             gang=declared_gang is not None,
             interpreter=declared_interpreter is not None,
             local_dependencies=bool(dependencies),
@@ -6749,6 +6795,7 @@ class PoolQueue:
             awaited = (pb.action_awaited_batch(sealed_request)
                        if sealed_request is not None else None)
             declared_contracts = contracts.declared_contract_tags(contracts.Publication(
+                opportunistic_cpu=cpu_qos == "opportunistic",
                 progress=progress,
                 pool_contention=progress is not None and contention is not None,
                 awaited_batch=progress is not None and awaited is not None,
@@ -7052,6 +7099,8 @@ class PoolQueue:
             except oc.ProducedOutputError as exc:
                 raise PoolContractError(
                     f"produced-output template conflict: {exc}") from exc
+        if cpu_qos not in ("protected", "opportunistic"):
+            raise PoolContractError("cpu_qos must be protected or opportunistic")
         published_unix = _now()
         if canary_ref is not None:
             try:
@@ -7074,6 +7123,8 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
+        if cpu_qos != "protected":
+            item["cpu_qos"] = cpu_qos
         if scratch_io is not None:
             item[local_scratch.IO_ENV] = scratch_io
         if reason is not None:
@@ -14491,6 +14542,7 @@ class PoolQueue:
         scope = resource_scope.ResourceScope(
             key, nonce, control.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
+            cpu_weight=resource_scope.scope_cpu_weight(record, control),
             authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=record.get("container_owner"),
             shape_key=cpu_admission.shape_key(record) if record.get("cas_root") else None,
@@ -14526,6 +14578,7 @@ class PoolQueue:
         scope = resource_scope.ResourceScope(
             key, intent.get("nonce"), intent.get("memory_max_bytes"),
             self.ledger().base / "telemetry" / f"{key}.json",
+            cpu_weight=resource_scope.scope_cpu_weight(record, intent),
             authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=record.get("container_owner"),
             **({"gpu_memory_max_bytes": intent["gpu_memory_max_bytes"]}
@@ -14705,9 +14758,19 @@ class PoolQueue:
                 raise PoolContractError(f"gpu_memory_gb: {exc}") from exc
         if item.get("resource_scope") is not None or item.get("resource_scope_intent") is not None:
             raise PoolContractError("claim already owns a resource scope or creation intent")
+        cpu_meta = self.ledger().holder_census().cpu_record(key).fields
+        weight = cpu_meta.get('cpu_weight', 100)
+        if item.get('cpu_weight', 100) != weight:
+            raise PoolContractError('claimed CPU weight differs from reserved policy')
+        if weight == 10:
+            eligibility = cpu_admission.cpu_lending.opportunistic_eligibility(
+                cpu_meta, action, measurement=bool(cpu_meta.get('measurement')),
+                owner=cpu_meta.get('funded_by'), allowance=cpu_meta.get('dependent_allowance'), running=True)
+            cpu_admission.cpu_lending.require_opportunistic(eligibility)
         scope = resource_scope.ResourceScope(
             key, uuid.uuid4().hex, memory * 1024 ** 3,
             self.ledger().base / "telemetry" / f"{key}.json",
+            cpu_weight=weight,
             authority_path=cpu_admission.local_telemetry_path(self.ledger().base, key),
             docker_owner=item.get("container_owner"),
             shape_key=cpu_admission.shape_key(item),
@@ -14727,6 +14790,7 @@ class PoolQueue:
         )
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
+                  "cpu_weight": scope.cpu_weight,
                   "socket_path": str(scope.socket_path), **gpu_kwargs}
         live["resource_scope_intent"] = intent
         self.records.replace_record_at(path, live)
@@ -16076,6 +16140,7 @@ class PoolQueue:
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
+        cpu_lending_ramp_cap: int = 0,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
@@ -16094,7 +16159,7 @@ class PoolQueue:
         ledger = self.ledger()
         tiers = cpu_tiers or record_store.read_document(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
-            controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler)
+            controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler, ramp_cap=cpu_lending_ramp_cap)
             # Resolving the ledger identity may stat the shared mount. Prepare
             # both controllers before taking the host-wide admission lock.
             gpu_controller = (gpu_admission.Controller(ledger, publisher=controller,
@@ -16357,7 +16422,7 @@ class PoolQueue:
         }
         for field in ("max_attempts", "retry_safe", "retry_scope", "container_owner",
                       "container_images", "interpreter", "local_dependencies",
-                      "dependency_queries", "tested_repository"):
+                      "dependency_queries", "tested_repository", "cpu_qos"):
             # ``tested_repository`` rides along because a requeue tests the
             # same sealed tree again: a new generation, not a new repository.
             # Absent stays absent, so rows from producers that never named one
@@ -18292,7 +18357,10 @@ class PoolQueue:
         # and withdrawal guards above already read ``moved`` for this
         # reason; the record this method returns is the last place that
         # still did not.
+        cpu_admission.cpu_lending.require_selected_cpu_policy(adaptive, moved)
         claimed = dict(moved)
+        claimed.pop("cpu_qos_selected", None)
+        claimed.pop("cpu_weight", None)
         claimed.pop("cpu_guest", None)
         if host.request is not None and host.request.cpu_guest:
             claimed["cpu_guest"] = True
@@ -18334,6 +18402,9 @@ class PoolQueue:
         claimed["served_from"] = "canonical"
         if ledger is not None and cpu_tiers is not None and demand.get("cpu", 0):
             claimed["cpu_allocation"] = ledger.cpu_allocation(key, cpu_tiers)
+        if adaptive is not None:
+            claimed["cpu_qos_selected"] = adaptive.get("cpu_qos", "protected")
+            claimed["cpu_weight"] = adaptive.get("cpu_weight", 100)
         if adaptive_gpu is not None:
             claimed["gpu_admission"] = ledger.holder_census().gpu_record(key).as_record()
         if adaptive is not None and adaptive.get("idle_baseline"):
@@ -22332,6 +22403,7 @@ class PoolQueue:
         capacity: Mapping[str, int] | None = None,
         cpu_tiers: Mapping[str, Sequence[int]] | None = None,
         adaptive_cpu: bool = False,
+        cpu_lending_ramp_cap: int = 0,
         containment: bool = False,
         ready: list[dict[str, object]] | None = None,
         observed_images: Container[str] | None = None,
@@ -22370,7 +22442,7 @@ class PoolQueue:
             self.sweep_orphan_passes()
             self.sweep_gangs()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
-                          cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu,
+                          cpu_tiers=cpu_tiers, adaptive_cpu=adaptive_cpu, cpu_lending_ramp_cap=cpu_lending_ramp_cap,
                           ready=ready, observed_images=observed_images,
                           container_class_policy=container_class_policy,
                           container_inventory=container_inventory,

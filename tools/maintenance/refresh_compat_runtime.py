@@ -5,6 +5,7 @@ import argparse
 import ast
 import base64
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -42,6 +43,8 @@ def runtime_source_pin(root):
 
 
 CONTROLLER_PROFILES = {
+    "cpu-lending-sample": ("adaptive-sample", frozenset({"state-cpu-sample/fresh", "state-cpu-sample/cached"})),
+    "cpu-lending-metadata": ("unversioned-carriers", frozenset({"host-cpu-metadata/borrowed"})),
     "upgrade-attestation": ("rollout", frozenset({"upgrade-attestation/first", "upgrade-attestation/repeated"})),
     "qualification-receipt": ("qualification-ram-telemetry", frozenset({"runtime-receipt/qualification"})),
 }
@@ -71,6 +74,37 @@ def validate_delta(profile, old_row, new_row, root, declarations):
     if old == new:
         raise ValueError("capture did not change this current golden")
     before, after = json.loads(old), json.loads(new)
+    if profile == "cpu-lending-sample":
+        expected = {**before, 'observation': {**before['observation'],
+                                            'psi_avg10': None, 'psi_avg60': None}}
+        if after != expected:
+            raise ValueError('CPU sample changed outside the two explicit unknown PSI averages')
+        return {'fields': ['/observation/psi_avg10', '/observation/psi_avg60'], 'value': None}
+    if profile == "cpu-lending-metadata":
+        expected_keys = {'declared_cpu', 'cost', 'shape', 'cpu_qos', 'cpu_weight', 'unbounded_cpu',
+                         'measurement', 'serves_measurement', 'dependent_allowance', 'idle_baseline',
+                         'admitted_unix', 'preferred_borrow', 'eligible_cpus', 'sampled_unix', 'borrowing',
+                         'host_busy_cpus', 'host_psi_some', 'active_cpu_cost', 'pending_cpu_cost',
+                         'borrowable_cpus', 'opportunistic_policy', 'allocation', 'borrowed_cpu'}
+        fixed = {'declared_cpu': 1, 'cost': 1., 'cpu_qos': 'opportunistic', 'cpu_weight': 10,
+                 'unbounded_cpu': False, 'measurement': False, 'serves_measurement': None,
+                 'dependent_allowance': None, 'idle_baseline': None, 'admitted_unix': 100.,
+                 'preferred_borrow': 1, 'eligible_cpus': [4, 5, 6, 7], 'sampled_unix': 100.,
+                 'borrowing': True, 'host_busy_cpus': .4, 'host_psi_some': 0.,
+                 'active_cpu_cost': (3 * .1 - 2 * .1) * 1.25,
+                 'pending_cpu_cost': 0., 'borrowable_cpus': [0],
+                 'allocation': {'preferred': [0], 'fallback': []}, 'borrowed_cpu': 1}
+        policy = after.get('opportunistic_policy', {})
+        if (set(after) != expected_keys or not before.get('measurement') or before.get('borrowed_cpu') != 1
+                or any(after.get(key) != value for key, value in fixed.items())
+                or re.fullmatch('[a-f0-9]{64}', after.get('shape', '')) is None
+                or policy.get('cpu_qos') != 'opportunistic' or policy.get('priority') != -10
+                or policy.get('task_class') != 'generation' or policy.get('resources') != {'cpu': 1}
+                or re.fullmatch('[a-f0-9]{64}', policy.get('action_key', '')) is None
+                or not str(policy.get('cas_root', '')).endswith('/loan-cas')):
+            raise ValueError('CPU loan metadata differs from the registered-policy fixture contract')
+        return {'added': sorted(set(after) - set(before)), 'removed': sorted(set(before) - set(after)),
+                'before_sha256': sha(old), 'after_sha256': sha(new), 'selected_weight': 10}
     if profile == "upgrade-attestation":
         updater = (root / "tools/fleet/upgrade_client.py").read_bytes()
         expected = {**before, "client_sha256": sha(updater)}
@@ -174,7 +208,10 @@ def _refresh_controller(args):
                      "superseded_current_archive": previous["archive"]}
     elif args.preceding_adoption_report is not None:
         raise ValueError("qualification profile does not consume a preceding rollout adoption report")
-    source_paths = ["tools/fleet/upgrade_client.py"]
+    source_paths = (["src/prismabuild/cpu_lending.py", "src/prismabuild/adaptive_cpu.py",
+                     "src/prismabuild/pool.py", "tests/compat/support/compat_adaptive_state_adapters.py",
+                     "tests/compat/support/compat_unversioned_adapters.py"]
+                    if args.profile.startswith('cpu-lending-') else ["tools/fleet/upgrade_client.py"])
     if args.profile == "qualification-receipt":
         source_paths += ["tools/fleet/qualify_rollout.py", "tests/compat/support/compat_generation_adapters.py"]
     source_identities = {path: {"bytes": len((root / path).read_bytes()), "sha256": sha((root / path).read_bytes())}
@@ -201,7 +238,9 @@ def _refresh_controller(args):
             raise ValueError("unselected current row bytes changed")
         provenance = {"profile": args.profile, "selected_cases": sorted(expected),
                       "credit": "superseded current fixture; no supported historical-generation credit",
-                      "reason": ("Only actual updater source identity changed" if args.profile == "upgrade-attestation"
+                      "reason": ("CPU lending changes only the reviewed PSI or registered-loan fixture contract"
+                                 if args.profile.startswith('cpu-lending-') else
+                                 "Only actual updater source identity changed" if args.profile == "upgrade-attestation"
                                  else "Real current qualification builder requires the supplied park fixture member"),
                       "baseline_git_identity": baseline_git,
                       "exact_pre_profile_working_tree": pre_profile,

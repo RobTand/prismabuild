@@ -18,10 +18,10 @@ class Kernel:
     def __init__(self, root):
         self.root, self.groups, self.calls = root, {}, []
 
-    def create(self, scope, budget):
+    def create(self, scope, budget, cpu_weight=100):
         directory = self.root / scope
         directory.mkdir(parents=True)
-        for name, value in {"cpu.stat": "usage_usec 0\n", "memory.events": "oom_kill 0\n",
+        for name, value in {"cpu.stat": "usage_usec 0\n", "cpu.weight": str(cpu_weight), "memory.events": "oom_kill 0\n",
                             "memory.events.local": "oom 0\n", "memory.current": "0",
                             "memory.peak": "0"}.items():
             (directory / name).write_text(value)
@@ -30,6 +30,9 @@ class Kernel:
         self.calls.append({"op": "create", "scope": scope, "budget": budget})
         return {"cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / scope),
                 "cgroup_identity": self.groups[scope]["identity"]}
+
+    def verify_cpu_weight(self, scope, expected):
+        assert int((self.root / scope / "cpu.weight").read_text()) == expected
 
     def run(self, scope, uid, command, stdio):
         assert uid == os.getuid()

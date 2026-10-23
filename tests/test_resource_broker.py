@@ -24,9 +24,12 @@ class Backend:
     def __init__(self):
         self.groups={};self.attached=[];self.stopped=[]
         self.identity={};self.charge={};self.ops=[]
-    def create(self, scope, budget):
-        self.groups[scope]={'budget':budget,'populated':False}
+    def create(self, scope, budget, cpu_weight=100):
+        self.groups[scope]={'budget':budget,'populated':False,'cpu_weight':cpu_weight}
         return {'cgroup_path':'/fake/'+scope,'leaf_path':'/fake/'+scope+'/payload'}
+    def verify_cpu_weight(self, scope, expected):
+        if self.groups[scope]['cpu_weight'] != expected:
+            raise ValueError('kernel CPU weight differs from requested scope')
     def run(self, scope, uid, command, stdio):
         self.groups[scope]['populated']=True;self.attached.append((scope,uid));return object()
     def stop(self, scope):
@@ -556,7 +559,7 @@ def test_failed_gate_persistence_does_not_acknowledge_drain(authority,monkeypatc
 
 def test_drain_safely_retires_empty_failed_creation_without_restart_or_kill(authority,monkeypatch):
     a,b=authority;original=b.create
-    def partial(scope,budget):
+    def partial(scope,budget,cpu_weight=100):
         original(scope,budget)
         raise OSError('controller setup failed')
     monkeypatch.setattr(b,'create',partial)
@@ -572,7 +575,7 @@ def test_drain_safely_retires_empty_failed_creation_without_restart_or_kill(auth
 @pytest.mark.parametrize('ambiguity',['populated','launched','docker'])
 def test_drain_preserves_ambiguous_pending_scopes(authority,monkeypatch,ambiguity):
     a,b=authority;original=b.create
-    def partial(scope,budget):
+    def partial(scope,budget,cpu_weight=100):
         original(scope,budget)
         raise OSError('controller setup failed')
     monkeypatch.setattr(b,'create',partial)
@@ -697,7 +700,7 @@ def test_creation_recovery_refuses_unknown_existing_group(authority):
 
 def test_partial_creation_can_be_recovered_and_empty_setup_released(authority,monkeypatch):
     a,b=authority;original=b.create
-    def partial(scope,budget):
+    def partial(scope,budget,cpu_weight=100):
         original(scope,budget)
         raise OSError('controller creation failed')
     monkeypatch.setattr(b,'create',partial)
@@ -717,3 +720,30 @@ def test_unsupported_creation_protocol_never_creates_authority(authority,version
         a.handle(os.getuid(),os.getpid(),{'op':'create','action_key':'a'*64,'nonce':'b'*32,
                  'memory_max_bytes':64*1024**2,'recovery_protocol':version})
     assert not a.records and not b.groups
+
+@pytest.mark.parametrize('weight', [10, 100])
+def test_cpu_weight_is_durable_immutable_and_checked_at_launch(authority, weight):
+    a, backend = authority
+    request = {'op': 'create', 'action_key': 'a' * 64, 'nonce': 'b' * 32,
+               'memory_max_bytes': 1024, 'cpu_weight': weight}
+    record = a.handle(os.getuid(), os.getpid(), request)
+    assert record['cpu_weight'] == weight
+    restored = module().Authority(a.state_dir, os.getuid(), backend, max_memory_bytes=1024**3)
+    assert restored.handle(os.getuid(), os.getpid(), {**request, 'op': 'recover_create'})['cpu_weight'] == weight
+    for operation in ('create', 'recover_create'):
+        with pytest.raises(ValueError, match='budget cannot change'):
+            restored.handle(os.getuid(), os.getpid(), {**request, 'op': operation,
+                                                       'cpu_weight': 100 if weight == 10 else 10})
+    backend.groups[record['scope_id']]['cpu_weight'] = 100 if weight == 10 else 10
+    with pytest.raises(ValueError, match='CPU weight'):
+        launch(restored, request, record)
+    assert not backend.attached
+
+
+@pytest.mark.parametrize('weight', [True, 0, 1, 9, 11, 101, '10', 10.0])
+def test_invalid_cpu_weight_refuses_before_kernel_creation(authority, weight):
+    a, backend = authority
+    with pytest.raises(ValueError, match='CPU weight'):
+        a.handle(os.getuid(), os.getpid(), {'op': 'create', 'action_key': 'a' * 64,
+            'nonce': 'b' * 32, 'memory_max_bytes': 1024, 'cpu_weight': weight})
+    assert not backend.groups

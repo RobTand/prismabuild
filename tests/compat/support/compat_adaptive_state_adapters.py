@@ -72,6 +72,50 @@ def jobs(cpu, ledger, controller, item, measured):
     return lambda: observe(100., 11., 1.1)
 
 
+def registered_borrow(cpu, pool, core, store):
+    """Current writers obtain authority through the real policy and ledger."""
+    tiers = {'preferred': [0, 1, 2, 3], 'fallback': [4, 5, 6, 7]}
+    ledger = pool.ResourceLedger(store / 'loan-queue/reservations', 'compat-host')
+    ledger.ensure_capacity({'cpu': 8})
+    ledger.configure_cpu_tiers(tiers)
+    clock = [97.]
+    cpu.time.time = lambda: clock[0]
+    def sampled():
+        return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
+                'busy_cpus': .4, 'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0.,
+                'per_cpu_busy': {str(c): .1 if c < 4 else 0. for c in range(8)}}
+    controller = cpu.Controller(ledger, tiers, sampler=sampled, ramp_cap=2)
+    state = {}
+    for stamp in range(66, 97):
+        state = cpu.cpu_lending.advance_lending_history(
+            state, {**sampled(), 'sampled_unix': stamp}, identity=controller._lending_identity,
+            cpus=controller.cpus, preferred=tiers['preferred'], now=stamp, cap=2)
+    controller.write_state('cpu-lending.json', state)
+    body = runpy.run_path(str(Path(__file__).with_name('compat_core_adapters.py')))['action_body'](core, store)
+    cas = core.PrismaBuildCAS(store / 'loan-cas')
+    items = []
+    for role, count in (('donor', 4), ('borrower', 1)):
+        action = core.seal_action({**body, 'params': {**body['params'], 'loan_fixture': role}})
+        cas.publish_action_request(action)
+        items.append({'action_key': action['action_key'], 'cas_root': str(cas.root),
+                      'cpu_qos': 'opportunistic', 'priority': -10, 'resources': {'cpu': count}})
+    donor, item = items
+    meta = controller.decision(donor, donor['resources'], owner=None)
+    handle = ledger.begin_acquire(donor['action_key'], donor['resources'], adaptive=meta, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(donor['action_key'], handle)
+    for at in (98., 99., 100.):
+        clock[0] = at
+        cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
+            'action_key': donor['action_key'], 'nonce': G, 'complete': True,
+            'sampled_unix': at, 'wall_seconds': at - 97., 'cpu_seconds': (at - 97.) * .1})
+        controller._host_sample = None
+        meta = controller.decision(item, item['resources'], owner=None)
+    assert meta and meta['borrowing']
+    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=meta, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(item['action_key'], handle)
+    return ledger, controller, item, meta
+
+
 def operation(request, store, load):
     family, variant = request["case"].split("/", 1)
     writing = request["op"] == "write"
@@ -111,6 +155,12 @@ def operation(request, store, load):
     elif family == "state-cpu-borrow":
         path = controller.base / "last-borrow.json"
         metadata = {"borrowing": True, "sampled_unix": 100.}
+        registered = hasattr(cpu, 'cpu_lending')
+        if registered:
+            ledger, controller, item, metadata = registered_borrow(cpu, load('prismabuild.pool'), load('prismabuild.core'), store)
+            path = controller.base / 'last-borrow.json'
+            if not writing and variant == 'admitted':
+                controller.admitted(metadata)
         if writing:
             previous = controller.admitted(metadata)
             if variant == "returned":
