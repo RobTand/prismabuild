@@ -694,7 +694,7 @@ def test_disjoint_proof_maps_token_ordinals_through_the_tiers(tmp_path, monkeypa
     from prismabuild import adaptive_cpu
     tiers = dict(NONCONTIGUOUS)
     queue = pool.PoolQueue(tmp_path / 'queue')
-    _seed_queue(queue, tiers, held_ordinals=(1,))
+    _seed_queue(queue, tiers, held_ordinals=(1,), allocation={'preferred': [10], 'fallback': []})
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
     busy = {cpu: (1. if cpu == 10 else 0.) for cpu in (8, 10, 2, 4)}
     cpu_sampler = lambda: _host_sample([8, 10, 2, 4], busy, .633)
@@ -706,7 +706,7 @@ def test_disjoint_proof_maps_token_ordinals_through_the_tiers(tmp_path, monkeypa
                        adaptive_cpu=True, cpu_sampler=cpu_sampler) is not None
 
     queue2 = pool.PoolQueue(tmp_path / 'queue2')
-    _seed_queue(queue2, tiers, held_ordinals=(0,))
+    _seed_queue(queue2, tiers, held_ordinals=(0,), allocation={'preferred': [8], 'fallback': []})
     cpu_sampler = lambda: _host_sample([8, 10, 2, 4], busy, .633)
     queue2.publish(action_key='b' * 64, cas_root=str(tmp_path / 'cas'),
                    checkout_root=str(tmp_path), worker_script='worker.py',
