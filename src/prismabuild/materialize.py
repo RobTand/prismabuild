@@ -153,7 +153,7 @@ def _cleanup_execution_checkout(
         else:
             _remove_tree_before(temporary, deadline_unix)
     except Exception as exc:  # cleanup must not turn completed work into retry
-        error = str(exc)
+        error = f"{type(exc).__name__}: {exc}"
     try:
         remains = temporary.exists() or temporary.is_symlink()
     except OSError as exc:

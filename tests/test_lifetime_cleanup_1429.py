@@ -107,3 +107,29 @@ def test_late_snapshot_completion_keeps_its_cleanup_proof_and_successor_isolatio
     assert queue.ledger().held() == held
     assert not queue.records.late_finish_path(first).exists()
     assert queue.attempt_outcomes(record_store.read_document(path))[0] == original
+
+
+def test_empty_removal_error_never_certifies_a_vanished_checkout(
+        tmp_path, broker, monkeypatch):
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
+    original = materialize.owned_tree.remove_tree
+
+    def remove_then_fail(*args, **kwargs):
+        original(*args, **kwargs)
+        raise PermissionError()
+
+    monkeypatch.setattr(materialize.owned_tree, "remove_tree", remove_then_fail)
+    item = claim(queue)
+    outcome = _execute(queue, item)
+    assert outcome["status"] == "executed"
+    assert outcome["checkout_cleanup"]["complete"] is False
+    assert "PermissionError" in outcome["checkout_cleanup"]["error"]
+    pending = _finish(queue, item, outcome)
+    key = item["action_key"]
+    assert pending == queue.records.item_path(pool.CLAIMED, key)
+    assert queue.ledger().held_keys() == [key]
+    assert queue.records.lease_path(key).exists()
+    assert reservation.attempt_release_audit(queue.queue, record_store.read_document(pending)) is None
+    assert queue.reap_stale() == []
+    assert queue.ledger().held_keys() == [key]
