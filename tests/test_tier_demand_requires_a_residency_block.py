@@ -12,6 +12,8 @@ Nothing here touches the live queue, a real pool or a real device.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import sys
 
@@ -83,7 +85,7 @@ def test_a_range_block_with_its_floor_still_admits(queue: pool.PoolQueue) -> Non
 
     queue.tier(TIER).mint({'stage_gib': 2})
     _submit(queue, KEY_A, {"cpu": 1, STAGE: 2}, residency=_range_block(range_bytes=2))
-    claimed = queue.claim(owner="mover", capacity={"cpu": 1})
+    claimed = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 1}))
     assert claimed is not None and claimed["action_key"] == KEY_A
     assert claimed["tier_reservations"] == {TIER: {"stage_gib": 2}}
 
@@ -122,5 +124,5 @@ def test_host_demand_without_a_block_is_unchanged(queue: pool.PoolQueue) -> None
     """Ordinary rows never carried tier demand and still need no block."""
 
     _submit(queue, KEY_A, {"cpu": 1, "mem_gb": 1})
-    claimed = queue.claim(owner="worker", capacity={"cpu": 1, "mem_gb": 1})
+    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 1, "mem_gb": 1}))
     assert claimed is not None and claimed["action_key"] == KEY_A

@@ -1,4 +1,6 @@
 """Independent #365 review: private queues, logical tokens, no GPU work."""
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import submission as submit_core
 import json
 import uuid
@@ -25,7 +27,7 @@ def setup_holder(tmp_path, *, retry_safe=True, max_attempts=3):
                   checkout_root=tmp_path, worker_script=tmp_path / 'worker.py',
                   priority=priority, resources={'gpu': 1}, **kw)
     publish(background, -10, retry_safe=retry_safe, max_attempts=max_attempts)
-    holder = q.claim(has_gpu=True, capacity={'gpu': 1})
+    holder = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     assert holder['action_key'] == background
     publish(foreground, 0)
     return q, background, foreground, holder
@@ -33,7 +35,7 @@ def setup_holder(tmp_path, *, retry_safe=True, max_attempts=3):
 
 def test_explicit_non_retry_safe_holder_is_not_automatically_restarted(tmp_path):
     q, bg, fg, holder = setup_holder(tmp_path, retry_safe=False, max_attempts=1)
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert not q.records.withdrawal_decisions(bg), 'priority alone cancelled non-idempotent work'
     assert not q.records.item_path(pool.record_store.READY, bg).exists()
 
@@ -43,11 +45,11 @@ def test_preemption_does_not_reset_already_spent_retry_attempts(tmp_path):
     # Let the background action fail once without a competing ready action.
     q.records.item_path(pool.record_store.READY, fg).unlink()
     q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=holder)
-    holder = q.claim(has_gpu=True, capacity={'gpu': 1})
+    holder = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     assert holder['attempts'] == 1
     q.publish(action_key=fg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     path = q.records.item_path(pool.record_store.READY, bg)
     retained = json.loads((path if path.exists() else q.records.item_path(pool.record_store.CLAIMED, bg)).read_text())
     assert retained['attempts'] >= holder['attempts'], 'preemption refunded a prior failed attempt'
@@ -63,7 +65,7 @@ def test_operator_withdrawal_winning_selection_race_is_not_reversed(tmp_path, mo
         withdraw(key, by='operator', reason='cancel this work', signal_child=False)
         return withdraw(key, **kw)
     monkeypatch.setattr(q, 'withdraw', operator_wins)
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert not q.records.item_path(pool.record_store.READY, bg).exists(), 'scheduler revived operator-cancelled work'
     assert q.records.item_path(pool.record_store.WITHDRAWN, bg).exists()
 
@@ -76,7 +78,7 @@ def test_holder_finishing_before_withdraw_is_not_published_again(tmp_path, monke
         q.finish(bg, status='executed', detail={'returncode': 0}, claim_snapshot=holder)
         return withdraw(key, **kw)
     monkeypatch.setattr(q, 'withdraw', finish_wins)
-    q.claim(has_gpu=True, capacity={'gpu': 1})
+    q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     assert q.records.item_path(pool.record_store.DONE, bg).exists()
     assert not q.records.item_path(pool.record_store.READY, bg).exists(), 'scheduler republished completed work'
 
@@ -93,11 +95,11 @@ def test_new_foreground_generation_winning_selection_race_is_not_preempted(tmp_p
         q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
                   worker_script=tmp_path / 'worker.py', priority=0,
                   resources={'gpu': 1}, retry_safe=False, max_attempts=1)
-        successor.update(q.claim(has_gpu=True, capacity={'gpu': 1}))
+        successor.update(q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})))
         waiting.write_bytes(saved)
         return withdraw(key, **kw)
     monkeypatch.setattr(q, 'withdraw', successor_wins)
-    q.claim(has_gpu=True, capacity={'gpu': 1})
+    q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     assert successor['priority'] == 0
     assert q.withdrawal_covers(successor, action_key=bg) is None
     assert not q.records.item_path(pool.record_store.READY, bg).exists()
@@ -107,7 +109,7 @@ def test_new_foreground_generation_winning_selection_race_is_not_preempted(tmp_p
 def test_unknown_or_measurement_holder_is_not_preempted(tmp_path, monkeypatch, identity):
     q, bg, fg, holder = setup_holder(tmp_path)
     monkeypatch.setattr(pool.cpu_admission, 'action_identity', lambda item: identity)
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert not q.records.withdrawal_decisions(bg)
 
 
@@ -117,22 +119,22 @@ def test_repeated_preemptions_and_failure_share_the_original_attempt_budget(tmp_
     generations = []
     for consumed in (1, 2):
         generations.append(holder['published_unix'])
-        assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+        assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
         requeued = json.loads(q.records.item_path(pool.record_store.READY, bg).read_text())
         assert requeued['attempts'] == consumed
         assert requeued['max_attempts'] == 3
         assert requeued['supersedes_withdrawal']['published_unix'] == holder['published_unix']
         q.finish(bg, status='withdrawn', claim_snapshot=holder)
-        foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
+        foreground = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
         assert foreground['action_key'] == fg
         q.finish(fg, status='executed', claim_snapshot=foreground)
-        holder = q.claim(has_gpu=True, capacity={'gpu': 1})
+        holder = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
         assert holder['action_key'] == bg
         q.publish(action_key=fg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
                   worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
     # The last allowed launch must finish. Another foreground arrival cannot
     # manufacture a fourth launch, and its failure consumes the final attempt.
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert not q.records.item_path(pool.record_store.READY, bg).exists()
     assert len(q.records.withdrawal_decisions(bg)) == 2
     for generation in generations:
@@ -161,7 +163,7 @@ def test_unattributed_attempt_prefix_is_not_restart_permission(tmp_path):
     record = json.loads(path.read_text())
     record.update(attempts=1, attempt_history_missing_before=1)
     path.write_text(json.dumps(record))
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert not q.records.withdrawal_decisions(bg)
 
 
@@ -181,9 +183,9 @@ def test_preemption_reads_the_sealed_action_class(tmp_path, monkeypatch, measure
     q.publish(action_key=key, cas_root=cas.root, checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=-10,
               resources={'gpu': 1}, retry_safe=True, max_attempts=2)
-    holder = q.claim(has_gpu=True, capacity={'gpu': 1})
+    holder = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     assert holder['action_key'] == key
     q.publish(action_key='f' * 64, cas_root=cas.root, checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', resources={'gpu': 1})
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     assert bool(q.records.withdrawal_decisions(key)) is not measurement

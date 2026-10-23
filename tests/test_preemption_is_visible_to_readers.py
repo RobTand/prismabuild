@@ -15,6 +15,8 @@ generation-aware:
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -55,12 +57,12 @@ def preempted(tmp_path: Path):
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=-10, resources={"gpu": 1},
               retry_safe=True, max_attempts=3)
-    holder = q.claim(has_gpu=True, capacity={"gpu": 1})
+    holder = q.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
     assert holder is not None and holder["action_key"] == BACKGROUND
 
     q.publish(action_key=FOREGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=0, resources={"gpu": 1})
-    assert q.claim(has_gpu=True, capacity={"gpu": 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1})) is None
 
     stopped = float(holder["published_unix"])
     requeued = json.loads(q.records.item_path(pool.record_store.READY, BACKGROUND).read_text())
@@ -82,14 +84,14 @@ def test_a_waiter_follows_the_preemption_to_the_generation_it_requeued(
     # The holder concludes the stop; the foreground item it yielded to runs.
     q.finish(BACKGROUND, status="withdrawn", detail={"returncode": -15},
              claim_snapshot=holder)
-    first = q.claim(has_gpu=True, capacity={"gpu": 1})
+    first = q.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
     assert first is not None and first["action_key"] == FOREGROUND
     q.finish(FOREGROUND, status="executed", detail={"returncode": 0},
              claim_snapshot=first)
 
     # And then the retry runs and succeeds.  A waiter that named the stopped
     # generation is told about that ending, not about the stop.
-    retry = q.claim(has_gpu=True, capacity={"gpu": 1})
+    retry = q.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
     assert retry is not None and retry["action_key"] == BACKGROUND
     q.finish(BACKGROUND, status="executed", detail={"returncode": 0},
              claim_snapshot=retry)
@@ -193,16 +195,16 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
 def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
     from test_preemption_review_boundaries import setup_holder
     q, bg, fg, holder = setup_holder(tmp_path, max_attempts=2)
-    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
     q.finish(bg, status='withdrawn', claim_snapshot=holder)
-    foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
+    foreground = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(fg, status='executed', claim_snapshot=foreground)
-    retry = q.claim(has_gpu=True, capacity={'gpu': 1})
+    retry = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=retry)
     assert q.records.item_path(pool.record_store.FAILED, bg).exists()
     q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
-    unrelated = q.claim(has_gpu=True, capacity={'gpu': 1})
+    unrelated = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(bg, status='executed', claim_snapshot=unrelated)
     landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=holder['published_unix'])
     assert landed is not None
@@ -218,11 +220,11 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q, bg, fg, holder = setup_holder(tmp_path, max_attempts=interruptions + 1)
     original_generation = holder['published_unix']
     for index in range(interruptions):
-        assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
+        assert q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1})) is None
         q.finish(bg, status='withdrawn', claim_snapshot=holder)
-        foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
+        foreground = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
         q.finish(fg, status='executed', claim_snapshot=foreground)
-        holder = q.claim(has_gpu=True, capacity={'gpu': 1})
+        holder = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
         if index + 1 < interruptions:
             q.publish(action_key=fg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
                       worker_script=tmp_path / 'worker.py', resources={'gpu': 1})
@@ -233,7 +235,7 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1},
               max_attempts=1, retry_safe=False)
-    unrelated = q.claim(has_gpu=True, capacity={'gpu': 1})
+    unrelated = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(bg, status=status, detail={'returncode': 9 if status == 'failed' else 0,
                                       'stdout': 'unrelated later run'},
              claim_snapshot=unrelated)
@@ -259,9 +261,9 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
 def test_archived_retry_recovery_revalidates_immutable_evidence(preempted, damage):
     q, holder, stopped = preempted
     q.finish(BACKGROUND, status='withdrawn', claim_snapshot=holder)
-    foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
+    foreground = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(FOREGROUND, status='executed', claim_snapshot=foreground)
-    retry = q.claim(has_gpu=True, capacity={'gpu': 1})
+    retry = q.claim(has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
     q.finish(BACKGROUND, status='executed', detail={'stdout': 'verified original'},
              claim_snapshot=retry)
     recovered = q.archived_preemption_outcomes(BACKGROUND)

@@ -900,14 +900,14 @@ def observed_claim_capacity(queue, *, args, base_declared, observer,
     return declared, capacity, known_physical_gpus
 
 
-def private_claim_parameters(queue):
+def private_claim_parameters(queue, *, has_gpu=False):
     """Executable private tool callers use observed host admission, not grants.
 
     A separate queue root does not prove an outer reservation. No submissions
     or synthetic scope adoption occur here; resource requests still come from
     the caller and may be refused on the actual host.
     """
-    args = build_parser().parse_args([])
+    args = build_parser().parse_args(["--gpu"] if has_gpu else [])
     tiers = cpu_topology.inherited_tiers()
     if tiers is None:
         raise pool.PoolContractError("private claim requires known inherited CPU topology")
@@ -916,10 +916,43 @@ def private_claim_parameters(queue):
         samples=args.observe_samples, ledger_total=queue.ledger().capacity())
     _declared, capacity, _gpus = observed_claim_capacity(
         queue, args=args, base_declared=base, observer=observer,
-        gpu_sample=None, known_physical_gpus=0)
+        gpu_sample=box_capacity.trusted_gpu_sample() if has_gpu else None, known_physical_gpus=0)
     if args.host_cap_detail.get("host_cap_refusal"):
         raise pool.PoolContractError(args.host_cap_detail["host_cap_refusal"])
-    return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True}
+    return {"capacity": capacity, "cpu_tiers": tiers, "adaptive_cpu": True,
+            "admission_open": claim_capacity_fence(queue, capacity)}
+
+
+def claim_capacity_fence(queue, capacity):
+    """Recheck containment and maintenance at the last claim transition."""
+    from prismabuild import host_cap, fleet_roster
+    host_cap.require_capped_capacity(capacity)
+    box = fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,))
+
+    def admission_open():
+        if role_session.read_maintenance_gate() is not None:
+            return False
+        detail = {}
+        fresh = host_cap.enforce_host_cap(capacity, box, queue.ledger().held, detail=detail)
+        host_cap.require_capped_capacity(fresh)
+        return "host_cap_refusal" not in detail and fresh == capacity
+
+    return admission_open
+
+
+def capped_simulation_parameters(queue, capacity):
+    """Keep private simulation inputs while enforcing this host's live cap.
+
+    Benchmark geometry is a declared fixture, not an observed fleet offer.
+    Its real queue transitions still require containment and maintenance.
+    """
+    from prismabuild import host_cap, fleet_roster
+    box = fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,))
+    detail = {}
+    value = host_cap.enforce_host_cap(capacity, box, queue.ledger().held, detail=detail)
+    if detail.get("host_cap_refusal"):
+        raise pool.PoolContractError(detail["host_cap_refusal"])
+    return {"capacity": value, "admission_open": claim_capacity_fence(queue, value)}
 
 
 def stable_host_capacity(live: dict[str, int],
@@ -1662,14 +1695,6 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 stop.wait(args.poll_s)
                 continue
 
-            def claim_admission_open():
-                if role_session.read_maintenance_gate() is not None:
-                    return False
-                from prismabuild import host_cap
-                detail = {}
-                fresh = host_cap.enforce_host_cap(capacity, box, queue.ledger().held, detail=detail)
-                return "host_cap_refusal" not in detail and fresh == capacity
-
             outcome = queue.serve_once(
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
@@ -1680,7 +1705,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 # Re-checked under the per-key transition lock just before
                 # the claim rename, so a resign drain that began after this
                 # poll's gate check still refuses the claim deterministically.
-                admission_open=claim_admission_open,
+                admission_open=claim_capacity_fence(queue, capacity),
                 # Membership handoffs settle in the box's sweep turn, so
                 # settlement does not depend on the requester surviving
                 # (``settle_membership``).

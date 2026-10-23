@@ -22,6 +22,8 @@ been created yet legitimately has no ``done/``.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import errno
 import json
 import os
@@ -105,7 +107,7 @@ def test_a_filed_outcome_is_not_requeued_when_done_cannot_be_listed(
     time and the second ``finish`` writes over the record of the first.
     """
 
-    item = queue.claim(capacity={"cpu": 1})
+    item = queue.claim(capacity=simulated_capacity({"cpu": 1}))
     assert item is not None
     claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())

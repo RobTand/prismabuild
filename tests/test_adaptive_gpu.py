@@ -1,4 +1,6 @@
 """GPU concurrency follows trusted device evidence inside fixed memory limits."""
+
+from admitted_queue_fixture import simulated_capacity
 from pathlib import Path
 import sys
 import time
@@ -286,7 +288,7 @@ def test_fallback_deferral_leaves_gpu_sample_for_preferred_candidate(gpu_rig):
     queue, clock, sample, capacity, publish, tick, _ = gpu_rig
     tiers = {'preferred': [0, 1], 'fallback': list(range(2, 8))}
     def claim():
-        return queue.claim(capacity=capacity, cpu_tiers=tiers,
+        return queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers,
                            adaptive_cpu=True, has_gpu=True,
                            cpu_sampler=lambda: _cpu_sample(clock),
                            gpu_sampler=sample.copy)

@@ -15,6 +15,8 @@ pbtest at -10.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from history_inputs import source_bytes
 
 import hashlib
@@ -323,7 +325,7 @@ def _retained_item(tmp_path, worker: str):
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, worker_script=worker,
                   resources=demand, max_attempts=2, retry_safe=True)
-    return queue, queue.claim(capacity=demand)
+    return queue, queue.claim(capacity=simulated_capacity(demand))
 
 
 def test_receipt_listed_digest_owner_tamper_refuses_before_proxy_launch(

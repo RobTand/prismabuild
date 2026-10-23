@@ -1,6 +1,8 @@
 """Opt-in PB-only paired claim-loop profile for #1221 (no live queue or GPU)."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import contextlib
 import json
 import os
@@ -69,7 +71,7 @@ def test_private_claim_loop_profile(tmp_path, monkeypatch):
         for name in counters:
             counters[name] = [] if name == "admission_holds" else 0
         began = time.perf_counter()
-        result = queue.claim(capacity={"cpu": 2}, cpu_tiers={"preferred": [0, 1], "fallback": []},
+        result = queue.claim(capacity=simulated_capacity({"cpu": 2}), cpu_tiers={"preferred": [0, 1], "fallback": []},
                              adaptive_cpu=True, ready=ready)
         elapsed = time.perf_counter() - began
         assert result is None

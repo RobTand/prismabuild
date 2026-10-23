@@ -1,6 +1,8 @@
 """Execution slots and IPC branches cannot impersonate a publication ending."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import time
 
@@ -18,7 +20,7 @@ from test_pool_requeue_preserves_newer_generation import (
 
 def _legacy_slot(queue, clock, damage):
     _publish(queue)
-    executed = queue.claim(owner="executed", capacity=DEMAND)
+    executed = queue.claim(owner="executed", capacity=simulated_capacity(DEMAND))
     assert executed is not None
     queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=executed)
     attempt = queue.records.attempt_path(executed, 1)
@@ -103,7 +105,7 @@ def test_publication_proof_in_the_execution_ipc_branch_is_unavailable(
     queue, clock, monkeypatch, consumer,
 ):
     _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
     assert original is not None
     clock[0] += 1
     _publish(queue)

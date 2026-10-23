@@ -6,6 +6,8 @@ an absent broker reply into exit 125.  The socket server is confined to the
 test process; scope create/status/release remain the narrow mock used by the
 resource-scope tests, so this never contacts the privileged broker.
 """
+
+from admitted_queue_fixture import simulated_capacity
 import array
 import hashlib
 import json
@@ -132,7 +134,7 @@ def make_failed_attempt(tmp_path, monkeypatch, *, publish_receipt=True,
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, worker_script=worker,
                   resources={"cpu": 1, "mem_gb": 2}, max_attempts=1)
-    item = queue.claim(capacity={"cpu": 1, "mem_gb": 2})
+    item = queue.claim(capacity=simulated_capacity({"cpu": 1, "mem_gb": 2}))
     assert item is not None
 
     socket_path = tmp_path / "broker.sock"

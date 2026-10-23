@@ -17,6 +17,8 @@ starvation census on the #966 fixtures.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import socket
 import sys
@@ -124,7 +126,7 @@ def test_the_denial_and_the_census_name_the_retirement(
     row = _successor_row(world)
     claimed = queue.claim(
         tags=["x86"], owner=f"{socket.gethostname()}:1:consumer",
-        capacity={"cpu": 4, "mem_gb": 16}, ready=[row])
+        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=[row])
     assert claimed is None
     denial = _denial(queue, world.successor)
     assert denial["reason"] == "residency_lead_terminal", denial

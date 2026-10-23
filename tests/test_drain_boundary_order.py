@@ -9,6 +9,8 @@ its place: the pass holds the box for it instead of claiming past it.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -63,7 +65,7 @@ def test_a_busy_row_keeps_the_drain_boundary_when_its_episode_expired(tmp_path, 
         queue.record_pass(KEY_A)
 
     # While the quantum holder holds its tokens, the head row withholds.
-    assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()]) is None
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()]) is None
     assert _record_for(queue, KEY_A)["reason"] == "reservation_unavailable_withholding"
 
     # The drain outlives the carry ceiling, then the holder finishes.
@@ -73,7 +75,7 @@ def test_a_busy_row_keeps_the_drain_boundary_when_its_episode_expired(tmp_path, 
     with held_transition(queue, KEY_A):
         # Another loop is deciding the head row at the boundary: this pass must
         # not claim the lower-priority row behind it while that decision pends.
-        assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()]) is None
+        assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()]) is None
         busy = _record_for(queue, KEY_A)
         assert busy["reason"] == "transition_busy"
         assert busy["evidence"]["gpu_room_kept"] == {"cpu": 6, "gpu": 1, "mem_gb": 64}
@@ -82,7 +84,7 @@ def test_a_busy_row_keeps_the_drain_boundary_when_its_episode_expired(tmp_path, 
         assert deferred["reason"] == "deferred_for_ready_gpu_row"
         assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
     # Once the sibling is done, the head row takes its boundary.
-    assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])["action_key"] == KEY_A
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])["action_key"] == KEY_A
 
 
 def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch):
@@ -113,7 +115,7 @@ def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch
 
     monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)
     with held_transition(queue, KEY_A):
-        claimed = queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])
+        claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])
         assert claimed is None, (
             f"claimed {claimed and claimed['action_key'][:4]} past the busy head row "
             "whose holder released mid-pass")
@@ -124,7 +126,7 @@ def test_the_room_survives_a_holder_that_releases_mid_pass(tmp_path, monkeypatch
         deferred = _record_for(queue, KEY_B)
         assert deferred["reason"] == "deferred_for_ready_gpu_row"
         assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
-    assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])["action_key"] == KEY_A
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])["action_key"] == KEY_A
 
 
 def test_a_malformed_busy_row_keeps_no_room_and_ends_no_pass(tmp_path, monkeypatch):
@@ -157,7 +159,7 @@ def test_a_malformed_busy_row_keeps_no_room_and_ends_no_pass(tmp_path, monkeypat
     monkeypatch.setattr(queue, "_host_denial_records", release_at_denial_read)
     monkeypatch.setattr(queue, "demand_of", malformed)
     with held_transition(queue, KEY_A):
-        claimed = queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])
+        claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])
         assert claimed is not None and claimed["action_key"] == KEY_B
         assert "gpu_room_kept" not in _record_for(queue, KEY_A)["evidence"]
 
@@ -180,9 +182,9 @@ def test_a_cpu_row_fills_beside_a_binds_all_room(tmp_path, monkeypatch):
 
     with held_transition(queue, KEY_A):
         # The CPU row that fits beside the room is admitted.
-        assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])["action_key"] == "c" * 64
+        assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])["action_key"] == "c" * 64
         # The row the room leaves no memory for is deferred, not merely short.
-        assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()]) is None
+        assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()]) is None
         deferred = _record_for(queue, "d" * 64)
         assert deferred["reason"] == "deferred_for_ready_gpu_row", deferred
         assert deferred["evidence"]["gpu_row"] == KEY_A[:12]
@@ -236,6 +238,6 @@ def test_a_busy_row_with_no_history_still_keeps_its_place(tmp_path, monkeypatch)
     publish(queue, KEY_B, priority=-10, resources={"cpu": 6, "gpu": 1, "mem_gb": 69})
 
     with held_transition(queue, KEY_A):
-        assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()]) is None
+        assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()]) is None
         assert _record_for(queue, KEY_B)["reason"] == "deferred_for_ready_gpu_row"
-    assert queue.claim(has_gpu=True, capacity=CAPACITY, tags=[pool.socket.gethostname()])["action_key"] == KEY_A
+    assert queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), tags=[pool.socket.gethostname()])["action_key"] == KEY_A

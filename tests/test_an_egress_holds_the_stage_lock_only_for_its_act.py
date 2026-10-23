@@ -7,6 +7,8 @@ machine speed; module-local clock bindings share the synthetic grant clock.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from contextlib import contextmanager
 import hashlib
 import multiprocessing
@@ -74,7 +76,7 @@ def _land_range(queue: pool.PoolQueue, stage: Path, root: Path) -> None:
                              "range_start_bytes": 0,
                              "range_end_bytes": storage_tiers.GIB},
                   max_attempts=1, retry_safe=False)
-    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == LANDED_MOVER
     queue.record_move(LANDED_MOVER, {
         "consumer_action_key": LANDED_CONSUMER, "tier_id": TIER,

@@ -1,4 +1,6 @@
 """A failed claim move cannot authorize reaper cleanup (#318)."""
+
+from admitted_queue_fixture import simulated_capacity
 import errno
 from pathlib import Path
 
@@ -16,7 +18,7 @@ def test_failed_entomb_retains_claim_lease_and_capacity(tmp_path, monkeypatch, u
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py",
                   resources={"cpu": 1}, max_attempts=2, retry_safe=True)
-    item = queue.claim(capacity={"cpu": 1})
+    item = queue.claim(capacity=simulated_capacity({"cpu": 1}))
     claim = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     if unstarted:
         queue.records.lease_path(KEY).unlink()

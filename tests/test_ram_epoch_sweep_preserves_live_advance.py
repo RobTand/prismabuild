@@ -1,5 +1,7 @@
 """Epoch cleanup must not turn a live advance promise into free capacity."""
 
+from admitted_queue_fixture import simulated_capacity
+
 import pytest
 import test_the_nonfinal_window_fences_its_advance as base
 from storage_host_ledger import STORAGE_HOST
@@ -60,7 +62,7 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
         queue.records.item(base.pool.record_store.READY, target),
     )
     claim = queue.claim(ready=[row], tags=['dl380g10'], owner='ram-advance-proof',
-                        capacity={'cpu': 4, 'mem_gb': 8})
+                        capacity=simulated_capacity({'cpu': 4, 'mem_gb': 8}))
     assert claim and claim['action_key'] == target
     assert queue.funding.read_window(target, base.RAM_TIER)['state'] == 'consumed'
     assert ledger.holdings(target) == {'ram_gib': 1}

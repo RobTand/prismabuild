@@ -1,5 +1,7 @@
 """A cancellation keeps its decision and the worker's authenticated ending."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
 import os
@@ -77,7 +79,7 @@ def test_running_withdrawal_retains_cleanup_and_immutable_attempt(scoped, monkey
     queue, item, calls = scoped
     if retried:
         queue.finish(item["action_key"], status="failed", detail={"stderr": "prior failure"})
-        item = queue.claim(capacity={"cpu": 1, "mem_gb": 2})
+        item = queue.claim(capacity=simulated_capacity({"cpu": 1, "mem_gb": 2}))
     queue, live, path, record = _conclude(queue, item, monkeypatch)
     cleanup = record["resource_scope_cleanup"]
     assert cleanup["nonce"] == record["resource_scope"]["nonce"] == live["resource_scope_intent"]["nonce"]
@@ -328,7 +330,7 @@ def test_late_withdrawn_finish_after_a_charged_retry_reads_back_withdrawn(scoped
     queue, item, calls = scoped
     key = item["action_key"]
     queue.finish(key, status="failed", detail={"stderr": "prior failure"})
-    item = queue.claim(capacity={"cpu": 1, "mem_gb": 2})
+    item = queue.claim(capacity=simulated_capacity({"cpu": 1, "mem_gb": 2}))
     assert item["attempts"] == 1
     queue.withdraw(key, by="rob", reason="cancel this run", signal_child=False)
     queue.reap_stale(timeout_s=-1)

@@ -1,5 +1,7 @@
 """Receipting work across a publication must not schedule a second action."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
 import hashlib
@@ -75,7 +77,7 @@ def test_receipted_action_is_a_real_cache_hit_after_publication(
 ):
     work, queue, action, old, new = original
     outcome = queue.serve_once(tags=["sparky", "gb10"], python=sys.executable,
-                               capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
+                               capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
                                timeout_s=60)
     assert outcome["status"] == "executed", outcome
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -166,7 +168,7 @@ def test_mixed_generation_campaign_reuses_each_rows_own_key(
     second = _one_json_line(capsys.readouterr())
     for _ in range(2):
         outcome = queue.serve_once(tags=["sparky", "gb10"], python=sys.executable,
-                                   capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
+                                   capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
                                    timeout_s=60)
         assert outcome["status"] == "executed", outcome
     third = _generation(tmp_path, "third")

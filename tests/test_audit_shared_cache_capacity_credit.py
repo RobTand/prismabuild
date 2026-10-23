@@ -25,6 +25,8 @@ Runs under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import errno
 import hashlib
 import json
@@ -124,7 +126,7 @@ def _publish_mover(queue: pool.PoolQueue, key: str, start: int, end: int,
 
 
 def _claim(queue: pool.PoolQueue):
-    return queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
+    return queue.claim(owner="worker:1:abcd0001", capacity=simulated_capacity(dict(HOST_CAP)),
                        tags=["dl380g10"])
 
 

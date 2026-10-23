@@ -6,6 +6,8 @@ are real. These CPU-only simulations never submit work or use a GPU themselves.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import platform
 import sys
@@ -114,7 +116,7 @@ def fleet(tmp_path, monkeypatch):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(0.01)
         active = q or queue
-        result = active.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
+        result = active.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers, adaptive_cpu=True,
                               has_gpu=True, tags=["gb10", host],
                               cpu_sampler=cpu_sampler,
                               gpu_sampler=gpu_sampler)

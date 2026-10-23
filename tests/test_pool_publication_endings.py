@@ -1,6 +1,8 @@
 """The queue owns exact immutable publication decisions and their recovery."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import errno
 import json
 from pathlib import Path
@@ -17,7 +19,7 @@ from test_pool_requeue_preserves_newer_generation import (
 
 def _collision(queue, clock):
     _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
     assert original is not None
     clock[0] += 1
     _publish(queue)
@@ -45,7 +47,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
                              / f"{queue.records.attempt_generation(original)}.json")
     assert decision.path.stat().st_mode & 0o222 == 0
     raw = decision.path.read_bytes()
-    retry = queue.claim(owner="successor", capacity=DEMAND)
+    retry = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
     assert retry is not None
     queue.finish(KEY, status="executed", claim_snapshot=retry)
     assert queue.publication_ending(KEY, generation=original["published_unix"]) == decision

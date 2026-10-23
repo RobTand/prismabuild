@@ -147,8 +147,8 @@ def test_system_unit_renderer_keeps_the_supervisor_and_broker_inside_the_cap(tmp
                                "--cpus", "4-7,12-15", "--memory-gb", "32", "--print"],
                               capture_output=True, text=True, check=True).stdout
     assert "User=rob" in rendered
-    assert rendered.count("Slice=pbcap.slice") == 2
-    assert rendered.count("AllowedCPUs=4-7,12-15") == 3
+    assert rendered.count("Slice=pbcap.slice") == 4
+    assert rendered.count("AllowedCPUs=4-7,12-15") == 5
     assert "MemoryMax=32G" in rendered and "MemorySwapMax=0" in rendered
     assert "Environment=PB_SCOPE_PARENT=pbcap.slice" in rendered
     assert "KillMode=process" in rendered and "TimeoutStopSec=infinity" in rendered
@@ -159,7 +159,10 @@ def test_system_unit_renderer_keeps_the_supervisor_and_broker_inside_the_cap(tmp
     assert supervise._systemd_managed()
 
 
-def test_configured_broker_parent_preserves_the_attempt_identity(tmp_path):
+def test_configured_broker_parent_preserves_the_attempt_identity(tmp_path, monkeypatch):
+    roster = fleet_roster.Roster.capture(json.dumps({"boxes": {"proof": {
+        "cap": {"cpus": "4-7,12-15", "mem_gb": 32, "slice": "pbcap.slice"}}}}).encode())
+    monkeypatch.setattr(fleet_roster.Roster, "for_host", lambda *a, **k: roster.canonical_box("proof"))
     from test_resource_broker import module
     broker = module()
     from prismabuild import resource_scope

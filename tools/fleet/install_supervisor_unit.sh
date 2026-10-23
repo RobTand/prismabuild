@@ -53,6 +53,13 @@ CPUAccounting=yes
 MemoryAccounting=yes
 UNIT
     }
+    service_dropin() {
+        cat <<UNIT
+[Service]
+Slice=$cap_slice
+AllowedCPUs=$cap_cpus
+UNIT
+    }
     broker_dropin() {
         cat <<UNIT
 [Service]
@@ -88,24 +95,35 @@ UNIT
     if $print_only; then
         system_units
         broker_dropin
+        service_dropin
+        service_dropin
         supervisor_unit
         exit 0
     fi
     if [ "$(id -u)" -ne 0 ]; then echo 'system mode must run as root' >&2; exit 1; fi
-    if systemctl is-active --quiet prismabuild-supervisor.service || systemctl is-active --quiet prismabuild-resource-broker.service; then
-        echo 'drain this host and stop supervisor and broker before installing the cap' >&2
-        exit 1
-    fi
+    for service in supervisor resource-broker client-upgrade movement-publish; do
+        if systemctl is-active --quiet "prismabuild-$service.service"; then
+            echo "drain this host and stop prismabuild-$service.service before installing the cap" >&2
+            exit 1
+        fi
+    done
     if [ -e /home/rob/.config/systemd/user/prismabuild-supervisor.service ]; then
         echo 'disable and remove the old user supervisor unit before switching to system mode' >&2
         exit 1
     fi
-    install -d /etc/systemd/system/prismabuild-resource-broker.service.d
+    install -d /etc/prismabuild
+    for service in resource-broker client-upgrade movement-publish; do
+        install -d "/etc/systemd/system/prismabuild-$service.service.d"
+    done
     install -d -o rob -g rob /home/rob/tmp
-    for unit_file in "$cap_slice" prismabuild-supervisor.service prismabuild-resource-broker.service.d/10-host-cap.conf; do
+    for unit_file in "$cap_slice" prismabuild-supervisor.service prismabuild-resource-broker.service.d/10-host-cap.conf prismabuild-client-upgrade.service.d/10-host-cap.conf prismabuild-movement-publish.service.d/10-host-cap.conf; do
         if [ -e "/etc/systemd/system/$unit_file" ]; then cp -a "/etc/systemd/system/$unit_file" "/etc/systemd/system/$unit_file.backup-$(date +%s)"; fi
     done
     system_units > "/etc/systemd/system/$cap_slice"
+    service_dropin > /etc/prismabuild/host-cap.conf
+    for service in client-upgrade movement-publish; do
+        install -m 0644 /etc/prismabuild/host-cap.conf "/etc/systemd/system/prismabuild-$service.service.d/10-host-cap.conf"
+    done
     broker_dropin > /etc/systemd/system/prismabuild-resource-broker.service.d/10-host-cap.conf
     supervisor_unit > /etc/systemd/system/prismabuild-supervisor.service
     systemctl daemon-reload

@@ -1,3 +1,5 @@
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import claim_identity
 """A repeated action key cannot acquire a predecessor's ownership paths."""
 from concurrent.futures import ThreadPoolExecutor
@@ -17,10 +19,10 @@ def publish(queue, key):
 def test_successor_waits_for_holder_cleanup(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="first", capacity={"cpu": 2})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 2}))
     publish(queue, KEY)
     lease = queue.records.lease_path(KEY).read_bytes()
-    assert queue.claim(owner="second", capacity={"cpu": 2}) is None
+    assert queue.claim(owner="second", capacity=simulated_capacity({"cpu": 2})) is None
     assert claim_identity.same_claim(
         pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)),
         first,
@@ -28,10 +30,10 @@ def test_successor_waits_for_holder_cleanup(tmp_path):
     assert queue.records.lease_path(KEY).read_bytes() == lease
     tombstone, taken = queue._entomb_claim(KEY, expect=first)
     assert taken and tombstone is not None
-    assert queue.claim(owner="second", capacity={"cpu": 2}) is None
+    assert queue.claim(owner="second", capacity=simulated_capacity({"cpu": 2})) is None
     queue.sweep_finish_tombstones(grace_s=-1)
     queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=first)
-    successor = queue.claim(owner="second", capacity={"cpu": 2})
+    successor = queue.claim(owner="second", capacity=simulated_capacity({"cpu": 2}))
     assert successor and successor["claimed_by"] == "second"
 
 
@@ -70,10 +72,10 @@ def test_old_owner_cannot_replace_successor_lease(tmp_path):
     import pytest
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="first", capacity={"cpu": 2})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 2}))
     queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=first)
     publish(queue, KEY)
-    queue.claim(owner="second", capacity={"cpu": 2})
+    queue.claim(owner="second", capacity=simulated_capacity({"cpu": 2}))
     lease = queue.records.lease_path(KEY).read_bytes()
     with pytest.raises(pool.PoolContractError, match="claim.*changed|owner.*differs"):
         queue.write_lease(KEY, owner="first")
@@ -84,10 +86,10 @@ def test_same_owner_old_attempt_cannot_replace_successor_lease(tmp_path):
     import pytest
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="worker", capacity={"cpu": 2})
+    first = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 2}))
     queue.finish(KEY, status="executed", detail={"returncode": 0}, claim_snapshot=first)
     publish(queue, KEY)
-    queue.claim(owner="worker", capacity={"cpu": 2})
+    queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 2}))
     lease = queue.records.lease_path(KEY).read_bytes()
     with pytest.raises(pool.PoolContractError, match="claim changed"):
         queue.write_lease(KEY, owner="worker", claim_snapshot=first)
@@ -98,12 +100,12 @@ def test_claim_census_does_not_trust_cached_negative_name(tmp_path, monkeypatch)
     from pathlib import Path
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="first", capacity={"cpu": 2})
+    first = queue.claim(owner="first", capacity=simulated_capacity({"cpu": 2}))
     publish(queue, KEY)
     claimed = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     exists = Path.exists
     monkeypatch.setattr(Path, "exists", lambda path: False if path == claimed else exists(path))
-    assert queue.claim(owner="second", capacity={"cpu": 2}) is None
+    assert queue.claim(owner="second", capacity=simulated_capacity({"cpu": 2})) is None
     assert claim_identity.same_claim(pool.record_store.read_document(claimed), first)
 
 
@@ -114,7 +116,7 @@ def test_claim_census_does_not_trust_cached_negative_name(tmp_path, monkeypatch)
 def test_heartbeat_retains_each_conflicting_lease_identity(tmp_path, field, value):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="worker", capacity={"cpu": 1})
+    first = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 1}))
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     lease[field] = value
     pool.immutable_files.write_json_atomic(queue.records.lease_path(KEY), lease)
@@ -130,7 +132,7 @@ def test_heartbeat_retains_each_conflicting_lease_identity(tmp_path, field, valu
 def test_heartbeat_upgrades_compatible_legacy_lease_and_refreshes_observation(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY)
-    first = queue.claim(owner="worker", capacity={"cpu": 1})
+    first = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 1}))
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     for field in ("claimed_unix", "published_unix"):
         lease.pop(field)

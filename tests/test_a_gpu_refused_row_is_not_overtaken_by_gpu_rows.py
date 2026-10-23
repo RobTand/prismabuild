@@ -23,6 +23,8 @@ that cannot place a row takes no lock; and every withhold stays bounded.
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
 import hashlib
@@ -146,7 +148,7 @@ def box(tmp_path: Path, monkeypatch):
                                    "scope_id": record["scope_unit"], "complete": True})
 
     def claim(*, cpu_sampler=cpu_sampler, tags=None):
-        return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
+        return _key_of(queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
                                    tags=[pool.socket.gethostname()] if tags is None else tags,
                                    cpu_sampler=cpu_sampler,
@@ -302,7 +304,7 @@ def _withholding_gpu_action(tmp_path: Path, clock):
         return key
 
     def claim():
-        return _key_of(queue.claim(has_gpu=True, capacity=capacity))
+        return _key_of(queue.claim(has_gpu=True, capacity=simulated_capacity(capacity)))
 
     shard = publish("shard", {"cpu": 2})
     assert claim() == shard

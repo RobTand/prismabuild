@@ -20,6 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import action_wait, endings, pool, queue_bell, queue_notifier
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--celestia-host", default="celestia",
@@ -60,7 +63,7 @@ def main() -> int:
                        worker_script=Path(__file__), resources=demand,
                        max_attempts=2, retry_safe=True)
         queue.publish(**publish)
-        original = queue.claim(owner="bell-scratch-proof", capacity=demand)
+        original = queue.claim(owner="bell-scratch-proof", **capped_simulation_parameters(queue, demand))
         assert original is not None, "scratch claim refused"
         queue.publish(**publish)
         with queue_notifier.BellService(root, [("127.0.0.1", 19470)]) as service:

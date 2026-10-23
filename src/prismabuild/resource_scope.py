@@ -358,10 +358,19 @@ _PROXY_PACKAGE_DEPENDENCIES = (
 )
 
 
-def scope_path_matches(path: str | Path, unit: str) -> bool:
-    """Keep broker identity stable across a host's configured system parent."""
+def declared_scope_parent(host: str | None = None) -> str:
+    """Read containment authority from the roster, never a broker response."""
+    from prismabuild import fleet_roster, host_cap
+    box = fleet_roster.Roster.for_host(
+        host or socket.gethostname(), roots=(Path(__file__).resolve().parents[2],))
+    return (host_cap.HostCap.parse(box.entry["cap"]).slice
+            if box is not None and "cap" in box.entry else "prismabuild.slice")
+
+
+def scope_path_matches(path: str | Path, unit: str, *, host: str | None = None) -> bool:
+    """Require the canonical attempt inside its roster-declared parent."""
     path = Path(path)
-    parent = path.parent.name
+    parent = declared_scope_parent(host)
     if (SCOPE_RE.fullmatch(unit) is None
             or re.fullmatch(r'[A-Za-z0-9_]+\.slice', parent) is None):
         return False
@@ -370,7 +379,7 @@ def scope_path_matches(path: str | Path, unit: str) -> bool:
 
 
 def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
-    """Pure identity half of pool scope recovery; no host check or broker RPC."""
+    """Verify attempt identity and roster containment before any recovery RPC."""
     from .produced_output import _broker_scope_id
 
     if not isinstance(control, dict):

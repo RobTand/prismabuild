@@ -19,6 +19,8 @@ now withholds while those holders drain soon.  Busy CPUs no holder holds are
 load the pool does not own, which no drain clears, so they still do not.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
@@ -127,7 +129,7 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 
 def _claim(q: pool.PoolQueue, cpu_sampler) -> str | None:
-    item = q.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=CAPACITY,
+    item = q.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=simulated_capacity(CAPACITY),
                    cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler,
                    gpu_sampler=idle_gpu_sample)
     return None if item is None else item["action_key"]

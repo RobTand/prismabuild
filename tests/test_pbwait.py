@@ -10,6 +10,8 @@ them.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import os
 from pathlib import Path
@@ -291,7 +293,7 @@ def test_a_detached_pool_action_is_reported_once_a_worker_runs_it(
 
     served = queue.serve_once(
         tags=["sparky"], python=sys.executable, timeout_s=60.0,
-        capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
+        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
     )
     assert served is not None and served["status"] == "executed", served
 
@@ -614,7 +616,7 @@ def test_a_receipt_with_nothing_outstanding_is_reported_as_a_cache_hit(
     key = _one_json_line(capsys.readouterr())["action_key"]
     assert queue.serve_once(
         tags=["sparky"], python=sys.executable, timeout_s=60.0,
-        capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
+        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
     )["status"] == "executed"
 
     # The ending is filed; drop it, keeping the receipt, which is the state a

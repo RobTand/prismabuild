@@ -26,6 +26,8 @@ telemetry are stated, and spool filesystem qualification is isolated from the
 runner's scratch filesystem in the producer fixture.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -70,7 +72,7 @@ def _sample(*, psi: float, per_cpu: dict[int, float] | None = None):
 
 
 def _claim(queue: pool.PoolQueue, host: str, cpu_sampler):
-    return queue.claim(capacity=CAPACITY, tags=[host], cpu_tiers=CPU_TIERS,
+    return queue.claim(capacity=simulated_capacity(CAPACITY), tags=[host], cpu_tiers=CPU_TIERS,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
@@ -128,7 +130,7 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
     queue, owner = published.queue, published.owner
     template, cas_root = published.template, published.cas_root
     cpu_sampler = _sample(psi=0.)
-    claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
+    claimed = queue.claim(owner="spool-producer", capacity=simulated_capacity(CAPACITY),
                           cpu_tiers=CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     assert bool(_meta(queue, owner).get("measurement")) is measurement
@@ -462,7 +464,7 @@ def test_a_published_producer_that_fits_without_its_allowance_still_claims(
         row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, owner))
         assert adaptive_cpu.producer_allowance(row, rates)["slots"] == measured_slots
     cpu_sampler = _sample(psi=0.)
-    claimed = queue.claim(owner="spool-producer", capacity=CAPACITY,
+    claimed = queue.claim(owner="spool-producer", capacity=simulated_capacity(CAPACITY),
                           cpu_tiers=CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     assert not queue.records.item_path(pool.record_store.READY, owner).exists()

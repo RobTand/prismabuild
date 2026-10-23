@@ -1,4 +1,6 @@
 """Retiring the original lead cannot turn an admitted consumer into a priority barrier."""
+
+from admitted_queue_fixture import simulated_capacity
 import test_higher_priority_window_waits_for_existing_promises as priority
 import test_the_nonfinal_window_fences_its_advance as progress
 
@@ -49,7 +51,7 @@ def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tm
         queue.records.item(base.pool.record_store.READY, low),
     )
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='small-qualifier',
-                          capacity={'cpu': 4, 'mem_gb': 4})
+                          capacity=simulated_capacity({'cpu': 4, 'mem_gb': 4}))
     assert claimed and claimed['action_key'] == low
     assert queue.tier(base.TIER).holdings(low) == {'stage_gib': 3}
     # Existing larger-window credit gate was not bypassed to make this pass.

@@ -1,4 +1,6 @@
 """Admitted CPU integration: real export action, durable ack, existing stage/lease."""
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 import hashlib
@@ -51,7 +53,7 @@ def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1, env=None):
             checkout_root=str(tmp_path / "mover-checkout"),
             resources={"cpu": 1, "mem_gb": parent_mem, **oc.owner_demand_terms(template)},
             produced_output_template=template)
-        claimed = q.claim(owner="finite-producer", capacity=host_capacity)
+        claimed = q.claim(owner="finite-producer", capacity=simulated_capacity(host_capacity))
         assert claimed is not None and claimed["action_key"] == owner
         control = fx._broker_control(q, owner)
         po.declare_template(q.root, template)
@@ -324,7 +326,7 @@ def test_export_admission_respects_live_producer_aggregate_memory(tmp_path, pare
     source, destination, entries = prepare(spool)
     handle = spool.submit_group("b1", entries)
     assert spool.queue.ledger().holder_tokens(spool.owner)["mem_gb"] == parent_mem
-    claimed = spool.queue.claim(owner="finite-export", tags=[spool.host], capacity=capacity)
+    claimed = spool.queue.claim(owner="finite-export", tags=[spool.host], capacity=simulated_capacity(capacity))
     if not can_claim:
         assert claimed is None
         assert spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).exists()

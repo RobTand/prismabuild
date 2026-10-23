@@ -34,6 +34,8 @@ Every fixture is a temp stage root registered to a temp queue (never a real
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 import json
 import os
@@ -238,7 +240,7 @@ class _World:
         assert ready
         claimed = self.queue.claim(
             tags=["dl380g10"], owner=f"{socket.gethostname()}:1:stage",
-            capacity={"cpu": 4, "mem_gb": 16}, ready=ready)
+            capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=ready)
         assert claimed is not None and claimed["action_key"] == self.copier
         assert self.queue.tier(TIER).holdings(self.copier), (
             "control: the claim must take the mover's tier tokens")

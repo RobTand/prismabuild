@@ -17,6 +17,8 @@ Run only inside the parent's admitted CPU-only PB test action; its real CAS
 receipt is separate from the synthetic inner queue's durable claim evidence.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
 import json
@@ -215,7 +217,7 @@ class ScratchFleet:
 
     def claim(self, host, *, gpu_sampler=None):
         self.host = host
-        return self.queue.claim(owner=f"worker-{host}", capacity=CAPACITY, cpu_tiers=self.tiers,
+        return self.queue.claim(owner=f"worker-{host}", capacity=simulated_capacity(CAPACITY), cpu_tiers=self.tiers,
                                 adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY],
                                 cpu_sampler=self.cpu_sample,
                                 gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
@@ -1095,7 +1097,7 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
         replacements.append(b)
         return True
 
-    claimed = fleet.queue.claim(owner="generation-race-control", capacity=CAPACITY,
+    claimed = fleet.queue.claim(owner="generation-race-control", capacity=simulated_capacity(CAPACITY),
                                 cpu_tiers=fleet.tiers, adaptive_cpu=True, has_gpu=True,
                                 tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate,
                                 cpu_sampler=fleet.cpu_sample,

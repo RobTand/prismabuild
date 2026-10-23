@@ -1,6 +1,8 @@
 """C26 baseline REDs use native observations and existing public consumers."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import base64
 import json
 import os
@@ -254,7 +256,7 @@ def gate_receipt(tmp_path, monkeypatch, fault):
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   worker_script=ROOT / 'tools/fleet/worker.py', checkout_snapshot=snapshot,
                   resources={'cpu': 1, 'mem_gb': 1}, priority=-10)
-    item = queue.claim(tags=[], capacity={'cpu': 1, 'mem_gb': 1})
+    item = queue.claim(tags=[], capacity=simulated_capacity({'cpu': 1, 'mem_gb': 1}))
     assert item is not None, 'private native receipt action was not claimed'
     # Core publishes only after the actual argv exits zero and source is attested.
     # A checkout worker's runtime-upgrade gate is unrelated to log judgment.

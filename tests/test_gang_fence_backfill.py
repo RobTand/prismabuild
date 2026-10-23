@@ -1,6 +1,8 @@
 """Gang backfill uses real private queues; no payloads or live fleet mutations."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import pytest
 
 from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
@@ -234,7 +236,7 @@ def claim_backfill_snapshot(queue, key, tick, monkeypatch, *, cpu_sampler, gpu_s
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     tick(0.01)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
-    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+    return queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
                        has_gpu=True, tags=["gb10", "sparklina", _gang.TAG], ready=[row],
                        cpu_sampler=cpu_sampler,
                        gpu_sampler=gpu_sampler)
@@ -292,7 +294,7 @@ def token_gang_claim(queue, host, tick, monkeypatch):
     from test_gang_reservation_1517 import CAPACITY, TIERS
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
     tick(0.01)
-    row = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, has_gpu=True,
+    row = queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, has_gpu=True,
                       tags=["gb10", host, _gang.TAG], adaptive_cpu=False)
     return None if row is None else row["action_key"]
 

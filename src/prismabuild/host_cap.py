@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+from types import MappingProxyType
+import weakref
 
 from . import box_capacity, fleet_roster
 
@@ -13,6 +15,58 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 MEMBERSHIP = Path("/proc/self/cgroup")
 CAP_OVERHEAD_GB = 1
 GIB = 1024**3
+
+_CAPACITY_MINT = object()
+_CAPPED_VALUES = {}
+
+
+class CappedCapacity(Mapping[str, int]):
+    """Immutable admission evidence minted only by the live host clamp.
+
+    Values and minting authority live outside the instance. An exact-type
+    registry check refuses object.__new__, copies, pickle and subclasses.
+    """
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, values, *, _authority=None):
+        if cls is not CappedCapacity or _authority is not _CAPACITY_MINT:
+            raise TypeError("CappedCapacity requires enforce_host_cap")
+        value = super().__new__(cls)
+        identity = id(value)
+        reference = weakref.ref(value, lambda _: _CAPPED_VALUES.pop(identity, None))
+        _CAPPED_VALUES[identity] = (reference, MappingProxyType(dict(values)))
+        return value
+
+    def __getitem__(self, key):
+        require_capped_capacity(self)
+        return _CAPPED_VALUES[id(self)][1][key]
+
+    def __iter__(self):
+        require_capped_capacity(self)
+        return iter(_CAPPED_VALUES[id(self)][1])
+
+    def __len__(self):
+        require_capped_capacity(self)
+        return len(_CAPPED_VALUES[id(self)][1])
+
+    def __copy__(self):
+        raise TypeError("CappedCapacity cannot be copied")
+
+    def __deepcopy__(self, memo):
+        raise TypeError("CappedCapacity cannot be copied")
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("CappedCapacity cannot be pickled")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("CappedCapacity cannot be subclassed")
+
+
+def require_capped_capacity(value: object) -> CappedCapacity:
+    registered = _CAPPED_VALUES.get(id(value))
+    if type(value) is not CappedCapacity or registered is None or registered[0]() is not value:
+        raise TypeError("admission requires capacity from enforce_host_cap")
+    return value
 
 
 def cap_cpu_set(value: str) -> frozenset[int]:
@@ -51,7 +105,7 @@ class HostCap:
 
 
 def enforce_host_cap(capacity: Mapping[str, int], box: fleet_roster.Box | None,
-                     held, *, detail: dict | None = None) -> dict[str, int]:
+                     held, *, detail: dict | None = None) -> CappedCapacity:
     """One live clamp for offers and admission, after any observer smoothing.
 
     Capacity is a total including existing reservations. Bracket slice usage
@@ -61,7 +115,7 @@ def enforce_host_cap(capacity: Mapping[str, int], box: fleet_roster.Box | None,
     """
     result = dict(capacity)
     if box is None or "cap" not in box.entry:
-        return result
+        return CappedCapacity(result, _authority=_CAPACITY_MINT)
     evidence = {} if detail is None else detail
     try:
         cap = HostCap.parse(box.entry["cap"])
@@ -98,5 +152,5 @@ def enforce_host_cap(capacity: Mapping[str, int], box: fleet_roster.Box | None,
         evidence["host_cap"] = {"slice": cap.slice, "memory_roof_gib": roof}
     except (OSError, ValueError, TypeError) as exc:
         evidence["host_cap_refusal"] = str(exc)
-        return {kind: 0 for kind in result}
-    return result
+        return CappedCapacity({kind: 0 for kind in result}, _authority=_CAPACITY_MINT)
+    return CappedCapacity(result, _authority=_CAPACITY_MINT)

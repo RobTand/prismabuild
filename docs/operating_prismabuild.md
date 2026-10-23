@@ -5414,8 +5414,9 @@ space; add a measured numeric disk budget only after Rob approves it.
    agent execution policy. Publish the reviewed enrolling roster first.
    Enrolling hosts do not participate in publication or barrier quorums.
 2. In an idle maintenance window, disable and remove any old user supervisor
-   unit. Drain and stop the system supervisor and broker before installing
-   the cap. Install the current broker code with its normal root installer.
+   unit. Drain and stop the system supervisor, broker, client-upgrade and
+   movement-publish services before installing the cap. Stop the ancillary
+   timers during this maintenance window. Install the current broker code with its normal root installer.
    Stop the broker before the next step.
 3. Review the generated units without changing the host:
 
@@ -5426,10 +5427,14 @@ space; add a measured numeric disk budget only after Rob approves it.
 
 4. As root, run that command without `--print`. It installs the system
    supervisor as `User=rob`, the slice with `AllowedCPUs`, `MemoryMax=32G`
-   and `MemorySwapMax=0`, and a broker drop-in with the same slice and CPUs.
+   and `MemorySwapMax=0`, and broker, client-upgrade and movement-publish
+   drop-ins with the same slice and CPUs. The ancillary installers retain
+   their own memory/task limits and reuse `/etc/prismabuild/host-cap.conf`
+   when installed after the cap.
    `PB_SCOPE_PARENT` configures the broker action parent on this host.
 5. Inspect `systemctl show prismabuild-supervisor.service` and the broker's
-   unit. Confirm both run inside the cap slice. Read its
+   unit, plus the client-upgrade and movement-publish services. Confirm all
+   four run inside the cap slice. Resume the ancillary timers afterward. Read its
    `cpuset.cpus.effective`, `memory.max`, and `memory.current`, and the
    supervisor's cgroup membership. Expect `4-7,12-15` and 34359738368 bytes.
    Workers refuse claims if their live containment differs; `pbstatus` names

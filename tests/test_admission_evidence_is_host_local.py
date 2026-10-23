@@ -15,6 +15,8 @@ dead holder's tokens from whatever box sweeps; that is cross-host evidence and
 stays on the mount. The ownership tests for it are elsewhere
 (``test_pool_ambiguous_holder_recovery``, ``test_pool_holder_contradiction``).
 """
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import census as fleet_census
 import pbstatus
 import json
@@ -64,7 +66,7 @@ def cpu_rig(tmp_path, monkeypatch):
         return key
 
     def claim():
-        return queue.claim(capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1},
+        return queue.claim(capacity=simulated_capacity({'cpu': 2, 'mem_gb': 4, 'gpu': 1}),
                            cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
     def record(key, cpu):

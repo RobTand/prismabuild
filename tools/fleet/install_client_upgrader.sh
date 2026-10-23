@@ -54,6 +54,10 @@ Unit=prismabuild-client-upgrade.service
 WantedBy=timers.target
 UNIT
 chmod 0644 /etc/systemd/system/prismabuild-client-upgrade.{service,timer}
+if [ -f /etc/prismabuild/host-cap.conf ]; then
+    install -d /etc/systemd/system/prismabuild-client-upgrade.service.d
+    install -m 0644 /etc/prismabuild/host-cap.conf /etc/systemd/system/prismabuild-client-upgrade.service.d/10-host-cap.conf
+fi
 systemctl daemon-reload
 systemctl enable --now prismabuild-client-upgrade.timer
 systemctl start prismabuild-client-upgrade.service

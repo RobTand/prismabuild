@@ -19,6 +19,8 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 from pathlib import Path
 import sys
@@ -131,7 +133,7 @@ def box(tmp_path: Path, monkeypatch):
                                    "scope_id": record["scope_unit"], "complete": True})
 
     def claim():
-        return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
+        return _key_of(queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
                                    tags=[pool.socket.gethostname()],
                                    cpu_sampler=cpu_sampler,

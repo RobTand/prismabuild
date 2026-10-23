@@ -1,6 +1,8 @@
 """Versioned consumer CLI contracts use private queues and CAS objects (#1892)."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import multiprocessing
 import os
@@ -62,7 +64,7 @@ def consumer_action(world, name, status="executed", action_exit=None, *, with_re
     world.actions.publish(key, cas_root=cas.root, checkout_root=checkout, tags=["x86"],
                           resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
     if status != "waiting":
-        world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+        world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
         world.queue.finish(key, status=status, detail={
             "status": status, "returncode": 0 if receipt else 1,
             "action_returncode": action_exit if action_exit is not None else 0 if receipt else 7,
@@ -204,7 +206,7 @@ def test_withdraw_parser_contract(consumer_world):
 
 def test_a_running_withdrawal_stays_withdrawn_until_cleanup(consumer_world, capsys):
     key, _ = consumer_action(consumer_world, "running-withdraw", "waiting")
-    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     assert pbrun.main(["--withdraw", key, "--reason", "stop", "--json"]) == 0
     capsys.readouterr()
     assert pbwait.main(["--endings", "--wait-s", "0", key]) == 1
@@ -246,7 +248,7 @@ def test_failed_ending_can_carry_its_exact_published_receipt(consumer_world, cap
 
 def test_concluded_withdrawal_verifies_its_attempt_logs(consumer_world, capsys):
     key, _ = consumer_action(consumer_world, "concluded-withdraw", "waiting")
-    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
     consumer_world.queue.finish(key, status="withdrawn", detail={
         "returncode": 143, "stdout": "partial output\n", "stderr": "stopped\n"})
@@ -301,7 +303,7 @@ def test_terminal_directory_binding_is_required(
 def test_malformed_retained_withdrawal_is_isolated(consumer_world, capsys, corruption):
     key, _ = consumer_action(consumer_world, "corrupt-withdrawal", "waiting")
     queue = consumer_world.queue
-    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     queue.withdraw(key, reason="stop", signal_child=False)
     queue.finish(key, status="withdrawn", detail={
         "returncode": 143, "stdout": "partial output\n", "stderr": "stopped\n"})
@@ -396,7 +398,7 @@ def test_claimed_attempt_requires_scope_and_container_cleanup(
 
 def test_until_cleaned_keeps_the_ending_at_the_deadline(consumer_world, capsys):
     key, _ = consumer_action(consumer_world, "cleanup-pending", "waiting")
-    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
     assert pbwait.main(["--endings", "--until", "cleaned", "--wait-s", "0", key]) == 75
     body = json.loads(capsys.readouterr().out)
@@ -419,7 +421,7 @@ def test_until_cleaned_returns_for_a_ready_withdrawal(consumer_world, capsys):
 
 def test_until_cleaned_rechecks_through_the_existing_waiter(consumer_world, monkeypatch, capsys):
     key, _ = consumer_action(consumer_world, "cleanup-arrives", "waiting")
-    consumer_world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    consumer_world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     consumer_world.queue.withdraw(key, reason="stop", signal_child=False)
     original = pbwait._look_once_checked
     observed = []
@@ -650,7 +652,7 @@ def review_action(world, name, status, layout, *, damage_payload=False):
     key = action["action_key"]
     world.actions.publish(key, cas_root=cas.root, checkout_root=checkout, tags=["x86"],
                           resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
-    world.queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    world.queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
     world.queue.finish(key, status=status, detail={
         "status": status, "returncode": 0 if status == "executed" else 1,
         "action_returncode": 0 if status == "executed" else 7,

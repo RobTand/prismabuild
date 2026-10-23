@@ -70,6 +70,9 @@ STAGE_KIND = f"stage_gib@{TIER}"
 FORBIDDEN_ROOTS = ("/stage", "/ram", "/mnt/shared")
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def _key(label: str) -> str:
     return hashlib.sha256(f"bench-1151:{label}".encode()).hexdigest()
 
@@ -213,7 +216,7 @@ class _Reclaim:
             raise SystemExit(f"{key[:12]} is not queued")
         claimed = self.queue.claim(
             tags=["dl380g10"], owner=f"{socket.gethostname()}:1:bench",
-            capacity={"cpu": 4, "mem_gb": 16}, ready=ready)
+            **capped_simulation_parameters(self.queue, {"cpu": 4, "mem_gb": 16}), ready=ready)
         if claimed is None or claimed.get("action_key") != key:
             raise SystemExit(f"{key[:12]} did not claim: {claimed}")
         return claimed

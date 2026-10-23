@@ -34,6 +34,8 @@ request and the copy's argv never named -- so the tier's offer is what moves.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import sys
 
@@ -460,7 +462,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
         assert row["residency"]["range_end_bytes"] == (ordinal + 1) * 2 * GIB
     # The tier cannot seat a 400 reservation on the 130 it holds: the row
     # waits, unchanged, rather than claiming against a price it never sealed.
-    assert queue.claim(capacity={"cpu": 32, "mem_gb": 48},
+    assert queue.claim(capacity=simulated_capacity({"cpu": 32, "mem_gb": 48}),
                        tags=["dl380g10"]) is None
 
     # The next cycle measures a 65.7 ceiling that no receipt can price a
@@ -470,7 +472,7 @@ def test_a_republished_mover_priced_above_the_tier_keeps_its_sealed_resources(
     record = _cycle(queue)
     assert record["fill_source"] == "measured-probing"
     assert record["tokens"][FILL] == int(65.7) + 400
-    claimed = queue.claim(capacity={"cpu": 32, "mem_gb": 48},
+    claimed = queue.claim(capacity=simulated_capacity({"cpu": 32, "mem_gb": 48}),
                           tags=["dl380g10"])
     assert claimed is not None
     assert claimed["resources"][KIND] == 400

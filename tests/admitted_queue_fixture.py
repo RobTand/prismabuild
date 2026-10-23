@@ -8,9 +8,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from prismabuild import pool
+from prismabuild import pool, host_cap
 
 _OMITTED = object()
+
+
+def simulated_capacity(value):
+    """Mint explicit fixture observations through the real uncapped clamp."""
+    if value is None:
+        return None
+    if type(value) is host_cap.CappedCapacity:
+        return host_cap.require_capped_capacity(value)
+    return host_cap.enforce_host_cap(value, None, {})
 
 
 class AdmittedQueueFixture:
@@ -40,9 +49,9 @@ class AdmittedQueueFixture:
         return self.queue.publish(*args, resources=declared, **kwargs)
 
     def claim(self, *args, capacity=_OMITTED, **kwargs):
-        observed = dict(self.capacity) if capacity is _OMITTED else capacity
+        observed = simulated_capacity(self.capacity) if capacity is _OMITTED else capacity
         return self.queue.claim(*args, capacity=observed, **kwargs)
 
     def serve_once(self, *args, capacity=_OMITTED, **kwargs):
-        observed = dict(self.capacity) if capacity is _OMITTED else capacity
+        observed = simulated_capacity(self.capacity) if capacity is _OMITTED else capacity
         return self.queue.serve_once(*args, capacity=observed, **kwargs)

@@ -1,5 +1,7 @@
 """A publication ending stops a campaign while real queue occupancy remains."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
 import errno
@@ -23,14 +25,14 @@ def _campaign(tmp_path, monkeypatch, clock, successor_state):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     patch_store(monkeypatch, client=pbrun, root=tmp_path)
     _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
     assert original is not None
     clock[0] += 1
     _publish(queue)
     successor_generation = _ready(queue)["published_unix"]
     _end_claim(queue, original, "finish_retry", clock)
     if successor_state != "ready":
-        successor = queue.claim(owner="successor", capacity=DEMAND)
+        successor = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
         assert successor is not None
         assert successor["published_unix"] == successor_generation
         if successor_state == "cleanup":

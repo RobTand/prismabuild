@@ -19,6 +19,8 @@ Nothing here touches a real pool, a real device, or another box.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
 import threading
@@ -161,7 +163,7 @@ def test_the_probe_is_sized_for_the_oldest_ready_mover(
     FleetClock(source=lambda: next(clock)).install(monkeypatch, scope="pool")
     _mover(queue, "a", 100)
     _cycle(queue)
-    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == "a" * 64
     _mover(queue, "b", 210)
     _mover(queue, "c", 50)

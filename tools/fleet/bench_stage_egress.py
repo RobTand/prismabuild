@@ -71,6 +71,9 @@ ENTRY_BYTES = 1024
 DIGEST = "a" * 64
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def _key(label: str) -> str:
     return hashlib.sha256(f"bench-988:{label}".encode()).hexdigest()
 
@@ -119,7 +122,7 @@ def land_range(queue: pool.PoolQueue, stage: Path, entries_wanted: int) -> None:
                              "range_start_bytes": 0,
                              "range_end_bytes": storage_tiers.GIB},
                   max_attempts=1, retry_safe=False)
-    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    claimed = queue.claim(**capped_simulation_parameters(queue, {"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
     if claimed is None or claimed["action_key"] != LANDED_MOVER:
         raise SystemExit("the landed mover could not be claimed")
     queue.record_move(LANDED_MOVER, {
