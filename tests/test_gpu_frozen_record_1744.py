@@ -10,6 +10,7 @@ import pytest
 from prismabuild import action_client, action_result, core as pb, pool, endings
 from gpu_evidence_fixtures import frozen_gpu, worker_peer
 from test_gpu_review_r2 import generic_gpu, _RealGuardGpu, _job, MIB  # noqa: F401
+from test_pbwait import pbwait
 from test_resource_broker import authority, monitored  # noqa: F401
 
 
@@ -50,11 +51,12 @@ def test_lost_reply_uses_committed_record_across_readers(generic_gpu, monkeypatc
         result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
                                      resource_demand=queue.demand_of(item))
         assert result['receipt']['resource_telemetry']['gpu_use'] == ('used' if state == 'used' else 'unobserved')
+    stdout = '' if state == 'zero' else json.dumps(result) + '\n'
     telemetry = {} if state == 'absent' else {'gpu_record': captured[0]}
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
         'complete': True, 'resource_scope': {'telemetry': telemetry}})
     path = queue.finish(item['action_key'], status='failed' if state == 'zero' else 'executed',
-        detail={'returncode': 1 if state == 'zero' else 0, 'stdout': '', 'stderr': ''}, claim_snapshot=item)
+        detail={'returncode': 1 if state == 'zero' else 0, 'stdout': stdout, 'stderr': ''}, claim_snapshot=item)
     terminal = json.loads(path.read_text())
     expected = 'unobserved' if state == 'absent' else state
     assert terminal['detail']['gpu_use'] == expected
@@ -68,7 +70,11 @@ def test_lost_reply_uses_committed_record_across_readers(generic_gpu, monkeypatc
                                             generation=item['published_unix']) == (1 if state == 'zero' else 0)
     verified = action_result.read_verified_ending_result(queue, item['action_key'],
         published_unix=item['published_unix'], attempt=1)
-    assert verified['record']['detail']['gpu_use'] == expected
+    assert verified['verified']
+    assert (verified['receipt_sha256'] is None) == (state == 'zero')
+    row = pbwait._from_ending(queue, (path, terminal))
+    assert row['succeeded'] == (state != 'zero')
+    assert row['status'] == terminal['status']
     if state == 'absent':
         assert terminal['detail']['gpu_use_reason'] == 'final_observation_failed'
 
