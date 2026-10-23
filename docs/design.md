@@ -4180,10 +4180,19 @@ from before the field offers neither the tag nor the answers, so
 interpreter-naming work waits out a rolling publish rather than exiting 127
 on a box that cannot run it (fail closed, the #714 fence).
 
-**The inventory is a lookup, not a scan.** The worker's offer answers for
-exactly the absolute paths the ready items name — one `stat` per distinct
-path per poll — and publishes the present, executable ones as `interpreters`
-on the offer. No configured roots, no directory walk, and nothing anywhere
+**The inventory is a lookup, not a scan.** Each offer publication rechecks
+up to `INTERPRETER_INVENTORY_LIMIT` (32) recently requested interpreter paths
+and publishes executable ones as `interpreters`, with negative answers in
+`interpreters_absent` (#2014). The host-local `interpreter-inventory.json`
+stores at most 32 names oldest first and a rotation cursor under the existing
+per-uid offer-publication lock. An overflowing READY snapshot selects the next
+32 distinct paths in sorted circular order after that cursor, then advances it.
+Every path in a stable N-path snapshot gets a fresh answer within ceil(N/32)
+publications of that snapshot. Sibling loops share the cursor; empty or smaller
+snapshots preserve it. Selected paths refresh their retained positions and evict
+the oldest names. Empty READY and drain publications retain and re-stat saved
+names too. No saved name preserves a stale positive or negative answer.
+No configured roots, no directory walk, and nothing anywhere
 names a project's venvs: PB core stays ignorant of PQ. An offer with no
 `interpreters` field is unknown, never capable, and matches no
 interpreter-naming item.
@@ -4726,7 +4735,8 @@ poll republishes `workers/<host>.json` with `state: "draining"`, the gate's
 `owner`, `reason` and `changed_unix` (each bounded and omitted when malformed),
 its normal tags and the declared `capacity` the last open poll published
 (including a raised live spool figure), and a zero `observed_capacity` on every
-declared kind. The declared capability keeps a submission that is merely waiting
+declared kind. Drain publications also retain and re-stat saved interpreter names.
+The declared capability keeps a submission that is merely waiting
 on the drain queueable rather than refused; the zero live figure keeps the two
 bounded placement preferences from waiting on a box that will not claim, and no
 admission path reads either field -- the loop's own gate check is what stops it
@@ -6456,6 +6466,22 @@ guest retry cap. Explicit hostname/class tags keep their existing placement.
 A CPU-only host never waits indefinitely for another host. Peer reads remain
 once per host per pass; #1262 yields charge that view so it cannot leave more
 rows than a peer fits.
+
+For portable CPU work, a LIVE CPU-only host that matches every other
+requirement but has an UNKNOWN interpreter answer also counts as a possible
+CPU host (#2014). An idle GPU host may admit the row as a proven restartable
+guest under the idle checks above. Otherwise it leaves the row READY with
+`deferred_for_unresolved_cpu_host`; its `cpu_host` evidence names the host,
+interpreter and `interpreter_presence: "unknown"`. This wait has no timer and
+grants no claim or reservation. It ends on interpreter evidence: PRESENT
+resumes #1262's fit and pass-on rules; ABSENT excludes the host. Capacity or
+an earlier denial cannot resolve an UNKNOWN interpreter. A stale or
+disappeared host also releases the wait. An explicit `state: "draining"` excludes
+the host from CPU-host deferral even when its interpreter answer is UNKNOWN;
+that host cannot claim the row. Tagged/pinned rows and GPU rows keep
+their existing placement. Actual capability enforcement still requires a
+locally executable interpreter, and ordinary offer matching still requires
+PRESENT. UNKNOWN relaxes only this advisory placement decision.
 
 These #1929 contracts describe source behavior. Runtime publication and the
 live guest/GPU canary proof remain separate acceptance steps. The scoped

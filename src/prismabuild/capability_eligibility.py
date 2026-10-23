@@ -1,16 +1,21 @@
 """Host capability evidence from advisory offers and live observations."""
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+import json
 import os
 from pathlib import Path
 import shutil
 from types import MappingProxyType
 from typing import Protocol
 
-from . import container_images, contracts, dependency_digest, local_dependencies
+from . import container_images, contracts, dependency_digest, immutable_files, local_dependencies
+
+
+INTERPRETER_INVENTORY_LIMIT = 32
 
 
 class Presence(str, Enum):
@@ -151,11 +156,41 @@ class LiveInterpreters:
 
 
 
-def observe_interpreters(items: Sequence[object]) -> InterpreterAnswers:
+def observe_interpreters(
+    items: Sequence[object], *, inventory_path: Path | None = None,
+) -> InterpreterAnswers:
+    """Recheck requested paths; the offer publisher serializes the shared names.
+
+    The host-local inventory retains bounded names and a rotation cursor.
+    Siblings share progress; no saved executable answer grants presence.
+    """
     paths = sorted({
         str(item.get("interpreter"))
         for item in items
         if isinstance(item, dict) and isinstance(item.get("interpreter"), str)})
+    previous, cursor = [], None
+    if inventory_path is not None:
+        try:
+            saved = json.loads(immutable_files.read_replaced_record(
+                inventory_path, where="interpreter inventory", max_bytes=256 * 1024))
+            previous = saved.get("paths") if isinstance(saved, dict) else None
+            cursor = saved.get("cursor") if isinstance(saved, dict) else None
+        except (OSError, ValueError, immutable_files.PrismaBuildError):
+            previous = None
+        previous = (previous if isinstance(previous, list)
+                    and len(previous) <= INTERPRETER_INVENTORY_LIMIT
+                    and all(isinstance(path, str) for path in previous) else [])
+        cursor = cursor if isinstance(cursor, str) else None
+    if len(paths) > INTERPRETER_INVENTORY_LIMIT:
+        # Advance only overflowing snapshots: an empty or smaller sibling
+        # publication must not reset progress through a stable READY set.
+        start = bisect_right(paths, cursor) if cursor is not None else 0
+        paths = (paths[start:] + paths[:start])[:INTERPRETER_INVENTORY_LIMIT]
+        cursor = paths[-1]
+    paths = [*dict.fromkeys([path for path in previous if path not in paths] + paths)][
+        -INTERPRETER_INVENTORY_LIMIT:]
+    if inventory_path is not None:
+        immutable_files.write_json_atomic(inventory_path, {"paths": paths, "cursor": cursor})
     host = LiveInterpreters()
     present, absent = set(), set()
     for path in paths:
@@ -444,8 +479,12 @@ class OfferCapabilities:
         return cls(ImageAnswers.from_offer(offer), InterpreterAnswers.from_offer(offer),
                    DependencyAnswers.from_offer(offer))
 
-    def check(self, required: CapabilityRequirements, *, clock: Callable[[], float]) -> ImageAccepted | CapabilityRefusal:
-        return _check_capabilities(required, self, clock=clock)
+    def check(
+        self, required: CapabilityRequirements, *, clock: Callable[[], float],
+        allow_unknown_interpreter: bool = False,
+    ) -> ImageAccepted | CapabilityRefusal:
+        return _check_capabilities(required, self, clock=clock,
+                                   allow_unknown_interpreter=allow_unknown_interpreter)
 
     def offer_fields(self) -> dict[str, object]:
         return {**self.images.offer_fields(), **self.interpreters.offer_fields(),
@@ -511,14 +550,17 @@ class LiveCapabilities:
 
 def _check_capabilities(
     required: CapabilityRequirements, host: OfferCapabilities | LiveCapabilities, *, clock: Callable[[], float],
+    allow_unknown_interpreter: bool = False,
 ) -> ImageAccepted | CapabilityRefusal:
     interpreter = required.interpreter
     if isinstance(interpreter, CapabilityRefusal):
         return interpreter
     if contracts.INTERPRETER_TAG in required.tags and interpreter is None:
         return CapabilityRefusal("interpreter_requirement_missing", {"tags": list(required.tags)})
-    if interpreter is not None and host.interpreters.answer(interpreter) is not Presence.PRESENT:
-        return CapabilityRefusal("interpreter_not_present", {"interpreter": interpreter})
+    if interpreter is not None:
+        answer = host.interpreters.answer(interpreter)
+        if answer is Presence.ABSENT or (answer is Presence.UNKNOWN and not allow_unknown_interpreter):
+            return CapabilityRefusal("interpreter_not_present", {"interpreter": interpreter})
     local = required.local_paths
     if isinstance(local, CapabilityRefusal):
         return local
