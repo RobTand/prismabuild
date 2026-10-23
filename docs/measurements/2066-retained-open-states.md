@@ -15,9 +15,10 @@ file now constructs snapshots before monkeypatching; it is not edited here.
 #2135's earlier acceptance-file dependency does not require another feature.
 
 **Historical boundary:** all runtime responses, identity checks, access attempts
-and synthetic results below, except the explicitly labelled “Current delivery
-verification” section, are attributed history retained from the candidate,
-not checks newly performed by this delivery. In those sections, “fresh”, “current”,
+and synthetic results below, except the explicitly labelled “Initial delivery
+verification” and “O3 repair verification” sections, are attributed history
+retained from the candidate, not checks newly performed by this delivery.
+In those sections, “fresh”, “current”,
 “this session” and “follow-up” refer only to the earlier pass being described.
 The earlier recursion finding is superseded by the supplied fixture repair;
 it is not a current impossibility claim. Retaining a transcript or evidence
@@ -396,10 +397,64 @@ note above remains conditional: affected client/server versions and a specific
 upstream correction are unknown. Do not publish a kernel diagnosis or upgrade
 recommendation without the missing discriminating evidence.
 
-## Current delivery verification (synthetic only)
+## O3 repair verification (synthetic only)
 
-The combined command below was newly completed on both arms after adopting
-the candidate, using the supplied corrected acceptance file unchanged:
+Independent review of `fbba5884f56e016bb4aec7466182b8dbbdb956b6`
+found that the initial passing suite below missed an explicit O3 requirement:
+malformed NFS operation rows were silently discarded, and two empty operation
+maps could yield healthy zero RPCs. Retained stdout from reviewer operations
+`a05389d62a0cf84dba28988653f5642e5a4296db1f835cb53a96cd53de905350`
+(x86) and
+`46b5bd731089db86e772b80ae38a4ead12fbb72a046f4a467a5e8e0684a022a0`
+(ARM) was read in this repair: both showed `window_s=10.0`, zero RPC counts
+and an empty `by_op` after malformed operation inputs. Those are synthetic
+failure observations, not production idle measurements.
+
+The existing parser now rejects a selected NFS snapshot with missing/empty
+per-operation data or any malformed row, even if other rows parse correctly.
+Selection happens before rejection, so unusable NFS data cannot fall back to
+a parent or autofs trigger; invalid data on an unrelated mount does not poison
+the selected mount. Empty maps also cannot pass `_same_population`. Rejection
+uses the existing unavailable path: unknown transport, `rpc: null`,
+`window_s: 0`, explanatory note, no attribution and a cleared baseline. The
+next usable snapshot rebaselines; subsequent same-population rates resume.
+Valid unchanged counters still report genuine zero activity. No fields,
+acceptance files, compatibility goldens or waiter behavior changed.
+
+Before the parser repair, the focused regression command
+`python -m pytest tests/test_mount_latency.py -q -k unusable_nfs --basetemp="$TMPDIR/pytest"`
+reported **16 failed, 1 passed, 31 deselected** on x86. Its retained failures
+cover unavailable RPC evidence/notes and unwanted mount fallback:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"ed09ffe3218fb32775d7ba0d9211bfeb970977e3b40579c17aae00b6b2aac882","size":48348}},"operation":"e590643fc06b9cf899c06c287da1d2a972159a7fc09f9950ed99432a03a88d8f","receipt":"817bab177f39320af04b4c0b646c274132cc780c0a7862fee3808f3cb8fb5eb3"}]
+
+Final combined validation, with 17 added regression cases in the existing
+mount-latency test file, completed on both arms:
+
+```sh
+python -m pytest tests/test_mount_latency_retained_states.py tests/test_mount_latency.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"
+```
+
+- x86 / Python 3.14.4: **168 passed in 138.11 s**, exit 0.
+- ARM / Python 3.12.3: **168 passed in 40.47 s**, exit 0.
+
+Both retained stdout artifacts were read. Regressions exercise active and
+passive modes through the binary procfs reader, initial repeated invalid
+snapshots, interrupted windows and recovery, missing/empty/short/nonnumeric/
+negative or partially malformed rows, plus explicit-text mount selection.
+The immutable acceptance file is unchanged. This qualifies the diagnostic
+repair, not production state retention or mitigation; all O4 evidence gaps,
+safety limits and conditional external handoff above remain unchanged.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"0d998b44b5289db4de374fa26efffbf47ac7a482bc802a07776a35b96896a417","size":2237}},"operation":"80af1c2607b53cb8132ff5f7617522927b511c8b6e5d445e7ec67e50dc538c46","receipt":"dfeb4feafe143569871148aaddc03dd87cacea889df7144e4d2133940a143d0b"}]
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"328210225dd0f8cc1956c7182b509aa716c86dc3fca220be62d47692affc6a65","size":2238}},"operation":"86c6b091da79818cbc4bcfa9f1156a56123e2426aad6b6a14e9d5b0d997649d9","receipt":"eda30dfda828a6fcd7ba833e63643461995f9cce6f63b213e23249c7637b8f8f"}]
+
+## Initial delivery verification (synthetic only)
+
+The combined command below was initially completed on both arms after adopting
+the candidate, using the supplied corrected acceptance file unchanged. These
+passes did not cover the unusable-operation defect repaired above:
 
 ```sh
 python -m pytest tests/test_mount_latency_retained_states.py tests/test_mount_latency.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"

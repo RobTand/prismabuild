@@ -346,7 +346,13 @@ can report same-population RPC deltas, including raw per-operation `ops`,
 options, age, operation-set changes or counter regression invalidate the
 window rather than create a rate across populations. Unreadable, oversized,
 incomplete or unmatched mountstats yields unknown transport/no RPC evidence,
-not a healthy zero. A local filesystem has no NFS RPC leg. Per-operation RPC
+not a healthy zero. A missing/empty NFS operation table or any malformed
+operation row also rejects the selected snapshot, including partially valid
+tables. The unavailable sample clears the rate window; the next usable sample
+only rebaselines, and a subsequent same-population sample resumes rates. Do
+not confuse this with valid unchanged counters, which can report zero activity.
+An unusable NFS table does not fall back to a parent mount or autofs trigger.
+A local filesystem has no NFS RPC leg. Per-operation RPC
 counts are not retained-state counts: RPC activity alone cannot prove which
 open owner or filehandle remains retained.
 

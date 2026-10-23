@@ -189,12 +189,12 @@ def read_mountstats(target: Path, text: str | None = None) -> _Mount | None:
     The longest matching mount point wins, so a path under a submount is
     attributed to the submount rather than to whatever it is nested in.  An
     ``autofs`` trigger line names the same mount point as the NFS mount behind
-    it and carries no statistics; the record with per-op data is preferred.
+    it and carries no statistics; the NFS record is preferred even if its
+    operation data is unusable, rather than falling back to the trigger.
 
-    Returns ``None`` when the path is on no listed mount -- which is the
-    correct answer on the box that *is* the server and reaches the same bytes
-    as local ZFS, and is why this fleet's three boxes must never be given one
-    symmetric latency number.
+    Returns ``None`` if the read is unavailable/incomplete, no mount matches,
+    or the selected NFS mount has empty or malformed per-operation data.
+    Matching non-NFS mounts retain their identity without an RPC observation.
     """
 
     if text is None:
@@ -208,27 +208,29 @@ def read_mountstats(target: Path, text: str | None = None) -> _Mount | None:
             return None
     wanted = str(target)
     best: _Mount | None = None
+    best_ops_valid = True
     current: _Mount | None = None
+    current_ops_valid = True
     in_per_op = False
 
-    def consider(candidate: _Mount | None) -> None:
-        nonlocal best
+    def consider(candidate: _Mount | None, ops_valid: bool) -> None:
+        nonlocal best, best_ops_valid
         if candidate is None or not candidate.mount_point:
             return
         point = candidate.mount_point
         if not (wanted == point or wanted.startswith(point.rstrip("/") + "/")):
             return
-        if best is None:
+        # Resolve the actual mount before validating its counters. Otherwise
+        # an unusable NFS table could fall back to a parent or autofs trigger.
+        if best is None or (len(point), candidate.is_nfs, bool(candidate.ops)) > (
+                len(best.mount_point), best.is_nfs, bool(best.ops)):
             best = candidate
-            return
-        # Longer mount point first; among equals, the one carrying statistics.
-        if (len(point), bool(candidate.ops)) > (len(best.mount_point),
-                                                bool(best.ops)):
-            best = candidate
+            best_ops_valid = ops_valid
 
     for line in text.splitlines():
         if line.startswith("device "):
-            consider(current)
+            consider(current, current_ops_valid)
+            current_ops_valid = True
             in_per_op = False
             parts = line.split()
             current = _Mount()
@@ -262,26 +264,36 @@ def read_mountstats(target: Path, text: str | None = None) -> _Mount | None:
             # and put mean round-trip time at 266 *seconds*, which is the kind
             # of number that discredits an instrument rather than a mount.
             in_per_op = True
-        elif in_per_op and ":" in stripped:
-            name, _, rest = stripped.partition(":")
+        elif in_per_op and stripped:
+            name, separator, rest = stripped.partition(":")
             name = name.strip()
-            if not name.replace("_", "").isalpha():
+            if not separator or not name.replace("_", "").isalpha():
+                current_ops_valid = False
                 continue
             values = rest.split()
             if len(values) < len(_OP_FIELDS):
+                current_ops_valid = False
                 continue
             try:
                 numbers = [int(v) for v in values[:len(_OP_FIELDS)]]
             except ValueError:
+                current_ops_valid = False
+                continue
+            if any(number < 0 for number in numbers):
+                current_ops_valid = False
                 continue
             current.ops[name] = dict(zip(_OP_FIELDS, numbers))
-    consider(current)
+    consider(current, current_ops_valid)
+    if best is not None and best.is_nfs and (not best_ops_valid or not best.ops):
+        # A partial/empty table is not evidence of healthy zero RPC activity.
+        return None
     return best
 
 
 def _same_population(before: _Mount, after: _Mount) -> bool:
     """Never calculate a window across mount identities or counter resets."""
     return (before.is_nfs and after.is_nfs
+            and bool(before.ops) and bool(after.ops)
             and (before.device, before.mount_point, before.fstype, before.options)
             == (after.device, after.mount_point, after.fstype, after.options)
             and after.age_s >= before.age_s
@@ -865,7 +877,9 @@ class MountSampler:
             record["rpc"] = None
             record["window_s"] = 0.0
             if after is None:
-                record["note"] = "mountstats unavailable (unreadable, oversized, incomplete or no matching mount)"
+                record["note"] = ("mountstats unavailable (unreadable, oversized, "
+                                  "incomplete, unusable NFS operation data or "
+                                  "no matching mount)")
             record["attribution"] = None
             self._previous, self._previous_at = after, now
             return record
