@@ -45,6 +45,42 @@ METADATA = CPU_METADATA
 _UNREAD = object()
 
 
+#: Tolerance on the projected-cost comparison. A learned cheap cost only
+#: admits more; the declared demand is the conservative side (#1721).
+PROJECTED_CPU_TOLERANCE = 0.01
+
+
+def projected_cpu_fits(*, busy_cpus: object, pending_cpu_cost: object,
+                       active_cpu_cost: object, requested_cpu_cost: object,
+                       cpu_count: object) -> bool:
+    """One projected-cost rule for CPU admission and its callers (#1721).
+
+    ``True`` when the host keeps headroom for ``requested_cpu_cost`` beside
+    its holders: ``max(busy + pending, active) + requested <= cpus``. Every
+    term is a declared or measured cost, never a token count. ``False`` on
+    any unreadable or non-finite term: unknown costs are unknown, never zero.
+    """
+    try:
+        terms = (busy_cpus, pending_cpu_cost, active_cpu_cost,
+                 requested_cpu_cost, cpu_count)
+        if any(isinstance(term, bool) or not isinstance(term, (int, float))
+               for term in terms):
+            return False
+        busy = float(busy_cpus)
+        pending = float(pending_cpu_cost)
+        active = float(active_cpu_cost)
+        cost = float(requested_cpu_cost)
+        total = float(cpu_count)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    for value in (busy, pending, active, cost, total):
+        if not math.isfinite(value) or value < 0:
+            return False
+    if total <= 0:
+        return False
+    return max(busy + pending, active) + cost <= total + PROJECTED_CPU_TOLERANCE
+
+
 def read_json(path):
     try:
         value = json.loads(Path(path).read_text())
@@ -2094,7 +2130,10 @@ class Controller:
                            and not idle['exceeds'])
         # Unbounded legacy work already proved the same exclusive idle host.
         if (fresh and not unbounded_cpu and not full_width_idle
-                and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
+                and not projected_cpu_fits(
+                    busy_cpus=sample['busy_cpus'], pending_cpu_cost=pending,
+                    active_cpu_cost=active_cost, requested_cpu_cost=cost,
+                    cpu_count=len(self.cpus))):
             return refuse("projected_cpu_cost", pending_cpu_cost=pending,
                           active_cpu_cost=active_cost, requested_cpu_cost=cost)
         available = self.ledger.available().get('cpu', 0)
