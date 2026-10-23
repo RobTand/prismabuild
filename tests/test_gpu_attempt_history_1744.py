@@ -104,6 +104,8 @@ def test_broker_evidence_read_requires_protected_ancestry_and_attempt(generic_gp
     record = {'action_key': action['action_key'], 'scope_id': scope,
               'nonce': 'b' * 32 if fault == 'attempt' else os.environ[pb.ACTION_NONCE_ENV],
               'resource_telemetry': evidence, 'deadline_monotonic': 1.0}
+    (directory / (scope + '.lock')).write_bytes(b'')
+    (directory / (scope + '.lock')).chmod(0o444)
     path.write_text('x' * 65537 if fault == 'oversize' else json.dumps(record))
     path.chmod(0o444)
     if fault == 'symlink':

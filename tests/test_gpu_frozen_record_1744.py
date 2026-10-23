@@ -289,3 +289,52 @@ def test_recordless_projection_cannot_establish_gpu_use(state):
         pb.gpu_execution_judgment(raw)
     judgment = pb.gpu_execution_judgment(raw.get('gpu_record'))
     assert (judgment['gpu_use'], judgment['gpu_use_reason']) == ('unobserved', 'final_observation_failed')
+
+
+def test_readonly_gpu_publication_descriptor_cannot_take_an_exclusive_ofd_lock(tmp_path):
+    import fcntl
+    import struct
+    path = tmp_path / 'publication.lock'
+    path.write_bytes(b'')
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        with pytest.raises(OSError):
+            fcntl.fcntl(descriptor, fcntl.F_OFD_SETLK,
+                        struct.pack('hhqqii', fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0, 0))
+        fcntl.fcntl(descriptor, fcntl.F_OFD_SETLK,
+                    struct.pack('hhqqii', fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0, 0))
+    finally:
+        os.close(descriptor)
+
+
+def test_a_payload_read_lock_can_only_refuse_commit_without_blocking_guard(monitored, monkeypatch):
+    import fcntl
+    import struct
+    a, backend, rows, _, monitor = monitored
+    request, record, path = rows[0]
+    worker_peer(a, record, monkeypatch)
+    a.gpu_evidence_dir.mkdir()
+    lock = a.gpu_evidence_dir / (record['scope_id'] + '.lock')
+    lock.write_bytes(b'')
+    # Root owns this file in production. Keep it writable for the simulated
+    # broker UID until its open; the broker restores 0444 before locking.
+    descriptor = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.fcntl(descriptor, fcntl.F_OFD_SETLK,
+                    struct.pack('hhqqii', fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0, 0))
+        with pytest.raises(BlockingIOError):
+            monitor.observe_gpu(record['scope_id'], time.monotonic() + .2)
+        assert not a.records[record['scope_id']].get('gpu_record')
+        assert monitor.sample_lock.acquire(blocking=False)
+        monitor.sample_lock.release()
+        assert a.lock.acquire(blocking=False)
+        a.lock.release()
+        # Evidence readers' shared locks are compatible with payload readers.
+        other = os.open(lock, os.O_RDONLY)
+        try:
+            fcntl.fcntl(other, fcntl.F_OFD_SETLK,
+                        struct.pack('hhqqii', fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0, 0))
+        finally:
+            os.close(other)
+    finally:
+        os.close(descriptor)

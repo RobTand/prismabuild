@@ -35,6 +35,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -6237,8 +6238,7 @@ def _unobserved_gpu_use(*, bind_scope: bool = False) -> GpuUseJudgment:
 
 def gpu_execution_judgment(record: Mapping[str, object] | None, *,
                            action_key: str | None = None, nonce: str | None = None,
-                           scope_id: str | None = None,
-                           ) -> GpuUseJudgment:
+                           scope_id: str | None = None) -> GpuUseJudgment:
     """The sole GPU judgment, from a frozen attempt record or its absence.
 
     Absence after the commit deadline is final unobserved evidence. Live scope
@@ -6315,8 +6315,13 @@ def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, obje
             if info.st_uid != 0 or info.st_mode & 0o022:
                 _fail("broker GPU evidence ancestry is not root-owned and protected")
             if part == path.name:
-                fcntl.flock(descriptor, fcntl.LOCK_SH)
-                publication_lock = os.dup(descriptor)
+                publication_lock = os.open(scope + ".lock", flags, dir_fd=descriptor)
+                lock_info = os.fstat(publication_lock)
+                if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != 0
+                        or lock_info.st_mode & 0o222):
+                    _fail("broker GPU publication lock is not root-owned and read-only")
+                fcntl.fcntl(publication_lock, fcntl.F_OFD_SETLKW,
+                    struct.pack("hhqqii", fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0, 0))
             child = os.open(part, flags | (os.O_DIRECTORY if part != path.name else 0), dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child

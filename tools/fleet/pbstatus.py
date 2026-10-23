@@ -273,13 +273,13 @@ class SchedulerUnavailable(Exception):
     """
 
 
-
 def _gpu_use_text(judgment: pb.GpuUseJudgment | None) -> str:
     if judgment is None:
         return ABSENT
     judgment = pb.GpuUseJudgment.require(judgment)
     state = judgment["gpu_use"]
     return state + ": " + judgment["gpu_use_reason"] if state == "unobserved" else state
+
 
 def _scheduler_output(argv: Sequence[str], *, program: str) -> str:
     """Run one scheduler command and return its stdout.

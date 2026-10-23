@@ -17,6 +17,7 @@ Adaptations from review-r2-probes.py:
 """
 import ast
 import fcntl
+import struct
 import json
 import os
 import re
@@ -151,9 +152,10 @@ def _rob_reader(action):
     """pb._read_broker_gpu_evidence minus root ownership (probes run as rob)."""
     scope, nonce = os.environ[pb.ACTION_SCOPE_ENV], os.environ[pb.ACTION_NONCE_ENV]
     leaf = Path(os.environ['PRISMABUILD_RESOURCE_BROKER_SOCKET']).parent / 'gpu-observations' / (scope + '.json')
-    directory = os.open(leaf.parent, os.O_RDONLY | os.O_DIRECTORY)
+    directory = os.open(leaf.parent / (scope + '.lock'), os.O_RDONLY)
     try:
-        fcntl.flock(directory, fcntl.LOCK_SH)
+        fcntl.fcntl(directory, fcntl.F_OFD_SETLKW,
+                    struct.pack('hhqqii', fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0, 0))
         evidence = pb.digest_primitives.decode_strict_json(leaf.read_bytes(), where='broker GPU evidence')
     finally:
         os.close(directory)
@@ -727,10 +729,10 @@ def test_n7_late_finisher_keeps_the_zero_verdict(scoped, monkeypatch):
 # project the issued capability; plain replacement dictionaries are rejected.
 
 def _replace_function(module, name, change, extra=''):
-    source = Path(sys.modules[module.__module__].__file__ if isinstance(module, type) else module.__file__).read_text()
+    source = Path(getattr(module, name).__globals__['__file__'] if isinstance(module, type) else module.__file__).read_text()
     tree = ast.parse(source)
     node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
-    source = textwrap.dedent(ast.get_source_segment(source, node))
+    source = textwrap.dedent(" " * node.col_offset + ast.get_source_segment(source, node))
     changed = change(source)
     assert changed != source, 'stale mutation anchor'
     namespace = dict(vars(module))
@@ -834,7 +836,7 @@ def test_retain_mutant_breaks_the_frozen_record_contract(e2e):
         "current.get('gpu_record') is not None", 'False  # gpu_record spelled in comment\n                       ')
         .replace("prior=current.get('resource_telemetry') or {}",
                  "current.get('gpu_record', {}).get('resource_telemetry', {})['gpu_uuids']=['GPU-forged-late']\n"
-                 "                prior=current.get('resource_telemetry') or {}"))
+                 "            prior=current.get('resource_telemetry') or {}"))
     e2e.monkeypatch.setattr(type(e2e.live), '_retain_gpu_observation', changed)
     with pytest.raises(AssertionError):
         _frozen_retention_contract(e2e)
@@ -867,7 +869,7 @@ def test_every_terminal_consumer_refuses_a_nonjudgment(e2e, consumer, forged):
             return pbstatus.ending_lines([{'gpu_use': 'used', 'gpu_record': {}, 'status': 'executed'}])
         entry = next(x for x in os.scandir(path.parent) if x.path == str(path))
         return census.ending_row(entry, e2e.queue.root)
-    with pytest.raises((pb.ActionContractError, pb.CASTamperError, pool.PoolContractError, action_result.ActionResultError),
+    with pytest.raises((pb.ActionContractError, pb.CASTamperError, pool.PoolContractError, action_result.ActionResultError, action_client.action_wait.OutcomeReadUnavailable),
                        match='GpuUseJudgment'):
         read()
 
@@ -959,3 +961,14 @@ def test_r3_final_census_that_excluded_the_scope_is_not_a_success(e2e):
     assert frozen['gpu_use'] != 'zero' and terminal['detail'].get('termination_reason') != 'zero_gpu_devices_used', (
         f"{when}: final census sampled no scope, frozen={frozen['gpu_use']} ({frozen['gpu_use_reason']}); "
         f"killed attempt filed {path.parent.name}/ termination_reason={terminal['detail'].get('termination_reason')}")
+
+
+def test_historical_cache_receipt_reports_its_missing_gpu_evidence(e2e):
+    # Generic actions without sealed demand can have pre-closure CPU receipts.
+    result = pb.run_local_action(e2e.action, cas_root=e2e.cas.root, checkout_root=e2e.checkout)
+    assert 'resource_telemetry' not in result['receipt']
+    path = e2e.queue.finish(e2e.item['action_key'], status='cache_hit',
+        detail={'returncode': 0, 'stdout': json.dumps(result) + '\n'}, claim_snapshot=e2e.item)
+    detail = json.loads(path.read_text())['detail']
+    assert detail['gpu_use'] == 'unobserved'
+    assert detail['gpu_cache_note'] == 'receipt_predates_gpu_observation'

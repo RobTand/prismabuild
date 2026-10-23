@@ -6263,7 +6263,11 @@ monitor health; a scope disappearing during inventory does not.
 
 The worker supplies an absolute monotonic deadline. The broker commits before
 replying and refuses publication after that deadline. The broker and protected
-reader hold an exclusive/shared directory publication lock. The broker checks
+reader hold OFD write/read locks on a root-owned 0444 publication lock file.
+Only the broker can open a writable descriptor for its write lock; acquisition
+is nonblocking. A same-UID payload can hold only a compatible read lock, which
+may refuse a commit and make it visibly unobserved, but cannot block the broker
+or Guard, nor an evidence reader. The broker checks
 the deadline before and after rename and directory sync, and rolls back an
 expired rename before releasing that lock. A reader cannot observe a late
 rename while it is being refused. If the reply is lost,

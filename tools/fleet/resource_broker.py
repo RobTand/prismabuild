@@ -226,12 +226,18 @@ def _atomic(path, value, *, mode=0o600, deadline=None):
         os.replace(temp,path)
         if deadline is not None and time.monotonic()>=deadline:
             path.unlink(missing_ok=True)
+            rollback_dir=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+            try:os.fsync(rollback_dir)
+            finally:os.close(rollback_dir)
             raise ValueError('GPU observation deadline elapsed during commit')
         directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(directory)
         finally:os.close(directory)
         if deadline is not None and time.monotonic()>=deadline:
             path.unlink(missing_ok=True)
+            rollback_dir=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+            try:os.fsync(rollback_dir)
+            finally:os.close(rollback_dir)
             raise ValueError('GPU observation deadline elapsed during commit')
     finally:temp.unlink(missing_ok=True)
 
@@ -911,9 +917,22 @@ class Authority:
                 os.fchmod(directory_fd,0o755)
                 # A reader cannot see a rename preempted across the deadline:
                 # _atomic rolls it back before releasing this publication lock.
-                fcntl.flock(directory_fd,fcntl.LOCK_EX)
-                _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
-                        frozen,mode=0o444,deadline=deadline)
+                # OFD write locks require a writable descriptor. Payloads may
+                # open the root-owned 0444 lock only for compatible read locks.
+                # A payload holding a read lock can refuse this commit, never
+                # block the authority or the host Guard.
+                lock_fd=os.open(scope+'.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,
+                                0o444,dir_fd=directory_fd)
+                try:
+                    lock_info=os.fstat(lock_fd)
+                    if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid!=os.geteuid():
+                        raise ValueError('unsafe GPU publication lock')
+                    os.fchmod(lock_fd,0o444)
+                    fcntl.fcntl(lock_fd,fcntl.F_OFD_SETLK,
+                        struct.pack('hhqqii',fcntl.F_WRLCK,os.SEEK_SET,0,0,0,0))
+                    _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
+                            frozen,mode=0o444,deadline=deadline)
+                finally:os.close(lock_fd)
             finally:os.close(directory_fd)
             record['gpu_record']=frozen
             _atomic(self.state_dir/(scope+'.json'),record)
@@ -950,7 +969,9 @@ class Authority:
         try:descriptor=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
         except FileNotFoundError:return
         try:
-            os.unlink(scope+'.json',dir_fd=descriptor)
+            for suffix in ('.json','.lock'):
+                try:os.unlink(scope+suffix,dir_fd=descriptor)
+                except FileNotFoundError:pass
             os.fsync(descriptor)
         except FileNotFoundError:pass
         finally:os.close(descriptor)
@@ -1454,7 +1475,8 @@ class ResourceMonitor:
             records={scope:records[scope]}
             snapshot,_=self._sample_gpu(records,final_scope=scope,
                 timeout_s=max(0.0,min(self.timeout_s,census_deadline-time.monotonic())))
-            sampled=(snapshot is not None and any(job.scope_id==scope for job in snapshot.jobs))
+            sampled=(snapshot is not None and any(job.get('scope_id')==scope
+                     for job in snapshot.as_dict().get('jobs',())))
             return self.authority.freeze_gpu_record(scope,deadline,
                 final_succeeded=sampled and snapshot.as_dict().get('gpu_query_complete') is True,
                 final_reason='final_census_skipped' if snapshot is not None and not sampled else None)
