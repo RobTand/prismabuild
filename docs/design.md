@@ -3670,10 +3670,12 @@ without the member or the ordinary package import boundary.
   access. Cache I/O errors, partial records and digest mismatches fall back
   to sealing; oversized bundles bypass storage. A hit is byte-identical to
   a fresh seal and changes neither snapshot records nor action keys.
-  `tools/maintenance/measure_bundle_cache.py` compares repeated complete
-  snapshot submissions with caching disabled and enabled. Run it through PB;
-  it measures process and child CPU, counts pack executions, and checks every
-  snapshot and bundle digest against the uncached result.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated fixture
+  seals with caching disabled and enabled. Run it through PB;
+  it interleaves fresh fixture seals and verified hits in alternating order,
+  measures process and child CPU, counts pack executions, and checks every
+  bundle digest against the uncached result. An ordinary portable action
+  suffices; the comparison does not require an idle measurement-class host.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
