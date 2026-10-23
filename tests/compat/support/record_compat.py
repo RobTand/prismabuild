@@ -259,6 +259,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     context_binding = None
     reader_fixture = None
     fixture_derivation = None
+    loan_fixture_derivation = None
 
     def finish(result):
         if context_producer is not None:
@@ -271,6 +272,13 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                 result["returncode"] = 2
                 result["attestation_error"] = "historical spool reader fixture differs from its derivation"
             result["reader_fixture_derivation"] = fixture_derivation
+        if loan_fixture_derivation is not None:
+            observed = result.get("adapters_sha256", {}).get("compat_unversioned_adapters.py")
+            loan_fixture_derivation["observed_adapter_sha256"] = observed
+            if observed != loan_fixture_derivation["derived_adapter_sha256"]:
+                result["returncode"] = 2
+                result["attestation_error"] = "historical loan reader fixture differs from its derivation"
+            result["loan_reader_fixture_derivation"] = loan_fixture_derivation
         if runtime_observe is not None:
             runtime_observe(result)
         if evidence:
@@ -316,6 +324,25 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         path.write_bytes(original.replace(boundary, b'        record = request["writer_context"]\n' + boundary))
         fixture_derivation = {"original_spool_adapter_sha256": sha(original),
                               "derived_spool_adapter_sha256": sha(path.read_bytes())}
+        driver = derived
+    if raw is not None and case == "host-cpu-metadata/borrowed" and driver != HERE:
+        reader_fixture = tempfile.TemporaryDirectory(prefix="compat-loan-reader-")
+        derived = Path(reader_fixture.name) / "support"
+        shutil.copytree(driver, derived)
+        path = derived / "compat_unversioned_adapters.py"
+        original = path.read_bytes()
+        assertion = b'assert result is None and controller.last_decision["reason"] == "measurement_holder", controller.last_decision'
+        if (sha(original) != "f82bb7b65fee904a64b4e114b0c2171805efd5de9c68e59b932c356d82d44d6c"
+                or original.count(assertion) != 1):
+            raise ValueError("historical loan reader fixture source identity changed")
+        # The old measured-loan fixture now has a real opportunistic producer.
+        # Keep the refusal mandatory and observe the old controller's reason.
+        replacement = b'assert result is None and controller.last_decision["reason"] in ("measurement_holder", "borrow_evidence_unavailable"), controller.last_decision'
+        path.write_bytes(original.replace(assertion, replacement))
+        loan_fixture_derivation = {"original_adapter_sha256": sha(original),
+                                   "derived_adapter_sha256": sha(path.read_bytes()),
+                                   "refusal_required": True,
+                                   "accepted_reasons": ["measurement_holder", "borrow_evidence_unavailable"]}
         driver = derived
     adapter_path = driver / "compat_adapters.py" if adapter_path is None else adapter_path
     command = [sys.executable, "-I", "-S", str(driver / "compat_isolate.py"),
