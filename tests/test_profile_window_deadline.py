@@ -229,14 +229,49 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
 
     monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
     original_ingest = pb._ProfileSession.ingest
+    original_action_returncode = pb._ProfileSession.action_returncode
+    comparison_deadline = None
+    checkpoint_time = None
 
     def delayed_ingest(self, cas):
-        # This models a slow CAS checkpoint after the profiler has already
-        # exited. The action keeps running underneath its relay meanwhile.
-        time.sleep(0.35)
-        return original_ingest(self, cas)
+        nonlocal comparison_deadline, checkpoint_time
+        # Observe the real relay rather than guessing when scheduling lets the
+        # action finish. This is only an observation watchdog, not its budget.
+        watchdog = time.monotonic() + 10
+        while True:
+            try:
+                record = self.exit_status()
+            except pb.ProfileUnusable:
+                record = {}
+            if record.get('phase') == 'ended':
+                break
+            assert time.monotonic() < watchdog, 'relay never recorded completion'
+            time.sleep(.01)
+        # Keep the parameterized before/after relationship, but derive it from
+        # completion: no real process has to fit into the tested 150 ms window.
+        comparison_deadline = record['ended_monotonic'] + 0.15 - action_sleep
+        result = original_ingest(self, cas)
+        checkpoint_time = max(record['ended_monotonic'], comparison_deadline) + 1
+        return result
+
+    def compare_after_checkpoint(self, process=None, *, deadline=None):
+        assert deadline is None
+        assert checkpoint_time is not None
+
+        class CheckpointClock:
+            def monotonic(self):
+                return checkpoint_time
+
+        # Replace only core's clock reference, never the shared time module.
+        # Restore real time before ordinary cleanup, including the timeout path.
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(pb, 'time', CheckpointClock())
+            return original_action_returncode(
+                self, process, deadline=comparison_deadline,
+            )
 
     monkeypatch.setattr(pb._ProfileSession, 'ingest', delayed_ingest)
+    monkeypatch.setattr(pb._ProfileSession, 'action_returncode', compare_after_checkpoint)
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     action = _action(checkout, profile='fake')
@@ -245,8 +280,7 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
         **body['task'],
         'argv': [
             sys.executable, '-c',
-            ('import time; from pathlib import Path; '
-             f'time.sleep({action_sleep}); Path("result.txt").write_text("done")'),
+            'from pathlib import Path; Path("result.txt").write_text("done")',
         ],
     }
     sealed = pb.seal_action(body)
@@ -254,13 +288,11 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
         with pytest.raises(pb.LocalActionError, match='timed out') as raised:
             pb.run_local_action(
                 sealed, cas_root=tmp_path / 'cas', checkout_root=checkout,
-                timeout_seconds=0.15,
             )
         assert raised.value.returncode is None
         assert raised.value.profile is not None
         return
     outcome = pb.run_local_action(
         sealed, cas_root=tmp_path / 'cas', checkout_root=checkout,
-        timeout_seconds=0.15,
     )
     assert outcome['status'] == 'published'
