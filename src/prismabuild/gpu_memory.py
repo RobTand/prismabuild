@@ -472,6 +472,7 @@ class Guard:
     """Stateful conservative decision maker; broker serializes observe calls."""
     def __init__(self, policy: Policy | None = None):
         self.policy = policy or Policy()
+        self.minimum_sample_interval_s = 1.0
         self.previous: Snapshot | None = None
         self.over_budget: dict[tuple, int] = {}
         self.pressure: dict[tuple, int] = {}
@@ -479,8 +480,10 @@ class Guard:
     def observe(self, snapshot: Snapshot) -> list[Decision]:
         policy = self.policy
         previous = self.previous
-        self.previous = snapshot
         dt = snapshot.sampled_monotonic - previous.sampled_monotonic if previous else 0
+        if previous is not None and 0 <= dt < self.minimum_sample_interval_s:
+            return []
+        self.previous = snapshot
         continuous = previous is not None and 0 < dt <= policy.max_sample_gap_s
         if not continuous:
             self.over_budget.clear()
@@ -502,7 +505,7 @@ class Guard:
                 counter = (*key, domain)
                 excess = valid and used is not None and used > budget
                 self.over_budget[counter] = self.over_budget.get(counter, 0) + 1 if excess else 0
-                if (self.over_budget[counter] >= policy.budget_samples
+                if (self.over_budget[counter] >= max(2, policy.budget_samples)
                         and not any(d.scope_id == job.scope_id for d in decisions)):
                     decisions.append(Decision(job.scope_id, job.cgroup_identity, reason,
                         {"job": asdict(job), "budget_domain": domain,
@@ -538,7 +541,7 @@ class Guard:
         for job in snapshot.jobs:
             key = _budget_identity(job)
             self.pressure[key] = self.pressure.get(key, 0) + 1 if job.scope_id == candidate else 0
-            if (self.pressure[key] >= policy.pressure_samples - 1
+            if (self.pressure[key] >= max(1, policy.pressure_samples - 1)
                     and not any(d.scope_id == job.scope_id for d in decisions)):
                 decisions.append(Decision(job.scope_id, job.cgroup_identity, "projected_host_oom",
                     {"job": asdict(job), "host_available_bytes": snapshot.host_available_bytes,

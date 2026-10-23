@@ -2467,6 +2467,7 @@ def worker_argv(
     cas_root: str | Path,
     checkout_root: str | Path,
     recompute: bool = False,
+    resource_demand: Mapping[str, object] | None = None,
 ) -> list[str]:
     """The canonical worker launch shared with the SLURM lane.
 
@@ -2484,7 +2485,8 @@ def worker_argv(
         str(cas_root),
         "--checkout-root",
         str(checkout_root),
-    ] + (["--recompute"] if recompute else [])
+    ] + (["--recompute"] if recompute else []) + (
+        ["--resource-demand", pb.sorted_json(resource_demand)] if resource_demand else [])
 
 
 def _with_cpu_affinity(argv: list[str], cpus: list[int]) -> list[str]:
@@ -5667,9 +5669,6 @@ class PoolQueue:
             path.unlink()
         if not isinstance(body, dict):
             return outcome
-        for field in ("resource_telemetry", "cached_execution", "termination_reason"):
-            if field in body:
-                outcome[field] = body[field]
         for field in ("action_returncode", "action_signal"):
             value = body.get(field)
             if isinstance(value, int) and not isinstance(value, bool):
@@ -14685,15 +14684,10 @@ class PoolQueue:
         action = pb.validate_action(
             pb.digest_primitives.decode_strict_json(raw, where="contained pool action request"),
         )
-        demand = action["params"].get("demand")
+        demand = pb.action_resource_demand(action, self.demand_of(item))
         if action["action_key"] != key:
             raise PoolContractError("contained action request differs from claimed key")
-        if demand is None and action["task"]["definition_id"] != "fleet/pbrun":
-            # Existing generic producers declare resources
-            # through publish rather than action params. Preserve that trusted
-            # producer contract; pbrun always binds demand into the sealed key.
-            demand = item.get("resources")
-        if not isinstance(demand, dict) or demand != item.get("resources"):
+        if demand != self.demand_of(item):
             raise PoolContractError("pool resource demand differs from sealed action demand")
         memory = demand.get("mem_gb")
         if type(memory) is not int or memory <= 0:
@@ -15340,7 +15334,7 @@ class PoolQueue:
         raw = item.get("resources") or {}
         if not isinstance(raw, Mapping):
             raise PoolContractError("pool item resources must be an object")
-        return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
+        return pb.normalized_resource_demand(raw)
 
     def _defer_fallback(
         self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
@@ -21527,8 +21521,7 @@ class PoolQueue:
             outcome.update(policy.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self.scope_for_record(item))
-            if not outcome.get("cached_execution"):
-                outcome["resource_telemetry"] = {**telemetry, **outcome.get("resource_telemetry", {})}
+            outcome["resource_telemetry"] = telemetry
             resource_failure = self._resource_failure(telemetry)
             if resource_failure:
                 outcome.update(status="failed", returncode=137,
@@ -21709,12 +21702,19 @@ class PoolQueue:
         # resource_exec wrapper: once those wrappers have exec'd, this is
         # exactly what ``/proc/<pid>/cmdline`` shows, and it is what the
         # deadline's contained flush opportunity matches against (#1401).
+        admitted_demand = self.demand_of(item)
+        cached_gpu_receipt = None
+        if admitted_demand.get("gpu", 0) > 0 and not item.get("recompute"):
+            cache = pb.PrismaBuildCAS(item["cas_root"])
+            sealed = cache.read_action_request(key)
+            cached_gpu_receipt = cache.lookup(sealed) if sealed else None
         worker_argv_exact = [str(python)] + worker_argv(
             worker_script=item["worker_script"],
             action_key=key,
             cas_root=item["cas_root"],
             checkout_root=checkout_root,
             recompute=item.get("recompute") is True,
+            resource_demand=admitted_demand if admitted_demand.get("gpu", 0) > 0 else None,
         )
         argv = list(worker_argv_exact)
         allocation = item.get("cpu_allocation")
@@ -22023,6 +22023,9 @@ class PoolQueue:
                     Path(pb_progress.staged_wait_path(str(progress_path))).unlink()
                 with suppress(OSError):
                     Path(pb_progress.export_wait_path(str(progress_path))).unlink()
+                if (cached_gpu_receipt is not None and outcome.get("status") == "executed"
+                        and outcome.get("returncode") == 0):
+                    outcome["status"] = "cache_hit"
                 return self._merge_action_status(outcome, status_path)
             self.write_lease(
                 key,

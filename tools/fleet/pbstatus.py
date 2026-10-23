@@ -882,7 +882,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
         return [note or "no endings filed under done/, failed/ or withdrawn/"]
     headers = (
         "KEY", "STATUS", "VIA", "HOST", "ELAPSED", "RC", "ACTION RC",
-        "RECEIPT", "SLURM", "RESOURCE", "NOTE",
+        "RECEIPT", "SLURM", "RESOURCE", "GPU USE", "NOTE",
     )
     rows = []
     for ending in endings:
@@ -907,6 +907,8 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # three numbers nobody can see beside the run they belong to are
             # three numbers nobody reads.
             pool.describe_resource_profile(ending),
+            (str(ending.get("gpu_use")) + ": " + str(ending.get("gpu_use_reason"))
+             if ending.get("gpu_use") == "unobserved" else ending.get("gpu_use") or ABSENT),
             # The path and the reason, on the one kind of row where every
             # other column is inside a file nobody could read -- and otherwise
             # the cost of a preemption, which is the one ending whose cause is

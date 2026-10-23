@@ -30,13 +30,15 @@ def test_attributed_gpu_uuid_union_survives_empty_samples(monitored, tmp_path, m
         return replace(value, jobs=(job,))
 
     monkeypatch.setattr(gpu, 'collect', lambda *args, **kw: sample())
+    monkeypatch.setattr(monitor, '_payload_live', lambda row: True)
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
     assert status['resource_telemetry']['gpu_devices_used'] is None
     query(monkeypatch, '20, GPU-visible, 1\n')
     monitor.poll_once()
     status = a.handle(a.uid, 1, {**request, 'op': 'status', 'token': record['token']})
-    assert status['resource_telemetry']['gpu_devices_used'] == 0
+    assert status['resource_telemetry']['gpu_use'] == 'unobserved'
+    assert status['resource_telemetry']['gpu_use_reason'] == 'gpu_sampler_failed'
     query(monkeypatch, '10, GPU-first, [N/A]\n11, GPU-first, 1\n10, GPU-second, 2\n20, GPU-visible, 3\n')
     monitor.poll_once()
     query(monkeypatch, '')
@@ -80,10 +82,14 @@ def test_gpu_observation_requires_exact_peer_scope_and_kernel_identity(monitored
 
 @pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
 @pytest.mark.parametrize('count', [0, 1, None])
-def test_pool_finish_adjudicates_gpu_use(scoped, count):
+def test_pool_finish_adjudicates_gpu_use(scoped, count, monkeypatch):
     queue, item, calls = scoped
     detail = {'status': 'executed', 'returncode': 0, 'stdout': '', 'stderr': '',
               'resource_telemetry': {'gpu_devices_used': count}}
+    final = {'gpu_devices_used': count, 'gpu_use': 'unobserved' if count is None else 'used' if count else 'zero',
+             'gpu_use_reason': 'no_payload_sample' if count is None else 'successful_payload_sample'}
+    monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *a, **k: {
+        'complete': True, 'resource_scope': {'telemetry': final}})
     path = queue.finish(item['action_key'], status='executed', detail=detail,
                         claim_snapshot=item)
     terminal = json.loads(path.read_text())
@@ -117,7 +123,8 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
     action = pb.seal_action(body)
     nonce = 'a' * 32
     scope = 'prismabuild-job' + pb.raw_sha256((action['action_key'] + nonce).encode())[:32] + '.slice'
-    telemetry = {'gpu_devices_used': count, 'gpu_uuids': [f'GPU-{i}' for i in range(count)]}
+    telemetry = {'gpu_devices_used': count, 'gpu_uuids': [f'GPU-{i}' for i in range(count)],
+                 'gpu_use': 'used' if count else 'zero', 'gpu_use_reason': 'successful_payload_sample'}
     monkeypatch.setenv(pb.ACTION_NONCE_ENV, nonce)
     monkeypatch.setenv(pb.ACTION_SCOPE_ENV, scope)
     monkeypatch.setenv('PRISMABUILD_READER_HELPER_ROOT', str(Path(pb.__file__).resolve().parents[2]))
@@ -141,7 +148,7 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         with pytest.raises(pb.LocalActionError, match='zero distinct GPU UUIDs'):
             pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout)
         assert cas.lookup(action) is None
-        assert json.loads(status_file.read_text())['termination_reason'] == 'zero_gpu_devices_used'
+        assert not status_file.exists()
     else:
         first = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout)
         recorded = {**telemetry, 'scope_id': scope, 'nonce': nonce}
@@ -152,11 +159,10 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         again = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout)
         assert again['status'] == 'cache_hit'
         assert again['receipt']['resource_telemetry'] == recorded
-        assert json.loads(status_file.read_text())['resource_telemetry'] == recorded
-        assert json.loads(status_file.read_text())['cached_execution'] is True
+        assert not status_file.exists()
         receipt_file = cas.receipt_path(action['action_key'])
         damaged = json.loads(receipt_file.read_text())
-        damaged['resource_telemetry'].update(gpu_devices_used=0, gpu_uuids=[])
+        damaged['resource_telemetry'].update(gpu_devices_used=0, gpu_uuids=[], gpu_use='zero')
         damaged['receipt_sha256'] = pb.canonical_sha256({k: v for k, v in damaged.items() if k != 'receipt_sha256'})
         receipt_file.chmod(0o644)
         receipt_file.write_text(json.dumps(damaged))
@@ -164,7 +170,8 @@ def test_gpu_cas_publication_and_cache_keep_execution_evidence(tmp_path, monkeyp
         assert client.cas_receipt_self_check(damaged) == 'cas-receipt-shape'
         with pytest.raises(pb.CASTamperError, match='zero distinct GPU UUIDs'):
             cas.lookup(action)
-    assert requests == [{'op': 'gpu_observation', 'action_key': action['action_key'], 'nonce': nonce}]
+    assert [r['op'] for r in requests] == ['gpu_payload', 'gpu_observation']
+    assert requests[-1] == {'op': 'gpu_observation', 'action_key': action['action_key'], 'nonce': nonce}
 
 
 @pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
@@ -172,8 +179,16 @@ def test_pool_cache_retains_used_devices_over_idle_replay_scope(scoped, monkeypa
     queue, item, calls = scoped
     monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *args, **kw: {
         'complete': True, 'resource_scope': {'telemetry': {'gpu_devices_used': 0}}})
-    detail = {'status': 'cache_hit', 'returncode': 0, 'cached_execution': True,
-              'resource_telemetry': {'gpu_devices_used': 1}}
+    cas = pb.PrismaBuildCAS(item['cas_root'])
+    action = cas.read_action_request(item['action_key'])
+    checkout = Path(item['checkout_root'])
+    (checkout / 'result').write_text('ok')
+    attestation = pb.preflight_action(action, cas_root=cas.root, checkout_root=checkout)
+    observation = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-used'],
+                   'scope_id': 'prismabuild-job' + 'a' * 32 + '.slice', 'nonce': 'a' * 32}
+    cas.publish_result(action, checkout / 'result', attestation=attestation,
+                       resource_telemetry=observation)
+    detail = {'status': 'cache_hit', 'returncode': 0}
     path = queue.finish(item['action_key'], status='cache_hit', detail=detail, claim_snapshot=item)
     record = json.loads(path.read_text())
     assert record['status'] == 'cache_hit'
@@ -190,7 +205,9 @@ def test_fresh_gpu_finish_retains_final_broker_uuid_union(scoped, monkeypatch):
                         detail={'returncode': 0, 'resource_telemetry': {
                             'gpu_devices_used': 1, 'gpu_uuids': ['GPU-first']}},
                         claim_snapshot=item)
-    assert json.loads(path.read_text())['detail']['resource_telemetry'] == final
+    observed = json.loads(path.read_text())['detail']['resource_telemetry']
+    assert all(observed[key] == value for key, value in final.items())
+    assert observed['gpu_use'] == 'used'
 
 
 def test_submission_and_shard_cpu_defaults_agree(monkeypatch):

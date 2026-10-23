@@ -3837,7 +3837,7 @@ class PrismaBuildCAS:
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
         if _action_needs_gpu(normalized) and resource_telemetry is None:
-            raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published")
+            resource_telemetry = _unobserved_gpu_use("no_execution_observation")
         if resource_telemetry is not None:
             resource_telemetry = _validate_gpu_execution_observation(resource_telemetry)
             if resource_telemetry["gpu_devices_used"] == 0:
@@ -6124,12 +6124,21 @@ def _sigterm_unwinds_this_process():
         signal.signal(signal.SIGTERM, previous_term)
 
 
-def _action_needs_gpu(action: Mapping[str, object]) -> bool:
-    params = action["params"]
-    assert isinstance(params, Mapping)
-    demand = params.get("demand")
-    return (isinstance(demand, Mapping) and type(demand.get("gpu")) is int
-            and demand["gpu"] > 0)
+def normalized_resource_demand(value: Mapping[str, object]) -> dict[str, int]:
+    """Normalize the resource counts shared by admission and execution."""
+    return {str(key): int(count) for key, count in value.items() if int(count) > 0}
+
+
+def action_resource_demand(action: Mapping[str, object],
+                           fallback: Mapping[str, object] | None = None) -> dict[str, int]:
+    """Sealed demand owns execution; generic producers may supply admitted demand."""
+    demand = action["params"].get("demand")
+    return normalized_resource_demand(demand if isinstance(demand, Mapping) else fallback or {})
+
+
+def _action_needs_gpu(action: Mapping[str, object],
+                      fallback: Mapping[str, object] | None = None) -> bool:
+    return action_resource_demand(action, fallback).get("gpu", 0) > 0
 
 
 def _validate_receipt_shape(value: object) -> Mapping[str, object]:
@@ -6141,58 +6150,87 @@ def _validate_receipt_shape(value: object) -> Mapping[str, object]:
 
 
 def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
-    raw = _exact_mapping(value, keys=frozenset({"gpu_devices_used", "gpu_uuids", "scope_id", "nonce"}),
+    fields = frozenset({"gpu_devices_used", "gpu_uuids", "scope_id", "nonce"})
+    modern = isinstance(value, Mapping) and "gpu_use" in value
+    raw = _exact_mapping(value, keys=fields | ({"gpu_use", "gpu_use_reason"} if modern else set()),
                          where="GPU execution observation")
-    count = _nonnegative_integer(raw["gpu_devices_used"], where="GPU devices used")
+    state = raw.get("gpu_use")
+    if modern and state not in {"used", "zero", "unobserved"}:
+        _fail("invalid GPU use outcome")
+    count = raw["gpu_devices_used"]
+    if state != "unobserved" or count is not None:
+        count = _nonnegative_integer(count, where="GPU devices used")
     uuids = raw["gpu_uuids"]
     if (not isinstance(uuids, list) or any(not isinstance(uuid, str) or not uuid for uuid in uuids)
-            or uuids != sorted(set(uuids)) or len(uuids) != count):
+            or uuids != sorted(set(uuids)) or len(uuids) != (count or 0)):
         _fail("GPU UUIDs must be distinct, sorted and agree with the device count")
-    nonce = _text(raw["nonce"], where="GPU observation nonce", pattern=re.compile(r"[a-f0-9]{32}"))
-    scope = _text(raw["scope_id"], where="GPU observation scope",
-                  pattern=re.compile(r"prismabuild-job[a-f0-9]{32}\.slice"))
-    return {"gpu_devices_used": count, "gpu_uuids": list(uuids), "scope_id": scope, "nonce": nonce}
+    if modern and ((state == "used" and not count) or (state == "zero" and count != 0)
+                   or (state == "unobserved" and count is not None)):
+        _fail("GPU use outcome disagrees with device count")
+    nonce, scope = raw["nonce"], raw["scope_id"]
+    if state != "unobserved" or nonce is not None or scope is not None:
+        nonce = _text(nonce, where="GPU observation nonce", pattern=re.compile(r"[a-f0-9]{32}"))
+        scope = _text(scope, where="GPU observation scope",
+                      pattern=re.compile(r"prismabuild-job[a-f0-9]{32}\.slice"))
+    result = {"gpu_devices_used": count, "gpu_uuids": list(uuids), "scope_id": scope, "nonce": nonce}
+    if modern:
+        result.update(gpu_use=state, gpu_use_reason=_text(raw["gpu_use_reason"], where="GPU use reason"))
+    return result
 
 
-def _gpu_execution_observation(action: Mapping[str, object]) -> dict[str, object] | None:
-    if not _action_needs_gpu(action):
-        return None
+def _unobserved_gpu_use(reason: str) -> dict[str, object]:
+    return {"gpu_use": "unobserved", "gpu_use_reason": reason,
+            "gpu_devices_used": None, "gpu_uuids": [], "scope_id": None, "nonce": None}
+
+
+def _gpu_broker_request(action: Mapping[str, object], op: str, **fields: object) -> Mapping[str, object]:
     nonce, scope = os.environ.get(ACTION_NONCE_ENV), os.environ.get(ACTION_SCOPE_ENV)
     if not nonce or not scope:
-        raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published")
+        raise ValueError("GPU payload scope unavailable")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(10)
+        client.connect(os.environ.get("PRISMABUILD_RESOURCE_BROKER_SOCKET", "/run/prismabuild/resources.sock"))
+        client.sendall(_canonical_bytes({"op": op, "action_key": action["action_key"],
+                                        "nonce": nonce, **fields}) + b"\n")
+        data = bytearray()
+        while b"\n" not in data:
+            chunk = client.recv(65537 - len(data))
+            if not chunk or len(data) + len(chunk) > 65536:
+                raise ValueError("GPU observation response unavailable or exceeds 64 KiB")
+            data.extend(chunk)
+    response = digest_primitives.decode_strict_json(data.split(b"\n", 1)[0], where="GPU observation")
+    if (not isinstance(response, Mapping) or response.get("ok") is not True
+            or response.get("nonce") != nonce or response.get("scope_id") != scope):
+        raise ValueError("GPU observation is not bound to the payload scope")
+    return response
+
+
+def _register_gpu_payload(action: Mapping[str, object], pid: int) -> None:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(10)
-            client.connect(os.environ.get("PRISMABUILD_RESOURCE_BROKER_SOCKET", "/run/prismabuild/resources.sock"))
-            client.sendall(_canonical_bytes({"op": "gpu_observation", "action_key": action["action_key"],
-                                            "nonce": nonce}) + b"\n")
-            data = bytearray()
-            while b"\n" not in data:
-                chunk = client.recv(65537 - len(data))
-                if not chunk or len(data) + len(chunk) > 65536:
-                    raise ValueError("GPU observation response unavailable or exceeds 64 KiB")
-                data.extend(chunk)
-        response = digest_primitives.decode_strict_json(data.split(b"\n", 1)[0], where="GPU observation")
-        if (not isinstance(response, Mapping) or response.get("ok") is not True
-                or response.get("nonce") != nonce or response.get("scope_id") != scope):
-            raise ValueError("GPU observation is not bound to the payload scope")
+        _gpu_broker_request(action, "gpu_payload", payload_pid=pid)
+    except (OSError, ValueError, KeyError, TypeError, ActionContractError):
+        # A child that already exited has no sampleable lifetime. The final
+        # broker observation remains unobserved unless a UUID was attributed.
+        pass
+
+
+def _gpu_execution_observation(action: Mapping[str, object],
+                               demand: Mapping[str, object] | None = None) -> dict[str, object] | None:
+    if not _action_needs_gpu(action, demand):
+        return None
+    try:
+        response = _gpu_broker_request(action, "gpu_observation")
+        if ("gpu_use" not in response["resource_telemetry"]
+                and not response["resource_telemetry"].get("gpu_devices_used")):
+            return _unobserved_gpu_use("legacy_observation_without_payload_sample")
         observation = _validate_gpu_execution_observation({**response["resource_telemetry"],
-                                                          "nonce": nonce, "scope_id": scope})
-    except (OSError, ValueError, KeyError, TypeError, ActionContractError) as exc:
-        raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published") from exc
-    _write_action_status({"resource_telemetry": observation})
+                                                          "nonce": response["nonce"],
+                                                          "scope_id": response["scope_id"]})
+    except (OSError, ValueError, KeyError, TypeError, ActionContractError):
+        return _unobserved_gpu_use("broker_observation_unavailable")
     if observation["gpu_devices_used"] == 0:
-        _write_action_status({"termination_reason": "zero_gpu_devices_used"})
         raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope; no receipt was published")
     return observation
-
-
-def _cached_gpu_observation(result: dict[str, object], action: Mapping[str, object]) -> dict[str, object]:
-    observation = result["receipt"].get("resource_telemetry")
-    if _action_needs_gpu(action):
-        _write_action_status({"cached_execution": True,
-                              **({"resource_telemetry": observation} if observation is not None else {})})
-    return result
 
 
 def run_local_action(
@@ -6203,6 +6241,7 @@ def run_local_action(
     timeout_seconds: float | None = None,
     recompute: bool = False,
     worker_launcher_identity: object | None = None,
+    resource_demand: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
@@ -6215,11 +6254,11 @@ def run_local_action(
         cached = cas.lookup(normalized)
         if cached is not None:
             verify_code_closure(normalized["code_closure"], root)
-            return _cached_gpu_observation({
+            return {
                 "status": "cache_hit",
                 "receipt": cached,
                 "payload_path": str(cas._verified_receipt_result_path(cached)),
-            }, normalized)
+            }
     task = normalized["task"]
     environment = normalized["environment"]
     assert isinstance(task, Mapping)
@@ -6243,11 +6282,11 @@ def run_local_action(
             cached = cas.lookup(normalized)
             if cached is not None:
                 verify_code_closure(normalized["code_closure"], root)
-                return _cached_gpu_observation({
+                return {
                     "status": "cache_hit",
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
-                }, normalized)
+                }
         attestation = preflight_action(
             normalized,
             cas_root=cas_root,
@@ -6305,6 +6344,8 @@ def run_local_action(
                     # parent's descriptor remains CLOEXEC for unrelated execs.
                     pass_fds=(output_lock_descriptor,),
                 )
+                if _action_needs_gpu(normalized, resource_demand):
+                    _register_gpu_payload(normalized, process.pid)
                 if timeout_seconds is not None:
                     execution_deadline = time.monotonic() + timeout_seconds
                 returncode = process.wait(timeout=timeout_seconds)
@@ -6440,7 +6481,7 @@ def run_local_action(
             raise LocalActionError(
                 f"action succeeded without its declared result file: {output}"
             )
-        resource_telemetry = _gpu_execution_observation(normalized)
+        resource_telemetry = _gpu_execution_observation(normalized, resource_demand)
         # Preflight alone is insufficient: an action (or another checkout
         # writer) can change a closure member while argv is running.  Check
         # once before an expensive result copy, then again at the CAS receipt
@@ -6542,6 +6583,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--checkout-root", required=True, type=Path)
     run.add_argument("--timeout-seconds", type=float)
     run.add_argument("--recompute", action="store_true")
+    run.add_argument("--resource-demand", type=json.loads, help="admitted resource demand for generic producers")
     repair = commands.add_parser("repair-local-result")
     repair.add_argument("--action", required=True, type=Path)
     repair.add_argument("--cas-root", required=True, type=Path)
@@ -7138,6 +7180,7 @@ def main(
             checkout_root=args.checkout_root,
             timeout_seconds=args.timeout_seconds,
             recompute=args.recompute,
+            resource_demand=args.resource_demand,
             worker_launcher_identity=worker_launcher_identity,
         )
     except LocalActionError as error:

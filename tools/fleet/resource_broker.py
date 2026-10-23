@@ -597,6 +597,7 @@ class Authority:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
+        if op=='gpu_payload':return self.gpu_payload(pid,request)
         if op=='gpu_observation':return self.gpu_observation(pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
@@ -791,6 +792,40 @@ class Authority:
         return {key:record[key] for key in ('stop_reason','stopped_unix',
                 'termination_evidence','last_cleanup_reason','resource_telemetry') if key in record}
 
+    @staticmethod
+    def _live_process(pid):
+        try:
+            fields=Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()
+            if len(fields)>19 and fields[0] not in {'Z','X'}:
+                return {'pid':pid,'starttime':fields[19],'parent':int(fields[1])}
+        except (OSError,ValueError):pass
+        return None
+
+    def gpu_payload(self,pid,request):
+        """Only the broker-launched worker can register its actual argv child."""
+        if set(request)!={'op','action_key','nonce','payload_pid'}:raise ValueError('invalid GPU payload fields')
+        key,nonce=self.identity(request);scope=scope_id(key,nonce)
+        child_pid=request['payload_pid']
+        if type(child_pid) is not int or child_pid<=0:raise ValueError('invalid GPU payload PID')
+        with self.lock:
+            record=self.records.get(scope)
+            worker=self._live_process(pid);child=self._live_process(child_pid)
+            if (record is None or record.get('released_unix') or worker is None
+                    or record.get('worker_process')!=worker or child is None or child['parent']!=pid):
+                raise PermissionError('GPU payload registration requires the launched worker and its live child')
+            membership='0::/prismabuild.slice/'+scope
+            for member in (pid,child_pid):
+                groups=Path(f'/proc/{member}/cgroup').read_text().splitlines()
+                if not any(line==membership or line.startswith(membership+'/') for line in groups):
+                    raise PermissionError('GPU payload registration is outside the payload scope')
+            info=self.backend.path(scope).stat()
+            if [info.st_dev,info.st_ino]!=record.get('cgroup_identity'):
+                raise ValueError('GPU observation kernel scope changed')
+            if record.get('gpu_payload') is not None:raise ValueError('GPU payload already registered')
+            record['gpu_payload']=child
+            _atomic(self.state_dir/(scope+'.json'),record)
+            return {'ok':True,'scope_id':scope,'nonce':nonce}
+
     def gpu_observation(self,pid,request):
         """Read-only payload access, authorized by kernel scope membership."""
         if set(request)!={'op','action_key','nonce'}:raise ValueError('invalid GPU observation fields')
@@ -799,8 +834,8 @@ class Authority:
         membership='/prismabuild.slice/'+scope
         if not any(line=='0::'+membership or line.startswith('0::'+membership+'/') for line in groups):
             raise PermissionError('GPU observer is outside the payload scope')
-        # One final bounded census catches empty short-lived payloads. Sampling
-        # owns no admission lock and revalidates the exact authority afterwards.
+        # Observation never advances the Guard. Post-exit samples can retain
+        # UUIDs, but cannot establish a zero-use payload lifetime.
         observer=getattr(self,'gpu_observer',None)
         if observer is None:raise ValueError('GPU observation monitor unavailable')
         observer()
@@ -811,7 +846,9 @@ class Authority:
             if [info.st_dev,info.st_ino]!=record.get('cgroup_identity'):
                 raise ValueError('GPU observation kernel scope changed')
             return {'ok':True,'scope_id':scope,'nonce':nonce,
-                    'resource_telemetry':dict(record.get('resource_telemetry') or {})}
+                    'resource_telemetry':dict(record.get('resource_telemetry') or {
+                        'gpu_use':'unobserved','gpu_use_reason':'no_payload_sample',
+                        'gpu_devices_used':None,'gpu_uuids':[]})}
 
     def admin(self,uid,request):
         """Operate the one gate that stops this host, as a claim with a holder.
@@ -1201,7 +1238,11 @@ class Authority:
             # a duplicate, retaining the exact scope for stop/recovery.
             record['launched_unix']=time.time()
             _atomic(self.state_dir/(record['scope_id']+'.json'),record)
-            return self.backend.run(record['scope_id'],uid,command,stdio)
+            process=self.backend.run(record['scope_id'],uid,command,stdio)
+            if hasattr(process,'pid'):
+                record['worker_process']=self._live_process(process.pid)
+                _atomic(self.state_dir/(record['scope_id']+'.json'),record)
+            return process
 
     def container(self,uid,pid,request):
         op=request['op'];scope=request.get('scope_id')
@@ -1241,13 +1282,14 @@ class ResourceMonitor:
         self.interval_s=interval_s;self.timeout_s=timeout_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
         self.sample_lock=threading.Lock()
-        authority.gpu_observer=self.poll_once
+        self.guard.minimum_sample_interval_s=interval_s
+        authority.gpu_observer=self.observe_gpu
 
     def _records(self):
         with self.authority.lock:
             return {scope:{key:value for key,value in record.items() if key in {
                     *self.identity_fields,'gpu_memory_max_bytes','memory_oom_kill_baseline','memory_oom_local_baseline','monitor_stop_pending',
-                    'termination_evidence','stop_reason'}}
+                    'termination_evidence','stop_reason','gpu_payload'}}
                 for scope,record in self.authority.records.items()
                 if not record.get('pending') and not record.get('released_unix')
                 and (not record.get('stopped_unix') or record.get('monitor_stop_pending'))
@@ -1279,7 +1321,39 @@ class ResourceMonitor:
         with self.sample_lock:
             return self._poll_once()
 
-    def _retain_gpu_observation(self,records,snapshot):
+    def observe_gpu(self):
+        """Collect attribution without OOM checks, Guard counters or stop calls."""
+        with self.sample_lock:
+            snapshot,_=self._sample_gpu(self._records())
+            return snapshot
+
+    def _payload_live(self,record):
+        child=record.get('gpu_payload')
+        return child is not None and self.authority._live_process(child['pid'])==child
+
+    def _sample_gpu(self,records):
+        scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
+                    **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
+                       if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
+                for scope,record in records.items()]
+        live={scope for scope,record in records.items() if self._payload_live(record)}
+        device_readings=None;memory_options={}
+        try:
+            if self.capacity is not None:
+                device_readings=self.capacity.devices(timeout_s=self.timeout_s)
+                memory_options['gpu_memory_domains']={device['uuid']:device['memory_domain']
+                                                     for device in device_readings[0]}
+                memory_options['gpu_devices']=device_readings[0]
+            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
+        except (OSError,ValueError,subprocess.TimeoutExpired):
+            self._retain_gpu_observation(records,{'gpu_query_complete':False,'jobs':[
+                {'scope_id':scope,'cgroup_identity':record['cgroup_identity'],'processes':[]}
+                for scope,record in records.items()]},live)
+            return None,device_readings
+        self._retain_gpu_observation(records,snapshot.as_dict(),live)
+        return snapshot,device_readings
+
+    def _retain_gpu_observation(self,records,snapshot,live):
         """Union only UUIDs attributed to this unchanged kernel scope."""
         for job in snapshot.get('jobs',()):
             scope=job.get('scope_id');expected=records.get(scope)
@@ -1296,9 +1370,17 @@ class ResourceMonitor:
                 prior=current.get('resource_telemetry') or {}
                 uuids=set(prior.get('gpu_uuids',()))
                 uuids.update(row['gpu_uuid'] for row in job.get('processes',()))
-                known=bool(uuids) or snapshot.get('gpu_query_complete') is True or prior.get('gpu_devices_used') is not None
-                current['resource_telemetry']={'gpu_devices_used':len(uuids) if known else None,
-                                               'gpu_uuids':sorted(uuids)}
+                covered=scope in live and self._payload_live(expected)
+                if snapshot.get('gpu_query_complete') is not True:
+                    current['gpu_sampler_failed']=True
+                elif covered:
+                    current['gpu_payload_samples']=current.get('gpu_payload_samples',0)+1
+                if uuids:state,reason='used','attributed_gpu_uuid'
+                elif current.get('gpu_sampler_failed'):state,reason='unobserved','gpu_sampler_failed'
+                elif current.get('gpu_payload_samples',0)>0:state,reason='zero','successful_payload_sample'
+                else:state,reason='unobserved','no_payload_sample'
+                current['resource_telemetry']={'gpu_use':state,'gpu_use_reason':reason,
+                    'gpu_devices_used':len(uuids) if state!='unobserved' else None,'gpu_uuids':sorted(uuids)}
                 _atomic(self.authority.state_dir/(scope+'.json'),current)
 
     def _poll_once(self):
@@ -1332,22 +1414,10 @@ class ResourceMonitor:
                               'oom_kill_baseline':baseline,'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
-        scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
-                    **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
-                       if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
-                for scope,record in records.items() if scope not in stopped and not record.get('monitor_stop_pending')]
-        snapshot=None;device_readings=None;memory_options={}
-        if self.capacity is not None:
-            device_readings=self.capacity.devices(timeout_s=self.timeout_s)
-            memory_options['gpu_memory_domains']={device['uuid']:device['memory_domain']
-                                                 for device in device_readings[0]}
-            # The census needs the vendor as well as the domain: which reader
-            # can attribute a process is a property of the device, and the one
-            # device query already made here is the only place that is known.
-            memory_options['gpu_devices']=device_readings[0]
-        if scopes or self.capacity is not None:
-            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
-            self._retain_gpu_observation(records,snapshot.as_dict())
+        active={scope:record for scope,record in records.items()
+                if scope not in stopped and not record.get('monitor_stop_pending')}
+        snapshot,device_readings=self._sample_gpu(active) if active or self.capacity is not None else (None,None)
+        if snapshot is not None:
             for decision in self.guard.observe(snapshot):
                 expected=records.get(decision.scope_id)
                 if expected is None:continue

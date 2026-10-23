@@ -2038,6 +2038,8 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # launcher's status above is 1 for every failure.
         "action_returncode": detail.get("action_returncode"),
         "action_signal": detail.get("action_signal"),
+        "gpu_use": detail.get("gpu_use"),
+        "gpu_use_reason": detail.get("gpu_use_reason"),
         # The pull queue's records carry no receipt field at all, which is
         # a different thing from a receipt that was not published.
         "receipt_published": detail.get("receipt_published"),

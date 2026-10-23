@@ -270,26 +270,39 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
 
 def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     detail = dict(detail or {})
-    if (status not in {"executed", "cache_hit"}
-            and detail.get("termination_reason") != "zero_gpu_devices_used"):
+    cas = pb.PrismaBuildCAS(record["cas_root"])
+    action = cas.read_action_request(str(record["action_key"]))
+    demand = pb.action_resource_demand(action, queue.demand_of(record)) if action else queue.demand_of(record)
+    if demand.get("gpu", 0) <= 0:
         return status, detail, False
-    if queue.demand_of(record).get("gpu", 0) <= 0:
-        return status, detail, False
-    if detail.get("cached_execution") or status == "cache_hit":
-        observation = detail.get("resource_telemetry") or {}
-    else:
-        observation = {**(detail.get("resource_telemetry") or {}), **telemetry}
-    if observation:
-        detail["resource_telemetry"] = observation
-    zero_gpu = (type(observation.get("gpu_devices_used")) is int
-                and observation["gpu_devices_used"] == 0)
-    if zero_gpu:
+    # The status sidecar is writable by the payload UID. Neither its cache
+    # claim nor its GPU fields can select evidence for a terminal verdict.
+    detail.pop("cached_execution", None)
+    detail.pop("resource_telemetry", None)
+    receipt = cas.lookup(action) if status == "cache_hit" and action else None
+    observation = dict((receipt.get("resource_telemetry") or {}) if receipt else telemetry)
+    state = observation.get("gpu_use")
+    if status == "cache_hit" and receipt is None:
+        status = "failed"
+        detail.update(status="failed", returncode=1, termination_reason="cache_receipt_unavailable")
+    if state is None:
+        # Older receipts can prove positive UUID use, but an old zero count
+        # contains no evidence that a sample covered the payload's lifetime.
+        state = "used" if observation.get("gpu_devices_used", 0) else "unobserved"
+    reason = observation.get("gpu_use_reason") or (
+        "cached_execution_observation" if receipt else "no_payload_sample")
+    observation.update(gpu_use=state, gpu_use_reason=reason)
+    detail.update(resource_telemetry=observation, gpu_use=state, gpu_use_reason=reason)
+    zero_gpu = state == "zero" and observation.get("gpu_devices_used") == 0
+    if zero_gpu and status in {"executed", "cache_hit", "failed"}:
         status = "failed"
         message = "PrismaBuild: GPU action used zero distinct GPU UUIDs in its payload scope."
         stderr = str(detail.get("stderr") or "")
         detail.update(status="failed", returncode=1,
                       termination_reason="zero_gpu_devices_used",
                       stderr=stderr if message in stderr else stderr + "\n" + message + "\n")
+    else:
+        zero_gpu = False
     return status, detail, zero_gpu
 
 

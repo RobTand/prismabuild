@@ -6192,31 +6192,40 @@ host cgroup memory and GPU power.
 
 ### GPU execution closure (#1744)
 
-The broker retains the union of GPU UUIDs attributed by `gpu_memory.collect`
-to each exact payload cgroup across samples. `resource_telemetry.gpu_devices_used`
-is the distinct observed UUID count, and `gpu_uuids` records its members.
-Device visibility, foreign processes and framebuffer occupancy do not count.
-Unavailable process-memory bytes do not erase valid device attribution.
-The monitor rechecks the attempt authority and kernel cgroup identity before
-persisting a sample. A missing or incomplete census with no earlier complete
-sample is unknown, rather than evidence of zero use.
+Core and `Pool.finish` use the same resource judgment: the sealed action's
+`params.demand` owns execution; only generic actions without a demand mapping
+fall back to shared normalized admitted resources. The worker receives that
+fallback in its launch arguments. Payload-writable action-status sidecars
+cannot establish GPU use, cache reuse or a GPU termination reason.
 
-Before publishing a new GPU result, Core requests one final broker census.
-The read-only `gpu_observation` operation verifies the peer's kernel membership
-in the requested action/nonce scope without handing broker tokens to payloads.
-Zero observed UUIDs refuse publication with `zero_gpu_devices_used`; unavailable
-attribution also refuses a new GPU receipt. Positive scope evidence is hashed
-into the receipt's optional `resource_telemetry` field and independently checked
-on lookup. CPU receipts retain their existing shape. Existing receipts without
-this field retain their historical unknown observation.
+The broker retains distinct GPU UUIDs attributed by `gpu_memory.collect` to
+an unchanged action/nonce and kernel cgroup identity, including descendants
+and containers. Device visibility, foreign processes and framebuffer occupancy
+do not count. Unavailable process-memory bytes retain valid UUID attribution.
+The broker records its launched worker's PID/start time. Only that worker can
+register its actual live argv child; a same-UID payload cannot register itself.
+A sample covers the payload only when that child's process identity is alive
+both before and after collection. Prelaunch and post-exit samples cannot prove
+zero use. The final `gpu_observation` RPC collects attribution without advancing
+the memory Guard, checking OOM events or stopping any scope. Guard decisions
+require at least two samples separated by the configured monitor interval.
 
-`Pool.finish`, through the lifecycle owner, files a zero-use successful GPU
-attempt as terminal `failed`, including its immutable attempt and the named
-reason. This policy refusal cannot retry automatically. The shared ending
-reader accepts the same terminal disposition. Cache reuse carries the original
-execution's observation and never substitutes the replay scope's idle sample.
-An unsampled short GPU use may fall between censuses; this signal proves
-observed scope attribution, not a trace of every GPU kernel.
+The PB lead's ruling on #1743's truncated text defines three outcomes:
+- `used`: at least one distinct GPU UUID was attributed to the payload scope.
+- `zero`: a successful GPU process sample covered the payload's lifetime and
+  found no attributed GPU process. Only this outcome blocks a new receipt and
+  becomes terminal `failed: zero_gpu_devices_used` in `Pool.finish`, without
+  automatic retry.
+- `unobserved`: no successful sample covered the payload's lifetime, or the GPU
+  sampler failed (including nvidia-smi timeouts). A successful payload may
+  publish a receipt. Terminal records, census and pbstatus expose `gpu_use`
+  and its reason. Sampler failures remain unobserved unless a UUID was seen.
+
+Core hashes the observation into the receipt's optional `resource_telemetry`
+field and validates it on lookup. CPU receipts retain their existing shape.
+Old receipts without GPU telemetry retain an unobserved execution. Cache hits
+require a verified CAS receipt and carry its original observation, never the
+replay scope's idle sample. Unsampled short CUDA contexts are unobserved.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand
 does not imply `gb10`, even when submitted from a GPU host. Portable CPU work
