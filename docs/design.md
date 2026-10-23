@@ -6243,6 +6243,8 @@ new sample cannot straddle the freeze. The bounded wait reserves the final
 when the periodic census cannot finish. `gpu_execution_judgment` reads only
 the frozen record or its absence and is the only outcome calculation. It issues
 an immutable `GpuUseJudgment` using a module-private constructor authority.
+Issued instances do not carry that authority. A module-private weak-reference
+registry recognizes issued instances without keeping them alive.
 Every decision and projection boundary requires that capability at runtime;
 serialized dictionaries cannot replace it. An AST guard checks construction
 by class identity and aliases, and behavioral mutants exercise the consumers. Core, Pool, late finishers and the ending readers
@@ -6267,7 +6269,10 @@ reader hold OFD write/read locks on a root-owned 0444 publication lock file.
 Only the broker can open a writable descriptor for its write lock; acquisition
 is nonblocking. A same-UID payload can hold only a compatible read lock, which
 may refuse a commit and make it visibly unobserved, but cannot block the broker
-or Guard, nor an evidence reader. The broker checks
+or Guard, nor an evidence reader. The PB lead accepts the publication-lock
+creation race as a visible degradation: a same-UID process can take a read lock
+on another attempt's new publication lock before its writer acquires it. That
+attempt's zero evidence then becomes unobserved, never used. The broker checks
 the deadline before and after rename and directory sync, and rolls back an
 expired rename before releasing that lock. A reader cannot observe a late
 rename while it is being refused. If the reply is lost,
@@ -6292,10 +6297,19 @@ verifiable, but an observation without a frozen record establishes neither
 used nor zero; its judgment is unobserved: final_observation_failed. A cache
 hit over such a receipt records gpu_cache_note: receipt_predates_gpu_observation
 to distinguish absent historical evidence from a current sampling failure.
+Census and pbstatus display this note alongside the unobserved outcome.
+Malformed GPU evidence becomes one visible unreadable row; other endings still
+render in census, pbstatus and the metrics view.
 Cache hits require a verified CAS receipt and carry its frozen record, never
 the replay scope's idle sample. An attempt with no
 committed record may carry a bound unobserved receipt; Pool honors the same
 sealed absence. Unsampled short CUDA contexts remain unobserved.
+
+The trusted PB runtime and its import paths remain outside the payload's write
+authority. The PB lead's N-6 ruling treats a payload rewriting that code as code
+execution inside PB, outside this change's threat scope. Same-UID writes in
+scope are to payload-owned scratch, outputs and sidecars. Runtime ownership
+hardening is separate work.
 
 Submission and test-shard defaults share the GPU placement judgment. CPU demand
 does not imply `gb10`, even when submitted from a GPU host. Portable CPU work

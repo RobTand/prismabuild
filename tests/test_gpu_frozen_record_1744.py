@@ -202,7 +202,8 @@ def _gpu_constructor_calls(source):
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     found = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not constructor(node.func):
+        if (not isinstance(node, ast.Call)
+                or not (constructor(node.func) or any(key.arg == "_authority" for key in node.keywords))):
             continue
         parent = parents.get(node)
         while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -220,6 +221,14 @@ def test_live_telemetry_is_not_a_judgment_route():
              for path in directory.rglob('*.py') for owner, _ in _gpu_constructor_calls(path.read_text())]
     assert sites and all(path == root / 'src/prismabuild/core.py' and owner == 'gpu_execution_judgment'
                          for path, owner in sites), sites
+    for directory in (root / 'src', root / 'tools'):
+        for path in directory.rglob('*.py'):
+            if path == root / 'src/prismabuild/core.py':
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                name = (node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute)
+                        else node.value if isinstance(node, ast.Constant) else None)
+                assert name not in {'_authority', '_GPU_JUDGMENT_AUTHORITY', '_GPU_JUDGMENTS'}, path
 
 
 @pytest.mark.parametrize('spelling', ['GpuUseJudgment', 'other.GpuUseJudgment', 'getattr(other, "GpuUseJudgment")', 'alias'])

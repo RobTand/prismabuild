@@ -279,6 +279,7 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     # claim nor its GPU fields can select evidence for a terminal verdict.
     detail.pop("cached_execution", None)
     detail.pop("resource_telemetry", None)
+    detail.pop("gpu_cache_note", None)
     receipt = cas.lookup(action) if status in {"executed", "cache_hit"} and cas and action else None
     execution = receipt.get("resource_telemetry") or {} if receipt else {}
     scope = record.get("resource_scope") or {}

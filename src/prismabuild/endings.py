@@ -375,11 +375,12 @@ def resolve_attempt(
         raise invalid("pool attempt detail must be an object")
     observation = raw_detail.get("resource_telemetry")
     gpu_judgment = None
-    if isinstance(observation, Mapping) and ("gpu_record" in observation or "gpu_use" in observation):
+    if (any(field in raw_detail for field in ("gpu_use", "gpu_use_reason"))
+            or isinstance(observation, Mapping) and ("gpu_record" in observation or "gpu_use" in observation)):
+        observation = observation if isinstance(observation, Mapping) else {}
         gpu_judgment = pb.GpuUseJudgment.require(pb.gpu_execution_judgment(observation.get("gpu_record"),
             nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
-    gpu_refusal_final = (raw_detail.get("termination_reason") == "zero_gpu_devices_used"
-                         and gpu_judgment is not None and gpu_judgment["gpu_use"] == "zero")
+    gpu_refusal_final = (gpu_judgment is not None and gpu_judgment["gpu_use"] == "zero")
     expected = (
         WITHDRAWN if status == WITHDRAWN else
         DONE if succeeded else FAILED if (stopped or worker_failure_final or gpu_refusal_final

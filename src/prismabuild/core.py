@@ -42,6 +42,7 @@ import tempfile
 import time
 from typing import NoReturn
 import uuid
+import weakref
 import zlib
 
 try:
@@ -6191,6 +6192,7 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
 
 
 _GPU_JUDGMENT_AUTHORITY = object()
+_GPU_JUDGMENTS: dict[int, weakref.ReferenceType] = {}
 
 
 class GpuUseJudgment(Mapping[str, object]):
@@ -6199,13 +6201,17 @@ class GpuUseJudgment(Mapping[str, object]):
     Serialized projections are evidence carriers, never decision capabilities.
     A consumer must require this type before routing or projecting an outcome.
     """
-    __slots__ = ("_encoded", "_authority")
+    __slots__ = ("_encoded", "__weakref__")
 
     def __init__(self, value: Mapping[str, object], *, _authority: object = None):
         if _authority is not _GPU_JUDGMENT_AUTHORITY:
             raise ActionContractError("GPU judgment requires the judgment authority")
         object.__setattr__(self, "_encoded", _canonical_bytes(value))
-        object.__setattr__(self, "_authority", _authority)
+        identity = id(self)
+        def forget(reference):
+            if _GPU_JUDGMENTS.get(identity) is reference:
+                del _GPU_JUDGMENTS[identity]
+        _GPU_JUDGMENTS[identity] = weakref.ref(self, forget)
 
     def __setattr__(self, name, value):
         raise AttributeError("GPU judgment is immutable")
@@ -6213,7 +6219,8 @@ class GpuUseJudgment(Mapping[str, object]):
     @staticmethod
     def require(value: object, *, action_key: str | None = None) -> GpuUseJudgment:
         if (type(value) is not GpuUseJudgment
-                or getattr(value, "_authority", None) is not _GPU_JUDGMENT_AUTHORITY):
+                or (reference := _GPU_JUDGMENTS.get(id(value))) is None
+                or reference() is not value):
             raise ActionContractError("GPU consumer requires a GpuUseJudgment")
         if action_key is not None:
             frozen = json.loads(value._encoded).get("gpu_record")

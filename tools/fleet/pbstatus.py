@@ -273,12 +273,13 @@ class SchedulerUnavailable(Exception):
     """
 
 
-def _gpu_use_text(judgment: pb.GpuUseJudgment | None) -> str:
+def _gpu_use_text(judgment: pb.GpuUseJudgment | None, *, cache_note: str | None = None) -> str:
     if judgment is None:
         return ABSENT
     judgment = pb.GpuUseJudgment.require(judgment)
     state = judgment["gpu_use"]
-    return state + ": " + judgment["gpu_use_reason"] if state == "unobserved" else state
+    text = state + ": " + judgment["gpu_use_reason"] if state == "unobserved" else state
+    return text + "; " + cache_note if cache_note else text
 
 
 def _scheduler_output(argv: Sequence[str], *, program: str) -> str:
@@ -896,6 +897,13 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
     for ending in endings:
         elapsed = ending.get("elapsed_s")
         reason = ending.get("unreadable")
+        try:
+            gpu_use = _gpu_use_text(pb.gpu_execution_judgment(ending.get("gpu_record"))
+                                    if ending.get("gpu_use") is not None else None,
+                                    cache_note=ending.get("gpu_cache_note"))
+        except pb.ActionContractError as exc:
+            gpu_use = UNKNOWN
+            reason = f"invalid GPU evidence: {exc}"
         rows.append((
             str(ending.get("action_key"))[:12], ending.get("status"),
             ending.get("transport"), ending.get("host"),
@@ -915,8 +923,7 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # three numbers nobody can see beside the run they belong to are
             # three numbers nobody reads.
             pool.describe_resource_profile(ending),
-            _gpu_use_text(pb.gpu_execution_judgment(ending.get("gpu_record"))
-                          if ending.get("gpu_use") is not None else None),
+            gpu_use,
             # The path and the reason, on the one kind of row where every
             # other column is inside a file nobody could read -- and otherwise
             # the cost of a preemption, which is the one ending whose cause is

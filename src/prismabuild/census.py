@@ -2003,10 +2003,13 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
     detail = record.get("detail")
     detail = detail if isinstance(detail, dict) else {}
     observation = detail.get("resource_telemetry")
-    judgment = (pb.GpuUseJudgment.require(pb.gpu_execution_judgment(observation.get("gpu_record"),
-                    nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
-                if isinstance(observation, dict) and ("gpu_use" in observation or "gpu_record" in observation)
-                else None)
+    try:
+        judgment = (pb.GpuUseJudgment.require(pb.gpu_execution_judgment(observation.get("gpu_record"),
+                        nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
+                    if isinstance(observation, dict) and ("gpu_use" in observation or "gpu_record" in observation)
+                    else None)
+    except pb.ActionContractError as exc:
+        return _unreadable_row(entry, f"invalid GPU evidence: {exc}")
     slurm = detail.get("slurm")
     slurm = slurm if isinstance(slurm, dict) else {}
     try:
@@ -2046,6 +2049,7 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         "gpu_use": judgment["gpu_use"] if judgment is not None else None,
         "gpu_use_reason": judgment["gpu_use_reason"] if judgment is not None else None,
         "gpu_record": judgment.get("gpu_record") if judgment is not None else None,
+        "gpu_cache_note": detail.get("gpu_cache_note"),
         # The pull queue's records carry no receipt field at all, which is
         # a different thing from a receipt that was not published.
         "receipt_published": detail.get("receipt_published"),
