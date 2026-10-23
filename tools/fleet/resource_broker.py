@@ -11,6 +11,7 @@ import errno
 import hashlib
 import hmac
 import importlib.util
+import fcntl
 import json
 import math
 import os
@@ -223,9 +224,15 @@ def _atomic(path, value, *, mode=0o600, deadline=None):
         if deadline is not None and time.monotonic()>=deadline:
             raise ValueError('GPU observation deadline elapsed')
         os.replace(temp,path)
+        if deadline is not None and time.monotonic()>=deadline:
+            path.unlink(missing_ok=True)
+            raise ValueError('GPU observation deadline elapsed during commit')
         directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(directory)
         finally:os.close(directory)
+        if deadline is not None and time.monotonic()>=deadline:
+            path.unlink(missing_ok=True)
+            raise ValueError('GPU observation deadline elapsed during commit')
     finally:temp.unlink(missing_ok=True)
 
 
@@ -877,7 +884,7 @@ class Authority:
                 self.freeze_gpu_record(scope,deadline,final_succeeded=False)
             return {'ok':True,'scope_id':scope,'nonce':nonce,'gpu_record':record['gpu_record']}
 
-    def freeze_gpu_record(self,scope,deadline,*,final_succeeded):
+    def freeze_gpu_record(self,scope,deadline,*,final_succeeded,final_reason=None):
         """Commit the sole public attempt record before returning any judgment."""
         with self.lock:
             record=self.records[scope]
@@ -890,6 +897,8 @@ class Authority:
                        'gpu_evidence':{**prior.get('gpu_evidence',{
                            'sample_failed':False,'live_sample':False}),
                            'final_succeeded':final_succeeded}}
+            if final_reason is not None:
+                telemetry['gpu_evidence']['final_reason']=final_reason
             frozen={key:record[key] for key in ('action_key','nonce','scope_id')}
             frozen.update(deadline_monotonic=deadline,resource_telemetry=telemetry)
             directory=self.gpu_evidence_dir
@@ -900,6 +909,9 @@ class Authority:
                 if info.st_uid!=os.geteuid() or info.st_mode&0o022:
                     raise ValueError('unsafe GPU evidence directory')
                 os.fchmod(directory_fd,0o755)
+                # A reader cannot see a rename preempted across the deadline:
+                # _atomic rolls it back before releasing this publication lock.
+                fcntl.flock(directory_fd,fcntl.LOCK_EX)
                 _atomic(Path(f'/proc/self/fd/{directory_fd}')/(scope+'.json'),
                         frozen,mode=0o444,deadline=deadline)
             finally:os.close(directory_fd)
@@ -1417,38 +1429,58 @@ class ResourceMonitor:
             return self._poll_once()
 
     def observe_gpu(self,scope,deadline):
-        """One bounded final census, independent of the periodic Guard lock."""
-        # A concurrent final census gets an explicit failed observation rather
-        # than queuing host-wide work ahead of the Guard. Payload RPCs never
-        # reach here; worker authentication and once-only admission precede it.
+        """Join the periodic sample, then freeze one bounded, read-only census."""
+        # Competing authenticated final censuses do not queue host-wide work.
+        # The once-only worker admission prevents a payload from repeating this.
         if not self.final_lock.acquire(blocking=False):
             return self.authority.freeze_gpu_record(scope,deadline,final_succeeded=False)
+        acquired=False
         try:
+            # Reserve the last 50 ms (at most half the remaining window) for
+            # committing explicit unobserved evidence if the periodic census
+            # cannot finish. This is a lock wait for an event, never a poll.
+            remaining=max(0.0,deadline-time.monotonic())
+            census_deadline=deadline-min(.05,remaining/2)
+            acquired=self.sample_lock.acquire(timeout=max(0.0,census_deadline-time.monotonic()))
+            if not acquired:
+                return self.authority.freeze_gpu_record(scope,deadline,final_succeeded=False,
+                    final_reason='sampler_in_flight_at_freeze')
+            # Hold the sample lock through commit: no newly attempted periodic
+            # sample can start and then be discarded by this freeze.
             records=self._records()
-            records={scope:records[scope]} if scope in records else {}
-            snapshot,_=self._sample_gpu(records,final_scope=scope)
+            if scope not in records:
+                return self.authority.freeze_gpu_record(scope,deadline,final_succeeded=False,
+                    final_reason='final_census_skipped')
+            records={scope:records[scope]}
+            snapshot,_=self._sample_gpu(records,final_scope=scope,
+                timeout_s=max(0.0,min(self.timeout_s,census_deadline-time.monotonic())))
+            sampled=(snapshot is not None and any(job.scope_id==scope for job in snapshot.jobs))
             return self.authority.freeze_gpu_record(scope,deadline,
-                final_succeeded=snapshot is not None and snapshot.as_dict().get('gpu_query_complete') is True)
-        finally:self.final_lock.release()
+                final_succeeded=sampled and snapshot.as_dict().get('gpu_query_complete') is True,
+                final_reason='final_census_skipped' if snapshot is not None and not sampled else None)
+        finally:
+            if acquired:self.sample_lock.release()
+            self.final_lock.release()
 
     def _payload_live(self,record):
         child=record.get('gpu_payload')
         return child is not None and self.authority._live_process(child['pid'])==child
 
-    def _sample_gpu(self,records,*,final_scope=None):
+    def _sample_gpu(self,records,*,final_scope=None,timeout_s=None):
         scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
                     **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
                        if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
                 for scope,record in records.items()]
         live={scope for scope,record in records.items() if self._payload_live(record)}
         device_readings=None;memory_options={}
+        timeout_s=self.timeout_s if timeout_s is None else timeout_s
         try:
             if self.capacity is not None:
-                device_readings=self.capacity.devices(timeout_s=self.timeout_s)
+                device_readings=self.capacity.devices(timeout_s=timeout_s)
                 memory_options['gpu_memory_domains']={device['uuid']:device['memory_domain']
                                                      for device in device_readings[0]}
                 memory_options['gpu_devices']=device_readings[0]
-            snapshot=self.gpu.collect(scopes,timeout_s=self.timeout_s,**memory_options)
+            snapshot=self.gpu.collect(scopes,timeout_s=timeout_s,**memory_options)
         except Exception as exc:
             self.sample_error=type(exc).__name__
             self.last_success_monotonic=None
@@ -1456,6 +1488,9 @@ class ResourceMonitor:
                 {'scope_id':scope,'cgroup_identity':record['cgroup_identity'],'processes':[]}
                 for scope,record in records.items()]},live,final_scope)
             return None,device_readings
+        if snapshot.as_dict().get('gpu_query_complete') is not True:
+            self.sample_error='gpu_query_incomplete'
+            self.last_success_monotonic=None
         self._retain_gpu_observation(records,snapshot.as_dict(),live,final_scope)
         return snapshot,device_readings
 
@@ -1545,7 +1580,9 @@ class ResourceMonitor:
                 public['errors'].append('scope inventory changed or monitor errors during sample')
             _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
         _atomic(self.authority.state_dir/'monitor.status',status)
-        self.last_success_monotonic=time.monotonic() if not errors else None
+        # A disappearing/released scope is an inventory race, not evidence
+        # that the host census itself is broken.
+        self.last_success_monotonic=time.monotonic() if self.sample_error is None else None
         return status
 
     def healthy(self):

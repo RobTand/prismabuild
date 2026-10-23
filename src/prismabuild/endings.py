@@ -376,7 +376,8 @@ def resolve_attempt(
     observation = raw_detail.get("resource_telemetry")
     gpu_judgment = None
     if isinstance(observation, Mapping) and ("gpu_record" in observation or "gpu_use" in observation):
-        gpu_judgment = pb.gpu_execution_judgment(observation)
+        gpu_judgment = pb.GpuUseJudgment.require(pb.gpu_execution_judgment(observation.get("gpu_record"),
+            nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
     gpu_refusal_final = (raw_detail.get("termination_reason") == "zero_gpu_devices_used"
                          and gpu_judgment is not None and gpu_judgment["gpu_use"] == "zero")
     expected = (
@@ -401,7 +402,7 @@ def resolve_attempt(
         raise invalid("pool attempt finished_host must be nonempty text")
     detail = dict(raw_detail)
     if gpu_judgment is not None:
-        detail.update(resource_telemetry=gpu_judgment, gpu_use=gpu_judgment["gpu_use"],
+        detail.update(resource_telemetry=gpu_judgment.as_dict(), gpu_use=gpu_judgment["gpu_use"],
                       gpu_use_reason=gpu_judgment["gpu_use_reason"])
     logs = adopted.get("logs")
     for stream in ("stdout", "stderr"):

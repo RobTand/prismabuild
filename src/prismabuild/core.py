@@ -3818,7 +3818,7 @@ class PrismaBuildCAS:
         precommit_verify: Callable[[], None] | None = None,
         staging_namespace: str | None = None,
         return_execution_receipt: bool = False,
-        resource_telemetry: Mapping[str, object] | None = None,
+        resource_telemetry: GpuUseJudgment | None = None,
     ) -> tuple[dict[str, object], bool]:
         """Publish a result and return ``(canonical_receipt, won_publication)``.
 
@@ -3838,10 +3838,10 @@ class PrismaBuildCAS:
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
         if _action_needs_gpu(normalized) and resource_telemetry is None:
-            resource_telemetry = _unobserved_gpu_use("no_sample_during_lifetime")
+            resource_telemetry = _unobserved_gpu_use()
         if resource_telemetry is not None:
-            resource_telemetry = _validate_gpu_execution_observation(resource_telemetry)
-            if resource_telemetry["gpu_devices_used"] == 0:
+            resource_telemetry = GpuUseJudgment.require(resource_telemetry)
+            if resource_telemetry["gpu_use"] == "zero":
                 raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope")
         if staging_namespace is None:
             staging_directory = self.root / ".staging"
@@ -3866,7 +3866,7 @@ class PrismaBuildCAS:
                 "producer": producer,
             }
             if resource_telemetry is not None:
-                body["resource_telemetry"] = dict(resource_telemetry)
+                body["resource_telemetry"] = resource_telemetry.as_dict()
             candidate = {**body, "receipt_sha256": canonical_sha256(body)}
             receipt_path = self._receipt_path(str(normalized["action_key"]))
 
@@ -6145,8 +6145,11 @@ def _action_needs_gpu(action: Mapping[str, object],
 def _validate_receipt_shape(value: object) -> Mapping[str, object]:
     optional = {"resource_telemetry"} if isinstance(value, Mapping) and "resource_telemetry" in value else set()
     receipt = _exact_mapping(value, keys=_RECEIPT_KEYS | optional, where="CAS receipt")
-    if optional and _validate_gpu_execution_observation(receipt["resource_telemetry"])["gpu_devices_used"] == 0:
-        _fail("GPU action used zero distinct GPU UUIDs in its payload scope")
+    if optional:
+        observation = _validate_gpu_execution_observation(receipt["resource_telemetry"])
+        judgment = GpuUseJudgment.require(gpu_execution_judgment(observation.get("gpu_record")))
+        if judgment["gpu_use"] == "zero":
+            _fail("GPU action used zero distinct GPU UUIDs in its payload scope")
     return receipt
 
 
@@ -6178,24 +6181,65 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
     if modern:
         result.update(gpu_use=state, gpu_use_reason=_text(raw["gpu_use_reason"], where="GPU use reason"))
     if "gpu_record" in raw:
-        judgment = gpu_execution_judgment(raw["gpu_record"])
+        judgment = GpuUseJudgment.require(gpu_execution_judgment(raw["gpu_record"]))
         if any(result[key] != judgment[key] for key in result):
             _fail("GPU observation disagrees with frozen record")
         result["gpu_record"] = raw["gpu_record"]
     return result
 
 
-def _unobserved_gpu_use(reason: str, *, bind_scope: bool = False) -> dict[str, object]:
-    return gpu_execution_judgment(None, reason=reason,
+_GPU_JUDGMENT_AUTHORITY = object()
+
+
+class GpuUseJudgment(Mapping[str, object]):
+    """Immutable capability issued only by gpu_execution_judgment.
+
+    Serialized projections are evidence carriers, never decision capabilities.
+    A consumer must require this type before routing or projecting an outcome.
+    """
+    __slots__ = ("_encoded", "_authority")
+
+    def __init__(self, value: Mapping[str, object], *, _authority: object = None):
+        if _authority is not _GPU_JUDGMENT_AUTHORITY:
+            raise ActionContractError("GPU judgment requires the judgment authority")
+        object.__setattr__(self, "_encoded", _canonical_bytes(value))
+        object.__setattr__(self, "_authority", _authority)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("GPU judgment is immutable")
+
+    @staticmethod
+    def require(value: object) -> GpuUseJudgment:
+        if (type(value) is not GpuUseJudgment
+                or getattr(value, "_authority", None) is not _GPU_JUDGMENT_AUTHORITY):
+            raise ActionContractError("GPU consumer requires a GpuUseJudgment")
+        return value
+
+    def as_dict(self) -> dict[str, object]:
+        GpuUseJudgment.require(self)
+        return json.loads(self._encoded)
+
+    def __getitem__(self, key):
+        return self.as_dict()[key]
+
+    def __iter__(self):
+        return iter(self.as_dict())
+
+    def __len__(self):
+        return len(self.as_dict())
+
+
+def _unobserved_gpu_use(*, bind_scope: bool = False) -> GpuUseJudgment:
+    return GpuUseJudgment.require(gpu_execution_judgment(None,
         nonce=os.environ.get(ACTION_NONCE_ENV) if bind_scope else None,
-        scope_id=os.environ.get(ACTION_SCOPE_ENV) if bind_scope else None)
+        scope_id=os.environ.get(ACTION_SCOPE_ENV) if bind_scope else None))
 
 
 def gpu_execution_judgment(record: Mapping[str, object] | None, *,
                            action_key: str | None = None, nonce: str | None = None,
                            scope_id: str | None = None,
-                           reason: str = "final_observation_failed") -> dict[str, object]:
-    """The sole GPU judgment, from a frozen attempt record or verified receipt.
+                           ) -> GpuUseJudgment:
+    """The sole GPU judgment, from a frozen attempt record or its absence.
 
     Absence after the commit deadline is final unobserved evidence. Live scope
     telemetry is deliberately not an accepted input. The random nonce is the
@@ -6206,19 +6250,9 @@ def gpu_execution_judgment(record: Mapping[str, object] | None, *,
                 or not isinstance(scope_id, str)
                 or not re.fullmatch(r"prismabuild-job[a-f0-9]{32}\.slice", scope_id)):
             nonce = scope_id = None
-        return {"gpu_use": "unobserved", "gpu_use_reason": reason,
-                "gpu_devices_used": None, "gpu_uuids": [], "nonce": nonce, "scope_id": scope_id}
-    if "gpu_record" in record:
-        return gpu_execution_judgment(record["gpu_record"], action_key=action_key,
-                                      nonce=nonce, scope_id=scope_id)
-    if "gpu_use" in record or set(record) == {"gpu_devices_used", "gpu_uuids", "nonce", "scope_id"}:
-        # Historical CAS receipts already seal their observation. New receipts
-        # carry the raw frozen record and always take the branch above.
-        observation = _validate_gpu_execution_observation(record)
-        if "gpu_use" not in observation:
-            observation.update(gpu_use="used" if observation["gpu_uuids"] else "zero",
-                               gpu_use_reason="attributed_gpu_uuid" if observation["gpu_uuids"] else "successful_payload_sample")
-        return observation
+        return GpuUseJudgment({"gpu_use": "unobserved", "gpu_use_reason": "final_observation_failed",
+                "gpu_devices_used": None, "gpu_uuids": [], "nonce": nonce, "scope_id": scope_id},
+                _authority=_GPU_JUDGMENT_AUTHORITY)
     frozen = _exact_mapping(record, keys={"action_key", "nonce", "scope_id",
                             "deadline_monotonic", "resource_telemetry"}, where="frozen GPU attempt")
     key = _text(frozen["action_key"], where="GPU action key", pattern=_SHA256_RE)
@@ -6239,23 +6273,29 @@ def gpu_execution_judgment(record: Mapping[str, object] | None, *,
     if (not isinstance(uuids, list) or any(not isinstance(value, str) or not value for value in uuids)
             or uuids != sorted(set(uuids))):
         _fail("GPU UUID evidence must be distinct and sorted")
-    evidence = _exact_mapping(telemetry["gpu_evidence"],
-        keys={"sample_failed", "live_sample", "final_succeeded"}, where="GPU attempt evidence")
-    if any(type(value) is not bool for value in evidence.values()):
+    raw_evidence = telemetry["gpu_evidence"]
+    optional = {"final_reason"} if isinstance(raw_evidence, Mapping) and "final_reason" in raw_evidence else set()
+    evidence = _exact_mapping(raw_evidence,
+        keys={"sample_failed", "live_sample", "final_succeeded"} | optional, where="GPU attempt evidence")
+    if any(type(evidence[key]) is not bool for key in ("sample_failed", "live_sample", "final_succeeded")):
         _fail("invalid frozen GPU sampling evidence")
+    final_reason = evidence.get("final_reason", "final_observation_failed")
+    if final_reason not in {"final_observation_failed", "sampler_in_flight_at_freeze", "final_census_skipped"}:
+        _fail("invalid frozen GPU final observation reason")
     if uuids:
         state, reason = "used", "attributed_gpu_uuid"
     elif evidence["final_succeeded"] is False:
-        state, reason = "unobserved", "final_observation_failed"
+        state, reason = "unobserved", final_reason
     elif evidence["sample_failed"]:
         state, reason = "unobserved", "sampler_error"
     elif not evidence["live_sample"]:
         state, reason = "unobserved", "no_sample_during_lifetime"
     else:
         state, reason = "zero", "successful_payload_sample"
-    return {"gpu_use": state, "gpu_use_reason": reason, "gpu_uuids": list(uuids),
+    return GpuUseJudgment({"gpu_use": state, "gpu_use_reason": reason, "gpu_uuids": list(uuids),
             "gpu_devices_used": None if state == "unobserved" else len(uuids),
-            "nonce": observed_nonce, "scope_id": observed_scope, "gpu_record": dict(frozen)}
+            "nonce": observed_nonce, "scope_id": observed_scope, "gpu_record": dict(frozen)},
+        _authority=_GPU_JUDGMENT_AUTHORITY)
 
 
 def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, object]:
@@ -6268,11 +6308,15 @@ def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, obje
         endpoint.parent / "gpu-observations" / (scope + ".json"), where="broker GPU evidence")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     descriptor = os.open(path.anchor, flags | os.O_DIRECTORY)
+    publication_lock = None
     try:
         for part in path.parts[1:]:
             info = os.fstat(descriptor)
             if info.st_uid != 0 or info.st_mode & 0o022:
                 _fail("broker GPU evidence ancestry is not root-owned and protected")
+            if part == path.name:
+                fcntl.flock(descriptor, fcntl.LOCK_SH)
+                publication_lock = os.dup(descriptor)
             child = os.open(part, flags | (os.O_DIRECTORY if part != path.name else 0), dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
@@ -6292,6 +6336,8 @@ def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, obje
             _fail("broker GPU evidence changed or exceeds 64 KiB")
     finally:
         os.close(descriptor)
+        if publication_lock is not None:
+            os.close(publication_lock)
     evidence = digest_primitives.decode_strict_json(bytes(raw), where="broker GPU evidence")
     gpu_execution_judgment(evidence, action_key=str(action["action_key"]), nonce=nonce, scope_id=scope)
     return evidence
@@ -6329,7 +6375,7 @@ def _register_gpu_payload(action: Mapping[str, object], pid: int) -> None:
 
 
 def _gpu_execution_observation(action: Mapping[str, object],
-                               demand: Mapping[str, object] | None = None) -> dict[str, object] | None:
+                               demand: Mapping[str, object] | None = None) -> GpuUseJudgment | None:
     if not _action_needs_gpu(action, demand):
         return None
     deadline = time.monotonic() + GPU_OBSERVATION_TIMEOUT_S
@@ -6350,8 +6396,9 @@ def _gpu_execution_observation(action: Mapping[str, object],
             observation = gpu_execution_judgment(frozen, action_key=str(action["action_key"]),
                 nonce=os.environ.get(ACTION_NONCE_ENV), scope_id=os.environ.get(ACTION_SCOPE_ENV))
         except (OSError, ValueError, KeyError, TypeError, ActionContractError):
-            observation = _unobserved_gpu_use("final_observation_failed", bind_scope=True)
-    if observation["gpu_devices_used"] == 0:
+            observation = _unobserved_gpu_use(bind_scope=True)
+    observation = GpuUseJudgment.require(observation)
+    if observation["gpu_use"] == "zero":
         raise LocalActionError("GPU action used zero distinct GPU UUIDs in its payload scope; no receipt was published")
     return observation
 

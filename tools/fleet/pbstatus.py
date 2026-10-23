@@ -273,6 +273,14 @@ class SchedulerUnavailable(Exception):
     """
 
 
+
+def _gpu_use_text(judgment: pb.GpuUseJudgment | None) -> str:
+    if judgment is None:
+        return ABSENT
+    judgment = pb.GpuUseJudgment.require(judgment)
+    state = judgment["gpu_use"]
+    return state + ": " + judgment["gpu_use_reason"] if state == "unobserved" else state
+
 def _scheduler_output(argv: Sequence[str], *, program: str) -> str:
     """Run one scheduler command and return its stdout.
 
@@ -907,8 +915,8 @@ def ending_lines(endings: Sequence[Mapping[str, object]],
             # three numbers nobody can see beside the run they belong to are
             # three numbers nobody reads.
             pool.describe_resource_profile(ending),
-            (str(ending.get("gpu_use")) + ": " + str(ending.get("gpu_use_reason"))
-             if ending.get("gpu_use") == "unobserved" else ending.get("gpu_use") or ABSENT),
+            _gpu_use_text(pb.gpu_execution_judgment(ending.get("gpu_record"))
+                          if ending.get("gpu_use") is not None else None),
             # The path and the reason, on the one kind of row where every
             # other column is inside a file nobody could read -- and otherwise
             # the cost of a preemption, which is the one ending whose cause is

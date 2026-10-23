@@ -16,6 +16,7 @@ Adaptations from review-r2-probes.py:
   ownership checks (verified separately by code reading).
 """
 import ast
+import fcntl
 import json
 import os
 import re
@@ -150,7 +151,12 @@ def _rob_reader(action):
     """pb._read_broker_gpu_evidence minus root ownership (probes run as rob)."""
     scope, nonce = os.environ[pb.ACTION_SCOPE_ENV], os.environ[pb.ACTION_NONCE_ENV]
     leaf = Path(os.environ['PRISMABUILD_RESOURCE_BROKER_SOCKET']).parent / 'gpu-observations' / (scope + '.json')
-    evidence = pb.digest_primitives.decode_strict_json(leaf.read_bytes(), where='broker GPU evidence')
+    directory = os.open(leaf.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_SH)
+        evidence = pb.digest_primitives.decode_strict_json(leaf.read_bytes(), where='broker GPU evidence')
+    finally:
+        os.close(directory)
     pb.gpu_execution_judgment(evidence, action_key=str(action['action_key']), nonce=nonce, scope_id=scope)
     return evidence
 
@@ -394,8 +400,12 @@ def test_r3_inflight_lifetime_sample_is_not_discarded_by_the_freeze(e2e, infligh
     poller.start()
     assert entered.wait(5)                         # census started during the payload's lifetime
     e2e.alive['value'] = False                     # argv exits; the worker observes
+    observer = e2e.a.gpu_observer
+    def finalize(scope, deadline):
+        release.set()
+        return observer(scope, deadline)
+    e2e.a.gpu_observer = finalize
     core = _run_core(e2e, 'deliver')
-    release.set()
     poller.join(10)
     frozen = pb.gpu_execution_judgment(e2e.a.records[e2e.scope]['gpu_record'])
     readers = _finish_and_read(e2e, core)
@@ -713,143 +723,58 @@ def test_n7_late_finisher_keeps_the_zero_verdict(scoped, monkeypatch):
         'disposition')
 
 
-# -- Q2: mutation test of the "no other route" guard -------------------------
+# The review's eight mutations now exercise real consumers. The control paths
+# project the issued capability; plain replacement dictionaries are rejected.
 
-GUARD_FILE = REPO / 'tests' / 'test_gpu_frozen_record_1744.py'
-GUARD = 'test_live_telemetry_is_not_a_judgment_route'
-LIFECYCLE_ANCHOR = '    state, reason = observation["gpu_use"], observation["gpu_use_reason"]\n'
-ENDINGS_ANCHOR = '        gpu_judgment = pb.gpu_execution_judgment(observation)\n'
-POOL_ANCHOR = ('            if status.get("gpu_record") is not None:\n'
-               '                telemetry["gpu_record"] = status["gpu_record"]\n')
-RETAIN_ANCHOR = ("                if (current is None or current.get('released_unix') "
-                 "or current.get('gpu_record') is not None\n")
-DEMAND_ANCHOR = '        return pb.normalized_resource_demand(raw)\n'
-CENSUS_ANCHOR = '        "gpu_use": (pb.gpu_execution_judgment(detail["resource_telemetry"])["gpu_use"]\n'
-ZERO_FROM_LIVE = ('        observation = {**observation, "gpu_use": "zero", '
-                  '"gpu_use_reason": "successful_payload_sample", "gpu_devices_used": 0}\n')
-MUTANTS = {
-    # name: [(file, anchor, replacement)]
-    'live_key_local_variable': [('src/prismabuild/lifecycle.py', LIFECYCLE_ANCHOR,
-        '    if observation["gpu_use"] == "unobserved" and telemetry.get("gpu_devices_used") == 0:\n'
-        + ZERO_FROM_LIVE + LIFECYCLE_ANCHOR)],
-    'live_key_getattr': [('src/prismabuild/lifecycle.py', LIFECYCLE_ANCHOR,
-        '    if observation["gpu_use"] == "unobserved" and getattr(telemetry, "get")("gpu_devices_used") == 0:\n'
-        + ZERO_FROM_LIVE + LIFECYCLE_ANCHOR)],
-    'computed_banned_keys': [('src/prismabuild/lifecycle.py', LIFECYCLE_ANCHOR,
-        '    _live = telemetry.get("gpu_" + "evidence") or {}\n'
-        '    if (observation["gpu_use"] == "unobserved" and not telemetry.get("gpu_" + "uuids")\n'
-        '            and _live.get("live_" + "sample") and not _live.get("sample_" + "failed")):\n'
-        + ZERO_FROM_LIVE + LIFECYCLE_ANCHOR)],
-    'second_judgment_function': [('src/prismabuild/endings.py', ENDINGS_ANCHOR,
-        '        gpu_judgment = _second_route(observation)\n'),
-        ('src/prismabuild/endings.py', None,
-         '\n\ndef _second_route(observation):\n'
-         '    count = observation.get("gpu_devices_used")\n'
-         '    return {**observation, "gpu_use": "used" if count else "zero",\n'
-         '            "gpu_use_reason": "successful_payload_sample", "gpu_devices_used": count or 0}\n')],
-    'unscanned_pool_local_receiver': [('src/prismabuild/pool.py', POOL_ANCHOR, POOL_ANCHOR +
-        '            elif status.get("resource_telemetry"):\n'
-        '                live = status["resource_telemetry"]\n'
-        '                telemetry["gpu_record"] = {"action_key": scope.action_key, "nonce": scope.nonce,\n'
-        '                    "scope_id": scope.scope_id, "deadline_monotonic": 0.0, "resource_telemetry": {\n'
-        '                        "gpu_uuids": live["gpu_uuids"],\n'
-        '                        "gpu_evidence": {**live["gpu_evidence"], "final_succeeded": True}}}\n')],
-    'unscanned_pool_self_receiver': [('src/prismabuild/pool.py', DEMAND_ANCHOR, DEMAND_ANCHOR +
-        '\n    def _gpu_live_judgment(self, status):\n'
-        '        live = status.get("resource_telemetry") or {}\n'
-        '        evidence = live.get("gpu_evidence") or {}\n'
-        '        return "zero" if not live.get("gpu_uuids") and evidence.get("final_succeeded") else "unobserved"\n')],
-    'census_unbanned_key': [('src/prismabuild/census.py', CENSUS_ANCHOR,
-        '        "gpu_use": ("used" if detail["resource_telemetry"].get("gpu_devices_used") else "zero")\n'
-        '                   if detail.get("resource_telemetry") else (pb.gpu_execution_judgment(detail["resource_telemetry"])["gpu_use"]\n')],
-    'retain_check_satisfied_by_comment': [('tools/fleet/resource_broker.py', RETAIN_ANCHOR,
-        "                if (current is None or current.get('released_unix')  # gpu_record: see freeze\n")],
-}
-POSITIVE_CONTROL = [('src/prismabuild/lifecycle.py', LIFECYCLE_ANCHOR,
-                     '    _unused = telemetry.get("gpu_uuids")\n' + LIFECYCLE_ANCHOR)]
-
-
-def _scratch(tmp_path, edits):
-    root = tmp_path / 'scratch'
-    for rel in ['src/prismabuild/lifecycle.py', 'src/prismabuild/endings.py', 'src/prismabuild/census.py',
-                'src/prismabuild/action_result.py', 'src/prismabuild/pool.py', 'tools/fleet/resource_broker.py']:
-        target = root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text((REPO / rel).read_text())
-    (root / 'tests').mkdir(exist_ok=True)
-    for rel, anchor, replacement in edits:
-        target = root / rel
-        text = target.read_text()
-        if anchor is None:
-            text += replacement
-        else:
-            assert text.count(anchor) == 1, f'stale mutant anchor in {rel}'
-            text = text.replace(anchor, replacement)
-        compile(text, rel, 'exec')
-        target.write_text(text)
-    return root
-
-
-def _run_guard(root):
-    source = GUARD_FILE.read_text()
-    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == GUARD)
-    ns = {'ast': ast, 'Path': Path, 'pytest': pytest, 'pb': pb,
-          '__file__': str(root / 'tests' / GUARD_FILE.name)}
-    exec(compile(ast.get_source_segment(source, node), str(GUARD_FILE), 'exec'), ns)
-    try:
-        ns[GUARD]()
-    except AssertionError:
-        return 'guard_failed'
-    return 'guard_passed'
-
-
-def test_q2_guard_harness_controls(tmp_path):
-    assert _run_guard(_scratch(tmp_path / 'clean', [])) == 'guard_passed'
-    assert _run_guard(_scratch(tmp_path / 'positive', POSITIVE_CONTROL)) == 'guard_failed'
-
-
-@pytest.mark.parametrize('mutant', sorted(MUTANTS))
-def test_q2_no_other_route_guard_catches_second_judgment_mutant(tmp_path, mutant):
-    assert _run_guard(_scratch(tmp_path, MUTANTS[mutant])) == 'guard_failed', (
-        f'{GUARD} passes with mutant {mutant}: a second GPU judgment route goes undetected')
-
-
-def _mutated_function(root, rel, name, module, extra=()):
-    source = (root / rel).read_text()
+def _replace_function(module, name, change, extra=''):
+    source = Path(sys.modules[module.__module__].__file__ if isinstance(module, type) else module.__file__).read_text()
     tree = ast.parse(source)
-    glb = dict(module.__dict__)
-    for fn in [name, *extra]:
-        node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == fn)
-        exec(compile(textwrap.dedent(ast.get_source_segment(source, node)), rel, 'exec'), glb)
-    return glb[name]
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+    source = textwrap.dedent(ast.get_source_segment(source, node))
+    changed = change(source)
+    assert changed != source, 'stale mutation anchor'
+    namespace = dict(vars(module))
+    exec(compile(extra + '\n' + changed, name, 'exec'), namespace)
+    return namespace[name]
 
 
-@pytest.mark.parametrize('mutant', ['live_key_local_variable', 'live_key_getattr', 'computed_banned_keys'])
-def test_q2_lifecycle_mutants_are_live_second_routes(e2e, tmp_path, mutant):
-    """Behaviour proof: each mutant flips an unobserved success into terminal zero."""
-    root = _scratch(tmp_path, MUTANTS[mutant])
-    e2e.monkeypatch.setattr(lifecycle, '_gpu_finish_verdict',
-                            _mutated_function(root, 'src/prismabuild/lifecycle.py', '_gpu_finish_verdict', lifecycle))
+@pytest.mark.parametrize('mutant', ['live_key_local_variable', 'live_key_getattr', 'computed_banned_keys',
+                                     'unscanned_pool_self_receiver'])
+def test_lifecycle_second_judgment_mutants_are_refused(e2e, mutant):
     _lifetime(e2e, ['zero'])
     core = _run_core(e2e, 'refused')
     assert core['outcome'] == 'unobserved'
-    readers = _finish_and_read(e2e, core)
-    assert (readers['dir'], readers['pool']) == ('failed', 'zero'), readers
+    anchor = '    observation = pb.GpuUseJudgment.require(observation)'
+    forged = 'observation = {**observation, "gpu_use": "zero", "gpu_devices_used": 0}'
+    conditions = {
+        'live_key_local_variable': 'telemetry.get("gpu_devices_used") == 0',
+        'live_key_getattr': 'getattr(telemetry, "get")("gpu_devices_used") == 0',
+        'computed_banned_keys': '(telemetry.get("gpu_" + "evidence") or {}).get("live_" + "sample")',
+        'unscanned_pool_self_receiver': 'queue._gpu_live_judgment(telemetry)',
+    }
+    e2e.monkeypatch.setattr(e2e.queue, '_gpu_live_judgment', lambda t: t.get('gpu_devices_used') == 0, raising=False)
+    changed = _replace_function(lifecycle, '_gpu_finish_verdict', lambda source:
+        source.replace(anchor, '    if ' + conditions[mutant] + ':\n        ' + forged + '\n' + anchor))
+    e2e.monkeypatch.setattr(lifecycle, '_gpu_finish_verdict', changed)
+    with pytest.raises(pb.ActionContractError, match='GpuUseJudgment'):
+        _finish_and_read(e2e, core)
 
 
-def test_q2_endings_mutant_is_a_live_second_route(e2e, tmp_path):
-    root = _scratch(tmp_path, MUTANTS['second_judgment_function'])
-    e2e.monkeypatch.setattr(endings, 'resolve_attempt', _mutated_function(
-        root, 'src/prismabuild/endings.py', 'resolve_attempt', endings, extra=['_second_route']))
+def test_endings_second_judgment_mutant_is_refused(e2e):
     _lifetime(e2e, ['zero'])
     core = _run_core(e2e, 'refused')
-    readers = _finish_and_read(e2e, core)
-    # Baseline (no mutant) is unobserved everywhere: test_q4 nothing_committed.
-    assert readers['adopted'] == 'zero' and readers['dir'] == 'done', readers
+    extra = ('def _second_route(observation):\n'
+             '    count = observation.get("gpu_devices_used")\n'
+             '    return {**observation, "gpu_use": "used" if count else "zero"}\n')
+    changed = _replace_function(endings, 'resolve_attempt', lambda source:
+        source.replace('pb.gpu_execution_judgment(observation.get("gpu_record"),',
+                       '_second_route(observation,'), extra.replace('_second_route(observation):', '_second_route(observation, **ignored):'))
+    e2e.monkeypatch.setattr(endings, 'resolve_attempt', changed)
+    with pytest.raises(pb.ActionContractError, match='GpuUseJudgment'):
+        _finish_and_read(e2e, core)
 
 
-def test_q2_pool_mutant_is_a_live_second_route(tmp_path):
-    root = _scratch(tmp_path, MUTANTS['unscanned_pool_local_receiver'])
+def _scope_sampler_contract(sample):
     key, nonce = 'a' * 64, 'b' * 32
     scope_id = 'prismabuild-job' + pb.raw_sha256((key + nonce).encode())[:32] + '.slice'
     live = {'gpu_devices_used': 0, 'gpu_uuids': [],
@@ -857,11 +782,135 @@ def test_q2_pool_mutant_is_a_live_second_route(tmp_path):
     fake = SimpleNamespace(sample=lambda: {}, _request=lambda op: {'resource_telemetry': live},
                            write_telemetry=lambda telemetry: None, action_key=key, nonce=nonce,
                            scope_id=scope_id, _pool_accounting_valid=True)
-    judge = lambda t: pb.gpu_execution_judgment(t.get('gpu_record'), action_key=key, nonce=nonce,  # noqa: E731
-                                                scope_id=scope_id)['gpu_use']
-    assert judge(pool.PoolQueue._sample_resource_scope(fake)) == 'unobserved'
-    mutated = _mutated_function(root, 'src/prismabuild/pool.py', '_sample_resource_scope', pool)
-    assert judge(mutated(fake)) == 'zero'
+    assert 'gpu_record' not in sample(fake)
+    frozen = frozen_gpu(live, action_key=key, nonce=nonce)
+    fake._request = lambda op: {'resource_telemetry': live, 'gpu_record': frozen}
+    assert sample(fake)['gpu_record'] is frozen
+
+
+def test_pool_sampler_only_carries_committed_records():
+    _scope_sampler_contract(pool.PoolQueue._sample_resource_scope)
+
+
+def test_pool_fabricated_record_mutant_breaks_the_contract():
+    anchor = '            if status.get("gpu_record") is not None:'
+    changed = _replace_function(pool, '_sample_resource_scope', lambda source: source.replace(anchor.strip(),
+        'if status.get("gpu_record") is None:\n'
+        '            telemetry["gpu_record"] = {"resource_telemetry": status.get("resource_telemetry")}\n'
+        '        ' + anchor.strip()))
+    with pytest.raises(AssertionError):
+        _scope_sampler_contract(changed)
+
+
+def test_census_count_based_mutant_does_not_project_the_judgment(e2e):
+    _lifetime(e2e, ['zero'])
+    core = _run_core(e2e, 'refused')
+    readers = _finish_and_read(e2e, core)
+    assert readers['census'] == 'unobserved'
+    changed = _replace_function(census, 'ending_row', lambda source: source.replace(
+        'judgment["gpu_use"] if judgment is not None else None',
+        '("used" if detail["resource_telemetry"].get("gpu_devices_used") else "zero")'))
+    path = e2e.queue.records.item_path(pool.record_store.DONE, e2e.item['action_key'])
+    entry = next(x for x in os.scandir(path.parent) if x.path == str(path))
+    assert changed(entry, e2e.queue.root)['gpu_use'] != readers['census']
+
+
+def _frozen_retention_contract(e):
+    _lifetime(e, ['zero'])
+    assert _run_core(e, 'deliver')['outcome'] == 'zero'
+    frozen = json.loads(json.dumps(e.a.records[e.scope]['gpu_record']))
+    e.gpu.plan = lambda: {e.scope: 'GPU-late'}
+    e.live.poll_once()
+    assert e.a.records[e.scope]['gpu_record'] == frozen
+    assert json.loads((e.a.gpu_evidence_dir / (e.scope + '.json')).read_text()) == frozen
+
+
+def test_frozen_record_is_unchanged_by_late_samples(e2e):
+    _frozen_retention_contract(e2e)
+
+
+def test_retain_mutant_breaks_the_frozen_record_contract(e2e):
+    changed = _replace_function(type(e2e.live), '_retain_gpu_observation', lambda source: source.replace(
+        "current.get('gpu_record') is not None", 'False  # gpu_record spelled in comment\n                       ')
+        .replace("prior=current.get('resource_telemetry') or {}",
+                 "current.get('gpu_record', {}).get('resource_telemetry', {})['gpu_uuids']=['GPU-forged-late']\n"
+                 "                prior=current.get('resource_telemetry') or {}"))
+    e2e.monkeypatch.setattr(type(e2e.live), '_retain_gpu_observation', changed)
+    with pytest.raises(AssertionError):
+        _frozen_retention_contract(e2e)
+
+
+@pytest.mark.parametrize('consumer', ['pool', 'late_finisher', 'pbwait', 'action_result', 'census', 'pbstatus'])
+@pytest.mark.parametrize('forged', ['plain', 'uninitialized'])
+def test_every_terminal_consumer_refuses_a_nonjudgment(e2e, consumer, forged):
+    import pbstatus
+    _lifetime(e2e, ['used'])
+    core = _run_core(e2e, 'deliver')
+    assert _finish_and_read(e2e, core)['pool'] == 'used'
+    path = e2e.queue.records.item_path(pool.record_store.DONE, e2e.item['action_key'])
+    record = json.loads(path.read_text())
+    value = ({'gpu_use': 'zero', 'gpu_use_reason': 'successful_payload_sample', 'gpu_devices_used': 0}
+             if forged == 'plain' else object.__new__(pb.GpuUseJudgment))
+    e2e.monkeypatch.setattr(pb, 'gpu_execution_judgment', lambda *a, **kw: value)
+    def read():
+        if consumer == 'pool':
+            return lifecycle._gpu_finish_verdict(e2e.queue, record, 'cache_hit', {}, {})
+        if consumer == 'late_finisher':
+            return lifecycle._archive_late_finish(e2e.queue, e2e.item['action_key'], status='cache_hit',
+                detail={}, snapshot=record, live=record, telemetry={})
+        if consumer == 'pbwait':
+            return pbwait._from_ending(e2e.queue, (path, record))
+        if consumer == 'action_result':
+            return action_result.read_verified_ending_result(e2e.queue, e2e.item['action_key'],
+                published_unix=e2e.item['published_unix'], attempt=1)
+        if consumer == 'pbstatus':
+            return pbstatus.ending_lines([{'gpu_use': 'used', 'gpu_record': {}, 'status': 'executed'}])
+        entry = next(x for x in os.scandir(path.parent) if x.path == str(path))
+        return census.ending_row(entry, e2e.queue.root)
+    with pytest.raises((pb.ActionContractError, pb.CASTamperError, pool.PoolContractError, action_result.ActionResultError),
+                       match='GpuUseJudgment'):
+        read()
+
+
+@pytest.mark.parametrize('consumer', ['receipt_decision', 'receipt_reader', 'final_observation'])
+def test_core_refuses_a_plain_judgment(e2e, consumer):
+    _lifetime(e2e, ['used'])
+    core = _run_core(e2e, 'deliver')
+    plain = dict(core['result']['receipt']['resource_telemetry'])
+    e2e.monkeypatch.setattr(pb, 'gpu_execution_judgment', lambda *a, **kw: plain)
+    with pytest.raises(pb.ActionContractError, match='GpuUseJudgment'):
+        if consumer == 'receipt_reader':
+            pb._validate_receipt_shape(core['result']['receipt'])
+        elif consumer == 'final_observation':
+            pb._gpu_execution_observation(e2e.action, e2e.queue.demand_of(e2e.item))
+        else:
+            attestation = pb.preflight_action(e2e.action, cas_root=e2e.cas.root, checkout_root=e2e.checkout)
+            e2e.cas.publish_result(e2e.action, e2e.checkout / 'result', attestation=attestation,
+                                  resource_telemetry=plain)
+
+
+@pytest.mark.parametrize('inflight', ['used', 'fail'])
+def test_inflight_sample_that_outlives_deadline_is_unobserved(e2e, inflight):
+    _lifetime(e2e, ['zero'])
+    entered, release = threading.Event(), threading.Event()
+    def plan():
+        entered.set()
+        assert release.wait(5)
+        return 'fail' if inflight == 'fail' else {e2e.scope: 'GPU-inflight'}
+    e2e.alive['value'] = True
+    e2e.gpu.plan = plan
+    poller = threading.Thread(target=e2e.live.poll_once, daemon=True)
+    poller.start()
+    assert entered.wait(5)
+    e2e.alive['value'] = False
+    try:
+        core = _run_core(e2e, 'deliver')
+    finally:
+        release.set()
+        poller.join(5)
+    readers = _finish_and_read(e2e, core)
+    assert _agreement(core, readers, 'unobserved')[0]
+    assert readers['reason'] == 'sampler_in_flight_at_freeze'
 
 
 # -- NEW: a final census that never sampled the scope reports success --------

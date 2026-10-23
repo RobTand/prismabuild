@@ -285,15 +285,19 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     bound = (execution.get("nonce") is not None and execution.get("nonce") == scope.get("nonce")
              and execution.get("scope_id") == scope.get("scope_id"))
     if receipt and (status == "cache_hit" or bound):
-        observation = pb.gpu_execution_judgment(execution or None)
+        observation = pb.gpu_execution_judgment(execution.get("gpu_record"),
+            nonce=execution.get("nonce"), scope_id=execution.get("scope_id"))
     else:
         observation = pb.gpu_execution_judgment(telemetry.get("gpu_record"),
             action_key=str(record["action_key"]), nonce=scope.get("nonce"), scope_id=scope.get("scope_id"))
+    observation = pb.GpuUseJudgment.require(observation)
     state, reason = observation["gpu_use"], observation["gpu_use_reason"]
     if status == "cache_hit" and receipt is None:
         status = "failed"
         detail.update(status="failed", returncode=1, termination_reason="cache_receipt_unavailable")
-    detail.update(resource_telemetry=observation, gpu_use=state, gpu_use_reason=reason)
+    detail.update(resource_telemetry=observation.as_dict(), gpu_use=state, gpu_use_reason=reason)
+    if receipt and status == "cache_hit" and not execution.get("gpu_record"):
+        detail["gpu_cache_note"] = "receipt_predates_gpu_observation"
     zero_gpu = state == "zero" and observation.get("gpu_devices_used") == 0
     if zero_gpu and status in {"executed", "cache_hit", "failed"}:
         status = "failed"

@@ -6223,7 +6223,10 @@ The PB lead's ruling on #1743's truncated text defines three outcomes:
   sample covered the payload's lifetime. Allow the receipt and expose the reason
   in terminal records, census and pbstatus: `final_observation_failed` for a
   failed final RPC or sample, `sampler_error` for an earlier failed sample, or
-  `no_sample_during_lifetime` for absent coverage. An early zero followed by a
+  `no_sample_during_lifetime` for absent coverage. A periodic census that cannot
+  finish before freezing gives `sampler_in_flight_at_freeze`; a final census
+  that excluded the stopped scope gives `final_census_skipped`. Neither proves
+  zero. An early zero followed by a
   failed final observation is unobserved: GPU work could have started later.
 
 The broker accumulates raw sampling history until the launched worker requests
@@ -6232,8 +6235,17 @@ record bound to action key, nonce and scope. The random nonce identifies the
 attempt independently of the queue's retry ordinal. The record contains the
 union of UUIDs, failed-sample and lifetime flags, final-sample success and its
 commit deadline. Periodic polls continue protecting the host through the Guard
-but cannot alter that attempt's frozen evidence. `gpu_execution_judgment` is
-the only outcome calculation. Core, Pool, late finishers and the ending readers
+but cannot alter that attempt's frozen evidence. Before the final census,
+finalization waits for an in-flight periodic sample and retains its UUIDs and
+failures. It holds the sample lock through the final census and commit, so a
+new sample cannot straddle the freeze. The bounded wait reserves the final
+50 ms, at most half the remaining request window, to commit unobserved evidence
+when the periodic census cannot finish. `gpu_execution_judgment` reads only
+the frozen record or its absence and is the only outcome calculation. It issues
+an immutable `GpuUseJudgment` using a module-private constructor authority.
+Every decision and projection boundary requires that capability at runtime;
+serialized dictionaries cannot replace it. An AST guard checks construction
+by class identity and aliases, and behavioral mutants exercise the consumers. Core, Pool, late finishers and the ending readers
 used by pbwait, action_result and pbmcp consume it; census and pbstatus project
 the same judgment. Live scope telemetry cannot serve as judgment input.
 
@@ -6242,12 +6254,19 @@ final observation. Payloads, including same-UID children in the same cgroup,
 cannot request it. One request admits sampling per attempt; concurrent calls
 cannot extend its deadline. Redelivery by that worker returns the identical
 committed record without sampling again. Final censuses use a separate,
-nonblocking admission lock and never take the periodic Guard's sample lock.
-A competing final census is explicitly unobserved rather than queued ahead of
-Guard polls. Census exceptions record sampler_error and degrade monitor health.
+nonblocking admission lock. A competing final census is explicitly unobserved
+with final_observation_failed rather than queued ahead of Guard polls. An
+already-attributed UUID still wins. This concurrent-final limitation is visible
+and deliberately retained. Only the admitted final census joins the periodic
+sample lock, bounded by its deadline. Census and GPU sampler failures degrade
+monitor health; a scope disappearing during inventory does not.
 
 The worker supplies an absolute monotonic deadline. The broker commits before
-replying and refuses publication after that deadline. If the reply is lost,
+replying and refuses publication after that deadline. The broker and protected
+reader hold an exclusive/shared directory publication lock. The broker checks
+the deadline before and after rename and directory sync, and rolls back an
+expired rename before releasing that lock. A reader cannot observe a late
+rename while it is being refused. If the reply is lost,
 Core waits until the deadline, then reads the protected
 `gpu-observations/<scope>.json` beside the broker socket. A committed record is
 authoritative even when its reply was lost. This is the PB lead's refinement of
@@ -6264,9 +6283,13 @@ it cannot manufacture used. Sampler errors never invent UUID attribution.
 
 Core hashes the frozen record and its derived judgment into the receipt's
 optional resource_telemetry field and validates their agreement on lookup.
-CPU receipts retain their existing shape. Historical receipts keep their
-sealed observation. Cache hits require a verified CAS receipt and carry its
-original observation, never the replay scope's idle sample. An attempt with no
+CPU receipts retain their existing shape. Historical receipt bytes remain
+verifiable, but an observation without a frozen record establishes neither
+used nor zero; its judgment is unobserved: final_observation_failed. A cache
+hit over such a receipt records gpu_cache_note: receipt_predates_gpu_observation
+to distinguish absent historical evidence from a current sampling failure.
+Cache hits require a verified CAS receipt and carry its frozen record, never
+the replay scope's idle sample. An attempt with no
 committed record may carry a bound unobserved receipt; Pool honors the same
 sealed absence. Unsampled short CUDA contexts remain unobserved.
 

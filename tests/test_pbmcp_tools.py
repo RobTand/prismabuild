@@ -245,9 +245,11 @@ def test_verify_claim_hashes_the_payload_when_asked(session: pbmcp.Session,
 def test_verify_claim_checks_gpu_execution_evidence(session: pbmcp.Session, fleet: fx.Fleet, count):
     receipt_path = (fleet.cas_root / "actions" / "v3" / fx.DONE_KEY[:2] / f"{fx.DONE_KEY}.json")
     receipt = json.loads(receipt_path.read_text())
-    receipt["resource_telemetry"] = {
-        "gpu_devices_used": count, "gpu_uuids": ["GPU-observed"] if count else [],
-        "nonce": "a" * 32, "scope_id": "prismabuild-job" + "b" * 32 + ".slice"}
+    from gpu_evidence_fixtures import frozen_gpu
+    receipt["resource_telemetry"] = pbmcp.pb.gpu_execution_judgment(frozen_gpu({
+        "gpu_uuids": ["GPU-observed"] if count else [],
+        "gpu_evidence": {"sample_failed": False, "live_sample": True, "final_succeeded": True}},
+        action_key=fx.DONE_KEY)).as_dict()
     receipt["receipt_sha256"] = pbmcp.pb.canonical_sha256({key: value for key, value in receipt.items()
                                                         if key != "receipt_sha256"})
     receipt_path.chmod(0o644)
@@ -340,3 +342,22 @@ def test_runtime_reports_the_generation_and_who_is_on_it(
         "this server was started from a checkout, not from the generation "
         "the fleet publishes, and it must say so rather than imply agreement")
     assert body["loops"] == []
+
+
+def test_verify_claim_refuses_a_plain_gpu_judgment(session, fleet, monkeypatch):
+    from gpu_evidence_fixtures import frozen_gpu
+    receipt_path = fleet.cas_root / "actions" / "v3" / fx.DONE_KEY[:2] / f"{fx.DONE_KEY}.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["resource_telemetry"] = pbmcp.pb.gpu_execution_judgment(frozen_gpu({
+        "gpu_uuids": ["GPU-observed"], "gpu_evidence": {
+            "sample_failed": False, "live_sample": True, "final_succeeded": True}},
+        action_key=fx.DONE_KEY)).as_dict()
+    receipt["receipt_sha256"] = pbmcp.pb.canonical_sha256({key: value for key, value in receipt.items()
+                                                        if key != "receipt_sha256"})
+    receipt_path.chmod(0o644)
+    receipt_path.write_text(json.dumps(receipt))
+    receipt_path.chmod(0o444)
+    monkeypatch.setattr(pbmcp.pb, "gpu_execution_judgment", lambda *a, **kw: receipt["resource_telemetry"])
+    body = session.call("pb_verify_claim", {"sha256": fx.claim_digest(fleet)})
+    assert body["checks"]["receipt_self_consistent"] is False
+    assert body["checks_passed"] is False

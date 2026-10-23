@@ -2002,6 +2002,11 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         return _unreadable_row(entry, "not a JSON object")
     detail = record.get("detail")
     detail = detail if isinstance(detail, dict) else {}
+    observation = detail.get("resource_telemetry")
+    judgment = (pb.GpuUseJudgment.require(pb.gpu_execution_judgment(observation.get("gpu_record"),
+                    nonce=observation.get("nonce"), scope_id=observation.get("scope_id")))
+                if isinstance(observation, dict) and ("gpu_use" in observation or "gpu_record" in observation)
+                else None)
     slurm = detail.get("slurm")
     slurm = slurm if isinstance(slurm, dict) else {}
     try:
@@ -2038,10 +2043,9 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
         # launcher's status above is 1 for every failure.
         "action_returncode": detail.get("action_returncode"),
         "action_signal": detail.get("action_signal"),
-        "gpu_use": (pb.gpu_execution_judgment(detail["resource_telemetry"])["gpu_use"]
-                    if "gpu_use" in detail.get("resource_telemetry", {}) else detail.get("gpu_use")),
-        "gpu_use_reason": (pb.gpu_execution_judgment(detail["resource_telemetry"])["gpu_use_reason"]
-                           if "gpu_use" in detail.get("resource_telemetry", {}) else detail.get("gpu_use_reason")),
+        "gpu_use": judgment["gpu_use"] if judgment is not None else None,
+        "gpu_use_reason": judgment["gpu_use_reason"] if judgment is not None else None,
+        "gpu_record": judgment.get("gpu_record") if judgment is not None else None,
         # The pull queue's records carry no receipt field at all, which is
         # a different thing from a receipt that was not published.
         "receipt_published": detail.get("receipt_published"),

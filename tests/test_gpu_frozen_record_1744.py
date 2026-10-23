@@ -139,16 +139,17 @@ def test_payload_and_reused_worker_pid_cannot_finalize(monitored, monkeypatch):
     assert not a.gpu_evidence_dir.exists()
 
 
-def test_final_collection_does_not_wait_on_guard_lock(monitored, monkeypatch):
+def test_final_collection_has_bounded_guard_lock_wait(monitored, monkeypatch):
     a, backend, rows, _, monitor = monitored
     request, record, path = rows[0]
     pid = worker_peer(a, record, monkeypatch)
     monitor.sample_lock.acquire()
     try:
-        reply = a.handle(a.uid, pid, _query(request))
+        reply = a.handle(a.uid, pid, _query(request, time.monotonic() + .15))
     finally:
         monitor.sample_lock.release()
-    assert reply['gpu_record']
+    judgment = pb.gpu_execution_judgment(reply['gpu_record'])
+    assert (judgment['gpu_use'], judgment['gpu_use_reason']) == ('unobserved', 'sampler_in_flight_at_freeze')
 
 
 def test_sampler_exception_is_unobserved_and_unhealthy(monitored, monkeypatch):
@@ -181,24 +182,65 @@ def test_settlement_removes_public_mirror(monitored, monkeypatch):
     assert a.records[record['scope_id']]['gpu_record'] == reply['gpu_record']
 
 
+def _gpu_constructor_calls(source):
+    """Resolve class names and aliases, independently of receiver spelling."""
+    tree = ast.parse(source)
+    aliases = {"GpuUseJudgment"}
+
+    def constructor(node):
+        return ((isinstance(node, ast.Name) and node.id in aliases)
+                or (isinstance(node, ast.Attribute) and node.attr == "GpuUseJudgment")
+                or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "getattr" and len(node.args) == 2
+                    and isinstance(node.args[1], ast.Constant) and node.args[1].value == "GpuUseJudgment"))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "GpuUseJudgment")
+        if isinstance(node, ast.Assign) and constructor(node.value):
+            aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not constructor(node.func):
+            continue
+        parent = parents.get(node)
+        while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            parent = parents.get(parent)
+        found.append((parent.name if parent is not None else None, node.lineno))
+    return found
+
+
 def test_live_telemetry_is_not_a_judgment_route():
     with pytest.raises(pb.ActionContractError):
         pb.gpu_execution_judgment({'gpu_uuids': ['GPU-forged'], 'gpu_evidence': {
             'sample_failed': False, 'live_sample': True, 'final_succeeded': True}})
     root = Path(__file__).resolve().parents[1]
-    # Domain outcomes may be constructed only inside the one judgment. Other
-    # consumers project it or test it for routing; none inspect sampling flags.
-    for name in ['lifecycle.py', 'endings.py', 'census.py', 'action_result.py']:
-        tree = ast.parse((root / 'src/prismabuild' / name).read_text())
-        assert not any(isinstance(node, ast.Constant) and node.value in {
-            'sample_failed', 'live_sample', 'final_succeeded', 'gpu_evidence', 'gpu_uuids'}
-            for node in ast.walk(tree)), name
-    source = (root / 'tools/fleet/resource_broker.py').read_text()
-    tree = ast.parse(source)
-    retain = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
-                  and node.name == '_retain_gpu_observation')
-    assert 'gpu_record' in ast.get_source_segment(source, retain)
-    assert 'gpu_evidence_dir' not in ast.get_source_segment(source, retain)
+    sites = [(path, owner) for directory in (root / 'src', root / 'tools')
+             for path in directory.rglob('*.py') for owner, _ in _gpu_constructor_calls(path.read_text())]
+    assert sites and all(path == root / 'src/prismabuild/core.py' and owner == 'gpu_execution_judgment'
+                         for path, owner in sites), sites
+
+
+@pytest.mark.parametrize('spelling', ['GpuUseJudgment', 'other.GpuUseJudgment', 'getattr(other, "GpuUseJudgment")', 'alias'])
+def test_constructor_ast_tracks_receiver_and_alias(spelling):
+    source = 'alias = other.GpuUseJudgment\ndef illicit():\n    return ' + spelling + '({})\n'
+    assert _gpu_constructor_calls(source) == [('illicit', 3)]
+
+
+def test_gpu_judgment_cannot_be_constructed_or_mutated_by_consumers():
+    plain = {'gpu_use': 'used', 'gpu_devices_used': 1}
+    with pytest.raises(pb.ActionContractError, match='authority'):
+        pb.GpuUseJudgment(plain)
+    for forged in (plain, object.__new__(pb.GpuUseJudgment)):
+        with pytest.raises(pb.ActionContractError, match='GpuUseJudgment'):
+            pb.GpuUseJudgment.require(forged)
+    judgment = pb.gpu_execution_judgment(None)
+    with pytest.raises(AttributeError, match='immutable'):
+        judgment._encoded = b'{}'
+    projection = judgment.as_dict()
+    projection['gpu_use'] = 'used'
+    assert judgment['gpu_use'] == 'unobserved'
 
 
 def test_broker_restart_recovers_commit_before_private_update(monitored, monkeypatch):
@@ -223,3 +265,27 @@ def test_settled_scope_cannot_gain_a_late_mirror(monitored, monkeypatch):
     with pytest.raises(ValueError, match='settled'):
         a.freeze_gpu_record(record['scope_id'], time.monotonic() + 10, final_succeeded=False)
     assert not (a.gpu_evidence_dir / (record['scope_id'] + '.json')).exists()
+
+
+def test_scope_inventory_race_does_not_downgrade_sampler_health(monitored, monkeypatch):
+    a, backend, rows, gpu, monitor = monitored
+    real = backend.path
+    missing = rows[0][1]['scope_id']
+    monkeypatch.setattr(backend, 'path', lambda scope: Path('/nonexistent-prismabuild-fixture')
+                        if scope == missing else real(scope))
+    # The disappeared scope is dropped at inventory checking before the census.
+    monkeypatch.setattr(monitor, '_sample_gpu', lambda records: (None, None))
+    status = monitor.poll_once()
+    assert status['errors'] and monitor.sample_error is None
+    assert monitor.last_success_monotonic is not None
+
+
+@pytest.mark.parametrize('state', ['used', 'zero', 'unobserved'])
+def test_recordless_projection_cannot_establish_gpu_use(state):
+    raw = {'gpu_use': state, 'gpu_use_reason': 'forged', 'gpu_devices_used': 1 if state == 'used' else 0,
+           'gpu_uuids': ['GPU-forged'] if state == 'used' else [], 'nonce': 'a' * 32,
+           'scope_id': 'prismabuild-job' + 'b' * 32 + '.slice'}
+    with pytest.raises(pb.ActionContractError):
+        pb.gpu_execution_judgment(raw)
+    judgment = pb.gpu_execution_judgment(raw.get('gpu_record'))
+    assert (judgment['gpu_use'], judgment['gpu_use_reason']) == ('unobserved', 'final_observation_failed')

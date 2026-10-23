@@ -169,8 +169,9 @@ def test_pool_cache_retains_used_devices_over_idle_replay_scope(scoped, monkeypa
     checkout = Path(item['checkout_root'])
     (checkout / 'result').write_text('ok')
     attestation = pb.preflight_action(action, cas_root=cas.root, checkout_root=checkout)
-    observation = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-used'],
-                   'scope_id': 'prismabuild-job' + 'a' * 32 + '.slice', 'nonce': 'a' * 32}
+    observation = pb.gpu_execution_judgment(frozen_gpu({'gpu_uuids': ['GPU-used'],
+        'gpu_evidence': {'sample_failed': False, 'live_sample': True, 'final_succeeded': True}},
+        action_key=action['action_key']))
     cas.publish_result(action, checkout / 'result', attestation=attestation,
                        resource_telemetry=observation)
     detail = {'status': 'cache_hit', 'returncode': 0}
