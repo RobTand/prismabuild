@@ -333,3 +333,24 @@ def test_generic_gpu_worker_receives_admitted_fallback(generic_gpu):
     arguments = pb._build_parser().parse_args(argv[1:])
     assert arguments.resource_demand == queue.demand_of(item)
     assert pb.action_resource_demand(action, arguments.resource_demand)['gpu'] == 1
+
+
+def test_broker_rpc_outage_cannot_leave_success_receipt_with_failed_terminal(generic_gpu, monkeypatch):
+    queue, item, action, cas, checkout = generic_gpu
+    # A periodic live-payload sample saw zero, but the final observation RPC
+    # fails. Core may publish unobserved under the lead's outage ruling.
+    result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
+                                 resource_demand=queue.demand_of(item))
+    assert result['receipt']['resource_telemetry']['gpu_use'] == 'unobserved'
+    _broker_final(monkeypatch, queue, ZERO)
+    scope = {'nonce': os.environ[pb.ACTION_NONCE_ENV], 'scope_id': os.environ[pb.ACTION_SCOPE_ENV]}
+    # The broker/claim scope is worker authority, independent of the sidecar.
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, item['action_key'])
+    record = json.loads(claimed.read_text())
+    record['resource_scope'] = scope
+    queue.records.replace_record_at(claimed, record)
+    path = queue.finish(item['action_key'], status='executed', detail={'returncode': 0}, claim_snapshot=record)
+    terminal = json.loads(path.read_text())
+    assert terminal['status'] == 'executed'
+    assert terminal['detail']['gpu_use'] == 'unobserved'
+    assert cas.lookup(action) is not None
