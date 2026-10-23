@@ -759,15 +759,16 @@ def test_a_purged_job_reads_as_unknown_rather_than_none(fleet, capsys) -> None:
     assert pbstatus.UNKNOWN in lines[1]
 
 
-def test_unobserved_gpu_use_and_reason_reach_census_and_status(fleet, capsys):
+@pytest.mark.parametrize('reason', ['final_observation_failed', 'sampler_error', 'no_sample_during_lifetime'])
+def test_unobserved_gpu_use_and_reason_reach_census_and_status(fleet, capsys, reason):
     key = 'e5' * 32
     _pool_ending(fleet, key)
     path = fleet['queue'] / pool.record_store.DONE / f'{key}.json'
     record = json.loads(path.read_text())
-    record['detail'].update(gpu_use='unobserved', gpu_use_reason='gpu_sampler_failed')
+    record['detail'].update(gpu_use='unobserved', gpu_use_reason=reason)
     path.write_text(json.dumps(record))
     row = next(row for row in _run_json(fleet, capsys)['endings'] if row['action_key'] == key)
     assert row['gpu_use'] == 'unobserved'
-    assert row['gpu_use_reason'] == 'gpu_sampler_failed'
+    assert row['gpu_use_reason'] == reason
     text = '\n'.join(pbstatus.ending_lines([row]))
-    assert 'GPU USE' in text and 'unobserved: gpu_sampler_failed' in text
+    assert 'GPU USE' in text and f'unobserved: {reason}' in text

@@ -6247,7 +6247,9 @@ def _read_broker_gpu_evidence(action: Mapping[str, object]) -> Mapping[str, obje
             if not chunk:
                 break
             raw.extend(chunk)
-        if len(raw) > 65536 or os.fstat(descriptor) != info:
+        after = os.fstat(descriptor)
+        if (len(raw) > 65536 or immutable_files.substantive_identity(after) != immutable_files.substantive_identity(info)
+                or after.st_ctime_ns != info.st_ctime_ns):
             _fail("broker GPU evidence changed or exceeds 64 KiB")
     finally:
         os.close(descriptor)

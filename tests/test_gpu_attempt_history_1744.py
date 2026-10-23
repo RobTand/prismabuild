@@ -145,9 +145,10 @@ def test_broker_evidence_read_requires_protected_ancestry_and_attempt(generic_gp
         info = original(descriptor)
         mode = info.st_mode & ~0o022
         parent = stat.S_ISDIR(mode)
-        return SimpleNamespace(st_uid=1000 if fault == 'owner' and not parent else 0,
-                               st_mode=mode | (0o020 if fault == 'writable_parent' and parent else 0),
-                               st_size=info.st_size)
+        attrs = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+        attrs.update(st_uid=1000 if fault == 'owner' and not parent else 0,
+                     st_mode=mode | (0o020 if fault == 'writable_parent' and parent else 0))
+        return SimpleNamespace(**attrs)
 
     with monkeypatch.context() as patch:
         patch.setattr(os, 'fstat', ownership)
