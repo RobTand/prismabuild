@@ -77,7 +77,10 @@ def test_a_retained_decision_that_grants_capacity_fails_the_derived_assertion(ac
                         and node.name == "decision")
         lines = original.splitlines(keepends=True)
         first = decision.body[0]
-        lines.insert(first.lineno - 1, " " * first.col_offset + "return {}  # test-local admission mutation\n")
+        indent = " " * first.col_offset
+        lines.insert(first.lineno - 1,
+                     indent + 'self.last_decision = {"reason": "borrow_evidence_unavailable"}\n'
+                     + indent + "return {}  # test-local admission mutation\n")
         source.chmod(0o644)
         source.write_text("".join(lines))
         provenance = json.loads(manifest.read_bytes())
