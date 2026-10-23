@@ -885,6 +885,16 @@ def test_every_terminal_consumer_refuses_a_nonjudgment(e2e, consumer, forged):
             return pbstatus.ending_lines([{'gpu_use': 'used', 'gpu_record': {}, 'status': 'executed'}])
         entry = next(x for x in os.scandir(path.parent) if x.path == str(path))
         return census.ending_row(entry, e2e.queue.root)
+    if consumer == 'census':
+        row = read()
+        assert row['status'] == 'unreadable' and 'GpuUseJudgment' in row['unreadable']
+        assert row.get('gpu_use') is None
+        return
+    if consumer == 'pbstatus':
+        text = '\n'.join(read())
+        assert 'invalid GPU evidence' in text and 'GpuUseJudgment' in text
+        assert 'zero' not in text
+        return
     with pytest.raises((pb.ActionContractError, pb.CASTamperError, pool.PoolContractError, action_result.ActionResultError, action_client.action_wait.OutcomeReadUnavailable),
                        match='GpuUseJudgment'):
         read()
