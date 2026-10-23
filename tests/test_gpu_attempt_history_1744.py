@@ -173,20 +173,24 @@ def test_failed_process_sample_cannot_invent_used(monitored, monkeypatch):
 
 
 def test_gpu_recovery_directory_is_readable_under_service_umask(monitored):
-    a, backend, rows, gpu, monitor = monitored
+    a, backend, rows, _, monitor = monitored
+    _, record, path = rows[0]
+    live = type(monitor)(a, _RealGuardGpu(lambda: [_job(record, path, gpu_bytes=0)]))
     mask = os.umask(0o077)
     try:
-        monitor.observe_gpu(rows[0][1]['scope_id'])
+        live.observe_gpu(record['scope_id'])
     finally:
         os.umask(mask)
     assert stat.S_IMODE(a.gpu_evidence_dir.stat().st_mode) == 0o755
 
 
 def test_gpu_recovery_directory_symlink_cannot_change_target_mode(monitored, tmp_path):
-    a, backend, rows, gpu, monitor = monitored
+    a, backend, rows, _, monitor = monitored
+    _, record, path = rows[0]
+    live = type(monitor)(a, _RealGuardGpu(lambda: [_job(record, path, gpu_bytes=0)]))
     target = tmp_path / 'unrelated'
     target.mkdir(mode=0o700)
     a.gpu_evidence_dir.symlink_to(target, target_is_directory=True)
     with pytest.raises(OSError):
-        monitor.observe_gpu(rows[0][1]['scope_id'])
+        live.observe_gpu(record['scope_id'])
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
