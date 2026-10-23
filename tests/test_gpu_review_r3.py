@@ -21,6 +21,7 @@ from test_pool_resource_scope import scoped  # noqa: F401
 
 MIB, GIB = 1024 ** 2, 1024 ** 3
 PEER = 123456789
+PRODUCTION_GPU_WINDOW = pb.GPU_OBSERVATION_TIMEOUT_S
 
 
 def ev(failed, live, final):
@@ -362,6 +363,8 @@ EXPECTED = {
 
 @pytest.mark.parametrize('name', sorted(HISTORIES))
 def test_q3_core_and_pool_land_in_the_same_outcome(generic_gpu, monitored, monkeypatch, name):
+    # Histories test outcomes; deadline-edge probes separately exercise expiry.
+    monkeypatch.setattr(pb, 'GPU_OBSERVATION_TIMEOUT_S', PRODUCTION_GPU_WINDOW)
     queue, item, action, cas, checkout = generic_gpu
     a, backend, rows, _, monitor = monitored
     req, rec, _ = rows[0]
