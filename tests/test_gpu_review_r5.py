@@ -80,7 +80,8 @@ def test_review_r4_endings_mutants_change_behavior_and_are_caught(mutant):
 
 
 @pytest.mark.parametrize('kept', [False, True])
-def test_malformed_gpu_row_does_not_hide_other_endings_or_break_views(e2e, kept):
+@pytest.mark.parametrize('malformed', ['unknown_key', 'oversized_deadline'])
+def test_malformed_gpu_row_does_not_hide_other_endings_or_break_views(e2e, kept, malformed):
     _lifetime(e2e, ['used'])
     _finish_and_read(e2e, _run_core(e2e, 'deliver'))
     key = e2e.action['action_key']
@@ -88,7 +89,11 @@ def test_malformed_gpu_row_does_not_hide_other_endings_or_break_views(e2e, kept)
     good = json.loads(path.read_text())
     other = {**good, 'action_key': 'b' * 64}
     (path.parent / ('b' * 64 + '.json')).write_text(json.dumps(other))
-    good['detail']['resource_telemetry']['gpu_record']['resource_telemetry']['gpu_evidence']['added_field'] = True
+    broken = good['detail']['resource_telemetry']['gpu_record']
+    if malformed == 'unknown_key':
+        broken['resource_telemetry']['gpu_evidence']['added_field'] = True
+    else:
+        broken['deadline_monotonic'] = 10 ** 1000
     path.write_text(json.dumps(good))
     reader = census.KeptReads() if kept else None
     if reader:
