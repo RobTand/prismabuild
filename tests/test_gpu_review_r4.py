@@ -854,6 +854,11 @@ def test_every_terminal_consumer_refuses_a_nonjudgment(e2e, consumer, forged):
     value = ({'gpu_use': 'zero', 'gpu_use_reason': 'successful_payload_sample', 'gpu_devices_used': 0}
              if forged == 'plain' else object.__new__(pb.GpuUseJudgment))
     e2e.monkeypatch.setattr(pb, 'gpu_execution_judgment', lambda *a, **kw: value)
+    # Isolate each consumer's own boundary from earlier CAS/ending validation.
+    if consumer in {'pool', 'late_finisher'}:
+        e2e.monkeypatch.setattr(pb.PrismaBuildCAS, 'lookup', lambda *a, **kw: core['result']['receipt'])
+    if consumer == 'census':
+        e2e.monkeypatch.setattr(pool.record_store.RecordStore, 'selected_ending', lambda *a, **kw: record)
     def read():
         if consumer == 'pool':
             return lifecycle._gpu_finish_verdict(e2e.queue, record, 'cache_hit', {}, {})
@@ -973,3 +978,36 @@ def test_historical_cache_receipt_reports_its_missing_gpu_evidence(e2e):
     detail = json.loads(path.read_text())['detail']
     assert detail['gpu_use'] == 'unobserved'
     assert detail['gpu_cache_note'] == 'receipt_predates_gpu_observation'
+
+
+def test_reader_cannot_observe_a_rename_being_rolled_back_after_deadline(e2e):
+    _lifetime(e2e, ['zero'])
+    renamed, release, reading, completed = [threading.Event() for _ in range(4)]
+    real_replace = os.replace
+    def paused_after_rename(src, dst, *args, **kw):
+        result = real_replace(src, dst, *args, **kw)
+        if str(dst).startswith('/proc/self/fd/') and str(dst).endswith(e2e.scope + '.json'):
+            renamed.set()
+            assert release.wait(5)
+        return result
+    def read(action):
+        reading.set()
+        try:
+            return _rob_reader(action)
+        finally:
+            completed.set()
+    e2e.monkeypatch.setattr(os, 'replace', paused_after_rename)
+    e2e.monkeypatch.setattr(pb, '_read_broker_gpu_evidence', read)
+    box = {}
+    runner = threading.Thread(target=lambda: box.update(core=_run_core(e2e, 'timeout')), daemon=True)
+    runner.start()
+    try:
+        assert renamed.wait(5)
+        assert reading.wait(5)  # Core starts recovery only after the commit deadline.
+        assert not completed.is_set()
+    finally:
+        release.set()
+        runner.join(5)
+    assert not runner.is_alive()
+    assert e2e.a.records[e2e.scope].get('gpu_record') is None
+    assert _agreement(box['core'], _finish_and_read(e2e, box['core']), 'unobserved')[0]
