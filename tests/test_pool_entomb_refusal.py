@@ -20,8 +20,8 @@ def test_failed_entomb_retains_claim_lease_and_capacity(tmp_path, monkeypatch, u
     claim = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     if unstarted:
         queue.records.lease_path(KEY).unlink()
-        item["claimed_unix"] = pool._now() - 2 * pool.HEARTBEAT_S
-        pool.immutable_files.write_json_atomic(claim, item)
+        later = pool._now() + 2 * pool.HEARTBEAT_S
+        monkeypatch.setattr(pool, "_now", lambda: later)
     before = claim.read_bytes()
     lease = queue.records.lease_path(KEY)
     before_lease = lease.read_bytes() if lease.exists() else None
