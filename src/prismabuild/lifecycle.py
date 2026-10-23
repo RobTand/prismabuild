@@ -270,16 +270,18 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
 
 def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     detail = dict(detail or {})
+    if (status not in {"executed", "cache_hit"}
+            and detail.get("termination_reason") != "zero_gpu_devices_used"):
+        return status, detail, False
+    if queue.demand_of(record).get("gpu", 0) <= 0:
+        return status, detail, False
     if detail.get("cached_execution") or status == "cache_hit":
         observation = detail.get("resource_telemetry") or {}
     else:
-        observation = {**telemetry, **(detail.get("resource_telemetry") or {})}
+        observation = {**(detail.get("resource_telemetry") or {}), **telemetry}
     if observation:
         detail["resource_telemetry"] = observation
-    zero_gpu = ((status in {"executed", "cache_hit"}
-                 or detail.get("termination_reason") == "zero_gpu_devices_used")
-                and queue.demand_of(record).get("gpu", 0) > 0
-                and type(observation.get("gpu_devices_used")) is int
+    zero_gpu = (type(observation.get("gpu_devices_used")) is int
                 and observation["gpu_devices_used"] == 0)
     if zero_gpu:
         status = "failed"

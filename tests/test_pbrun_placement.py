@@ -2335,6 +2335,14 @@ def test_device_free_submission_skips_gpu_class_and_attaches_open_child(class_su
     assert "gb10" not in ready[0]["tags"]
 
 
+def test_device_free_private_runtime_retains_its_host_constraint(class_submission, monkeypatch):
+    submit, root = class_submission
+    patch_store(monkeypatch, client=pbrun, runtime_root=root / "private-runtime")
+    action = submit(["bash", "-c", "true"], gpu=False)
+    assert action["params"]["placement"]["required_tags"] == ["spark-a"]
+    assert "gpu" not in action["params"]["demand"]
+
+
 @pytest.mark.parametrize("source", ["argv", "environment"])
 def test_class_default_screens_all_declared_paths(class_submission, source):
     submit, root = class_submission

@@ -3836,7 +3836,7 @@ class PrismaBuildCAS:
 
         normalized = validate_action(action)
         producer = validate_worker_attestation(attestation, action=normalized)
-        if normalized["params"].get("demand", {}).get("gpu") and resource_telemetry is None:
+        if _action_needs_gpu(normalized) and resource_telemetry is None:
             raise LocalActionError("GPU payload scope attribution unavailable; no receipt was published")
         if resource_telemetry is not None:
             resource_telemetry = _validate_gpu_execution_observation(resource_telemetry)
@@ -6124,6 +6124,14 @@ def _sigterm_unwinds_this_process():
         signal.signal(signal.SIGTERM, previous_term)
 
 
+def _action_needs_gpu(action: Mapping[str, object]) -> bool:
+    params = action["params"]
+    assert isinstance(params, Mapping)
+    demand = params.get("demand")
+    return (isinstance(demand, Mapping) and type(demand.get("gpu")) is int
+            and demand["gpu"] > 0)
+
+
 def _validate_receipt_shape(value: object) -> Mapping[str, object]:
     optional = {"resource_telemetry"} if isinstance(value, Mapping) and "resource_telemetry" in value else set()
     receipt = _exact_mapping(value, keys=_RECEIPT_KEYS | optional, where="CAS receipt")
@@ -6147,7 +6155,7 @@ def _validate_gpu_execution_observation(value: object) -> dict[str, object]:
 
 
 def _gpu_execution_observation(action: Mapping[str, object]) -> dict[str, object] | None:
-    if not action["params"].get("demand", {}).get("gpu"):
+    if not _action_needs_gpu(action):
         return None
     nonce, scope = os.environ.get(ACTION_NONCE_ENV), os.environ.get(ACTION_SCOPE_ENV)
     if not nonce or not scope:
@@ -6181,7 +6189,7 @@ def _gpu_execution_observation(action: Mapping[str, object]) -> dict[str, object
 
 def _cached_gpu_observation(result: dict[str, object], action: Mapping[str, object]) -> dict[str, object]:
     observation = result["receipt"].get("resource_telemetry")
-    if action["params"].get("demand", {}).get("gpu"):
+    if _action_needs_gpu(action):
         _write_action_status({"cached_execution": True,
                               **({"resource_telemetry": observation} if observation is not None else {})})
     return result

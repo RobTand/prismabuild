@@ -180,6 +180,19 @@ def test_pool_cache_retains_used_devices_over_idle_replay_scope(scoped, monkeypa
     assert record['detail']['resource_telemetry']['gpu_devices_used'] == 1
 
 
+@pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
+def test_fresh_gpu_finish_retains_final_broker_uuid_union(scoped, monkeypatch):
+    queue, item, calls = scoped
+    final = {'gpu_devices_used': 2, 'gpu_uuids': ['GPU-first', 'GPU-second']}
+    monkeypatch.setattr(queue, 'cleanup_action_containers', lambda *args, **kw: {
+        'complete': True, 'resource_scope': {'telemetry': final}})
+    path = queue.finish(item['action_key'], status='executed',
+                        detail={'returncode': 0, 'resource_telemetry': {
+                            'gpu_devices_used': 1, 'gpu_uuids': ['GPU-first']}},
+                        claim_snapshot=item)
+    assert json.loads(path.read_text())['detail']['resource_telemetry'] == final
+
+
 def test_submission_and_shard_cpu_defaults_agree(monkeypatch):
     import importlib.util
     path = Path(__file__).resolve().parents[1] / 'tools/fleet/pbtest.py'

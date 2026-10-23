@@ -251,8 +251,14 @@ def _publish_receipt(tmp_path: Path, cas, target: dict, *, tag: str = "a",
             action, cas_root=tmp_path / "cas", checkout_root=checkout,
             worker_launcher_identity=None)
     assert attestation["evidence"]["machine"] == "x86_64"
+    observation = None
+    if gpu:
+        nonce = "a" * 32
+        observation = {"gpu_devices_used": 1, "gpu_uuids": ["GPU-preflight-fixture"],
+                       "nonce": nonce, "scope_id": "prismabuild-job" +
+                       pb.raw_sha256((key + nonce).encode())[:32] + ".slice"}
     cas.publish_result(action, out, attestation=attestation,
-                       return_execution_receipt=True)
+                       return_execution_receipt=True, resource_telemetry=observation)
     return key
 
 
