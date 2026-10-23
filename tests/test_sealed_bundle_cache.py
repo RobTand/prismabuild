@@ -358,16 +358,63 @@ print(snapshot["input"]["sha256"])
             child.wait()
 
 
-def test_only_copy_verification_constructs_the_capability():
-    tree = ast.parse(Path(cache_module.__file__).read_text())
-    constructors = []
-    for function in tree.body:
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for node in ast.walk(function):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                    if node.func.id == "_VerifiedBundle":
-                        constructors.append(function.name)
+def _bundle_capability_routes(source):
+    tree = ast.parse(source)
+    parents, owners = {}, {}
+
+    def index(node, owner="<module>"):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            owner = node.name if owner == "<module>" else owner + "." + node.name
+        owners[node] = owner
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+            index(child, owner)
+
+    index(tree)
+    constructors, writes, violations = [], [], []
+    for node in ast.walk(tree):
+        owner = owners[node]
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_VerifiedBundle":
+            constructors.append(owner)
+        if not isinstance(node, ast.Name) or node.id != "_VERIFIED_COPIES":
+            continue
+        parent = parents[node]
+        if (isinstance(node.ctx, ast.Store) and owner == "<module>"
+                and isinstance(parent, ast.Assign) and isinstance(parent.value, ast.Call)
+                and isinstance(parent.value.func, ast.Name) and parent.value.func.id == "WeakKeyDictionary"):
+            writes.append(("declare", owner))
+        elif (isinstance(parent, ast.Subscript) and isinstance(parent.ctx, ast.Store)
+                and owner == "_verify_bundle_copy"):
+            writes.append(("put", owner))
+        elif (isinstance(parent, ast.Attribute) and parent.attr == "pop"
+                and isinstance(parents[parent], ast.Call) and parents[parent].func is parent
+                and owner == "_install_bundle_copy"):
+            writes.append(("pop", owner))
+        elif (isinstance(parent, ast.Compare) and owner == "_install_bundle_copy"
+                and any(isinstance(op, ast.NotIn) for op in parent.ops)):
+            pass
+        else:
+            violations.append((owner, node.lineno))
+    return constructors, sorted(writes), violations
+
+
+def test_only_copy_verification_constructs_and_registers_the_capability():
+    constructors, writes, violations = _bundle_capability_routes(Path(cache_module.__file__).read_text())
     assert constructors == ["_verify_bundle_copy"]
+    assert writes == [("declare", "<module>"), ("pop", "_install_bundle_copy"), ("put", "_verify_bundle_copy")]
+    assert not violations
+
+
+@pytest.mark.parametrize("body", (
+    "def outer():\n def inner():\n  return _VerifiedBundle(_BUNDLE_AUTHORITY)\n",
+    "def outer():\n def inner(proof):\n  _VERIFIED_COPIES[proof] = ()\n",
+    "def outer():\n registry = _VERIFIED_COPIES\n registry.clear()\n",
+    "def outer():\n global _VERIFIED_COPIES\n _VERIFIED_COPIES = {}\n",
+))
+def test_capability_ast_guard_rejects_nested_mints_and_registry_bypasses(body):
+    source = Path(cache_module.__file__).read_text() + "\n" + body
+    constructors, _, violations = _bundle_capability_routes(source)
+    assert constructors != ["_verify_bundle_copy"] or violations
 
 
 def test_installer_requires_an_unforgeable_single_use_proof(tmp_path):
@@ -394,6 +441,7 @@ def test_installer_requires_an_unforgeable_single_use_proof(tmp_path):
 
 @pytest.mark.parametrize("through_cache", (False, True))
 def test_changed_verified_copy_is_rejected_at_installation(sealing, tmp_path, monkeypatch, through_cache):
+    monkeypatch.setattr(cache_module, "_bundle_copy_stamp", lambda info: (info.st_ino, info.st_size))
     if through_cache:
         _, _, packs, seal = sealing
         expected = seal()[1]
@@ -401,7 +449,9 @@ def test_changed_verified_copy_is_rejected_at_installation(sealing, tmp_path, mo
 
         def changed(path, *args):
             proof = verifier(path, *args)
-            path.write_bytes(b"changed after verification")
+            content = bytearray(path.read_bytes())
+            content[-1] ^= 1
+            path.write_bytes(content)
             return proof
 
         monkeypatch.setattr(cache_module, "_verify_bundle_copy", changed)
@@ -424,11 +474,22 @@ def test_digest_check_mutation_fails_the_corruption_invariant(sealing, tmp_path)
     payload = bytearray(bundle.read_bytes())
     payload[-1] ^= 1
     bundle.write_bytes(payload)
-    source = Path(cache_module.__file__).read_text()
-    check = "digests.stream_sha256(path) != expected_digest"
-    assert source.count(check) == 1
+    tree = ast.parse(Path(cache_module.__file__).read_text())
+    verifier = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "_verify_bundle_copy")
+    checks = [node for node in ast.walk(verifier) if isinstance(node, ast.Compare)
+              and isinstance(node.left, ast.Name) and node.left.id == "actual_digest"
+              and len(node.comparators) == 1 and isinstance(node.comparators[0], ast.Name)
+              and node.comparators[0].id == "expected_digest"]
+    assert len(checks) == 1
+
+    class BypassExpectedDigest(ast.NodeTransformer):
+        def visit_Compare(self, node):
+            return ast.copy_location(ast.Constant(False), node) if node is checks[0] else self.generic_visit(node)
+
+    tree = ast.fix_missing_locations(BypassExpectedDigest().visit(tree))
     mutant = types.ModuleType("prismabuild._bundle_cache_mutant")
-    exec(compile(source.replace(check, "False"), cache_module.__file__, "exec"), mutant.__dict__)
+    exec(compile(tree, cache_module.__file__, "exec"), mutant.__dict__)
 
     def corruption_invariant(module):
         assert not module._reuse_bundle_cache(cache, bundle.parent.name,

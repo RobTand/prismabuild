@@ -3671,6 +3671,8 @@ without the member or the ordinary package import boundary.
   stored SHA-256, and atomically installs that same file. Only verification
   mints a registered, single-use `_VerifiedBundle` capability. Installation
   rejects plain, forged, copied or consumed capabilities and changed files;
+  it rechecks the verified digest as well as stat identity, because same-size
+  writes can share filesystem timestamps. Tests force that metadata collision.
   instances carry no minting authority. A miss runs the original
   sealer. Under the inventory lock, publication evicts oldest entries to make
   room, fsyncs both staged files and their directory, renames the complete

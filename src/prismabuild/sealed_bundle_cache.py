@@ -52,22 +52,31 @@ def _bundle_copy_stamp(info: os.stat_result) -> tuple[int, ...]:
 
 def _verify_bundle_copy(path: Path, expected_bytes: int, expected_digest: str) -> _VerifiedBundle:
     before = path.lstat()
-    if (not stat.S_ISREG(before.st_mode) or before.st_size != expected_bytes
-            or digests.stream_sha256(path) != expected_digest
+    if not stat.S_ISREG(before.st_mode) or before.st_size != expected_bytes:
+        raise ValueError("cached bundle copy differs from its stored size")
+    actual_digest = digests.stream_sha256(path)
+    if (actual_digest != expected_digest
             or _bundle_copy_stamp(path.lstat()) != _bundle_copy_stamp(before)):
         raise ValueError("cached bundle copy differs from its stored digest")
     proof = _VerifiedBundle(_BUNDLE_AUTHORITY)
-    _VERIFIED_COPIES[proof] = (path, _bundle_copy_stamp(before))
+    _VERIFIED_COPIES[proof] = (path, _bundle_copy_stamp(before), actual_digest)
     return proof
 
 
 def _install_bundle_copy(proof: _VerifiedBundle, destination: Path) -> None:
     if type(proof) is not _VerifiedBundle or proof not in _VERIFIED_COPIES:
         raise ValueError("an unconsumed verified bundle is required")
-    path, verified_stat = _VERIFIED_COPIES.pop(proof)
-    if _bundle_copy_stamp(path.lstat()) != verified_stat:
-        raise ValueError("verified bundle changed before installation")
-    os.replace(path, destination)
+    path, verified_stat, verified_digest = _VERIFIED_COPIES.pop(proof)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if (_bundle_copy_stamp(os.fstat(fd)) != verified_stat
+                or digests.stream_sha256(Path(f"/proc/self/fd/{fd}")) != verified_digest
+                or _bundle_copy_stamp(os.fstat(fd)) != verified_stat
+                or _bundle_copy_stamp(path.lstat()) != verified_stat):
+            raise ValueError("verified bundle changed before installation")
+        os.replace(path, destination)
+    finally:
+        os.close(fd)
 
 
 @contextmanager
