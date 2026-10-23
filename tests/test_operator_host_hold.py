@@ -161,7 +161,7 @@ def test_expiry_must_be_finite_future_and_at_most_twelve_hours(tmp_path, seconds
 
 
 @pytest.mark.parametrize("drain", [False, True])
-def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_path, monkeypatch, drain):
+def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_path, monkeypatch, capsys, drain):
     root = tmp_path / "pb-queue"
     queue = pool.PoolQueue(root)
     queue.records.ensure_layout()
@@ -179,6 +179,12 @@ def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_
     assert node["hold"]["expires_unix"] == hold.expires_unix
     assert node["draining"] is drain
     assert "external load" in "\n".join(pbstatus.pool_node_lines([node]))
+    capsys.readouterr()
+    assert pbstatus.main(["--transport", "pool", "--json", "--recent", "0",
+                          "--queue-root", str(root)]) == 0
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered["nodes"][0]["state"] == "held"
+    assert rendered["nodes"][0]["hold"]["owner"] == "operator"
     host_hold.change_host_hold(root, HOST, owner="operator", release=True)
     assert loop._run_loop(Event()) == 0
     node = census.offers(root).value["nodes"][0]

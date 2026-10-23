@@ -1234,10 +1234,11 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 print(f"[{host}] swept {len(swept)} dead offer temporary "
                       f"file(s) (issue #1040)", flush=True)
         gate = role_session.read_maintenance_gate()
+        if gate is not None:
+            role_session.post_park_marker(gate)
         hold = queue.claim_hold()
         if gate is not None or hold is not None:
             if gate is not None:
-                role_session.post_park_marker(gate)
                 print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
             if hold is not None:
                 print(f"[{host}] operator hold; admission paused: "
