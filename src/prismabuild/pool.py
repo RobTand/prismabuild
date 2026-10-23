@@ -7287,6 +7287,7 @@ class PoolQueue:
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
         "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        "checkout_cleanup", "lifetime_evidence",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -19490,8 +19491,8 @@ class PoolQueue:
 
         The one reader for the guard ``reap_stale`` has always applied and the
         drain-time retry needs identically.  Only the claiming host may retry
-        a saved outcome -- a payload has already returned, so lease freshness
-        is irrelevant, but only the owner can prove its kernel scope empty.
+        a saved conclusion -- execution or preparation has returned, so lease
+        freshness is irrelevant, but only the owner can prove its cleanup.
         A ``finish_pending`` that is not a status/detail object is a contract
         error, never something to act on.  ``None`` means the record is not
         this host's pending finish: absent, foreign or already concluded, and
@@ -19512,19 +19513,21 @@ class PoolQueue:
     def _retry_own_pending_finish(
         self, key: str, record: Mapping[str, object] | None
     ) -> Path | None:
-        """Retry one saved outcome through the single ``finish`` lifecycle.
+        """Retry one saved conclusion through its existing lifecycle policy.
 
         ``None`` when the record is not this host's pending finish.  Callers
         hold the key's transition lock; the exact claim generation, the
         original saved status and detail, immutable attempt filing, the
         reservation release and the reader/scope cleanup proof all stay
-        ``finish``'s own behaviour, so there is no second conclusion path to
-        keep in step with the reaper's.
+        ``finish``'s own behaviour. An unstarted deferral retries its named
+        policy instead, preserving its uncharged attempt count.
         """
 
         pending = self._saved_finish(key, record)
         if pending is None:
             return None
+        if pending["status"] == lifecycle.Transition.DEFER.value:
+            return self._defer_unstarted_claim(record)
         return self.finish(key, status=str(pending["status"]),
                            detail=pending["detail"], claim_snapshot=record)
 
@@ -21822,16 +21825,32 @@ class PoolQueue:
             outcome = _fence_refusal(
                 f"PrismaBuild: lifetime fence expired during checkout: {exc}\n",
                 argv=[], allocation=item.get("cpu_allocation"))
+        finally:
+            if life is not None:
+                # The context has removed the registered tree or recorded its
+                # debt. Preserve that verdict even when preparation raises.
+                life.claim = lifetime_fence.attempt_identity(item)
+                item["lifetime_evidence"] = life.as_record()
+                if item.get("checkout_snapshot") is not None:
+                    checkout_cleanup["claim"] = life.claim
+                    item["checkout_cleanup"] = dict(checkout_cleanup)
+                key = str(item["action_key"])
+                with self.action_transition_lock(key):
+                    path = self.records.item_path(CLAIMED, key)
+                    live = record_store.read_document(path)
+                    if (live is not None and claim_identity.same_claim(live, item)
+                            and lifetime_fence.attempt_identity(live) == life.claim):
+                        claim_identity.check_lease_identity(
+                            key, live, record_store.read_document(self.records.lease_path(key)),
+                            invalid=AmbiguousClaimHolder)
+                        live["lifetime_evidence"] = item["lifetime_evidence"]
+                        if item.get("checkout_snapshot") is not None:
+                            live["checkout_cleanup"] = item["checkout_cleanup"]
+                        self.records.replace_record_at(path, live)
         if life is not None:
-            # The record travels on the outcome into the attempt archive,
-            # where ``finish`` completes it and the audit reads it back.  The
-            # scope nonce exists only now, so the identity binds last.
-            life.claim = lifetime_fence.attempt_identity(item)
+            outcome["lifetime_evidence"] = item["lifetime_evidence"]
             if item.get("checkout_snapshot") is not None:
-                checkout_cleanup["claim"] = life.claim
-                item["checkout_cleanup"] = checkout_cleanup
-                outcome["checkout_cleanup"] = checkout_cleanup
-            outcome["lifetime_evidence"] = life.as_record()
+                outcome["checkout_cleanup"] = item["checkout_cleanup"]
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's
@@ -22801,9 +22820,9 @@ class PoolQueue:
             return "", ""
 
     @_serialized_key
-    def _defer_unstarted_claim(self, item: Mapping[str, object]) -> None:
+    def _defer_unstarted_claim(self, item: Mapping[str, object]) -> Path | None:
         """Release a broker-refused launch through the unstarted policy."""
-        lifecycle.conclude(self, lifecycle.DeferredLaunch(item))
+        return lifecycle.conclude(self, lifecycle.DeferredLaunch(item))
 
     def serve_once(
         self,
@@ -22865,16 +22884,20 @@ class PoolQueue:
             outcome = self.execute(item, python=python, timeout_s=timeout_s,
                                    **({"containment": True} if containment else {}))
         except resource_scope.ResourceUnavailable:
-            # Only create emits this typed maintenance refusal: no payload or
-            # scope has been created, so capacity returns without an attempt.
+            # No payload or scope was created. The unstarted policy still
+            # requires proof that this attempt's checkout has been removed.
             self._defer_unstarted_claim(item)
             return None
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as
             # a terminal state, not left for the reaper 300 s later.
+            detail = {"exception": repr(exc)}
+            if item.get("lifetime_fence_s") is not None:
+                detail.update({field: item[field] for field in
+                               ("checkout_cleanup", "lifetime_evidence") if field in item})
             self.finish(key,
                 status="failed",
-                detail={"exception": repr(exc)},
+                detail=detail,
                 claim_snapshot=item,
             )
             raise

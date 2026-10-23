@@ -1728,8 +1728,10 @@ class WidowedLeaseRecovery:
     timeout_s: float
 
 
-def _defer_launch(queue, item: Mapping[str, object]) -> None:
-    """Return a broker-refused launch without recording an execution attempt."""
+def _defer_launch(queue, item: Mapping[str, object]) -> Path | None:
+    """Return a broker-refused launch only after its checkout is removed."""
+    from . import materialize, pool
+
     key = str(item["action_key"])
     record = record_store.value_or_raise(queue.records.item(CLAIMED, key))
     if record is None or not claim_identity.same_claim(record, item):
@@ -1740,7 +1742,18 @@ def _defer_launch(queue, item: Mapping[str, object]) -> None:
     host = queue.resolve_claim_holder(key, record)
     if host is not None:
         record["claimed_host"] = host
-    _commit_claim(queue, ClaimCommit(
+    if queue.withdrawal_covers(record, action_key=key) is not None:
+        return queue.finish(key, status=WITHDRAWN, claim_snapshot=record)
+    if record.get("lifetime_fence_s") is not None and record.get("checkout_snapshot") is not None:
+        checkout = materialize.settle_checkout_cleanup(
+            record, local_checkout_root=pool.LOCAL_CHECKOUT_ROOT)
+        record["checkout_cleanup"] = checkout
+        if checkout.get("complete") is not True:
+            queue._note_cleanup_attempt(record, read_claim, checkout)
+            record["finish_pending"] = {"status": Transition.DEFER.value, "detail": {}}
+            queue.records.replace_record_at(queue.records.item_path(CLAIMED, key), record)
+            return queue.records.item_path(CLAIMED, key)
+    return _commit_claim(queue, ClaimCommit(
         Transition.DEFER, key, record, read_claim, host,
         queue.records.item_path(READY, key), "requeued"))
 

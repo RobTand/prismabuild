@@ -125,12 +125,12 @@ def _remove_checkout_tree(temporary: Path, *, expect=None) -> None:
     finally:
         os.close(parent)
 
-def _remove_tree_before(path: Path, deadline_unix: float) -> None:
+def _remove_tree_before(path: Path, deadline_unix: float, *, expect=None) -> None:
     """Remove through the owned-tree authority while checking the fence."""
     parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         owned_tree.remove_tree(
-            parent, path.name,
+            parent, path.name, expect=expect,
             check=lambda: _seconds_before(deadline_unix, "checkout removal"))
     finally:
         os.close(parent)
@@ -151,7 +151,7 @@ def _cleanup_execution_checkout(
         if deadline_unix is None:
             _remove_checkout_tree(temporary, **({} if expect is None else {"expect": expect}))
         else:
-            _remove_tree_before(temporary, deadline_unix)
+            _remove_tree_before(temporary, deadline_unix, expect=expect)
     except Exception as exc:  # cleanup must not turn completed work into retry
         error = f"{type(exc).__name__}: {exc}"
     try:
@@ -353,15 +353,17 @@ def _execution_checkout(
     base.mkdir(parents=True, exist_ok=True)
     temporary, owner_lock = _new_owned_checkout(
         base, f"{str(item['action_key'])[:12]}.")
+    expected = None
     if cleanup is not None:
         identity = temporary.stat(follow_symlinks=False)
+        expected = (identity.st_dev, identity.st_ino)
         cleanup.update(path=str(temporary), device=identity.st_dev, inode=identity.st_ino,
                        complete=False, ended_unix=None)
-    if on_temporary is not None:
-        on_temporary(temporary)
     repository = temporary / "checkout"
     bounded = {} if deadline_unix is None else {"deadline_unix": deadline_unix}
     try:
+        if on_temporary is not None:
+            on_temporary(temporary)
         _run_materializer_git(
             ["git", "init", "-q", str(repository)],
             where="initialize materialized checkout",
@@ -448,7 +450,7 @@ def _execution_checkout(
         # failure must not change an already-published action into a failure.
         try:
             verdict = _cleanup_execution_checkout(
-                base, temporary, item,
+                base, temporary, item, expect=expected,
                 **({} if cleanup_deadline_unix is None
                    else {"deadline_unix": cleanup_deadline_unix}))
             if cleanup is not None:

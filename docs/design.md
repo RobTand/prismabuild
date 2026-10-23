@@ -20914,6 +20914,17 @@ The executed claim snapshot carries the same checkout proof as the outcome,
 so late-finisher recovery can settle its own journal while preserving the
 successor's claim, lease, tokens and immutable earlier result.
 
+Initial checkout removal checks the registered device and inode, just as
+recovery does. A replacement path cannot stand in for the original checkout.
+Execution binds and persists the checkout verdict in its finally path, so
+ordinary materialization and prelaunch exceptions supply the same exact-attempt
+proof to finish as successful payloads. The existing lifecycle owner retains
+an unstarted maintenance deferral in `finish_pending` with status `defer` while
+checkout cleanup is unproved. The owner host retries that policy through the
+normal reaper or drain-time pending-finish pass. Successful cleanup requeues
+without charging an execution; a covered withdrawal stays cancelled. Requeue
+removes the old claim's checkout proof and lifetime evidence.
+
 This is source support for SC-01, ID-02, ID-08 and SM-01 of the staged-read
 contract. It does not change their wider requirement status. No generation
 is deployed by this port. A person's settlement decision, deployment and
