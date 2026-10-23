@@ -6211,6 +6211,7 @@ the memory Guard, checking OOM events or stopping any scope. Guard decisions
 require at least two samples separated by the configured monitor interval.
 
 The PB lead's ruling on #1743's truncated text defines three outcomes:
+
 - `used`: at least one distinct GPU UUID was attributed to the payload scope.
 - `zero`: a successful GPU process sample covered the payload's lifetime and
   found no attributed GPU process. Only this outcome blocks a new receipt and

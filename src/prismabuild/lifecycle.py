@@ -270,8 +270,8 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
 
 def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     detail = dict(detail or {})
-    cas = pb.PrismaBuildCAS(record["cas_root"])
-    action = cas.read_action_request(str(record["action_key"]))
+    cas = pb.PrismaBuildCAS(record["cas_root"]) if record.get("cas_root") else None
+    action = cas.read_action_request(str(record["action_key"])) if cas else None
     demand = pb.action_resource_demand(action, queue.demand_of(record)) if action else queue.demand_of(record)
     if demand.get("gpu", 0) <= 0:
         return status, detail, False
@@ -279,7 +279,7 @@ def _gpu_finish_verdict(queue, record, status, detail, telemetry):
     # claim nor its GPU fields can select evidence for a terminal verdict.
     detail.pop("cached_execution", None)
     detail.pop("resource_telemetry", None)
-    receipt = cas.lookup(action) if status == "cache_hit" and action else None
+    receipt = cas.lookup(action) if status == "cache_hit" and cas and action else None
     observation = dict((receipt.get("resource_telemetry") or {}) if receipt else telemetry)
     state = observation.get("gpu_use")
     if status == "cache_hit" and receipt is None:

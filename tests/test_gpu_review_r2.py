@@ -191,26 +191,42 @@ def test_gpu_observation_rpc_does_not_shorten_guard_debounce(monitored, monkeypa
 
 # -- Finding 3: GPU use between censuses is a terminal zero-use failure ------
 
-@pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
-def test_unsampled_short_gpu_use_is_not_a_terminal_zero(scoped, monitored, monkeypatch):
+def test_unsampled_short_gpu_use_is_not_a_terminal_zero(generic_gpu, monitored, monkeypatch):
     a, backend, rows, _, monitor = monitored
     req, rec, path = rows[0]
     # Census 1 covers the worker before the argv child starts.
     gpu = _RealGuardGpu(lambda: [_job(rec, path, gpu_bytes=0), _job(rows[1][1], rows[1][2], gpu_bytes=0)])
     live = type(monitor)(a, gpu)
+    clock = [0.]
+    context = lambda: .2 <= clock[0] < .7
+    original_jobs = gpu.jobs
+    gpu.jobs = lambda: [
+        _job(rec, path, gpu_bytes=MIB if context() else 0), original_jobs()[1]]
     live.poll_once()
     # A fake child holds a CUDA context for 0.5 s, entirely between samples.
     # No process sample covers that child's lifetime.
     live_child = {'pid': 424242, 'parent': 123456789, 'starttime': '42'}
+    clock[0] = .1
     a.records[rec['scope_id']]['gpu_payload'] = live_child
-    monkeypatch.setattr(a, '_live_process', lambda pid: None)
+    monkeypatch.setattr(a, '_live_process', lambda pid: live_child if .1 <= clock[0] < .8 else None)
+    clock[0] = .5
+    assert context() and live._payload_live(a.records[rec['scope_id']])
+    clock[0] = 1.
+    assert not context() and not live._payload_live(a.records[rec['scope_id']])
     peer = Path('/proc/123456789/cgroup')
     original = Path.read_text
     monkeypatch.setattr(Path, 'read_text', lambda f, *x, **k: (
         '0::/prismabuild.slice/' + rec['scope_id'] + '/payload\n') if f == peer else original(f, *x, **k))
     final = a.handle(a.uid, 123456789, {'op': 'gpu_observation', 'action_key': req['action_key'],
                                         'nonce': req['nonce']})['resource_telemetry']
-    queue, item, calls = scoped
+    queue, item, action, cas, checkout = generic_gpu
+    monkeypatch.setattr(pb, '_gpu_broker_request', lambda *a, **k: {
+        'resource_telemetry': final, 'nonce': os.environ[pb.ACTION_NONCE_ENV],
+        'scope_id': os.environ[pb.ACTION_SCOPE_ENV]})
+    result = pb.run_local_action(action, cas_root=cas.root, checkout_root=checkout,
+                                 resource_demand=queue.demand_of(item))
+    assert result['receipt']['resource_telemetry']['gpu_use'] == 'unobserved'
+    assert cas.lookup(action) is not None
     _broker_final(monkeypatch, queue, final)
     path_t = queue.finish(item['action_key'], status='executed',
                           detail={'status': 'executed', 'returncode': 0, 'stdout': '', 'stderr': '',
@@ -298,3 +314,22 @@ def test_payload_cannot_register_gpu_lifetime_for_worker(monitored, monkeypatch)
         if file in {Path('/proc/11/cgroup'), Path('/proc/22/cgroup')} else original(file, *args, **kw)))
     reply = a.handle(a.uid, 11, {**fields, 'op': 'gpu_payload', 'payload_pid': 22})
     assert reply['ok'] and a.records[rec['scope_id']]['gpu_payload'] == payload
+
+
+def test_non_executable_cpu_history_has_no_cas_dependency(generic_gpu):
+    from prismabuild import lifecycle
+    queue, item, action, cas, checkout = generic_gpu
+    status, detail, zero = lifecycle._gpu_finish_verdict(
+        queue, {'action_key': item['action_key'], 'resources': {'cpu': 1}},
+        'executed', {'returncode': 0}, ZERO)
+    assert status == 'executed' and detail == {'returncode': 0} and not zero
+
+
+def test_generic_gpu_worker_receives_admitted_fallback(generic_gpu):
+    queue, item, action, cas, checkout = generic_gpu
+    argv = pool.worker_argv(worker_script=item['worker_script'], action_key=item['action_key'],
+                            cas_root=cas.root, checkout_root=checkout,
+                            resource_demand=queue.demand_of(item))
+    arguments = pb._build_parser().parse_args(argv[1:])
+    assert arguments.resource_demand == queue.demand_of(item)
+    assert pb.action_resource_demand(action, arguments.resource_demand)['gpu'] == 1
