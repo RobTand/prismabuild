@@ -20944,6 +20944,9 @@ cannot substitute another execute's proof or a foreign nonce.
 `materialize.certify_checkout_cleanup` is the sole release certificate mint.
 Host and tier return primitives require its process-local `ReleaseCertificate`,
 bound to the durable reservation nonce and exact claim's registration envelope.
+Issuance is tracked by a module-private weak registry with immutable bindings.
+Instances carry neither authority nor mutable bindings; construction, copying,
+serialization, subclasses and unissued handles refuse at the consumer boundary.
 The primitive rechecks that envelope and retains the transition exclusion through
 the token move. A stale, foreign or missing certificate returns no capacity.
 A reservation without a checkout also has a durable empty registration list;
@@ -20960,6 +20963,40 @@ mkdir. The exclusion ends before Git materialization begins.
 An unbound intent certifies only when an lstat relative to that held parent
 returns ENOENT. An existing unbound path retains custody for manual diagnosis;
 recovery never assumes that an unregistered inode belongs to the attempt.
+
+Accepted residual (N2): a crash after mkdir but before durable inode binding,
+followed by a same-UID rename of that unbound directory, can leave the intent
+name absent. The never-created check cannot distinguish it from mkdir failure.
+A marker written after mkdir has the same crash gap; this port does not claim
+atomic directory creation and durable registration. Registered inodes retain the
+strong descriptor-held unlink guarantee. Kernel, root and filesystem defects
+remain outside the threat model.
+
+A foreign heartbeat never renews the successor's claim. Recovery tries after
+the heartbeat bound, or immediately for a local PID whose recorded start ticks
+prove death or reuse. The exact predecessor scope and registration envelope are
+cleaned through the certifier, using its late-finish journal; no PID-only signal
+or age-only release is permitted. Unproved custody remains charged and appears
+as cleanup pending. Admission rolls back only its own receipt and leaves any
+foreign lease for certified recovery, so a stale heartbeat cannot silently hold
+an unstarted successor forever.
+
+Pre-contract deployment requires the explicit operator adoption in the operating
+guide before enabling new writers. Stop old writers and admissions, inventory
+manifest-less host, tier and RAM mirror holds, then review and apply that exact
+inventory with `tools/maintenance/adopt_legacy_custody.py`. Adoption checks token
+inodes and the durable attempt, journals the operation before updating live
+mirrors, and is resumable with the same inventory. It never returns tokens.
+Legacy live-root actions can adopt an empty registration list; an immutable
+successful terminal with a complete pre-contract cleanup verdict can qualify
+once under the rules it was made with, without pretending to have an inode
+proof. Snapshot holds with ambiguous cleanup, ownerless holds and changed
+inventories retain custody. Restore their exact durable owner or drain them with
+the previous runtime before adoption; never delete tokens or invent an empty
+registration list. `pbstatus` shows every remaining pre-contract hold and its
+qualification reason, or explicitly reports unavailable inventory. Ordinary
+cleanup, finish and egress then consume the adopted custody through the same
+certifier. Do not generate a fresh legacy inventory after enabling the contract.
 
 `materialize.certify_checkout_cleanup` is the sole checkout certification
 function. Cleanup, deferral, recovery and the reservation-return boundary use

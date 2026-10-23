@@ -6147,3 +6147,50 @@ mismatch. This is strict log equality, not an input-equivalence verifier or a
 policy-coverage certificate; the experiment must establish identical inputs and
 exercise the decisions of interest. Unrelated live windows do not establish
 decision parity.
+
+
+## Deploying the checkout custody contract (#1429)
+
+This is a required operator step for a queue with reservations made before the
+release-certificate contract. The port does not perform a live rollout.
+
+1. Stop new admissions and all old queue/lease writers, including storage roles.
+   Drain old snapshot actions with the previous runtime where practical. Keep
+   the queue and reservation directories intact. Keep a durable queue backup.
+2. Before enabling the new contract, run the new checkout's coordinator tool:
+
+   ```bash
+   python3 tools/maintenance/adopt_legacy_custody.py --queue-root QUEUE \
+     --inventory EVIDENCE/legacy-inventory.json --writers-stopped
+   ```
+
+   Review each eligible or retained hold. The inventory binds token device/inode
+   facts and the exact durable attempt. It includes host, tier and RAM mirror
+   reservations. No tokens are released.
+3. With writers still stopped, apply the reviewed inventory:
+
+   ```bash
+   python3 tools/maintenance/adopt_legacy_custody.py --queue-root QUEUE \
+     --apply EVIDENCE/legacy-inventory.json --writers-stopped \
+     --report EVIDENCE/legacy-adoption.json
+   ```
+
+   Exit 2 means some holds remain charged; read the report and `pbstatus`'s
+   `legacy cleanup custody` section (`legacy_custody` in JSON). Unknown status
+   is shown explicitly when the inventory cannot be read. Ambiguous legacy
+   snapshots or missing attempt identities must be drained with the previous
+   runtime or have their exact durable owner restored. Do not delete a holder
+   directory, fabricate an empty registration list, or reinterpret a new hold
+   as legacy. A successful pre-contract terminal may be adopted under its old
+   complete-cleanup rules; its immutable record is preserved.
+4. Resume an interrupted apply using the **same inventory**, choosing a new
+   report filename. Adoption is journaled and idempotent. A changed token or
+   owner is refused. Never create a new legacy inventory after enabling the
+   contract. Resume new writers only after reviewing retained custody; proven
+   adopted holds return through normal finish, recovery or tier egress.
+
+Adoption only establishes custody. It neither certifies a registered inode's
+unlink nor returns capacity. Unproved holds stay charged and visible until the
+operator resolves their legacy evidence. New registered checkout removals retain
+the descriptor-held unlink guarantee. The design records the accepted unbound
+mkdir-to-registration crash/rename residual (N2).

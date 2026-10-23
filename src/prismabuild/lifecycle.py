@@ -1670,7 +1670,7 @@ def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
                     age = now - lease.stat().st_mtime
                 except OSError:
                     continue
-            if age <= timeout_s:
+            if age <= timeout_s and not queue._heartbeat_cleanup_due(record, timeout_s=timeout_s):
                 continue
             try:
                 host = queue.resolve_claim_holder(key, record)

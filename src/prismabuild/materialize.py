@@ -32,6 +32,8 @@ import sys
 import tempfile
 import time
 import uuid
+import weakref
+from typing import NamedTuple
 
 from . import core as pb
 from . import owned_tree, immutable_files
@@ -483,47 +485,57 @@ def _execution_checkout(
 
 
 
-_RELEASE_AUTHORITY = object()
+# Issuance and immutable bindings stay in this module, never on a certificate.
+_ISSUED_RELEASE_CERTIFICATES = weakref.WeakKeyDictionary()
+
+
+class _ReleaseBinding(NamedTuple):
+    base: Path
+    holder: str
+    manifest: bytes
+    owner_path: Path
+    claim: bytes
+    registrations: bytes
+    token_names: frozenset | None
+    custody_key: str
+    attempt: object
 
 
 class ReleaseCertificate:
-    """Process-local authority for one durable reservation and cleanup envelope."""
+    """Opaque process-local capability issued only by the cleanup certifier."""
 
-    __slots__ = ("_authority", "_base", "_holder", "_manifest", "_owner_path", "_claim", "_registrations", "_token_names", "_custody_key", "_attempt")
+    __slots__ = ("__weakref__",)
 
-    def __init__(self, authority, ledger, holder, manifest, owner_path, owner, token_names, custody_key):
-        if authority is not _RELEASE_AUTHORITY:
-            raise pb.PrismaBuildError("release certificate can only be minted by the certifier")
-        from . import lifetime_fence, record_store
-        observed = record_store.read_document(owner_path)
-        values = {
-            "_authority": authority, "_base": ledger.base, "_holder": holder,
-            "_manifest": pb._canonical_bytes(manifest), "_owner_path": owner_path,
-            "_claim": pb._canonical_bytes(lifetime_fence.attempt_identity(owner)),
-            "_attempt": owner.get("attempts"), "_custody_key": custody_key,
-            "_registrations": pb._canonical_bytes(observed.get("checkout_registrations")),
-            "_token_names": None if token_names is None else frozenset(token_names),
-        }
-        for name, value in values.items():
-            object.__setattr__(self, name, value)
+    def __new__(cls, *args, **kwargs):
+        raise pb.PrismaBuildError("release certificate can only be minted by the certifier")
 
     def __setattr__(self, name, value):
         from .record_store import PoolContractError
         raise PoolContractError("release certificate is immutable")
 
+    def __reduce_ex__(self, protocol):
+        raise TypeError("release certificate cannot be copied or serialized")
+
+    @staticmethod
+    def _issued(certificate):
+        from .record_store import PoolContractError
+        if (type(certificate) is not ReleaseCertificate
+                or (binding := _ISSUED_RELEASE_CERTIFICATES.get(certificate)) is None):
+            raise PoolContractError("release certificate required for this reservation")
+        return binding
+
     def permits(self, token_name):
-        return self._token_names is None or token_name in self._token_names
+        binding = self._issued(self)
+        return binding.token_names is None or token_name in binding.token_names
 
     @staticmethod
     @contextmanager
     def returning(certificate, ledger, holder):
         from . import pool, record_store
-        if type(certificate) is not ReleaseCertificate:
-            raise record_store.PoolContractError("release certificate required")
-        # Mint is a leaf: when called under a tier/host guard, refuse a busy
-        # transition instead of waiting in the reverse order.
+        binding = ReleaseCertificate._issued(certificate)
+        # Never wait in the reverse order under a tier or host mutation guard.
         queue = pool.PoolQueue(ledger.release_records.root)
-        with queue.action_transition_lock(certificate._custody_key, blocking=False) as acquired:
+        with queue.action_transition_lock(binding.custody_key, blocking=False) as acquired:
             if not acquired:
                 raise record_store.PoolContractError("release certificate custody is busy")
             ReleaseCertificate.require(certificate, ledger, holder)
@@ -533,26 +545,34 @@ class ReleaseCertificate:
     def require(certificate, ledger, holder):
         from . import lifetime_fence, record_store
         invalid = record_store.PoolContractError
-        if (type(certificate) is not ReleaseCertificate
-                or certificate._authority is not _RELEASE_AUTHORITY
-                or certificate._base != ledger.base or certificate._holder != holder):
+        binding = ReleaseCertificate._issued(certificate)
+        if binding.base != ledger.base or binding.holder != holder:
             raise invalid("release certificate required for this reservation")
         manifest = record_store.read_document(ledger.release_owner_path(holder))
-        owner = record_store.read_document(certificate._owner_path)
-        if (pb._canonical_bytes(manifest) != certificate._manifest or owner is None
-                or pb._canonical_bytes(lifetime_fence.attempt_identity(owner)) != certificate._claim
-                or owner.get("attempts") != certificate._attempt
-                or pb._canonical_bytes(owner.get("checkout_registrations")) != certificate._registrations):
+        owner = record_store.read_document(binding.owner_path)
+        if (pb._canonical_bytes(manifest) != binding.manifest or owner is None
+                or pb._canonical_bytes(lifetime_fence.attempt_identity(owner)) != binding.claim
+                or owner.get("attempts") != binding.attempt
+                or pb._canonical_bytes(owner.get("checkout_registrations")) != binding.registrations):
             raise invalid("release certificate is stale or belongs to another claim")
-        # A tombstone or terminal proof cannot borrow a successor's key-scoped hold.
-        key = certificate._custody_key
-        for path in (ledger.release_records.lease_path(key),
-                     ledger.release_records.item_path(record_store.CLAIMED, key)):
+        key = binding.custody_key
+        lease_path = ledger.release_records.lease_path(key)
+        claim_path = ledger.release_records.item_path(record_store.CLAIMED, key)
+        own_unstarted_rollback = (
+            binding.token_names is not None and binding.owner_path == claim_path
+            and owner.get("checkout_registrations") == []
+            and owner.get("resource_scope") is None and owner.get("resource_scope_intent") is None)
+        for path in (lease_path, claim_path):
+            # A private admission receipt owns exactly its new token names.
+            # Returning those cannot return a predecessor's same-key custody.
+            if path == lease_path and own_unstarted_rollback:
+                continue
             live = record_store.read_document(path)
             if (live is not None and live.get("claimed_by") is not None
-                    and (pb._canonical_bytes(lifetime_fence.attempt_identity(live)) != certificate._claim
-                         or live.get("attempts") != certificate._attempt)):
+                    and (pb._canonical_bytes(lifetime_fence.attempt_identity(live)) != binding.claim
+                         or live.get("attempts") != binding.attempt)):
                 raise invalid("release certificate conflicts with live claim custody")
+        return binding
 
 
 def certify_checkout_cleanup(
@@ -607,6 +627,13 @@ def certify_checkout_cleanup(
                         return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
                     if marks:
                         path, owner = marks[0], record_store.read_document(marks[0])
+                if owner is None and manifest.get("legacy_adoption") is not None:
+                    legacy_path = release_ledger.legacy_owner_path(holder)
+                    legacy = record_store.read_document(legacy_path)
+                    if (legacy is None or legacy.get("inventory_id") != manifest["legacy_adoption"]
+                            or legacy.get("manifest_nonce") != manifest.get("nonce")):
+                        return {"complete": False, "used": True, "error": "legacy custody journal differs"}
+                    path, owner = legacy_path, legacy
                 if owner is None:
                     # The reservation's durable empty registration is authority
                     # only before it was bound to an executable claim.
@@ -774,8 +801,15 @@ def certify_checkout_cleanup(
                         live["checkout_cleanup"] = result
                     queue.records.replace_record_at(mirror, live)
             if release_ledger is not None and result["complete"]:
-                return {**result, "certificate": ReleaseCertificate(
-                    _RELEASE_AUTHORITY, release_ledger, holder, manifest, path, owner, token_names, key)}
+                certificate = object.__new__(ReleaseCertificate)
+                observed = record_store.read_document(path)
+                _ISSUED_RELEASE_CERTIFICATES[certificate] = _ReleaseBinding(
+                    release_ledger.base, holder, pb._canonical_bytes(manifest), path,
+                    pb._canonical_bytes(lifetime_fence.attempt_identity(owner)),
+                    pb._canonical_bytes(observed.get("checkout_registrations")),
+                    None if token_names is None else frozenset(token_names), key,
+                    owner.get("attempts"))
+                return {**result, "certificate": certificate}
             return result
     except (OSError, ValueError, TypeError, KeyError, record_store.PoolContractError) as exc:
         return {"complete": False, "used": True,

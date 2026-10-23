@@ -3611,6 +3611,9 @@ class ResourceLedger:
     def release_owner_path(self, action_key):
         return self.base / "release-owners" / (action_key + ".json")
 
+    def legacy_owner_path(self, action_key):
+        return self.base / "legacy-adoptions" / (action_key + ".json")
+
     def acquisition_receipt_path(self, action_key, nonce):
         return self.base / "release-receipts" / action_key / (nonce + ".json")
 
@@ -3654,8 +3657,8 @@ class ResourceLedger:
 
     @_guarded_mutation(blocking=True, releasing=True)
     def unbind_unstarted_claim(self, action_key, *, certificate=None):
-        materialize.ReleaseCertificate.require(certificate, self, action_key)
-        owner = record_store.read_document(certificate._owner_path)
+        binding = materialize.ReleaseCertificate.require(certificate, self, action_key)
+        owner = record_store.read_document(binding.owner_path)
         if owner is None or owner.get("checkout_registrations") != []:
             raise PoolContractError("unstarted rollback has checkout custody")
         path = self.release_owner_path(action_key)
@@ -5466,8 +5469,18 @@ class _ClaimReservation:
             self.ledger.abandon_acquire(self.host_handle)
             if (exit in {_ClaimExit.COMMITTED_RETRY, _ClaimExit.PERSISTED_RETRY}
                     and not immutable_files.confirmed_metadata_absence(self.ledger.held_dir / self.action_key)):
-                self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
-                    self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
+                try:
+                    self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
+                        self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot,
+                        owner_path=self.queue.records.item_path(CLAIMED, self.action_key)))
+                except (OSError, PoolContractError, ValueError) as exc:
+                    pending = dict(self.claim_snapshot or {})
+                    pending["finish_pending"] = {"status": "defer", "detail": {}}
+                    self.queue._note_cleanup_attempt(pending, pending, {
+                        "complete": False, "error": "admission rollback cleanup: " + str(exc)})
+                    self.queue.records.replace_record_at(
+                        self.queue.records.item_path(CLAIMED, self.action_key), pending)
+                    return
             self._return_borrow()
             self.return_unlaunched_probe()
         if exit in {_ClaimExit.RENAME_LOST, _ClaimExit.RENAMED_REFUSAL,
@@ -12174,6 +12187,10 @@ class PoolQueue:
         if (claim is None or claim.get("claimed_by") != owner
                 or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
             raise PoolContractError("claim changed before heartbeat publication")
+        previous = record_store.read_document(self.records.lease_path(action_key))
+        if previous is not None and self._heartbeat_conflicts(claim, previous):
+            self._recover_stale_heartbeat_lease(action_key, claim)
+            raise PoolContractError("foreign heartbeat custody observed; retry admission after cleanup")
         # A stale claim read must not erase the successor lease's ownership
         # evidence, including the evidence used by finish's cleanup guard.
         claim_identity.check_lease_identity(
@@ -12194,6 +12211,7 @@ class PoolQueue:
             # Legacy heartbeat callers need not invent an attempt counter.
             for field in ("claimed_by", "claimed_host", "attempts"):
                 lease[field] = claim[field]
+            lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
         previous = record_store.read_document(self.records.lease_path(action_key))
         if previous is not None and "checkout_registrations" in previous:
             # Registration is lease-owned. A stale heartbeat cannot erase an
@@ -12202,6 +12220,91 @@ class PoolQueue:
             if "checkout_cleanup" in previous:
                 lease["checkout_cleanup"] = previous["checkout_cleanup"]
         self.records.replace_record_at(self.records.lease_path(action_key), lease)
+
+    @staticmethod
+    def _heartbeat_conflicts(claim, lease):
+        try:
+            claim_identity.check_lease_identity(
+                str(claim.get("action_key", "")), claim, lease, invalid=PoolContractError)
+        except PoolContractError:
+            return True
+        return False
+
+    @staticmethod
+    def _heartbeat_cleanup_due(lease, *, timeout_s=LEASE_TIMEOUT_S):
+        beat = lease.get("heartbeat_unix")
+        stale = type(beat) in (int, float) and math.isfinite(beat) and _now() - beat > timeout_s
+        pid, ticks = lease.get("pid"), lease.get("pid_start_ticks")
+        dead = (lease.get("host") == socket.gethostname()
+                and type(pid) is int and pid > 0 and type(ticks) is int and ticks > 0
+                and (not _process_alive(pid) or (
+                    (observed := _contained_worker_start_ticks(pid)) is not None and observed != ticks)))
+        return stale or dead
+
+    def _recover_stale_heartbeat_lease(self, key, claim):
+        """Retire a foreign heartbeat only after exact predecessor cleanup.
+
+        Caller holds the key transition. A PID alone never authorizes signals:
+        liveness decides when to try, while the broker nonce and checkout
+        certifier decide what can be cleaned. Uncertain cleanup stays visible.
+        """
+        path = self.records.lease_path(key)
+        lease = record_store.read_document(path)
+        if lease is None or not self._heartbeat_conflicts(claim, lease):
+            return True
+        try:
+            if not self._heartbeat_cleanup_due(lease):
+                raise PoolContractError("foreign heartbeat owner is live or its identity is unknown")
+            old = dict(lease)
+            old.setdefault("claimed_by", old.get("owner"))
+            old.setdefault("claimed_host", old.get("host"))
+            journal_path = self.records.late_finish_path(old)
+            journal = record_store.read_document(journal_path)
+            created_journal = journal is None
+            if created_journal:
+                self.records.replace_record_at(journal_path, old)
+            elif not claim_identity.same_claim(journal, old):
+                raise PoolContractError("foreign heartbeat journal belongs to another attempt")
+            else:
+                def registrations(value):
+                    entries = value.get("checkout_registrations")
+                    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+                        raise PoolContractError("foreign heartbeat registration envelope missing")
+                    return [{k: v for k, v in entry.items() if k not in ("cleanup", "completion_claim")}
+                            for entry in entries]
+                if (lifetime_fence.attempt_identity(journal) != lifetime_fence.attempt_identity(old)
+                        or registrations(journal) != registrations(old)
+                        or any(entry.get("completion_claim", lifetime_fence.attempt_identity(old))
+                               != saved.get("completion_claim", lifetime_fence.attempt_identity(old))
+                               for entry, saved in zip(old["checkout_registrations"], journal["checkout_registrations"]))):
+                    raise PoolContractError("foreign heartbeat journal has different checkout custody")
+                old = journal
+            cleanup = self.cleanup_action_containers(old, reason="stale-heartbeat", scope_only=True)
+            if not cleanup.get("complete"):
+                raise PoolContractError(str(cleanup.get("error") or "predecessor cleanup remains unproved"))
+            observed = record_store.read_document(path)
+            if observed != lease:
+                raise PoolContractError("foreign heartbeat changed during cleanup")
+            old_identity = {k: v for k, v in lifetime_fence.attempt_identity(old).items()
+                            if k not in ("nonce", "scope_id")}
+            for host in self.claim_reservation_hosts(key):
+                ledger = self.ledger(host)
+                manifest = record_store.read_document(ledger.release_owner_path(key))
+                if manifest is None or manifest.get("claim") == old_identity:
+                    raise PoolContractError("predecessor reservation still has custody; defer successor rollback")
+            path.unlink()
+            if created_journal:
+                journal_path.unlink(missing_ok=True)
+            return True
+        except (OSError, ValueError, TypeError, KeyError, PoolContractError) as exc:
+            pending = dict(claim)
+            self._note_cleanup_attempt(pending, claim, {
+                "complete": False, "error": "foreign heartbeat cleanup: " + str(exc)})
+            live_path = self.records.item_path(CLAIMED, key)
+            live = record_store.read_document(live_path)
+            if live is not None and claim_identity.same_claim(live, claim):
+                self.records.replace_record_at(live_path, pending)
+            return False
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         """Host tokens share the reservation owner's reentrant mutation lock.
@@ -15310,6 +15413,9 @@ class PoolQueue:
                 if live is not None and not claim_identity.same_claim(live, record):
                     old = record.get("resource_scope") or record.get("resource_scope_intent")
                     if not isinstance(old, dict) or not old.get("nonce"):
+                        if (old is None and record.get("child_pid") is None
+                                and not record.get("container_owner")):
+                            return {"complete": True, "used": False, "removed": [], "remaining": []}
                         raise PoolContractError("late finish has no exact scope authority")
                     if any(isinstance(live.get(field), dict)
                            and live[field].get("nonce") == old["nonce"]
@@ -19897,6 +20003,11 @@ class PoolQueue:
                 if not acquired:
                     continue
                 record = record_store.read_document(path)
+                lease = record_store.read_document(self.records.lease_path(key))
+                if record is not None and lease is not None and self._heartbeat_conflicts(record, lease):
+                    if not self._recover_stale_heartbeat_lease(key, record):
+                        continue
+                    record = record_store.read_document(path)
                 if (record or {}).get("finish_pending") is not None:
                     # Only the owner host can prove its kernel scope is empty.
                     # A payload has already returned here, so lease freshness is

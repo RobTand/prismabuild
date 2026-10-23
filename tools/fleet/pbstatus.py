@@ -683,6 +683,15 @@ def pool_job_lines(jobs: Sequence[Mapping[str, object]], summary: Mapping[str, o
          j.get('reason')) for j in jobs))
 
 
+def legacy_custody_lines(holds):
+    """Show holds that still need the explicit pre-contract adoption step."""
+    if not holds:
+        return ["no pre-contract holds awaiting custody adoption"]
+    return render_table(("LEDGER", "HOLDER", "CUSTODY", "REASON"), (
+        (row["kind"] + ":" + row["ledger"], row["holder"][:12], row["status"], row["reason"])
+        for row in holds))
+
+
 # --------------------------------------------------------------------------
 # Printing
 # --------------------------------------------------------------------------
@@ -1538,6 +1547,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if read["status"] == "ok":
         canary = read["value"]
 
+    legacy_custody = None
+    if transport == "pool":
+        from prismabuild.legacy_custody import LegacyCustodyMigration
+        read = bounded("legacy-custody", lambda: LegacyCustodyMigration(
+            pool.PoolQueue(args.queue_root)).inventory()["holds"],
+            deadline=deadline, abandoned=abandoned)
+        if read["status"] == "ok":
+            legacy_custody = read["value"]
+        else:
+            notes.append("legacy custody inventory unavailable; adoption status is unknown")
+
     # Whole means every required section read, and read entirely: the deadline
     # held, nothing raised, and the pool census came back with every record
     # legible.  Any one of those failing is a partial answer, and a partial
@@ -1580,6 +1600,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "endings": endings,
             "rollout": rollout,
             "canary": canary,
+            "legacy_custody": legacy_custody,
             "scheduler": notes,
         }, sort_keys=True, indent=1))
         return _incomplete(timed_out, unavailable, pool_partial, args.timeout_s)
@@ -1599,6 +1620,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         for note in notes:
             print(note)
     print()
+    if transport == "pool":
+        print("== legacy cleanup custody")
+        print("\n".join(legacy_custody_lines(legacy_custody)) if legacy_custody is not None
+              else "legacy custody inventory unavailable; adoption status is unknown")
+        print()
     print(f"== endings (newest {args.recent})")
     print("\n".join([ending_note] if ending_note
                      else ending_lines(endings, note=empty_note)))

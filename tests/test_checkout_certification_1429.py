@@ -184,7 +184,17 @@ def test_every_checkout_release_path_requires_the_single_certifier(tmp_path, bro
 def test_scope_token_returns_have_one_conclusion_boundary():
     import ast
     root = Path(__file__).resolve().parents[1]
-    constructions = []
+    constructions, private_access = [], []
+    private = {"_RELEASE_AUTHORITY", "_authority", "_ISSUED_RELEASE_CERTIFICATES"}
+
+    def literal(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = literal(node.left), literal(node.right)
+            return left + right if left is not None and right is not None else None
+        return None
+
     for path in (root / "src/prismabuild").glob("*.py"):
         tree = ast.parse(path.read_bytes())
         aliases = {"ReleaseCertificate"}
@@ -192,22 +202,41 @@ def test_scope_token_returns_have_one_conclusion_boundary():
             if isinstance(node, ast.ImportFrom):
                 aliases.update(entry.asname or entry.name for entry in node.names
                                if entry.name == "ReleaseCertificate")
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and (
-                    isinstance(node.value, ast.Attribute) and node.value.attr == "ReleaseCertificate"
-                    or isinstance(node.value, ast.Name) and node.value.id in aliases):
-                aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+
+        def certificate_class(node):
+            return ((isinstance(node, ast.Name) and node.id in aliases)
+                    or (isinstance(node, ast.Attribute) and node.attr == "ReleaseCertificate")
+                    or (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "getattr" and len(node.args) >= 2
+                        and literal(node.args[1]) == "ReleaseCertificate"))
+
+        previous = set()
+        while previous != aliases:
+            previous = set(aliases)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and certificate_class(node.value):
+                    aliases.update(target.id for target in node.targets if isinstance(target, ast.Name))
+
         def walk(node, owners=()):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 owners = (*owners, node.name)
             if isinstance(node, ast.Call):
-                name = (node.func.id if isinstance(node.func, ast.Name)
-                        else node.func.attr if isinstance(node.func, ast.Attribute) else None)
-                if name in aliases:
+                raw_new = (isinstance(node.func, ast.Attribute) and node.func.attr == "__new__"
+                           and any(certificate_class(arg) for arg in node.args))
+                if certificate_class(node.func) or raw_new:
                     constructions.append((path.stem, owners))
+                if (path.stem != "materialize" and isinstance(node.func, ast.Name)
+                        and node.func.id == "getattr" and len(node.args) >= 2
+                        and literal(node.args[1]) in private):
+                    private_access.append(path.name)
+            if path.stem != "materialize" and (
+                    isinstance(node, ast.Name) and node.id in private
+                    or isinstance(node, ast.Attribute) and node.attr in private):
+                private_access.append(path.name)
             for child in ast.iter_child_nodes(node):
                 walk(child, owners)
         walk(tree)
+    assert not private_access, private_access
     assert constructions == [("materialize", ("certify_checkout_cleanup",))]
 
 

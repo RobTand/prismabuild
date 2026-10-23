@@ -439,8 +439,9 @@ def test_release_certificate_cannot_be_retargeted(tmp_path):
     certificate = ledger.certify_release("owned")
     with pytest.raises(pool.PoolContractError, match="immutable"):
         certificate._holder = "foreign"
-    assert isinstance(certificate._manifest, bytes)
-    assert isinstance(certificate._registrations, bytes)
+    binding = materialize.ReleaseCertificate.require(certificate, ledger, "owned")
+    assert isinstance(binding.manifest, bytes)
+    assert isinstance(binding.registrations, bytes)
     assert ledger.release("owned", certificate=certificate) == 1
 
 
