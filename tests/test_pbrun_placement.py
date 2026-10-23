@@ -805,6 +805,7 @@ def test_git_snapshot_keeps_a_tracked_file_that_now_matches_ignore(
     bundle = cas.input_path(snapshot["input"])
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized,
         "fetch",
@@ -812,6 +813,7 @@ def test_git_snapshot_keeps_a_tracked_file_that_now_matches_ignore(
         str(bundle),
         "refs/heads/prismabuild-snapshot",
     ).returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0
@@ -828,10 +830,12 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
 
     primary = _git_checkout(tmp_path)
     linked = tmp_path / "linked"
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         primary, "worktree", "add", "-q", "--detach", str(linked)
     ).returncode == 0
     assert (linked / ".git").is_file()
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     common_dir = Path(_git(linked, "rev-parse", "--git-common-dir").stdout.strip())
     assert common_dir.is_absolute()
     assert linked not in common_dir.parents
@@ -850,6 +854,7 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
     materialized = tmp_path / "materialized-linked"
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized,
         "fetch",
@@ -857,6 +862,7 @@ def test_git_snapshot_from_a_linked_worktree_is_self_contained(
         str(cas.input_path(snapshot["input"])),
         "refs/heads/prismabuild-snapshot",
     ).returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0
@@ -954,6 +960,7 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
     materialized = tmp_path / "materialized-internal-link"
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized,
         "fetch",
@@ -961,6 +968,7 @@ def test_git_snapshot_allows_an_internal_relative_symlink(tmp_path: Path) -> Non
         str(cas.input_path(snapshot["input"])),
         "refs/heads/prismabuild-snapshot",
     ).returncode == 0
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0
@@ -985,6 +993,7 @@ def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
     assert _git(dependency, "commit", "-qm", "dependency").returncode == 0
 
     checkout = _git_checkout(tmp_path)
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert _git(
         checkout,
         "-c",
@@ -1067,7 +1076,9 @@ def test_git_snapshot_keeps_the_source_commit_as_its_parent(
         raising=False,
     )
     with _materialized(snapshot, cas_root) as root:
+        # pb-history-ok: Compares the generated snapshot with its fixture parent, which is HEAD~1 in that snapshot.
         assert _git(root, "rev-parse", "HEAD~1").stdout.strip() == source_head
+        # pb-history-ok: Compares the generated snapshot with its fixture parent, which is HEAD~1 in that snapshot.
         diff = _git(root, "diff", "--name-only", f"{source_head}...HEAD")
         assert diff.returncode == 0, diff.stderr
         assert "task.py" in diff.stdout.split()
@@ -1098,7 +1109,9 @@ def test_git_snapshot_advertises_a_requested_branch_by_name(
         raising=False,
     )
     with _materialized(snapshot, cas_root) as root:
+        # pb-history-ok: Compares the generated snapshot against the fixture branch advertised during capture.
         assert _git(root, "rev-parse", branch).stdout.strip() == source_head
+        # pb-history-ok: Compares the generated snapshot against the fixture branch advertised during capture.
         diff = _git(root, "diff", "--name-only", f"{branch}...HEAD")
         assert diff.returncode == 0, diff.stderr
         assert "task.py" in diff.stdout.split()
@@ -1193,6 +1206,7 @@ def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
     assert _git(origin, "add", "second.txt").returncode == 0
     assert _git(origin, "commit", "-qm", "second").returncode == 0
     shallow = tmp_path / "shallow"
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     assert subprocess.run(
         ["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(shallow)],
         capture_output=True, text=True,
@@ -1226,7 +1240,7 @@ def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
 ) -> None:
     checkout = _git_checkout(tmp_path)
     for key, value in configuration.items():
-        assert _git(checkout, "config", key, value).returncode == 0
+        assert _git(checkout, "config", "--", key, value).returncode == 0
     original = (checkout / ".git" / "config").read_bytes()
     def cannot_pack(*args, **kwargs):
         raise AssertionError("partial source must refuse before bundle packing")
@@ -1246,7 +1260,7 @@ def test_false_promisor_without_a_filter_keeps_a_complete_source_eligible(
     tmp_path: Path, value: str,
 ) -> None:
     checkout = _git_checkout(tmp_path)
-    assert _git(checkout, "config", "remote.origin.promisor", value).returncode == 0
+    assert _git(checkout, "config", "--", "remote.origin.promisor", value).returncode == 0
     submit_core.require_complete_history(checkout)
     snapshot = submit_core.snapshot_checkout(
         checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
@@ -1260,6 +1274,7 @@ def test_real_modern_filtered_clone_without_legacy_extension_refuses_early(
     origin = _git_checkout(tmp_path)
     assert _git(origin, "config", "uploadpack.allowFilter", "true").returncode == 0
     partial = tmp_path / "modern-filtered"
+    # pb-history-ok: Builds and compares generated source and snapshot repositories in this fixture.
     result = subprocess.run(
         ["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
          f"file://{origin}", str(partial)], capture_output=True, text=True)

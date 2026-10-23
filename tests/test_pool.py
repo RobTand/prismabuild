@@ -429,6 +429,7 @@ def _test_checkout_snapshot(
     """Build the on-wire bundle independently of the production submitter."""
 
     snapshot = tmp_path / "snapshot-source"
+    # pb-history-ok: Clones or bundles the generated temporary source repository for pool fixtures.
     subprocess.run(
         ["git", "clone", "-q", str(source), str(snapshot)], check=True
     )
@@ -452,6 +453,7 @@ def _test_checkout_snapshot(
         text=True,
     ).stdout.strip()
     bundle = tmp_path / "snapshot.bundle"
+    # pb-history-ok: Clones or bundles the generated temporary source repository for pool fixtures.
     subprocess.run(
         ["git", "-C", str(snapshot), "bundle", "create", str(bundle), "HEAD"],
         check=True,

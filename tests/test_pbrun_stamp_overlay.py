@@ -40,6 +40,7 @@ def test_overlay_materializes_the_declared_stamp_and_closure(tmp_path, subdirect
         cwd, stamp_name=stamp, stamp_payload=payload, cas=cas)
     assert not (cwd / stamp).exists()
     materialized = tmp_path / "materialized"
+    # pb-history-ok: Clones the generated fixture snapshot to inspect its stamp overlay.
     subprocess.run(["git", "clone", "-q", "--branch", pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME,
                     str(cas.input_path(overlay["input"])),
                     str(materialized)], check=True, capture_output=True)
