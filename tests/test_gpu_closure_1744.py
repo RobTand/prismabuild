@@ -46,6 +46,38 @@ def test_attributed_gpu_uuid_union_survives_empty_samples(monitored, tmp_path, m
     assert status['resource_telemetry']['gpu_uuids'] == ['GPU-first', 'GPU-second']
 
 
+def test_gpu_observation_requires_exact_peer_scope_and_kernel_identity(monitored, monkeypatch):
+    a, backend, rows, gpu, monitor = monitored
+    request, record, path = rows[0]
+    telemetry = {'gpu_devices_used': 1, 'gpu_uuids': ['GPU-observed']}
+    a.records[record['scope_id']]['resource_telemetry'] = telemetry
+    monkeypatch.setattr(a, 'gpu_observer', lambda: None)
+    peer = Path('/proc/123456789/cgroup')
+    membership = '/prismabuild.slice/' + record['scope_id']
+    group = membership + '-foreign/payload'
+    original = Path.read_text
+
+    def peer_group(file, *args, **kwargs):
+        return '0::' + group + '\n' if file == peer else original(file, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', peer_group)
+    query = {key: request[key] for key in ('action_key', 'nonce')}
+    query['op'] = 'gpu_observation'
+    with pytest.raises(PermissionError, match='outside the payload scope'):
+        a.handle(a.uid, 123456789, query)
+    group = membership + '/payload/container'
+    response = a.handle(a.uid, 123456789, query)
+    assert response == {'ok': True, 'scope_id': record['scope_id'],
+                        'nonce': request['nonce'], 'resource_telemetry': telemetry}
+    assert 'token' not in response
+    with pytest.raises(PermissionError, match='outside the payload scope'):
+        a.handle(a.uid, 123456789, {**query, 'nonce': rows[1][0]['nonce']})
+    path.rename(path.with_name(path.name + '-old'))
+    path.mkdir()
+    with pytest.raises(ValueError, match='kernel scope changed'):
+        a.handle(a.uid, 123456789, query)
+
+
 @pytest.mark.parametrize('scoped', ['gpu'], indirect=True)
 @pytest.mark.parametrize('count', [0, 1, None])
 def test_pool_finish_adjudicates_gpu_use(scoped, count):
