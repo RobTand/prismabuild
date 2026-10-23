@@ -915,6 +915,46 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     return None
 
 
+def runtime_reservation_census(census: dict, ledger: ResourceLedger) -> dict:
+    """Suspend only proved pending GPU elections on this runtime-fenced host.
+
+    Keep the canonical census and elections intact. A later unfenced claim
+    uses their original authority, including on a reused pass census.
+    """
+    from . import gpu_runtime_gate
+    if gpu_runtime_gate.runtime_gate_state() is None:
+        return census
+    try:
+        held = set(ledger.held_keys())
+    except (OSError, ValueError):
+        return census
+    host = ledger.base.name
+
+    def gpu_demand(resources):
+        return (isinstance(resources, dict)
+                and all(isinstance(kind, str) and type(count) is int and count >= 0
+                        for kind, count in resources.items())
+                and resources.get('gpu', 0) > 0)
+
+    def pending_measurement(key, chosen):
+        versions = census.get('measurements', {}).get(key)
+        if not versions or key in census.get('opportunities', {}):
+            return False
+        return all(row.get('action_key') == key
+                   and row.get('published_unix') == chosen['published_unix']
+                   and row.get('claimed_host') is None and 'claimed_unix' not in row
+                   and gpu_demand(row.get('resources')) for row in versions)
+
+    return {**census,
+            'elections': {key: chosen for key, chosen in census['elections'].items()
+                          if not (chosen['host'] == host and key not in held
+                                  and pending_measurement(key, chosen))},
+            'gang_elections': {key: chosen for key, chosen in census['gang_elections'].items()
+                               if not (chosen['host'] == host and key not in held
+                                       and chosen.get('member_state') == 'ready'
+                                       and gpu_demand(chosen.get('demand')))}}
+
+
 #: How long an elected gang waits before it reserves its member's demand on each
 #: elected host (#1579).  See ``docs/design.md``, "Priority rule".
 GANG_RESERVE_AFTER_S = 600.0
@@ -1162,6 +1202,7 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
     from . import pool
     generation = queue.records.attempt_generation(item)
     with locked_census(queue, ledger, controller) as census:
+        census = runtime_reservation_census(census, ledger)
         authority = authority and movement_drained(
             census, queue, tags=tags, has_gpu=has_gpu, host=ledger.base.name)
         prior = _read(queue.records.passes_path(item["action_key"]), optional=True) or {}
