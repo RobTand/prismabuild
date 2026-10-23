@@ -179,7 +179,7 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
     monkeypatch.setattr(q, 'publish', pause_publish)
     monkeypatch.setattr(q, 'action_transition_lock', watch_transition)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        writer = workers.submit(q.claim, has_gpu=True, capacity={'gpu': 1})
+        writer = workers.submit(q.claim, has_gpu=True, capacity=simulated_capacity({'gpu': 1}))
         try:
             assert stopped.wait(10)
             reader = workers.submit(wait_for_outcome)

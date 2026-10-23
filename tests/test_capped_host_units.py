@@ -12,8 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("cap_first", [True, False])
-@pytest.mark.parametrize("service", ["prismabuild-client-upgrade.service", "prismabuild-movement-publish.service"])
-def test_cap_install_covers_ancillary_units(tmp_path, service, cap_first):
+def test_cap_install_covers_ancillary_units(tmp_path, cap_first):
     staged = tmp_path / "staged"
     staged.mkdir()
     bindir = tmp_path / "bin"

@@ -1,6 +1,8 @@
 """Claim-denial diagnostics are best-effort evidence, never admission state."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_claim_parameters
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -231,11 +233,11 @@ def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
         publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
     args = {"capacity": {"cpu": 2, "mem_gb": 2},
             "cpu_tiers": {"preferred": [0, 1], "fallback": []}, "adaptive_cpu": True}
-    assert blocked.claim(**args, cpu_sampler=lambda: hot) is None
-    admitted = available.claim(**args, cpu_sampler=lambda: idle)
+    assert blocked.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: hot) is None
+    admitted = available.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: idle)
     assert admitted is not None and admitted["action_key"] == KEY_A
     assert available.ledger().held() == {"cpu": 1, "mem_gb": 1}
-    assert blocked.claim(**args, cpu_sampler=lambda: hot) is None
+    assert blocked.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: hot) is None
     assert blocked.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert blocked.ledger().held() == {}
     denial = next(value for value in blocked._host_denial_records().values()

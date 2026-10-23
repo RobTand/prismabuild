@@ -22,6 +22,14 @@ def simulated_capacity(value):
     return host_cap.enforce_host_cap(value, None, {})
 
 
+def simulated_claim_parameters(parameters):
+    """Convert only an explicitly supplied test capacity, at the call."""
+    result = dict(parameters)
+    if "capacity" in result:
+        result["capacity"] = simulated_capacity(result["capacity"])
+    return result
+
+
 class AdmittedQueueFixture:
     def __init__(self, queue: pool.PoolQueue, *, capacity: Mapping[str, int],
                  default_demand: Mapping[str, int]) -> None:

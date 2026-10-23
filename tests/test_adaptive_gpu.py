@@ -1,5 +1,7 @@
 """GPU concurrency follows trusted device evidence inside fixed memory limits."""
 
+from admitted_queue_fixture import simulated_claim_parameters
+
 from admitted_queue_fixture import simulated_capacity
 from pathlib import Path
 import sys
@@ -34,8 +36,8 @@ def test_cold_start_is_one_job_independent_of_historical_slots(tmp_path, monkeyp
     args = dict(capacity={'cpu': 4, 'mem_gb': 4, 'gpu': historical_slots},
                 cpu_tiers={'preferred': [0, 1, 2, 3], 'fallback': []},
                 adaptive_cpu=True, has_gpu=True)
-    assert queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
-    assert queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler) is None
+    assert queue.claim(**simulated_claim_parameters(args), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
+    assert queue.claim(**simulated_claim_parameters(args), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler) is None
     assert queue.ledger().held()['mem_gb'] == 1
 
 
@@ -86,7 +88,7 @@ def gpu_rig(tmp_path, monkeypatch):
             sample['jobs'].append({'action_key': key, 'nonce': record['nonce'],
                                    'scope_id': record['scope_unit'], 'complete': True})
     def claim():
-        return queue.claim(**args, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
+        return queue.claim(**simulated_claim_parameters(args), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
     return queue, clock, sample, capacity, publish, tick, claim
 
 
