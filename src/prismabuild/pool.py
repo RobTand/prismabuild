@@ -3748,7 +3748,7 @@ class ResourceLedger:
         assigned = set()
         for holder in census.non_mirror_holders:
             if holder.name in releasing:
-                tokens.extend(immutable_files.match_optional(holder, 'cpu-*'))
+                tokens.extend(immutable_files.match_optional(self.held_dir / holder.name, 'cpu-*'))
                 continue
             reservation = census.cpu(holder.name)
             metadata = reservation.metadata

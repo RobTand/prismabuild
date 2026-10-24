@@ -45,6 +45,7 @@ def runtime_source_pin(root):
 CONTROLLER_PROFILES = {
     "cpu-lending-sample": ("adaptive-sample", frozenset({"state-cpu-sample/fresh", "state-cpu-sample/cached"})),
     "cpu-lending-metadata": ("unversioned-carriers", frozenset({"host-cpu-metadata/borrowed"})),
+    "cpu-lending-records": ("pool-wire", frozenset({"q-attempt/executed", "q-outcome/executed"})),
     "upgrade-attestation": ("rollout", frozenset({"upgrade-attestation/first", "upgrade-attestation/repeated"})),
     "qualification-receipt": ("qualification-ram-telemetry", frozenset({"runtime-receipt/qualification"})),
 }
@@ -80,6 +81,30 @@ def validate_delta(profile, old_row, new_row, root, declarations):
         if after != expected:
             raise ValueError('CPU sample changed outside the two explicit unknown PSI averages')
         return {'fields': ['/observation/psi_avg10', '/observation/psi_avg60'], 'value': None}
+    if profile == "cpu-lending-records":
+        evidence = {'borrowed_cpus': [0], 'cap': 0, 'generation': None,
+                    'sampled_unix': 100., 'gate_open': None, 'loan_budget': None,
+                    'gate_reason': 'legacy_adaptive'}
+        added = {'cpu_admission': evidence, 'cpu_qos_selected': 'legacy', 'cpu_weight': 100}
+        if old_row['case'] == 'q-outcome/executed':
+            added.update(cpu_allocation={'preferred': [0], 'fallback': []},
+                         served_from='canonical', reserved_on='compat-host')
+        expected = {**before, **added}
+        if 'attempt_history' in expected:
+            # The immutable attempt now binds these exact additive fields.
+            if (len(after.get('attempt_history', [])) != 1
+                    or len(before['attempt_history']) != 1):
+                raise ValueError('CPU evidence refresh requires the one actual executed attempt')
+            old_link, new_link = before['attempt_history'][0], after['attempt_history'][0]
+            if (set(old_link) != set(new_link) or any(
+                    new_link[k] != v for k, v in old_link.items() if k != 'sha256')
+                    or re.fullmatch('[a-f0-9]{64}', new_link.get('sha256', '')) is None):
+                raise ValueError('CPU evidence changed an attempt link beyond its digest')
+            expected['attempt_history'] = after['attempt_history']
+        if after != expected or set(added) & set(before):
+            raise ValueError('CPU attempt evidence changed outside the exact additive loan fixture')
+        return {'added': sorted(added), 'borrowed_cpus': [0], 'selected_weight': 100,
+                'before_sha256': sha(old), 'after_sha256': sha(new)}
     if profile == "cpu-lending-metadata":
         expected_keys = {'declared_cpu', 'cost', 'shape', 'cpu_qos', 'cpu_weight', 'unbounded_cpu',
                          'measurement', 'serves_measurement', 'dependent_allowance', 'idle_baseline',
@@ -210,7 +235,8 @@ def _refresh_controller(args):
         raise ValueError("qualification profile does not consume a preceding rollout adoption report")
     source_paths = (["src/prismabuild/cpu_lending.py", "src/prismabuild/adaptive_cpu.py",
                      "src/prismabuild/pool.py", "tests/compat/support/compat_adaptive_state_adapters.py",
-                     "tests/compat/support/compat_unversioned_adapters.py"]
+                     "tests/compat/support/compat_unversioned_adapters.py",
+                     "tests/compat/support/compat_pool_wire_adapters.py"]
                     if args.profile.startswith('cpu-lending-') else ["tools/fleet/upgrade_client.py"])
     if args.profile == "qualification-receipt":
         source_paths += ["tools/fleet/qualify_rollout.py", "tests/compat/support/compat_generation_adapters.py"]
@@ -425,10 +451,11 @@ def refresh(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
-    parser.add_argument("--profile", choices=("runtime", "upgrade-intent"), default="runtime")
+    parser.add_argument("--profile", choices=("runtime", "upgrade-intent", *CONTROLLER_PROFILES), default="runtime")
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--primary-audit", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--preceding-adoption-report", type=Path)
     refresh(parser.parse_args())
 
 

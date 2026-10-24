@@ -275,7 +275,9 @@ def test_mutation_bypassing_decision_fails_the_valid_loan_suite(tmp_path, monkey
     if kind == 'policy':
         guards = [node for node in target.body if isinstance(node, ast.If)
                   and len(node.body) == 1 and isinstance(node.body[0], ast.Return)
-                  and isinstance(node.body[0].value, ast.Constant) and node.body[0].value.value is None]
+                  and isinstance(node.body[0].value, ast.Constant) and node.body[0].value.value is None
+                  and (decision != 'decide_cpu_loan' or any(
+                      isinstance(value, ast.Name) and value.id == 'needed' for value in ast.walk(node.test)))]
         assert len(guards) == 1
         target.body.remove(guards[0])
     else:

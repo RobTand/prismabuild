@@ -205,7 +205,7 @@ def real_loan_guest(guest_fleet, monkeypatch):
 def test_guest_drain_cannot_reuse_a_surviving_real_borrow(real_loan_guest):
     fleet, guest, borrower = real_loan_guest
     ledger = fleet.queue.ledger()
-    assert ledger.available()['cpu'] == 0
+    assert ledger.available().get('cpu', 0) == 0
     assert ledger.admission_available(releasing=[guest['action_key']])['cpu'] == 3
     gpu = fleet.publish('b', gpu=True, cpu=4)
     assert fleet.queue._preempt_background_holder(ledger, action_key=gpu,
