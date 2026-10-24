@@ -685,7 +685,7 @@ def _descriptor_mount(fd):
             "filesystem_type": fields[0], "root_inode": str(info.st_ino)}
 
 
-def _descriptor_identity(fd):
+def descriptor_identity(fd):
     """One disk-scratch I/O profile root, under its closed filesystem policy.
 
     ``LOCAL_FILESYSTEM_TYPES`` is the qualified local disk set.  tmpfs is an
@@ -721,7 +721,7 @@ def root_identity(root):
         raise LocalScratchError("scratch root must be canonical absolute")
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        return _descriptor_identity(fd)
+        return descriptor_identity(fd)
     finally:
         os.close(fd)
 
@@ -830,7 +830,7 @@ def record_profile(envelope):
             "write_bytes": 0, "read_bytes": 0, "write_elapsed_s": 0., "read_elapsed_s": 0.,
             "completed": False, "errors": []}
     try:
-        identity = _descriptor_identity(directory)
+        identity = descriptor_identity(directory)
         body.update(identity, start_identity=identity)
         fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
                      0o600, dir_fd=directory)
@@ -859,7 +859,7 @@ def record_profile(envelope):
                 remaining -= len(data)
                 body["read_bytes"] += len(data)
             body["read_elapsed_s"] += time.perf_counter() - begin
-        end_identity = _descriptor_identity(directory)
+        end_identity = descriptor_identity(directory)
         body["end_identity"] = end_identity
         if end_identity != identity or root_identity(root) != identity:
             raise LocalScratchError("scratch root identity changed during measurement")
