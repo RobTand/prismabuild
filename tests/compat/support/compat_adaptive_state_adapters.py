@@ -100,19 +100,20 @@ def registered_borrow(cpu, pool, core, store):
         items.append({'action_key': action['action_key'], 'cas_root': str(cas.root),
                       'cpu_qos': 'opportunistic', 'priority': -10, 'resources': {'cpu': count}})
     donor, item = items
-    meta = controller.decision(donor, donor['resources'], owner=None)
-    handle = ledger.begin_acquire(donor['action_key'], donor['resources'], adaptive=meta, cpu_tiers=tiers)
-    assert handle and ledger.commit_acquire(donor['action_key'], handle)
-    for at in (98., 99., 100.):
-        clock[0] = at
-        cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
-            'action_key': donor['action_key'], 'nonce': G, 'complete': True,
-            'sampled_unix': at, 'wall_seconds': at - 97., 'cpu_seconds': (at - 97.) * .1})
-        controller._host_sample = None
-        meta = controller.decision(item, item['resources'], owner=None)
-    assert meta and meta['borrowing']
-    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=meta, cpu_tiers=tiers)
-    assert handle and ledger.commit_acquire(item['action_key'], handle)
+    with controller.locked():
+        meta = controller.decision(donor, donor['resources'], owner=None)
+        handle = ledger.begin_acquire(donor['action_key'], donor['resources'], adaptive=meta, cpu_tiers=tiers)
+        assert handle and ledger.commit_acquire(donor['action_key'], handle)
+        for at in (98., 99., 100.):
+            clock[0] = at
+            cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
+                'action_key': donor['action_key'], 'nonce': G, 'complete': True,
+                'sampled_unix': at, 'wall_seconds': at - 97., 'cpu_seconds': (at - 97.) * .1})
+            controller._host_sample = None
+            meta = controller.decision(item, item['resources'], owner=None)
+        assert meta and meta['borrowing']
+        handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=meta, cpu_tiers=tiers)
+        assert handle and ledger.commit_acquire(item['action_key'], handle)
     return ledger, controller, item, meta
 
 

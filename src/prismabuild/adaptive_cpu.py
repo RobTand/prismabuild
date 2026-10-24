@@ -1590,6 +1590,42 @@ class Controller:
     def write_state(self, name, value):
         write_json(self.base / name, value)
 
+    def _observe_lending(self, sample, now):
+        """Advance shared history once, under the caller's host admission lock."""
+        path = self.base / 'cpu-lending.json'
+        previous = read_json(path)
+        generation = previous.get('generation', 0)
+        if type(generation) is not int or generation < 0:
+            generation = 0
+
+        def skipped(reason):
+            return {**previous, 'generation': generation, 'open': False,
+                    'budget': 0, 'reason': reason}
+
+        at, last = sample.get('sampled_unix'), previous.get('sampled_unix')
+        if type(at) not in (int, float) or not math.isfinite(at) or not 0 <= now - at <= 5:
+            return skipped('unknown_or_stale')
+        has_last = type(last) in (int, float) and math.isfinite(last)
+        if has_last and at < last:
+            return skipped('older_sample')
+        observation = {key: sample.get(key) for key in (
+            'sampled_unix', 'cpu_count', 'interval_s', 'per_cpu_busy',
+            'psi_some', 'psi_avg10', 'psi_avg60')}
+        if has_last and at == last:
+            if (previous.get('identity') != self._lending_identity
+                    or previous.get('observation', observation) != observation):
+                return skipped('sample_generation_changed')
+            return previous
+        updated = cpu_lending.advance_lending_history(
+            previous, sample, identity=self._lending_identity, cpus=self.cpus,
+            preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
+        updated.update(sampled_unix=at, generation=generation + 1, observation=observation)
+        current = read_json(path)
+        if current.get('generation', 0) != previous.get('generation', 0) or current != previous:
+            return skipped('history_generation_changed')
+        self.write_state('cpu-lending.json', updated)
+        return updated
+
     def _predicted_cpus(self, need: int, *, eligible_cpus=None) -> list[int] | None:
         """The CPUs this claim's tokens would represent, by the ledger's rule.
 
@@ -1785,17 +1821,19 @@ class Controller:
         funding_refusal = None
         measurement_drain = {}
         self.last_decision = {"reason": "not_evaluated"}
-        if self._host_sample is None:
+        if self._ramp_cap or self._host_sample is None:
             self._host_sample = self.sample()
         sample = self._host_sample
         now = time.time()
         history = {'open': False, 'budget': 0, 'reason': 'legacy_adaptive'}
         if self._ramp_cap:
-            history = cpu_lending.advance_lending_history(
-                read_json(self.base / 'cpu-lending.json'), sample,
-                identity=self._lending_identity, cpus=self.cpus,
-                preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
-            self.write_state('cpu-lending.json', history)
+            history = self._observe_lending(sample, now)
+        lending = {
+            'cap': self._ramp_cap, 'generation': history.get('generation'),
+            'sampled_unix': sample.get('sampled_unix'),
+            'gate_open': history.get('open') if self._ramp_cap else None,
+            'loan_budget': history.get('budget') if self._ramp_cap else None,
+            'gate_reason': history['reason']}
         def refuse(reason, **values):
             # The claimant publishes this exact decision after it releases
             # admission.  Do not sample or reread state for diagnostics.
@@ -1807,7 +1845,7 @@ class Controller:
                 extra['dependent_of'] = owner
             if funding_refusal is not None:
                 extra['allowance'] = funding_refusal
-            self.last_decision = {"reason": reason, "sample": sample,
+            self.last_decision = {"reason": reason, "sample": sample, "lending": lending,
                                   **measurement_drain, **extra, **values}
             return None
         fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
@@ -1891,7 +1929,10 @@ class Controller:
         pressure_override = False
         occupied = set()
         for holder in holders:
-            allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+            try:
+                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+            except ValueError:
+                return refuse('unknown_holder_affinity', holder=holder.name)
             occupied.update(allocation['preferred'] + allocation['fallback'])
         # Also excludes an orphaned borrowed ID whose donor token is free.
         eligible_cpus = [cpu for cpu in self.cpus if cpu not in occupied]
@@ -2156,7 +2197,10 @@ class Controller:
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
             return refuse("projected_cpu_cost", pending_cpu_cost=pending,
                           active_cpu_cost=active_cost, requested_cpu_cost=cost)
-        available = len(self.ledger.free_cpu_tokens(self.tiers, eligible_cpus=eligible_cpus))
+        selection = self.ledger.cpu_token_selection(self.tiers, eligible_cpus=eligible_cpus)
+        if selection.unknown_holder is not None:
+            return refuse('unknown_holder_affinity', holder=selection.unknown_holder)
+        available = len(selection.tokens)
         borrowable = lending_cpus - protected_cpus
         can_borrow = fresh and shape and eligibility is not None and lendable
         preferred_borrow = (min(max(0, declared - sum(cpu in self.tiers['preferred'] for cpu in
@@ -2202,10 +2246,10 @@ class Controller:
                               lendable=lendable, available_cpu=available,
                               declared_cpu=declared, borrowable_cpus=len(borrowable),
                               last_borrow_sampled_unix=last)
-        self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
+        self.last_decision = {"reason": "admitted", "sample": sample, "lending": lending, **measurement_drain}
         metadata = {'declared_cpu': declared, 'cost': cost, 'shape': shape,
                 'cpu_qos': qos, 'cpu_weight': 10 if qos == 'opportunistic' else 100,
-                '_eligibility': eligibility,
+                '_eligibility': eligibility, '_lending_decision': lending,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
                 'dependent_allowance': dict(allowance) if allowance else None,

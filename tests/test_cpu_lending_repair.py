@@ -100,6 +100,61 @@ def test_one_slow_pass_does_not_erase_shared_open_history(rig):
     assert state['open'] and state['budget'] == 2, state
 
 
+@head_only
+def test_seventeen_overlapping_loops_advance_each_sample_once(rig):
+    clock, _, make = rig
+    siblings, first_open = [], None
+    for at in range(100, 151):
+        clock[0] = float(at)
+        current = make(observation(at))
+        state = decide(current)
+        if state['open'] and first_open is None:
+            first_open = at
+        for sibling in [current, *siblings[-16:]]:
+            assert decide(sibling) == state
+        assert state['generation'] == at - 99
+        siblings.append(current)
+    assert first_open == 130
+    assert state['open'] and state['budget'] == 2
+
+
+@head_only
+def test_history_generation_check_does_not_overwrite_a_winner(rig, monkeypatch):
+    clock, _, make = rig
+    for at in range(100, 141):
+        clock[0] = float(at)
+        controller = make(observation(at))
+        state = decide(controller)
+    path = controller.base / 'cpu-lending.json'
+    winner = {**state, 'generation': state['generation'] + 1, 'sampled_unix': 141.}
+    original, reads = adaptive_cpu.read_json, []
+
+    def interleave(target):
+        if target == path:
+            reads.append(target)
+            if len(reads) == 2:
+                adaptive_cpu.write_json(path, winner)
+        return original(target)
+
+    monkeypatch.setattr(adaptive_cpu, 'read_json', interleave)
+    clock[0] = 141.
+    assert decide(make(observation(141))) == winner
+    assert len(reads) >= 2
+
+
+@head_only
+def test_late_decision_never_rewrites_an_open_generation(rig):
+    clock, _, make = rig
+    for at in range(100, 141):
+        clock[0] = float(at)
+        controller = make(observation(at))
+        state = decide(controller)
+    before = (controller.base / 'cpu-lending.json').read_bytes()
+    decide(make(observation(134)))
+    assert (controller.base / 'cpu-lending.json').read_bytes() == before
+    assert state['open'] and state['budget'] == 2
+
+
 # --- Existing adaptive lending for default (protected) work ---
 
 def test_default_generation_work_still_shares_idle_preferred_cpus(rig):

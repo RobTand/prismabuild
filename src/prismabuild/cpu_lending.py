@@ -71,7 +71,7 @@ def advance_lending_history(previous, sample, *, identity, cpus, preferred, now,
            if continuous else value for key, value in raw.items()}
     start = previous['history_since'] if continuous else at
     budget = min(cap, previous.get('budget', 0)) if continuous else 0
-    breach = (sample['psi_some'] >= .10 or sample['psi_avg10'] >= 10
+    breach = (sample['psi_some'] >= .10 or sample['psi_avg10'] >= 10 or sample['psi_avg60'] >= 10
               or sum(raw[str(c)] for c in preferred) > .85 * len(preferred))
     healthy = sample['psi_avg10'] < 5 and sample['psi_avg60'] < 5 and not breach
     healthy_since = previous.get('healthy_since') if continuous and healthy else None
@@ -205,7 +205,7 @@ def _require_cpu_eligibility(value):
 _LOAN_FIELDS = ('declared_cpu', 'cpu_qos', 'cpu_weight', 'borrowing',
                 'preferred_borrow', 'borrowable_cpus', 'eligible_cpus', 'sampled_unix',
                 'measurement', 'funded_by', 'funded', 'dependent_allowance',
-                'unbounded_cpu', 'serves_measurement', 'shape', 'opportunistic_policy')
+                'unbounded_cpu', 'serves_measurement', 'shape', 'opportunistic_policy', '_lending_decision')
 
 
 def decide_cpu_loan(eligibility, metadata, *, ledger, demand, tiers, history,
@@ -370,4 +370,4 @@ def require_selected_cpu_policy(metadata, record):
 def cpu_admission_record(metadata):
     """Live capabilities never enter queue records, holder files, or JSON."""
     return {key: value for key, value in metadata.items()
-            if key not in ('_eligibility', '_loan_grant')}
+            if key not in ('_eligibility', '_loan_grant', '_lending_decision')}

@@ -6734,37 +6734,50 @@ identity retains command, code, environment, inputs, parameters and resources,
 while excluding result bookkeeping. Custom or unverifiable launch shapes never
 borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 
-CPU lending is opt-in (#2156). `pbrun --cpu-qos protected|opportunistic`
-defaults to `protected`. Only an explicit opportunistic declaration at effective
-priority -10, for a known generation action, is eligible. Measurements, unknown
-or legacy shapes, exclusive GPU work, and funded dependent CPU allocations are
-protected. Priority changes before claim invalidate eligibility. The claim
-retains its selected class and weight for the attempt. Reprioritizing a running
-row does not change the scope. TL integration shards, including sweep_live
-max_lag, startup polling, CPU-overlap timing, and release-queue timing checks,
-use the protected default. `pbtest` does not opt its shards in.
+The existing adaptive lending remains the default (#2156). With cap 0 and no
+`--cpu-qos` declaration, main and this implementation make identical decisions,
+including refusals, preferred borrowing, wide loans and physical allocations.
+Cap 0 never reads or writes `cpu-lending.json`. The paired regression runs the
+same fixture against the immutable task base and current source on ARM and x86.
 
-`cpu_qos` is queue execution policy, outside the action-result cache identity,
-like priority. READY and ending records retain the declaration. Claims retain
-`cpu_qos_selected` and `cpu_weight`, so a protected attempt and an opportunistic
-attempt remain distinguishable even when the cached result identity agrees.
-An attachment to an existing attempt preserves that attempt's selected class.
-Explicit declarations require the `cpu-qos-v1` worker tag. Drain the whole host
-and upgrade every broker and admission loop before the first offer of this tag,
-including at cap 0: opted work already runs at weight 10 without borrowing.
-Before restoring an older runtime, disable new opportunistic publication and
-drain every opportunistic attempt, including attempts that borrowed no CPUs.
+`pbrun --cpu-qos protected|opportunistic` adds explicit execution policy outside
+the action-result cache identity. Explicit protected work neither lends nor
+borrows. Explicit opportunistic work requires effective priority -10, a known
+generation shape and a positive ramp cap. Measurements, unknown shapes,
+exclusive GPU work and funded dependent allocations cannot opt in. Priority or
+publication changes before acquisition invalidate eligibility. Undeclared work
+keeps legacy lending at weight 100; explicit opportunistic attempts use 10.
+TL timing-sensitive shards can declare protected isolation. `pbtest` leaves QoS
+undeclared and retains its current adaptive behavior.
 
-Protected actions neither lend nor borrow assigned IDs. Only opted-in donors
-with complete fresh telemetry can lend preferred IDs. A CPU can have at most
-two live assignments, with at most two borrowed claimants per host. After a
-donor exits, a live borrower's assigned ID remains excluded from free-token
-prediction and acquisition until the borrower drains. SMT remains ordinary
-fallback on x86, never a new lending target. The Sparks retain their configured
-P-core mask, without E-cores or mask widening.
+Protected rows require `cpu-protect-v1`, offered whenever this implementation
+is loaded, including at cap 0. Opportunistic rows require `cpu-qos-v1`, offered
+only by an adaptive loop with a valid positive cap. A manually supplied tag
+cannot override that check. Drain all admission loops on a host and upgrade
+its broker before enabling a positive cap. Before rollback, disable new opted
+publication and drain every opportunistic attempt, even one with no loan.
+Holders with ambiguous older QoS provenance count as protected until drained.
+
+Each preferred ID has its owner plus at most one borrower. The new mechanism
+permits at most two opportunistic borrowers per host. A surviving borrower's
+ID stays excluded after its donor exits, including in #1929 guest release
+projections and READY-GPU room counts. Unknown holder affinity refuses with
+`unknown_holder_affinity`. x86 SMT remains fallback and is never a new opted
+lending target. Spark P-core masks are unchanged.
+
+Claims, immutable attempts and terminal records retain `cpu_admission` with
+actual borrowed CPU IDs, the sample timestamp, history generation, cap, gate,
+budget and gate reason. Refusal decisions retain the same gate evidence in
+existing bounded denial records. At cap 0 the gate and budget are explicitly
+unknown and the reason is `legacy_adaptive`. Requeue clears selected QoS,
+weight and admission evidence while preserving the declaration and archived
+attempts. These diagnostic records cannot authorize a loan.
 
 `cpu-lending.json` is authoritative host-local state under the existing admission
-lock. Per-CPU busy EMA uses `alpha = 1 - exp(-elapsed / 30)`, a 30-second time
+lock. A strictly newer timestamp advances the shared generation once. Equal
+samples reuse it; older samples, observations more than five seconds late and
+lost generation comparisons skip without rewriting the winner's history.
+Per-CPU busy EMA uses `alpha = 1 - exp(-elapsed / 30)`, a 30-second time
 constant. CPU-map changes, boot changes, counter resets, nonfinite readings,
 and telemetry gaps discard history. New loans need 30 seconds of continuous
 fresh observations. A proposed borrowed preferred ID needs both raw and EMA
@@ -6774,15 +6787,15 @@ preferred and fallback usage grants no assumed per-tier discount. Existing
 95% raw whole-mask and projected-cost gates remain in force, as do the 25%
 shape margin, three-sample minimum, one-day expiry, and once-per-sample loan.
 
-The lending gate closes at CPU PSI some interval >= 0.10, avg10 >= 10%, or a
+The lending gate closes at CPU PSI some interval >= 0.10, avg10 >= 10%, avg60 >= 10%, or a
 preferred raw-budget breach. Unknown or stale PSI also closes the gate. It
 reopens only after avg10 and avg60 both stay below 5% for 30 seconds. PSI
 averages are percent values; the interval remains a fraction. After reopening, each healthy
 10-second observation period can add at most one borrowed affinity ID to the
 future-admission budget. A breach halves that budget. The operator setting
-`worker_loop --cpu-lending-ramp-cap` defaults to 0, disabling new loans. Valid
+`worker_loop --cpu-lending-ramp-cap` defaults to 0, disabling only the additive opted mechanism. Valid
 caps are 0 through 4 with more than ten preferred CPUs, and 0 through 2 otherwise.
-Invalid settings disable lending. The initial rollout uses caps 2 then 4 on
+Invalid settings disable the additive mechanism. The initial rollout uses caps 2 then 4 on
 dl380g10, and 1 then 2 on one Spark at a time.
 
 Existing loans retain their affinity and low weight until completion. Lending
@@ -6799,6 +6812,11 @@ removed is retired under `released-holders/`, outside the authoritative held
 namespace. Only empty directories or NFS metadata-unlink remnants can retire;
 a surviving resource file refuses cleanup.
 
+Before upgrading, record today's adaptive-lending baseline, including borrowed
+CPU IDs and refusals. First compare that baseline with upgraded cap 0 using
+the same undeclared workload. Admission and loan behavior must be equal.
+Then compare cap 0 with cap N, opting in only the eligible cohort and keeping
+TL timing-sensitive shards explicitly protected throughout.
 Rollout compares matched, post-retier cohorts for at least one hour and 100
 useful distinct successful jobs per period. Count jobs/hour and CPU-seconds,
 exclude cached duplicate results and failed or retried starts, and retain sample

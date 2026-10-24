@@ -165,3 +165,70 @@ def test_pending_borrower_blocks_another_guest_handoff(borrowed_guest, pending, 
         demand={"cpu": 8 if mode == "tokens" else 1, "gpu": 1},
         priority=0, guest_drain=mode, held_cpus=[0, 1]) is None
     assert not fleet.stopped(key) and not fleet.stopped(other)
+
+
+@pytest.fixture
+def real_loan_guest(guest_fleet, monkeypatch):
+    """A #1929 guest lends one CPU through the real legacy admission gate."""
+    fleet = guest_fleet
+    clock = [time.time()]
+    monkeypatch.setattr(pool, '_now', lambda: clock[0])
+    monkeypatch.setattr(pool.cpu_admission.time, 'time', lambda: clock[0])
+    def sample():
+        return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
+                'busy_cpus': .4, 'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0.,
+                'per_cpu_busy': {str(cpu): .05 for cpu in range(8)}}
+    donor = fleet.publish('a', cpu=4, priority=20)
+    guest = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
+    assert guest['action_key'] == donor and guest['cpu_guest']
+    borrower = fleet.publish('c', cpu=5, priority=20, tags=['sparky'])
+    ledger = fleet.queue.ledger()
+    start = clock[0]
+    claimed = None
+    for step in range(1, 4):
+        clock[0] = start + step
+        pool.cpu_admission.write_json(
+            pool.cpu_admission.Controller(ledger, fleet.tiers).base / 'telemetry' / (donor + '.json'),
+            {'action_key': donor, 'complete': True, 'nonce': 'e' * 32,
+             'sampled_unix': clock[0], 'wall_seconds': float(step), 'cpu_seconds': step * .1})
+        claimed = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
+        if claimed is not None:
+            break
+    assert claimed and claimed['action_key'] == borrower and not claimed.get('cpu_guest')
+    assert claimed['cpu_admission']['borrowed_cpus'] == [0]
+    assert claimed['cpu_admission']['cap'] == 0
+    assert claimed['cpu_admission']['gate_reason'] == 'legacy_adaptive'
+    assert not (pool.cpu_admission.Controller(ledger, fleet.tiers).base / 'cpu-lending.json').exists()
+    return fleet, guest, claimed
+
+
+def test_guest_drain_cannot_reuse_a_surviving_real_borrow(real_loan_guest):
+    fleet, guest, borrower = real_loan_guest
+    ledger = fleet.queue.ledger()
+    assert ledger.available()['cpu'] == 0
+    assert ledger.admission_available(releasing=[guest['action_key']])['cpu'] == 3
+    gpu = fleet.publish('b', gpu=True, cpu=4)
+    assert fleet.queue._preempt_background_holder(ledger, action_key=gpu,
+        demand={'cpu': 4, 'gpu': 1}, priority=0, guest_drain='tokens') is None
+    assert not fleet.stopped(guest['action_key'])
+    fleet.finish(guest)
+    assert ledger.available()['cpu'] == 4
+    assert ledger.admission_available()['cpu'] == 3
+    assert fleet.claim() is None
+    assert not fleet.stopped(borrower['action_key'])
+    fleet.finish(borrower)
+    assert fleet.claim()['action_key'] == gpu
+
+
+def test_borrowed_ids_and_gate_survive_release_in_attempt_and_ending(real_loan_guest):
+    fleet, guest, borrower = real_loan_guest
+    fleet.finish(guest)
+    evidence = borrower['cpu_admission']
+    path = fleet.queue.finish(borrower['action_key'], status='executed',
+        detail={'returncode': 0}, claim_snapshot=borrower)
+    ending = pool.record_store.read_document(path)
+    assert borrower['action_key'] not in fleet.queue.ledger().held_keys()
+    assert ending['cpu_admission'] == evidence
+    attempts = fleet.queue.attempt_outcomes(ending)
+    assert len(attempts) == 1 and attempts[0]['cpu_admission'] == evidence
+    assert attempts[0]['cpu_weight'] == 100 and attempts[0]['cpu_qos_selected'] == 'legacy'

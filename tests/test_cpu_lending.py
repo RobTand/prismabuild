@@ -53,7 +53,7 @@ def test_ema_uses_elapsed_time_and_raw_spikes_close_immediately():
     assert advance(changed, sample)['budget'] == 1
 
 
-@pytest.mark.parametrize('values', [{'psi_some': .10}, {'psi_avg10': 10.},
+@pytest.mark.parametrize('values', [{'psi_some': .10}, {'psi_avg10': 10.}, {'psi_avg60': 10.},
                                     {'psi_avg60': None}, {'psi_avg10': float('nan')}])
 def test_pressure_and_unknowns_close_lending(values):
     sample = observation(132)
@@ -429,3 +429,15 @@ def test_closed_policy_cannot_issue_a_loan(loan_rig, fault):
         metadata['_eligibility'], metadata, ledger=ledger, demand=item['resources'], tiers=tiers,
         history=state, sample=sample, assignments=assignments, outstanding=0,
         borrowers=borrowers, pending=0., cost=cost, state_path=controller.base / 'cpu-lending.json') is None
+
+
+@pytest.mark.parametrize('private', [False, True])
+def test_none_epoch_cannot_mint_or_acquire_a_loan(loan_rig, private):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    token = cpu_lending._admission_epoch.set(None)
+    try:
+        acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
+        assert acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers) is None
+        assert controller.decision(item, item['resources'], identity=('candidate', False), owner=None).get('borrowing') is False
+    finally:
+        cpu_lending._admission_epoch.reset(token)

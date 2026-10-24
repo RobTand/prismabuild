@@ -3487,6 +3487,12 @@ def tier_ledger_names_from(reader: Callable[[Path], frozenset[str]] | None):
         _TIER_LEDGER_NAMES.reset(token)
 
 
+@dataclass(frozen=True)
+class CpuTokenSelection:
+    tokens: tuple[Path, ...]
+    unknown_holder: str | None = None
+
+
 class ResourceLedger:
     """Per-host capacity, held as tokens that are acquired by ``rename``.
 
@@ -3731,10 +3737,19 @@ class ResourceLedger:
         may silently substitute a busy CPU outside that proof. With no filter,
         static and old adaptive decisions keep the original ordered selection.
         """
-        tokens = immutable_files.match_optional(self.free_dir, "cpu-*")
+        return list(self.cpu_token_selection(tiers, eligible_cpus=eligible_cpus).tokens)
+
+    def cpu_token_selection(self, tiers: Mapping | None = None, *, eligible_cpus=None,
+                            releasing=()) -> CpuTokenSelection:
+        """Select disjoint physical IDs, also for a hypothetical complete release."""
+        tokens = list(immutable_files.match_optional(self.free_dir, "cpu-*"))
+        releasing = frozenset(releasing)
         census = self.holder_census()
         assigned = set()
         for holder in census.non_mirror_holders:
+            if holder.name in releasing:
+                tokens.extend(immutable_files.match_optional(holder, 'cpu-*'))
+                continue
             reservation = census.cpu(holder.name)
             metadata = reservation.metadata
             allocation = metadata.get('allocation')
@@ -3746,20 +3761,32 @@ class ResourceLedger:
                 try:
                     allocation = self.cpu_allocation(holder.name, tiers, metadata=metadata)
                 except PoolContractError:
-                    return []
+                    return CpuTokenSelection((), holder.name)
                 assigned.update(allocation['preferred'] + allocation['fallback'])
             elif reservation.has_contents or not holder.name.startswith(ACQUIRING_PREFIX):
                 # A missing affinity record cannot prove a returned token is
                 # disjoint from a surviving borrower or funded dependent.
                 if tiers is not None or record_store.read_document(self.base / 'cpu-map.json'):
-                    return []
+                    return CpuTokenSelection((), holder.name)
+        tokens.sort(key=lambda token: token.name)
         if eligible_cpus is None and not assigned:
-            return tokens
+            return CpuTokenSelection(tuple(tokens))
         if tiers is None:
             raise PoolContractError('eligible CPU selection needs a topology')
         allowed = (set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None
                    else set(eligible_cpus)) - assigned
-        return [token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers)) if cpu in allowed]
+        return CpuTokenSelection(tuple(token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers))
+                                       if cpu in allowed))
+
+    def admission_available(self, tiers: Mapping | None = None, *, releasing=()) -> dict[str, int]:
+        """Physical fit after releases, retaining every surviving borrower's IDs."""
+        counts = self.available()
+        for key in releasing:
+            for kind, count in self.holder_tokens(key).items():
+                if kind != 'cpu':
+                    counts[kind] = counts.get(kind, 0) + count
+        counts['cpu'] = len(self.cpu_token_selection(tiers, releasing=releasing).tokens)
+        return counts
 
     def free_cpu_allocation(self, need: int, tiers: Mapping, *, eligible_cpus=None) -> list[int] | None:
         """CPUs this claim would take by the acquisition rule, or unknown.
@@ -4440,11 +4467,16 @@ class ResourceLedger:
                 if kind == "cpu" and adaptive is not None:
                     need -= int(adaptive.get("preferred_borrow", 0))
                 taken = 0
-                tokens = (self.free_cpu_tokens(cpu_tiers, eligible_cpus=(adaptive or {}).get('eligible_cpus'))
-                          if kind == "cpu" else immutable_files.match_optional(
-                              self.free_dir,
-                              f"{kind}-*",
-                          ))
+                if kind == 'cpu':
+                    selection = self.cpu_token_selection(
+                        cpu_tiers, eligible_cpus=(adaptive or {}).get('eligible_cpus'))
+                    if selection.unknown_holder is not None:
+                        self.last_token_shortage = {'resource': 'cpu', 'reason': 'unknown_holder_affinity',
+                                                    'holder': selection.unknown_holder}
+                        raise _Insufficient('cpu')
+                    tokens = selection.tokens
+                else:
+                    tokens = immutable_files.match_optional(self.free_dir, f'{kind}-*')
                 for token in tokens:
                     if taken >= need:
                         break
@@ -7269,7 +7301,7 @@ class PoolQueue:
     _CLAIM_SCOPED_FIELDS = (
         "cpu_guest", "gang_backfill", "gang_backfill_release", "gang_backfill_preemption",
         "claimed_by", "claimed_unix", "claimed_host", "reserved_on", "passes", "gpu_admission",
-        "cpu_allocation", "tier_reservations", "tier_funding", "residency_verdict",
+        "cpu_allocation", "cpu_admission", "cpu_qos_selected", "cpu_weight", "tier_reservations", "tier_funding", "residency_verdict",
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
@@ -7463,7 +7495,7 @@ class PoolQueue:
         if not bands:
             return ready, frozenset()
         try:
-            available = ledger.available()
+            available = ledger.admission_available()
         except OSError:
             return ready, frozenset()
         if available.get("gpu", 0) < 1:
@@ -11867,7 +11899,8 @@ class PoolQueue:
             measurement_unmeasured)
         progress = drain_policy.prepare_drain(question, prior, now=now, host=ledger.base.name)
         try:
-            progress = drain_policy.begin_drain(progress, ledger.available(), gpu_sample)
+            available = ledger.admission_available(cpu_tiers)
+            progress = drain_policy.begin_drain(progress, available, gpu_sample)
             if not isinstance(progress, drain_policy.PendingDrain):
                 return progress
             for identity in ledger.holder_census().non_private_holders:
@@ -11889,6 +11922,10 @@ class PoolQueue:
                 progress = drain_policy.add_holder(progress, holder=holder, bound=bound, counts=counts)
                 if not isinstance(progress, drain_policy.PendingDrain):
                     return progress
+            if mode == "tokens" and "cpu" in progress.short:
+                releasing = [bound["action_key"] for bound in progress.draining]
+                released = ledger.admission_available(cpu_tiers, releasing=releasing)
+                progress.covered["cpu"] = max(0, released["cpu"] - available["cpu"])
             return drain_policy.finish_drain(progress)
         except BaseException as exc:
             return drain_policy.failed_drain(progress, exc)
@@ -16749,8 +16786,7 @@ class PoolQueue:
             # preemption into a cancellation.
             return None
 
-        available = ledger.available()
-        pending: dict[str, int] = {}
+        pending: set[str] = set()
         pending_guest = False
         pending_release = False
         pressure_drain = guest_drain is not None and guest_drain != "tokens"
@@ -16778,8 +16814,7 @@ class PoolQueue:
                     or record.get("container_cleanup_pending") is not None):
                 pending_release = True
                 pending_guest = pending_guest or record.get("cpu_guest") is True
-                for kind, count in tokens.items():
-                    pending[kind] = pending.get(kind, 0) + count
+                pending.add(holder)
                 continue
             # Metadata-only borrowers can still owe allocation cleanup. Check
             # pending releases first, but count only physical tokens for fit.
@@ -16815,10 +16850,10 @@ class PoolQueue:
             candidates.append(
                 (holder_priority, claimed_unix, holder, record, tokens))
 
-        def fits(extra: Mapping[str, int]) -> bool:
+        def fits(releasing=()) -> bool:
+            available = ledger.admission_available(releasing=pending | set(releasing))
             return all(
-                available.get(kind, 0) + pending.get(kind, 0)
-                + int(extra.get(kind, 0)) >= need
+                available.get(kind, 0) >= need
                 for kind, need in wanted.items()
             )
 
@@ -16834,16 +16869,13 @@ class PoolQueue:
             if pressure_drain:
                 usable = [entry for entry in candidates if entry[2] in cpu_occupants]
             else:
-                released = {}
-                for entry in candidates:
-                    for kind, count in entry[4].items():
-                        released[kind] = released.get(kind, 0) + count
-                usable = candidates if not fits({}) and fits(released) else []
-        elif fits({}):
+                released = {entry[2] for entry in candidates}
+                usable = candidates if not fits() and fits(released) else []
+        elif fits():
             # Enough is already coming back.  Nothing left to stop.
             return None
         else:
-            usable = [entry for entry in candidates if fits(entry[4])]
+            usable = [entry for entry in candidates if fits((entry[2],))]
         if not usable:
             return None
         # Lowest priority first, then the youngest claim: of two holders that
@@ -17627,7 +17659,7 @@ class PoolQueue:
                       if kept.binds_all]
                      if demanding_gpu else list(scan.rooms))
             try:
-                available = ledger.available()
+                available = ledger.admission_available()
             except OSError:
                 room_taken = None
             else:
@@ -17689,7 +17721,7 @@ class PoolQueue:
             # (#1240): a refused GPU row keeps its room
             # only when they do not fit it.
             try:
-                free_at_refusal = ledger.available()
+                free_at_refusal = ledger.admission_available(cpu_tiers)
             except OSError:
                 free_at_refusal = None
         demand_result = _CandidateDemand(
@@ -18383,6 +18415,7 @@ class PoolQueue:
         claimed = dict(moved)
         claimed.pop("cpu_qos_selected", None)
         claimed.pop("cpu_weight", None)
+        claimed.pop("cpu_admission", None)
         claimed.pop("cpu_guest", None)
         if host.request is not None and host.request.cpu_guest:
             claimed["cpu_guest"] = True
@@ -18427,6 +18460,13 @@ class PoolQueue:
         if adaptive is not None:
             claimed["cpu_qos_selected"] = adaptive.get("cpu_qos", "protected")
             claimed["cpu_weight"] = adaptive.get("cpu_weight", 100)
+            physical = set(ledger.cpu_ids(
+                immutable_files.match_optional(ledger.held_dir / key, "cpu-*"), cpu_tiers))
+            allocation = claimed.get("cpu_allocation", {})
+            assigned = set(allocation.get("preferred", []) + allocation.get("fallback", []))
+            claimed["cpu_admission"] = {
+                **adaptive.get("_lending_decision", {}),
+                "borrowed_cpus": sorted(assigned - physical) if adaptive.get("borrowing") else []}
         if adaptive_gpu is not None:
             claimed["gpu_admission"] = ledger.holder_census().gpu_record(key).as_record()
         if adaptive is not None and adaptive.get("idle_baseline"):
@@ -19961,6 +20001,9 @@ class PoolQueue:
             "detail": details,
             "logs": logs,
         }
+        for field in ("cpu_admission", "cpu_qos_selected", "cpu_weight"):
+            if field in record:
+                outcome[field] = record[field]
         if record.get("retry_scope") is not None:
             outcome["retry_scope"] = record["retry_scope"]
             if worker_reported:
