@@ -50,10 +50,10 @@ def test_cpu_intervals_are_shared_by_new_controllers_but_not_other_ledgers(tmp_p
     ])
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: next(samples))
     first = adaptive_cpu.Controller(queue.ledger(), tiers)
-    borrow = {'sampled_unix': 10., 'borrow_id': 'fixture-owner'}
+    borrow = {'borrowing': True, 'sampled_unix': 10.}
     with first.locked():
         assert first.sample() == {}
-        first.write_state('last-borrow.json', borrow)
+        first.admitted(borrow)
     second = adaptive_cpu.Controller(queue.ledger(), tiers)
     with second.locked():
         assert second.sample()['busy_cpus'] == pytest.approx(.2)
@@ -115,7 +115,7 @@ raise SystemExit(snap.main(sys.argv[1:]))
         # The real lock is acquired again while the publication child is alive.
         sibling = adaptive_cpu.Controller(queue.ledger(), tiers)
         with sibling.locked():
-            sibling.write_state('last-borrow.json', {'sampled_unix': 12., 'borrow_id': 'fixture-owner'})
+            sibling.admitted({'borrowing': True, 'sampled_unix': 12.})
         assert child.poll() is None
         assert adaptive_snapshot.publish(sibling.base, shared) is None
         assert adaptive_cpu.read_json(controller.base / 'publisher-owner.json') == owner

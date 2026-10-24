@@ -6734,9 +6734,11 @@ identity retains command, code, environment, inputs, parameters and resources,
 while excluding result bookkeeping. Custom or unverifiable launch shapes never
 borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 
-The existing adaptive lending remains the default (#2156). With cap 0 and no
-`--cpu-qos` declaration, main and this implementation make identical decisions,
-including refusals, preferred borrowing, wide loans and physical allocations.
+The existing adaptive lending remains the default (#2156). The accepted
+equivalence scope is: cap 0 equals main for every row that doesn't declare
+`--cpu-qos protected`; no client or default sets it today. This includes
+refusals, preferred borrowing, wide loans and physical allocations. Explicit
+protected donors do not lend, even at cap 0.
 Cap 0 never reads the opted boot identity or reads or writes `cpu-lending.json`.
 At positive caps, passive history I/O and missing boot identity cannot refuse
 undeclared work; they only close the additive lending view. The permanent regression compares all 27 reviewer and builder fixtures with
@@ -6844,10 +6846,15 @@ skips the shared lending-history update. It cannot reset coverage another
 series kept fresh. Real gaps in shared observations still reset continuity.
 Eight SHA-pinned main CPU test files also run unchanged at cap 0 beside the
 opted tests, using fixture bytes and no old Git history.
-After a complete resource return, an empty holder directory that cannot be
-removed is retired under `released-holders/`, outside the authoritative held
-namespace. Only empty directories or NFS metadata-unlink remnants can retire;
-a surviving resource file refuses cleanup.
+Release-remnant retirement is an ungated cleanup change that applies to all
+rows, independently of lending and the ramp cap. After complete resource
+return, a holder directory that cannot be removed is retired under
+`released-holders/`, outside the authoritative held namespace. It retires only
+empty directories or directories containing solely `.nfs*` metadata-unlink
+remnants. Retirement refuses with `OSError` while any non-`.nfs*` file remains,
+including a resource token. Main swallowed that removal error. The retired
+directory has no automatic retention policy; measure its file count and bytes
+at the canary.
 
 Before upgrading, capture main's borrowed IDs while each attempt still owns
 its tokens. The observation-only launcher
@@ -6866,17 +6873,24 @@ The wrapper adds no admission decision. Before launch or release it writes
 immutable sidecars keyed by exact publication, claim identity and attempt, with
 source commit, host, topology digest, assigned IDs, owned-token IDs and their
 difference. Funded allowance IDs are excluded. Refusals remain in main's
-existing denial records. Capture failures invalidate the cohort. Reconcile
+existing denial records. Sidecar write failures invalidate the cohort. Reconcile
 sidecars one-to-one against immutable attempts and endings, excluding abandoned
 claims; any missing attempt makes the period inconclusive. Archive those
 sidecars, refusal records and CAS receipts before replacing main. Attempts
 without an allocation still write a sidecar with null assigned and borrowed
 IDs; unknown affinity cannot be counted as zero borrowing. The observer takes
 the census lock without waiting, preserving main's admission latency. A busy
-lock records a capture failure and invalidates the cohort. No /proc
-probe is involved. Record observer overhead and apply the same collection
-cost to comparison periods. Main endings alone cannot reconstruct released
-physical tokens.
+lock writes an immutable sidecar with `capture_status` set to
+`skipped_census_reader_busy`, null physical and borrowed IDs, and the same
+attempt identity. Successful captures record `captured`. Count and report all
+skipped captures separately; never treat them as zero borrowing. Dry-run the
+observer before the baseline. Each comparison period needs at least 100
+complete borrowed-ID observations and a skipped-capture rate at most 1% of
+reconciled attempts. A higher rate or fewer complete observations makes the
+comparison inconclusive; extend or repeat collection. No /proc probe is
+involved. Record observer overhead and apply the same collection cost to
+comparison periods. Main endings alone cannot reconstruct released physical
+tokens.
 
 First compare this baseline with upgraded cap 0 using the same undeclared
 workload and per-attempt `cpu_admission.borrowed_cpus`. The 27 deterministic
@@ -6894,11 +6908,28 @@ Track normal-priority x86 publication-to-claim wait p95, host PSI avg60,
 protected elapsed-time p95, unexpected OOMs, and each named TL timing-test flake
 rate. Promotion requires at least 5% useful-throughput gain in the eligible
 cohort, at most 5% protected p95 regression, normal-priority x86 wait p95 below
-600 seconds without a material baseline regression, and no increase in OOMs or
-named timing failures. Sparse periods are inconclusive. Set the cap to 0 on a
-sustained pressure or SLA breach and let existing scopes drain. Broker rollout
-requires a drained canary and version support; this source change does not
-claim deployment or measured throughput gains.
+600 seconds, and no material regression from the matched baseline. Material
+means a normal-priority wait or protected elapsed p95 increase over 5%, a host
+PSI avg60 increase of at least 1 percentage point or an absolute avg60 of at
+least 10%, any unexpected OOM, or any increase in a named TL timing-test flake
+rate. Each named timing shard needs at least 1,000 uncached attempts in each
+period, even if collection takes longer than one hour. Retain failures and
+retry counts; below that minimum the flake comparison is inconclusive. Sparse
+periods cannot qualify promotion. Set the cap to 0 on a sustained pressure or
+SLA breach and let existing scopes drain.
+
+Canary measurements also cover the accepted S3 and S4 effects, with no code
+change for either. For S3, compare admission-lock hold and claim latency p50,
+p95 and p99 on the NFS-backed Sparks, holder-census read counts and errors,
+static-holder metadata write cost, and broker `cpu.weight` readback latency
+and failures for every scope. For S4, count weight-10 opted completions that
+teach legacy profiles and compare legacy per-shape sample counts, cost
+estimates and refusal rates with the baseline. The profile decay is bounded
+at 2% per completion. Use existing records and approved ordinary PB actions;
+CPU-cost A/B measurements use interleaved `getrusage` in one ordinary action,
+without new /proc lock or other-process fd probes. Broker rollout requires a
+drained canary and version support; this source change does not claim
+deployment or measured throughput gains.
 
 A measurement holds its host alone, with one exception (#982): an action whose
 sealed request names the holder in `params.produced_spool.owner` -- the spool

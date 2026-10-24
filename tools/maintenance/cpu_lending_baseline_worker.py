@@ -19,26 +19,28 @@ def capture_main_cpu_attempt(row, ledger, tiers, output_root):
 
     if ledger is None or tiers is None:
         raise RuntimeError('baseline capture has no ledger or topology')
+    key = row['action_key']
+    allocation = row.get('cpu_allocation')
+    assigned = (set(allocation['preferred'] + allocation['fallback'])
+                if allocation is not None else None)
+    identity = {name: row.get(name) for name in
+                ('action_key', 'published_unix', 'claimed_by', 'claimed_unix', 'claimed_host')}
+    identity['attempt'] = int(row.get('attempts', 0)) + 1
+    owned = borrowed = funded_by = None
     with ledger._mutation_locked(blocking=False) as captured:
-        if not captured:
-            raise RuntimeError('baseline capture census reader busy')
-        key = row['action_key']
-        allocation = row.get('cpu_allocation')
-        assigned = (set(allocation['preferred'] + allocation['fallback'])
-                    if allocation is not None else None)
-        tokens = immutable_files.match_optional(ledger.held_dir / key, 'cpu-*')
-        owned = set(ledger.cpu_ids(tokens, tiers))
-        metadata = ledger.holder_census().cpu_record(key).fields
-        borrowed = (None if assigned is None else
-                    [] if metadata.get('funded_by') else sorted(assigned - owned))
-        identity = {name: row.get(name) for name in
-                    ('action_key', 'published_unix', 'claimed_by', 'claimed_unix', 'claimed_host')}
-        identity['attempt'] = int(row.get('attempts', 0)) + 1
-        evidence = {**identity, 'source_commit': '43234d0fbd42d6ed76da38658cb9f447ed19a606',
-                    'topology_sha256': core.canonical_sha256(tiers),
-                    'assigned_cpus': sorted(assigned) if assigned is not None else None,
-                    'physical_cpus': sorted(owned),
-                    'borrowed_cpus': borrowed, 'funded_by': metadata.get('funded_by')}
+        if captured:
+            tokens = immutable_files.match_optional(ledger.held_dir / key, 'cpu-*')
+            owned = set(ledger.cpu_ids(tokens, tiers))
+            metadata = ledger.holder_census().cpu_record(key).fields
+            funded_by = metadata.get('funded_by')
+            borrowed = (None if assigned is None else
+                        [] if funded_by else sorted(assigned - owned))
+    evidence = {**identity, 'source_commit': '43234d0fbd42d6ed76da38658cb9f447ed19a606',
+                'topology_sha256': core.canonical_sha256(tiers),
+                'capture_status': 'captured' if captured else 'skipped_census_reader_busy',
+                'assigned_cpus': sorted(assigned) if assigned is not None else None,
+                'physical_cpus': sorted(owned) if owned is not None else None,
+                'borrowed_cpus': borrowed, 'funded_by': funded_by}
     path = Path(output_root) / key / (core.canonical_sha256(identity) + '.json')
     immutable_files.publish_immutable(path, core._canonical_bytes(evidence))
     return path

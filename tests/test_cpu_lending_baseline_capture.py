@@ -30,6 +30,7 @@ def test_main_baseline_records_exact_owned_and_borrowed_ids(tmp_path):
     output = OBSERVER.capture_main_cpu_attempt(row, ledger, tiers, tmp_path / 'baseline')
     assert row == before
     value = json.loads(output.read_bytes())
+    assert value['capture_status'] == 'captured'
     assert value['assigned_cpus'] == [5, 7, 9]
     assert value['physical_cpus'] == [5, 7] and value['borrowed_cpus'] == [9]
     assert value['attempt'] == 1 and value['source_commit'] == '43234d0fbd42d6ed76da38658cb9f447ed19a606'
@@ -68,6 +69,34 @@ def test_main_baseline_records_unknown_affinity_instead_of_silently_omitting_att
     value = json.loads(output.read_bytes())
     assert value['assigned_cpus'] is None and value['borrowed_cpus'] is None
     assert value['physical_cpus'] == []
+
+
+def test_main_baseline_records_busy_census_as_durable_skip(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def busy_census(*, blocking):
+        assert blocking is False
+        yield False
+
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'baseline-host')
+    monkeypatch.setattr(ledger, '_mutation_locked', busy_census)
+    def forbidden_census():
+        raise AssertionError('a skipped capture must not read unlocked holder metadata')
+    monkeypatch.setattr(ledger, 'holder_census', forbidden_census)
+    row = {'action_key': 'b' * 64, 'attempts': 3,
+           'cpu_allocation': {'preferred': [0, 1], 'fallback': []}}
+    before = dict(row)
+    tiers = {'preferred': [0, 1], 'fallback': []}
+    output = OBSERVER.capture_main_cpu_attempt(row, ledger, tiers, tmp_path / 'baseline')
+    value = json.loads(output.read_bytes())
+    assert row == before and value['attempt'] == 4
+    assert value['capture_status'] == 'skipped_census_reader_busy'
+    assert value['assigned_cpus'] == [0, 1]
+    assert value['physical_cpus'] is None and value['borrowed_cpus'] is None
+    raw = output.read_bytes()
+    assert OBSERVER.capture_main_cpu_attempt(row, ledger, tiers, tmp_path / 'baseline') == output
+    assert output.read_bytes() == raw
 
 
 def test_installed_observer_reads_the_positional_scan_context(tmp_path, monkeypatch, capsys):
