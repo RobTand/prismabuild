@@ -6,10 +6,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
+import io
+import hashlib
 from history_inputs import materialize_sources
 import time
-from urllib.request import urlopen
 
 import pytest
 
@@ -17,6 +17,11 @@ from prismabuild import census, core, pool
 import pbmcp
 import pbmcp_fixture as fixture
 import pbmetrics
+
+
+@pytest.fixture(autouse=True)
+def fixed_census_clock(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 2_000_000_000.)
 
 
 def test_offers_do_not_read_active_rows_and_keep_their_own_coverage(tmp_path, monkeypatch):
@@ -114,7 +119,7 @@ def test_partial_movers_keep_known_rows_without_empty_depth_credit(tmp_path):
     assert counts.value["ready"] is None
     assert counts.value["claimed"] == 0
     answer = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
-                           repo_link=fleet.repo_link, deadline_s=10).call("pb_movers")
+                           repo_link=fleet.repo_link, deadline_s=0).call("pb_movers")
     stage = next(row for row in answer["tiers"] if row["tier_id"] == fixture.STAGE_TIER)
     assert answer["complete"] is False
     assert any(row["section"] == "movers-live" for row in answer["unavailable"])
@@ -195,7 +200,7 @@ def test_unreadable_filed_receipt_cannot_prove_no_receipts(tmp_path):
     receipt = fleet.queue_root / pool.record_store.MOVERS / (fixture._hexkey("mover0") + ".json")
     receipt.write_text("{")
     answer = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
-                           repo_link=fleet.repo_link, deadline_s=10).call("pb_movers")
+                           repo_link=fleet.repo_link, deadline_s=0).call("pb_movers")
     stage = next(row for row in answer["tiers"] if row["tier_id"] == fixture.STAGE_TIER)
     assert answer["complete"] is False
     assert any(row["section"] == "movers-filed" for row in answer["unavailable"])
@@ -253,34 +258,36 @@ def test_cli_mcp_and_http_observe_one_private_actual_store(tmp_path):
     fleet = fixture.build_starved(tmp_path)
     script = Path(pbmcp.__file__).with_name("pbstatus.py")
     run = subprocess.run([sys.executable, str(script), "--json", "--recent", "0",
-                          "--queue-root", str(fleet.queue_root), "--timeout-s", "10"],
-                         capture_output=True, text=True, timeout=20)
+                          "--queue-root", str(fleet.queue_root), "--timeout-s", "0"],
+                         capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     cli = json.loads(run.stdout)
     session = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
-                            repo_link=fleet.repo_link, deadline_s=10)
+                            repo_link=fleet.repo_link, deadline_s=0)
     mcp = session.call("pb_status", {"recent": 0})
     assert mcp["complete"] is True
     assert cli["pool"]["ready"] == mcp["queue"]["ready"]
     assert cli["pool"]["claimed"] == mcp["queue"]["claimed"]
     cache = pbmetrics.MetricsCache(fleet.queue_root, cache_seconds=0,
                                     terminal_window_seconds=3600, terminal_limit=500)
-    server = pbmetrics.ThreadingHTTPServer(("127.0.0.1", 0), pbmetrics._handler(cache))
-    worker = threading.Thread(target=server.serve_forever)
-    worker.start()
-    try:
-        with urlopen(f"http://127.0.0.1:{server.server_port}/metrics", timeout=20) as reply:
-            text = reply.read().decode()
-        for state in ("ready", "claimed"):
-            assert f'prismabuild_queue_items{{state="{state}"}} {mcp["queue"][state]}' in text
-        assert 'prismabuild_starvation_waiting_consumers{tier="' + fixture.STAGE_TIER + '"} 1' in text
-        assert session.call("pb_cursors")["cursors"][0]["cursor_gap"]["stage"]["unstaged_bytes"] >= 0
-    finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=5)
-    assert not worker.is_alive()
-    assert server.socket.fileno() == -1
+    # Drive the actual HTTP handler through in-memory HTTP streams. Socket
+    # scheduling and network availability are not part of census rendering.
+    handler_type = pbmetrics._handler(cache)
+    handler = handler_type.__new__(handler_type)
+    handler.path = "/metrics"
+    handler.request_version = "HTTP/1.1"
+    handler.requestline = "GET /metrics HTTP/1.1"
+    handler.command = "GET"
+    handler.wfile = io.BytesIO()
+    handler.do_GET()
+    headers, body = handler.wfile.getvalue().split(b"\r\n\r\n", 1)
+    assert headers.startswith(b"HTTP/1.0 200 ")
+    assert f"Content-Length: {len(body)}".encode() in headers
+    text = body.decode()
+    for state in ("ready", "claimed"):
+        assert f'prismabuild_queue_items{{state="{state}"}} {mcp["queue"][state]}' in text
+    assert 'prismabuild_starvation_waiting_consumers{tier="' + fixture.STAGE_TIER + '"} 1' in text
+    assert session.call("pb_cursors")["cursors"][0]["cursor_gap"]["stage"]["unstaged_bytes"] >= 0
 
 
 _OBSERVE = r'''
@@ -362,8 +369,15 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                     event[1] = str(Path(event[1]))
     # #2230 adds one exact stamp lookup per lease freshness observation.
     # Keep the historical comparison for every other read and fact.
-    stamps = {fleet.queue._heartbeat_stamp_path(pool.record_store.read_document(path))
-              for path in fleet.queue.records.claimed_lease_paths()}
+    stamps = set()
+    for path in fleet.queue.records.claimed_lease_paths():
+        lease = json.loads(path.read_text())
+        # Independent wire oracle: never compute an expected destination with
+        # the production stamp-path function being checked.
+        identity = {name: lease.get(name) for name in
+                    ("claimed_by", "claimed_unix", "published_unix", "attempts")}
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        stamps.add(fleet.queue_root / "lease-heartbeats" / lease["action_key"] / (digest + ".json"))
     added = []
     for name, events in readings[1]["schedules"].items():
         kept = []

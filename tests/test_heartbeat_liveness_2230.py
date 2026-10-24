@@ -1,12 +1,11 @@
 """Attempt-bound heartbeats survive contention without borrowing another lease."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import subprocess
 import json
 import sys
 import threading
-import uuid
 
 import pytest
 
@@ -18,13 +17,13 @@ from prismabuild import checkout_recovery
 
 @pytest.fixture
 def holder(tmp_path, monkeypatch):
+    clock = [2_000_000_000.]
+    monkeypatch.setattr(pool, "_now", lambda: clock[0])
     queue = pool.PoolQueue(tmp_path / "queue")
-    key = uuid.uuid4().hex + uuid.uuid4().hex
+    key = "a" * 64
     publish(queue, key)
     item = queue.claim(owner="worker", capacity={"cpu": 2})
     assert item
-    clock = [pool._now()]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
     queue.write_lease(key, owner="worker", claim_snapshot=item,
                       progress_observation={"accepted_count": 0, "staged_wait_exempt_s": 0.,
                                             "quiet_s": 0., "grace_s": 720.})
@@ -37,15 +36,15 @@ def _busy_key(queue, key):
     def hold():
         with queue.action_transition_lock(key):
             acquired.set()
-            assert release.wait(15), "test did not release its key lock"
+            assert release.wait(60), "test did not release its key lock"
     thread = threading.Thread(target=hold)
     thread.start()
-    assert acquired.wait(5)
+    assert acquired.wait(60)
     try:
         yield
     finally:
         release.set()
-        thread.join(5)
+        thread.join(60)
         assert not thread.is_alive()
 
 
@@ -62,9 +61,8 @@ def test_twelve_contended_beats_keep_every_judge_live(holder, judge):
             queue.write_lease(key, owner="worker", claim_snapshot=item)
     with ThreadPoolExecutor(max_workers=1) as executor:
         with _busy_key(queue, key):
-            executor.submit(beats).result(timeout=2)
+            executor.submit(beats).result(timeout=60)
             assert path.read_bytes() == original
-    assert clock[0] - start > pool.LEASE_TIMEOUT_S
     if judge == "reaper":
         assert queue.lease_age(key) == 0.
         assert queue.reap_stale() == []
@@ -81,6 +79,83 @@ def test_twelve_contended_beats_keep_every_judge_live(holder, judge):
         assert live and evidence["evidence"] == "ahead-within-grace"
         assert evidence["heartbeat_age_s"] == 0.
         assert evidence["evidence_unix"] == clock[0]
+
+
+@pytest.mark.parametrize("contended,point", [
+    (False, "initial-claim"), (False, "process-identity"),
+    (False, "lease-read"), (False, "final-claim"), (False, "publish"),
+    (True, "lease-read"), (True, "final-claim"),
+    (True, "process-identity"), (True, "publish"),
+])
+def test_gated_heartbeat_io_never_requeues_or_admits_a_second_run(holder, monkeypatch, contended, point):
+    """Control every heartbeat I/O boundary, then judge without lock contention."""
+    queue, key, item, clock = holder
+    path = queue.records.lease_path(key)
+    before = path.read_bytes()
+    entered, resume = threading.Event(), threading.Event()
+    local = threading.local()
+    read = record_store.read_document
+    initial = queue.records.item
+    ticks = pool._contained_worker_start_ticks
+    replace = queue.records.replace_record_at
+    def gate(at):
+        if threading.current_thread().name == "gated-beat" and at == point and not entered.is_set():
+            entered.set()
+            assert resume.wait(60), "heartbeat I/O gate was not released"
+    def read_claim(*args, **kwargs):
+        gate("initial-claim")
+        local.initial = True
+        try:
+            return initial(*args, **kwargs)
+        finally:
+            local.initial = False
+    def read_record(target):
+        if target == path:
+            gate("lease-read")
+        elif target == queue.records.item_path(record_store.CLAIMED, key) and not getattr(local, "initial", False):
+            gate("final-claim")
+        return read(target)
+    def read_identity(pid):
+        gate("process-identity")
+        return ticks(pid)
+    def publish_record(target, payload):
+        if target == path or "lease-heartbeats" in Path(target).parts:
+            gate("publish")
+        return replace(target, payload)
+    monkeypatch.setattr(queue.records, "item", read_claim)
+    monkeypatch.setattr(record_store, "read_document", read_record)
+    monkeypatch.setattr(pool, "_contained_worker_start_ticks", read_identity)
+    monkeypatch.setattr(queue.records, "replace_record_at", publish_record)
+    errors = []
+    start = clock[0]
+    def beats():
+        try:
+            for step in range(12):
+                clock[0] = start + (step + 1) * pool.HEARTBEAT_S
+                queue.write_lease(key, owner="worker", claim_snapshot=item)
+        except BaseException as exc:
+            errors.append(exc)
+    with _busy_key(queue, key) if contended else nullcontext():
+        thread = threading.Thread(target=beats, name="gated-beat")
+        thread.start()
+        try:
+            assert entered.wait(60), f"heartbeat did not reach {point}"
+            with queue.action_transition_lock(key, blocking=False) as acquired:
+                assert acquired is False
+            clock[0] += 1
+        finally:
+            resume.set()
+            thread.join(60)
+        assert not thread.is_alive() and not errors
+    # No competing lock remains to make the judges skip the claim.
+    assert queue.lease_age(key) == 0.
+    assert queue.reap_stale() == []
+    assert queue.claim(owner="successor", capacity={"cpu": 2}) is None
+    current = record_store.value_or_raise(queue.records.item(record_store.CLAIMED, key))
+    assert current["claimed_by"] == "worker" and current["attempts"] == 0
+    assert queue.ledger().holder_tokens(key) == {"cpu": 1}
+    if contended:
+        assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("field", ["claimed_by", "claimed_unix", "published_unix", "attempts",
@@ -148,29 +223,43 @@ def test_delayed_predecessor_stamp_cannot_refresh_a_successor(holder):
 def test_cross_thread_predecessor_publish_excludes_successor(holder, monkeypatch, landing):
     # Corrected r6 R3 / r7 probe: successor is a different thread.
     queue, key, first, clock = holder
-    entered, resume, finished = threading.Event(), threading.Event(), threading.Event()
+    entered, resume, tested, proceed = (threading.Event() for _ in range(4))
     original = queue.records.replace_record_at
     def stall(path, payload):
         if Path(path) == queue.records.lease_path(key) and threading.current_thread().name == "beat":
             entered.set()
-            assert resume.wait(5)
+            assert resume.wait(60), "heartbeat gate was not released"
         return original(path, payload)
     monkeypatch.setattr(queue.records, "replace_record_at", stall)
-    errors = []
+    errors, exclusion = [], []
     def beat():
-        try:queue.write_lease(key, owner="worker", claim_snapshot=first)
-        except BaseException as exc:errors.append(exc)
+        try:
+            queue.write_lease(key, owner="worker", claim_snapshot=first)
+        except BaseException as exc:
+            errors.append(exc)
     def finish():
-        queue.finish(key, status="executed", claim_snapshot=first)
-        finished.set()
+        try:
+            with queue.action_transition_lock(key, blocking=False) as acquired:
+                exclusion.append(acquired)
+            tested.set()
+            assert proceed.wait(60), "successor gate was not released"
+            queue.finish(key, status="executed", claim_snapshot=first)
+        except BaseException as exc:
+            errors.append(exc)
     thread = threading.Thread(target=beat, name="beat")
-    thread.start()
-    assert entered.wait(5)
     successor = threading.Thread(target=finish)
-    successor.start()
-    try:assert not finished.wait(.1)
-    finally:resume.set()
-    thread.join(5);successor.join(5)
+    thread.start()
+    try:
+        assert entered.wait(60), "heartbeat did not reach publication"
+        successor.start()
+        assert tested.wait(60), "competitor did not test the real flock"
+        assert exclusion == [False]
+    finally:
+        resume.set()
+        thread.join(60)
+        proceed.set()
+        if successor.ident is not None:
+            successor.join(60)
     assert not errors and not thread.is_alive() and not successor.is_alive()
     clock[0] += 1
     publish(queue, key)
@@ -208,16 +297,22 @@ def test_actually_dead_owner_does_not_receive_infinite_stamp_credit(holder):
         lease.update(pid=child.pid, pid_start_ticks=pool._contained_worker_start_ticks(child.pid))
         queue.records.replace_record_at(queue.records.lease_path(key), lease)
         queue.records.replace_record_at(queue._heartbeat_stamp_path(lease), lease)
-        child.stdin.close();child.wait(timeout=5)
+        child.stdin.close();child.wait(timeout=60)
         assert queue._heartbeat_cleanup_due(lease)
-        clock[0] += pool.LEASE_TIMEOUT_S + 1
+        assert queue.reap_stale() == []
+        assert queue.ledger().holder_tokens(key) == {"cpu": 1}
+        clock[0] += pool.LEASE_TIMEOUT_S
+        assert queue.reap_stale() == []
+        assert queue.records.item_path(record_store.CLAIMED, key).exists()
+        clock[0] += 1
         assert queue.reap_stale() == [key]
         assert not queue.ledger().holder_tokens(key)
     finally:
-        if child.poll() is None:child.kill();child.wait(timeout=5)
+        if child.poll() is None:child.kill();child.wait(timeout=60)
 
 
-def test_checkout_recovery_refuses_a_contended_live_terminal_lease(case):
+def test_checkout_recovery_refuses_a_contended_live_terminal_lease(case, monkeypatch):
+    monkeypatch.setattr(pool, "_now", lambda: 2_000_000_000.)
     queue, key = case.queue.queue, case.key
     lease = {**case.claim, "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": key,
              "owner": case.claim["claimed_by"], "host": case.claim["claimed_host"],
@@ -284,7 +379,7 @@ def test_status_census_reports_the_contended_heartbeat(holder, monkeypatch):
         queue.write_lease(key, owner="worker", claim_snapshot=item)
     with ThreadPoolExecutor(max_workers=1) as executor:
         with _busy_key(queue, key):
-            executor.submit(beat).result(timeout=2)
+            executor.submit(beat).result(timeout=60)
     monkeypatch.setattr(census.time, "time", lambda: clock[0])
     result = census.action_rows(queue.root)
     row = next(row for row in result.value["jobs"] if row["action_key"] == key)
@@ -306,10 +401,11 @@ def test_fresh_foreign_lease_does_not_renew_this_claim(holder, judge, field, val
         assert not live and evidence["evidence"] == "unread"
 
 
-def test_partial_legacy_claim_keeps_its_lease_format_and_cannot_stamp(tmp_path):
+def test_partial_legacy_claim_keeps_its_lease_format_and_cannot_stamp(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool, "_now", lambda: 2_000_000_000.)
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
-    key = uuid.uuid4().hex + uuid.uuid4().hex
+    key = "a" * 64
     queue.records.replace_record_at(queue.records.item_path(record_store.CLAIMED, key),
         {"action_key": key, "claimed_by": "legacy", "claimed_host": pool.socket.gethostname()})
     queue.write_lease(key, owner="legacy")
@@ -321,4 +417,4 @@ def test_partial_legacy_claim_keeps_its_lease_format_and_cannot_stamp(tmp_path):
         queue.write_lease(key, owner="legacy")
     assert not queue._heartbeat_stamp_path(lease).exists()
     assert path.read_bytes() == before
-    assert queue.lease_age(key) < pool.LEASE_TIMEOUT_S
+    assert queue.lease_age(key) == 0.

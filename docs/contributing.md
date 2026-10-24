@@ -155,3 +155,31 @@ The [#1530 evidence record](results/pbtest_exit_completion_1530.md) shows pytest
 exit hook inside pool cleanup after the test progress reached `[100%]`.
 An exit timeout remains non-green, even when the selected tests have verified completion evidence.
 
+
+
+## Deterministic regression tests
+
+Inject the clock at the owning module boundary, such as `pool._now`, and assert
+on state transitions at exact logical times. Never assert elapsed wall time or
+sample counts inside a real-time window. Control concurrency with Events, pipes,
+pidfds or an explicit I/O gate. A timeout is a failure watchdog of at least
+60 seconds, not synchronization or a performance assertion. Keep fixtures private
+to `tmp_path`; use explicit inputs and listing order, seeded randomness, and
+in-memory protocol streams rather than network listeners. Fit all child workers
+inside the shard's admitted resources.
+
+Expected values must come from the contract or an independent oracle. Do not
+compare a value with itself, assert a configured mock return, compute the expected
+value with the function being tested, or check only that a mock received its own
+input. Remove such assertions when touching a test and record the removal.
+Demonstrate each new or changed assertion failing on the pre-fix source or a
+named product mutant, and retain the RED action key.
+
+Keep wall-clock endurance experiments as review probes outside `tests/` and map
+each property to a deterministic suite test. Before handoff, execute every changed
+test file at least five times on ARM and x86 through published `pbtest.py`, with
+at least two runs per architecture using `--workers-per-shard 2`,
+`--cpus-per-shard 2` and `--threads-per-shard 1`. Vary accepted pytest arguments,
+such as `--durations=1` through `--durations=5`, to execute fresh actions. Check
+terminal outcomes and CAS receipts. Diagnose any failure; retries, skips, rerun
+plugins and wider timing windows do not establish determinism.
