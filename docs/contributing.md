@@ -70,6 +70,44 @@ them.
 
 ## Pool regression fixtures
 
+### Write deterministic tests
+
+Rob, 2026-10-24: "Flaky tests derail this entire platform."
+
+Inject the clock used by the decision under test. Assert on state, ordering and
+virtual allowance boundaries. Keep measured CPU or elapsed time diagnostic;
+host-speed thresholds do not establish correctness.
+
+Order concurrent work with Events, Conditions, pipes, socket handshakes, pidfds,
+inotify or PB's bell. Stall code behind a gate the test controls. Use a generous
+failure bound of at least 60 seconds for an event, independent of the policy
+allowance under test. A sleep, a file-existence loop or a larger allowance cannot
+establish the ordering. `tests/controlled_action.py` gates real action processes
+at semantic milestones and advances only their injected execution clock.
+
+Keep inputs and filesystem identities explicit. Seed randomness, use private
+pytest scratch, choose listing order deliberately, and keep an old file open
+when a test requires a distinct replacement inode. For timestamps, set exact
+values rather than waiting for the host clock. Reserve the resources used by all
+workers and children together, preserving PB's assigned affinity.
+
+Every assertion needs a deterministic RED against pre-fix behavior or a named
+product mutant. Test an independently observable result; self-comparisons,
+constant assertions, a mock's own return, same-code expected-value calculations
+and assertions that merely repeat call arguments are tautologies. Remove those
+tests from files you touch and name each removal in the report. Report any
+tautology outside those files without silently editing it.
+
+Run each changed file at least five executed times per supported architecture,
+including at least two runs with `--workers-per-shard 2 --cpus-per-shard 2
+--threads-per-shard 1`. Vary reporting options from `--durations=1` through
+`--durations=5` to obtain distinct PB action keys. `pbtest` does not accept arbitrary ini overrides such as `junit_suite_name`.
+Check terminal status, logs, executed counts and CAS receipts. Fix a failure at
+its cause; retries, quarantine, deselection, xfail, skip and widened timeouts do
+not repair a flaky test.
+
+### Keep queue fixtures valid
+
 Keep fixture inputs valid for the reviewed admission contract. Executable
 fixtures declare their host capacity and CPU map before taking a reservation;
 fixtures that execute subprocesses use CPU IDs within their admitted affinity.
