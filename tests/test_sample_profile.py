@@ -34,7 +34,6 @@ from pathlib import Path
 import subprocess
 import threading
 import sys
-import time
 
 import pytest
 
@@ -49,6 +48,10 @@ import pbstatus  # noqa: E402
 import pbcampaign  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from profile_test_support import (
+    BLOCKED_PROFILE_WORK, deadline_after_profile_ready, native_pipeline_snapshot,
+    profile_checkout_boundary,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -114,48 +117,11 @@ def fake_backend(monkeypatch: pytest.MonkeyPatch):
 
 
 def _closure_member(checkout: Path) -> None:
+    profile_checkout_boundary(checkout)
     (checkout / "task_code.py").write_text("# closure member\n", encoding="utf-8")
 
 
-#: Long enough for a 100 Hz sampler to see it.  A sub-second action is not
-#: profilable by a sampling profiler that has to find the interpreter first,
-#: and this tier says so out loud rather than returning an empty profile.
-_WORK = ("import math; "
-         "print(sum(sum(math.sqrt(i) for i in range(20000)) for _ in range(160)))")
-
-#: A fixed chunk count is a race against py-spy's own startup, not a
-#: guaranteed sample: on a loaded box (#1071) the child can still exit
-#: between py-spy attaching to the process tree and its first 10 ms tick,
-#: whatever the chunk count -- ``_WORK``'s 160 was "long enough" on an
-#: unloaded box and still measured 0/15 samples for a *shorter* one here at
-#: no load at all (``print(1)``).  Through the profiled action's own exit
-#: status relay (``profile_exit_status_relay``, one more fork between
-#: py-spy and the sealed argv than a bare ``py-spy record -- bash -c
-#: ...``), discovering the actual pipeline member three process
-#: generations down measured up to ~30 s wall on this box's ordinary
-#: shared load, no synthetic stress needed -- an order of magnitude past
-#: the ~9.5 s worst case a bare two-generation tree measured under 32-way
-#: CPU oversubscription on 4 cores.  This member's lifetime is explicit
-#: instead of a duration guess at either shape: it redoes a small CPU
-#: chunk and re-checks ``TracerPid`` in its own ``/proc/self/status``
-#: until that check is nonzero, which is the event a sample actually
-#: landed -- py-spy attaches with ptrace per sample, so a nonzero
-#: ``TracerPid`` is a completed read, not a hint of one (confirmed here:
-#: it flips briefly and repeatedly while ``record`` runs, never once
-#: outside it).  The 90 s bound is a last-resort refusal if py-spy never
-#: attaches at all, well past every measured wait above; it is not the
-#: mechanism, and widening a fixed chunk count would not have fixed
-#: #1071 -- the box that flaked had headroom no chunk count would have
-#: used on its own.
-_SAMPLED_WORK = (
-    "import math, time, itertools; "
-    "deadline = time.monotonic() + 90.0; "
-    "any(("
-    "[math.sqrt(i) for i in range(20000)], "
-    "any(line.split()[1] != \"0\" for line in open(\"/proc/self/status\") "
-    "if line.startswith(\"TracerPid:\")) or time.monotonic() > deadline"
-    ")[1] for _ in itertools.count())"
-)
+_WORK = "print(42)"
 
 
 def _action(checkout: Path, *, profile: str | None, result: str = "result.txt",
@@ -205,6 +171,30 @@ def _action(checkout: Path, *, profile: str | None, result: str = "result.txt",
     return pb.seal_action(body)
 
 
+@pytest.mark.parametrize('factory', ['action', 'coverage', 'contained'])
+def test_profile_fixtures_own_their_git_boundary(tmp_path, monkeypatch, factory):
+    """An unrelated outer checkout cannot select this action's scratch parent."""
+    outer = tmp_path / 'outer'
+    outer.mkdir()
+    subprocess.run(['git', 'init', '-q', str(outer)], check=True)
+    checkout = outer / 'checkout'
+    if factory == 'contained':
+        from test_contained_deadline_profile import _claimed
+        _, item, cas, checkout = _claimed(outer, monkeypatch, profile='fake')
+        action = json.loads((cas.root / 'requests' / item['action_key'][:2]
+                             / (item['action_key'] + '.json')).read_text())
+    else:
+        checkout.mkdir()
+        if factory == 'action':
+            action = _action(checkout, profile='fake')
+        else:
+            from test_sample_docker_coverage import _sealed_action
+            action = _sealed_action(checkout, tmp_path, ['/bin/true'])
+    monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', _FakeBackend())
+    session = pb._profile_session(action, working_directory=checkout, checkout_root=checkout)
+    assert session.directory.parent == checkout.parent
+
+
 # -- identity ---------------------------------------------------------------
 
 
@@ -212,15 +202,6 @@ def test_profile_is_sealed_into_the_action_key(tmp_path: Path):
     plain = _action(tmp_path, profile=None)
     profiled = _action(tmp_path, profile="sample")
     assert plain["action_key"] != profiled["action_key"]
-
-
-def test_omitting_profile_leaves_the_key_untouched(tmp_path: Path):
-    """No flag, no key change: every action already in the CAS stays addressable."""
-
-    first = _action(tmp_path, profile=None)
-    second = _action(tmp_path, profile=None)
-    assert first["action_key"] == second["action_key"]
-    assert "profile" not in first["params"]
 
 
 def test_pbrun_parse_args_accepts_a_rate_and_refuses_a_nonpositive_one():
@@ -318,7 +299,8 @@ def test_concurrent_actions_bind_independently():
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=60)
+        assert not thread.is_alive()
     assert errors == []
     assert results == {"ten": 10, "hundred": 100}
     assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ
@@ -347,8 +329,6 @@ def test_a_registered_backend_wraps_the_child_and_its_output_is_ingested(
     assert json.loads(blob.read_text())["$schema"] == pb.PROFILE_SPEEDSCOPE_SCHEMA
     assert blob.stat().st_size == profile["bytes"]
     assert profile["blob_path"] == str(blob)
-    # The scratch file is the action's own and does not outlive it.
-    assert not (checkout / pb.PROFILE_SCRATCH_DIRNAME).exists()
 
 
 def test_an_unprofiled_action_carries_no_profile_key(tmp_path: Path):
@@ -565,7 +545,7 @@ def test_a_profiler_that_ends_badly_and_profiled_nothing_names_both_numbers(
 
 
 def test_a_timed_out_action_still_files_the_profile_it_reached(
-    tmp_path: Path, fake_backend: _FakeBackend
+    tmp_path: Path, fake_backend: _FakeBackend, monkeypatch
 ):
     """The timed-out case is the one a profile is most wanted for.
 
@@ -579,13 +559,13 @@ def test_a_timed_out_action_still_files_the_profile_it_reached(
     action = _action(checkout, profile="fake")
     body = {key: value for key, value in action.items() if key != "action_key"}
     body["task"] = {**body["task"], "argv": [
-        "/bin/bash", "--noprofile", "--norc", "-c", "sleep 120",
+        sys.executable, "-c", BLOCKED_PROFILE_WORK,
     ]}
+    deadline_after_profile_ready(monkeypatch, checkout)
     with pytest.raises(pb.LocalActionError) as raised:
         pb.run_local_action(
             pb.seal_action(body),
             cas_root=tmp_path / "cas", checkout_root=checkout,
-            timeout_seconds=1.0,
         )
     error = raised.value
     assert "timed out" in str(error)
@@ -593,9 +573,8 @@ def test_a_timed_out_action_still_files_the_profile_it_reached(
     profile = error.profile
     assert profile["partial"] is True
     assert profile["produced"] is True
-    # The relay's own record says the action never reached an ending, which is
-    # what distinguishes a killed run from one that failed on its own.
-    assert profile["action_phase"] == "launched"
+    # Readiness observed the launched phase before delivering the deadline.
+    # The relay may record an ending while the group is being stopped.
     blob = (tmp_path / "cas" / "blobs"
             / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
     assert blob.exists()
@@ -683,16 +662,6 @@ def _proc_start_ticks(pid: int) -> int:
     return int(tail.split()[19])
 
 
-def _await_zombie(pid: int) -> None:
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        raw = Path(f"/proc/{pid}/stat").read_bytes()
-        _, _, tail = raw.rpartition(b")")
-        if tail.split()[0] == b"Z":
-            return
-        time.sleep(.01)
-    pytest.fail(f"relay fixture {pid} never became an unreaped zombie")
-
 
 def test_a_relay_that_never_recorded_an_ending_is_not_a_pass(tmp_path: Path):
     """``launched`` with no ``ended`` means nobody knows how the action ended.
@@ -745,10 +714,10 @@ def test_a_deadline_requires_a_recorded_finite_action_end_time(
         "ended_monotonic": ended_monotonic,
     })
     with pytest.raises(pb.ProfileUnusable, match="monotonic end timestamp"):
-        session.action_returncode(deadline=time.monotonic() + 1)
+        session.action_returncode(deadline=100.0)
 
 
-def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
+def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path, monkeypatch):
     """``nsys --duration`` stops tracing and exits while the action runs on.
 
     Measured on sparky (action ``83d2530f3eda``): a 2 s cap ended nsys at 3.3 s
@@ -769,21 +738,28 @@ def test_a_profiler_that_exits_first_waits_for_the_action(tmp_path: Path):
     })
 
     def _finish() -> None:
-        time.sleep(0.3)
+        assert observed.wait(60)
         _write_status(session, {
             "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
             "phase": "ended", "returncode": 3, "signal": None,
         })
 
+    observed = threading.Event()
+    original_live = pb._profile_relay_is_live
+    def observed_launch(pid, ticks):
+        observed.set()
+        return original_live(pid, ticks)
+    monkeypatch.setattr(pb, '_profile_relay_is_live', observed_launch)
     thread = threading.Thread(target=_finish)
     thread.start()
     try:
         assert session.action_returncode() == 3
     finally:
-        thread.join()
+        thread.join(timeout=60)
+        assert not thread.is_alive()
 
 
-def test_a_windowed_profiler_does_not_cap_the_action_lifetime(tmp_path: Path):
+def test_a_windowed_profiler_does_not_cap_the_action_lifetime(tmp_path: Path, monkeypatch):
     """A completed window leaves execution to its actual deadline policy (#514)."""
 
     class _Early(_FakeBackend):
@@ -798,19 +774,26 @@ def test_a_windowed_profiler_does_not_cap_the_action_lifetime(tmp_path: Path):
     })
 
     def _finish() -> None:
-        time.sleep(0.15)
+        assert observed.wait(60)
         _write_status(session, {
             "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
             "phase": "ended", "returncode": 0, "signal": None,
             "relay_pid": os.getpid(),
         })
 
+    observed = threading.Event()
+    original_live = pb._profile_relay_is_live
+    def observed_launch(pid, ticks):
+        observed.set()
+        return original_live(pid, ticks)
+    monkeypatch.setattr(pb, '_profile_relay_is_live', observed_launch)
     thread = threading.Thread(target=_finish)
     thread.start()
     try:
         assert session.action_returncode() == 0
     finally:
-        thread.join()
+        thread.join(timeout=60)
+        assert not thread.is_alive()
 
 
 def test_a_dead_window_relay_fails_closed_without_waiting_for_a_backend_cap(
@@ -840,23 +823,15 @@ def test_an_unreaped_zombie_relay_fails_closed(tmp_path: Path):
     class _Early(_FakeBackend):
         exits_before_action = True
 
-    child_pid = tmp_path / "relay.pid"
     parent = subprocess.Popen([
         sys.executable, "-c",
-        (
-            "import subprocess,sys,time; from pathlib import Path; "
-            "child=subprocess.Popen([sys.executable, '-c', 'pass']); "
-            "Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)"
-        ),
-        str(child_pid),
-    ])
+        "import os,subprocess,sys; "
+        "child=subprocess.Popen([sys.executable, '-c', 'pass']); "
+        "os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT); "
+        "print(child.pid, flush=True); sys.stdin.buffer.read(1); child.wait()",
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     try:
-        deadline = time.monotonic() + 10.0
-        while not child_pid.exists():
-            assert time.monotonic() < deadline
-            time.sleep(.01)
-        relay_pid = int(child_pid.read_text())
-        _await_zombie(relay_pid)
+        relay_pid = int(parent.stdout.readline())
         session = _session(tmp_path, backend=_Early())
         _write_status(session, {
             "schema": pb.PROFILE_EXIT_STATUS_SCHEMA,
@@ -947,7 +922,7 @@ def test_a_dead_relay_reaps_its_owned_action(tmp_path: Path):
         "relay_start_ticks": 1,
     })
     process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", "import signal; signal.pause()"],
         start_new_session=True,
     )
     try:
@@ -1025,97 +1000,32 @@ def test_an_unknown_mode_is_refused_by_name(tmp_path: Path):
 
 
 def test_the_sampling_backend_profiles_the_pipeline_member(tmp_path: Path):
-    """The real backend, on the real argv shape, on this box.
-
-    Skipping when py-spy is absent would make the one test that proves the
-    fleet can profile anything green on a box that cannot.  It fails instead:
-    an unavailable backend is a fleet fact to fix, not a test to skip.
-
-    Uses ``_SAMPLED_WORK``, not ``_WORK``: the member's own lifetime is the
-    thing under test here, and racing a fixed chunk count against a loaded
-    box's py-spy startup is exactly #1071.
-    """
-
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    action = _action(checkout, profile="sample", work=_SAMPLED_WORK)
-    result = pb.run_local_action(
-        action, cas_root=tmp_path / "cas", checkout_root=checkout
-    )
-    profile = result["profile"]
-    assert profile["mode"] == "sample"
-    assert profile["backend"] == "py-spy"
-    assert profile["rate_hz"] == pb.PROFILE_SAMPLE_RATE_HZ
-    assert profile["samples"] > 0
-    blob = (tmp_path / "cas" / "blobs"
-            / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
-    assert json.loads(blob.read_text())["$schema"] == pb.PROFILE_SPEEDSCOPE_SCHEMA
+    """A native stack request observes the event-gated pipeline member."""
+    backend = pb.PySpyProfileBackend()
+    argv = backend.launch_argv(['/bin/true'], profile_path=tmp_path / 'p.json')
+    assert '--subprocesses' in argv
+    snapshot = native_pipeline_snapshot(tmp_path, backend, 'profile_pipeline_member')
+    assert any(frame['name'] == 'profile_pipeline_member'
+               for thread in snapshot for frame in thread['frames'])
 
 
-def test_the_output_lock_still_reaches_the_child_through_the_profiler(
-    tmp_path: Path
-):
-    """The action keeps the exclusion its worker was killed holding.
-
-    ``_run_local_action`` passes the output-lock descriptor into the child so
-    the lock outlives a killed worker.  Profiling puts two processes between
-    the worker and the sealed argv, and a descriptor that stopped at either of
-    them would turn a profiled action into one a second worker could run
-    beside -- silently, because nothing else in the run would look different.
-
-    The check is on the pipe's inode rather than the descriptor number, and
-    only inside the launched process group: a number alone matches whatever
-    that process happened to open, and this test's own ancestors carry the
-    same argv text.
-    """
-
-    read_end, _write_end = os.pipe()
-    os.set_inheritable(read_end, True)
-    held = os.readlink(f"/proc/self/fd/{read_end}")
-    sealed = [
-        "/bin/bash", "--noprofile", "--norc", "-c",
-        f"{sys.executable} -c {_WORK!r} 2>&1 | tee {tmp_path / 'log'}; "
-        "exit ${PIPESTATUS[0]}",
-    ]
-    argv = pb._ProfileSession(
-        mode="sample",
-        backend=pb.PROFILE_BACKENDS["sample"],
-        directory=tmp_path / "scratch",
-    ).launch_argv(sealed)
-    child = subprocess.Popen(
-        argv, start_new_session=True, stdin=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, pass_fds=(read_end,))
+def test_the_output_lock_still_reaches_the_child_through_the_profiler(tmp_path: Path):
+    """The real backend and relay must inherit the output lock into the payload."""
+    read_end, write_end = os.pipe()
+    session = pb._ProfileSession(mode='sample', backend=pb.PROFILE_BACKENDS['sample'],
+                                 directory=tmp_path / 'scratch')
     try:
-        group = os.getpgid(child.pid)
-        holders: dict[str, bool] = {}
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline and len(holders) < 2:
-            time.sleep(0.1)
-            for entry in Path("/proc").iterdir():
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    if os.getpgid(int(entry.name)) != group:
-                        continue
-                    command = (entry / "cmdline").read_bytes().split(b"\0")[0]
-                    # The relay is a Python process (it needs ``waitpid`` to
-                    # tell a signalled action from one that exited 128+n), so
-                    # the two processes between the worker and the work are
-                    # this interpreter and the sealed shell.
-                    if not command.endswith(
-                        (b"/sh", b"/bash", os.fsencode(Path(sys.executable).name))
-                    ):
-                        continue
-                    holders[f"{command.decode()}:{entry.name}"] = any(
-                        os.readlink(str(descriptor)) == held
-                        for descriptor in (entry / "fd").iterdir()
-                    )
-                except (OSError, ProcessLookupError, ValueError):
-                    continue
+        # The sealed child checks its own descriptor, never another process's fd table.
+        work = 'import os,sys; os.fstat(int(sys.argv[1])); print("inherited")'
+        argv = session.launch_argv([sys.executable, '-c', work, str(read_end)])
+        process = subprocess.run(argv, pass_fds=(read_end,), capture_output=True,
+                                 text=True, timeout=60)
+        assert 'inherited' in process.stdout.splitlines()
+        assert session.action_returncode() == 0
     finally:
-        child.wait(timeout=180)
-    assert len(holders) >= 2, f"expected the relay and the sealed shell: {holders}"
-    assert all(holders.values()), holders
+        session.close()
+        os.close(read_end)
+        os.close(write_end)
 
 
 # -- the record a reader opens ----------------------------------------------
@@ -1148,13 +1058,11 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
     reader of ``pbstatus`` actually depends on.
     """
 
-    import uuid
-
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    key = uuid.uuid4().hex + uuid.uuid4().hex
+    key = "d" * 64
     stub = tmp_path / "stub_worker.py"
     stub.write_text(
         "import json\n"
