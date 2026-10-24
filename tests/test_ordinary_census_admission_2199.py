@@ -73,6 +73,153 @@ def _fixture_selection(queue, key, *, host="sparklina", priority=10):
     return chosen
 
 
+def test_retired_election_and_unrelated_pass_counter_still_admit(fleet, monkeypatch):
+    """The reviewer's N1 probe, including the retained passes sidecar."""
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("r2-retired", measurement=True, gpu=0, priority=10)
+    _fixture_selection(queue, selected)
+    queue.withdraw(selected)
+    other = publish("r2-unrelated", gpu=0)
+    candidate = publish("r2-unfenced", gpu=0)
+    queue.sweep_orphan_passes()
+    assert queue.records.passes_path(selected).exists()
+    with reservation.locked_census(
+            queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())) as census:
+        assert selected not in census["elections"]
+    queue.record_pass(other)
+    monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
+    with _fixture_census_fence(queue):
+        result = pool.PoolQueue(queue.root).claim(
+            capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
+    assert result is not None and result["action_key"] == candidate
+
+
+@pytest.mark.parametrize("authority", ["withdrawn", "successor", "absent", "torn", "old-mark", "held", "busy"])
+def test_per_key_retirement_preserves_every_full_census_fence(fleet, monkeypatch, authority):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("r2-retirement-authority", measurement=True, gpu=0, priority=10)
+    _fixture_selection(queue, selected)
+    old = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, selected))
+    queue.withdraw(selected)
+    if authority == "successor":
+        tick(1)
+        assert publish("r2-retirement-authority", measurement=True, gpu=0, priority=10) == selected
+    elif authority == "absent":
+        queue.records.item_path(pool.record_store.WITHDRAWN, selected).unlink()
+    elif authority == "torn":
+        queue.records.item_path(pool.record_store.WITHDRAWN, selected).write_text("{broken")
+    elif authority == "old-mark":
+        queue.records.replace_record_at(
+            queue.root / pool.record_store.CLAIMED / (selected + ".fixture.tombstone"), old)
+    elif authority == "held":
+        assert queue.ledger().acquire(selected, {"cpu": 1})
+    candidate = publish("r2-authority-follower", gpu=0)
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
+    monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
+    # No saved census: the per-key proof must supply the decision itself.
+    if authority == "busy":
+        from concurrent.futures import ThreadPoolExecutor
+        with queue.action_transition_lock(selected), ThreadPoolExecutor(max_workers=1) as executor:
+            with _fixture_census_fence(queue):
+                result = executor.submit(queue.claim, capacity={"cpu": 20, "mem_gb": 120},
+                                         ready=[row]).result(timeout=10)
+    else:
+        with _fixture_census_fence(queue):
+            result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
+    if authority in {"withdrawn", "successor"}:
+        assert result is not None and result["action_key"] == candidate
+    else:
+        assert result is None
+        assert denial(candidate)["reason"] == "measurement_census_unavailable"
+
+
+def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("r2-recheck-election", measurement=True, gpu=0, priority=10)
+    _fixture_selection(queue, selected, host="sparky")
+    first = publish("r2-recheck-first", gpu=0)
+    second = publish("r2-recheck-second", gpu=0)
+    pass_census = reservation.PassCensus(queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger()))
+    original = reservation._read
+    reads = []
+
+    def observe(path, **kwargs):
+        if path == queue.records.passes_path(selected):
+            reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(reservation, "_read", observe)
+    for key in (first, second):
+        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
+        with reservation.candidate_admission_census(
+                pass_census, queue, queue.ledger(), pass_census._controller, row,
+                dependent_owner=None) as census:
+            assert "unavailable" not in census
+    assert len(reads) == 1
+    _fixture_selection(queue, selected)
+    monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
+    with _fixture_census_fence(queue):
+        with reservation.candidate_admission_census(
+                pass_census, queue, queue.ledger(), pass_census._controller, row,
+                dependent_owner=None) as census:
+            assert "unavailable" in census
+    assert len(reads) == 2
+
+
+def test_election_between_source_discovery_and_H_cannot_authorize_admission(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("r2-before-H", measurement=True, gpu=0, priority=10)
+    _fixture_selection(queue, selected, host="sparky")
+    candidate = publish("r2-before-H-follower", gpu=0)
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
+    original = queue._admission_lock
+
+    @contextmanager
+    def elect_then_lock(controller):
+        _fixture_selection(queue, selected)
+        with original(controller):
+            yield
+
+    monkeypatch.setattr(queue, "_admission_lock", elect_then_lock)
+    monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
+    with _fixture_census_fence(queue):
+        assert queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row]) is None
+    assert denial(candidate)["reason"] == "measurement_census_unavailable"
+    assert queue.ledger().held_keys() == []
+
+
+@pytest.mark.parametrize("legacy", [True, False], ids=["before", "after"])
+def test_paired_admission_with_six_retired_elections(fleet, monkeypatch, legacy):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    for index in range(6):
+        selected = publish(f"r2-old-{index}", measurement=True, gpu=0, priority=10)
+        _fixture_selection(queue, selected)
+        queue.withdraw(selected)
+    other = publish("r2-counter", gpu=0)
+    candidate = publish("r2-retired-latency", gpu=0)
+    with reservation.locked_census(
+            queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())) as census:
+        assert not census["elections"] and len(census["selections"]) == 6
+    queue.record_pass(other)
+    if legacy:
+        monkeypatch.setattr(reservation, "candidate_admission_census",
+                            lambda stored, active, ledger, controller, item, refusal, **kwargs:
+                            reservation.pass_admission_census(stored, active, ledger, controller))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
+    with _fixture_census_fence(queue):
+        started = time.perf_counter()
+        result = pool.PoolQueue(queue.root).claim(
+            capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
+        elapsed = time.perf_counter() - started
+    print(f"retired_elections=6 arm={'before' if legacy else 'after'} "
+          f"latency_s={elapsed:.6f} admitted={result is not None}")
+    if legacy:
+        assert result is None and denial(candidate)["reason"] == "measurement_census_unavailable"
+    else:
+        assert result is not None and result["action_key"] == candidate
+
+
 @pytest.mark.parametrize("host,priority", [
     ("sparky", 10), ("sparklina", -20), ("sparklina", -10),
 ])
@@ -178,6 +325,7 @@ def test_a_complete_retirement_census_is_shared_across_independent_loops(fleet, 
     with reservation.locked_census(
             queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())) as census:
         assert selected not in census["elections"]
+    monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     with _fixture_census_fence(queue):
         result = pool.PoolQueue(queue.root).claim(
             capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
@@ -278,6 +426,8 @@ def test_a_retirement_cache_must_be_verifiable_before_ordinary_admission(
         def unreadable_boot(proc):
             raise reservation.reader.ReaderOwnershipUnavailable("fixture boot identity unavailable")
         monkeypatch.setattr(reservation.reader, "_boot_id", unreadable_boot)
+    # Isolate shared reuse; an independent per-key proof can now retire this key.
+    monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
         result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
