@@ -1282,6 +1282,10 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                         chosen = current["selections"].get(key)
                         if chosen is not None and chosen["host"] == ledger.base.name:
                             current["elections"][key] = chosen
+                    # Remember verified shared authority just like an owned
+                    # census, including the conservative merge above. A later
+                    # candidate's negative proof must not forget this election.
+                    pass_census.store(current)
                 if current is None:
                     prior = pass_census.census
                     remembered = (prior is not None and (

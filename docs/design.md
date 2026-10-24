@@ -762,6 +762,8 @@ sorted nonblocking M keys before H, verifies the generation and age under H,
 and restores fences for busy keys and retained holders. A sibling's omission
 is not retirement authority: selections remembered by this pass but absent
 from the shared result remain remembered, with their live fences intact.
+Both owned and accepted shared censuses update pass memory before candidate
+evaluation; candidate-relative ordinary negative proofs never replace it.
 Missing, stale or unverifiable results fall back. Shared reuse never supplies a
 new retirement proof. The ordinary proof uses exactly the complete census's
 per-key retirement rule. Optional source-generation preparation and verification

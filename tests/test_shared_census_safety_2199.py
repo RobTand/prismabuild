@@ -7,6 +7,7 @@ import signal
 import socket
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import ExitStack, contextmanager, suppress
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,95 @@ from prismabuild import _measurement_reservation as reservation, adaptive_cpu, p
 from test_census_tmpfs_state_1451 import tmpfs_mount, tmpfs_state  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_ordinary_census_admission_2199 import _fixture_selection
+
+
+@pytest.fixture
+def shared_age_clock(monkeypatch):
+    # Only cache age uses this clock; bounded readers keep their real deadlines.
+    monkeypatch.setattr(reservation, "time", SimpleNamespace(
+        monotonic=lambda: 100.0, time=reservation.time.time, sleep=reservation.time.sleep))
+
+
+@pytest.mark.parametrize("cache", ["stale", "sibling-omission"])
+def test_one_claim_pass_remembers_an_election_first_seen_in_shared_reuse(
+        fleet, monkeypatch, cache, shared_age_clock):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("shared-first-election", measurement=True, priority=10, gpu=0)
+    chosen = _fixture_selection(queue, selected)
+    candidates = [publish(f"shared-first-follower-{i}", priority=-10, gpu=0) for i in range(2)]
+    rows = [pool.record_store.value_or_raise(queue.records.item(pool.READY, key))
+            for key in candidates]
+    ledger = queue.ledger()
+    gate = adaptive_cpu.AdmissionGate(ledger)
+    with reservation.locked_census(queue, ledger, gate) as census:
+        assert census["elections"][selected] == chosen
+
+    seen = []
+    owned_reads = []
+    original_candidate = reservation.candidate_admission_census
+    original_owned = reservation.pass_admission_census
+
+    @contextmanager
+    def observe_owned(*args, **kwargs):
+        owned_reads.append(len(seen))
+        with original_owned(*args, **kwargs) as current:
+            yield current
+
+    @contextmanager
+    def lose_sidecar_between_candidates(saved, active, host_ledger, controller, item, *args, **kwargs):
+        with original_candidate(saved, active, host_ledger, controller, item, *args, **kwargs) as current:
+            seen.append((item["action_key"], current.get("elections", {}).get(selected)))
+            yield current
+        if item["action_key"] == candidates[0]:
+            assert owned_reads == [], "the first observation must come from shared reuse"
+            # No retirement record: the exact elected measurement is still READY.
+            queue.records.passes_path(selected).unlink()
+            if cache == "sibling-omission":
+                with reservation.locked_census(queue, ledger, gate) as sibling:
+                    assert sibling["selections"] == {}
+
+    monkeypatch.setattr(reservation, "pass_admission_census", observe_owned)
+    monkeypatch.setattr(reservation, "candidate_admission_census", lose_sidecar_between_candidates)
+    result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=rows)
+
+    assert result is None, "a later candidate undercut an election learned through shared reuse"
+    assert seen == [(key, chosen) for key in candidates]
+    assert owned_reads == ([1] if cache == "stale" else [])
+    for key in candidates:
+        refusal = denial(key)
+        assert refusal["reason"] == "deferred_for_measurement_reservation"
+        assert refusal["evidence"]["withheld_for"] == selected
+    assert all(queue.records.item_path(pool.READY, key).is_file()
+               for key in [selected, *candidates])
+    assert queue.ledger().held_keys() == []
+
+
+def test_an_ordinary_negative_proof_keeps_elections_learned_from_shared_reuse(
+        fleet, shared_age_clock):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("shared-negative-election", measurement=True, priority=10, gpu=0)
+    chosen = _fixture_selection(queue, selected)
+    higher = publish("shared-negative-higher", priority=20, gpu=0)
+    lower = publish("shared-negative-lower", priority=-10, gpu=0)
+    high_row, low_row = [pool.record_store.value_or_raise(queue.records.item(pool.READY, key))
+                         for key in (higher, lower)]
+    ledger = queue.ledger()
+    gate = adaptive_cpu.AdmissionGate(ledger)
+    with reservation.locked_census(queue, ledger, gate):
+        pass
+    saved = reservation.PassCensus(queue, ledger, gate)
+    with reservation.candidate_admission_census(
+            saved, queue, ledger, gate, low_row, dependent_owner=None) as first:
+        assert reservation.blocking_selection(
+            first, low_row, host="sparklina", funded_by=None) == chosen
+    queue.records.passes_path(selected).unlink()
+    with reservation.candidate_admission_census(
+            saved, queue, ledger, gate, high_row, dependent_owner=None) as irrelevant:
+        assert irrelevant["elections"] == {}
+    with reservation.candidate_admission_census(
+            saved, queue, ledger, gate, low_row, dependent_owner=None) as later:
+        assert reservation.blocking_selection(
+            later, low_row, host="sparklina", funded_by=None) == chosen
 
 
 @pytest.mark.parametrize("state", ["ready", "missing", "busy", "holder"])
