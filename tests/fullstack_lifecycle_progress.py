@@ -8,7 +8,8 @@ until all samples finish; this helper neither claims nor finishes queue work.
     p1 = reporter.commit("p1", 1)   # child calls production progress.commit
     # caller performs lifecycle steps governed by accepted p1 ...
     p2 = reporter.commit("p2", 2)
-    refusals = reporter.check_rejections()
+    for refusal in reporter.check_rejections():
+        observe(refusal)   # inspect the live lease before the next report
 
 Each child completes before ProgressWatch.sample runs: no sleep/poll race and
 no overwritten p1 before worker acceptance. Accepted AND rejected observations
@@ -18,6 +19,7 @@ is the authority. This does not exercise the full worker launch/monitor loop.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import math
 import os
@@ -169,9 +171,11 @@ class ClaimedProgressReporter:
         """Run production commit in a child; require real worker advancement."""
         return self._sample(phase, self._spawn(phase, units), expected=True)
 
-    def check_rejections(self) -> list[dict[str, Any]]:
-        """After p2, prove repeated/regressing/stale/invalid buy no allowance.
+    def check_rejections(self) -> Iterator[dict[str, Any]]:
+        """Yield each refusal after publication, before producing the next report.
 
+        The caller must observe each yield synchronously to inspect that sample's
+        live lease/plan/retirement boundary, rather than a final batch snapshot.
         Linear ProgressWatch calls a regressing same-phase report ``replayed``;
         cyclic mode has the more specific ``regressing`` reason. A foreign token
         is launch staleness, not an old reported_unix (which is advisory only).
@@ -180,7 +184,6 @@ class ClaimedProgressReporter:
             raise ValueError('accept positive progress before checking rejections')
         phase = self.policy.phases[self.watch.phase_index].name
         units = self.watch.units_high_water
-        events = []
         for label, value, token, invalid, reason in (
             ('repeated', units, None, False, 'replayed'),
             ('regressing', 0, None, False,
@@ -189,5 +192,4 @@ class ClaimedProgressReporter:
             ('invalid', units + 1, None, True, 'units_completed is not a finite count'),
         ):
             child = self._spawn(phase, value, token=token, invalid=invalid)
-            events.append(self._sample(label, child, expected=False, reason=reason))
-        return events
+            yield self._sample(label, child, expected=False, reason=reason)

@@ -525,12 +525,29 @@ def run_case(case, *, root: Path, sources: dict[str, Path], observe):
                 reader[1].send('release'); joined(reader[0])
             actor_channel.send('stop'); joined(actor)
         else:
-            for name, certificate in [('missing_scope', {}), ('wrong_scope', {
-                'schema': 'prismabuild.containment_certificate.v1',
-                'action_key': consumer, 'scope_id': 'not-this-attempt'})]:
+            # Bind identifiers to the actual reader ref that cleanup would
+            # have to retire. Missing nonce would only test malformed input.
+            acquired = first[2]
+            pin = reader_lease.validate_pin(acquired['pin'])
+            attempt = pin['refs'][acquired['ref_id']]['attempt']
+            identifiers = {'action_key': pin['owner_action_key'], 'nonce': attempt['nonce']}
+            scope_probes = {}
+            for name, certificate, expected_reason in (
+                ('missing_scope', dict(identifiers), 'certificate names no attempt'),
+                ('wrong_scope', {**identifiers, 'scope_id': attempt['scope_id'] + '-wrong'},
+                 'no-broker-attestation-retain')):
                 ok, reason = client.containment_certificate_ok(q, certificate)
-                assert not ok and reason
-                observe(name, {**context, 'certificate': certificate})
+                assert (ok, reason) == (False, expected_reason), (name, ok, reason)
+                probe = {'certificate': certificate, 'reason': reason,
+                         'status': 'unqualified' if name == 'wrong_scope' else 'refused',
+                         'scope_mismatch_exercised': False}
+                if name == 'wrong_scope':
+                    # A real authority lookup finds no attestation for this
+                    # portable attempt. That is NOT a qualified scope mismatch.
+                    probe['blocked_operation'] = 'authoritative scope mismatch verification'
+                scope_probes[name] = probe
+                observe(name, {**context, 'certificate': certificate, 'scope_probe': probe})
+            recovery['scope_probes'] = scope_probes
             # Simulate interruption without inventing an authoritative terminal.
             # The abandoned refs/charged occupancy remain explicitly retained.
             for reader in (first, second):
