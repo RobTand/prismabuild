@@ -157,12 +157,16 @@ def test_query_uses_socket_peer_credentials(tmp_path):
         os.close(directory)
 
 
-@pytest.mark.parametrize('operation', ['begin', 'end'])
-def test_local_root_gate_client_sends_only_owned_operation(tmp_path, monkeypatch, capsys, operation):
+@pytest.mark.parametrize('operation,reason,healthy', [
+    ('begin', None, True), ('begin', 'fleet cutover', True),
+    ('begin', '', True), ('begin', None, False), ('end', None, True),
+])
+def test_local_root_gate_client_sends_only_owned_operation(tmp_path, monkeypatch, capsys, operation, reason, healthy):
     broker = module()
     authority = broker.Authority(tmp_path / 'state', os.getuid(), Backend(), max_memory_bytes=1 << 30)
     if operation == 'end':
         authority.handle(0, os.getpid(), {'op': 'maintenance_begin', 'owner': 'bridge'})
+    authority.health_check = lambda: healthy
     trusted, requests = [], []
 
     class RootClient:
@@ -180,12 +184,21 @@ def test_local_root_gate_client_sends_only_owned_operation(tmp_path, monkeypatch
     monkeypatch.setattr(broker, '_trusted_file', lambda path: trusted.append(path) or path)
     monkeypatch.setattr(broker.socket, 'socket', lambda *args: RootClient())
     monkeypatch.setattr(sys, 'argv', ['resource_broker.py', '--socket', '/fake/local-broker.sock',
-                                    '--maintenance-' + operation, 'bridge'])
+                                    '--maintenance-' + operation, 'bridge',
+                                    *(['--reason', reason] if reason is not None else [])])
     broker.main()
     assert trusted == [Path(broker.__file__).resolve()]
-    assert requests == [{'op': 'maintenance_' + operation, 'owner': 'bridge'}]
+    expected = {'op': 'maintenance_' + operation, 'owner': 'bridge'}
+    if operation == 'begin':
+        expected['reason'] = reason or 'operator maintenance'
+        assert authority.maintenance['reason'] == expected['reason']
+        assert json.loads(authority.maintenance_path.read_bytes())['reason'] == expected['reason']
+    assert requests == [expected]
     result = json.loads(capsys.readouterr().out)
-    assert result['draining'] is (operation == 'begin') and result['health']
+    assert result['draining'] is (operation == 'begin') and result['health'] is healthy
+    if not healthy:
+        assert result['errors'] == ['resource monitor is not healthy']
+        assert result['errors_truncated'] is False
 
 
 def test_local_gate_client_refuses_nonroot_before_rpc(monkeypatch):
@@ -203,3 +216,26 @@ def test_local_gate_client_refuses_untrusted_install_before_rpc(monkeypatch):
     monkeypatch.setattr(broker, '_trusted_file', lambda path: (_ for _ in ()).throw(ValueError('untrusted local helper')))
     with pytest.raises(ValueError, match='untrusted'):
         broker.main()
+
+
+def test_query_returns_only_documented_fields(tmp_path):
+    authority = module().Authority(tmp_path / 'state', os.getuid(), Backend(), max_memory_bytes=1 << 30)
+    assert set(_query(authority)) == {
+        'ok', 'draining', 'maintenance_owner', 'active_scopes', 'active_scopes_truncated',
+        'health', 'errors', 'errors_truncated', 'maintenance_protocol',
+    }
+
+
+def test_ending_maintenance_rechecks_root_health_after_healthy_query(tmp_path, monkeypatch):
+    authority = module().Authority(tmp_path / 'state', os.getuid(), Backend(), max_memory_bytes=1 << 30)
+    _, _, scope = _retired(authority, authority.backend, monkeypatch)
+    monkeypatch.setattr(authority.backend, 'release',
+                        lambda scope: (_ for _ in ()).throw(OSError('reap busy')))
+    authority.handle(0, os.getpid(), {'op': 'maintenance_begin', 'owner': 'bridge'})
+    root = authority.handle(0, os.getpid(), {'op': 'maintenance_status'})
+    assert not root['health'] and root['errors']
+    query = _query(authority)
+    assert query['health'] and query['active_scopes'] == 0
+    with pytest.raises(ValueError, match='not healthy'):
+        authority.handle(0, os.getpid(), {'op': 'maintenance_end', 'owner': 'bridge'})
+    assert authority.maintenance['draining'] and scope in authority.backend.groups

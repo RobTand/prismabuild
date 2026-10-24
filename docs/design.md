@@ -1754,19 +1754,24 @@ no kernel stop, reclaim or release may act on a missing or replacement group.
 
 The broker's `maintenance_query` accepts only `{"op":"maintenance_query"}`
 from root or its configured execution UID, authenticated by Unix peer credentials.
-It returns maintenance ownership, drain state, health and bounded active-scope
-counts under the authority lock. It uses the root maintenance pass's scope
+Its reply contains only `ok`, `draining`, `maintenance_owner` (null when open),
+`active_scopes`, `active_scopes_truncated`, `health`, `errors`,
+`errors_truncated` and `maintenance_protocol`, under the authority lock. It uses the root maintenance pass's scope
 classification, including empty frozen retired container tombstones and valid
 settled tombstones whose kernel group vanished. It performs no pending-creation
 cleanup, reclaim, stop, removal or durable record write. Pending setup remains
 active until root maintenance cleans it. Changed kernel identity, populated or
 unfrozen groups, unknown groups and unreadable observations retain the existing
 refusals. Zero active scopes is an observation, not proof of physical memory
-reclamation or permission to release an action's reservations.
+reclamation or permission to release an action's reservations. A failed root
+reap can leave root status unhealthy while a read-only query reports healthy
+with zero active scopes. Ending maintenance re-runs the root check and refuses
+while that failure persists.
 
 The locally installed root-owned broker entrypoint provides
 `--maintenance-begin OWNER` and `--maintenance-end OWNER` as bounded Unix RPC
-clients. These operations retain root-only authorization and exact gate-owner
+clients. Begin accepts `--reason TEXT`, defaulting to `operator maintenance`.
+An empty reason uses that default. These operations retain root-only authorization and exact gate-owner
 checks; the read-only query grants neither. The bridge is published and
 converged as its own generation through the normal updater before a later
 custody deployment relies on it. No privileged Python is executed from NFS.

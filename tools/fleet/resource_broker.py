@@ -596,7 +596,11 @@ class Authority:
         if op=='maintenance_query':
             if uid not in {0,self.uid}:raise PermissionError('caller UID is not authorized')
             if set(request)!={'op'}:raise ValueError('unknown read-only maintenance field')
-            with self.lock:return self._maintenance_status(read_only=True)
+            with self.lock:
+                status=self._maintenance_status(read_only=True)
+                return {key:status.get(key) for key in (
+                    'ok','draining','maintenance_owner','active_scopes','active_scopes_truncated',
+                    'health','errors','errors_truncated','maintenance_protocol')}
         if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end','maintenance_takeover'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
@@ -1463,12 +1467,16 @@ def main():
                             help='close the local broker gate as root')
     maintenance.add_argument('--maintenance-end',metavar='OWNER',
                             help="release only this owner's local broker gate as root")
+    parser.add_argument('--reason',default='operator maintenance',metavar='TEXT',
+                        help='operator reason recorded when beginning maintenance')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource broker must run as root')
     if args.maintenance_begin is not None or args.maintenance_end is not None:
         _trusted_file(Path(__file__).resolve())
         request={'op':'maintenance_begin' if args.maintenance_begin is not None else 'maintenance_end',
                  'owner':args.maintenance_begin if args.maintenance_begin is not None else args.maintenance_end}
+        if args.maintenance_begin is not None:
+            request['reason']=args.reason.strip() or 'operator maintenance'
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(30)
             client.connect(args.socket)
@@ -1477,7 +1485,8 @@ def main():
                 response=json.loads(reply.readline(1 << 20))
         if response.get('ok') is not True:raise SystemExit(response.get('error','maintenance RPC refused'))
         print(json.dumps({key:response.get(key) for key in (
-            'draining','maintenance_owner','active_scopes','active_scopes_truncated','health')}))
+            'draining','maintenance_owner','active_scopes','active_scopes_truncated','health',
+            'errors','errors_truncated')}))
         return
     if args.initialize_maintenance_state:
         state=Path(args.maintenance_state)
