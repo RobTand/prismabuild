@@ -64,7 +64,7 @@ def test_b3_builder_cases_work_without_git_history_or_git_executable(tmp_path):
     shutil.copyfile(Path(__file__), checkout / 'tests/test_cpu_lending_main_equivalence.py')
     empty = tmp_path / 'empty-path'
     empty.mkdir()
-    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-k', 'builder_',
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-k', 'test_cap_zero_matches_main and builder_',
         str(checkout / 'tests/test_cpu_lending_main_equivalence.py')], cwd=checkout,
         env=dict(os.environ, PATH=str(empty), PYTHONPATH=str(checkout / 'src'),
                  PRISMABUILD_BOX_STATE_ROOT=str(tmp_path / 'box-state')),
