@@ -11916,6 +11916,12 @@ class PoolQueue:
                 if mode == "tokens":
                     tokens = ledger.holder_tokens(holder)
                     counts = {kind: tokens.get(kind, 0) for kind in progress.short if tokens.get(kind, 0)}
+                    if "cpu" in progress.short:
+                        topology = cpu_tiers or record_store.read_document(ledger.base / 'cpu-map.json')
+                        if topology:
+                            allocation = ledger.cpu_allocation(holder, topology)
+                            if allocation['preferred'] or allocation['fallback']:
+                                counts.setdefault('cpu', 0)
                     if not counts:
                         continue
                 bound = self.holder_bound(holder, now=now)
@@ -16816,10 +16822,8 @@ class PoolQueue:
                 pending_guest = pending_guest or record.get("cpu_guest") is True
                 pending.add(holder)
                 continue
-            # Metadata-only borrowers can still owe allocation cleanup. Check
-            # pending releases first, but count only physical tokens for fit.
-            if not tokens and not pressure_drain:
-                continue
+            # A borrower can shadow a returned token without owning one.
+            # The release projection includes that surviving affinity.
             if exclude_gang_election is not None:
                 from . import _gang
                 if _gang.backfill_matches(record, exclude_gang_election):

@@ -273,6 +273,7 @@ def test_gpu_drain_reclaims_an_orphaned_metadata_only_real_borrow(guest_fleet, m
     assert ledger.available()['cpu'] == 8 and ledger.admission_available()['cpu'] == 7
     gpu = fleet.publish('b', gpu=True, cpu=8)
     assert fleet.claim() is None
-    assert fleet.stopped(borrower)[0]['preempted_by'] == gpu
+    decisions = fleet.stopped(borrower)
+    assert decisions and decisions[0]['preempted_by'] == gpu
     fleet.finish(guest, 'withdrawn')
     assert fleet.claim()['action_key'] == gpu
