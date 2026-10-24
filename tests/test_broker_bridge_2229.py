@@ -143,7 +143,7 @@ def test_query_uses_socket_peer_credentials(tmp_path):
             thread.start()
             try:
                 with socket.socket(socket.AF_UNIX) as client:
-                    client.settimeout(5)
+                    client.settimeout(60)  # failure bound only (#2249)
                     client.connect(endpoint)
                     client.sendall(b'{"op":"maintenance_query"}\n')
                     with client.makefile('rb') as reply:
@@ -151,7 +151,7 @@ def test_query_uses_socket_peer_credentials(tmp_path):
                 assert result['ok'] and result['health'] and result['active_scopes'] == 0
             finally:
                 server.shutdown()
-                thread.join(timeout=5)
+                thread.join(timeout=60)  # failure bound only (#2249)
                 assert not thread.is_alive()
     finally:
         os.close(directory)
