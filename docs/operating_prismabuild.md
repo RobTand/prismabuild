@@ -1998,12 +1998,13 @@ Root closes or releases its gate through the locally installed, root-owned
 helper, using the existing maintenance owner protocol:
 
 ```bash
-sudo /usr/bin/python3 /opt/prismabuild-resource-broker/resource_broker.py --maintenance-begin OWNER
-sudo /usr/bin/python3 /opt/prismabuild-resource-broker/resource_broker.py --maintenance-end OWNER
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-begin OWNER
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-end OWNER
 ```
 
 Use the exact owner that holds the gate for the second command. Never run PB
-Python from the shared NFS generation as root. The helper verifies its trusted
+Python from the shared NFS generation as root. `-I` excludes ambient Python
+import paths. The helper verifies its trusted
 installation before connecting, sends only the operation and owner, and bounds
 the local RPC to 30 seconds. The existing installed broker path and ownership
 must be verified before running either command.
