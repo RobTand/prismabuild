@@ -117,3 +117,47 @@ def test_shared_nonloan_gates_have_the_same_decision_and_allocation(tmp_path, mo
         outcomes.append((metadata is not None, controller.last_decision['reason'],
                          (metadata or {}).get('cost'), allocation))
     assert outcomes[0] == outcomes[1]
+
+
+@pytest.mark.parametrize('ramp_cap', [0, 2])
+def test_optional_lending_boot_identity_cannot_break_undeclared_admission(tmp_path, monkeypatch, ramp_cap):
+    from prismabuild import adaptive_cpu, pool
+    original = Path.read_text
+    def absent_boot(path, *args, **kwargs):
+        if path == Path('/proc/sys/kernel/random/boot_id'):
+            if ramp_cap == 0:
+                raise AssertionError('cap zero read opportunistic boot identity')
+            raise OSError('injected unavailable opportunistic boot identity')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', absent_boot)
+    tiers = {'preferred': [0, 1], 'fallback': [2, 3]}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'legacy-host')
+    ledger.ensure_capacity({'cpu': 4})
+    ledger.configure_cpu_tiers(tiers)
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=ramp_cap, sampler=lambda: {
+        'sampled_unix': adaptive_cpu.time.time(), 'cpu_count': 4, 'interval_s': 1.,
+        'busy_cpus': 0., 'psi_some': 0.})
+    with controller.locked():
+        result = controller.decision({'action_key': 'a' * 64}, {'cpu': 1},
+                                     identity=('known', False), owner=None)
+    assert result and not result['borrowing']
+    assert not (controller.base / 'cpu-lending.json').exists()
+
+
+def test_failed_passive_history_write_cannot_refuse_undeclared_work(tmp_path, monkeypatch):
+    from prismabuild import adaptive_cpu, pool
+    tiers = {'preferred': [0, 1], 'fallback': [2, 3]}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'legacy-host')
+    ledger.ensure_capacity({'cpu': 4})
+    ledger.configure_cpu_tiers(tiers)
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=2, sampler=lambda: {
+        'sampled_unix': adaptive_cpu.time.time(), 'cpu_count': 4, 'interval_s': 1.,
+        'busy_cpus': 0., 'psi_some': 0.})
+    def unavailable(*args):
+        raise OSError('injected failed lending history write')
+    monkeypatch.setattr(controller, '_observe_lending', unavailable)
+    with controller.locked():
+        result = controller.decision({'action_key': 'a' * 64}, {'cpu': 1},
+                                     identity=('known', False), owner=None)
+    assert result and not result['borrowing']
+    assert controller.last_decision['reason'] == 'admitted'
