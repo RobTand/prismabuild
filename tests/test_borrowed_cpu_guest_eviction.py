@@ -202,7 +202,8 @@ def real_loan_guest(guest_fleet, monkeypatch):
     donor = fleet.publish('a', cpu=4, priority=-10, cpu_qos='opportunistic')
     guest = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
     assert guest['action_key'] == donor and guest['cpu_guest']
-    borrower = fleet.publish('c', cpu=5, priority=-10, tags=['sparky'], cpu_qos='opportunistic')
+    borrower = fleet.publish('c', cpu=5, priority=-10, tags=['sparky'], cpu_qos='opportunistic',
+                             retry_safe=False, max_attempts=1)
     ledger = fleet.queue.ledger()
     start = clock[0]
     claimed = None

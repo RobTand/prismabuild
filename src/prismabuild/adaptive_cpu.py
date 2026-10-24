@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 
-from . import adaptive_snapshot, cpu_lending
+from . import adaptive_snapshot, cpu_lending, digest_primitives
 from . import flock_owner
 from .holder_census import CPU_METADATA, HolderCensus
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
@@ -1611,6 +1611,10 @@ class Controller:
         observation = {key: sample.get(key) for key in (
             'sampled_unix', 'cpu_count', 'interval_s', 'per_cpu_busy',
             'psi_some', 'psi_avg10', 'psi_avg60')}
+        try:
+            digest_primitives.canonical_bytes(observation)
+        except (ValueError, TypeError):
+            return skipped('unknown_or_stale')
         if has_last and at == last:
             if (previous.get('identity') != self._lending_identity
                     or previous.get('observation', observation) != observation):
@@ -2749,7 +2753,7 @@ class Controller:
         one thing ``admitted`` exists to prevent.  So this is a
         compare-and-set, and it belongs under the same lock as ``admitted``.
         """
-        if not metadata.get('borrowing') and metadata.get('_loan_grant') is None:
+        if not metadata.get('borrowing'):
             return
         # A host sample can be returned and borrowed again. Its timestamp is
         # not the owner of that later borrow. Retire this caller's authority

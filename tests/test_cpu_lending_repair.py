@@ -182,3 +182,19 @@ def test_default_generation_work_still_shares_idle_preferred_cpus(rig):
     assert metadata and metadata['borrowing'] and metadata['preferred_borrow'] == 1
 
 
+
+
+@head_only
+def test_nonfinite_passive_observation_preserves_main_verdict_and_history(rig):
+    clock, _, make = rig
+    for at in range(100, 141):
+        clock[0] = float(at)
+        controller = make(observation(at))
+        state = decide(controller)
+    path = controller.base / 'cpu-lending.json'
+    before = path.read_bytes()
+    clock[0] = 141.
+    for changes in ({'interval_s': float('nan')}, {'psi_avg10': float('inf')},
+                    {'per_cpu_busy': {'0': float('nan')}}):
+        assert decide(make(observation(141, **changes))) == state
+        assert path.read_bytes() == before
