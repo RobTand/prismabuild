@@ -1752,6 +1752,25 @@ malformed identity, unsettled tickets, malformed settlement, an unknown or
 reappearing group, or any inventory error retains the record as active, and
 no kernel stop, reclaim or release may act on a missing or replacement group.
 
+The broker's `maintenance_query` accepts only `{"op":"maintenance_query"}`
+from root or its configured execution UID, authenticated by Unix peer credentials.
+It returns maintenance ownership, drain state, health and bounded active-scope
+counts under the authority lock. It uses the root maintenance pass's scope
+classification, including empty frozen retired container tombstones and valid
+settled tombstones whose kernel group vanished. It performs no pending-creation
+cleanup, reclaim, stop, removal or durable record write. Pending setup remains
+active until root maintenance cleans it. Changed kernel identity, populated or
+unfrozen groups, unknown groups and unreadable observations retain the existing
+refusals. Zero active scopes is an observation, not proof of physical memory
+reclamation or permission to release an action's reservations.
+
+The locally installed root-owned broker entrypoint provides
+`--maintenance-begin OWNER` and `--maintenance-end OWNER` as bounded Unix RPC
+clients. These operations retain root-only authorization and exact gate-owner
+checks; the read-only query grants neither. The bridge is published and
+converged as its own generation through the normal updater before a later
+custody deployment relies on it. No privileged Python is executed from NFS.
+
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
 it without the original worker, and it is never converted to a lost lease or
