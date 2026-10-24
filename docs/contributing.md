@@ -154,3 +154,4 @@ Do not use the HDD pool as the normal scratch parent for small CPU suites.
 The [#1530 evidence record](results/pbtest_exit_completion_1530.md) shows pytest's
 exit hook inside pool cleanup after the test progress reached `[100%]`.
 An exit timeout remains non-green, even when the selected tests have verified completion evidence.
+
