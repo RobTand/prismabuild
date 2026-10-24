@@ -11,6 +11,11 @@ import sys
 import tempfile
 
 
+CPU_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(CPU_ROOT / "src"))
+from prismabuild.fleet_roster import Roster
+
+
 CPU_DEFINITIONS = Path(__file__).resolve().with_name("pb_cpu")
 CPU_INVENTORY = """
 import importlib.metadata as m, json, platform, sys
@@ -87,9 +92,13 @@ def cpu_requirements(definition):
 
 def cpu_build_destination(destination):
     destination = destination.resolve()
-    live = Path("/home/rob/venvs/pb-cpu").resolve()
-    if destination == live or live in destination.parents:
-        raise ValueError("build must never write into the live pb-cpu environment")
+    live_roots = Roster.at(CPU_ROOT).pb_cpu_live_roots
+    if not live_roots:
+        raise ValueError("build requires nonempty pb_cpu_live_roots in the fleet roster")
+    for root in live_roots:
+        live = Path(root).resolve()
+        if destination == live or live in destination.parents:
+            raise ValueError(f"build must never write into a live pb-cpu environment: {live}")
     if destination.exists():
         raise ValueError(f"build destination already exists: {destination}")
     return destination

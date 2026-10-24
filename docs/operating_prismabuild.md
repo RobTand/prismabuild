@@ -2712,8 +2712,14 @@ JSON and exits 1 for missing, extra, duplicate, or different distributions,
 including a different `+cpu` suffix. It exits 2 for inspection or build errors.
 `--python /absolute/base/interpreter build /new/destination` creates a fresh
 venv, installs the hashed wheels without resolving new dependencies, and runs
-the same comparison. The destination must not exist. The tool refuses builds
-under `/home/rob/venvs/pb-cpu` and never installs during `check`.
+the same comparison. The destination must not exist. The tool reads protected
+live environment directories from `pb_cpu_live_roots` in the checkout's fleet
+roster, `tools/fleet/fleet_boxes.json`. Keep this nonempty list in sync with
+every live deployment, including relocated or renamed environments. Builds
+refuse any listed root or descendant, including through symlink aliases, before
+creating directories or running installers. Missing, empty, unreadable, or
+invalid protection configuration refuses the build. `check` does not need this
+configuration and never installs.
 
 To change `pb-cpu`, review changes to the appropriate definition, including
 package purposes and wheel hashes. Preserve each host class's Python minor
