@@ -10335,6 +10335,9 @@ def _cycle(
                                   census=commitments, consumers=planned, store=store):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("residency_window")
+    for event in produced_output.output_scope_tick(queue, tiers):
+        _emit(queue, host, event, tier_consumers=tier_consumers)
+    phases.lap("output_scope_tick")
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes
