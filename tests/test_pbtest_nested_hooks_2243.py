@@ -37,15 +37,39 @@ def pytest_sessionstart(session):
 
 @pytest.mark.parametrize("drift", [False, True], ids=["balanced", "misaligned"])
 def test_nested_logreport_inside_tracked_hook(tmp_path, drift):
-    run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n", conftest='''
-from _pytest.reports import TestReport
+    # Pytest itself dispatches setup/call/teardown reports beneath the real
+    # runtestloop and runtest_protocol hooks. Observe that nesting without
+    # manufacturing reports or calling a pytest hook dispatcher from conftest.
+    plugin = DRIFT_MONITOR.replace(
+        "TRIGGER", 'report.when == "setup"' if drift else "False")
+    run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n", conftest=plugin + '''
+parents = []
+seen = []
 
-def pytest_collection_finish(session):
-    session.config.hook.pytest_runtest_logreport(report=TestReport(
-        "test_one.py::test_pass", ("test_one.py", 0, "test_pass"), {},
-        "passed", None, "setup"))
-''' + (DRIFT_MONITOR.replace("TRIGGER", 'report.when == "setup"') if drift else ""))
+@pytest.hookimpl(specname="pytest_runtest_logreport", tryfirst=True)
+def pytest_observe_report_stack(report):
+    before = config._pb2243_before
+    cells = dict(zip(before.__code__.co_freevars, before.__closure__))
+    stack = cells["hook_calls"].cell_contents
+    assert stack[-1]["name"] == "pytest_runtest_logreport"
+    assert stack[-1]["kwargs"]["report"] is report
+    assert any(call["name"] == "pytest_runtestloop" and call["phase"]
+               for call in stack[:-1])
+    if seen:
+        # The prior report and any injected stale entry must have gone away,
+        # while the genuine ancestors must still be the same entries.
+        assert len(stack) == len(parents) + 1
+        assert all(call is parent for call, parent in zip(stack[:-1], parents))
+    else:
+        parents.extend(stack[:-1])
+    seen.append(report.when)
+
+def pytest_sessionfinish(session, exitstatus):
+    assert seen == ["setup", "call", "teardown"]
+    print("native nested report stack preserved", flush=True)
+''')
     assert run.returncode == 0, run.stdout + run.stderr
+    assert "native nested report stack preserved" in run.stdout, run.stdout
     assert "INTERNALERROR" not in run.stdout, run.stdout
     assert verdict["green"], verdict
     assert verdict["shards"][0]["completion"]["status"] == "complete", verdict
