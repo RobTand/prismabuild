@@ -105,11 +105,13 @@ def test_one_slow_pass_does_not_erase_shared_open_history(rig):
 def test_default_generation_work_still_shares_idle_preferred_cpus(rig):
     clock, ledger, make = rig
     donor = {'action_key': 'a' * 64, 'priority': 0, 'resources': {'cpu': 4}}
-    metadata = make(observation(100), cap=0).decision(
-        donor, donor['resources'], identity=('donor', False), owner=None)
-    handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
-                                  adaptive=metadata, cpu_tiers=TIERS)
-    assert handle and ledger.commit_acquire(donor['action_key'], handle)
+    controller = make(observation(100), cap=0)
+    with controller.locked():
+        metadata = controller.decision(
+            donor, donor['resources'], identity=('donor', False), owner=None)
+        handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
+                                      adaptive=metadata, cpu_tiers=TIERS)
+        assert handle and ledger.commit_acquire(donor['action_key'], handle)
     telemetry = adaptive_cpu.local_telemetry_path(ledger.base, donor['action_key'])
     for at in range(101, 132):
         clock[0] = float(at)
@@ -117,8 +119,10 @@ def test_default_generation_work_still_shares_idle_preferred_cpus(rig):
             'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
             'sampled_unix': clock[0], 'wall_seconds': clock[0] - 100,
             'cpu_seconds': (clock[0] - 100) * .1})
-        metadata = make(observation(at), cap=0).decision(
-            PROTECTED, PROTECTED['resources'], identity=('candidate', False), owner=None)
+        controller = make(observation(at), cap=0)
+        with controller.locked():
+            metadata = controller.decision(
+                PROTECTED, PROTECTED['resources'], identity=('candidate', False), owner=None)
     warnings.warn('PROBE-METRICS ' + json.dumps({'probe': 'default_lending',
                                        'borrowing': (metadata or {}).get('borrowing'),
                                        'preferred_borrow': (metadata or {}).get('preferred_borrow')}))

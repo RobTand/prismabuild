@@ -18,7 +18,7 @@ class RowPublication:
     max_attempts: int
     retry_safe: bool
     priority_reason: str | None = None
-    cpu_qos: str = "protected"
+    cpu_qos: str | None = None
 
     def row(self, action: Mapping[str, object], *, queue,
             max_attempts: int | None = None, retry_safe: bool | None = None,
@@ -43,7 +43,7 @@ class RowPublication:
             "container_owner": str(variables[pool.CONTAINER_OWNER_ENV]),
             "checkout_snapshot": params["checkout_snapshot"],
         }
-        if self.cpu_qos != "protected":
+        if self.cpu_qos is not None:
             parameters = inspect.signature(queue.publish).parameters
             if ("cpu_qos" not in parameters and not any(
                     p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())):

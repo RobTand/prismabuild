@@ -118,7 +118,7 @@ class SubmissionRequest:
     wait_s: float = 86400.0
     filesystem_growth_gib: int = 1
     detach: bool = False
-    cpu_qos: Literal["protected", "opportunistic"] = "protected"
+    cpu_qos: Literal["protected", "opportunistic"] | None = None
     priority: int = 0
     priority_reason: str | None = None
     profile: str | None = None

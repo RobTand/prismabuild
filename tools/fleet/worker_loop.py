@@ -1030,6 +1030,9 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         enabled = set(ordered[:cores])
         cpu_tiers = {kind: [c for c in values if c in enabled]
                      for kind, values in cpu_tiers.items()}
+    lending_cap = (pool.cpu_admission.cpu_lending.lending_ramp_cap(
+        len(cpu_tiers['preferred']), args.cpu_lending_ramp_cap)
+        if cpu_tiers is not None and cpu_tiers['preferred'] and not args.assume_idle else 0)
     # Memory and CPU are stable box bounds. GPU capacity is a physical device
     # count from the root-published snapshot, refreshed on every idle pass.
     # Positive legacy slot values are normalized to one device during rollout;
@@ -1101,7 +1104,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         change while this loop runs; see the re-read at the top of the poll.
         """
 
-        tags = [args.klass, name, *args.tag]
+        tags = [args.klass, name, *(tag for tag in args.tag if tag != contracts.CPU_QOS_TAG)]
         if not gpu_capable:
             # A box with no GPU must say so, or an action demanding gpu=1
             # matches it on tags and then fails at run time instead of waiting
@@ -1110,6 +1113,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
             gang_admission=args.gang_admission,
             adaptive_cpu=not args.assume_idle,
+            cpu_qos_enabled=lending_cap > 0,
             loaded_generation=(loaded.generation if isinstance(
                 loaded, generation_receipt.RuntimeIdentity) else ""))))
         return tags
@@ -1646,7 +1650,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 tags=offered, has_gpu=gpu_capable, python=args.python,
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
-                cpu_lending_ramp_cap=args.cpu_lending_ramp_cap,
+                cpu_lending_ramp_cap=lending_cap,
                 ready=discovery.snapshot, observed_images=claim_images,
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),

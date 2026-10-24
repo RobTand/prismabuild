@@ -6594,7 +6594,7 @@ class PoolQueue:
         tags: Sequence[str] = (),
         needs_gpu: bool = False,
         priority: int = 0,
-        cpu_qos: str = "protected",
+        cpu_qos: str | None = None,
         priority_reason: str | None = None,
         resources: Mapping[str, int] | None = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -6700,6 +6700,7 @@ class PoolQueue:
             raise PoolContractError(str(exc)) from exc
         declared_contracts = contracts.declared_contract_tags(contracts.Publication(
             opportunistic_cpu=cpu_qos == "opportunistic",
+            protected_cpu=cpu_qos == "protected",
             gang=declared_gang is not None,
             interpreter=declared_interpreter is not None,
             local_dependencies=bool(dependencies),
@@ -6814,6 +6815,7 @@ class PoolQueue:
                        if sealed_request is not None else None)
             declared_contracts = contracts.declared_contract_tags(contracts.Publication(
                 opportunistic_cpu=cpu_qos == "opportunistic",
+                protected_cpu=cpu_qos == "protected",
                 progress=progress,
                 pool_contention=progress is not None and contention is not None,
                 awaited_batch=progress is not None and awaited is not None,
@@ -7117,7 +7119,7 @@ class PoolQueue:
             except oc.ProducedOutputError as exc:
                 raise PoolContractError(
                     f"produced-output template conflict: {exc}") from exc
-        if cpu_qos not in ("protected", "opportunistic"):
+        if cpu_qos not in (None, "protected", "opportunistic"):
             raise PoolContractError("cpu_qos must be protected or opportunistic")
         published_unix = _now()
         if canary_ref is not None:
@@ -7141,7 +7143,7 @@ class PoolQueue:
             "published_by": socket.gethostname(),
             **addressing,
         }
-        if cpu_qos != "protected":
+        if cpu_qos is not None:
             item["cpu_qos"] = cpu_qos
         if scratch_io is not None:
             item[local_scratch.IO_ENV] = scratch_io

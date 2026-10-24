@@ -1789,11 +1789,13 @@ class Controller:
             self._host_sample = self.sample()
         sample = self._host_sample
         now = time.time()
-        history = cpu_lending.advance_lending_history(
-            read_json(self.base / 'cpu-lending.json'), sample,
-            identity=self._lending_identity, cpus=self.cpus,
-            preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
-        self.write_state('cpu-lending.json', history)
+        history = {'open': False, 'budget': 0, 'reason': 'legacy_adaptive'}
+        if self._ramp_cap:
+            history = cpu_lending.advance_lending_history(
+                read_json(self.base / 'cpu-lending.json'), sample,
+                identity=self._lending_identity, cpus=self.cpus,
+                preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
+            self.write_state('cpu-lending.json', history)
         def refuse(reason, **values):
             # The claimant publishes this exact decision after it releases
             # admission.  Do not sample or reread state for diagnostics.
@@ -1835,12 +1837,17 @@ class Controller:
         declared = int(demand.get('cpu', 0))
         unbounded_cpu = not declared
         resolved_owner = dependent_owner(item) if owner is _UNREAD else owner
-        eligibility = cpu_lending.opportunistic_eligibility(
-            item, _sealed_request(item), measurement=measurement,
-            owner=resolved_owner, allowance=allowance)
-        if not shape or declared >= len(self.cpus):
-            eligibility = None
-        qos = 'opportunistic' if eligibility is not None else 'protected'
+        legacy = 'cpu_qos' not in item
+        eligibility = cpu_lending.legacy_eligibility(item, shape=shape, measurement=measurement)
+        if not legacy and self._ramp_cap:
+            eligibility = cpu_lending.opportunistic_eligibility(
+                item, _sealed_request(item), measurement=measurement,
+                owner=resolved_owner, allowance=allowance)
+            if not shape or declared >= len(self.cpus):
+                eligibility = None
+        if item.get('cpu_qos') == 'opportunistic' and not self._ramp_cap:
+            return refuse('cpu_lending_disabled')
+        qos = 'legacy' if legacy else 'opportunistic' if eligibility is not None else 'protected'
         # Measurements, unbounded demand and full-width reservations need the
         # host idle.  "Idle" is judged against the host's own idle history
         # (#997), which every fresh decision feeds, not a fixed fraction of
@@ -2102,14 +2109,16 @@ class Controller:
                 assignments[cpu_id] = assignments.get(cpu_id, 0) + 1
             outstanding += meta.get('borrowed_cpu', 0)
             borrowers += int(bool(meta.get('borrowed_cpu')))
-            donor_eligibility = cpu_lending.opportunistic_eligibility(
-                meta, _sealed_request(meta.get('opportunistic_policy', {})),
-                measurement=bool(meta.get('measurement')),
-                owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'),
-                running=True, holder_key=holder.name)
-            donor = donor_eligibility is not None
-            if donor:
-                cpu_lending.require_opportunistic(donor_eligibility)
+            donor = legacy and meta.get('cpu_qos') in (None, 'legacy')
+            if not legacy:
+                donor_eligibility = cpu_lending.opportunistic_eligibility(
+                    meta, _sealed_request(meta.get('opportunistic_policy', {})),
+                    measurement=bool(meta.get('measurement')),
+                    owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'),
+                    running=True, holder_key=holder.name)
+                donor = donor_eligibility is not None
+                if donor:
+                    cpu_lending.require_opportunistic(donor_eligibility)
             # A measurement's CPUs are never lent, not even to its own
             # dependents (#982): they are admitted beside it, on free tokens.
             # Nor are CPUs a dependent runs on from its producer's allowance
@@ -2195,7 +2204,7 @@ class Controller:
                               last_borrow_sampled_unix=last)
         self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
         metadata = {'declared_cpu': declared, 'cost': cost, 'shape': shape,
-                'cpu_qos': qos, 'cpu_weight': 10 if eligibility is not None else 100,
+                'cpu_qos': qos, 'cpu_weight': 10 if qos == 'opportunistic' else 100,
                 '_eligibility': eligibility,
                 'unbounded_cpu': unbounded_cpu,
                 'measurement': measurement, 'serves_measurement': serves,
@@ -2211,7 +2220,7 @@ class Controller:
                 'active_cpu_cost': active_cost, 'pending_cpu_cost': pending,
                 'borrowable_cpus': sorted(borrowable, key=lambda c: sample.get('per_cpu_busy', {}).get(str(c), 0.))
                                    if borrowing else []}
-        if eligibility is not None:
+        if qos == 'opportunistic':
             metadata['opportunistic_policy'] = {
                 **cpu_lending.require_opportunistic(eligibility), 'task_class': 'generation'}
         if borrowing:

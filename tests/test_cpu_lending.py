@@ -109,22 +109,23 @@ def loan_rig(tmp_path, monkeypatch, request):
         return {'action_key': key * 64, 'cpu_qos': 'opportunistic', 'priority': -10,
                 'resources': {'cpu': cpu}}
     donor_width, candidate_width = getattr(request, 'param', (4, 1))
-    donor, candidate = item('a', donor_width), item('b', candidate_width)
-    metadata = controller.decision(donor, donor['resources'], identity=('donor', False), owner=None)
-    handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
-                                  adaptive=metadata, cpu_tiers=tiers)
-    assert handle and ledger.commit_acquire(donor['action_key'], handle)
-    for at in range(101, 132):
-        clock[0] = float(at)
-        adaptive_cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'),
-            {'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
-             'sampled_unix': clock[0], 'wall_seconds': clock[0] - 100,
-             'cpu_seconds': (clock[0] - 100) * .1})
-        controller._host_sample = None
-        metadata = controller.decision(candidate, candidate['resources'],
-                                       identity=('candidate', False), owner=None)
-    assert metadata and metadata['borrowing']
-    return ledger, tiers, controller, donor, candidate, metadata
+    with cpu_lending.lending_admission_epoch():
+        donor, candidate = item('a', donor_width), item('b', candidate_width)
+        metadata = controller.decision(donor, donor['resources'], identity=('donor', False), owner=None)
+        handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
+                                      adaptive=metadata, cpu_tiers=tiers)
+        assert handle and ledger.commit_acquire(donor['action_key'], handle)
+        for at in range(101, 132):
+            clock[0] = float(at)
+            adaptive_cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'),
+                {'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
+                 'sampled_unix': clock[0], 'wall_seconds': clock[0] - 100,
+                 'cpu_seconds': (clock[0] - 100) * .1})
+            controller._host_sample = None
+            metadata = controller.decision(candidate, candidate['resources'],
+                                           identity=('candidate', False), owner=None)
+        assert metadata and metadata['borrowing']
+        yield ledger, tiers, controller, donor, candidate, metadata
 
 
 def test_real_decision_borrows_and_protects_orphaned_ids(loan_rig):
@@ -236,6 +237,7 @@ def test_capabilities_cannot_be_transferred(loan_rig, name, operation):
 def test_capability_construction_has_one_ast_owner():
     root = Path(__file__).resolve().parents[1]
     expected = {'OpportunisticEligibility': 'opportunistic_eligibility',
+                'LegacyEligibility': 'legacy_eligibility',
                 'CpuLoanGrant': 'decide_cpu_loan'}
     owners = {name: [] for name in expected}
     class Construction(ast.NodeVisitor):

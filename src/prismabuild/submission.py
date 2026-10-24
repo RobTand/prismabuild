@@ -6625,10 +6625,10 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
 
 
 def validate_request(request: SubmissionRequest) -> None:
-    if request.cpu_qos not in ("protected", "opportunistic"):
+    if request.cpu_qos not in (None, "protected", "opportunistic"):
         request.refuse_argument("--cpu-qos must be protected or opportunistic")
-    if request.cpu_qos != "protected" and request.transport != "pool":
-        request.refuse_argument("--cpu-qos opportunistic requires the pool transport")
+    if request.cpu_qos is not None and request.transport != "pool":
+        request.refuse_argument("--cpu-qos requires the pool transport")
     if request.profile is not None:
         try:
             pb.parse_profile_mode(request.profile)
@@ -6680,7 +6680,7 @@ def producer_publication_row(action, *, args: SubmissionRequest,
         checkout_root=producer.checkout_root, worker_script=str(producer.worker_script),
         tags=list(producer.tags), needs_gpu=producer.needs_gpu, priority=args.priority,
         resources=dict(producer.resources), max_attempts=args.max_attempts,
-        **({"cpu_qos": args.cpu_qos} if args.cpu_qos != "protected" else {}),
+        **({"cpu_qos": args.cpu_qos} if args.cpu_qos is not None else {}),
         retry_safe=producer.retry_safe, container_images=images or None,
         **({"retry_scope": params["retry_policy"]["retry_scope"]}
            if params.get("retry_policy", {}).get("retry_scope") is not None else {}),
@@ -7048,7 +7048,7 @@ def row_publication(args: SubmissionRequest, store: FleetStore) -> RowPublicatio
         worker_script=store.runtime_root / "tools" / "prismabuild_worker.py",
         priority=args.priority, max_attempts=args.max_attempts,
         retry_safe=args.retry_safe, priority_reason=getattr(args, "priority_reason", None),
-        cpu_qos=getattr(args, 'cpu_qos', 'protected'))
+        cpu_qos=getattr(args, 'cpu_qos', None))
 
 
 def filing_options(args: SubmissionRequest) -> residency_plan.FilingOptions:

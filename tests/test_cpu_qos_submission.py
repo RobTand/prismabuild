@@ -33,7 +33,10 @@ def test_default_negative_priority_has_no_opportunistic_declaration(tmp_path, mo
 
 def test_qos_requires_a_compatible_worker_and_pool_transport():
     assert contracts.CPU_QOS_TAG not in contracts.offered_contract_tags(contracts.WorkerFacts())
-    assert contracts.CPU_QOS_TAG in contracts.offered_contract_tags(contracts.WorkerFacts(adaptive_cpu=True))
+    assert contracts.CPU_QOS_TAG not in contracts.offered_contract_tags(contracts.WorkerFacts(adaptive_cpu=True))
+    assert contracts.CPU_QOS_TAG in contracts.offered_contract_tags(
+        contracts.WorkerFacts(adaptive_cpu=True, cpu_qos_enabled=True))
+    assert contracts.CPU_PROTECT_TAG in contracts.offered_contract_tags(contracts.WorkerFacts())
     with pytest.raises(submission.SubmissionRefused, match='pool transport'):
         submission.validate_request(SubmissionRequest(cpu_qos='opportunistic', transport='slurm'))
 

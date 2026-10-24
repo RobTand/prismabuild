@@ -96,6 +96,7 @@ def advance_lending_history(previous, sample, *, identity, cpus, preferred, now,
 
 
 _ELIGIBILITY_MINT = object()
+_LEGACY_MINT = object()
 _LOAN_MINT = object()
 _eligible = WeakKeyDictionary()
 _loans = WeakKeyDictionary()
@@ -117,6 +118,18 @@ class OpportunisticEligibility:
     def __new__(cls, authority):
         if cls is not OpportunisticEligibility or authority is not _ELIGIBILITY_MINT:
             raise TypeError('eligibility requires the CPU QoS decision')
+        return super().__new__(cls)
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError('CPU eligibility cannot be copied or serialized')
+
+
+class LegacyEligibility:
+    __slots__ = ('__weakref__',)
+
+    def __new__(cls, authority):
+        if cls is not LegacyEligibility or authority is not _LEGACY_MINT:
+            raise TypeError('legacy eligibility requires the adaptive CPU decision')
         return super().__new__(cls)
 
     def __reduce_ex__(self, protocol):
@@ -166,8 +179,23 @@ def opportunistic_eligibility(item, action, *, measurement, owner, allowance, ru
 
 
 def require_opportunistic(value):
-    if type(value) is not OpportunisticEligibility or value not in _eligible:
+    if type(value) is not OpportunisticEligibility:
         raise ValueError('unissued opportunistic eligibility')
+    return _require_cpu_eligibility(value)
+
+
+def legacy_eligibility(item, *, shape, measurement):
+    """Preserve existing adaptive lending only for an omitted declaration."""
+    if 'cpu_qos' in item or not shape or measurement:
+        return None
+    result = LegacyEligibility(_LEGACY_MINT)
+    _eligible[result] = (os.getpid(), item, _qos_inputs(item))
+    return result
+
+
+def _require_cpu_eligibility(value):
+    if type(value) not in (LegacyEligibility, OpportunisticEligibility) or value not in _eligible:
+        raise ValueError('unissued CPU lending eligibility')
     pid, item, selected = _eligible[value]
     if pid != os.getpid() or _qos_inputs(item) != selected:
         raise ValueError('opportunistic eligibility changed before acquisition')
@@ -183,24 +211,28 @@ _LOAN_FIELDS = ('declared_cpu', 'cpu_qos', 'cpu_weight', 'borrowing',
 def decide_cpu_loan(eligibility, metadata, *, ledger, demand, tiers, history,
                     sample, assignments, outstanding, borrowers, pending, cost, state_path):
     """Authorize a bounded preferred-ID loan after the ordinary CPU gates."""
-    require_opportunistic(eligibility)
+    _require_cpu_eligibility(eligibility)
+    if _admission_epoch.get() is None:
+        return None
+    legacy = type(eligibility) is LegacyEligibility
     preferred = set(tiers['preferred'])
     raw = sample.get('per_cpu_busy', {})
     ema = history.get('ema', {})
     candidates = [cpu for cpu in metadata['borrowable_cpus']
-                  if cpu in preferred and assignments.get(cpu, 0) == 1
-                  and raw.get(str(cpu), 1) < .5 and ema.get(str(cpu), 1) < .5]
+                  if assignments.get(cpu, 0) == 1 and (legacy or cpu in preferred
+                  and raw.get(str(cpu), 1) < .5 and ema.get(str(cpu), 1) < .5)]
     needed = max(metadata['preferred_borrow'],
                  metadata['declared_cpu'] - len(ledger.free_cpu_tokens(
                      tiers, eligible_cpus=metadata.get('eligible_cpus'))))
     projected = max(sum(raw.get(str(c), 1) for c in preferred),
                     sum(ema.get(str(c), 1) for c in preferred)) + pending + cost
-    if (not history.get('open') or needed <= 0 or needed > len(candidates)
-            or outstanding + needed > history.get('budget', 0) or borrowers >= 2
-            or projected > .85 * len(preferred)):
+    if (needed <= 0 or needed > len(candidates) or not legacy and (
+            not history.get('open') or outstanding + needed > history.get('budget', 0)
+            or borrowers >= 2 or projected > .85 * len(preferred))):
         return None
-    metadata['borrowable_cpus'] = candidates[:needed]
-    metadata['preferred_borrow'] = needed
+    metadata['borrowable_cpus'] = candidates if legacy else candidates[:needed]
+    if not legacy:
+        metadata['preferred_borrow'] = needed
     holders = _lending_holder_binding(ledger)
     try:
         telemetry = _donor_binding(holders, metadata['borrowable_cpus'], state_path.parent)
@@ -213,7 +245,7 @@ def decide_cpu_loan(eligibility, metadata, *, ledger, demand, tiers, history,
         'demand': {k: v for k, v in demand.items() if v},
         'tiers': copy.deepcopy(tiers),
         'fields': copy.deepcopy({k: metadata.get(k) for k in _LOAN_FIELDS}),
-        'history': copy.deepcopy(history), 'state_path': state_path,
+        'history': None if legacy else copy.deepcopy(history), 'state_path': state_path,
         'holders': holders, 'telemetry': telemetry, 'phase': 'decided'}
     return result
 
@@ -232,16 +264,17 @@ def require_cpu_acquisition(metadata, *, ledger, key, demand, tiers, begin=False
     if not borrowing:
         return
     record = require_cpu_loan(metadata)
-    selected = require_opportunistic(record['eligibility'])
+    selected = _require_cpu_eligibility(record['eligibility'])
     if (eligible is not record['eligibility'] or record['ledger_base'] != ledger.base.resolve()
             or record['demand'] != {k: v for k, v in demand.items() if v} or record['tiers'] != tiers
             or selected['action_key'] != key or record['phase'] != 'decided'):
         raise ValueError('CPU loan grant differs from the reservation')
-    current = _read_lending_evidence(record['state_path'])
+    current = (_read_lending_evidence(record['state_path'])
+               if record['history'] is not None else None)
     last_borrow = _read_lending_evidence(record['state_path'].parent / 'last-borrow.json', optional=True)
-    if (record['epoch'] is not _admission_epoch.get()
+    if (record['epoch'] is None or record['epoch'] is not _admission_epoch.get()
             or not 0 <= time.time() - metadata['sampled_unix'] <= 5
-            or current != record['history'] or not current.get('open')
+            or current != record['history'] or current is not None and not current.get('open')
             or last_borrow.get('sampled_unix', 0) >= metadata['sampled_unix']
             or _lending_holder_binding(ledger) != record['holders']
             or _donor_binding(record['holders'], metadata['borrowable_cpus'],
@@ -314,16 +347,16 @@ def require_cpu_loan(metadata, *, current=True):
     if record['pid'] != os.getpid():
         raise ValueError('CPU loan grant belongs to another process')
     if current:
-        require_opportunistic(record['eligibility'])
+        _require_cpu_eligibility(record['eligibility'])
     if current and record['fields'] != {k: metadata.get(k) for k in _LOAN_FIELDS}:
         raise ValueError('CPU loan grant differs from the reservation')
     return record
 
 
 def selected_cpu_policy_matches(metadata, record):
-    if metadata is not None and metadata.get('cpu_qos') == 'opportunistic':
+    if metadata is not None and metadata.get('_eligibility') is not None:
         try:
-            return require_opportunistic(metadata.get('_eligibility')) == _qos_inputs(record)
+            return _require_cpu_eligibility(metadata.get('_eligibility')) == _qos_inputs(record)
         except ValueError:
             return False
     return True
