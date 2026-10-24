@@ -73,6 +73,34 @@ def test_refused_opted_rows_do_not_learn_legacy_telemetry_twice(tmp_path, monkey
     assert snapshots[0] == snapshots[1]
 
 
+def test_opted_profile_updates_leave_the_legacy_profile_bytes_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 101.)
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request',
+                        lambda item: {'task': {'task_class': 'generation'}, 'params': {}})
+    tiers = {'preferred': list(range(4)), 'fallback': list(range(4, 8))}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'profile-host')
+    ledger.ensure_capacity({'cpu': 8})
+    ledger.configure_cpu_tiers(tiers)
+    donor = 'd' * 64
+    handle = ledger.begin_acquire(donor, {'cpu': 4}, cpu_tiers=tiers,
+        adaptive={'declared_cpu': 4, 'shape': 'donor', 'cost': 4.,
+                  'measurement': False, 'admitted_unix': 100.})
+    assert handle and ledger.commit_acquire(donor, handle)
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=2,
+                                        sampler=lambda: host_sample(101., .1))
+    old = {'action_key': donor, 'complete': True, 'sampled_unix': 100.,
+           'nonce': 'e' * 32, 'wall_seconds': 0., 'cpu_seconds': 0., 'memory_peak_bytes': 0}
+    controller.write_state('jobs-opportunistic.json', {donor: old})
+    controller.write_state('profiles.json', {'donor': {'cpu': .2, 'samples': 2, 'sampled_unix': 100.}})
+    adaptive_cpu.write_json(controller.base / 'telemetry' / (donor + '.json'),
+                            {**old, 'sampled_unix': 101., 'wall_seconds': 1., 'cpu_seconds': .1})
+    before = (controller.base / 'profiles.json').read_bytes()
+    with controller.locked():
+        opted = {'action_key': 'b' * 64, 'cpu_qos': 'opportunistic', 'priority': -10}
+        controller.decision(opted, {'cpu': 7}, identity=('opted', False), owner=None)
+    assert (controller.base / 'profiles.json').read_bytes() == before
+
+
 def test_opted_idle_and_counter_sampling_never_write_legacy_history(tmp_path, monkeypatch):
     clock = [100.]
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
