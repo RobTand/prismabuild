@@ -77,7 +77,14 @@ def operate(request, store, load):
                 for _ in range(2 if variant == "repeated" else 1):
                     assert "prelaunch-group-released" in pg.release_unit(queue, TIER, UNIT, holder, [], terminal=True)
             else:
-                queue.tier(TIER).release_unspent(holder, authority=load("prismabuild.tier_holdings").Unspent.NEVER_STARTED)
+                ledger = queue.tier(TIER)
+                # This is reader setup, before the consumer boundary. Current
+                # ledgers require the genuine empty-checkout certificate;
+                # immutable older readers predate that API.
+                certificate = ({"certificate": ledger.certify_release(holder)}
+                               if hasattr(ledger, "certify_release") else {})
+                ledger.release_unspent(holder, authority=load("prismabuild.tier_holdings").Unspent.NEVER_STARTED,
+                                       **certificate)
     elif family == "pg-ticket":
         unit = UNIT if variant == "plain" else "compat/escaped-unit"
         path = pg._ticket_file(queue, unit)
