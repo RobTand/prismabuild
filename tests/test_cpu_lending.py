@@ -544,3 +544,28 @@ def test_legacy_loans_do_not_consume_the_additive_opportunistic_budget(loan_rig,
     assert metadata and metadata['borrowing'] and metadata['borrowable_cpus'] == [2]
     handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=metadata, cpu_tiers=tiers)
     assert handle and ledger.commit_acquire(candidate['action_key'], handle)
+
+
+@pytest.mark.parametrize('private', [False, True])
+@pytest.mark.parametrize('funding', ['funded', 'funded_by', 'dependent_allowance'])
+def test_nonloan_eligibility_cannot_be_mutated_into_producer_funding(tmp_path, monkeypatch, private, funding):
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 100.)
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request',
+                        lambda item: {'task': {'task_class': 'generation'}, 'params': {}})
+    tiers = {'preferred': [0, 1, 2, 3], 'fallback': [4, 5, 6, 7]}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'funding-host')
+    ledger.ensure_capacity({'cpu': 8, 'mem_gb': 8})
+    ledger.configure_cpu_tiers(tiers)
+    controller = adaptive_cpu.Controller(ledger, tiers, sampler=lambda: observation(100.), ramp_cap=2)
+    item = {'action_key': 'a' * 64, 'cpu_qos': 'opportunistic', 'priority': -10,
+            'resources': {'cpu': 4}}
+    with controller.locked():
+        metadata = controller.decision(item, item['resources'], identity=('known', False), owner=None)
+        assert metadata and not metadata['borrowing'] and '_loan_grant' not in metadata
+        metadata[funding] = ({'cpus': [4], 'mem_gb': 1} if funding == 'funded'
+                             else 'b' * 64 if funding == 'funded_by'
+                             else {'cpu': 1, 'mem_gb': 1, 'slots': 1})
+        acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
+        with pytest.raises(ValueError, match='eligibility|funded'):
+            acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+        assert ledger.available() == {'cpu': 8, 'mem_gb': 8}
