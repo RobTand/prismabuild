@@ -11417,7 +11417,8 @@ class PoolQueue:
         except (OSError, ValueError, PoolContractError):
             return None
         if (not isinstance(lease, Mapping)
-                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+                or lease.get("claimed_unix") != claim.get("claimed_unix")
+                or self._heartbeat_conflicts(claim, lease)):
             return None
         heartbeat = self._effective_heartbeat(lease, now=now)
         age = None if heartbeat is None else now - heartbeat
@@ -11624,7 +11625,8 @@ class PoolQueue:
         except (OSError, ValueError, PoolContractError):
             return carried("unread")
         if (not isinstance(lease, Mapping)
-                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+                or lease.get("claimed_unix") != claim.get("claimed_unix")
+                or self._heartbeat_conflicts(claim, lease)):
             return carried("unread")
         observation = lease.get("progress_observation")
         if not isinstance(observation, Mapping):
@@ -11969,14 +11971,18 @@ class PoolQueue:
             return None
         return beat if math.isfinite(beat) and beat <= now else None
 
-    def _effective_heartbeat(self, lease: Mapping[str, object], *, now: float | None = None):
+    def _effective_heartbeat(self, lease: Mapping[str, object], *, now: float | None = None,
+                             read=None):
         """The one heartbeat observation used by all claim freshness readers.
 
         Malformed/future lease time is unknown. A malformed or foreign stamp
         contributes no credit. Unreadable stamp I/O propagates, retaining custody.
         """
-        stamp = (record_store.read_document(self._heartbeat_stamp_path(lease))
+        observe = record_store.read_document if read is None else read
+        stamp = (observe(self._heartbeat_stamp_path(lease))
                  if isinstance(lease.get("action_key"), str) else None)
+        if isinstance(stamp, Exception):
+            raise stamp
         # Sample after the stamp read: a concurrent beat is not future merely
         # because this reader began before its publication.
         now = _now() if now is None else now

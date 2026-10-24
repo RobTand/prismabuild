@@ -678,7 +678,8 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
                                cleanup_attempts=record.get('container_cleanup_attempts'),
                                cleanup_pending_s=_age(
                                    record.get('container_cleanup_first_failed_unix'), now))
-                    beat = None if sidecar is None else queue._effective_heartbeat(sidecar, now=now)
+                    beat = None if sidecar is None else queue._effective_heartbeat(
+                        sidecar, now=now, read=lambda path: _pool_sidecar(path, reader=reader))
                     if sidecar is not None and not isinstance(beat, (int, float)):
                         raise pool.PoolContractError(f"lease has no heartbeat: {key}")
                     age = None if sidecar is None else now - float(beat)

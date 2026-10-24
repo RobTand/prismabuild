@@ -1518,7 +1518,8 @@ a delayed predecessor can replace only its own incarnation's stamp.
 
 `PoolQueue._effective_heartbeat` is the shared freshness observation for lease
 age, mover and consumer-order verdicts, widowed-lease sweeps, checkout recovery
-and the status census. It uses the later valid lease/stamp time only for an
+and the status census. Census stamp reads use its retained reader, preserving
+idle-scrape I/O reuse. It uses the later valid lease/stamp time only for an
 exact matching incarnation and process. A valid time is a finite number, not a
 boolean or string, no later than the reader's clock. Future or malformed lease
 time is unknown and retains custody; an invalid stamp adds no credit. Offer

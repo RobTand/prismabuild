@@ -287,3 +287,18 @@ def test_status_census_reports_the_contended_heartbeat(holder, monkeypatch):
     result = census.action_rows(queue.root)
     row = next(row for row in result.value["jobs"] if row["action_key"] == key)
     assert row["stale"] is False and row["lease_age_s"] == 0.
+
+
+@pytest.mark.parametrize("judge", ["mover", "order"])
+@pytest.mark.parametrize("field,value", [("owner", "foreign"), ("host", "foreign"), ("attempts", 999)])
+def test_fresh_foreign_lease_does_not_renew_this_claim(holder, judge, field, value):
+    queue, key, item, clock = holder
+    lease = record_store.read_document(queue.records.lease_path(key))
+    lease[field] = value
+    queue.records.replace_record_at(queue.records.lease_path(key), lease)
+    if judge == "mover":
+        assert queue._mover_lease(key, item, now=clock[0]) is None
+    else:
+        live, evidence = queue._claim_order_ahead_live(key, now=clock[0], window_s=60.,
+            prior={"evidence_unix": clock[0] - 120, "accepted_count": 0, "staged_wait_exempt_s": 0.})
+        assert not live and evidence["evidence"] == "unread"
