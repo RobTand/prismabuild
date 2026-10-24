@@ -500,7 +500,7 @@ def read_lock_holders(paths: dict[str, Path]) -> dict[str, dict]:
             descriptor = os.open(
                 path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
             if _stat_key(os.fstat(descriptor)) == key:
-                pid = flock_owner.holder_pid(descriptor)
+                pid = flock_owner.holder_pid(descriptor, observer=True)
                 if pid is not None:
                     entry["holders"].append(pid)
         except OSError:

@@ -113,6 +113,7 @@ def test_per_key_retirement_preserves_every_full_census_fence(fleet, monkeypatch
         queue.records.replace_record_at(
             queue.root / pool.record_store.CLAIMED / (selected + ".fixture.tombstone"), old)
     elif authority == "held":
+        queue.ledger().ensure_capacity({"cpu": 20})
         assert queue.ledger().acquire(selected, {"cpu": 1})
     candidate = publish("r2-authority-follower", gpu=0)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
