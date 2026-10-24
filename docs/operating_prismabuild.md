@@ -2001,6 +2001,28 @@ with that exact demand, native threads 1, priority -10 and the existing
 its separate two-CPU, four-GiB demand. See the
 [root proof runtime contract](design.md#root-proof-runtime-qualification).
 
+Before a root qualification or publish, compare each worker's selected host
+inventories with its committed native profile through published PB:
+
+```bash
+TMPDIR=/home/rob/pbt17 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+	--cwd "$R" --tag "$HOST" --cpus 1 --demand mem_gb=2 \
+	--priority -10 --priority-reason 'root runtime drift preflight' --timeout-s 480 \
+	--env TMPDIR=/home/rob/pbt17 --env OMP_NUM_THREADS=1 \
+	--env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- "$PYTHON" tools/maintenance/check_proof_runtime_drift.py \
+	--runtime-profile "$PROFILE"
+```
+
+Set `HOST` to the worker whose inventory is being checked. Use the architecture's
+standard interpreter for `PYTHON` and committed native profile for `PROFILE`.
+The read-only check reports every added, removed or changed host inventory entry,
+including bytes, modes and symlink targets. Exit 0 means those inventories match,
+1 reports drift, and 2 means an observation or profile could not be verified.
+The check shares the capture's member, byte and time bounds. It does not inspect
+image inventories or grant root qualification. Refresh profiles through capture
+and `tools/maintenance/verify_proof_runtime_capture.py`, then rerun qualification.
+
 Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is an absolute `python*` executable on eligible target workers.
 Portable CPU fanout has no default class tag (#1263, #1462): pbrun seals the

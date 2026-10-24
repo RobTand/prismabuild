@@ -20222,6 +20222,14 @@ fresh collection/execution rosters, actual CAS chains and
 physical scope release remain qualification gates. It changes no deployment,
 installed trust guard, live service or interpreter support claim.
 
+`tools/maintenance/check_proof_runtime_drift.py` provides an admitted read-only
+preflight over the profile's host inventories. It reuses the capture inventory
+owner and aggregate member, byte and time bounds. It reports complete entry
+differences and observation errors without changing the profile or host.
+Exit 0 means the selected host inventories match, 1 reports drift, and 2
+reports unknown observation or invalid profile. Image inventories, mounted
+verification and root qualification still require the existing runner.
+
 ### Shared submission ownership (C14)
 
 `submission_types.SubmissionRequest` is the submission vocabulary. Campaign,
