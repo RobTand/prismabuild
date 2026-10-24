@@ -510,3 +510,37 @@ def test_missing_opted_label_cannot_fall_back_to_legacy_lifecycle(loan_rig, fiel
         controller.admitted(metadata)
     assert not (controller.base / 'last-borrow.json').exists()
     ledger.abandon_acquire(handle)
+
+
+def test_legacy_loans_do_not_consume_the_additive_opportunistic_budget(loan_rig, monkeypatch):
+    ledger, tiers, controller, donor, candidate, _ = loan_rig
+    stamp = [131.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: stamp[0])
+    monkeypatch.setattr(controller, '_sampler', lambda: observation(stamp[0]))
+    warm = {'action_key': 'e' * 64, 'resources': {'cpu': 1}}
+    controller.decision(warm, warm['resources'], identity=('warm-legacy', False), owner=None)
+    for index in range(2):
+        stamp[0] += 1
+        adaptive_cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
+            'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
+            'sampled_unix': stamp[0], 'wall_seconds': stamp[0] - 100.,
+            'cpu_seconds': (stamp[0] - 100.) * .1})
+        controller._host_sample = None
+        item = {'action_key': chr(ord('c') + index) * 64, 'resources': {'cpu': 1}}
+        metadata = controller.decision(item, item['resources'], identity=('legacy', False), owner=None)
+        assert metadata and metadata['borrowing']
+        handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+        assert handle and ledger.commit_acquire(item['action_key'], handle)
+        controller.admitted(metadata)
+    stamp[0] += 1
+    adaptive_cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
+        'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
+        'sampled_unix': stamp[0], 'wall_seconds': stamp[0] - 100.,
+        'cpu_seconds': (stamp[0] - 100.) * .1})
+    sample = observation(stamp[0])
+    sample.update(busy_cpus=.2, per_cpu_busy={str(cpu): .05 for cpu in range(8)})
+    monkeypatch.setattr(controller, '_sampler', lambda: sample)
+    metadata = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
+    assert metadata and metadata['borrowing'] and metadata['borrowable_cpus'] == [2]
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=metadata, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(candidate['action_key'], handle)
