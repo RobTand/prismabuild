@@ -4,12 +4,10 @@ The same file runs on the head and on the task base. Head-only tests skip on
 the base. Characterization metrics print as one ``PROBE-METRICS`` line each.
 """
 import json
-import io
 import os
 from pathlib import Path
 import subprocess
 import sys
-import tarfile
 import warnings
 
 import pytest
@@ -182,38 +180,5 @@ def test_default_generation_work_still_shares_idle_preferred_cpus(rig):
                                        'borrowing': (metadata or {}).get('borrowing'),
                                        'preferred_borrow': (metadata or {}).get('preferred_borrow')}))
     assert metadata and metadata['borrowing'] and metadata['preferred_borrow'] == 1
-
-
-@pytest.fixture(scope='module')
-def task_base_source(tmp_path_factory):
-    root = Path(__file__).resolve().parents[1]
-    target = tmp_path_factory.mktemp('cpu-lending-task-base')
-    # pb-history-ok: Compare admission against the immutable task-base source.
-    source = subprocess.check_output([
-        'git', '-C', str(root), 'archive',
-        '43234d0fbd42d6ed76da38658cb9f447ed19a606', 'src'])
-    with tarfile.open(fileobj=io.BytesIO(source)) as archive:
-        archive.extractall(target, filter='data')
-    return target
-
-
-@pytest.mark.parametrize('variant', ['ordinary', 'wide', 'busy', 'unknown', 'measurement'])
-def test_cap_zero_matches_task_base_on_the_same_admission_trace(task_base_source, tmp_path, variant):
-    root = Path(__file__).resolve().parents[1]
-    fixture = root / 'tests/compat/support/cpu_lending_cap0_fixture.py'
-    observed = []
-    for label, checkout in [('base', task_base_source), ('head', root)]:
-        scratch = tmp_path / label
-        scratch.mkdir()
-        result = subprocess.run(
-            [sys.executable, str(fixture), str(scratch), variant], cwd=checkout,
-            env=dict(os.environ, PYTHONPATH=str(checkout / 'src'),
-                     PRISMABUILD_BOX_STATE_ROOT=str(scratch / 'box-state')),
-            text=True, capture_output=True, check=True)
-        observed.append(json.loads(result.stdout))
-    assert observed[0] == observed[1]
-    if variant == 'ordinary':
-        assert observed[0]['trace'][-1]['preferred_borrow'] == 1
-        assert observed[0]['trace'][-1]['borrowing'] is True
 
 

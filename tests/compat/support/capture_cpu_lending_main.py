@@ -20,6 +20,7 @@ BUILDER = ROOT / "tests/compat/support/cpu_lending_cap0_fixture.py"
 
 with tempfile.TemporaryDirectory() as temporary:
     scratch = Path(temporary)
+    # pb-history-ok: The one-off capture explicitly seals this adopted reference.
     archive = subprocess.check_output(["git", "archive", MAIN, "src"], cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
         bundle.extractall(scratch / "main", filter="data")
