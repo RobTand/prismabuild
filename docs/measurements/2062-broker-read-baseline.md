@@ -220,8 +220,9 @@ W2 counts/bytes are identical at each of N=0, 8 and 64 on both CPU arms.
 Thus W1's unrelated-PID slope of 4 file reads / 142 returned bytes per PID
 per two calls is zero in W2, for collector and monitor alike. For byte
 comparison against W1, empty/gpu_present remove exactly `142*N` bytes;
-no_gpu/gpu_error also remove the single non-GPU PID's 142 bytes of identity
-reads over two calls. Empty or failed discovery performs no candidate identity
+no_gpu/gpu_error also remove the single non-GPU PID's 262 bytes of identity
+reads over two calls (`2*(55+76)`), for a total reduction of `142*N+262` bytes.
+Empty or failed discovery performs no candidate identity
 reads. GPU-present identities are read before and after measurement, not just
 after a query. Discovery counters are discarded; newly measured PIDs without
 matching pre-measurement identity proof stay incomplete. Scope inode fencing,
