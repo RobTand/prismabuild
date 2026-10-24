@@ -1,4 +1,6 @@
 """Refused opted rows cannot change the state or verdict of legacy admission."""
+import pytest
+
 from prismabuild import adaptive_cpu, pool
 
 
@@ -130,3 +132,47 @@ def test_opted_idle_and_counter_sampling_never_write_legacy_history(tmp_path, mo
                  'cpu_qos': 'opportunistic', 'priority': 0}
         assert controller.decision(opted, opted['resources'], identity=('opted', False), owner=None) is None
         assert before == {name: (controller.base / name).read_bytes() for name in names}
+
+
+@pytest.mark.parametrize('active_opted', [False, True])
+def test_returning_counter_series_cannot_reset_a_fresh_shared_history(tmp_path, monkeypatch, active_opted):
+    clock = [100.]
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: clock[0])
+    monkeypatch.setattr(adaptive_cpu, 'control_plane_counters', lambda cpus: {})
+    monkeypatch.setattr(adaptive_cpu, 'boot_ticks', lambda: 1)
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request',
+                        lambda item: {'task': {'task_class': 'generation'}, 'params': {}})
+    def counters(cpus):
+        return {'sampled_unix': clock[0], 'cpus': {str(cpu): [0, int(clock[0] * 100)] for cpu in cpus},
+                'psi_total': 0, 'psi_avg10': 0., 'psi_avg60': 0.}
+    monkeypatch.setattr(adaptive_cpu, 'counters', counters)
+    tiers = {'preferred': list(range(4)), 'fallback': list(range(4, 8))}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'series-host')
+    ledger.ensure_capacity({'cpu': 8})
+    ledger.configure_cpu_tiers(tiers)
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=2)
+    for name in ('cpu-sample.json', 'cpu-sample-opportunistic.json'):
+        controller.write_state(name, counters(controller.cpus))
+    def decide(opted):
+        controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=2)
+        item = {'action_key': ('a' if opted else 'b') * 64, 'priority': -10}
+        if opted:
+            item['cpu_qos'] = 'opportunistic'
+        with controller.locked():
+            controller.decision(item, {'cpu': 9 if opted else 1}, identity=('known', False), owner=None)
+        return controller
+    for tick in range(101, 142):
+        clock[0] = float(tick)
+        controller = decide(active_opted)
+    path = controller.base / 'cpu-lending.json'
+    before = path.read_bytes()
+    state = adaptive_cpu.read_json(path)
+    assert state['open'] and state['budget'] == 2 and state['ema']
+    clock[0] = 142.
+    controller = decide(not active_opted)
+    assert controller.last_decision['sample']['interval_s'] == 42.
+    assert path.read_bytes() == before
+    clock[0] = 143.
+    decide(active_opted)
+    resumed = adaptive_cpu.read_json(path)
+    assert resumed['open'] and resumed['budget'] == 2 and resumed['ema'] == state['ema']
