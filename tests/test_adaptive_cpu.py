@@ -366,20 +366,20 @@ def test_a_spent_sample_admits_on_free_tokens_instead_of_refusing(loan_rig):
     ledger, tiers, controller, donor, candidate, decision = loan_rig
     assert decision['borrowing'] and decision['preferred_borrow'] == 1
     peer = {'sampled_unix': decision['sampled_unix'], 'borrow_id': 'peer'}
-    controller.write_state('last-borrow.json', peer)
+    controller.write_state('last-opportunistic-borrow.json', peer)
     spent = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
     assert spent is not None and not spent['borrowing'] and spent['preferred_borrow'] == 0
     handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=spent, cpu_tiers=tiers)
     assert handle
     assert ledger.cpu_allocation(handle, tiers) == {'preferred': [], 'fallback': [4]}
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == peer
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == peer
 
 
 def test_a_spent_sample_still_refuses_a_borrow_the_demand_needs(rig):
     from prismabuild import adaptive_cpu
     queue, clock, state, key, first, publish, claim, telemetry = rig
     base = adaptive_cpu.local_state_base(queue.ledger().base)
-    adaptive_cpu.write_json(base / 'last-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
+    adaptive_cpu.write_json(base / 'last-opportunistic-borrow.json', {'sampled_unix': clock[0], 'borrow_id': 'peer'})
     assert claim() is None
     assert queue.ledger().available().get('cpu', 0) == 0
 
@@ -599,10 +599,10 @@ def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(loan_rig, 
     assert handle
     newer_previous = controller.admitted(newer)
     controller.withdrew(spent, previous)
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == {
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == {
         'sampled_unix': newer['sampled_unix'], 'borrow_id': newer['borrow_id']}
     controller.withdrew(newer, newer_previous)
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == newer_previous
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == newer_previous
 
 def _host_sample(cpus, busy_by_cpu, psi_some, *, interval=10.):
     """A fresh host sample with per-CPU occupancy, as the real sampler files it.

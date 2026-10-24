@@ -6737,8 +6737,11 @@ borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 The existing adaptive lending remains the default (#2156). With cap 0 and no
 `--cpu-qos` declaration, main and this implementation make identical decisions,
 including refusals, preferred borrowing, wide loans and physical allocations.
-Cap 0 never reads or writes `cpu-lending.json`. The paired regression runs the
-same fixture against the immutable task base and current source on ARM and x86.
+Cap 0 never reads or writes `cpu-lending.json`. The permanent regression compares all 27 reviewer and builder fixtures with
+SHA-pinned outcomes captured from the adopted main commit through PB on ARM
+and x86. It needs no old Git history. A second structural regression compares
+main statements with the restored legacy methods, removing only the named
+explicit-policy and actual-opportunistic-occupancy identity guards.
 
 `pbrun --cpu-qos protected|opportunistic` adds explicit execution policy outside
 the action-result cache identity. Explicit protected work neither lends nor
@@ -6758,12 +6761,16 @@ its broker before enabling a positive cap. Before rollback, disable new opted
 publication and drain every opportunistic attempt, even one with no loan.
 Holders with ambiguous older QoS provenance count as protected until drained.
 
-Each preferred ID has its owner plus at most one borrower. The new mechanism
+For the additive mechanism, each preferred ID has its owner plus at most one borrower. The new mechanism
 permits at most two opportunistic borrowers per host. A surviving borrower's
 ID stays excluded after its donor exits, including in #1929 guest release
-projections and READY-GPU room counts. Unknown holder affinity refuses with
-`unknown_holder_affinity`. x86 SMT remains fallback and is never a new opted
-lending target. Spark P-core masks are unchanged.
+projections and READY-GPU room counts. Only actual opportunistic loans activate
+those projections, including when their cap is later disabled. Legacy-only
+loans, repeated lending, orphaned IDs, SMT donors, telemetry rewrites, unrelated
+releases and cached sample acquisition retain main's decisions. Unknown holder
+affinity refuses opted acquisition with `unknown_holder_affinity`; older static
+holders retain main's fallback on the legacy path. x86 SMT remains fallback and
+is never a new opted lending target. Spark P-core masks are unchanged.
 
 Claims, immutable attempts and terminal records retain `cpu_admission` with
 actual borrowed CPU IDs, the sample timestamp, history generation, cap, gate,
@@ -6804,17 +6811,49 @@ preemption, cancellation, lease recovery and memory enforcement remain separate.
 The broker sets cpu.weight
 10 for opportunistic scopes and 100 for protected scopes. Weight controls
 relative service during contention, not a CPU quota or a latency guarantee.
-Eligibility and loan grants are process-local registered capabilities. Both
-ordinary and private acquisition refuse forged, copied, deserialized, or stale
-capabilities. Persisted metadata cannot reconstruct a grant.
+Opportunistic eligibility and loan grants are process-local registered
+capabilities. Both public and private opted acquisition refuse forged, copied,
+deserialized, or stale capabilities. Undeclared admission never enters these
+validators. Persisted metadata cannot reconstruct a grant. Opted loans require
+a current AdmissionGate epoch; direct calls outside it cannot mint or acquire
+one. Their grants bind actual reservation demand, so historical GPU slot
+counts remain publication identity while a one-device reservation binds one
+GPU. Legacy loans retain main's unbound dictionary contract. Opted learning
+and sample spending use `jobs-opportunistic.json` and
+`last-opportunistic-borrow.json`, separate from legacy history and freshness.
 After a complete resource return, an empty holder directory that cannot be
 removed is retired under `released-holders/`, outside the authoritative held
 namespace. Only empty directories or NFS metadata-unlink remnants can retire;
 a surviving resource file refuses cleanup.
 
-Before upgrading, record today's adaptive-lending baseline, including borrowed
-CPU IDs and refusals. First compare that baseline with upgraded cap 0 using
-the same undeclared workload. Admission and loan behavior must be equal.
+Before upgrading, capture main's borrowed IDs while each attempt still owns
+its tokens. The observation-only launcher
+`tools/maintenance/cpu_lending_baseline_worker.py` wraps main's successful claim
+construction and refuses any pool or adaptive source whose SHA-256 differs
+from adopted main `43234d0fbd42d6ed76da38658cb9f447ed19a606`. The operator copies
+this standalone file beside that main checkout, drains and restarts the
+baseline admission loops through it, using the unchanged main worker arguments:
+
+```sh
+PYTHONPATH=MAIN/src MAIN_PYTHON cpu_lending_baseline_worker.py \
+  --output-root BASELINE_DIR MAIN_WORKER ORIGINAL_WORKER_ARGS
+```
+
+The wrapper adds no admission decision. Before launch or release it writes
+immutable sidecars keyed by exact publication, claim identity and attempt, with
+source commit, host, topology digest, assigned IDs, owned-token IDs and their
+difference. Funded allowance IDs are excluded. Refusals remain in main's
+existing denial records. Capture failures invalidate the cohort. Reconcile
+sidecars one-to-one against immutable attempts and endings, excluding abandoned
+claims; any missing attempt makes the period inconclusive. Archive those
+sidecars, refusal records and CAS receipts before replacing main. No /proc
+probe is involved. Record observer overhead and apply the same collection
+cost to comparison periods. Main endings alone cannot reconstruct released
+physical tokens.
+
+First compare this baseline with upgraded cap 0 using the same undeclared
+workload and per-attempt `cpu_admission.borrowed_cpus`. Admission decisions,
+refusals and exact borrowed IDs must be equal.
 Then compare cap 0 with cap N, opting in only the eligible cohort and keeping
 TL timing-sensitive shards explicitly protected throughout.
 Rollout compares matched, post-retier cohorts for at least one hour and 100

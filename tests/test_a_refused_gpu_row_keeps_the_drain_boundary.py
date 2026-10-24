@@ -338,13 +338,17 @@ def _sealed_holder(tmp_path: Path, name: str, *, timeout_s: int):
     return action["action_key"], str(cas.root), str(checkout)
 
 
-def test_a_shadowed_cpu_token_keeps_gpu_room_without_blocking_a_lower_row(
+def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
     tmp_path: Path, monkeypatch,
 ) -> None:
-    """An orphan borrow leaves eight usable CPUs despite eighteen free tokens.
+    """#1241 review: the room binds only at the drain boundary.
 
-    The nine-CPU GPU row keeps its future room. That room does not fit yet,
-    so it does not prevent a smaller GPU row from running beside the borrower.
+    A +1 GPU row is refused ``adaptive_cpu_refused`` / ``host_pressure`` on
+    CPUs a long pool holder holds (#1160), and is starved (#924).  The GPU
+    token is free and its whole reservation fits the free tokens, so tokens
+    are not what refused it: its room would bind every GPU row behind it on
+    every pass while the measured refusal lasts, idling the GPU behind a row
+    starved by definition.  It keeps no room, and the -10 GPU row claims.
     """
 
     import json
@@ -398,8 +402,6 @@ def test_a_shadowed_cpu_token_keeps_gpu_room_without_blocking_a_lower_row(
     metadata["borrowed_cpu"] = len(predicted[-1:] + later)
     path.write_text(json.dumps(metadata))
 
-    assert queue.ledger().available()["cpu"] == 18
-    assert queue.ledger().admission_available(tiers)["cpu"] == 8
     host["psi_some"] = .2
     row = publish(_key("plus-one-gpu-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96}, priority=1)
     lower = publish(_key("minus-ten-gpu-row"), {"cpu": 2, "gpu": 1, "mem_gb": 5}, priority=-10)
@@ -410,5 +412,5 @@ def test_a_shadowed_cpu_token_keeps_gpu_room_without_blocking_a_lower_row(
     refused = _denial(queue, row)
     assert refused["reason"] == "adaptive_cpu_refused_starved"
     assert refused["evidence"]["decision"]["reason"] == "host_pressure"
-    assert refused["evidence"]["gpu_room_kept"] == {"cpu": 9, "gpu": 1, "mem_gb": 96}
-    assert refused["evidence"]["gpu_room_binds_all"] is True
+    assert "gpu_room_kept" not in refused["evidence"]
+    assert refused["evidence"]["gpu_room_fit_at_refusal"] is True

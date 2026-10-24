@@ -108,12 +108,9 @@ def loan_rig(tmp_path, monkeypatch, request):
     def item(key, cpu):
         return {'action_key': key * 64, 'cpu_qos': 'opportunistic', 'priority': -10,
                 'resources': {'cpu': cpu}}
-    donor_width, candidate_width, *policy = getattr(request, 'param', (4, 1))
+    donor_width, candidate_width = getattr(request, 'param', (4, 1))
     with cpu_lending.lending_admission_epoch():
         donor, candidate = item('a', donor_width), item('b', candidate_width)
-        if policy == ['legacy']:
-            donor.pop('cpu_qos')
-            candidate.pop('cpu_qos')
         metadata = controller.decision(donor, donor['resources'], identity=('donor', False), owner=None)
         handle = ledger.begin_acquire(donor['action_key'], donor['resources'],
                                       adaptive=metadata, cpu_tiers=tiers)
@@ -146,7 +143,7 @@ def test_real_decision_borrows_and_protects_orphaned_ids(loan_rig):
     protected = controller.decision(candidate, candidate['resources'], identity=('protected', False), owner=None)
     assert protected and protected['cpu_weight'] == 100 and not protected['borrowing']
     borrowed = stored['allocation']['preferred'][0]
-    assert borrowed not in protected['eligible_cpus']
+    assert protected['eligible_cpus'] is None  # acquisition subtracts actual opted footprints
     for acquire in (ledger.begin_acquire, ledger._begin_acquire_locked):
         handle = acquire('f' * 64, {'cpu': 1}, cpu_tiers=tiers)
         assert handle
@@ -240,7 +237,6 @@ def test_capabilities_cannot_be_transferred(loan_rig, name, operation):
 def test_capability_construction_has_one_ast_owner():
     root = Path(__file__).resolve().parents[1]
     expected = {'OpportunisticEligibility': 'opportunistic_eligibility',
-                'LegacyEligibility': 'legacy_eligibility',
                 'CpuLoanGrant': 'decide_cpu_loan'}
     owners = {name: [] for name in expected}
     class Construction(ast.NodeVisitor):
@@ -304,7 +300,7 @@ def test_rollback_uses_frozen_grant_after_priority_changes(loan_rig):
     item['priority'] = 0
     ledger.abandon_acquire(handle)
     controller.withdrew(metadata, previous)
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == (previous or {})
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == (previous or {})
 
 
 @pytest.mark.parametrize('private', [False, True])
@@ -453,44 +449,3 @@ def test_none_epoch_cannot_mint_or_acquire_a_loan(loan_rig, private):
         cpu_lending._admission_epoch.reset(token)
 
 
-@pytest.mark.parametrize('loan_rig', [(4, 1, 'legacy')], indirect=True)
-@pytest.mark.parametrize('fault', ['valid', 'explicit_protected', 'forged', 'copied', 'pickle'])
-@pytest.mark.parametrize('private', [False, True])
-def test_legacy_capability_obeys_the_same_final_boundaries(loan_rig, fault, private):
-    ledger, tiers, controller, donor, item, metadata = loan_rig
-    assert type(metadata['_eligibility']) is cpu_lending.LegacyEligibility
-    if fault == 'explicit_protected':
-        item['cpu_qos'] = 'protected'
-    elif fault == 'forged':
-        metadata['_eligibility'] = object.__new__(cpu_lending.LegacyEligibility)
-    elif fault == 'copied':
-        with pytest.raises(TypeError):
-            copy.copy(metadata['_eligibility'])
-        return
-    elif fault == 'pickle':
-        with pytest.raises(TypeError):
-            pickle.dumps(metadata['_eligibility'])
-        return
-    acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
-    if fault in ('explicit_protected', 'forged'):
-        with pytest.raises(ValueError, match='eligibility|grant'):
-            acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
-        return
-    handle = acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
-    assert handle
-    if handle:
-        assert ledger.commit_acquire(item['action_key'], handle)
-
-
-def test_mutation_bypassing_legacy_eligibility_fails_the_loan_suite(tmp_path):
-    tree = ast.parse(Path(cpu_lending.__file__).read_text())
-    target = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                  and node.name == 'legacy_eligibility')
-    target.body = ast.parse('return object.__new__(LegacyEligibility)').body
-    mutated = tmp_path / 'mutated_legacy.py'
-    mutated.write_text(ast.unparse(ast.fix_missing_locations(tree)))
-    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', str(Path(__file__).resolve()),
-        '-k', 'test_legacy_capability_obeys_the_same_final_boundaries'],
-        env={**os.environ, 'PB_CPU_LENDING_MUTANT': str(mutated)},
-        capture_output=True, text=True, timeout=90)
-    assert result.returncode == 1, result.stdout + result.stderr

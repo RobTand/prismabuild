@@ -1812,7 +1812,425 @@ class Controller:
                 'owner_measurement': bool(meta_of_owner.get('measurement'))}, None
 
     def decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
+                 foreign_load_exempt=False, reservation_demand=None):
+        if self._ramp_cap and item.get('cpu_qos') == 'opportunistic':
+            return self._opportunistic_decision(
+                item, demand, identity=identity, owner=owner, allowance=allowance,
+                foreign_load_exempt=foreign_load_exempt, reservation_demand=reservation_demand)
+        metadata = self._legacy_decision(
+            item, demand, identity=identity, owner=owner, allowance=allowance,
+            foreign_load_exempt=foreign_load_exempt)
+        # Passive observation never replaces main's cached sample or verdict.
+        sample = self._host_sample
+        if self._ramp_cap:
+            self._observe_lending(sample, time.time())
+        evidence = {'cap': 0, 'generation': None,
+                    'sampled_unix': sample.get('sampled_unix'), 'gate_open': None,
+                    'loan_budget': None, 'gate_reason': 'legacy_adaptive'}
+        self.last_decision['lending'] = evidence
+        if metadata is not None:
+            metadata.update(cpu_qos='protected' if item.get('cpu_qos') == 'protected' else 'legacy',
+                            cpu_weight=100, _lending_decision=evidence)
+        return metadata
+
+    def _legacy_decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
                  foreign_load_exempt=False):
+        """Decide under admission; callers may pre-read sealed action identity.
+
+        ``owner`` is the producer a dependent serves, when the caller knows it
+        (the pool reads it from the sealed request, outside this lock); left unread it is
+        read only if a measurement holds the host (#982).  ``allowance`` is the
+        export allowance a producer's claim reserves with itself (#985).
+        """
+        funding_refusal = None
+        measurement_drain = {}
+        self.last_decision = {"reason": "not_evaluated"}
+        if self._host_sample is None:
+            self._host_sample = self.sample()
+        sample = self._host_sample
+        now = time.time()
+        def refuse(reason, **values):
+            # The claimant publishes this exact decision after it releases
+            # admission.  Do not sample or reread state for diagnostics.
+            # A dependent's refusal names its producer, and why its allowance
+            # did not cover it, so a starved producer's evidence reads in one
+            # place (#985).
+            extra = {}
+            if owner is not _UNREAD:
+                extra['dependent_of'] = owner
+            if funding_refusal is not None:
+                extra['allowance'] = funding_refusal
+            self.last_decision = {"reason": reason, "sample": sample,
+                                  **measurement_drain, **extra, **values}
+            return None
+        fresh = (0 <= now - sample.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
+                 and sample.get('cpu_count') == len(self.cpus)
+                 and all(isinstance(sample.get(key), (float, int)) and math.isfinite(sample[key])
+                         for key in ('busy_cpus', 'psi_some', 'interval_s')))
+        # There is no system-wide CPU FULL to corroborate "some" with: the
+        # kernel records FULL for CPU only under a cgroup, never for
+        # psi_system (kernel/sched/psi.c: "the FULL state doesn't exist for the
+        # CPU resource at the system level"; the system root's state mask omits
+        # PSI_CPU_FULL).  So the corroboration is the occupancy the sampler
+        # already keeps per CPU.  The host-wide saturation gate is unchanged and
+        # stands alone; what follows only decides whether a high "some" reading
+        # is this action's problem or a pinned neighbour's local contention.
+        # A RAM fill's host memory hold (#1222) is a mirror of tmpfs bytes, not
+        # an action: it holds ``mem_gb`` tokens, which the ledger already
+        # counts, and runs nothing on a CPU.  Read as a holder it has no
+        # declared CPU and non-empty content, so it refused every row on the
+        # storage host as ``holder_reservation_unknown`` (#1260).
+        census = HolderCensus(self.ledger.held_dir, read_json)
+        holders = list(census.non_mirror_holders)
+        # Resolved once, before the pressure decision reads the demand.  The
+        # caller may have pre-read the sealed identity, and the measurement and
+        # ownership paths below all need the same answer rather than a second
+        # read of the same CAS record.
+        shape, measurement = action_identity(item) if identity is None else identity
+        declared = int(demand.get('cpu', 0))
+        unbounded_cpu = not declared
+        # Measurements, unbounded demand and full-width reservations need the
+        # host idle.  "Idle" is judged against the host's own idle history
+        # (#997), which every fresh decision feeds, not a fixed fraction of
+        # the CPUs that housekeeping alone can cross.
+        idle = (self.idle(sample, holders) if fresh else
+                {'state': 'sample_not_fresh', 'exceeds': True})
+        exclusive_need = measurement or unbounded_cpu or declared == len(self.cpus)
+        ambient = (self._measurement_foreign_ambient(sample, holders, declared)
+                   if measurement and fresh else None)
+        if ambient is not None and ambient['clear']:
+            # Affirmative, complete attribution can retire a historical
+            # foreign-load veto. Missing/stale/partial readings cannot.
+            measurement_drain = {'measurement_pool_drain': {
+                'foreign_clear': True, 'sampled_unix': sample['sampled_unix'],
+                **ambient['evidence']}}
+        if isinstance(owner, str) and not measurement:
+            # A dependent runs on the room its producer reserved (#985).  Host
+            # pressure is not its gate: its CPUs are reserved, so nothing the
+            # pool admits runs there, and the pressure its producer makes on
+            # its own CPUs is the producer's.  No free token is taken.
+            funded, funding_refusal = self._funding(owner, holders, demand, census)
+            if funded is not None:
+                serves_measurement = funded.pop('owner_measurement')
+                self.last_decision = {"reason": "admitted_on_allowance", "sample": sample,
+                                      "dependent_of": owner}
+                return {'declared_cpu': int(demand.get('cpu', 0)),
+                        'cost': float(int(demand.get('cpu', 0))), 'shape': shape,
+                        'unbounded_cpu': False, 'measurement': False,
+                        'serves_measurement': owner if serves_measurement else None,
+                        'funded_by': owner, 'funded': funded, 'admitted_unix': now,
+                        'preferred_borrow': 0, 'sampled_unix': sample.get('sampled_unix', 0),
+                        'borrowing': False, 'host_busy_cpus': sample.get('busy_cpus'),
+                        'host_psi_some': sample.get('psi_some'),
+                        'active_cpu_cost': 0., 'pending_cpu_cost': 0., 'borrowable_cpus': []}
+        if fresh and sample['busy_cpus'] >= .95 * len(self.cpus):
+            return refuse("host_pressure", fresh=fresh)
+        # True only when a high "some" was believed because the CPUs this
+        # claim would actually be given are idle.  It keeps the proof and the
+        # claim's real selection in step: the lending path below can hand a
+        # claim a *held* CPU, which that proof never saw.
+        pressure_override = False
+        eligible_cpus = None
+        # The exclusive needs are judged on PSI by the idle baseline below,
+        # which carries ``psi_some``: a pinned neighbour's local contention, or
+        # the host's own housekeeping, is not a reason to refuse them unless it
+        # is above what this host shows while idle (#997).
+        full_width = declared == len(self.cpus) and not measurement and not unbounded_cpu
+        if fresh and sample['psi_some'] >= .10 and (
+                not exclusive_need or (full_width and holders)):
+            # System-wide CPU PSI "some" counts any task anywhere waiting for a
+            # CPU, so one job pinned to a few cores with more runnable threads
+            # than cores holds it high while most of the box is idle (measured:
+            # 0.63 with 6.7 of 80 cores busy).  It is believed only when the
+            # CPUs this claim would actually be given are not idle.
+            #
+            # "Would actually be given" is the ledger's own rule, not a count:
+            # ``begin_acquire`` takes the first ``need`` eligible free tokens
+            # in ledger order, and ``cpu_allocation`` maps a token
+            # ordinal through ``preferred + fallback`` -- the ordinal is NOT a
+            # CPU ID, so tiers such as preferred [8, 10] / fallback [2, 4] make
+            # token 0 CPU 8.  Held CPUs come from ``cpu_allocation`` as well,
+            # which is what carries a borrowed allocation recorded in the
+            # holder's metadata.  Anything unreadable or out of range is
+            # unknown, and unknown refuses rather than being read as idle.
+            per_cpu = sample.get('per_cpu_busy')
+            if (not isinstance(per_cpu, dict)
+                    or set(per_cpu) != {str(cpu) for cpu in self.cpus}
+                    or any(type(busy) not in (int, float) or not math.isfinite(busy)
+                           or busy < 0 or busy > 1 for busy in per_cpu.values())):
+                return refuse("host_pressure_unproven", fresh=fresh)
+            if full_width:
+                # Beside holders the baseline cannot say what is foreign, so
+                # a full-width reservation keeps the pre-#997 refusal under
+                # pressure; a learned cheap cost and an all-zero reading do
+                # not reopen it.
+                return refuse("host_pressure", fresh=fresh)
+            # Raw occupancy remains the saturation/projected-cost gate. Only
+            # verified control-thread work is not *foreign* load (#1210).
+            # Old samples have no attribution and retain their conservative
+            # raw interpretation during a rolling upgrade.
+            foreign_cpu = sample.get('foreign_per_cpu_busy', per_cpu)
+            if (not isinstance(foreign_cpu, dict) or set(foreign_cpu) != set(per_cpu)
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           or not 0 <= value <= per_cpu[cpu] for cpu, value in foreign_cpu.items())):
+                return refuse('host_pressure_unproven', fresh=fresh)
+            held = set()
+            for holder in holders:
+                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+                held.update(allocation['preferred'] + allocation['fallback'])
+            # A verified publication canary crosses foreign load (#1239):
+            # its verdict is correctness-only -- receipts, envelopes, bitwise
+            # equality -- so foreign CPU load cannot corrupt it, only delay
+            # it, and that delay is the boundary loss.  Held CPUs stay
+            # ineligible either way: a held CPU is token accounting, not
+            # load, and the canary still needs its free tokens.
+            eligible_cpus = [cpu for cpu in self.cpus if cpu not in held
+                             and (foreign_load_exempt
+                                  or foreign_cpu[str(cpu)] <= IDLE_BUSY_FRACTION)]
+            predicted = self._predicted_cpus(declared, eligible_cpus=eligible_cpus)
+            eligible_proven = predicted is not None
+            if predicted is None:
+                # Keep the existing held/foreign denial evidence when there
+                # isn't enough eligible room. Never wait on the first busy
+                # token when a later idle one can satisfy this whole claim.
+                predicted = self._predicted_cpus(declared)
+            if predicted is None:
+                return refuse("host_pressure_unproven", fresh=fresh)
+            # Held and foreign are recorded apart (#1160): a CPU a pool holder
+            # holds is cleared by that holder draining, which the claim path
+            # may withhold the box for; a busy CPU no holder holds is load the
+            # pool does not own, which no drain clears.
+            held_busy = sorted(cpu for cpu in predicted if cpu in held)
+            foreign_busy = sorted(cpu for cpu in predicted if cpu not in held
+                                  and foreign_cpu[str(cpu)] > IDLE_BUSY_FRACTION)
+            if foreign_load_exempt:
+                # #1239: the exemption's own half.  The foreign split stays
+                # in the evidence, but only held CPUs refuse the exempted
+                # probe; every other gate above -- raw saturation, unproven
+                # evidence, the GPU side -- already stood.
+                busy = held_busy
+            else:
+                busy = sorted(held_busy + foreign_busy)
+            if busy:
+                return refuse("host_pressure", fresh=fresh, cpus=busy[:8],
+                              held_cpus=held_busy, foreign_cpus=foreign_busy)
+            if not eligible_proven:
+                return refuse('host_pressure_unproven', fresh=fresh)
+            pressure_override = True
+        # With holders present the sample measures them too: above the
+        # host's idle history it refuses here, as the fixed line did, and
+        # otherwise the holder loop below refuses the measurement
+        # ``measurement_holder`` (naming ``isolated_by``, #982).
+        if measurement and not fresh:
+            # Unknown telemetry is not idle, foreign load, or evidence that
+            # PB's holders prevent the measurement. Refuse the measurement
+            # without reserving a drain for sampler silence (#1317).
+            return refuse("measurement_sampler_unknown", fresh=False, baseline=idle,
+                          sample_max_age_s=MAX_SAMPLE_AGE_S)
+        if measurement:
+            idle_refusal = self._measurement_idle_refusal(sample, idle, ambient)
+            if idle_refusal is not None:
+                evidence = (ambient['evidence']
+                            if idle_refusal == 'measurement_foreign_ambient'
+                            and ambient is not None else {})
+                return refuse(idle_refusal, fresh=fresh, baseline=idle, **evidence)
+        if full_width and fresh and not holders and idle['exceeds']:
+            # A reservation of every CPU needs the host idle too.
+            return refuse("host_pressure", fresh=fresh, baseline=idle)
+        if len(holders) >= MAX_ACTIONS:
+            return refuse("max_actions", holders=len(holders))
+        # Legacy producers sometimes reserved only GPU/memory. Their children
+        # inherit the whole worker affinity, so zero tokens are unknown CPU
+        # use, never evidence of zero use. Keep that historical demand intact
+        # but serialize it on a freshly idle host until the producer declares
+        # an enforceable CPU allocation.
+        if unbounded_cpu and (holders or not fresh or idle['exceeds']):
+            return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh,
+                          baseline=idle)
+        profiles = read_json(self.base / 'profiles.json')
+        recent = read_json(self.base / 'jobs.json')
+        next_recent = {}
+        serves = None
+        pending = 0.
+        lendable = False
+        lending_cpus = set()
+        protected_cpus = set()
+        active_cost = 0.
+        for holder in holders:
+            reservation = census.cpu(holder.name)
+            meta = reservation.metadata
+            physical = reservation.physical_cpu_count
+            reserved = meta.get('declared_cpu', physical)
+            if not reserved:
+                if meta or reservation.has_contents:
+                    return refuse("holder_reservation_unknown", holder=holder.name)
+                continue
+            if measurement:
+                # ``isolated_by`` names a measurement already holding the host,
+                # if any: the claim path must not withhold the box against
+                # that measurement's own dependents (#982).
+                isolated = holder.name if meta.get('measurement') else next(
+                    (other.name for other in holders
+                     if census.cpu(other.name).metadata.get('measurement')), None)
+                return refuse("measurement_holder", holder=holder.name,
+                              isolated_by=isolated, fresh=fresh)
+            if meta.get('measurement'):
+                # A measurement's own spool exports run under its isolation;
+                # everything else waits (#982).  Read only here, where a
+                # measurement holds the host: this path used to refuse every
+                # sibling, so the one CAS read it adds under the lock is paid
+                # only while nothing else could be admitted anyway.
+                if owner is _UNREAD:
+                    owner = dependent_owner(item)
+                if owner != holder.name:
+                    return refuse("measurement_holder", holder=holder.name,
+                                  isolated_by=holder.name)
+                serves = holder.name
+            # ``self.base`` rather than ``local_telemetry_path``: that helper
+            # resolves the ledger path, which is three stats on the mount per
+            # call, and this loop runs once per holder under the lock.
+            record = read_json(self.base / 'telemetry' / f'{holder.name}.json')
+            valid = (record.get('complete') is True
+                     and 0 <= now - record.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S
+                     and record.get('sampled_unix', 0) >= meta.get('admitted_unix', now)
+                     and record.get('action_key', holder.name) == holder.name
+                     and all(type(record.get(k)) in (int, float) and math.isfinite(record[k]) and record[k] >= 0
+                             for k in ('cpu_seconds', 'wall_seconds')))
+            previous = recent.get(holder.name, {})
+            if (previous.get('nonce') != record.get('nonce')
+                    or previous.get('sampled_unix', 0) < meta.get('admitted_unix', now)):
+                previous = {}
+            cpu = None
+            if valid:
+                wall_delta = record['wall_seconds'] - previous.get('wall_seconds', record['wall_seconds'])
+                cpu_delta = record['cpu_seconds'] - previous.get('cpu_seconds', record['cpu_seconds'])
+                if MIN_INTERVAL_S <= wall_delta <= MAX_INTERVAL_S and cpu_delta >= 0:
+                    cpu = cpu_delta / wall_delta
+                    record['_cpu'] = cpu
+                    next_recent[holder.name] = record
+                    # Measurements are never learned from (``record_completion``);
+                    # one is read here only beside its own dependents (#982).
+                    if meta.get('shape') and not meta.get('measurement'):
+                        old = profiles.get(meta['shape'], {})
+                        # Decay slowly; increases apply immediately. A changed
+                        # phase must promptly undo a previous cheap estimate.
+                        profiles[meta['shape']] = {**old, 'cpu': max(cpu * 1.25, old.get('cpu', cpu) * .98),
+                                                   'sampled_unix': now,
+                                                   'samples': min(1000, old.get('samples', 0) + 1),
+                                                   'memory_peak_bytes': max(record.get('memory_peak_bytes', 0),
+                                                                            old.get('memory_peak_bytes', 0))}
+                elif 0 <= wall_delta < MIN_INTERVAL_S and previous:
+                    next_recent[holder.name] = previous
+                    if 0 <= now - previous.get('sampled_unix', 0) <= MAX_SAMPLE_AGE_S:
+                        cpu = previous.get('_cpu')
+                else:
+                    next_recent[holder.name] = record
+            cost = float(reserved) if cpu is None else max(.05, cpu * 1.25)
+            # Pass the metadata already read; an absent or unreadable file keeps
+            # the ledger's own read and its own refusal on a torn record.
+            allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
+            assigned = set(allocation['preferred'] + allocation['fallback'])
+            # A measurement's CPUs are never lent, not even to its own
+            # dependents (#982): they are admitted beside it, on free tokens.
+            # Nor are CPUs a dependent runs on from its producer's allowance
+            # (#985): they are the producer's reservation, not idle credit.
+            if (cpu_lending.legacy_donor_allowed(meta) and cpu is not None and meta.get('shape') and not meta.get('measurement')
+                    and not meta.get('funded_by') and cost < reserved):
+                lending_cpus.update(assigned)
+            else:
+                protected_cpus.update(assigned)
+            active_cost += cost
+            # Host busy already includes samples ending before this reading.
+            # Charge startup/unknown attribution in full to avoid spending the
+            # same headroom in concurrent admissions.
+            if cpu is None:
+                pending += cost
+            elif (cpu_lending.legacy_donor_allowed(meta) and meta.get('shape') and not meta.get('measurement')
+                  and not meta.get('funded_by') and cost < reserved):
+                lendable = True
+        self.write_state('jobs.json', next_recent)
+        profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
+        self.write_state('profiles.json', profiles)
+        learned = profiles.get(shape, {}) if shape else {}
+        learned_valid = (learned.get('samples', 0) >= 3
+                         and 0 <= now - learned.get('sampled_unix', 0) < 86400)
+        cost = (float(len(self.cpus)) if unbounded_cpu else
+                max(.05, min(float(declared), learned['cpu'])) if learned_valid else float(declared))
+        # A solitary full-width reservation must not wait forever for every
+        # background daemon to consume exactly zero CPU. The fresh idle-host
+        # test permits only incidental activity, never real foreign load or a
+        # competing reservation; PSI pressure was refused before this point.
+        full_width_idle = (fresh and not holders and declared == len(self.cpus)
+                           and not idle['exceeds'])
+        # Unbounded legacy work already proved the same exclusive idle host.
+        if (fresh and not unbounded_cpu and not full_width_idle
+                and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
+            return refuse("projected_cpu_cost", pending_cpu_cost=pending,
+                          active_cpu_cost=active_cost, requested_cpu_cost=cost)
+        available = self.ledger.admission_available().get('cpu', 0)
+        borrowable = lending_cpus - protected_cpus
+        borrowable -= self.ledger.opportunistic_borrowed_cpu_ids(self.tiers)
+        can_borrow = cpu_lending.legacy_borrower_allowed(item) and fresh and shape and not measurement and lendable
+        preferred_borrow = (min(max(0, declared - self.ledger.free_preferred(self.tiers)),
+                                len(borrowable & set(self.tiers['preferred'])))
+                            if can_borrow else 0)
+        borrowing = available < declared or preferred_borrow > 0
+        if pressure_override:
+            # The override above was earned by the CPUs this claim's own free
+            # tokens map to.  A borrowed CPU is different evidence: it is a
+            # *held* reservation judged idle from its holder's telemetry, not
+            # from the fresh sample that proof read, so the proof does not
+            # cover it -- and a borrowed CPU can be busy right now while its
+            # holder's average still reads cheap.  Rather than extend the proof
+            # to a CPU it never saw, the lending path is closed for this one
+            # decision: the claim is still admitted when ordinary free tokens
+            # cover its demand.  Ordinary borrowing, taken when no pressure
+            # override is in play, is unchanged.
+            if available < declared:
+                return refuse("pressure_override_no_borrow",
+                              available_cpu=available, declared_cpu=declared)
+            can_borrow, preferred_borrow = False, 0
+            borrowable = set()
+            borrowing = False
+        if borrowing:
+            last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
+            authorized = (cpu_lending.legacy_borrower_allowed(item) and fresh and shape and not measurement and lendable
+                          and len(borrowable) >= declared - available
+                          and sample['sampled_unix'] > last)
+            if not authorized and available >= declared:
+                # A preferred borrow is a placement preference, not a need:
+                # free tokens already cover the demand.  When the borrow cannot
+                # be authorized -- most often because this sample's one borrow
+                # was already spent -- the claim takes its free tokens instead
+                # of being refused.  Where those land on fallback CPUs, the
+                # claim path's bounded ``deferred_for_preferred_cpu`` decides
+                # whether to wait for a preferred one; a refusal here cost one
+                # sample interval per item for nothing (#924).
+                preferred_borrow, borrowing = 0, False
+            elif not authorized:
+                return refuse("borrow_evidence_unavailable", fresh=fresh, shape=shape,
+                              lendable=lendable, available_cpu=available,
+                              declared_cpu=declared, borrowable_cpus=len(borrowable),
+                              last_borrow_sampled_unix=last)
+        self.last_decision = {"reason": "admitted", "sample": sample, **measurement_drain}
+        return {'declared_cpu': declared, 'cost': cost, 'shape': shape,
+                'unbounded_cpu': unbounded_cpu,
+                'measurement': measurement, 'serves_measurement': serves,
+                'dependent_allowance': dict(allowance) if allowance else None,
+                # What an exclusive admission was judged idle against, so
+                # measurements can be compared on the baselines they ran on.
+                'idle_baseline': idle if exclusive_need and fresh else None,
+                'admitted_unix': now,
+                'preferred_borrow': preferred_borrow,
+                'eligible_cpus': eligible_cpus,
+                'sampled_unix': sample.get('sampled_unix', 0), 'borrowing': borrowing,
+                'host_busy_cpus': sample.get('busy_cpus'), 'host_psi_some': sample.get('psi_some'),
+                'active_cpu_cost': active_cost, 'pending_cpu_cost': pending,
+                'borrowable_cpus': sorted(borrowable, key=lambda c: sample.get('per_cpu_busy', {}).get(str(c), 0.))}
+
+
+    def _opportunistic_decision(self, item, demand, *, identity=None, owner=_UNREAD, allowance=None,
+                 foreign_load_exempt=False, reservation_demand=None):
         """Decide under admission; callers may pre-read sealed action identity.
 
         ``owner`` is the producer a dependent serves, when the caller knows it
@@ -1877,17 +2295,12 @@ class Controller:
         declared = int(demand.get('cpu', 0))
         unbounded_cpu = not declared
         resolved_owner = dependent_owner(item) if owner is _UNREAD else owner
-        legacy = 'cpu_qos' not in item
-        eligibility = cpu_lending.legacy_eligibility(item, shape=shape, measurement=measurement)
-        if not legacy and self._ramp_cap:
-            eligibility = cpu_lending.opportunistic_eligibility(
-                item, _sealed_request(item), measurement=measurement,
-                owner=resolved_owner, allowance=allowance)
-            if not shape or declared >= len(self.cpus):
-                eligibility = None
-        if item.get('cpu_qos') == 'opportunistic' and not self._ramp_cap:
-            return refuse('cpu_lending_disabled')
-        qos = 'legacy' if legacy else 'opportunistic' if eligibility is not None else 'protected'
+        eligibility = cpu_lending.opportunistic_eligibility(
+            item, _sealed_request(item), measurement=measurement,
+            owner=resolved_owner, allowance=allowance)
+        if not shape or declared >= len(self.cpus):
+            eligibility = None
+        qos = 'opportunistic' if eligibility is not None else 'protected'
         # Measurements, unbounded demand and full-width reservations need the
         # host idle.  "Idle" is judged against the host's own idle history
         # (#997), which every fresh decision feeds, not a fixed fraction of
@@ -1932,7 +2345,7 @@ class Controller:
         occupied = set()
         for holder in holders:
             try:
-                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+                allocation = self.ledger.opportunistic_cpu_allocation(holder.name, self.tiers)
             except ValueError:
                 return refuse('unknown_holder_affinity', holder=holder.name)
             occupied.update(allocation['preferred'] + allocation['fallback'])
@@ -1983,7 +2396,7 @@ class Controller:
                 return refuse('host_pressure_unproven', fresh=fresh)
             held = set()
             for holder in holders:
-                allocation = self.ledger.cpu_allocation(holder.name, self.tiers)
+                allocation = self.ledger.opportunistic_cpu_allocation(holder.name, self.tiers)
                 held.update(allocation['preferred'] + allocation['fallback'])
             # A verified publication canary crosses foreign load (#1239):
             # its verdict is correctness-only -- receipts, envelopes, bitwise
@@ -2064,7 +2477,7 @@ class Controller:
             return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh,
                           baseline=idle)
         profiles = read_json(self.base / 'profiles.json')
-        recent = read_json(self.base / 'jobs.json')
+        recent = read_json(self.base / 'jobs-opportunistic.json')
         next_recent = {}
         serves = None
         pending = 0.
@@ -2146,22 +2559,20 @@ class Controller:
             cost = float(reserved) if cpu is None else max(.05, cpu * 1.25)
             # Pass the metadata already read; an absent or unreadable file keeps
             # the ledger's own read and its own refusal on a torn record.
-            allocation = self.ledger.cpu_allocation(holder.name, self.tiers, metadata=meta or None)
+            allocation = self.ledger.opportunistic_cpu_allocation(holder.name, self.tiers, metadata=meta or None)
             assigned = set(allocation['preferred'] + allocation['fallback'])
             for cpu_id in assigned:
                 assignments[cpu_id] = assignments.get(cpu_id, 0) + 1
             outstanding += meta.get('borrowed_cpu', 0)
             borrowers += int(bool(meta.get('borrowed_cpu')))
-            donor = legacy and meta.get('cpu_qos') in (None, 'legacy')
-            if not legacy:
-                donor_eligibility = cpu_lending.opportunistic_eligibility(
-                    meta, _sealed_request(meta.get('opportunistic_policy', {})),
-                    measurement=bool(meta.get('measurement')),
-                    owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'),
-                    running=True, holder_key=holder.name)
-                donor = donor_eligibility is not None
-                if donor:
-                    cpu_lending.require_opportunistic(donor_eligibility)
+            donor_eligibility = cpu_lending.opportunistic_eligibility(
+                meta, _sealed_request(meta.get('opportunistic_policy', {})),
+                measurement=bool(meta.get('measurement')),
+                owner=meta.get('funded_by'), allowance=meta.get('dependent_allowance'),
+                running=True, holder_key=holder.name)
+            donor = donor_eligibility is not None
+            if donor:
+                cpu_lending.require_opportunistic(donor_eligibility)
             # A measurement's CPUs are never lent, not even to its own
             # dependents (#982): they are admitted beside it, on free tokens.
             # Nor are CPUs a dependent runs on from its producer's allowance
@@ -2180,7 +2591,7 @@ class Controller:
             elif (donor and meta.get('shape') and not meta.get('measurement')
                   and not meta.get('funded_by') and cost < reserved):
                 lendable = True
-        self.write_state('jobs.json', next_recent)
+        self.write_state('jobs-opportunistic.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
         self.write_state('profiles.json', profiles)
         learned = profiles.get(shape, {}) if shape else {}
@@ -2199,7 +2610,7 @@ class Controller:
                 and max(sample['busy_cpus'] + pending, active_cost) + cost > len(self.cpus) + .01):
             return refuse("projected_cpu_cost", pending_cpu_cost=pending,
                           active_cpu_cost=active_cost, requested_cpu_cost=cost)
-        selection = self.ledger.cpu_token_selection(self.tiers, eligible_cpus=eligible_cpus)
+        selection = self.ledger.cpu_token_selection(self.tiers, eligible_cpus=eligible_cpus, opportunistic=True)
         if selection.unknown_holder is not None:
             return refuse('unknown_holder_affinity', holder=selection.unknown_holder)
         available = len(selection.tokens)
@@ -2229,7 +2640,7 @@ class Controller:
             borrowable = set()
             borrowing = False
         if borrowing:
-            last = read_json(self.base / 'last-borrow.json').get('sampled_unix', 0)
+            last = read_json(self.base / 'last-opportunistic-borrow.json').get('sampled_unix', 0)
             authorized = (can_borrow
                           and len(borrowable) >= declared - available
                           and sample['sampled_unix'] > last)
@@ -2271,7 +2682,8 @@ class Controller:
                 **cpu_lending.require_opportunistic(eligibility), 'task_class': 'generation'}
         if borrowing:
             grant = cpu_lending.decide_cpu_loan(
-                eligibility, metadata, ledger=self.ledger, demand=demand, tiers=self.tiers,
+                eligibility, metadata, ledger=self.ledger,
+                demand=demand if reservation_demand is None else reservation_demand, tiers=self.tiers,
                 history=history, sample=sample, assignments=assignments,
                 outstanding=outstanding, borrowers=borrowers, pending=pending, cost=cost,
                 state_path=self.base / 'cpu-lending.json')
@@ -2284,18 +2696,69 @@ class Controller:
         return metadata
 
     def admitted(self, metadata):
+        if metadata.get('cpu_qos') == 'opportunistic':
+            return self._opportunistic_admitted(metadata)
+        return self._legacy_admitted(metadata)
+
+    def _legacy_admitted(self, metadata):
         """Spend the sample's borrow freshness; answer what it replaced."""
         if not metadata.get('borrowing'):
             return None
-        grant = cpu_lending.spend_cpu_loan(metadata)
         previous = read_json(self.base / 'last-borrow.json')
         metadata['borrow_id'] = uuid.uuid4().hex
-        grant['borrow_id'], grant['previous'] = metadata['borrow_id'], previous
         self.write_state('last-borrow.json', {
             'sampled_unix': metadata['sampled_unix'], 'borrow_id': metadata['borrow_id']})
         return previous
 
+
+    def _opportunistic_admitted(self, metadata):
+        """Spend the sample's borrow freshness; answer what it replaced."""
+        if not metadata.get('borrowing'):
+            return None
+        grant = cpu_lending.spend_cpu_loan(metadata)
+        previous = read_json(self.base / 'last-opportunistic-borrow.json')
+        metadata['borrow_id'] = uuid.uuid4().hex
+        grant['borrow_id'], grant['previous'] = metadata['borrow_id'], previous
+        self.write_state('last-opportunistic-borrow.json', {
+            'sampled_unix': metadata['sampled_unix'], 'borrow_id': metadata['borrow_id']})
+        return previous
+
     def withdrew(self, metadata, previous):
+        if metadata.get('cpu_qos') == 'opportunistic':
+            return self._opportunistic_withdrew(metadata, previous)
+        return self._legacy_withdrew(metadata, previous)
+
+    def _legacy_withdrew(self, metadata, previous):
+        """Give the freshness back when the claim it was spent on never happened.
+
+        A borrowing decision is spent at the decision, not at the rename, so a
+        claimant that loses the rename has already consumed the sample.  It
+        never used it: its tokens went back and no borrowed CPU was ever
+        occupied, so keeping the record would refuse the retry that the lost
+        race is supposed to allow.
+
+        Only while the record is still this decision's own.  A newer borrow
+        that landed in between owns it now, and writing an older sample over
+        that one would let the newer sample authorize a second borrow -- the
+        one thing ``admitted`` exists to prevent.  So this is a
+        compare-and-set, and it belongs under the same lock as ``admitted``.
+        """
+        if not metadata.get('borrowing'):
+            return
+        # A host sample can be returned and borrowed again. Its timestamp is
+        # not the owner of that later borrow. Retire this caller's authority
+        # before I/O too: a write followed by an exception is still a return.
+        borrow_id = metadata.pop('borrow_id', None)
+        if not borrow_id:
+            return
+        current = read_json(self.base / 'last-borrow.json')
+        if (current.get('borrow_id') != borrow_id
+                or current.get('sampled_unix') != metadata.get('sampled_unix')):
+            return
+        self.write_state('last-borrow.json', previous or {})
+
+
+    def _opportunistic_withdrew(self, metadata, previous):
         """Give the freshness back when the claim it was spent on never happened.
 
         A borrowing decision is spent at the decision, not at the rename, so a
@@ -2320,11 +2783,11 @@ class Controller:
         metadata.pop('borrow_id', None)
         if not borrow_id:
             return
-        current = read_json(self.base / 'last-borrow.json')
+        current = read_json(self.base / 'last-opportunistic-borrow.json')
         if (current.get('borrow_id') != borrow_id
                 or current.get('sampled_unix') != grant['fields']['sampled_unix']):
             return
-        self.write_state('last-borrow.json', grant['previous'] or {})
+        self.write_state('last-opportunistic-borrow.json', grant['previous'] or {})
 
 
 def learn_export(ledger, template_sha256, owner, published_unix, landing_s, family=None):
