@@ -179,9 +179,11 @@ def _publish_cleanup_permit(queue, permit):
                 or not isinstance(prior_containers, dict) or prior_containers.get('complete') is not True
                 or prior_containers.get('remaining')):
             raise record_store.PoolContractError('conflicting cleanup recovery supplement')
-        annotations = ('resource_scope_cleanup', 'container_cleanup', 'cleanup_obligation')
-        if ({k: v for k, v in original.items() if k not in annotations}
-                != {k: v for k, v in record.items() if k not in annotations}):
+        # Retry bookkeeping and recovered control may advance after the
+        # immutable proof commits. Its owner identity and intent cannot.
+        if any(original.get(field) != record.get(field)
+               for field in ('action_key', 'published_unix', 'claimed_by', 'claimed_host',
+                             'claimed_unix', 'resource_scope_intent', 'container_owner')):
             raise record_store.PoolContractError('cleanup supplement belongs to a changed owner')
         record.update(resource_scope_cleanup=previous['resource_scope_cleanup'],
                       container_cleanup=previous['container_cleanup'],

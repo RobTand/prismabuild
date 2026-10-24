@@ -298,7 +298,9 @@ def _named_cleanup_mutant(monkeypatch):
     else:
         import inspect
         import textwrap
-        function = debt._cleanup_owner if mutant in ('nonce', 'owner-key', 'lease-key') else debt._verify_cleanup_identity
+        function = (debt._publish_cleanup_permit if mutant == 'retry-metadata' else
+                    debt._cleanup_owner if mutant in ('nonce', 'owner-key', 'lease-key') else
+                    debt._verify_cleanup_identity)
         source = textwrap.dedent(inspect.getsource(function))
         if mutant == 'nonce':
             source = source.replace("if debt is not None and (", "if False and (")
@@ -306,6 +308,10 @@ def _named_cleanup_mutant(monkeypatch):
             source = source.replace(
                 "if record.get('action_key') != key or (lease is not None and lease.get('action_key') != key):",
                 'if False:')
+        elif mutant == 'retry-metadata':
+            source = source.replace(
+                "for field in ('action_key', 'published_unix',",
+                "for field in ('container_cleanup_attempts', 'action_key', 'published_unix',")
         elif mutant == 'stale':
             source = source.replace("'challenge': challenge, 'empty': True", "'challenge': answer.get('challenge'), 'empty': True")
         else:
@@ -432,3 +438,26 @@ def test_legacy_claim_cannot_redirect_cleanup_to_another_action(refused, fault):
             queue.reconcile_cleanup(key, queue.records.attempt_generation(record), 1)
     assert path.read_bytes() == before
     assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
+
+
+def test_recovery_replays_after_summary_write_failure_advances_retry_metadata(refused, monkeypatch):
+    queue, item, connected = refused
+    key = item['action_key']
+    replace = queue.records.replace_record_at
+    interrupted = []
+    def fail_summary(path, record):
+        if (record.get('cleanup_obligation') or {}).get('state') == 'resolved' and not interrupted:
+            interrupted.append(True)
+            raise OSError('injected failure after immutable cleanup proof')
+        return replace(path, record)
+    with connected():
+        with monkeypatch.context() as patch:
+            patch.setattr(queue.records, 'replace_record_at', fail_summary)
+            queue.reap_stale()
+        assert interrupted == [True]
+        assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
+        queue.reap_stale()
+    failed = pool.record_store.read_document(queue.records.item_path(pool.FAILED, key))
+    assert failed is not None, 'cleanup did not recover after pending metadata advanced'
+    assert failed['resource_scope_cleanup']['complete'] is True
+    assert queue.ledger().held() == {}

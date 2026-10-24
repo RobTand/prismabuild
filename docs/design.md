@@ -6987,7 +6987,9 @@ owner record, its canonical digest and verified scope/container evidence. The
 mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
 obligation. Original command status, immutable attempts, logs, generation and
 publication endings remain intact. A crash between supplement and summary is
-replayable only after another fresh verification. `pb_action` exposes pending
+replayable only after another fresh verification. Replay binds the saved claim
+identity and scope intent while allowing cleanup counters and recovered control
+to advance after a partial summary write. `pb_action` exposes pending
 obligations independently of the command outcome. This operation neither
 creates success receipts nor changes an already released reservation. This is
 source support; deployment and reconciliation of the two live actions require
