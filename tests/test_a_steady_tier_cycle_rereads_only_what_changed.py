@@ -43,7 +43,6 @@ import os
 from pathlib import Path
 import shutil
 import sys
-import tempfile
 import time
 
 import pytest
@@ -109,6 +108,15 @@ class _Loop:
         self.counts = bench.build_queue(self.queue, self.stage,
                                         shape or _shape())
         self.receipts = tier_loop.ReceiptCache()
+        self._directory_clock = time.time_ns()
+
+    def changed_directory(self, path: Path) -> None:
+        self._directory_clock += 1000000000
+        os.utime(path, ns=(self._directory_clock, self._directory_clock))
+
+    def record_move(self, key: str, document: dict) -> None:
+        self.queue.record_move(key, document)
+        self.changed_directory(self.queue.root / tier_loop.MOVER_RECEIPTS)
 
     def cycle(self) -> list[dict[str, object]]:
         return tier_loop.cycle(
@@ -159,25 +167,10 @@ LOCAL_CLOCK = {"zfs", "ext4", "xfs", "btrfs", "tmpfs"}
 
 
 def _clock_root(tmp_path: Path) -> Path:
-    """A fresh fixture directory on a local-clock filesystem.
-
-    The stamps the index keeps are trusted only where the mount table names
-    zfs/ext4/xfs/btrfs/tmpfs; on a box whose own ``tmp_path`` is not one of
-    those (dl380g10's /home/rob/tmp is not), the test would measure the
-    fallback. ``/dev/shm`` is tried first, then the worker's admitted
-    temporary directory; the fixture never writes to ``/tmp``.
-    """
-
-    for candidate in (Path("/dev/shm"), tmp_path):
-        try:
-            if not candidate.is_dir() or not os.access(candidate, os.W_OK):
-                continue
-        except OSError:
-            continue
-        if _filesystem_type(candidate) in LOCAL_CLOCK:
-            return Path(tempfile.mkdtemp(prefix="pb-tier-cycle-",
-                                         dir=candidate))
-    pytest.skip("no writable local-clock filesystem for the fixture")
+    """Use the admitted local-disk temporary directory."""
+    root = tmp_path / "local-clock"
+    root.mkdir()
+    return root
 
 
 @pytest.fixture()
@@ -254,8 +247,8 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
     queue = loop.queue
     mover = bench._key("late-receipt")
     late = bench._key("late-fragment")
-    queue.record_move(mover, {"tier_id": bench.TIER, "unix": time.time(),
-                              "complete": True})
+    loop.record_move(mover, {"tier_id": bench.TIER, "unix": time.time(),
+                             "complete": True})
     root = queue.records.residency_fragment_root()
     namespace = sorted(entry.name for entry in os.scandir(root)
                        if entry.is_dir() and len(entry.name) == 64)[0]
@@ -269,6 +262,7 @@ def test_a_change_between_cycles_is_read_by_the_next(loop: _Loop) -> None:
             residency_map.residency_map_key(str(loop.stage / "late"), 0): {
                 "stage_path": str(loop.stage / "late"), "bytes": 1,
                 "sha256": "b" * 64, "offset": 0}}})
+    loop.changed_directory(root / namespace)
     after = loop.cycle()[0]["fill_records"]
     reads = tier_loop.LAST_CYCLE["reads"]
     assert after == before + 1
@@ -295,6 +289,7 @@ def _write_late_fragment(loop: _Loop, name: str) -> None:
             residency_map.residency_map_key(str(loop.stage / name), 0): {
                 "stage_path": str(loop.stage / name), "bytes": 1,
                 "sha256": "b" * 64, "offset": 0}}})
+    loop.changed_directory(root / namespace)
 
 
 def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
@@ -307,7 +302,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
 
     loop.cycle()
     loop.cycle()
-    loop.queue.record_move(bench._key("kept-receipt"), {
+    loop.record_move(bench._key("kept-receipt"), {
         "tier_id": bench.TIER, "unix": time.time(), "complete": True})
     _write_late_fragment(loop, "kept-fragment")
     loop.cycle()
@@ -341,9 +336,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
 
 
 def test_an_unreadable_receipt_directory_is_skipped_and_named(
-        tmp_path: Path) -> None:
-    if os.geteuid() == 0:
-        pytest.skip("root reads a directory whatever its mode")
+        tmp_path: Path, monkeypatch) -> None:
     small = _Loop(tmp_path, _small_shape())
     prewarm = small.queue.root / pool.record_store.PREWARM
     prewarm.mkdir(parents=True, exist_ok=True)
@@ -351,15 +344,37 @@ def test_an_unreadable_receipt_directory_is_skipped_and_named(
     assert tier_loop.LAST_CYCLE["completed"] is True
     assert not tier_loop.LAST_CYCLE.get("receipts_unreadable")
     before = small.cycle()[0]["fill_records"]
-    prewarm.chmod(0)
-    try:
+    native_listdir, native_scandir = os.listdir, os.scandir
+
+    def is_target(path):
+        if isinstance(path, int):
+            opened, wanted = os.fstat(path), prewarm.stat()
+            return (opened.st_dev, opened.st_ino) == (wanted.st_dev, wanted.st_ino)
+        path = Path(path)
+        if str(path).startswith("/proc/self/fd/"):
+            path = path.resolve()
+        return path == prewarm
+
+    def listdir(path=".", *args, **kwargs):
+        if is_target(path):
+            raise PermissionError(str(prewarm))
+        return native_listdir(path, *args, **kwargs)
+
+    def scandir(path=".", *args, **kwargs):
+        if is_target(path):
+            raise PermissionError(str(prewarm))
+        return native_scandir(path, *args, **kwargs)
+
+    small.changed_directory(prewarm)
+    with monkeypatch.context() as denied:
+        denied.setattr(os, "listdir", listdir)
+        denied.setattr(os, "scandir", scandir)
         small.cycle()
         recorded = tier_loop.LAST_CYCLE
         assert recorded["completed"] is True
         assert list(recorded["receipts_unreadable"]) == [str(prewarm)], (
             recorded.get("receipts_unreadable"))
-    finally:
-        prewarm.chmod(0o755)
+    small.changed_directory(prewarm)
     after = small.cycle()[0]["fill_records"]
     assert not tier_loop.LAST_CYCLE.get("receipts_unreadable")
     assert after == before
