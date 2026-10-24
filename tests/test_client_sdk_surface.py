@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 import prismabuild.client as client
-from prismabuild import contracts
+from prismabuild import contracts, decomposition
 from prismabuild import manifest_layout
 from prismabuild import (
     action_result,
@@ -58,11 +58,12 @@ def _no_outer_launch_identity(monkeypatch):
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
 
-SDK_VERSION = 6
+SDK_VERSION = 7
 
 #: Each callable's parameters as ``[kind]name[=default]``: ``*`` keyword-only,
 #: no prefix positional-or-keyword.
 SIGNATURES = {
+    "validate_logical_request": "value",
     "injected_context": "queue=None, *env=None, *residency_root=None",
     "acquire_for": "ctx, *tier_id, *epoch, *covers, *expected=None, *span, *acquire_token, *ram=None, *context=None, *residency_root=None, *material_namespace=None, *file_pin=True",
     "open_pinned": "queue, pin, ref_id, key, *residency_root=None",
@@ -119,7 +120,7 @@ SIGNATURES = {
 }
 
 CONSTANTS = {
-    "SDK_VERSION": 6,
+    "SDK_VERSION": 7,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": "prismabuild.ephemeral_scratch.v1",
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": "prismabuild.scratch_declaration_record.v1",
     "SCRATCH_LIFETIME_TAG": "scratch-lifetime-v1",
@@ -167,6 +168,7 @@ TYPES = {"PoolQueue": pool.PoolQueue, "ResidencyMapError": residency_map.Residen
 
 #: Names the SDK re-exports unchanged, with the internal object each must be.
 REEXPORTS = {
+    "validate_logical_request": decomposition.validate_logical_request,
     "EPHEMERAL_SCRATCH_SCHEMA_V1": local_scratch.EPHEMERAL_SCRATCH_SCHEMA_V1,
     "LocalScratchError": local_scratch.LocalScratchError,
     "bind_ephemeral_scratch": local_scratch.bind_ephemeral_scratch,
