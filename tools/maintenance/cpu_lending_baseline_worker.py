@@ -19,19 +19,22 @@ def capture_main_cpu_attempt(row, ledger, tiers, output_root):
 
     if ledger is None or tiers is None or 'cpu_allocation' not in row:
         return None
-    key = row['action_key']
-    assigned = set(row['cpu_allocation']['preferred'] + row['cpu_allocation']['fallback'])
-    tokens = immutable_files.match_optional(ledger.held_dir / key, 'cpu-*')
-    owned = set(ledger.cpu_ids(tokens, tiers))
-    metadata = ledger.holder_census().cpu_record(key).fields
-    borrowed = [] if metadata.get('funded_by') else sorted(assigned - owned)
-    identity = {name: row.get(name) for name in
-                ('action_key', 'published_unix', 'claimed_by', 'claimed_unix', 'claimed_host')}
-    identity['attempt'] = int(row.get('attempts', 0)) + 1
-    evidence = {**identity, 'source_commit': '43234d0fbd42d6ed76da38658cb9f447ed19a606',
-                'topology_sha256': core.canonical_sha256(tiers),
-                'assigned_cpus': sorted(assigned), 'physical_cpus': sorted(owned),
-                'borrowed_cpus': borrowed, 'funded_by': metadata.get('funded_by')}
+    with ledger._mutation_locked(blocking=False) as captured:
+        if not captured:
+            raise RuntimeError('baseline capture census reader busy')
+        key = row['action_key']
+        assigned = set(row['cpu_allocation']['preferred'] + row['cpu_allocation']['fallback'])
+        tokens = immutable_files.match_optional(ledger.held_dir / key, 'cpu-*')
+        owned = set(ledger.cpu_ids(tokens, tiers))
+        metadata = ledger.holder_census().cpu_record(key).fields
+        borrowed = [] if metadata.get('funded_by') else sorted(assigned - owned)
+        identity = {name: row.get(name) for name in
+                    ('action_key', 'published_unix', 'claimed_by', 'claimed_unix', 'claimed_host')}
+        identity['attempt'] = int(row.get('attempts', 0)) + 1
+        evidence = {**identity, 'source_commit': '43234d0fbd42d6ed76da38658cb9f447ed19a606',
+                    'topology_sha256': core.canonical_sha256(tiers),
+                    'assigned_cpus': sorted(assigned), 'physical_cpus': sorted(owned),
+                    'borrowed_cpus': borrowed, 'funded_by': metadata.get('funded_by')}
     path = Path(output_root) / key / (core.canonical_sha256(identity) + '.json')
     immutable_files.publish_immutable(path, core._canonical_bytes(evidence))
     return path
@@ -48,9 +51,15 @@ def install_main_cpu_baseline_observer(output_root):
     original = pool.PoolQueue._build_claim_record
 
     @wraps(original)
-    def observed(queue, *args, **kwargs):
-        row = original(queue, *args, **kwargs)
-        capture_main_cpu_attempt(row, kwargs.get('ledger'), kwargs.get('cpu_tiers'), output_root)
+    def observed(queue, committed, scan_pass):
+        row = original(queue, committed, scan_pass)
+        try:
+            capture_main_cpu_attempt(row, scan_pass.ledger, scan_pass.cpu_tiers, output_root)
+        except Exception as exc:
+            # Observation cannot refuse or crash main's claim. This marker,
+            # or any missing attempt sidecar, invalidates the whole cohort.
+            print('CPU_BASELINE_CAPTURE_FAILED ' + str(row.get('action_key'))
+                  + ' ' + type(exc).__name__, file=sys.stderr, flush=True)
         return row
 
     pool.PoolQueue._build_claim_record = observed

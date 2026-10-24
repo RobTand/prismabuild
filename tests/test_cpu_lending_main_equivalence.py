@@ -16,13 +16,26 @@ BASE = json.loads(REFERENCE.read_bytes())
 SCENARIOS = sorted(BASE['outcomes'])
 
 
-def run_trace(tmp_path, scenario):
+def run_trace(tmp_path, scenario, ramp_cap=0):
     builder = scenario.startswith('builder_')
     name = scenario.removeprefix('builder_')
     fixture = ROOT / 'tests/compat/support' / (
         'cpu_lending_cap0_fixture.py' if builder else 'cpu_lending_review_cap0_fixture.py')
     tmp_path.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run([sys.executable, str(fixture), str(tmp_path), name],
+    command = [sys.executable, str(fixture), str(tmp_path), name]
+    if ramp_cap:
+        injection = """import runpy,sys
+from prismabuild import adaptive_cpu
+original = adaptive_cpu.Controller.__init__
+def configured(self, *args, **kwargs):
+    kwargs['ramp_cap'] = 2
+    original(self, *args, **kwargs)
+adaptive_cpu.Controller.__init__ = configured
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        command = [sys.executable, '-c', injection, str(fixture), str(tmp_path), name]
+    result = subprocess.run(command,
         cwd=tmp_path, env=dict(os.environ, PYTHONPATH=str(ROOT / 'src'),
                               PRISMABUILD_BOX_STATE_ROOT=str(tmp_path / 'box-state')),
         capture_output=True, text=True, timeout=600)
@@ -73,3 +86,8 @@ def test_b3_builder_cases_work_without_git_history_or_git_executable(tmp_path):
         text=True, capture_output=True, timeout=600)
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
     assert '5 passed' in result.stdout
+
+
+@pytest.mark.parametrize('scenario', SCENARIOS)
+def test_undeclared_matches_main_at_positive_cap(tmp_path, scenario):
+    assert run_trace(tmp_path, scenario, ramp_cap=2) == BASE['outcomes'][scenario]

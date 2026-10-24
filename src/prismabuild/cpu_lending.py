@@ -323,7 +323,7 @@ def finish_cpu_acquisition(metadata):
 
 
 def spend_cpu_loan(metadata):
-    record = require_cpu_loan(metadata, current=False)
+    record = require_cpu_loan(metadata)
     if record['phase'] != 'reserved':
         raise ValueError('CPU loan grant was not reserved or was already spent')
     record['phase'] = 'spent'

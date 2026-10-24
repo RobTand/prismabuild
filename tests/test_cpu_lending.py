@@ -473,8 +473,17 @@ def test_opted_gpu_slot_demand_binds_the_physical_reservation(loan_rig):
     assert ledger.cpu_allocation(item['action_key'], tiers) == {'preferred': [0], 'fallback': []}
 
 
-def test_legacy_and_opted_loans_spend_separate_samples_and_share_only_occupied_ids(loan_rig):
+def test_legacy_and_opted_loans_spend_separate_samples_and_share_only_occupied_ids(loan_rig, monkeypatch):
     ledger, tiers, controller, donor, item, metadata = loan_rig
+    legacy_item = {'action_key': 'c' * 64, 'resources': {'cpu': 1}}
+    controller.decision(legacy_item, legacy_item['resources'], identity=('legacy', False), owner=None)
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 132.)
+    monkeypatch.setattr(controller, '_sampler', lambda: observation(132.))
+    adaptive_cpu.write_json(controller.base / 'telemetry' / (donor['action_key'] + '.json'), {
+        'action_key': donor['action_key'], 'complete': True, 'nonce': 'c' * 32,
+        'sampled_unix': 132., 'wall_seconds': 32., 'cpu_seconds': 3.2})
+    metadata = controller.decision(item, item['resources'], identity=('candidate', False), owner=None)
+    assert metadata and metadata['borrowing']
     handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
     assert handle and ledger.commit_acquire(item['action_key'], handle)
     controller.admitted(metadata)
@@ -489,3 +498,15 @@ def test_legacy_and_opted_loans_spend_separate_samples_and_share_only_occupied_i
     controller.admitted(legacy)
     assert (controller.base / 'last-borrow.json').exists()
     assert (controller.base / 'last-opportunistic-borrow.json').read_bytes() == opted
+
+
+@pytest.mark.parametrize('field', ['cpu_qos', 'borrowing', 'cpu_weight'])
+def test_missing_opted_label_cannot_fall_back_to_legacy_lifecycle(loan_rig, field):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+    assert handle
+    metadata.pop(field)
+    with pytest.raises(ValueError, match='grant'):
+        controller.admitted(metadata)
+    assert not (controller.base / 'last-borrow.json').exists()
+    ledger.abandon_acquire(handle)

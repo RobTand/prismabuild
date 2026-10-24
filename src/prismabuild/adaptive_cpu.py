@@ -1830,7 +1830,7 @@ class Controller:
         sample = self._host_sample
         if self._ramp_cap:
             self._observe_lending(sample, time.time())
-        evidence = {'cap': 0, 'generation': None,
+        evidence = {'cap': self._ramp_cap, 'generation': None,
                     'sampled_unix': sample.get('sampled_unix'), 'gate_open': None,
                     'loan_budget': None, 'gate_reason': 'legacy_adaptive'}
         self.last_decision['lending'] = evidence
@@ -2702,7 +2702,7 @@ class Controller:
         return metadata
 
     def admitted(self, metadata):
-        if metadata.get('cpu_qos') == 'opportunistic':
+        if cpu_lending.opportunistic_metadata(metadata):
             return self._opportunistic_admitted(metadata)
         return self._legacy_admitted(metadata)
 
@@ -2719,7 +2719,7 @@ class Controller:
 
     def _opportunistic_admitted(self, metadata):
         """Spend the sample's borrow freshness; answer what it replaced."""
-        if not metadata.get('borrowing'):
+        if not metadata.get('borrowing') and metadata.get('_loan_grant') is None:
             return None
         grant = cpu_lending.spend_cpu_loan(metadata)
         previous = read_json(self.base / 'last-opportunistic-borrow.json')
@@ -2730,7 +2730,7 @@ class Controller:
         return previous
 
     def withdrew(self, metadata, previous):
-        if metadata.get('cpu_qos') == 'opportunistic':
+        if cpu_lending.opportunistic_metadata(metadata):
             return self._opportunistic_withdrew(metadata, previous)
         return self._legacy_withdrew(metadata, previous)
 
@@ -2749,7 +2749,7 @@ class Controller:
         one thing ``admitted`` exists to prevent.  So this is a
         compare-and-set, and it belongs under the same lock as ``admitted``.
         """
-        if not metadata.get('borrowing'):
+        if not metadata.get('borrowing') and metadata.get('_loan_grant') is None:
             return
         # A host sample can be returned and borrowed again. Its timestamp is
         # not the owner of that later borrow. Retire this caller's authority
@@ -2779,7 +2779,7 @@ class Controller:
         one thing ``admitted`` exists to prevent.  So this is a
         compare-and-set, and it belongs under the same lock as ``admitted``.
         """
-        if not metadata.get('borrowing'):
+        if not metadata.get('borrowing') and metadata.get('_loan_grant') is None:
             return
         grant = cpu_lending.require_cpu_loan(metadata, current=False)
         # A host sample can be returned and borrowed again. Its timestamp is

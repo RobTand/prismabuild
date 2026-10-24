@@ -176,6 +176,9 @@ def opted_guest_claims(fleet, monkeypatch, sample):
             has_gpu=True, capacity=fleet.capacity, cpu_tiers=fleet.tiers,
             cpu_lending_ramp_cap=2, **fields)
     monkeypatch.setattr(fleet, 'claim', claim)
+    fleet.queue.announce(host='cpuhost', tags=['cpuhost', 'x86', pool.contracts.CPU_QOS_TAG],
+        has_gpu=False, capacity={'cpu': 8, 'mem_gb': 16},
+        observed_capacity={'cpu': 8, 'mem_gb': 16}, cpu_tiers=fleet.tiers)
     fleet.queue.announce(host='sparky', tags=['sparky', 'gb10', pool.contracts.CPU_QOS_TAG],
         has_gpu=True, capacity=fleet.capacity, observed_capacity=fleet.capacity,
         cpu_tiers=fleet.tiers, observed_detail={'observed_unix': time.time(), 'load1': 0.,

@@ -80,3 +80,40 @@ def test_legacy_acquisition_never_calls_opted_capability_checks(tmp_path, monkey
         metadata = controller.decision(item, item['resources'], identity=('known', False), owner=None)
         handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
         assert handle and ledger.commit_acquire(item['action_key'], handle)
+
+
+@pytest.mark.parametrize('need,values', [
+    (1, {}), (1, {'sampled_unix': 90.}), (1, {'busy_cpus': 8.}),
+    (1, {'psi_some': .2, 'per_cpu_busy': {str(cpu): .95 for cpu in range(8)}}),
+    (8, {}), (0, {}), (1, {'interval_s': float('nan')}),
+])
+def test_shared_nonloan_gates_have_the_same_decision_and_allocation(tmp_path, monkeypatch, need, values):
+    from prismabuild import adaptive_cpu, pool
+    monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 100.)
+    monkeypatch.setattr(adaptive_cpu, '_sealed_request',
+                        lambda item: {'task': {'task_class': 'generation'}, 'params': {}})
+    tiers = {'preferred': list(range(4)), 'fallback': list(range(4, 8))}
+    sample = {'sampled_unix': 100., 'cpu_count': 8, 'interval_s': 1., 'busy_cpus': .4,
+              'per_cpu_busy': {str(cpu): .05 for cpu in range(8)},
+              'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0., **values}
+    outcomes = []
+    for policy in ('protected', 'opportunistic'):
+        ledger = pool.ResourceLedger(tmp_path / policy / 'reservations', 'parity-host')
+        ledger.ensure_capacity({'cpu': 8})
+        ledger.configure_cpu_tiers(tiers)
+        controller = adaptive_cpu.Controller(ledger, tiers, sampler=lambda: sample, ramp_cap=2)
+        item = {'action_key': 'a' * 64, 'resources': {'cpu': need},
+                'cpu_qos': policy, 'priority': -10}
+        allocation = None
+        with controller.locked():
+            metadata = controller.decision(item, item['resources'], identity=('known', False), owner=None)
+            if metadata:
+                assert not metadata['borrowing'] and '_loan_grant' not in metadata
+                handle = ledger.begin_acquire(item['action_key'], item['resources'],
+                                              adaptive=metadata, cpu_tiers=tiers)
+                if handle:
+                    allocation = ledger.cpu_allocation(handle, tiers)
+                    ledger.abandon_acquire(handle)
+        outcomes.append((metadata is not None, controller.last_decision['reason'],
+                         (metadata or {}).get('cost'), allocation))
+    assert outcomes[0] == outcomes[1]

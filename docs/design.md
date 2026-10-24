@@ -6739,14 +6739,17 @@ The existing adaptive lending remains the default (#2156). With cap 0 and no
 including refusals, preferred borrowing, wide loans and physical allocations.
 Cap 0 never reads or writes `cpu-lending.json`. The permanent regression compares all 27 reviewer and builder fixtures with
 SHA-pinned outcomes captured from the adopted main commit through PB on ARM
-and x86. It needs no old Git history. A second structural regression compares
+and x86. It needs no old Git history. The same 27 undeclared traces also match main
+with a positive cap. A second structural regression compares
 main statements with the restored legacy methods, removing only the named
 explicit-policy and actual-opportunistic-occupancy identity guards.
 
 `pbrun --cpu-qos protected|opportunistic` adds explicit execution policy outside
 the action-result cache identity. Explicit protected work neither lends nor
-borrows. Explicit opportunistic work requires effective priority -10, a known
-generation shape and a positive ramp cap. Measurements, unknown shapes,
+borrows. The additive opportunistic path requires effective priority -10, a known
+generation shape and a positive ramp cap. At cap 0 the direct controller keeps
+main behavior even for that declaration, at weight 100. Published opted rows
+require `cpu-qos-v1`, so a cap-0 worker cannot claim them. Measurements, unknown shapes,
 exclusive GPU work and funded dependent allocations cannot opt in. Priority or
 publication changes before acquisition invalidate eligibility. Undeclared work
 keeps legacy lending at weight 100; explicit opportunistic attempts use 10.
@@ -6768,15 +6771,17 @@ projections and READY-GPU room counts. Only actual opportunistic loans activate
 those projections, including when their cap is later disabled. Legacy-only
 loans, repeated lending, orphaned IDs, SMT donors, telemetry rewrites, unrelated
 releases and cached sample acquisition retain main's decisions. Unknown holder
-affinity refuses opted acquisition with `unknown_holder_affinity`; older static
+affinity refuses opted acquisition with `unknown_holder_affinity`. If an actual
+opportunistic loan has unreadable affinity, ordinary admission also refuses
+until its occupied IDs are known or released. Older static
 holders retain main's fallback on the legacy path. x86 SMT remains fallback and
 is never a new opted lending target. Spark P-core masks are unchanged.
 
 Claims, immutable attempts and terminal records retain `cpu_admission` with
 actual borrowed CPU IDs, the sample timestamp, history generation, cap, gate,
 budget and gate reason. Refusal decisions retain the same gate evidence in
-existing bounded denial records. At cap 0 the gate and budget are explicitly
-unknown and the reason is `legacy_adaptive`. Requeue clears selected QoS,
+existing bounded denial records. For legacy decisions the gate and budget are explicitly unknown and the reason
+is `legacy_adaptive`; the recorded cap is the actual loop setting. Requeue clears selected QoS,
 weight and admission evidence while preserving the declaration and archived
 attempts. These diagnostic records cannot authorize a loan.
 
