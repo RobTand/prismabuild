@@ -221,8 +221,21 @@ def _guard_cleanup_authority(source):
             assert parent.name == '_verify_cleanup_identity'
 
 
-def test_authority_shape_and_bypass_mutant_are_guarded():
+def _guard_cleanup_signatures(source):
     import ast
+    tree = ast.parse(source)
+    for name in ('reconcile_cleanup', '_recover_cleanup_obligation'):
+        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+        assert [a.arg for a in method.args.args] == ['self', 'action_key', 'generation', 'attempt']
+        assert method.args.posonlyargs == []
+        assert method.args.kwonlyargs == []
+        assert method.args.defaults == []
+        assert method.args.kw_defaults == []
+        assert method.args.kwarg is None
+        assert method.args.vararg is None
+
+
+def test_authority_shape_and_bypass_mutant_are_guarded():
     from prismabuild import cleanup_obligation as debt
     source = Path(debt.__file__).read_text()
     _guard_cleanup_authority(source)
@@ -234,12 +247,12 @@ def test_authority_shape_and_bypass_mutant_are_guarded():
                 _guard_cleanup_authority(candidate)
     with pytest.raises(AssertionError):
         _guard_cleanup_authority(source + '\ndef bypass():\n    return _CleanupPermit(_MINT)\n')
-    tree = ast.parse(Path(pool.__file__).read_text())
-    for name in ('reconcile_cleanup', '_recover_cleanup_obligation'):
-        method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
-        assert [a.arg for a in method.args.args] == ['self', 'action_key', 'generation', 'attempt']
-        assert method.args.kwarg is None
-        assert method.args.vararg is None
+    _guard_cleanup_signatures(Path(pool.__file__).read_text())
+    with pytest.raises(AssertionError):
+        _guard_cleanup_signatures(
+            'class Queue:\n'
+            ' def reconcile_cleanup(self, action_key, generation, attempt, *, proof=None): pass\n'
+            ' def _recover_cleanup_obligation(self, action_key, generation, attempt): pass\n')
 
 
 def test_private_verifier_rejects_foreign_queue_objects(refused):
