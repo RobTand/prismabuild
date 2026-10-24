@@ -254,7 +254,7 @@ def test_shape_learning_grows_immediately_when_same_shape_gets_greedier(rig):
     # already invalidates its earlier cheap profile and protects its CPU IDs.
     publish(3)
     assert claim() is None
-    learned = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles.json')
+    learned = adaptive_cpu.read_json(adaptive_cpu.local_state_base(queue.ledger().base) / 'profiles-opportunistic.json')
     assert learned['shape']['cpu'] >= 2.
 
 

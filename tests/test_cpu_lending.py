@@ -419,7 +419,7 @@ def test_closed_policy_cannot_issue_a_loan(loan_rig, fault):
     ledger, tiers, controller, donor, item, issued = loan_rig
     metadata = dict(issued)
     state = adaptive_cpu.read_json(controller.base / 'cpu-lending.json')
-    sample = copy.deepcopy(controller._host_sample)
+    sample = copy.deepcopy(controller.last_decision['sample'])
     assignments = {cpu: 1 for cpu in tiers['preferred']}
     cost, borrowers = issued['cost'], 0
     if fault == 'pressure':

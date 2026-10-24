@@ -60,7 +60,7 @@ KINDS = (
                "prismabuild.pool:PoolQueue._awaited_wave_members", (), ("legacy", "published", "empty"),
                ("members may omit published_unix; writer is external to this repository",), negative_field="waves", caller_input=True),
 
-    RecordKind("state-cpu-profile", None, "host-local adaptive profiles.json; never restored from the shared diagnostic copy", "additive",
+    RecordKind("state-cpu-profile", None, "host-local adaptive profiles.json and profiles-opportunistic.json; never restored from the shared diagnostic copy", "additive",
                "prismabuild.adaptive_cpu:Controller.decision", ("prismabuild.adaptive_cpu:record_completion", "prismabuild.adaptive_cpu:Controller.decision"),
                ("learned", "single", "replay", "live"), ("insufficient samples grant no learned CPU discount",), negative_field=None, stable_paths=True,
                variant_writers=(("learned", "prismabuild.adaptive_cpu:record_completion"), ("single", "prismabuild.adaptive_cpu:record_completion"),
@@ -78,7 +78,7 @@ KINDS = (
     RecordKind("state-export-rates", None, "host-local adaptive export-rates.json", "additive",
                "prismabuild.adaptive_cpu:export_slots", ("prismabuild.adaptive_cpu:learn_export",), ("template", "family"),
                ("unknown or insufficient history grants only the default export slot",), negative_field=None, stable_paths=True),
-    RecordKind("state-cpu-sample", None, "host-local adaptive cpu-sample.json", "additive",
+    RecordKind("state-cpu-sample", None, "host-local adaptive cpu-sample.json and cpu-sample-opportunistic.json", "additive",
                "prismabuild.adaptive_cpu:Controller.sample", ("prismabuild.adaptive_cpu:Controller.sample",), ("fresh", "cached"),
                ("cached observations remain bounded by the actual sampling interval",), negative_field="observation", negative_value=None, stable_paths=True),
     RecordKind("state-gpu", None, "host-local adaptive gpu-state.json", "additive",

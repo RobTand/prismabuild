@@ -49,7 +49,8 @@ def test_refused_opted_rows_do_not_learn_legacy_telemetry_twice(tmp_path, monkey
         ledger.configure_cpu_tiers(tiers)
         donor = 'd' * 64
         handle = ledger.begin_acquire(donor, {'cpu': 4}, cpu_tiers=tiers,
-            adaptive={'declared_cpu': 4, 'shape': 'donor', 'cost': 4., 'measurement': False})
+            adaptive={'declared_cpu': 4, 'shape': 'donor', 'cost': 4.,
+                      'measurement': False, 'admitted_unix': 100.})
         assert handle and ledger.commit_acquire(donor, handle)
         for tick in range(4):
             clock[0] = 100. + tick
@@ -67,6 +68,7 @@ def test_refused_opted_rows_do_not_learn_legacy_telemetry_twice(tmp_path, monkey
                              'cpu_qos': 'opportunistic', 'priority': -10}
                     assert controller.decision(opted, opted['resources'], identity=('opted', False), owner=None) is None
                 controller.decision(legacy, legacy['resources'], identity=('legacy', False), owner=None)
+        assert adaptive_cpu.read_json(controller.base / 'profiles.json')['donor']['samples'] == 3
         snapshots.append({name: (controller.base / name).read_bytes()
                           if (controller.base / name).exists() else None
                           for name in ('profiles.json', 'jobs.json', 'idle-baseline.json', 'last-borrow.json')})
