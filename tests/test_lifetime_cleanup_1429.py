@@ -125,14 +125,16 @@ def test_late_snapshot_completion_keeps_its_cleanup_proof_and_successor_isolatio
     assert queue.attempt_outcomes(record_store.read_document(path))[0] == original
 
 
-def test_empty_removal_error_never_certifies_a_vanished_checkout(
-        tmp_path, broker, monkeypatch):
+@pytest.mark.parametrize("unlinked", [False, True])
+def test_empty_removal_error_requires_independent_inode_proof(
+        tmp_path, broker, monkeypatch, unlinked):
     queue, action, _ = fenced_snapshot_queue(tmp_path)
     monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
     original = materialize.owned_tree.remove_tree
 
     def remove_then_fail(*args, **kwargs):
-        original(*args, **kwargs)
+        if unlinked:
+            original(*args, **kwargs)
         raise PermissionError()
 
     monkeypatch.setattr(materialize.owned_tree, "remove_tree", remove_then_fail)
@@ -141,11 +143,20 @@ def test_empty_removal_error_never_certifies_a_vanished_checkout(
     assert outcome["status"] == "executed"
     assert outcome["checkout_cleanup"]["complete"] is False
     assert "PermissionError" in outcome["checkout_cleanup"]["error"]
-    pending = _finish(queue, item, outcome)
+    destination = _finish(queue, item, outcome)
     key = item["action_key"]
-    assert pending == queue.records.item_path(pool.CLAIMED, key)
-    assert queue.ledger().held_keys() == [key]
-    assert queue.records.lease_path(key).exists()
-    assert reservation.attempt_release_audit(queue.queue, record_store.read_document(pending)) is None
-    assert queue.reap_stale() == []
-    assert queue.ledger().held_keys() == [key]
+    journal = queue.root / "checkout-unlinks" / (outcome["checkout_cleanup"]["registration"]["execution_id"] + ".json")
+    if unlinked:
+        assert journal.exists(), "only a held original fd may establish this proof"
+        assert destination == queue.records.item_path(pool.DONE, key)
+        assert queue.ledger().held_keys() == []
+        assert not queue.records.lease_path(key).exists()
+        assert record_store.read_document(destination)["checkout_cleanup"]["unlinked"] is True
+    else:
+        assert not journal.exists()
+        assert destination == queue.records.item_path(pool.CLAIMED, key)
+        assert queue.ledger().held_keys() == [key]
+        assert queue.records.lease_path(key).exists()
+        assert reservation.attempt_release_audit(queue.queue, record_store.read_document(destination)) is None
+        assert queue.reap_stale() == []
+        assert queue.ledger().held_keys() == [key]

@@ -103,7 +103,7 @@ def test_scope_maintenance_refusal_cannot_release_failed_checkout_removal(tmp_pa
 
 @pytest.mark.parametrize("entry", ["finish", "withdraw", "reap"])
 @pytest.mark.parametrize("fault", ["permission", "partial", "empty_after_remove"])
-def test_removal_fault_retains_every_release_path(tmp_path, broker, monkeypatch, entry, fault):
+def test_removal_fault_needs_independent_unlink_at_every_release_path(tmp_path, broker, monkeypatch, entry, fault):
     queue, action, _ = fenced_snapshot_queue(tmp_path)
     key = action["action_key"]
     checkout_root = tmp_path / "materialized"
@@ -129,11 +129,19 @@ def test_removal_fault_retains_every_release_path(tmp_path, broker, monkeypatch,
         queue.withdraw(key, reason="independent cleanup review")
     elif entry == "reap":
         queue.reap_stale()
-    assert queue.ledger().held_keys() == [key]
-    assert queue.records.lease_path(key).exists()
-    assert not queue.records.item_path(pool.DONE, key).exists()
-    assert reservation.attempt_release_audit(
-        queue.queue, record_store.read_document(queue.records.item_path(pool.CLAIMED, key))) is None
+    journal = queue.root / "checkout-unlinks" / (outcome["checkout_cleanup"]["registration"]["execution_id"] + ".json")
+    if fault == "empty_after_remove":
+        assert journal.exists()
+        assert queue.ledger().held_keys() == []
+        assert not queue.records.lease_path(key).exists()
+        assert record_store.read_document(queue.records.item_path(pool.DONE, key))["checkout_cleanup"]["unlinked"]
+    else:
+        assert not journal.exists()
+        assert queue.ledger().held_keys() == [key]
+        assert queue.records.lease_path(key).exists()
+        assert not queue.records.item_path(pool.DONE, key).exists()
+        assert reservation.attempt_release_audit(
+            queue.queue, record_store.read_document(queue.records.item_path(pool.CLAIMED, key))) is None
 
 
 @pytest.mark.parametrize("recovery", ["reap", "drain", "withdraw"])
@@ -241,4 +249,7 @@ def test_proven_durable_cleanup_survives_stale_caller_detail(tmp_path, broker, m
     destination = _finish(queue, item, outcome)
     assert destination == queue.records.item_path(pool.DONE, key)
     assert queue.ledger().held_keys() == []
-    assert record_store.read_document(destination)["checkout_cleanup"] == proven
+    certified = record_store.read_document(destination)["checkout_cleanup"]
+    assert all(certified[field] == proven[field] for field in ("path", "device", "inode", "registration", "claim"))
+    assert certified["complete"] and certified["unlinked"]
+    assert certified["ended_unix"] >= proven["ended_unix"]
