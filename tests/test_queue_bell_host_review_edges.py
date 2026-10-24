@@ -116,7 +116,7 @@ def test_linked_authoritative_metadata_cannot_change_without_invalidation(tmp_pa
 
 
 @pytest.mark.parametrize("holder_name", ["legacy", ".legacy"])
-def test_an_empty_legacy_holder_refuses_until_cleanup_and_needs_a_hint(tmp_path, holder_name):
+def test_an_empty_holder_refuses_opted_work_until_cleanup_and_needs_a_hint(tmp_path, holder_name):
     queue = pool.PoolQueue(tmp_path / "queue")
     for state in queue_bell.REQUIRED_STATE_DIRS:
         (queue.root / state).mkdir(parents=True, exist_ok=True)
@@ -128,10 +128,10 @@ def test_an_empty_legacy_holder_refuses_until_cleanup_and_needs_a_hint(tmp_path,
     holder.mkdir()
     marker = holder / ".unfinished-metadata"
     marker.touch()
-    controller = adaptive_cpu.Controller(ledger, tiers, sampler=lambda: {
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=2, sampler=lambda: {
         "sampled_unix": time.time(), "cpu_count": 2, "interval_s": 1.0,
         "busy_cpus": 0.0, "psi_some": 0.0})
-    item = {"action_key": "a" * 64}
+    item = {"action_key": "a" * 64, "cpu_qos": "opportunistic", "priority": -10}
     with controller.locked():
         assert controller.decision(item, {"cpu": 1}, identity=("shape", False)) is None
         assert controller.last_decision["reason"] == "holder_reservation_unknown"

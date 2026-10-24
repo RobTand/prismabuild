@@ -1435,6 +1435,7 @@ class Controller:
         self.base = local_state_base(ledger.base)
         self._host_sample = None
         self._idle = None
+        self._opportunistic_idle = None
         # The (sampled_unix, {cpu: [pids]}) foreign-PID census, recomputed
         # at most once per sample (#1185): it names the suspects in a
         # measurement_foreign_ambient refusal, never a decision input.
@@ -1451,7 +1452,7 @@ class Controller:
                 self._lending_identity = {'boot_id': boot_id, 'tiers': tiers,
                                           'ramp_cap': self._ramp_cap}
 
-    def idle(self, sample, holders):
+    def idle(self, sample, holders, *, opportunistic=False):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
 
         Under the admission lock, like every other file in ``self.base``.  One
@@ -1459,9 +1460,11 @@ class Controller:
         candidates reads the history once and writes it at most once.
         """
         key = (sample.get('sampled_unix'), bool(holders))
-        if self._idle is not None and self._idle[0] == key:
-            return self._idle[1]
-        state = read_json(self.base / IDLE_BASELINE)
+        cached = self._opportunistic_idle if opportunistic else self._idle
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        name = 'idle-baseline-opportunistic.json' if opportunistic else IDLE_BASELINE
+        state = read_json(self.base / name)
         cpus = len(self.cpus)
 
         def prior_rule(current):
@@ -1473,23 +1476,28 @@ class Controller:
             state, sample, holders=bool(holders), identity=cpus,
             prior_rule=prior_rule)
         if updated != state:
-            self.write_state(IDLE_BASELINE, updated)
+            self.write_state(name, updated)
         # The reference THIS verdict judged against, taken from the
         # judgement itself and never re-derived here, so #1233's
         # re-judgement cannot drift from the window's own choice -- not for
         # a forced holder tail nor after an identity reset, which judge
         # against nothing and hand back None (#1236 review).
-        self._idle = (key, verdict, reference, prior_rule)
+        cached = (key, verdict, reference, prior_rule)
+        if opportunistic:
+            self._opportunistic_idle = cached
+        else:
+            self._idle = cached
         return verdict
 
-    def _measurement_idle_refusal(self, sample, idle, ambient):
+    def _measurement_idle_refusal(self, sample, idle, ambient, *, opportunistic=False):
         """Classify idle evidence without granting resources or isolation."""
         if not idle['exceeds']:
             return None
         if ambient is not None and ambient['exceeds']:
             return 'measurement_foreign_ambient'
-        if ambient is not None and ambient['clear'] and self._idle is not None:
-            reference, prior_rule = self._idle[2:]
+        cached = self._opportunistic_idle if opportunistic else self._idle
+        if ambient is not None and ambient['clear'] and cached is not None:
+            reference, prior_rule = cached[2:]
             # Clear assigned CPUs supersede aggregate CPU busy, not PSI.
             # Project PSI against THIS cached window; never reread/reseed it.
             # None is a forced holder tail, not an empty unmeasured reference.
@@ -1720,10 +1728,11 @@ class Controller:
             if acquired:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
-    def sample(self):
+    def sample(self, *, opportunistic=False):
         if self._sampler is not None:
             return self._sampler()
-        path = self.base / 'cpu-sample.json'
+        name = 'cpu-sample-opportunistic.json' if opportunistic else 'cpu-sample.json'
+        path = self.base / name
         previous = read_json(path)
         # No proc census for each candidate inside the same sampling interval.
         if 0 <= time.time() - previous.get('sampled_unix', 0) < MIN_INTERVAL_S:
@@ -1785,7 +1794,7 @@ class Controller:
                     key: (busy - excluded[key]) / total
                     for key, (busy, total) in zip(current['cpus'], deltas)}
         current['observation'] = observation
-        self.write_state('cpu-sample.json', current)
+        self.write_state(name, current)
         return observation
 
     def _funding(self, owner, holders, demand, census):
@@ -2265,9 +2274,7 @@ class Controller:
         funding_refusal = None
         measurement_drain = {}
         self.last_decision = {"reason": "not_evaluated"}
-        if self._ramp_cap or self._host_sample is None:
-            self._host_sample = self.sample()
-        sample = self._host_sample
+        sample = self.sample(opportunistic=True)
         now = time.time()
         history = {'open': False, 'budget': 0, 'reason': 'legacy_adaptive'}
         if self._ramp_cap:
@@ -2329,7 +2336,7 @@ class Controller:
         # host idle.  "Idle" is judged against the host's own idle history
         # (#997), which every fresh decision feeds, not a fixed fraction of
         # the CPUs that housekeeping alone can cross.
-        idle = (self.idle(sample, holders) if fresh else
+        idle = (self.idle(sample, holders, opportunistic=True) if fresh else
                 {'state': 'sample_not_fresh', 'exceeds': True})
         exclusive_need = measurement or unbounded_cpu or declared == len(self.cpus)
         ambient = (self._measurement_foreign_ambient(sample, holders, declared)
@@ -2481,7 +2488,7 @@ class Controller:
             return refuse("measurement_sampler_unknown", fresh=False, baseline=idle,
                           sample_max_age_s=MAX_SAMPLE_AGE_S)
         if measurement:
-            idle_refusal = self._measurement_idle_refusal(sample, idle, ambient)
+            idle_refusal = self._measurement_idle_refusal(sample, idle, ambient, opportunistic=True)
             if idle_refusal is not None:
                 evidence = (ambient['evidence']
                             if idle_refusal == 'measurement_foreign_ambient'
@@ -2501,6 +2508,9 @@ class Controller:
             return refuse("unbounded_cpu_not_exclusive", holders=len(holders), fresh=fresh,
                           baseline=idle)
         profiles = read_json(self.base / 'profiles.json')
+        for profile_shape, learned in read_json(self.base / 'profiles-opportunistic.json').items():
+            if learned.get('sampled_unix', 0) >= profiles.get(profile_shape, {}).get('sampled_unix', 0):
+                profiles[profile_shape] = learned
         recent = read_json(self.base / 'jobs-opportunistic.json')
         next_recent = {}
         serves = None
@@ -2618,7 +2628,7 @@ class Controller:
                 lendable = True
         self.write_state('jobs-opportunistic.json', next_recent)
         profiles = dict(sorted(profiles.items(), key=lambda x: x[1].get('sampled_unix', 0))[-512:])
-        self.write_state('profiles.json', profiles)
+        self.write_state('profiles-opportunistic.json', profiles)
         learned = profiles.get(shape, {}) if shape else {}
         learned_valid = (learned.get('samples', 0) >= 3
                          and 0 <= now - learned.get('sampled_unix', 0) < 86400)

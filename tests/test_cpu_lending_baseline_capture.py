@@ -56,6 +56,20 @@ def test_main_baseline_excludes_funded_allowance_ids(tmp_path):
     assert json.loads(output.read_bytes())['borrowed_cpus'] == []
 
 
+def test_main_baseline_records_unknown_affinity_instead_of_silently_omitting_attempt(tmp_path):
+    tiers = {'preferred': [0], 'fallback': []}
+    ledger = pool.ResourceLedger(tmp_path / 'reservations', 'baseline-host')
+    ledger.ensure_capacity({'cpu': 1, 'mem_gb': 1})
+    ledger.configure_cpu_tiers(tiers)
+    key = 'b' * 64
+    handle = ledger.begin_acquire(key, {'mem_gb': 1})
+    assert handle and ledger.commit_acquire(key, handle)
+    output = OBSERVER.capture_main_cpu_attempt({'action_key': key}, ledger, tiers, tmp_path / 'baseline')
+    value = json.loads(output.read_bytes())
+    assert value['assigned_cpus'] is None and value['borrowed_cpus'] is None
+    assert value['physical_cpus'] == []
+
+
 def test_installed_observer_reads_the_positional_scan_context(tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace
     from prismabuild import digest_primitives

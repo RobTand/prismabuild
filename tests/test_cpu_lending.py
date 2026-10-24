@@ -512,6 +512,18 @@ def test_missing_opted_label_cannot_fall_back_to_legacy_lifecycle(loan_rig, fiel
     ledger.abandon_acquire(handle)
 
 
+@pytest.mark.parametrize('private', [False, True])
+def test_relabelled_opted_grant_refuses_before_acquisition(loan_rig, private):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    metadata.update(cpu_qos='legacy', cpu_weight=100)
+    before = ledger.available()
+    acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
+    with pytest.raises(ValueError, match='eligibility'):
+        acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+    assert ledger.available() == before
+    assert not (ledger.held_dir / item['action_key']).exists()
+
+
 def test_legacy_loans_do_not_consume_the_additive_opportunistic_budget(loan_rig, monkeypatch):
     ledger, tiers, controller, donor, candidate, _ = loan_rig
     stamp = [131.]

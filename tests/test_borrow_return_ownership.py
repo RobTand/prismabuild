@@ -94,20 +94,21 @@ def test_repeated_return_cannot_clear_a_peer_with_the_same_sample(loan_rig, monk
     handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=peer, cpu_tiers=tiers)
     assert handle
     controller.admitted(peer)
-    expected = adaptive_cpu.read_json(controller.base / 'last-borrow.json')
+    expected = adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json')
     assert peer['borrow_id'] != delayed['borrow_id']
     controller.withdrew(old, previous)
     controller.withdrew(delayed, previous)
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == expected
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == expected
 
 
-def test_unowned_legacy_rollback_cannot_return_a_current_borrow(loan_rig):
+def test_unissued_opted_rollback_cannot_return_a_current_borrow(loan_rig):
     from prismabuild import adaptive_cpu
     ledger, tiers, controller, donor, item, current = loan_rig
     handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=current, cpu_tiers=tiers)
     assert handle
     controller.admitted(current)
-    expected = adaptive_cpu.read_json(controller.base / 'last-borrow.json')
+    expected = adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json')
     with pytest.raises(ValueError, match='unissued'):
-        controller.withdrew({'borrowing': True, 'sampled_unix': current['sampled_unix']}, {})
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == expected
+        controller.withdrew({'cpu_qos': 'opportunistic', 'cpu_weight': 10,
+                             'borrowing': True, 'sampled_unix': current['sampled_unix']}, {})
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == expected

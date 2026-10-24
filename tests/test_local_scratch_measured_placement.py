@@ -178,7 +178,7 @@ class ScratchFleet:
                             observed_detail=detail, state=state)
 
     def build(self, *, opted_in=True, read_bytes=0, write_bytes=ISSUE_BYTES,
-              max_age=60., retry=False, cpu_qos='protected'):
+              max_age=60., retry=False):
         declaration = {"schema": IO_SCHEMA, "write_bytes": write_bytes,
                        "read_bytes": read_bytes, "profile_contract": CONTRACT,
                        "max_profile_age_s": max_age}
@@ -193,7 +193,6 @@ class ScratchFleet:
         args = pbrun.parse_args([
             "--cwd", str(self.work), "--transport", "pool", "--no-default-env",
             "--gpu", "--cpus", "1", "--demand", "mem_gb=4", *tags, *extra,
-            *(['--cpu-qos', cpu_qos, '--priority', '-10'] if cpu_qos == 'opportunistic' else []),
             *(["--max-attempts", "2", "--retry-safe"] if retry else []),
             "--", "/bin/bash", "-c", "true"])
         # prepare_submission calls the real freeze_action_template.
@@ -214,12 +213,10 @@ class ScratchFleet:
         self.key = self.action["action_key"]
         return self.key
 
-    def claim(self, host, *, gpu_sampler=None, cpu_lending=False):
+    def claim(self, host, *, gpu_sampler=None):
         self.host = host
         return self.queue.claim(owner=f"worker-{host}", capacity=CAPACITY, cpu_tiers=self.tiers,
-                                adaptive_cpu=True, has_gpu=True,
-                                tags=["gb10", CAPABILITY, *([pool.contracts.CPU_QOS_TAG] if cpu_lending else [])],
-                                cpu_lending_ramp_cap=2 if cpu_lending else 0,
+                                adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY],
                                 cpu_sampler=self.cpu_sample,
                                 gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
 
@@ -970,12 +967,11 @@ def test_real_successful_cas_negative_producers_are_not_qualified(fleet, monkeyp
 
 
 def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, label="holder",
-                            tags=("gb10",), cpu_qos='protected'):
+                            tags=("gb10",)):
     args = pbrun.parse_args([
         "--cwd", str(fleet.work), "--transport", "pool", "--no-default-env",
         *(flag for tag in tags for flag in ("--tag", tag)),
         *(["--anywhere"] if not tags else []), "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
-        *(['--cpu-qos', cpu_qos] if cpu_qos != 'protected' else []),
         "--timeout-s", "30", *(["--max-attempts", "2", "--retry-safe"] if retry else []),
         "--", "/bin/bash", "-c", f"true # {label}"])
     action = submit_core.seal(submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"])
@@ -1005,35 +1001,26 @@ def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
         tmp_path, monkeypatch, opted_in):
     fleet = ScratchFleet(tmp_path, monkeypatch, cpu_tiers={"preferred": [0], "fallback": [1, 2, 3]})
     (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
-    sampled = fleet.cpu_sample
-    monkeypatch.setattr(fleet, 'cpu_sample', lambda: {
-        **sampled(), 'per_cpu_busy': {str(c): 0. for c in range(4)},
-        'psi_avg10': 0., 'psi_avg60': 0.})
-    upgraded_tags = ['gb10', CAPABILITY, pool.contracts.CPU_QOS_TAG]
-    fleet.announce(SLOW, tags=upgraded_tags)
-    holder = _normal_cpu_publication(fleet, priority=-10, cpu_qos='opportunistic')
-    first = fleet.claim(SLOW, cpu_lending=True)
+    holder = _normal_cpu_publication(fleet)
+    first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder
     assert first["cpu_allocation"] == {"preferred": [0], "fallback": []}
     calibration = _normal_cpu_publication(fleet, cpu=4, label="telemetry-observer")
+    fleet.clock[0] += 1.
     telemetry_path = adaptive_cpu.local_telemetry_path(fleet.queue.ledger(SLOW).base, holder)
-    for second in range(1, 33):
-        fleet.clock[0] += 1.
-        adaptive_cpu.write_json(telemetry_path, {
-            'action_key': holder, 'complete': True, 'sampled_unix': fleet.clock[0],
-            'cpu_seconds': second * .1, 'wall_seconds': second, 'memory_peak_bytes': 0})
-        assert fleet.claim(SLOW, cpu_lending=True) is None
+    telemetry = {"action_key": holder, "complete": True, "sampled_unix": fleet.clock[0],
+                 "cpu_seconds": .1, "wall_seconds": 1., "memory_peak_bytes": 0}
+    adaptive_cpu.write_json(telemetry_path, telemetry)  # low-level cumulative observation
+    assert fleet.claim(SLOW) is None                # real projected-cost refusal records first point
     assert fleet.denial_for(calibration, SLOW)["reason"].startswith("adaptive_cpu_refused")
     fleet.queue.withdraw(calibration, reason="owned telemetry calibration control concluded")
-    fleet.announce(SLOW, tags=upgraded_tags)
-    fleet.publish(opted_in=opted_in, cpu_qos='opportunistic')
-    candidate = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
-    for n in range(3):
-        assert adaptive_cpu.record_completion(fleet.queue.ledger(SLOW), candidate, {
-            'action_key': fleet.key, 'nonce': str(n), 'sampled_unix': fleet.clock[0],
-            'complete': True, 'cpu_seconds': .1, 'wall_seconds': 1., 'memory_peak_bytes': 0})
+    fleet.clock[0] += 1.
+    adaptive_cpu.write_json(telemetry_path, {**telemetry, "sampled_unix": fleet.clock[0],
+                                           "cpu_seconds": .2, "wall_seconds": 2.})
+    fleet.announce(SLOW)
+    fleet.publish(opted_in=opted_in)
     assert fleet.queue.ledger(SLOW).free_preferred(fleet.tiers) == 0
-    borrowed = fleet.claim(SLOW, cpu_lending=True)
+    borrowed = fleet.claim(SLOW)
     assert borrowed is not None, "scratch local prefit blocked normal preferred borrowing"
     assert borrowed["cpu_allocation"] == {"preferred": [0], "fallback": []}
     meta = adaptive_cpu.read_json(fleet.queue.ledger(SLOW).held_dir / fleet.key / adaptive_cpu.METADATA)

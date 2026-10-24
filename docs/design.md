@@ -6755,7 +6755,11 @@ require `cpu-qos-v1`, so a cap-0 worker cannot claim them. Measurements, unknown
 exclusive GPU work and funded dependent allocations cannot opt in. Priority or
 publication changes before acquisition invalidate eligibility. Undeclared work
 keeps legacy lending at weight 100; explicit opportunistic attempts use 10.
-TL timing-sensitive shards can declare protected isolation. `pbtest` leaves QoS
+Protected work excludes opportunistic borrowed IDs, including after their donor
+exits. It retains main's treatment of legacy orphan loans, so protected means
+neither lending nor borrowing and does not promise physical disjointness from
+an orphaned legacy borrower. TL timing-sensitive shards can declare protected
+policy. `pbtest` leaves QoS
 undeclared and retains its current adaptive behavior.
 
 Protected rows require `cpu-protect-v1`, offered whenever this implementation
@@ -6830,6 +6834,11 @@ counts remain publication identity while a one-device reservation binds one
 GPU. Legacy loans retain main's unbound dictionary contract. Opted learning
 and sample spending use `jobs-opportunistic.json` and
 `last-opportunistic-borrow.json`, separate from legacy history and freshness.
+Opportunistic decisions never replace the pass's legacy sample. They use
+`cpu-sample-opportunistic.json`, `profiles-opportunistic.json` and
+`idle-baseline-opportunistic.json` for their counter windows, live profile
+updates and idle history. Main profiles may seed opted estimates read-only.
+Interleaving refused opted rows leaves legacy samples and history byte exact.
 After a complete resource return, an empty holder directory that cannot be
 removed is retired under `released-holders/`, outside the authoritative held
 namespace. Only empty directories or NFS metadata-unlink remnants can retire;
@@ -6855,14 +6864,20 @@ difference. Funded allowance IDs are excluded. Refusals remain in main's
 existing denial records. Capture failures invalidate the cohort. Reconcile
 sidecars one-to-one against immutable attempts and endings, excluding abandoned
 claims; any missing attempt makes the period inconclusive. Archive those
-sidecars, refusal records and CAS receipts before replacing main. No /proc
+sidecars, refusal records and CAS receipts before replacing main. Attempts
+without an allocation still write a sidecar with null assigned and borrowed
+IDs; unknown affinity cannot be counted as zero borrowing. The observer takes
+the census lock without waiting, preserving main's admission latency. A busy
+lock records a capture failure and invalidates the cohort. No /proc
 probe is involved. Record observer overhead and apply the same collection
 cost to comparison periods. Main endings alone cannot reconstruct released
 physical tokens.
 
 First compare this baseline with upgraded cap 0 using the same undeclared
-workload and per-attempt `cpu_admission.borrowed_cpus`. Admission decisions,
-refusals and exact borrowed IDs must be equal.
+workload and per-attempt `cpu_admission.borrowed_cpus`. The 27 deterministic
+paired traces require identical admissions, refusals and exact borrowed IDs.
+Separate live periods compare borrowed-ID rates and refusal distributions
+across matched workloads; scheduling does not make attempts pairwise identical.
 Then compare cap 0 with cap N, opting in only the eligible cohort and keeping
 TL timing-sensitive shards explicitly protected throughout.
 Rollout compares matched, post-retier cohorts for at least one hour and 100
