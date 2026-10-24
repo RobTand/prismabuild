@@ -19952,6 +19952,9 @@ retained driver. Complete inherited environment values are bound by a canonical
 digest. The parent captures one environment dictionary, hashes it and passes
 that same dictionary explicitly to the archival subprocess. Native library
 changes to the C environment cannot alter the selected launch environment.
+The expected pre-driver TMPDIR comes from that captured environment and must
+be nonempty and absolute. An unset, empty or relative TMPDIR refuses archival
+replay before launch. No host scratch path is part of runtime qualification.
 The environment observation logs only native thread variables, TMPDIR
 and TZ values. The driver then changes TMPDIR to its private store as its
 retained source requires.
