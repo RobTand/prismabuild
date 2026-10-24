@@ -1,10 +1,32 @@
 # The used-filesystem floor (#1483), v2
 
-Status: source contract, **enforcement default-off**.  The fleet runs under
-CEO decision D1 (an interim Netdata disk check) until the end-to-end proof
-below passes and the integrator turns `enforce` on.  This replaces PR #1490;
-its review (`pull/1490#issuecomment-5982325705`) is the specification this
-answers, finding by finding, at the end.
+Status: source contract, **enforcement default-off**. Historical CEO decision
+D1 described an interim Netdata disk check; this document does not establish
+the current deployed runtime or population. The existing v2 guard supersedes
+PR #1490's proposed architecture; its review
+(`pull/1490#issuecomment-5982325705`) is historical intake, not current closure.
+
+## #2045 prerequisite review packet
+
+The [existing-owner identity and allowance contract](filesystem_identity_allowance_contract_2045.json)
+is a parent-review packet for #1483, not a runtime registry, ledger or second
+validator. It reconciles existing source capabilities and destination variants,
+conservative accounting obligations, and exact existing suppliers/unblock
+conditions. Current authenticated mappings, closed allowance populations,
+complete deployment growth bounds and explicit parent acceptance of whole
+reservation bounds were not supplied. Dependent repair waits; no deployment,
+activation or physical Rob action is authorized. Structure tests do not prove
+these facts, accounting semantics or review approval.
+
+The coverage and audit notes below describe source capabilities and historical
+limits, not an all-writers certificate. Binding members and tolerant
+`held()`/`held_keys()` observations do not close the population; `floor_status`
+discovery is diagnostic. NFS server-address association is conservative routing,
+not authenticated export-to-backing identity. Descriptor-based identification
+is a snapshot, not a retained pin for later pathname writes. Unknown mappings
+or allowances require HOLD in the parent contract, without changing current
+production behavior here. Historical bootstrap/proof examples below are not
+current deployment instructions or sufficient #1483 acceptance evidence.
 
 ## The rule
 
@@ -216,13 +238,28 @@ All through PrismaBuild CPU actions on the real fleet:
   enforcing, compare `status`'s stage charge with the pool's free space; if
   pins are large the stage floor will refuse new grants early.  A
   materialization credit is the follow-up, not a precondition.
-- Worker actions' own writes to the CAS are not reserved per action; they
-  are covered by the per-poll used-path check (the floor plus every
-  outstanding allowance), not by a per-action allowance.
-- `pbcampaign --transport pool` (which calls `pbrun.prepare_submission`
-  directly) and `shape_gate` publish without `pbrun.main`, so they hold no
-  growth allowance yet; rows `pbcampaign` runs through `pbrun.main` do.
-  What they write is still covered by the workers' per-poll used-path check.
+- Worker CAS writes do not have a demonstrated complete per-action growth
+  bound here. A per-poll used-path check is not a reservation for intervening
+  writes; CAS/result staging remains a separate #2093 interface.
+- `submission.preparation` already enters `submission.write_window` around
+  package preparation and child sealing, including campaign preparation.
+  The window checks cwd, CAS, queue and temporary storage, but pool growth
+  is reserved against the CAS filesystem only. Do not describe campaign
+  preparation as wholly unguarded or infer coverage of later publications,
+  every destination's growth, or normal action claim custody from that window.
+- Supervisor worker logs, role logs and queue attempt logs have distinct
+  owners and destinations. Supervisor `LOG_DIR` is not explicitly in the
+  worker floor-path list. Inactive worker-log cleanup and role-log trimming
+  are not complete active-log bounds; #2094/#2095 retain attempt-log and
+  SLURM diagnostic custody work.
+- `prewarm_loop`'s reader is read-only; its Admission/HoldLedger/DiskPacer
+  bound speculative reads, memory and pacing, not persistent storage.
+  Queue/event/control writes, stdout and optional `--log` still need coverage.
+- Tier descriptors, registered stage-root deletion authority and returned
+  tokens do not prove physical mappings or removal of partial/retry copies.
+  Stage residence can outlive movers. Produced-spool copy completion alone
+  does not authorize unlink or charge return: preserve ACK, origin commit,
+  source release and retirement authority and source/destination coexistence.
 - The two-pass census can miss a token that moves twice during it (a commit
   immediately followed by a transfer); the next refresh counts it.
 - A lost grant-counter write (logged) under-charges until the next refresh.
@@ -244,12 +281,36 @@ All through PrismaBuild CPU actions on the real fleet:
   it every poll), so for that long after `mode enforce` a process that last
   read `off` grants without counting.  The next refresh's census counts
   those tokens.
-- `spool_gb` also funds declared local scratch pairs (#911).  Their bytes are
-  charged to the filesystem the host's `spool_gb` is bound to; scratch roots
-  on another filesystem are covered only by the used-path floor there.
+- `local_scratch.scratch_terms` sums separately rounded positive ROOT/MAX
+  declarations into host `spool_gb`. These are reservations, not quotas or
+  per-filesystem routing. A measured offer does not prove that scratch,
+  spool, checkout and logs share its filesystem or establish freshness just
+  by recording a timestamp/PID. Optional `scratch_lifetime` evidence owns
+  exact-attempt cleanup, not producer-byte enforcement. Complete growth and
+  mapping obligations remain unresolved; preserve existing positive bounds.
 - `observe` takes the floor locks exactly as `enforce` does (that is what it
   measures), so it can add up to the 5 s lock wait to a byte acquisition
   under contention; it never refuses.
+
+## #2045 packet verification
+
+Command (through the admitted test runner on both arms):
+
+```sh
+python -m pytest tests/test_filesystem_identity_allowance_contract_2045.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"
+```
+
+Final results: x86/Python 3.14 **112 passed**; ARM/Python 3.12 **112 passed**.
+An initial x86 run reported 1 failed, 111 passed because the packet cited a
+nonexistent `disk_pacing.py`; corrected the reference to the actual
+`prewarm_loop.py` owner before these final runs. These checks validate minimum
+packet structure and repository guards, not deployment facts, closed populations,
+growth bounds, parent acceptance or operational qualification. No live mapping,
+population or deployment qualification was performed or claimed.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"d7d2118b847b3b6c47bee83377ed5fee70c311d9c8c4ca84cfdeb6f6681d9708","size":2039}},"operation":"5895fd0dcd001b838dbfbb2608560935c7524814f5435cfe6c6722a7656af191","receipt":"cffb419cab409ff882aa1b457a8570222a59041d553803f8d51508211e966ff8"}]
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"18b83e5c547f26b212b8cd889f99ec057c34e5bb695c3aab857e222aff1e489d","size":2043}},"operation":"f62772b900164a912348dd6cb1d92bb6b87ab0556979e24d44d4764ff51b6a65","receipt":"68188e0d897661186f228f1445bc490fb0061bd52c802434a1de6c8f42ab18d9"}]
 
 ## Review findings (#1490) and where each is answered
 

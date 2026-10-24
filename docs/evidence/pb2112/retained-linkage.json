@@ -1,0 +1,176 @@
+[
+  {
+    "action_key": "1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5",
+    "reader_context": "PB2112 implementer, authorized file/host reader under platform-readable CAS and queue mounts",
+    "operation": "Read original receipt, result blob, sealed request and queue done bytes; check action-key equality, receipt-field linkage and result raw SHA256/size",
+    "receipt_field": "3a1d6343e896f800c26dc133e9917ab8adcc5500a118f83fa7134c236f64a13d",
+    "receipt_raw_sha256": "c5590e51ddb08e77af2cec194d402d245f12cc332198aa1a262906f4c83c432d",
+    "receipt_copy": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1a/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+      "copy": "docs/evidence/pb2112/publication-receipt.json",
+      "sha256": "c5590e51ddb08e77af2cec194d402d245f12cc332198aa1a262906f4c83c432d",
+      "bytes": 2458
+    },
+    "result_copy": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/01/0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+      "copy": "docs/evidence/pb2112/publication-result.txt",
+      "sha256": "0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+      "bytes": 427
+    },
+    "result_digest_matches": true,
+    "request": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/requests/1a/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+      "raw_sha256": "aa74b006264167a9fefc82ab3e59e0c292221e14a4f56b3e61bb7aab3d5385e6",
+      "bytes": 2895,
+      "projection_only": true,
+      "action_key": "1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5",
+      "params": {
+        "checkout_snapshot": {
+          "commit": "18cd572a332e5618ecea98b4f5e585fac6f5ee67",
+          "input": {
+            "bytes": 12479506,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "58e853a977c8701bda0d90ee5279c930b38bb8bb42b5041596721c47b3b490f6"
+          },
+          "parent": "04e4509d66c0e1becc1961766d52559a74bcb944",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "cwd": ".",
+        "demand": {
+          "cpu": 1,
+          "mem_gb": 2
+        },
+        "execution_timeout_s": 600.0,
+        "interpreter": "/usr/bin/python3",
+        "placement": {
+          "required_tags": [
+            "x86"
+          ]
+        },
+        "retry_policy": {
+          "max_attempts": 1,
+          "retry_safe": false
+        }
+      },
+      "command": [
+        "/usr/bin/python3",
+        "mint.py"
+      ]
+    },
+    "done": {
+      "reference": "/mnt/shared/prismabuild-fleet/pb-queue/done/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+      "raw_sha256": "d3d2f778ab2c11278808a043c4b2d89307b5b1a32b48c7768e9b5f202a740707",
+      "bytes": 12259,
+      "projection_only": true,
+      "status": "executed",
+      "returncode": 0,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "attempt_history": [
+        {
+          "attempt": 1,
+          "outcome": "attempts/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5/c9de53ddc04435b722367a76c0650dd1cd70bd9d7de28ed6f93a3d1d524a3ac0/00000001.json"
+        }
+      ]
+    },
+    "limit": "Original action/result linkage observed, not independent authentication of archive bytes, installed direct_url/RECORD, helper tree, or native behavior. Receipt field is NOT the raw receipt-file digest."
+  },
+  {
+    "action_key": "20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6",
+    "reader_context": "PB2112 implementer, authorized file/host reader under platform-readable CAS and queue mounts",
+    "operation": "Read original receipt, result blob, sealed request and queue done bytes; check action-key equality, receipt-field linkage and result raw SHA256/size",
+    "receipt_field": "0ed9d0134b60b0df181b15dd605b41e0ca5ce7e5e1fe0ef8d0ee14cb25440913",
+    "receipt_raw_sha256": "dce44503433834f37204ff9d1bfd0fc62199a41c194192e9181c632a0d0e7129",
+    "receipt_copy": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/20/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+      "copy": "docs/evidence/pb2112/guard-receipt.json",
+      "sha256": "dce44503433834f37204ff9d1bfd0fc62199a41c194192e9181c632a0d0e7129",
+      "bytes": 2460
+    },
+    "result_copy": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/d1/d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+      "copy": "docs/evidence/pb2112/guard-result.txt",
+      "sha256": "d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+      "bytes": 18600
+    },
+    "result_digest_matches": true,
+    "request": {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/requests/20/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+      "raw_sha256": "bdf56f1dd134108e5f6af7cc7e19cbd04e139409dd833b26e70e1e1746f0ac41",
+      "bytes": 112800,
+      "projection_only": true,
+      "action_key": "20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6",
+      "params": {
+        "checkout_snapshot": {
+          "commit": "9657ee081aae7eaf5b8d6dbf37069409a255e1a1",
+          "input": {
+            "bytes": 43377090,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "93d75797abea048d88f55a25bf164a4fee5a925ba7e4ec173de7fda625c07376"
+          },
+          "parent": "f6960f8c76a03f825b382d8f52d00a9c1b8d2ed7",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "cwd": ".",
+        "demand": {
+          "cpu": 2,
+          "mem_gb": 8
+        },
+        "execution_timeout_s": 1800.0,
+        "interpreter": "/home/rob/venvs/pq-task-suite-layer-sdk5-20261009/bin/python",
+        "placement": {
+          "required_tags": [
+            "x86"
+          ]
+        },
+        "retry_policy": {
+          "max_attempts": 1,
+          "retry_safe": false
+        }
+      },
+      "command": [
+        "/home/rob/venvs/pq-task-suite-layer-sdk5-20261009/bin/python",
+        "-c",
+        "<embedded helper code omitted; original retained at reference>",
+        "{\"files\": [\"tests/test_ship_gates.py\", \"tests/test_task_quality_replay.py\", \"tests/test_task_suite.py\", \"tests/test_task_reader_capability.py\"], \"roots\": [[\"tests/test_ship_gates.py\", \"file\"], [\"tests/test_task_quality_replay.py\", \"file\"], [\"tests/test_task_suite.py\", \"file\"], [\"tests/test_task_reader_capability.py\", \"file\"]]}",
+        "-q",
+        "--no-header",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "addopts=",
+        "-m",
+        "task_suite",
+        "tests/test_ship_gates.py",
+        "tests/test_task_quality_replay.py",
+        "tests/test_task_suite.py",
+        "tests/test_task_reader_capability.py"
+      ]
+    },
+    "done": {
+      "reference": "/mnt/shared/prismabuild-fleet/pb-queue/done/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+      "raw_sha256": "a0aca1199dfedba3bba0da3dee73b8c8a63e6c0479463b8abfb232ac303d0f59",
+      "bytes": 31627,
+      "projection_only": true,
+      "status": "executed",
+      "returncode": 0,
+      "resources": {
+        "cpu": 2,
+        "mem_gb": 8
+      },
+      "attempt_history": [
+        {
+          "attempt": 1,
+          "outcome": "attempts/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6/e8878397db69885a5eba08ac5a8ef7f24af55ca6c80f3fe66b68702804fe8376/00000001.json"
+        }
+      ]
+    },
+    "limit": "Original action/result linkage observed, not independent authentication of archive bytes, installed direct_url/RECORD, helper tree, or native behavior. Receipt field is NOT the raw receipt-file digest."
+  }
+]

@@ -303,6 +303,86 @@ def test_a_rate_is_never_reported_without_the_window_it_was_measured_over(
     assert second["window_s"] > 0
 
 
+@pytest.mark.parametrize("operation_data", [
+    "",  # missing per-op section
+    "\tper-op statistics\n",  # empty per-op section
+    "\tper-op statistics\n\tOPEN: invalid\n\tCLOSE: invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 0\n\tCLOSE: invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 0\n\tCLOSE invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 -1\n",
+])
+@pytest.mark.parametrize("passive", [False, True])
+def test_unusable_nfs_operations_clear_window_and_recover(
+    monkeypatch, operation_data, passive,
+):
+    """Bad counters are unavailable evidence, not a quiet NFS mount.
+
+    Exercise the real binary procfs reader with complete newline-terminated
+    inputs, including partially valid operation tables.
+    """
+    header = STORM.partition("\tper-op statistics\n")[0]
+    unusable = header + operation_data
+    increased = STORM.replace("GETATTR: 1024 1024", "GETATTR: 1044 1044")
+    samples = [unusable, unusable, STORM, STORM, unusable, STORM, increased]
+    reads = iter(text.encode("utf-8") for text in samples
+                 for _ in range(1 if passive else 2))
+    clock = iter(range(1000, 1070, 10))
+    actual_open = Path.open
+
+    def proc_open(path, mode="r", *args, **kwargs):
+        if str(path) != "/proc/self/mountstats":
+            return actual_open(path, mode, *args, **kwargs)
+        assert mode == "rb"
+        return io.BytesIO(next(reads))
+
+    monkeypatch.setattr(Path, "open", proc_open)
+    monkeypatch.setattr(mount_latency.time, "time", lambda: next(clock))
+    monkeypatch.setattr(mount_latency.MountSampler, "_run_probe",
+                        lambda self: {"status": "ok"})
+    monkeypatch.setattr(mount_latency, "lock_contention", lambda *a, **k: {})
+    sampler = mount_latency.MountSampler(
+        Path("/mnt/shared/prismabuild-fleet"), passive=passive)
+
+    records = [sampler.sample() for _ in samples]
+    for index in (0, 1, 4):
+        unavailable = records[index]
+        assert unavailable["rpc"] is None, "unusable counters are not zero RPCs"
+        assert unavailable["window_s"] == 0
+        assert unavailable["mount"]["transport"] == "unknown"
+        assert "unusable NFS operation data" in unavailable["note"]
+        assert not unavailable.get("attribution")
+    for index in (2, 5):
+        rebaseline = records[index]
+        assert rebaseline["rpc"] is None, "never bridge a gap in counter coverage"
+        assert rebaseline["window_s"] == 0
+    idle = records[3]
+    assert idle["window_s"] == 10
+    assert idle["rpc"]["ops"] == 0, "valid unchanged counters really are idle"
+    resumed = records[6]
+    assert resumed["window_s"] == 10
+    assert resumed["rpc"]["ops"] == 20
+    assert resumed["rpc"]["by_op"]["GETATTR"]["ops_per_s"] == 2.0
+
+
+@pytest.mark.parametrize("namespace", ["autofs", "submount", "unrelated"])
+def test_unusable_nfs_operation_rejection_respects_mount_selection(namespace):
+    bad = (HEALTHY.partition("\tper-op statistics\n")[0]
+           + "\tper-op statistics\n\tOPEN: invalid\n")
+    target = "/mnt/shared/jobs"
+    if namespace == "submount":
+        text = HEALTHY + bad.replace("/mnt/shared", "/mnt/shared/jobs")
+    elif namespace == "unrelated":
+        text = HEALTHY + bad.replace("/mnt/shared", "/elsewhere")
+    else:
+        text = bad  # includes an autofs trigger at the same mount point
+    result = _mount(text, target)
+    if namespace == "unrelated":
+        assert result is not None and result.ops["GETATTR"]["ops"] == 1000
+    else:
+        assert result is None, "do not fall back to a parent or autofs trigger"
+
+
 def test_a_remount_restarts_the_counters_and_the_window_says_so(monkeypatch):
     """Every counter goes back to zero and the mount age drops.
 
