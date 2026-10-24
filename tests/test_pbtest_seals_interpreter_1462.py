@@ -1,6 +1,8 @@
 """The generated producer seals its interpreter, environment and queue row."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
@@ -201,7 +203,7 @@ def test_published_request_keeps_the_existing_three_state_path_verdict(
 
 def test_legacy_worker_cannot_claim_the_generated_naming_row(tmp_path, monkeypatch):
     _, row, queue = _sealed(tmp_path, monkeypatch)
-    assert queue.claim(capacity=simulated_capacity({'cpu': 8, 'mem_gb': 16}), tags=['x86']) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 8, 'mem_gb': 16})), tags=['x86']) is None
     assert queue.records.item_path(pool.record_store.READY, row['action_key']).exists()
 
 
@@ -212,7 +214,7 @@ def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, mon
     shutil.copy2(Path(sys.executable).resolve(), interpreter)
     _, row, queue = _sealed(tmp_path, monkeypatch, python=str(interpreter))
     interpreter.unlink()
-    assert queue.claim(capacity=simulated_capacity({'cpu': 8, 'mem_gb': 16}),
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 8, 'mem_gb': 16})),
                        tags=[contracts.INTERPRETER_TAG]) is None
     from test_interpreter_placement import _denials
     denial = _denials(queue)[-1]

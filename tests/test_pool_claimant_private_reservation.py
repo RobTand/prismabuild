@@ -9,6 +9,8 @@ action was then admitted on capacity the winner was already executing against.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -56,12 +58,12 @@ def test_losing_same_key_claimant_keeps_the_winners_tokens(
             # admission, and rolls its own admission back.
             observed["held_before_contender"] = queue.ledger().held()
             observed["contender"] = queue.claim(
-                owner="loser", capacity=simulated_capacity({"cpu": 1}))
+                owner="loser", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
             observed["held_after_contender"] = queue.ledger().held()
         return original_intent(key, owner=owner)
 
     with mock.patch.object(queue, "_write_claim_intent", intent):
-        winner = queue.claim(owner="winner", capacity=simulated_capacity({"cpu": 1}))
+        winner = queue.claim(owner="winner", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
 
     assert winner is not None and winner["claimed_by"] == "winner"
     assert observed["contender"] is None
@@ -80,7 +82,7 @@ def test_losing_same_key_claimant_keeps_the_winners_tokens(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    other = queue.claim(owner="other-action", capacity=simulated_capacity({"cpu": 1}))
+    other = queue.claim(owner="other-action", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert other is None
     assert len(list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json"))) == 1
 
@@ -189,7 +191,7 @@ def test_a_swept_claimant_does_not_run_unreserved(
         return original_commit(self, action_key, handle)
 
     with mock.patch.object(pool.ResourceLedger, "commit_acquire", commit):
-        claimed = queue.claim(owner="swept", capacity=simulated_capacity({"cpu": 1}))
+        claimed = queue.claim(owner="swept", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
 
     assert claimed is None
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
@@ -197,6 +199,6 @@ def test_a_swept_claimant_does_not_run_unreserved(
     assert queue.ledger().held() == {}
     assert queue.ledger().available() == {"cpu": 1}
     # The item is intact, so the next poll claims it normally.
-    again = queue.claim(owner="next", capacity=simulated_capacity({"cpu": 1}))
+    again = queue.claim(owner="next", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert again is not None and again["action_key"] == KEY_A
     assert queue.ledger().held() == {"cpu": 1}

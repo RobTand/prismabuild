@@ -925,19 +925,8 @@ def private_claim_parameters(queue, *, has_gpu=False):
 
 def claim_capacity_fence(queue, capacity):
     """Recheck containment and maintenance at the last claim transition."""
-    from prismabuild import host_cap, fleet_roster
-    host_cap.require_capped_capacity(capacity)
-    box = fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,))
-
-    def admission_open():
-        if role_session.read_maintenance_gate() is not None:
-            return False
-        detail = {}
-        fresh = host_cap.enforce_host_cap(capacity, box, queue.ledger().held, detail=detail)
-        host_cap.require_capped_capacity(fresh)
-        return "host_cap_refusal" not in detail and fresh == capacity
-
-    return admission_open
+    from prismabuild import host_cap
+    return host_cap.prepare_claim_fence(queue, capacity)
 
 
 def capped_simulation_parameters(queue, capacity):

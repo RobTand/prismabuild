@@ -15,6 +15,8 @@ transition lock, exactly as a loop does through its pass.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 from contextlib import contextmanager
@@ -64,7 +66,7 @@ def _loops_holding(queue, keys):
 def _claim_only(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(row, dict)
-    result = queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+    result = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", host], ready=[row],
                          cpu_sampler=cpu_sampler,
                          gpu_sampler=gpu_sampler)

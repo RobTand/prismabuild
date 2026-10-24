@@ -8,6 +8,8 @@ does not claim it.  There is no timer; the wait ends on evidence, and CPU-only
 work still overflows onto the GPU hosts when the CPU host cannot take it.
 """
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import json
 import socket
@@ -58,7 +60,7 @@ def fleet(tmp_path):
         return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
     def claim(has_gpu=True):
-        return queue.claim(tags=['gb10'], has_gpu=has_gpu, capacity=simulated_capacity(CAPACITY),
+        return queue.claim(tags=['gb10'], has_gpu=has_gpu, **simulated_admission(queue, simulated_capacity(CAPACITY)),
                            cpu_tiers=TIERS)
 
     return queue, announce, publish, claim
@@ -216,7 +218,7 @@ def test_timer_queries_respect_an_earlier_cpu_host_charge(tmp_path, monkeypatch,
                       checkout_root=str(tmp_path), worker_script='worker.py',
                       resources={'cpu': 3, 'mem_gb': 1})
     monkeypatch.setattr(pool.time, 'monotonic', lambda: 10.)
-    claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), cpu_tiers=local_tiers)
+    claimed = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=local_tiers)
     denials = [_local_denial(queue, key) for key in sorted(keys)]
     assert claimed, [denial['reason'] for denial in denials if denial]
     left = (keys - {claimed['action_key']}).pop()

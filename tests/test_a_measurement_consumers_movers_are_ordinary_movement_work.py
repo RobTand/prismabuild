@@ -23,6 +23,8 @@ with load the pool does not own.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 import pbrun
@@ -175,7 +177,7 @@ def _busy_stage_host():
 
 
 def _claim(queue: pool.PoolQueue, cpu_sampler):
-    return queue.claim(capacity=simulated_capacity(CAPACITY), tags=["dl380g10"], cpu_tiers=CPU_TIERS,
+    return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"], cpu_tiers=CPU_TIERS,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 

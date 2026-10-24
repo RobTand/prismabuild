@@ -5,6 +5,8 @@ naming evidence neither designates required cleanup nor authorizes deletion.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import copy
@@ -75,7 +77,7 @@ def runtime(tmp_path, monkeypatch):
         queue.publish(action_key=str(action["action_key"]), cas_root=cas.root,
                       checkout_root=checkout, worker_script="/worker.py",
                       resources=demand, max_attempts=2, retry_safe=True)
-        item = queue.claim(capacity=simulated_capacity(demand))
+        item = queue.claim(**simulated_admission(queue, simulated_capacity(demand)))
         assert item is not None
         return queue, item, variables
 

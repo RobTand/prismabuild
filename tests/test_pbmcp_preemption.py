@@ -12,6 +12,8 @@ case.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -68,12 +70,12 @@ def _overwritten_handoff(tmp_path: Path):
     generations = [holder["published_unix"]]
     stops = []
     for round_number in range(2):
-        assert queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1})) is None
+        assert queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1}))) is None
         queue.finish(background, status="withdrawn", claim_snapshot=holder)
         stops.append(_stopped(queue, background, generations[-1]))
-        running = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
+        running = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
         queue.finish(foreground, status="executed", claim_snapshot=running)
-        holder = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
+        holder = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
         generations.append(holder["published_unix"])
         if round_number == 0:
             queue.publish(action_key=foreground, cas_root=tmp_path / "cas",
@@ -85,7 +87,7 @@ def _overwritten_handoff(tmp_path: Path):
     queue.publish(action_key=background, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script=tmp_path / "worker.py",
                   priority=0, resources={"gpu": 1}, max_attempts=1, retry_safe=False)
-    unrelated = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
+    unrelated = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
     queue.finish(background, status="executed", detail={"stdout": "unrelated"},
                  claim_snapshot=unrelated)
     return queue, background, generations, stops

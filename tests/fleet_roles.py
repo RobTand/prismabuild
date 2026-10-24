@@ -1,6 +1,8 @@
 """Independent queue, host, clock and registered-stage roles for test fleets."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import os
@@ -73,7 +75,7 @@ class Actions:
     def claim_new(self, key):
         self.queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                            worker_script="/w.py", resources={"cpu": 1}, max_attempts=1)
-        claimed = self.queue.claim(capacity=simulated_capacity({"cpu": 4}))
+        claimed = self.queue.claim(**simulated_admission(self.queue, simulated_capacity({"cpu": 4})))
         assert claimed is not None and claimed["action_key"] == key
         return claimed
 

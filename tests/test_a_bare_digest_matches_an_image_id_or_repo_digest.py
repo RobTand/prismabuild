@@ -16,6 +16,8 @@ repository name is the same bytes.  The qualified forms stay exact: a
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 from contextlib import contextmanager
@@ -119,7 +121,7 @@ def test_the_claim_is_admitted_on_the_store_that_holds_only_the_repo_digest(tmp_
     queue.ledger().ensure_capacity(CAPACITY)
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[BARE])
-    claimed = queue.claim(capacity=simulated_capacity(CAPACITY), tags=CLAIM_TAGS,
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                           observed_images=sorted(inventory))
     assert claimed is not None and claimed["action_key"] == KEY_A
 
@@ -131,7 +133,7 @@ def test_a_box_holding_neither_the_id_nor_the_repo_digest_still_denies(tmp_path)
             container_images=[BARE])
     # sparklina's own store ID alone: the image it names is a different
     # content-addressed object, so the requirement is absent, by name.
-    assert queue.claim(capacity=simulated_capacity(CAPACITY), tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[SPARKLINA_SET[0]]) is None
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_absent"
@@ -145,7 +147,7 @@ def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
             container_images=[BARE], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "unknown", observed_images=None)
     assert queue.placeable_hosts(queue.ready_items()[0]) == []
-    assert queue.claim(capacity=simulated_capacity(CAPACITY), tags=["gb10", *CLAIM_TAGS],
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["gb10", *CLAIM_TAGS],
                        observed_images=None) is None
     assert denials(queue)[-1]["reason"] == "container_image_presence_unknown"
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
@@ -182,7 +184,7 @@ def test_a_busy_gpu_row_keeps_room_only_where_its_image_is_present(
 
     with monkeypatch.context() as patch:
         patch.setattr(queue, "_timed_transition_hold", hold)
-        claimed = queue.claim(capacity=simulated_capacity(CAPACITY), has_gpu=True,
+        claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), has_gpu=True,
                               tags=[*CLAIM_TAGS, "test-box"],
                               observed_images=inventory)
     if keeps_room:
@@ -191,7 +193,7 @@ def test_a_busy_gpu_row_keeps_room_only_where_its_image_is_present(
         assert by_key[KEY_A]["evidence"]["gpu_room_kept"] == gpu_demand
         assert by_key[cpu_key]["reason"] == "deferred_for_ready_gpu_row"
         assert queue.records.item_path(pool.record_store.READY, cpu_key).exists()
-        assert queue.claim(capacity=simulated_capacity(CAPACITY), has_gpu=True,
+        assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), has_gpu=True,
                            tags=[*CLAIM_TAGS, "test-box"],
                            observed_images=inventory)["action_key"] == KEY_A
     else:

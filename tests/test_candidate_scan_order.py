@@ -1,6 +1,8 @@
 """Scan fairness preserves room boundaries without owning capacity or reads."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
@@ -177,7 +179,7 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
     monkeypatch.setattr(queue, "_carried_withhold", carry)
     monkeypatch.setattr(queue, "_ready_gpu_row_room", room)
     with held_transition(queue, busy):
-        claimed = queue.claim(has_gpu=True, capacity=simulated_capacity(capacity), tags=local_tags)
+        claimed = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity(capacity)), tags=local_tags)
     path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     records = json.loads(path.read_text())["records"].values()
     busy_denial = next(row for row in records if row["action_key"] == busy)

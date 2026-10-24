@@ -15,6 +15,8 @@ already knew, and a re-run of a fifty-row campaign is fifty of them.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
@@ -243,7 +245,7 @@ def test_a_detached_submission_of_finished_work_submits_nothing(
 
     served = queue.serve_once(
         tags=["sparky"], python=sys.executable, timeout_s=60.0,
-        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
+        **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})),
     )
     assert served is not None and served["status"] == "executed", served
 

@@ -25,6 +25,8 @@ pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import hashlib
@@ -180,7 +182,7 @@ class _Row:
         assert ready, f"control: phase-{ordinal}'s mover must be queued"
         claimed = self.queue.claim(
             tags=["dl380g10"], owner=f"{socket.gethostname()}:1:stage",
-            capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}), ready=ready)
+            **simulated_admission(self.queue, simulated_capacity({"cpu": 4, "mem_gb": 16})), ready=ready)
         assert claimed is not None and claimed["action_key"] == mover
         start = ordinal * PER_PHASE * SIZE
         rc = stage_move.main([

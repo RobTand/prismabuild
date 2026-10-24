@@ -11,6 +11,8 @@ payload is still using.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from prismabuild import submission
@@ -49,7 +51,7 @@ def _claim_on_the_holder(q: pool.PoolQueue, key: str) -> dict:
     """Claim as the holder box, with a launcher-style lease and no process."""
 
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
-        claimed = q.claim(owner="holder-worker", capacity=simulated_capacity({"cpu": 1}))
+        claimed = q.claim(owner="holder-worker", **simulated_admission(q, simulated_capacity({"cpu": 1})))
         assert claimed is not None
         q.write_lease(key, owner="holder-worker", child_pid=99999999)
     return claimed
@@ -115,7 +117,7 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
         resources={'cpu': 1},
     )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
-        assert queue.claim(owner="another-worker", capacity=simulated_capacity({"cpu": 1})) is None
+        assert queue.claim(owner="another-worker", **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
 
 
 def test_the_holder_completes_the_withdrawal_and_releases_then(
@@ -160,7 +162,7 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
         resources={'cpu': 1},
     )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
-        other = queue.claim(owner="another-worker", capacity=simulated_capacity({"cpu": 1}))
+        other = queue.claim(owner="another-worker", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert other is not None and other["action_key"] == KEY_B
 
 
@@ -176,7 +178,7 @@ def test_a_local_withdrawal_defers_release_to_the_claiming_worker(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    claimed = queue.claim(owner="local-worker", capacity=simulated_capacity({"cpu": 1}))
+    claimed = queue.claim(owner="local-worker", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed is not None
     result = queue.withdraw(KEY_A, reason="changed my mind")
     assert result["stop_pending"] is not None

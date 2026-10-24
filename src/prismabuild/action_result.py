@@ -390,7 +390,7 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
             or scope.get("nonce") != nonce or scope.get("scope_id") != scope_id):
         raise ActionResultError("native producer scope differs from selected claim")
     try:
-        _resource_scope._checked_control_identity(key, scope)
+        _resource_scope._checked_control_identity(key, scope, host=host)
     except ValueError as exc:
         raise ActionResultError("native producer broker control is incomplete or invalid") from exc
     resources = record.get("resources")

@@ -35,6 +35,8 @@ queue under ``tmp_path``; nothing reads or writes a real stage.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from prismabuild import batch_ledger as bl
 
@@ -173,7 +175,7 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, consumer: str) -> str:
                       "range_start_bytes": 0,
                       "range_end_bytes": storage_tiers.GIB},
                   max_attempts=1, retry_safe=False)
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == mover
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,

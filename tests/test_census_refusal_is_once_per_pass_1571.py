@@ -17,6 +17,8 @@ the queue, not an unreadable census: it is rescanned.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import fcntl
@@ -71,7 +73,7 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         claimed = queue.claim(
-            capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+            **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
             has_gpu=True, tags=["gb10", "sparklina"], ready=records,
             cpu_sampler=lambda: cpu_sample(clock, readings),
             gpu_sampler=lambda: gpu_sample(sample, readings))
@@ -104,7 +106,7 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         assert queue.claim(
-            capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+            **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
             has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
             cpu_sampler=lambda: cpu_sample(clock, readings),
             gpu_sampler=lambda: gpu_sample(sample, readings)) is None
@@ -113,7 +115,7 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
         os.close(descriptor)
 
     claimed = queue.claim(
-        capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+        **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
         has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
         cpu_sampler=lambda: cpu_sample(clock, readings),
         gpu_sampler=lambda: gpu_sample(sample, readings))

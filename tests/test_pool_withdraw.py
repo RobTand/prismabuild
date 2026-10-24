@@ -17,6 +17,8 @@ that is not in it.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -256,13 +258,13 @@ def test_a_withdrawn_item_is_dropped_before_a_claim_is_even_attempted(
     """
 
     ActionRows(queue).publish(KEY_A, resources={'cpu': 1}, max_attempts=3)
-    queue.claim(capacity=simulated_capacity({"cpu": 2}))
+    queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2})))
     _strand_a_requeue(queue, KEY_A, monkeypatch)
     # The first claim -- the one that got as far as running -- left its own
     # intent behind, and intent is not cleared on success.  Clear it so what is
     # asserted below is this claim's behaviour and not that one's dropping.
     queue.records.item_path(pool.record_store.INTENT, KEY_A).unlink(missing_ok=True)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 2})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2}))) is None
     assert not queue.records.item_path(pool.record_store.INTENT, KEY_A).exists(), (
         "the item reached the claim path instead of being dropped by the scan")
     assert queue.ledger().available() == {"cpu": 2}, "no token was ever taken"
@@ -293,7 +295,7 @@ def test_a_withdrawal_landing_inside_the_claim_still_wins(
 
     ActionRows(queue).publish(KEY_A, resources={'cpu': 1})
     monkeypatch.setattr(pool.os, "rename", rename_after_the_marker_lands)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 2})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2}))) is None
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().available() == {"cpu": 2}, "the tokens went back"
 
@@ -390,7 +392,7 @@ def test_a_withdrawal_returns_the_capacity_the_action_held(
     queue: pool.PoolQueue
 ) -> None:
     ActionRows(queue).publish(KEY_A, resources={'gpu': 1, 'mem_gb': 8})
-    queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1, "mem_gb": 8}))
+    queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1, "mem_gb": 8})))
     assert queue.ledger().available() == {}
     result = queue.withdraw(KEY_A)
     assert result["released"] == 0
@@ -581,7 +583,7 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
-    item = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1, "mem_gb": 8}))
+    item = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1, "mem_gb": 8})))
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -628,7 +630,7 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
-    queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1, "mem_gb": 8}))
+    queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1, "mem_gb": 8})))
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -657,7 +659,7 @@ def test_finish_keeps_capacity_while_an_owned_container_survives(
     queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
-    claimed = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1}))
+    claimed = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)

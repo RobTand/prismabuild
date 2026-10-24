@@ -4,6 +4,8 @@ A soft preference, not a constraint. It may make a claimant wait; it may never
 refuse work, strand it, or place it somewhere it could not run.
 """
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import socket
 import time
@@ -41,7 +43,7 @@ def placement(tmp_path, request):
                   resources={'cpu': 1, 'mem_gb': 1, **({'gpu': 1} if gpu else {})})
 
     def claim():
-        return queue.claim(tags=['local'], has_gpu=True, capacity=simulated_capacity(capacity), cpu_tiers=tiers)
+        return queue.claim(tags=['local'], has_gpu=True, **simulated_admission(queue, simulated_capacity(capacity)), cpu_tiers=tiers)
 
     return queue, announce, claim, key
 

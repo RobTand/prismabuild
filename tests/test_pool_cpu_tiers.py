@@ -1,5 +1,7 @@
 """Real affinity inherited by launchers and concurrent token-backed CPU tiers."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -38,7 +40,7 @@ def test_claims_use_preferred_then_fallback_and_release_reuses_preferred(tmp_pat
     items = []
     for i in range(2):
         publish(queue, tmp_path, i)
-        item = queue.claim(capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers)
+        item = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers)
         items.append(item)
         expected = [cpus[1], cpus[0]][i]
         result = queue.execute(item, python=sys.executable)
@@ -46,9 +48,9 @@ def test_claims_use_preferred_then_fallback_and_release_reuses_preferred(tmp_pat
         assert json.loads(result['stdout']) == [expected]
         assert result['cpu_allocation'] == item['cpu_allocation']
     publish(queue, tmp_path, 2)
-    assert queue.claim(capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers) is None
     queue.finish(items[0]['action_key'], status='executed', detail={})
-    reused = queue.claim(capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers)
+    reused = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers)
     assert reused['cpu_allocation'] == {'preferred': [cpus[1]], 'fallback': []}
     assert os.sched_getaffinity(0) >= set(cpus), 'executor narrowed parent affinity'
 
@@ -63,7 +65,7 @@ def test_concurrent_claimants_have_disjoint_cpu_reservations(tmp_path):
     barrier = threading.Barrier(8)
     def claim(_):
         barrier.wait()
-        return queue.claim(capacity=simulated_capacity({'cpu': 4}), cpu_tiers=tiers)
+        return queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 4})), cpu_tiers=tiers)
     with ThreadPoolExecutor(max_workers=8) as workers:
         items = [x for x in workers.map(claim, range(8)) if x]
     assert len(items) <= 4
@@ -86,7 +88,7 @@ def test_sequential_claimants_exhaust_cpu_capacity_without_retries(tmp_path):
         publish(queue, tmp_path, i)
     items = []
     for _ in range(4):
-        item = queue.claim(capacity=simulated_capacity({'cpu': 4}), cpu_tiers=tiers)
+        item = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 4})), cpu_tiers=tiers)
         assert item is not None
         items.append(item)
     allocated = [cpu for x in items for values in x['cpu_allocation'].values()
@@ -94,7 +96,7 @@ def test_sequential_claimants_exhaust_cpu_capacity_without_retries(tmp_path):
     assert sorted(allocated) == [2, 3, 8, 9]
     assert len(set(allocated)) == 4
     assert queue.ledger().available().get('cpu', 0) == 0
-    assert queue.claim(capacity=simulated_capacity({'cpu': 4}), cpu_tiers=tiers) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 4})), cpu_tiers=tiers) is None
     assert queue.ledger().available().get('cpu', 0) == 0
 
 
@@ -102,9 +104,9 @@ def test_conflicting_worker_affinity_cannot_reinterpret_held_tokens(tmp_path):
     queue = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [0], 'fallback': [1]}
     publish(queue, tmp_path, 0)
-    item = queue.claim(capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers)
+    item = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers)
     with pytest.raises(pool.PoolContractError, match='CPU tier map differs'):
-        queue.claim(capacity=simulated_capacity({'cpu': 2}), cpu_tiers={'preferred': [1], 'fallback': [0]})
+        queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers={'preferred': [1], 'fallback': [0]})
     assert queue.ledger().cpu_allocation(item['action_key'], tiers) == item['cpu_allocation']
 
 
@@ -112,7 +114,7 @@ def test_executor_refuses_allocation_outside_current_affinity(tmp_path, monkeypa
     queue = pool.PoolQueue(tmp_path / 'queue')
     cpu = min(os.sched_getaffinity(0))
     publish(queue, tmp_path, 0)
-    item = queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers={'preferred': [cpu], 'fallback': []})
+    item = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers={'preferred': [cpu], 'fallback': []})
     monkeypatch.setattr(os, 'sched_getaffinity', lambda _: {cpu + 1})
     with pytest.raises(pool.PoolContractError, match='exceeds current affinity'):
         queue.execute(item)
@@ -134,7 +136,7 @@ def test_remote_preferred_deferral_is_compatible_whole_demand_and_bounded(queue,
     tiers = {"preferred": [4], "fallback": [5]}
     reads = hosts.preferred_reads("another-host")
     clock.set(monotonic=10.)
-    assert queue.claim(tags=['portable'], capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers) is None
+    assert queue.claim(tags=['portable'], **simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers) is None
     assert queue.ledger().available()['cpu'] == 2
     denial = queue.latest_denials({key})[key][0]
     assert denial['reason'] == 'deferred_for_preferred_cpu'
@@ -144,7 +146,7 @@ def test_remote_preferred_deferral_is_compatible_whole_demand_and_bounded(queue,
     }
     assert len(reads) == 1, 'diagnostic evidence must reuse the admission read'
     clock.set(monotonic=31.)
-    assert queue.claim(tags=['portable'], capacity=simulated_capacity({'cpu': 2}), cpu_tiers=tiers)
+    assert queue.claim(tags=['portable'], **simulated_admission(queue, simulated_capacity({'cpu': 2})), cpu_tiers=tiers)
 
 
 @pytest.mark.parametrize('remote_tags,remote_cpus', [(['wrong-host'], 2), (['portable'], 1)])
@@ -152,7 +154,7 @@ def test_incompatible_or_too_small_remote_does_not_delay(tmp_path, remote_tags, 
     queue = pool.PoolQueue(tmp_path / 'queue')
     remote_offer(queue, tags=remote_tags, cpus=remote_cpus)
     publish(queue, tmp_path, 0, cpus=2, tags=['portable'])
-    assert queue.claim(tags=['portable'], capacity=simulated_capacity({'cpu': 2}),
+    assert queue.claim(tags=['portable'], **simulated_admission(queue, simulated_capacity({'cpu': 2})),
                        cpu_tiers={'preferred': [4], 'fallback': [5]})
 
 
@@ -162,18 +164,18 @@ def test_finished_remote_generation_drops_local_deferral(tmp_path, clock):
     key = publish(queue, tmp_path, 0)
     tiers = {'preferred': [], 'fallback': [4]}
     clock.set(monotonic=10.)
-    assert queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers=tiers) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers=tiers) is None
     ready = queue.records.item_path(pool.record_store.READY, key)
     original = ready.read_bytes()
     ready.unlink()
-    assert queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers=tiers) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers=tiers) is None
     clock.set(monotonic=31.)
     ready.write_bytes(original)
-    assert queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers=tiers) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers=tiers) is None
     assert queue.latest_denials({key})[key][0]['reason'] == 'deferred_for_preferred_cpu'
     assert queue.ledger().available() == {'cpu': 1}
     clock.set(monotonic=51.)
-    assert queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers=tiers)['action_key'] == key
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers=tiers)['action_key'] == key
 
 
 def test_legacy_cpu_reservation_prevents_map_activation(tmp_path):

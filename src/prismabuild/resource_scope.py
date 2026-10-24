@@ -378,7 +378,7 @@ def scope_path_matches(path: str | Path, unit: str, *, host: str | None = None) 
     return path == Path('/sys/fs/cgroup') / parent / kernel_unit
 
 
-def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
+def _checked_control_identity(action_key: str, control: object, *, host: str | None = None) -> tuple[str, str]:
     """Verify attempt identity and roster containment before any recovery RPC."""
     from .produced_output import _broker_scope_id
 
@@ -391,7 +391,7 @@ def _checked_control_identity(action_key: str, control: object) -> tuple[str, st
     unit = _broker_scope_id(action_key, nonce)
     if (control.get("action_key") != action_key or control.get("scope_id") != unit
             or not isinstance(control.get("cgroup_path"), str)
-            or not scope_path_matches(control["cgroup_path"], unit)
+            or not scope_path_matches(control["cgroup_path"], unit, host=host)
             or control.get("socket_path") != str(BROKER_SOCKET)
             or not isinstance(control.get("token"), str)
             or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None):

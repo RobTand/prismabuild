@@ -1,6 +1,8 @@
 """Claim-denial diagnostics are best-effort evidence, never admission state."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_claim_parameters
 
 from admitted_queue_fixture import simulated_capacity
@@ -80,7 +82,7 @@ def test_diagnostic_failure_does_not_change_a_claim_or_passes(tmp_path, monkeypa
             raise OSError("full")
         return original_write(path, value)
     monkeypatch.setattr(adaptive_cpu, "write_json", fail_denial)
-    assert queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 2}))["action_key"] == KEY_B
+    assert queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 2})))["action_key"] == KEY_B
     assert queue.passes(KEY_A) == 0
 
 
@@ -118,13 +120,13 @@ def test_unfunded_denial_distinguishes_withholding_from_past_ceiling(tmp_path):
     assert ledger.acquire("0" * 64, {"gpu": 2})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(KEY_A)
-    assert queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 4})) is None
+    assert queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 4}))) is None
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_withholding"
     sidecar = json.loads(queue.records.passes_path(KEY_A).read_text())
     sidecar["first_unix"] -= pool.WITHHOLD_CEILING_S + 1
     queue.records.passes_path(KEY_A).write_text(json.dumps(sidecar))
-    assert queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 4}))["action_key"] == KEY_B
+    assert queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 4})))["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_past_ceiling"
 
@@ -159,7 +161,7 @@ def memory_blocked_queue(tmp_path):
 
 def test_memory_shortage_names_observed_tokens_and_preserves_reservations(tmp_path):
     queue, ledger, capacity = memory_blocked_queue(tmp_path)
-    assert queue.claim(capacity=simulated_capacity(capacity)) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(capacity))) is None
     assert ledger.available() == {"cpu": 14, "mem_gb": 3}
     denial = next(iter(local_records(queue).values()))
     assert denial["reason"] == "reservation_unavailable"
@@ -168,13 +170,13 @@ def test_memory_shortage_names_observed_tokens_and_preserves_reservations(tmp_pa
     }
     assert queue.passes(KEY_A) == 1
     ledger.release(KEY_B)
-    assert queue.claim(capacity=simulated_capacity(capacity))["action_key"] == KEY_A
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(capacity)))["action_key"] == KEY_A
 
 
 def test_cpu_only_shortage_does_not_quote_a_previous_gpu_decision(tmp_path):
     queue, ledger, capacity = memory_blocked_queue(tmp_path)
     gpu = SimpleNamespace(last_decision={"reason": "unrelated_gpu_refusal"})
-    assert queue._claim(capacity=simulated_capacity(capacity), gpu_controller=gpu) is None
+    assert queue._claim(**simulated_admission(queue, simulated_capacity(capacity)), gpu_controller=gpu) is None
     denial = next(iter(local_records(queue).values()))
     assert denial["evidence"].get("gpu_decision") is None
 
@@ -215,7 +217,7 @@ def test_a_row_behind_a_whole_box_withhold_says_so(tmp_path):
     assert ledger.acquire("0" * 64, {"mem_gb": 2})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(KEY_A)
-    assert queue.claim(capacity=simulated_capacity({"mem_gb": 4})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"mem_gb": 4}))) is None
     records = {value["action_key"]: value for value in local_records(queue).values()}
     assert records[KEY_A]["reason"] == "reservation_unavailable_withholding"
     assert records[KEY_B]["reason"] == "deferred_behind_withheld_row"
@@ -233,11 +235,11 @@ def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
         publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
     args = {"capacity": {"cpu": 2, "mem_gb": 2},
             "cpu_tiers": {"preferred": [0, 1], "fallback": []}, "adaptive_cpu": True}
-    assert blocked.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: hot) is None
-    admitted = available.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: idle)
+    assert blocked.claim(**simulated_claim_parameters(args, queue=blocked), cpu_sampler=lambda: hot) is None
+    admitted = available.claim(**simulated_claim_parameters(args, queue=available), cpu_sampler=lambda: idle)
     assert admitted is not None and admitted["action_key"] == KEY_A
     assert available.ledger().held() == {"cpu": 1, "mem_gb": 1}
-    assert blocked.claim(**simulated_claim_parameters(args), cpu_sampler=lambda: hot) is None
+    assert blocked.claim(**simulated_claim_parameters(args, queue=blocked), cpu_sampler=lambda: hot) is None
     assert blocked.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert blocked.ledger().held() == {}
     denial = next(value for value in blocked._host_denial_records().values()
@@ -257,7 +259,7 @@ def test_one_claim_pass_reuses_cpu_observation_after_a_candidate_refusal(tmp_pat
         return {"sampled_unix": time.time(), "busy_cpus": .1, "psi_some": .2,
                 "cpu_count": 2, "interval_s": 1., "per_cpu_busy": {"0": 0., "1": 0.}}
 
-    admitted = queue.claim(capacity=simulated_capacity({"cpu": 2, "mem_gb": 2}),
+    admitted = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 2})),
                            cpu_tiers={"preferred": [0, 1], "fallback": []},
                            adaptive_cpu=True, cpu_sampler=sample)
     assert admitted is not None and admitted["action_key"] == KEY_B

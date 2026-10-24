@@ -1,5 +1,7 @@
 """A remote live claim keeps its authority until its own conclusion."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 from prismabuild import pool
@@ -19,7 +21,7 @@ def test_withdrawal_on_another_host_retains_the_real_claim_and_its_reservation(
     with monkeypatch.context() as host:
         host.setattr(pool.socket, "gethostname", lambda: foreign)
         clock[0] += 1
-        claimed = queue.claim(owner="foreign-holder", capacity=simulated_capacity(demand))
+        claimed = queue.claim(owner="foreign-holder", **simulated_admission(queue, simulated_capacity(demand)))
         assert claimed is not None and claimed["attempts"] == 0
         ledger = queue.ledger()
         before = queue.records.item_path(pool.record_store.CLAIMED, key).read_bytes()

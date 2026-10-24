@@ -12,6 +12,8 @@ stubbed; the queue, claim, finish, ledger and container marker are real.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import subprocess
@@ -90,7 +92,7 @@ def claimed(tmp_path: Path):
     queued = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     queued["container_owner"] = OWNER
     pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.READY, KEY), queued)
-    record = queue.claim(has_gpu=True, capacity=simulated_capacity({"gpu": 1, "mem_gb": 8}))
+    record = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1, "mem_gb": 8})))
     assert record is not None and record["action_key"] == KEY
     marker = queue.root / "container-owners" / f"{OWNER}.used"
     marker.parent.mkdir(parents=True)

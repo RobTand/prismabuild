@@ -22,6 +22,8 @@ renames a second machine would.  Nothing touches the live queue.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, FleetWorld
 
@@ -114,7 +116,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
         tags=[],
         residency=_range_block(TIER, 30 * GIB),
     )
-    first = sparky.claim(owner="sparky-worker", capacity=simulated_capacity({"cpu": 8}))
+    first = sparky.claim(owner="sparky-worker", **simulated_admission(sparky, simulated_capacity({"cpu": 8})))
     assert first is not None
     winner = first["action_key"]
     assert first["claimed_host"] == "sparky"
@@ -126,7 +128,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     _as_host(monkeypatch, "sparklina")
     sparklina = FleetWorld(shared_root.parent, queue_name=shared_root.name).queue
     loser = ON_SPARKLINA if winner == ON_SPARKY else ON_SPARKY
-    assert sparklina.claim(owner="sparklina-worker", capacity=simulated_capacity({"cpu": 8})) is None
+    assert sparklina.claim(owner="sparklina-worker", **simulated_admission(sparklina, simulated_capacity({"cpu": 8}))) is None
 
     denial = _denial(sparklina, loser)
     assert denial is not None
@@ -155,7 +157,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     sparky.finish(winner, status="executed", claim_snapshot=first)
     assert tier_holdings.for_action(sparky, winner) == {}
     _as_host(monkeypatch, "sparklina")
-    second = sparklina.claim(owner="sparklina-worker", capacity=simulated_capacity({"cpu": 8}))
+    second = sparklina.claim(owner="sparklina-worker", **simulated_admission(sparklina, simulated_capacity({"cpu": 8})))
     assert second is not None and second["action_key"] == loser
     assert second["claimed_host"] == "sparklina"
     assert tier_holdings.for_action(sparklina, loser) == {TIER: {'stage_gib': 30, 'fill_mb_s_pool_side': 200}}
@@ -180,7 +182,7 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
         tags=[],
         residency=_range_block(TIER, 1),
     )
-    held = sparky.claim(owner="sparky-worker", capacity=simulated_capacity({"cpu": 8}))
+    held = sparky.claim(owner="sparky-worker", **simulated_admission(sparky, simulated_capacity({"cpu": 8})))
     assert held is not None and held["action_key"] == ON_SPARKY
 
     _as_host(monkeypatch, "sparklina")
@@ -203,7 +205,7 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
         resources={'cpu': 1},
         tags=[],
     )
-    claimed = sparklina.claim(owner="sparklina-worker", capacity=simulated_capacity({"cpu": 8}))
+    claimed = sparklina.claim(owner="sparklina-worker", **simulated_admission(sparklina, simulated_capacity({"cpu": 8})))
     # The tier-hungry row was passed over; the ordinary row ran.
     assert claimed is not None and claimed["action_key"] == ordinary
     denial = _denial(sparklina, ON_SPARKLINA)
@@ -226,7 +228,7 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
         tags=[],
         residency=_range_block(TIER, 5 * GIB),
     )
-    assert sparky.claim(owner="sparky-worker", capacity=simulated_capacity({"cpu": 8})) is None
+    assert sparky.claim(owner="sparky-worker", **simulated_admission(sparky, simulated_capacity({"cpu": 8}))) is None
     denial = _denial(sparky, ON_SPARKY)
     assert denial is not None and denial["reason"] == "never_fits_tier_capacity"
 
@@ -241,5 +243,5 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
         tags=[],
         residency=_range_block('prismabuild-stage:nowhere', 1),
     )
-    assert sparky.claim(owner="sparky-worker", capacity=simulated_capacity({"cpu": 8})) is None
+    assert sparky.claim(owner="sparky-worker", **simulated_admission(sparky, simulated_capacity({"cpu": 8}))) is None
     assert _denial(sparky, unknown)["reason"] == "tier_unknown"

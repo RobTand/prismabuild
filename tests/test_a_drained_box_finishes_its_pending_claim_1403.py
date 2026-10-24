@@ -21,6 +21,8 @@ assertions and no admission reopening.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import hashlib
@@ -118,7 +120,7 @@ def drained_box(tmp_path, monkeypatch):
                   checkout_root=tmp_path / "checkout",
                   worker_script=str(tmp_path / "worker.py"),
                   resources=RESOURCES, max_attempts=1)
-    owner = queue.claim(capacity=simulated_capacity(HOST_CAPACITY))
+    owner = queue.claim(**simulated_admission(queue, simulated_capacity(HOST_CAPACITY)))
     assert owner is not None and owner["action_key"] == OWNER_KEY
     assert queue.ledger().held() == RESOURCES
 

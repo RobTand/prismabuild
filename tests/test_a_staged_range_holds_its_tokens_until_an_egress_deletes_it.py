@@ -16,6 +16,8 @@ names any more is swept.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -74,7 +76,7 @@ def _claim_mover(q: pool.PoolQueue, *, host: str = "dl380g10") -> dict[str, obje
         max_attempts=1,
         retry_safe=False,
     )
-    claimed = q.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=[host])
+    claimed = q.claim(**simulated_admission(q, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=[host])
     assert claimed is not None and claimed["action_key"] == MOVER
     return claimed
 
@@ -171,7 +173,7 @@ def test_an_ordinary_action_is_unaffected(queue) -> None:
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1, 'mem_gb': 1},
     )
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None
     queue.finish(CONSUMER, status="executed")
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
@@ -221,7 +223,7 @@ def test_a_consumer_is_admitted_on_a_lead_that_holds_its_bytes(queue) -> None:
         },
     )
 
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
 
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
@@ -253,7 +255,7 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
         },
     )
 
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
     # Refused without ageing the item or taking a token: the loop composes on
@@ -262,7 +264,7 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
 
     _compose_map(queue)
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
 
 
@@ -311,7 +313,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
                         lambda self, key: _StalledPath(real(self, key)))
 
     # The claim returns, rather than raising out of the scan...
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_unreadable"
     verdict = denial["evidence"]["residency"]
@@ -323,7 +325,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
 
     # The mount comes back and the same item is admitted, unchanged.
     monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path', real)
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
 
@@ -374,7 +376,7 @@ def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
         },
     )
 
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
 
     assert claimed is None
     denial = _denial(queue, CONSUMER)
@@ -406,7 +408,7 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
     )
     tier_holdings.egress_all(queue, MOVER)
 
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
     # Terminal too: the bytes are gone and only a republished mover brings
     # them back.
     assert _denial(queue, CONSUMER)["reason"] == "residency_lead_terminal"
@@ -434,7 +436,7 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
     )
 
     _compose_map(queue)
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
 
 

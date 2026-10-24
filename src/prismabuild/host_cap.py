@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import socket
 from types import MappingProxyType
 import weakref
 
@@ -16,57 +17,145 @@ MEMBERSHIP = Path("/proc/self/cgroup")
 CAP_OVERHEAD_GB = 1
 GIB = 1024**3
 
-_CAPACITY_MINT = object()
-_CAPPED_VALUES = {}
+class _AdmissionRegistry:
+    """Only this module owns registrations; instances contain no mint key."""
+    def __init__(self):
+        self.entries = {}
 
-
-class CappedCapacity(Mapping[str, int]):
-    """Immutable admission evidence minted only by the live host clamp.
-
-    Values and minting authority live outside the instance. An exact-type
-    registry check refuses object.__new__, copies, pickle and subclasses.
-    """
-    __slots__ = ("__weakref__",)
-
-    def __new__(cls, values, *, _authority=None):
-        if cls is not CappedCapacity or _authority is not _CAPACITY_MINT:
-            raise TypeError("CappedCapacity requires enforce_host_cap")
-        value = super().__new__(cls)
+    def mint(self, kind, payload):
+        value = object.__new__(kind)
         identity = id(value)
-        reference = weakref.ref(value, lambda _: _CAPPED_VALUES.pop(identity, None))
-        _CAPPED_VALUES[identity] = (reference, MappingProxyType(dict(values)))
+        reference = weakref.ref(value, lambda _: self.entries.pop(identity, None))
+        self.entries[identity] = (reference, payload)
         return value
 
-    def __getitem__(self, key):
-        require_capped_capacity(self)
-        return _CAPPED_VALUES[id(self)][1][key]
+    def payload(self, value, kind):
+        registered = self.entries.get(id(value))
+        if type(value) is not kind or registered is None or registered[0]() is not value:
+            raise TypeError("admission requires capacity from enforce_host_cap or a registered claim fence proof")
+        return registered[1]
 
-    def __iter__(self):
-        require_capped_capacity(self)
-        return iter(_CAPPED_VALUES[id(self)][1])
+    def consume(self, value):
+        del self.entries[id(value)]
 
-    def __len__(self):
-        require_capped_capacity(self)
-        return len(_CAPPED_VALUES[id(self)][1])
+
+_ADMISSION_REGISTRY = _AdmissionRegistry()
+
+
+class _SealedAdmission:
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("admission capabilities require enforce_host_cap or the claim fence check")
 
     def __copy__(self):
-        raise TypeError("CappedCapacity cannot be copied")
+        raise TypeError("admission capabilities cannot be copied")
 
     def __deepcopy__(self, memo):
-        raise TypeError("CappedCapacity cannot be copied")
+        raise TypeError("admission capabilities cannot be copied")
 
     def __reduce_ex__(self, protocol):
-        raise TypeError("CappedCapacity cannot be pickled")
+        raise TypeError("admission capabilities cannot be pickled")
 
     def __init_subclass__(cls, **kwargs):
-        raise TypeError("CappedCapacity cannot be subclassed")
+        if cls.__module__ != __name__:
+            raise TypeError("admission capabilities cannot be subclassed")
+
+
+class CappedCapacity(_SealedAdmission, Mapping[str, int]):
+    """Immutable capacity and its original box/held observation, registry-owned."""
+    __slots__ = ()
+
+    def __getitem__(self, key):
+        return _ADMISSION_REGISTRY.payload(self, CappedCapacity)[0][key]
+
+    def __iter__(self):
+        return iter(_ADMISSION_REGISTRY.payload(self, CappedCapacity)[0])
+
+    def __len__(self):
+        return len(_ADMISSION_REGISTRY.payload(self, CappedCapacity)[0])
+
+
+class ClaimFence(_SealedAdmission):
+    """A queue/worker binding, requiring a fresh check for each final proof."""
+    __slots__ = ()
+
+    def __call__(self):
+        state = _ADMISSION_REGISTRY.payload(self, ClaimFence)
+        require_claim_fence(self, state[1], state[0])
+        return _claim_fence_open(state[1])
+
+
+class ClaimFenceProof(_SealedAdmission):
+    """One successful final check for one queue, worker, host, pass and key."""
+    __slots__ = ()
 
 
 def require_capped_capacity(value: object) -> CappedCapacity:
-    registered = _CAPPED_VALUES.get(id(value))
-    if type(value) is not CappedCapacity or registered is None or registered[0]() is not value:
-        raise TypeError("admission requires capacity from enforce_host_cap")
+    _ADMISSION_REGISTRY.payload(value, CappedCapacity)
     return value
+
+
+def prepare_claim_fence(queue, capacity: CappedCapacity) -> ClaimFence:
+    """Bind an entrypoint's observation to its actual queue and worker."""
+    require_capped_capacity(capacity)
+    return _ADMISSION_REGISTRY.mint(
+        ClaimFence, (queue, capacity, socket.gethostname(), os.getpid()))
+
+
+def require_claim_fence(value, capacity, queue) -> ClaimFence:
+    require_capped_capacity(capacity)
+    bound_queue, bound_capacity, host, pid = _ADMISSION_REGISTRY.payload(value, ClaimFence)
+    if (bound_queue is not queue or bound_capacity is not capacity
+            or host != socket.gethostname() or pid != os.getpid()):
+        raise TypeError("claim fence belongs to another queue, capacity or worker")
+    return value
+
+
+def recheck_host_cap(capacity: CappedCapacity, *, detail=None) -> CappedCapacity:
+    """Re-read the box and held source captured by the original clamp."""
+    _values, box, held = _ADMISSION_REGISTRY.payload(capacity, CappedCapacity)
+    return enforce_host_cap(capacity, box, held, detail=detail)
+
+
+def _claim_fence_open(capacity):
+    from . import role_session
+    if role_session.read_maintenance_gate() is not None:
+        return False
+    detail = {}
+    fresh = recheck_host_cap(capacity, detail=detail)
+    require_capped_capacity(fresh)
+    return "host_cap_refusal" not in detail and fresh == capacity
+
+
+def check_claim_fence(fence: ClaimFence, capacity: CappedCapacity, queue, scan, key) -> ClaimFenceProof | None:
+    """The sole proof mint, called under the candidate's transition lock."""
+    require_claim_fence(fence, capacity, queue)
+    if scan.host != socket.gethostname() or not _claim_fence_open(capacity):
+        return None
+    return _ADMISSION_REGISTRY.mint(
+        ClaimFenceProof, (queue, capacity, socket.gethostname(), os.getpid(), scan, scan.owner, key))
+
+
+def consume_claim_fence(proof: ClaimFenceProof, capacity: CappedCapacity, queue, scan, key) -> None:
+    """Refuse missing, forged, replayed or cross-pass proof before the rename."""
+    require_capped_capacity(capacity)
+    bound_queue, bound_capacity, host, pid, bound_scan, bound_owner, bound_key = _ADMISSION_REGISTRY.payload(proof, ClaimFenceProof)
+    _ADMISSION_REGISTRY.consume(proof)
+    if (bound_queue is not queue or bound_capacity is not capacity or bound_scan is not scan
+            or bound_key != key or bound_owner != scan.owner or host != socket.gethostname() or pid != os.getpid()
+            or scan.host != host):
+        raise TypeError("claim fence proof belongs to another queue, worker, host, pass or key")
+
+
+def _installed_cap_present():
+    try:
+        Path("/etc/prismabuild/host-cap.conf").stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def cap_cpu_set(value: str) -> frozenset[int]:
@@ -114,10 +203,12 @@ def enforce_host_cap(capacity: Mapping[str, int], box: fleet_roster.Box | None,
     lending. Uncapped hosts do not read cgroups and retain their old behavior.
     """
     result = dict(capacity)
-    if box is None or "cap" not in box.entry:
-        return CappedCapacity(result, _authority=_CAPACITY_MINT)
     evidence = {} if detail is None else detail
     try:
+        if box is None or "cap" not in box.entry:
+            if _installed_cap_present():
+                raise ValueError("installed host cap has no readable roster cap")
+            return _ADMISSION_REGISTRY.mint(CappedCapacity, (MappingProxyType(result), box, held))
         cap = HostCap.parse(box.entry["cap"])
         root = CGROUP_ROOT / cap.slice
         memberships = [line[3:] for line in MEMBERSHIP.read_text().splitlines()
@@ -152,5 +243,5 @@ def enforce_host_cap(capacity: Mapping[str, int], box: fleet_roster.Box | None,
         evidence["host_cap"] = {"slice": cap.slice, "memory_roof_gib": roof}
     except (OSError, ValueError, TypeError) as exc:
         evidence["host_cap_refusal"] = str(exc)
-        return CappedCapacity({kind: 0 for kind in result}, _authority=_CAPACITY_MINT)
-    return CappedCapacity(result, _authority=_CAPACITY_MINT)
+        return _ADMISSION_REGISTRY.mint(CappedCapacity, (MappingProxyType({kind: 0 for kind in result}), box, held))
+    return _ADMISSION_REGISTRY.mint(CappedCapacity, (MappingProxyType(result), box, held))

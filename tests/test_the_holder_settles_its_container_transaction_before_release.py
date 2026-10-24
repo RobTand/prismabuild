@@ -14,6 +14,8 @@ its tokens; that is right for a cleanup that could not prove the payload
 stopped, and wrong for a memory charge nobody reclaimed.
 """
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import hashlib
 import json
@@ -36,7 +38,7 @@ def holder(tmp_path, monkeypatch):
     queue.publish(action_key=KEY, cas_root=tmp_path / 'cas',
                   checkout_root=tmp_path / 'checkout', worker_script=tmp_path / 'worker.py',
                   resources={'cpu': 1}, container_owner=OWNER)
-    record = queue.claim(capacity=simulated_capacity({'cpu': 1}))
+    record = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})))
     record['resource_scope'] = {
         'action_key': KEY, 'nonce': NONCE, 'scope_id': UNIT,
         'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + UNIT,
@@ -156,7 +158,7 @@ def test_an_action_that_never_touched_docker_settles_nothing(tmp_path, monkeypat
     queue.publish(action_key=KEY, cas_root=tmp_path / 'cas',
                   checkout_root=tmp_path / 'checkout', worker_script=tmp_path / 'worker.py',
                   resources={'cpu': 1})
-    record = queue.claim(capacity=simulated_capacity({'cpu': 1}))
+    record = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})))
     record['resource_scope'] = {
         'action_key': KEY, 'nonce': NONCE, 'scope_id': UNIT,
         'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + UNIT,

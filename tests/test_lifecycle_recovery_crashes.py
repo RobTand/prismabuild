@@ -5,6 +5,8 @@ checks filed bytes, immutable attempts, reservations and exact successor
 ownership after reopening the queue. No final-state result is mocked.
 """
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import json
 import os
@@ -32,10 +34,10 @@ def _history(root, cancelled):
     queue = pool.PoolQueue(root / "queue")
     if not cancelled:
         _publication(queue, root)
-        prior = queue.claim(owner="prior", capacity=simulated_capacity({"cpu": 1}))
+        prior = queue.claim(owner="prior", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         queue.finish(KEY, status="failed", detail={"stderr": "prior generation"}, claim_snapshot=prior)
     _publication(queue, root)
-    item = queue.claim(owner="original", capacity=simulated_capacity({"cpu": 1}))
+    item = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert item is not None
     decision = None
     if cancelled:
@@ -200,7 +202,7 @@ def test_late_retry_preserves_a_live_successor_after_interrupted_conclusion(tmp_
     _interrupt_after(queue, item, tmp_path, "reservation", cancelled)
     restarted = _recover(tmp_path, item, cancelled)
     _publication(restarted, tmp_path)
-    successor = restarted.claim(owner="successor", capacity=simulated_capacity({"cpu": 1}))
+    successor = restarted.claim(owner="successor", **simulated_admission(restarted, simulated_capacity({"cpu": 1})))
     assert successor is not None
     paths = [restarted.records.item_path(pool.record_store.CLAIMED, KEY), restarted.records.lease_path(KEY)]
     before = [path.read_bytes() for path in paths]
