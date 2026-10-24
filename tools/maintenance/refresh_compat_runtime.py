@@ -293,7 +293,8 @@ def _refresh_controller(args):
         adoption["superseded_current_archive"] = str(archive.relative_to(root))
         adoption["files"] = {prior.name: sha(replacement), historical_path.name: sha(historical_path.read_bytes())}
         for path, raw in ((prior, replacement), (old_manifest, (sorted_json(adoption) + "\n").encode())):
-            path.chmod(0o644)
+            if path.exists():
+                path.chmod(0o644)
             path.write_bytes(raw)
             path.chmod(0o444)
     result = {"profile": args.profile, "cases": len(expected), "capture_source_parent": producer,
