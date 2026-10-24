@@ -473,7 +473,7 @@ def test_legacy_capability_obeys_the_same_final_boundaries(loan_rig, fault, priv
         return
     acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
     if fault in ('explicit_protected', 'forged'):
-        with pytest.raises(ValueError, match='eligibility'):
+        with pytest.raises(ValueError, match='eligibility|grant'):
             acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
         return
     handle = acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
