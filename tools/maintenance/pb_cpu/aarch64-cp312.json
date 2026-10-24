@@ -1,0 +1,446 @@
+{
+  "machine": "aarch64",
+  "python": [
+    3,
+    12
+  ],
+  "captured_from": "sparky",
+  "captured_python": "3.12.3",
+  "captured_on": "2026-10-23",
+  "packages": [
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "reason": "Dependency of typer for the shared project command-line stack.",
+      "sha256": [
+        "117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101"
+      ]
+    },
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "reason": "Dependency of pydantic for shared project metadata validation.",
+      "sha256": [
+        "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"
+      ]
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1",
+      "reason": "Dependency of httpx for shared project model-hub access.",
+      "sha256": [
+        "6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101"
+      ]
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "reason": "Dependency of jsonschema for project pool-test schema validation.",
+      "sha256": [
+        "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "reason": "TLS certificate bundle for httpx project model-hub access.",
+      "sha256": [
+        "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+      ]
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "reason": "Dependency of typer for the shared project command-line stack.",
+      "sha256": [
+        "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360"
+      ]
+    },
+    {
+      "name": "compressed-tensors",
+      "version": "0.19.0",
+      "reason": "PrismaQuant autouse test fixtures import compressed_tensors, including CPU tests.",
+      "sha256": [
+        "5c2dcfd9cd820521906e23e096a51d68755cb88b67e19b1a5c9e11fa69637fb2"
+      ]
+    },
+    {
+      "name": "execnet",
+      "version": "2.1.2",
+      "reason": "Dependency of pytest-xdist for PB test shards.",
+      "sha256": [
+        "67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec"
+      ]
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.3",
+      "reason": "Dependency of torch and huggingface-hub for shared project CPU tests.",
+      "sha256": [
+        "7f0ca4bcc0e181c60dbbd8aa9ab5b120ebb99e4e064e83636340056f833a1f09"
+      ]
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "reason": "Dependency of torch and huggingface-hub for project file access.",
+      "sha256": [
+        "b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279"
+      ]
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "reason": "Dependency of httpcore for project model-hub HTTP access.",
+      "sha256": [
+        "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
+      ]
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "reason": "Dependency of huggingface-hub for project model artifact access.",
+      "sha256": [
+        "0e6e21fa3cdfcdcd76748564bf593870a5e013f47d97cf10aed63aa222cff5b7"
+      ]
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "reason": "Dependency of httpx for project model-hub HTTP access.",
+      "sha256": [
+        "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "reason": "Dependency of huggingface-hub for shared project tests.",
+      "sha256": [
+        "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"
+      ]
+    },
+    {
+      "name": "huggingface_hub",
+      "version": "1.33.0",
+      "reason": "Dependency of transformers and compressed-tensors for shared project tests.",
+      "sha256": [
+        "04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899"
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "reason": "Dependency of anyio and httpx for project model-hub hostname handling.",
+      "sha256": [
+        "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+      ]
+    },
+    {
+      "name": "iniconfig",
+      "version": "2.3.0",
+      "reason": "Dependency of pytest for PB infrastructure tests.",
+      "sha256": [
+        "f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12"
+      ]
+    },
+    {
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "reason": "Dependency of torch for shared project CPU tests.",
+      "sha256": [
+        "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"
+      ]
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "reason": "Tessera pool tests validate rung-allowability artifacts with CPU torch installed, tessera#1042.",
+      "sha256": [
+        "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce"
+      ]
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "reason": "Dependency of jsonschema for project pool-test schema validation.",
+      "sha256": [
+        "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe"
+      ]
+    },
+    {
+      "name": "loguru",
+      "version": "0.7.3",
+      "reason": "Dependency of compressed-tensors for PrismaQuant CPU tests.",
+      "sha256": [
+        "31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"
+      ]
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "reason": "Dependency of rich for project command-line output.",
+      "sha256": [
+        "9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
+      ]
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.3",
+      "reason": "Dependency of Jinja2 for shared project CPU torch tests.",
+      "sha256": [
+        "3a7e8ae81ae39e62a41ec302f972ba6ae23a5c5396c8e60113e9066ef893da0d"
+      ]
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "reason": "Dependency of markdown-it-py for project command-line output.",
+      "sha256": [
+        "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
+      ]
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "reason": "Dependency of sympy for shared project CPU torch tests.",
+      "sha256": [
+        "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c"
+      ]
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "reason": "Dependency of torch for shared project CPU tests.",
+      "sha256": [
+        "d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762"
+      ]
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.3",
+      "reason": "Array operations in PrismaQuant and Tessera CPU tests.",
+      "sha256": [
+        "76c2c1e6bfa5c84adc6434dfbf013aa92096a7985221762c8f11fedfd20fff58"
+      ]
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "reason": "Version and requirement parsing for pytest and shared project dependencies.",
+      "sha256": [
+        "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+      ]
+    },
+    {
+      "name": "pip",
+      "version": "24.0",
+      "reason": "Environment bootstrap and installation of the reviewed pool definition.",
+      "sha256": [
+        "ba0d021a166865d2265246961bec0152ff124de910c5cc39f1156ce3fa7c69dc"
+      ]
+    },
+    {
+      "name": "pluggy",
+      "version": "1.6.0",
+      "reason": "Dependency of pytest for PB infrastructure tests.",
+      "sha256": [
+        "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746"
+      ]
+    },
+    {
+      "name": "psutil",
+      "version": "7.2.2",
+      "reason": "Retained shared project process/resource inspection test dependency.",
+      "sha256": [
+        "b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e"
+      ]
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.5",
+      "reason": "Dependency of compressed-tensors for PrismaQuant CPU tests.",
+      "sha256": [
+        "346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73"
+      ]
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.46.5",
+      "reason": "Dependency of pydantic for shared project metadata validation.",
+      "sha256": [
+        "4fdc8b93a41521988916eeaa271173fcca7fa0803d62f87675aac8dcec1c8e29"
+      ]
+    },
+    {
+      "name": "Pygments",
+      "version": "2.21.0",
+      "reason": "Dependency of pytest and rich for test and command-line diagnostics.",
+      "sha256": [
+        "2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9"
+      ]
+    },
+    {
+      "name": "pytest",
+      "version": "9.1.1",
+      "reason": "PB infrastructure tests and served project CPU tests.",
+      "sha256": [
+        "37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c"
+      ]
+    },
+    {
+      "name": "pytest-xdist",
+      "version": "3.8.0",
+      "reason": "PB parallel test execution within admitted shards.",
+      "sha256": [
+        "202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88"
+      ]
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "reason": "PB development tests and served project YAML fixtures.",
+      "sha256": [
+        "9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28"
+      ]
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "reason": "Dependency of jsonschema for project pool-test schema references.",
+      "sha256": [
+        "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231"
+      ]
+    },
+    {
+      "name": "regex",
+      "version": "2026.9.29",
+      "reason": "Dependency of transformers for shared project tokenizer tests.",
+      "sha256": [
+        "f93bc1c3486ef3747e07c9d7c1d0a147b8fbaab975f80e348aed6f71309dfaca"
+      ]
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "reason": "Dependency of typer for shared project command-line output.",
+      "sha256": [
+        "33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb"
+      ]
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.9.1",
+      "reason": "Dependency of jsonschema and referencing for project schema validation.",
+      "sha256": [
+        "2693b2728bbcc48d09a981a356954b0c47c53ff25b545856f28a889ea619f69a"
+      ]
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "reason": "Dependency of transformers and compressed-tensors for project CPU artifact tests.",
+      "sha256": [
+        "7a46e5ff292c356d6991e60942ba7f79817682d3a2cef0702136448cb9c4d235"
+      ]
+    },
+    {
+      "name": "scipy",
+      "version": "1.18.1",
+      "reason": "Retained shared project numerical CPU test dependency.",
+      "sha256": [
+        "3c085faa2cfa879c5141df483f836f4d691045a078224a670fa570fa01612d89"
+      ]
+    },
+    {
+      "name": "setuptools",
+      "version": "78.1.0",
+      "reason": "Retained package build tooling and shared project package metadata support.",
+      "sha256": [
+        "3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8"
+      ]
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "reason": "Dependency of typer for shared project command-line tests.",
+      "sha256": [
+        "7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686"
+      ]
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "reason": "Dependency of torch for shared project CPU tests.",
+      "sha256": [
+        "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5"
+      ]
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.23.2",
+      "reason": "Dependency of transformers for shared project tokenizer tests.",
+      "sha256": [
+        "a37039b5dfc4af84eb3ef0a92f4307e28936c8f9adccba2629d36f652e9bf7a2"
+      ]
+    },
+    {
+      "name": "torch",
+      "version": "2.11.0+cpu",
+      "reason": "CPU-only PyTorch for Tessera and PrismaQuant pool tests, tessera#1042 and PB#356.",
+      "sha256": [
+        "70ecb2659af6373b7c5336e692e665605b0201ea21ff51aaea47e1d75ea6b5aa"
+      ]
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.1",
+      "reason": "Dependency of transformers and huggingface-hub for shared project tests.",
+      "sha256": [
+        "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73"
+      ]
+    },
+    {
+      "name": "transformers",
+      "version": "5.16.1",
+      "reason": "Shared PrismaQuant model/configuration and compressed-tensors CPU test stack.",
+      "sha256": [
+        "2f2d5b98a5ad3718713653734298fa620754ed683702a635ebb587df3ed29c7e"
+      ]
+    },
+    {
+      "name": "triton",
+      "version": "3.6.0",
+      "reason": "Retained dependency of the captured compressed-tensors project stack; installation does not qualify GPU execution.",
+      "sha256": [
+        "374f52c11a711fd062b4bfbb201fd9ac0a5febd28a96fb41b4a0f51dde3157f4"
+      ]
+    },
+    {
+      "name": "typer",
+      "version": "0.27.2",
+      "reason": "Dependency of huggingface-hub for project command-line tests.",
+      "sha256": [
+        "b3a5fc4342d5fc8fda8fc3010b1cf117e9249aab7fae800c2eff62fd3842d97d"
+      ]
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "reason": "Dependency of pydantic for shared project metadata validation.",
+      "sha256": [
+        "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147"
+      ]
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "reason": "Dependency of torch and pydantic for shared project CPU tests.",
+      "sha256": [
+        "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+      ]
+    }
+  ],
+  "inventory_action": "2c397e600823246fa846ee3dd38d4fd59df42a6b58e93952fb748da64188837f",
+  "wheel_hash_action": "c86459335879bc015fdbc4da6686e31122e503c011675ec4511b673d26cc4027"
+}
