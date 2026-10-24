@@ -18916,12 +18916,9 @@ class PoolQueue:
                         if gang is _ClaimHandled.REFUSED:
                             continue
                         from . import _measurement_reservation as measurement_reservation
-                        if scan_pass.census_refusal is not None:
-                            self.record_denial(item, scan_pass.census_refusal.reason,
-                                               scan_pass.census_refusal.evidence)
-                            continue
-                        with measurement_reservation.pass_admission_census(
-                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate) as census:
+                        with measurement_reservation.candidate_admission_census(
+                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate,
+                                item, scan_pass.census_refusal) as census:
                             host_claim = self._reserve_claim_host(
                                 prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:

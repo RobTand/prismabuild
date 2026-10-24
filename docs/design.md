@@ -726,6 +726,35 @@ This source change retains PB admission authority (SC-01), movement authority
 (SC-02), and token settlement requirements (INV-07). It establishes no runtime
 deployment or campaign completion.
 
+**Ordinary admission without the census reader (#2199).** A non-measurement,
+non-gang candidate first checks election sources under host admission H. This
+small read never proves retirement: every canonical measurement selection and
+gang election, including concluded entries, remains a potential fence. An
+election on another host cannot fence this row. A measurement at the row's
+priority or below cannot fence it; an equal-priority gang still can reserve
+demand after maturation. Only when no source can fence the candidate does
+admission proceed without the reader. H remains held through reservation, so a
+new election cannot race between the proof and acquisition. Unreadable,
+malformed, vanished, over-budget or ambiguous sources take the complete census
+path. No publisher or election writer gains a new participation requirement.
+
+Sibling loops may also reuse a complete under-H census for at most two seconds.
+The host-local record binds the pool, boot identity, monotonic creation time,
+payload digest and source generation. The generation includes identities, sizes,
+mtime and ctime for pass sidecars, gang records and state files, exact elected
+publication and retirement slots, and gang members. A live gang also includes
+all READY and CLAIMED sources for its movement obligations. Unrelated ordinary
+claims do not invalidate a measurement-only result. Directory identities
+bracket listings. Publication requires equal generations before and after the
+complete locked read. Reuse takes the cached selections' sorted nonblocking M
+keys before H, verifies the generation and age under H, and restores fences for
+busy keys and retained holders. Missing, stale or unverifiable results fall
+back. Reuse never supplies a new retirement proof, and the conservative source
+check never removes an election. Measurement and gang candidates retain their
+owned-reader path. A census refusal still ends reader attempts for the pass,
+but each later ordinary candidate can prove that it is outside every fence;
+the refusal is recorded only when that candidate still needs the census.
+
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
 or a progress-governed action) does not void the election: requiring one left
 most live hosts unelected, so once the bounded attention above lapsed a
