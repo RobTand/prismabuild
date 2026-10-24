@@ -50,6 +50,7 @@ from prismabuild import role_session, host_cap
 role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
+host_cap.HOST_CAP_CONFIG = Path({str(tmp_path / "host-cap.conf")!r})
 role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
 role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 seen = {{}}
@@ -132,6 +133,7 @@ from prismabuild import role_session, host_cap
 role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
+host_cap.HOST_CAP_CONFIG = Path({str(tmp_path / "host-cap.conf")!r})
 role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
 role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 def serve_once(self, **kwargs):

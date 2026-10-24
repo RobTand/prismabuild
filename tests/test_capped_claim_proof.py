@@ -1,6 +1,7 @@
 """A final fence proof belongs to one real claim transition."""
 import copy
 import pickle
+from pathlib import Path
 import socket
 from types import SimpleNamespace
 
@@ -121,3 +122,15 @@ def test_an_installed_cap_with_a_missing_roster_refuses(monkeypatch):
     capacity = host_cap.enforce_host_cap({"cpu": 80, "mem_gb": 214}, None, {}, detail=detail)
     assert capacity == {"cpu": 0, "mem_gb": 0}
     assert detail["host_cap_refusal"] == "installed host cap has no readable roster cap"
+
+
+def test_the_installed_cap_marker_is_an_isolated_real_file():
+    marker = host_cap.HOST_CAP_CONFIG
+    assert marker != Path("/etc/prismabuild/host-cap.conf")
+    assert not marker.exists()
+    assert host_cap.enforce_host_cap({"cpu": 8}, None, {}) == {"cpu": 8}
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("[Service]\nSlice=prismabuild.slice\n")
+    detail = {}
+    assert host_cap.enforce_host_cap({"cpu": 8}, None, {}, detail=detail) == {"cpu": 0}
+    assert "no readable roster cap" in detail["host_cap_refusal"]

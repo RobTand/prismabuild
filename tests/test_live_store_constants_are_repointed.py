@@ -101,6 +101,9 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "root-owned broker GPU snapshot; repointed so implicit capacity reads "
         "do not depend on the worker's live GPU load"
     ),
+    ("prismabuild.host_cap", "HOST_CAP_CONFIG"): (
+        "installed partial-host cap marker; repointed so simulated hosts do not read the worker configuration"
+    ),
     ("supervise", "SYSTEMD_SYSTEM_UNIT"): (
         "installed system supervisor unit; repointed so tests do not read host configuration"
     ),

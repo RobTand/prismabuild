@@ -413,6 +413,7 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 LIVE_DEFAULTS = (
     ("prismabuild.sealed_bundle_cache", "CACHE_ROOT", "sealed-bundles"),
     ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
+    ("prismabuild.host_cap", "HOST_CAP_CONFIG", "host-cap.conf"),
     ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
