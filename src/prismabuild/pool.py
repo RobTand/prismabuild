@@ -866,7 +866,8 @@ WITHHOLD_STAMP_FRESH_S = OFFER_TIMEOUT_S
 
 #: Offer discovery tolerates up to one minute of future skew. This bound stays
 #: finite even when a submitter reads retained capability with an infinite TTL.
-#: It grants no freshness credit to CPU/GPU admission samples or claim leases.
+#: It grants no freshness credit to CPU/GPU admission samples. Matching claim
+#: stamps reuse this cross-host clock-skew bound.
 OFFER_FUTURE_TOLERANCE_S = 60.0
 
 
@@ -11997,8 +11998,9 @@ class PoolQueue:
         """The one heartbeat observation used by all claim freshness readers.
 
         All ages use a clock sampled after the lease and stamp reads. A future
-        lease is live at age zero. A malformed/future or foreign stamp adds no
-        credit. Unreadable stamp I/O propagates, retaining custody.
+        lease is live at age zero. A matching stamp within the cross-host skew
+        bound also counts at age zero; excessive skew adds no credit. Malformed
+        or foreign stamps add no credit. Unreadable I/O retains custody.
         """
         observe = record_store.read_document if read is None else read
         stamp = (observe(self._heartbeat_stamp_path(lease))
@@ -12019,8 +12021,8 @@ class PoolQueue:
                 and type(lease.get("pid")) is int and lease["pid"] > 0
                 and type(lease.get("pid_start_ticks")) is int and lease["pid_start_ticks"] > 0):
             stamped = self._heartbeat_time(stamp.get("heartbeat_unix"))
-            if stamped is not None and stamped <= now:
-                beat = max(beat, stamped)
+            if stamped is not None and stamped - now <= OFFER_FUTURE_TOLERANCE_S:
+                beat = max(beat, min(stamped, now))
         return _LeaseHeartbeat(beat, max(0.0, now - beat), lease_age)
 
     @staticmethod

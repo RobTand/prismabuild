@@ -7,8 +7,11 @@ Periodic beats and judge samples model worker timers for at most 900 seconds;
 these waits are for scheduled sample times, not result polling.
 """
 import json
+import ctypes
 import os
 from pathlib import Path
+import select
+import struct
 import sys
 import threading
 import time
@@ -27,7 +30,7 @@ def emit(**fields):
     sys.stdout.flush()
 
 
-def stop_event():
+def stop_event(wake_fd=None):
     event = threading.Event()
 
     def watch():
@@ -35,6 +38,11 @@ def stop_event():
             if line.strip() == "STOP":
                 break
         event.set()
+        if wake_fd is not None:
+            try:
+                os.write(wake_fd, b"x")
+            except OSError:
+                pass  # actor shutdown already closed the wake pipe
     threading.Thread(target=watch, daemon=True).start()
     return event
 
@@ -88,6 +96,9 @@ def beat_loop(queue, key, owner, item, interval, stop, limit=None):
 
 
 def worker(args):
+    if offset := args.get("clock_offset_s"):
+        clock = pool._now
+        pool._now = lambda: clock() + float(offset)
     queue = pool.PoolQueue(Path(args["root"]))
     key, owner = args["key"], args["owner"]
     item = queue.claim(owner=owner, capacity={"cpu": 2})
@@ -189,6 +200,73 @@ def judge(args):
     emit(event="judge_exit")
 
 
+def skew_holder(args):
+    """Judge immediately on each atomic stamp replacement under a held key.
+
+    The directory watch is installed before taking the key. select blocks for
+    a publication or STOP; its only timeout is the experiment's hold deadline.
+    """
+    queue = pool.PoolQueue(Path(args["root"]))
+    key = args["key"]
+    lease = record_store.read_document(queue.records.lease_path(key))
+    stamp_path = queue._heartbeat_stamp_path(lease)
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+    if fd < 0:
+        raise OSError(ctypes.get_errno(), "inotify_init1")
+    stop_r, stop_w = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+    stopped = stop_event(stop_w)
+    reaps = 0
+    try:
+        moved_to = 0x80
+        if libc.inotify_add_watch(fd, os.fsencode(stamp_path.parent), moved_to) < 0:
+            raise OSError(ctypes.get_errno(), "inotify_add_watch")
+        with queue.action_transition_lock(key) as acquired:
+            assert acquired
+            start = time.monotonic()
+            deadline = start + float(args["hold_s"])
+            emit(event="acquired", at=time.time())
+            while not stopped.is_set() and (remaining := deadline - time.monotonic()) > 0:
+                readable, _, _ = select.select([fd, stop_r], [], [], remaining)
+                if stop_r in readable:
+                    break
+                if fd not in readable:
+                    continue  # hold deadline, checked by the loop condition
+                events = os.read(fd, 65536)
+                at = 0
+                replacements = 0
+                while at < len(events):
+                    _, mask, _, size = struct.unpack_from("iIII", events, at)
+                    name = events[at + 16:at + 16 + size].rstrip(b"\0")
+                    replacements += bool(mask & moved_to and name == os.fsencode(stamp_path.name))
+                    at += 16 + size
+                for _ in range(replacements):
+                    now = pool._now()
+                    stamp = record_store.read_document(stamp_path)
+                    lead = stamp["heartbeat_unix"] - now
+                    current = record_store.read_document(queue.records.item_path(record_store.CLAIMED, key))
+                    mover = queue._mover_lease(key, current, now=now)
+                    order_live, _ = queue._claim_order_ahead_live(key, now=now, window_s=60.,
+                        prior={"evidence_unix": now - 3600, "accepted_count": 0, "staged_wait_exempt_s": 0.})
+                    row = next(row for row in census.action_rows(queue.root).value["jobs"]
+                               if row["action_key"] == key)
+                    age = queue.lease_age(key)
+                    reaped = queue.reap_stale()
+                    reaps += len(reaped)
+                    emit(event="skew_sample", at=now, lead_s=lead,
+                         late=now - lease["heartbeat_unix"] > pool.LEASE_TIMEOUT_S,
+                         inside_skew=0 < lead <= pool.OFFER_FUTURE_TOLERANCE_S,
+                         lease_live=age is not None and age <= pool.LEASE_TIMEOUT_S,
+                         mover_live=mover is not None and mover["lease_live"],
+                         order_live=order_live, census_live=not row["stale"], reaps=len(reaped))
+        emit(event="released", at=time.time(), hold_s=time.monotonic() - start, reaps=reaps)
+    finally:
+        for descriptor in (fd, stop_r, stop_w):
+            os.close(descriptor)
+
+
 if __name__ == "__main__":
-    {"worker": worker, "claimer": claimer, "holder": holder, "judge": judge}[sys.argv[1]](
+    {"worker": worker, "claimer": claimer, "holder": holder, "judge": judge,
+     "skew-holder": skew_holder}[sys.argv[1]](
         json.loads(sys.argv[2]))

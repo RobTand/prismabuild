@@ -97,12 +97,13 @@ def test_foreign_stamp_never_renews_another_incarnation(holder, field):
     assert not queue._mover_lease(key, item, now=clock[0])["lease_live"]
 
 
-@pytest.mark.parametrize("value", [None, True, "100", float("nan"), float("inf"), 10**400, "future"])
+@pytest.mark.parametrize("value", [None, True, "100", float("nan"), float("inf"), 10**400, "excessive-skew"])
 def test_invalid_stamp_never_extends_liveness(holder, value):
     queue, key, item, clock = holder
     lease = record_store.read_document(queue.records.lease_path(key))
     clock[0] += pool.LEASE_TIMEOUT_S + 1
-    stamp = dict(lease, heartbeat_unix=clock[0] + 1 if value == "future" else value)
+    stamp = dict(lease, heartbeat_unix=(clock[0] + pool.OFFER_FUTURE_TOLERANCE_S + 1
+                                      if value == "excessive-skew" else value))
     path = queue._heartbeat_stamp_path(lease)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(stamp))

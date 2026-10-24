@@ -1529,8 +1529,14 @@ boolean or string. It samples time after both reads, even when a caller has
 already sampled a clock. Every judge consumes the resulting nonnegative age;
 a future-dated lease is live at age zero. A malformed lease retains custody;
 the reaper records it and continues to other keys, and attachment treats it as
-possibly live. Census shows an invalid time as a stale claimed row. A future,
-malformed or foreign stamp adds no credit. A stamp renews liveness, not progress
+possibly live. Census shows an invalid time as a stale claimed row. A matching
+stamp at most `OFFER_FUTURE_TOLERANCE_S` (60 seconds) ahead of the reader counts
+at age zero; its credited time is capped at the reader's post-read clock.
+Excessive future skew, malformed time or a foreign stamp adds no credit. After
+the last beat, a dead owner's stamp expires within `LEASE_TIMEOUT_S` plus the
+skew tolerance (360 seconds); the next recovery pass can act. This is a
+heartbeat-expiry bound, not proof of cleanup or a resource-release deadline.
+A stamp renews liveness, not progress
 or execution observations; progress quiet time ages from the lease write, not
 the stamp. A dead exact local PID/start-time identity or an old
 effective heartbeat can trigger detection; neither proves checkout cleanup.
