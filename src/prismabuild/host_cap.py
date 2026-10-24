@@ -14,6 +14,7 @@ from . import box_capacity, fleet_roster
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 MEMBERSHIP = Path("/proc/self/cgroup")
+HOST_CAP_CONFIG = Path("/etc/prismabuild/host-cap.conf")
 CAP_OVERHEAD_GB = 1
 GIB = 1024**3
 
@@ -150,7 +151,7 @@ def consume_claim_fence(proof: ClaimFenceProof, capacity: CappedCapacity, queue,
 
 def _installed_cap_present():
     try:
-        Path("/etc/prismabuild/host-cap.conf").stat()
+        HOST_CAP_CONFIG.stat()
     except FileNotFoundError:
         return False
     except OSError:

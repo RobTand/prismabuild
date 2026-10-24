@@ -93,6 +93,9 @@ ENV_BACKED: dict[tuple[str, str], str] = {
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("prismabuild.host_cap", "HOST_CAP_CONFIG"): (
+        "installed partial-host cap marker; repointed so simulated hosts do not read the worker configuration"
+    ),
     ("supervise", "SYSTEMD_SYSTEM_UNIT"): (
         "installed system supervisor unit; repointed so tests do not read host configuration"
     ),

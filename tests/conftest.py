@@ -411,6 +411,7 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
+    ("prismabuild.host_cap", "HOST_CAP_CONFIG", "host-cap.conf"),
     ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
