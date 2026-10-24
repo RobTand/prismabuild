@@ -362,6 +362,7 @@ CANARY_RECORD_SCHEMA = "prismaquant.prismabuild.canary_status.v1"
 #: it as needrestart's exact-service restart exclusion (#1378), so a
 #: generation published without it would install an unprotected broker.
 FLEET_DATA = ("fleet_boxes.json", "ram_tier_policy.json", "local_tier_policy.json",
+              "class_images.json",
               "50-prismabuild-resource-broker.conf")
 
 # These originate at tools/, without a second tools/fleet/ spelling. The
@@ -675,6 +676,30 @@ def _publication_manifest() -> dict[str, str]:
         source = CHECKOUT / "fleet" / "storage" / name
         if source.is_file():
             published[f"fleet/storage/{name}"] = _sha256(source)
+    # A roster-selected policy is mandatory, even when it approves no classes.
+    # Validate using the runtime contract before sealing its exact bytes.
+    if "fleet_boxes.json" not in FLEET_DATA:
+        return published  # Reduced publications without a fleet roster select no policy.
+    from prismabuild.container_images import ClassImagePolicy
+    roster = _candidate_roster(published["tools/fleet_boxes.json"])
+    for box in roster.document.get("boxes", {}).values():
+        argv = box.get("args", [])
+        if "--class-image-config" not in argv:
+            continue
+        policy_path = "<missing>"
+        try:
+            if argv.count("--class-image-config") != 1:
+                raise ValueError("exactly one class image config is required")
+            policy_path = argv[argv.index("--class-image-config") + 1]
+            relative = Path(policy_path)
+            if (relative.as_posix() != policy_path or relative.parent not in
+                    (Path("tools"), Path("tools/fleet")) or relative.name not in FLEET_DATA):
+                raise ValueError("class image config must select a shipped fleet data member")
+            source_path = f"tools/fleet/{relative.name}"
+            ClassImagePolicy.from_file(source_path, source_root=CHECKOUT,
+                                       klass=argv[argv.index("--class") + 1])
+        except (OSError, ValueError, IndexError, RecursionError) as error:
+            raise ValueError(f"class image config {policy_path!r}: {error}") from error
     return published
 
 

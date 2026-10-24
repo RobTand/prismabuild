@@ -1063,7 +1063,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     #: first image-pinned submission can be placed, and a failure leaves
     #: ``None`` (unknown), never an empty set (#714).
     inventory = container_images.InventoryCache()
-    class_policy = (container_images.ClassImagePolicy.from_file(
+    class_policy = (container_images.ClassImagePolicy.for_worker(
         args.class_image_config, source_root=RUNTIME_ROOT, klass=args.klass)
         if args.class_image_config is not None else None)
     # Immutable loaded generation, never the moving repo symlink. Old loops

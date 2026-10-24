@@ -8925,7 +8925,8 @@ class PoolQueue:
         """
 
         return {pb.QUEUE_ROOT_ENV: str(self.root),
-                **self.residency_map_environment(item)}
+                **self.residency_map_environment(item),
+                **pb._container_class_launch_environment()}
 
     def residency_map_environment(self, item: Mapping[str, object]) -> dict[str, str]:
         """``{RESIDENCY_MAP_ENV: path}`` for an action with a map to read.
@@ -22379,8 +22380,14 @@ class PoolQueue:
             return None
         key = str(item["action_key"])
         try:
-            outcome = self.execute(item, python=python, timeout_s=timeout_s,
-                                   **({"containment": True} if containment else {}))
+            # Only the executor's in-memory configuration crosses this bridge;
+            # the claimed action and its persisted admission offer cannot set it.
+            owner = str(item.get("container_owner", ""))
+            marker = str(self.container_marker(owner)) if owner else ""
+            with pb._container_class_launch_context(
+                    container_class_policy, owner=owner, marker=marker):
+                outcome = self.execute(item, python=python, timeout_s=timeout_s,
+                                       **({"containment": True} if containment else {}))
         except resource_scope.ResourceUnavailable:
             # Only create emits this typed maintenance refusal: no payload or
             # scope has been created, so capacity returns without an attempt.

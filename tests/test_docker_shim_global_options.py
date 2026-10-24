@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -28,10 +29,67 @@ SHIM = ROOT / "tools" / "fleet" / "docker"
 OWNER = "1" * 64
 
 
+def _shim_command(*, inventory_endpoint: str | None = None) -> list[str]:
+    """Model an executing worker, not an action-supplied qualification flag.
+
+    Only the host inventory observation is fake; the shim still obtains its
+    policy from Core's private launch context and evaluates it on every launch.
+    Keep this in the child so signals and client-parent relationships remain real.
+    """
+    bootstrap = r'''
+import os, pathlib, runpy, signal, sys, time
+shim, inventory_endpoint = sys.argv[1:3]
+sys.argv = [shim, *sys.argv[3:]]
+sys.path.insert(0, str(pathlib.Path(shim).resolve().parents[2] / "src"))
+from prismabuild import core, container_images as ci
+
+store_root = "/fixture/docker-store"
+images = {name: "content:sha256:" + "a" * 64
+          for name in ("example:image", "image:latest", "img:latest")}
+policy = ci.ClassImagePolicy({
+    "schema": ci.CLASS_REQUIREMENTS_SCHEMA,
+    "classes": {"fixture": {"store_root": store_root, "images": images}},
+}, klass="fixture")
+
+def snapshot(self, *, max_age_s):
+    return {"schema": ci.INVENTORY_SCHEMA, "observed_unix": time.time() - 1,
+            "endpoint": ci.LOCAL_ENDPOINT, "entries": sorted(set(images.values())),
+            "store_root": store_root, "image_contents": images}
+
+ci.InventoryCache.snapshot = snapshot
+if inventory_endpoint:
+    # The context-pinning regression uses a fake rootless Unix daemon. Its
+    # inventory belongs to that socket in this isolated fixture, unlike the
+    # production system-daemon-only inventory. Do not change endpoint resolution
+    # or qualification: both must still agree on this explicit fake identity.
+    ci.LOCAL_ENDPOINT = inventory_endpoint
+with core._container_class_launch_context(
+        policy, owner=os.environ["PRISMABUILD_CONTAINER_OWNER"],
+        marker=os.environ["PRISMABUILD_CONTAINER_MARKER"]):
+    # Authority must be a live ancestor, just as on an executing worker. Fork
+    # retains the fake inventory seam without replacing the real policy reader.
+    os.environ.update(core._container_class_launch_environment())
+    child = os.fork()
+    if child == 0:
+        runpy.run_path(shim, run_name="__main__")
+    else:
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, lambda sig, frame: os.kill(child, sig))
+        _, status = os.waitpid(child, 0)
+        code = os.waitstatus_to_exitcode(status)
+        if code < 0:
+            if -code != signal.SIGKILL:
+                signal.signal(-code, signal.SIG_DFL)
+            os.kill(os.getpid(), -code)
+        sys.exit(code)
+'''
+    return [sys.executable, "-c", bootstrap, str(SHIM), inventory_endpoint or ""]
+
+
 def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
           affinity: set[int] | None = None,
           endpoint: str = "unix:///var/run/docker.sock", docker_env: dict | None = None,
-          timeout: float | None = None):
+          timeout: float | None = None, inventory_endpoint: str | None = None):
     """Run the real shim against a recording fake CLI, under its testing gate."""
 
     real = tmp_path / "fake-docker"
@@ -102,7 +160,8 @@ def _shim(tmp_path: Path, argv: list[str], *, cgroup: str | None = None,
     try:
         result = subprocess.run(
             (["taskset", "--cpu-list", ",".join(map(str, sorted(affinity)))]
-             if affinity is not None else []) + [str(SHIM), *argv],
+             if affinity is not None else []) + _shim_command(
+                 inventory_endpoint=inventory_endpoint) + argv,
             env=environment, capture_output=True, text=True,
             check=False, timeout=timeout,
         )

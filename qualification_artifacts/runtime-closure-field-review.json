@@ -1,0 +1,24 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/core.py",
+      "owner": "_validate_worker_runtime",
+      "unresolved": "_RUNTIME_KEYS | {'digest_primitives'} if isinstance(value, Mapping) and 'digest_primitives' in value else _RUNTIME_KEYS",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Replace the digest-only optional runtime source policy with the bounded container helper source policy. Retained v1 records without these sources remain valid; unknown fields still fail exact mapping validation."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/core.py",
+      "owner": "_validate_worker_runtime",
+      "unresolved": "_RUNTIME_KEYS | {name for name in ('digest_primitives', *_RUNTIME_CONTAINER_MODULES) if isinstance(value, Mapping) and name in value}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Permit only the three named container helper source identities in addition to the existing digest source. Normalize each source, bind it into runtime_sha256, compare against import-time identities and re-read it before execution. Includes the transitive launch context helper. Historical bodies are not augmented during validation."
+  }
+]

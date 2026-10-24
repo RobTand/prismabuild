@@ -88,6 +88,225 @@ ReplacedRecordError = immutable_files.ReplacedRecordError
 _SUBMISSION_TIMINGS = ContextVar("submission_timings", default=None)
 
 
+# A locator, not a policy/verdict. The executor holds the sealed anonymous file
+# open for this attempt. Reopening its proc fd works even through Python children
+# that close all inherited descriptors (including the Docker shim launcher).
+_CONTAINER_CLASS_LAUNCH_ENV = "_PRISMABUILD_CONTAINER_CLASS_CONTEXT"
+_CONTAINER_CLASS_CONTEXT = ContextVar("container_class_context", default="")
+_CONTAINER_CLASS_CONTEXT_LIMIT = 4 * 1024 * 1024
+_CONTAINER_CLASS_MEMFD_NAME = "prismabuild-class-launch"
+_CONTAINER_CLASS_MEMFD_TARGET = f"/memfd:{_CONTAINER_CLASS_MEMFD_NAME} (deleted)"
+_CONTAINER_CLASS_ANCESTOR_LIMIT = 128
+_CONTAINER_CLASS_FD_LIMIT = 4096
+_CONTAINER_CLASS_SCAN_LIMIT = 16384
+
+
+def _container_class_sealed_file(fd: int) -> bool:
+    info = os.fstat(fd)
+    seals = (fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW
+             | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+    return (stat.S_ISREG(info.st_mode) and info.st_nlink == 0
+            and info.st_uid == os.getuid()
+            and 0 < info.st_size <= _CONTAINER_CLASS_CONTEXT_LIMIT
+            and fcntl.fcntl(fd, fcntl.F_GET_SEALS) & seals == seals)
+
+
+def _container_class_same_uid(pid: int) -> bool:
+    # /proc/<pid>'s owner changes to root for a non-dumpable same-uid process.
+    # That is scan uncertainty, NOT a trusted-supervisor uid boundary.
+    with open(f"/proc/{pid}/status", encoding="ascii") as stream:
+        status = stream.read(65537)
+    if len(status) > 65536:
+        raise ValueError("process status exceeds bound")
+    rows = [line.split()[1:] for line in status.splitlines()
+            if line.startswith("Uid:")]
+    if len(rows) != 1 or len(rows[0]) != 4:
+        raise ValueError("process uid unavailable")
+    return os.getuid() in tuple(map(int, rows[0]))
+
+
+def _container_class_executor_matches(authority: int, birth: str,
+                                      descriptor: int, info) -> bool:
+    """Match the oldest context holder in the executor's same-uid lineage.
+
+    The uid boundary is a trusted supervisor, not a payload ancestor. We cannot
+    inspect its descriptors, and it cannot be this same-uid executor. Any
+    uncertainty *within* that lineage (including fd churn) refuses authority.
+    Multiple attempts may have descriptors in one executor process; match the
+    locator's descriptor there, not an arbitrary first/nearest named memfd.
+    """
+    current = os.getpid()
+    lineage = []
+    oldest_matches = False
+    scanned = 0
+    for _ in range(_CONTAINER_CLASS_ANCESTOR_LIMIT):
+        parent, current_birth = _container_class_process(current)
+        lineage.append((current, parent, current_birth))
+        current = parent
+        if current <= 0 or not _container_class_same_uid(current):
+            break
+        _, ancestor_birth = _container_class_process(current)
+        found = matches = False
+        with os.scandir(f"/proc/{current}/fd") as entries:
+            for count, entry in enumerate(entries, 1):
+                scanned += 1
+                if (count > _CONTAINER_CLASS_FD_LIMIT
+                        or scanned > _CONTAINER_CLASS_SCAN_LIMIT):
+                    return False
+                if os.readlink(entry.path) != _CONTAINER_CLASS_MEMFD_TARGET:
+                    continue
+                fd = os.open(entry.path, os.O_RDONLY | os.O_CLOEXEC)
+                try:
+                    if not _container_class_sealed_file(fd):
+                        return False
+                    candidate = os.fstat(fd)
+                    found = True
+                    matches |= (current == authority and ancestor_birth == birth
+                                and entry.name == str(descriptor)
+                                and (candidate.st_dev, candidate.st_ino)
+                                == (info.st_dev, info.st_ino))
+                finally:
+                    os.close(fd)
+        if _container_class_process(current)[1] != ancestor_birth:
+            return False
+        if found:
+            oldest_matches = matches
+    else:
+        return False
+    # Detect exit/reparent/PID reuse during the bounded scan, not just at the
+    # locator's process. The executor must stay alive for the synchronous call.
+    return oldest_matches and all(
+        _container_class_process(pid) == (parent, started)
+        for pid, parent, started in lineage)
+
+
+def _container_class_process(pid: int) -> tuple[int, str]:
+    """Parent and process birth identity; comm may contain spaces and ')'."""
+    proc_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return int(proc_fields[1]), proc_fields[19]
+
+
+@contextmanager
+def _container_class_launch_context(policy, *, owner: str, marker: str):
+    """Install executor configuration privately for one synchronous attempt.
+
+    Linux sealed memfds are intentional here: a named tempfile writable by the
+    payload uid is not immutable authority. Unsupported hosts refuse the attempt
+    rather than running without an executor anchor. Nothing
+    is persisted in the queue, offer, action request or receipt.
+    """
+    fd = None
+    token = _CONTAINER_CLASS_CONTEXT.set("")
+    try:
+        value = {
+            "schema": "prismabuild.container-class-launch.v1",
+            "owner": owner, "marker": marker,
+            "attempt": uuid.uuid4().hex, "denied": True,
+        }
+        if policy is not None and owner and marker:
+            if __package__:
+                from . import container_images as ci
+            else:  # retained runtime's flat Core alias
+                import container_images as ci
+            if not isinstance(policy, ci.ClassImagePolicy):
+                raise TypeError("container class launch policy must be ClassImagePolicy")
+            value = {
+                "schema": "prismabuild.container-class-launch.v1",
+                "owner": owner, "marker": marker,
+                "attempt": uuid.uuid4().hex,
+                "requirements": policy._requirements, "klass": policy.klass,
+                "configuration_error": policy._configuration_error,
+                "requirements_sha256": policy.requirements_sha256,
+            }
+        payload = _canonical_bytes(value)
+        if len(payload) > _CONTAINER_CLASS_CONTEXT_LIMIT:
+            raise ValueError("container class launch configuration exceeds bound")
+        try:
+            # Even an unconfigured executor anchors its descendants with an
+            # explicit denial; absence must not let a payload become authority.
+            fd = os.memfd_create(_CONTAINER_CLASS_MEMFD_NAME,
+                                 os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            with os.fdopen(os.dup(fd), "wb") as stream:
+                stream.write(payload)
+            seals = (fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW
+                     | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+            pid = os.getpid()
+            _, birth = _container_class_process(pid)
+            _CONTAINER_CLASS_CONTEXT.set(f"{pid}:{birth}:{fd}")
+        except (AttributeError, OSError):
+            # Without an anchor, continuing would let a child forge authority.
+            # Refuse the attempt rather than launching an unanchored payload.
+            raise RuntimeError("container class launch context unavailable") from None
+        yield
+    finally:
+        _CONTAINER_CLASS_CONTEXT.reset(token)
+        if fd is not None:
+            os.close(fd)
+
+
+def _container_class_launch_environment() -> dict[str, str]:
+    """Pool-only launch overlay; clear any ambient locator for an empty context."""
+    return {_CONTAINER_CLASS_LAUNCH_ENV: _CONTAINER_CLASS_CONTEXT.get()}
+
+
+def _container_class_launch_policy(*, owner: str, marker: str):
+    """Read immutable configuration held by a live executor ancestor.
+
+    No supplied policy, satisfied flag or persisted admission evidence is read.
+    Missing, mismatched, stale, unsealed and non-ancestor locators all mean no
+    authority. Inventory is deliberately absent: the shim re-observes it at
+    each actual launch. This is a process-lineage capability, not a sandbox
+    against arbitrary same-uid process debugging or a compromised executor.
+    """
+    fd = None
+    try:
+        locator = os.environ.get(_CONTAINER_CLASS_LAUNCH_ENV, "")
+        if not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+", locator):
+            return None
+        pid, birth, descriptor = locator.split(":")
+        authority = int(pid)
+        if authority <= 1 or int(descriptor) < 0:
+            return None
+        path = f"/proc/{authority}/fd/{int(descriptor)}"
+        if os.readlink(path) != _CONTAINER_CLASS_MEMFD_TARGET:
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        info = os.fstat(fd)
+        if (not _container_class_sealed_file(fd)
+                or not _container_class_executor_matches(
+                    authority, birth, int(descriptor), info)):
+            return None
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            payload = stream.read(_CONTAINER_CLASS_CONTEXT_LIMIT + 1)
+        if len(payload) != info.st_size:
+            return None
+        value = json.loads(payload)
+        if (value["schema"] != "prismabuild.container-class-launch.v1"
+                or value["owner"] != owner or value["marker"] != str(marker)
+                or value.get("denied", False) is not False):
+            return None
+        if __package__:
+            from . import container_images as ci
+        else:  # retained runtime's flat Core alias
+            import container_images as ci
+        policy = ci.ClassImagePolicy(value["requirements"], klass=value["klass"])
+        error = value["configuration_error"]
+        if error is not None:
+            if not isinstance(error, str) or value["requirements_sha256"] is not None:
+                return None
+            policy._configuration_error = error
+            policy.requirements_sha256 = None
+        elif policy.requirements_sha256 != value["requirements_sha256"]:
+            return None
+        return policy
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 @contextmanager
 def submission_phase(name: str):
     timings = _SUBMISSION_TIMINGS.get()
@@ -337,6 +556,10 @@ _EXECUTABLE_KEYS = frozenset({"path", "resolved_path", "sha256", "bytes"})
 _RUNTIME_KEYS = frozenset(
     {"schema", "launch_kind", "core", "launcher", "runtime_sha256"}
 )
+# Historical/minimal standalone runtimes predate container execution helpers.
+# Packaged runtimes bind these sources alongside Core, including the launch
+# context consumed by the Docker shim rather than imported directly by Core.
+_RUNTIME_CONTAINER_MODULES = ("container_images", "_container_exec", "_container_launch")
 _TOOLCHAIN_ATTESTATION_KEYS = frozenset({"declared", "verified"})
 _LOCAL_RESULT_CLAIM_BODY_KEYS = frozenset(
     {
@@ -708,6 +931,15 @@ if any(_LOADED_WORKER_IMMUTABLE_IDENTITY[key] != expected
        for key, expected in _IMMUTABLE_FILES_SOURCE.items()):
     raise ActionContractError("PrismaBuild immutable source differs from Core's pinned source")
 
+_CONTAINER_SOURCE_ROOT = Path(__file__).resolve().parent
+_LOADED_WORKER_CONTAINER_IDENTITIES = {
+    name: _identify_runtime_source(
+        _CONTAINER_SOURCE_ROOT / (name + ".py"),
+        where=f"PrismaBuild worker {name}")
+    for name in _RUNTIME_CONTAINER_MODULES
+    if (_CONTAINER_SOURCE_ROOT / (name + ".py")).is_file()
+}
+
 
 def _normalize_runtime_source(value: object, *, where: str) -> dict[str, object]:
     raw = _exact_mapping(value, keys=_EXECUTABLE_KEYS, where=where)
@@ -783,12 +1015,20 @@ def _worker_runtime_identity(
         "digest_primitives": digest_owner,
         "launcher": launcher,
     }
+    for name, identity in _LOADED_WORKER_CONTAINER_IDENTITIES.items():
+        _verify_runtime_source_unchanged(
+            identity, where=f"PrismaBuild worker {name}",
+            changed_message=f"PrismaBuild worker {name} changed after module import")
+        body[name] = dict(identity)
     return {**body, "runtime_sha256": canonical_sha256(body)}
 
 
 def _validate_worker_runtime(value: object) -> dict[str, object]:
     # Retained v1 receipts predate the split and keep their exact recorded body.
-    keys = _RUNTIME_KEYS | {"digest_primitives"} if isinstance(value, Mapping) and "digest_primitives" in value else _RUNTIME_KEYS
+    keys = _RUNTIME_KEYS | {
+        name for name in ("digest_primitives", *_RUNTIME_CONTAINER_MODULES)
+        if isinstance(value, Mapping) and name in value
+    }
     if isinstance(value, Mapping) and "immutable_files" in value:
         keys = keys | {"immutable_files"}
     raw = _exact_mapping(value, keys=keys, where="worker attestation.runtime")
@@ -824,6 +1064,10 @@ def _validate_worker_runtime(value: object) -> dict[str, object]:
     if "digest_primitives" in raw:
         body["digest_primitives"] = _normalize_runtime_source(
             raw["digest_primitives"], where="worker attestation.runtime.digest_primitives")
+    for name in _RUNTIME_CONTAINER_MODULES:
+        if name in raw:
+            body[name] = _normalize_runtime_source(
+                raw[name], where=f"worker attestation.runtime.{name}")
     if "immutable_files" in raw:
         body["immutable_files"] = _normalize_runtime_source(
             raw["immutable_files"], where="worker attestation.runtime.immutable_files")
@@ -872,6 +1116,16 @@ def _verify_worker_runtime_unchanged(runtime: object) -> None:
     _verify_runtime_source_unchanged(
         loaded_immutable, where="PrismaBuild worker immutable files",
         changed_message="PrismaBuild worker immutable files changed after module import")
+    for name in _RUNTIME_CONTAINER_MODULES:
+        if name not in expected:
+            continue
+        identity = expected[name]
+        if identity != _LOADED_WORKER_CONTAINER_IDENTITIES.get(name):
+            raise LocalActionError(
+                f"attested PrismaBuild worker {name} differs from module import identity")
+        _verify_runtime_source_unchanged(
+            identity, where=f"PrismaBuild worker {name}",
+            changed_message=f"PrismaBuild worker {name} changed after module import")
     launcher = expected["launcher"]
     if isinstance(launcher, Mapping):
         _verify_runtime_source_unchanged(
@@ -6209,10 +6463,19 @@ def run_local_action(
             # off this list, so the executable this action names is still the
             # one attested and rechecked after the run.
             launch_argv = profile.launch_argv(task["argv"])
+        # Runtime-only overlay: action-supplied context locators are not authority.
+        launch_environment[_CONTAINER_CLASS_LAUNCH_ENV] = (
+            _CONTAINER_CLASS_CONTEXT.get()
+            or os.environ.get(_CONTAINER_CLASS_LAUNCH_ENV, "")
+        )
         with _sigterm_unwinds_this_process():
             try:
+                if __package__:
+                    from ._container_exec import launch_argv as _mediate_container_exec
+                else:  # retained runtime's flat Core alias
+                    from _container_exec import launch_argv as _mediate_container_exec
                 process = subprocess.Popen(
-                    launch_argv,
+                    _mediate_container_exec(launch_argv, launch_environment),
                     cwd=cwd,
                     env=launch_environment,
                     shell=False,

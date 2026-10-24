@@ -1786,6 +1786,32 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The private Linux descendant-exec runner mediates the configured absolute
+`PRISMABUILD_DOCKER_REAL` client (default `/usr/bin/docker`) at kernel exec
+stops, before its first user instruction. Native launchers and child argv read
+from sealed inputs use the same route as direct launches: the existing Docker
+shim performs the current class/endpoint qualification and ownership protocol.
+Inventory remains available without class context; supported work operations
+refuse without authoritative context. The wrapper and context overlay do not
+rewrite the sealed argv or action identity. Tracees stay in the action process
+group, and tracer death kills attached descendants. This implementation requires
+Linux ptrace and procfs; register injection supports x86-64 and AArch64 ELF ABIs
+and fails closed on unsupported client ABIs. CPU fake-client acceptance ran on
+both ABIs, not real Docker qualification. This is cooperative exec mediation,
+not a sandbox against copied clients, raw daemon APIs or hostile same-user code.
+
+The worker runtime identity also binds `container_images.py`,
+`_container_exec.py` and `_container_launch.py` when present. Their source
+identities are captured at Core import, checked again when sealing the runtime,
+and verified before execution; they participate in `runtime_sha256`. The launch
+context helper is included even though the shim, rather than Core, imports it.
+These optional source fields preserve validation of historical/minimal runtime
+records, not permission to ignore a changed source in a new record. Runtime
+publication already copies every package Python module, and both `tools/` and
+`tools/fleet/` entry layouts resolve that same generation-local package. The
+standalone flat Core import convention also resolves sibling container helpers.
+No hand-maintained acceptance fixture module list is expanded for this feature.
+
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
 profiles cannot rewrite the sealed PATH or select a different executable.
 CUDA tooling outside the default PATH must be named explicitly or supplied

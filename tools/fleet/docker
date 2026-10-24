@@ -600,6 +600,7 @@ def _owned_exec(real: str, globals: list[str], sub: list[str], scope: tuple[str,
     global_options, environment = _local_daemon(real, globals)
     if global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
         raise Refused("PB resource scopes require the local system Docker daemon")
+    _qualify_class_launch(global_options[-1])
     try:
         result = subprocess.run([real, *global_options, "inspect", sub[index]],
                                 capture_output=True, text=True, env=environment, timeout=10, check=False)
@@ -618,6 +619,30 @@ def _owned_exec(real: str, globals: list[str], sub: list[str], scope: tuple[str,
     # Pin the immutable id after inspection; a recycled container name must not
     # redirect this command into another job between inspect and exec.
     return [*global_options, *sub[:index], cid, *sub[index + 1:]], environment
+
+
+def _qualify_class_launch(endpoint: str) -> None:
+    """Obtain executor authority separately from fresh image qualification.
+
+    Pool/core owns the private context transport and its action/attempt binding.
+    In particular, neither environment verdicts nor writable queue offers are
+    authority. Missing mediation is closed for workload, never for inventory.
+    """
+    source = Path(__file__).resolve().parents[1] / "src"
+    if not source.is_dir():
+        source = Path(__file__).resolve().parents[2] / "src"
+    sys.path.insert(0, str(source))
+    from prismabuild import core
+    from prismabuild._container_launch import qualify_launch
+    provider = getattr(core, "_container_class_launch_policy", None)
+    if provider is None:
+        raise Refused("class_context_missing: no authoritative container class launch context")
+    try:
+        policy = provider(owner=os.environ.get(OWNER_ENV, ""),
+                          marker=os.environ.get(MARKER_ENV, ""))
+        qualify_launch(policy, endpoint=endpoint)
+    except (OSError, ValueError) as exc:
+        raise Refused(f"container class launch refused: {exc}") from exc
 
 
 def _container_intent(scope: str, *, ticket: str | None = None) -> dict:
@@ -1020,8 +1045,13 @@ def main() -> int:
     try:
         scope = _resource_scope()
         _refuse_unaccounted_work(sub, scope=scope)
-        if scope and (sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
-            forwarded, environment = _owned_exec(real, argv[:command], sub, scope)
+        if sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]:
+            if scope:
+                forwarded, environment = _owned_exec(real, argv[:command], sub, scope)
+            else:
+                global_options, environment = _local_daemon(real, argv[:command])
+                _qualify_class_launch(global_options[-1])
+                forwarded = [*global_options, *sub]
             os.execvpe(real, [real, *forwarded], environment)
     except Refused as refusal:
         sys.stderr.write(f"docker shim: {refusal}\n")
@@ -1045,6 +1075,7 @@ def main() -> int:
 
     try:
         global_options, environment = _local_daemon(real, argv[:command])
+        _qualify_class_launch(global_options[-1])
         if scope and global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
             raise Refused("PB resource scopes require the local system Docker daemon")
     except Refused as refusal:

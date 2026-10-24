@@ -72,7 +72,7 @@ def test_remote_daemon_cpu_ids_are_never_guessed(tmp_path, endpoint, globals, en
 def test_resolved_context_is_pinned_before_creation(tmp_path):
     endpoint = "unix:///run/user/1000/docker.sock"
     result, _, forwarded = _shim(tmp_path, ["--context", "local-rootless", "run", "image"],
-                                 endpoint=endpoint)
+                                 endpoint=endpoint, inventory_endpoint=endpoint)
     assert result.returncode == 0, result.stderr
     assert forwarded[:2] == ["--host", endpoint]
     assert "--context" not in forwarded

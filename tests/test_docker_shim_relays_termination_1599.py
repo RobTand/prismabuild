@@ -29,6 +29,8 @@ import time
 
 import pytest
 
+from test_docker_shim_global_options import _shim_command
+
 ROOT = Path(__file__).resolve().parents[1]
 SHIM = ROOT / "tools" / "fleet" / "docker"
 OWNER = "1" * 64
@@ -247,7 +249,7 @@ def _start(tmp_path: Path, *, mode: str = "honor", grace: str | None = "1",
     environment.update(extra or {})
     out = (tmp_path / "out").open("w")
     err = (tmp_path / "err").open("w")
-    process = subprocess.Popen([str(SHIM), *(argv or ["run", "example:image"])],
+    process = subprocess.Popen([*_shim_command(), *(argv or ["run", "example:image"])],
                                env=environment, stdout=out, stderr=err)
     return process
 

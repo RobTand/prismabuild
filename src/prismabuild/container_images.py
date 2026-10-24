@@ -105,7 +105,10 @@ import stat
 import subprocess
 import time
 
-from . import core
+if __package__:
+    from . import core
+else:  # retained runtime's flat module aliases
+    import core
 
 #: How long one observed inventory answers the *offer*.  It bounds the
 #: placement surface's staleness and how often one box pays for a Docker read.
@@ -715,8 +718,24 @@ class ClassImagePolicy:
                                "images": dict(row.images)}
                         for name, row in parsed.items()},
         }
-        from .core import canonical_sha256
-        self.requirements_sha256 = canonical_sha256(self._requirements)
+        self.requirements_sha256 = core.canonical_sha256(self._requirements)
+        self._configuration_error: str | None = None
+
+    @classmethod
+    def for_worker(cls, path: str, *, source_root: Path, klass: str) -> "ClassImagePolicy":
+        """Keep an explicitly selected broken policy closed without losing native work.
+
+        Publication uses the strict loader. A worker must also tolerate lost or
+        damaged configuration after publication, never falling back to legacy
+        container admission. No requirements digest is asserted for unread bytes.
+        """
+        try:
+            return cls.from_file(path, source_root=source_root, klass=klass)
+        except (OSError, ValueError, RecursionError) as error:
+            policy = cls({"schema": CLASS_REQUIREMENTS_SCHEMA, "classes": {}}, klass=klass)
+            policy.requirements_sha256 = None
+            policy._configuration_error = f"{path}: {error}"
+            return policy
 
     @classmethod
     def from_file(cls, path: str, *, source_root: Path, klass: str) -> "ClassImagePolicy":
@@ -730,8 +749,7 @@ class ClassImagePolicy:
         candidate = (source / relative).resolve(strict=True)
         if not candidate.is_relative_to(source):
             raise ValueError("class image config must be contained in its generation")
-        from . import immutable_files
-        payload = immutable_files.read_stable_file(
+        payload = core.immutable_files.read_stable_file(
             candidate,
             where="class image config",
             max_bytes=MAX_INVENTORY_BYTES,
@@ -743,6 +761,10 @@ class ClassImagePolicy:
                  max_age_s: float = INVENTORY_TTL_S) -> dict[str, object]:
         verdict = class_image_verdict(self._requirements, self.klass, inventory,
                                       now=now, max_age_s=max_age_s)
+        if self._configuration_error is not None:
+            verdict.update(status="unknown", container_work_eligible=False,
+                           reason="class_config_unavailable",
+                           detail=self._configuration_error)
         return {**verdict, "requirements_sha256": self.requirements_sha256}
 
 

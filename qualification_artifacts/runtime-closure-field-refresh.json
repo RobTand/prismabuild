@@ -1,0 +1,88 @@
+{
+  "before_source": "833133cfa9beeb0a415b31b54c78736fa4457deb",
+  "current_head": "833133cfa9beeb0a415b31b54c78736fa4457deb",
+  "current_dirty": [
+    " M docs/design.md",
+    " M src/prismabuild/container_images.py",
+    " M src/prismabuild/core.py",
+    " M src/prismabuild/pool.py",
+    " M tools/fleet/docker",
+    " M tools/fleet/fleet_boxes.json",
+    " M tools/fleet/publish_runtime.py",
+    " M tools/fleet/worker_loop.py",
+    "?? qualification_artifacts/issue-2108-o1-o2-evidence.md",
+    "?? qualification_artifacts/o3-shim-evidence.md",
+    "?? qualification_artifacts/o4-exec-evidence.md",
+    "?? qualification_artifacts/runtime-closure-field-review.json",
+    "?? src/prismabuild/_container_exec.py",
+    "?? src/prismabuild/_container_launch.py",
+    "?? tools/fleet/class_images.json"
+  ],
+  "before_metadata_git_blob": "dc7f6b83276d88d2128256bc1ab241654d7dc30e",
+  "after_metadata_git_blob": "168a1372dee312ae930c021042f4ea03260b4a00",
+  "before_count": 572,
+  "after_count": 572,
+  "reviewed": true,
+  "applied": true,
+  "changes": [
+    {
+      "change": "removed",
+      "row": {
+        "path": "src/prismabuild/core.py",
+        "owner": "_validate_worker_runtime",
+        "unresolved": "_RUNTIME_KEYS | {'digest_primitives'} if isinstance(value, Mapping) and 'digest_primitives' in value else _RUNTIME_KEYS",
+        "binding": "keys"
+      },
+      "count": 1,
+      "reason": "Replace the digest-only optional runtime source policy with the bounded container helper source policy. Retained v1 records without these sources remain valid; unknown fields still fail exact mapping validation.",
+      "before": {
+        "path": "src/prismabuild/core.py",
+        "source_git_blob": "8fe571d89e1d34e0d1c4f28dfa4fe4b299640517",
+        "owner": "_validate_worker_runtime",
+        "owner_present": true,
+        "line": 789,
+        "end_line": 836,
+        "source": "def _validate_worker_runtime(value: object) -> dict[str, object]:\n    # Retained v1 receipts predate the split and keep their exact recorded body.\n    keys = _RUNTIME_KEYS | {\"digest_primitives\"} if isinstance(value, Mapping) and \"digest_primitives\" in value else _RUNTIME_KEYS\n    if isinstance(value, Mapping) and \"immutable_files\" in value:\n        keys = keys | {\"immutable_files\"}\n    raw = _exact_mapping(value, keys=keys, where=\"worker attestation.runtime\")\n    if raw[\"schema\"] != WORKER_RUNTIME_SCHEMA_V1:\n        _fail(\n            \"worker attestation.runtime.schema must be \"\n            f\"{WORKER_RUNTIME_SCHEMA_V1!r}\"\n        )\n    launch_kind = _text(\n        raw[\"launch_kind\"], where=\"worker attestation.runtime.launch_kind\"\n    )\n    if launch_kind not in {\"in_process\", \"script\"}:\n        _fail(\"worker attestation.runtime.launch_kind is unsupported\")\n    core = _normalize_runtime_source(\n        raw[\"core\"], where=\"worker attestation.runtime.core\"\n    )\n    launcher_raw = raw[\"launcher\"]\n    launcher = (\n        None\n        if launcher_raw is None\n        else _normalize_runtime_source(\n            launcher_raw, where=\"worker attestation.runtime.launcher\"\n        )\n    )\n    if (launch_kind == \"in_process\") != (launcher is None):\n        _fail(\"worker attestation runtime launch_kind and launcher disagree\")\n    body: dict[str, object] = {\n        \"schema\": WORKER_RUNTIME_SCHEMA_V1,\n        \"launch_kind\": launch_kind,\n        \"core\": core,\n        \"launcher\": launcher,\n    }\n    if \"digest_primitives\" in raw:\n        body[\"digest_primitives\"] = _normalize_runtime_source(\n            raw[\"digest_primitives\"], where=\"worker attestation.runtime.digest_primitives\")\n    if \"immutable_files\" in raw:\n        body[\"immutable_files\"] = _normalize_runtime_source(\n            raw[\"immutable_files\"], where=\"worker attestation.runtime.immutable_files\")\n    recorded = _sha256(\n        raw[\"runtime_sha256\"],\n        where=\"worker attestation.runtime.runtime_sha256\",\n    )\n    if recorded != canonical_sha256(body):\n        _fail(\"worker attestation runtime digest does not match its body\")\n    return {**body, \"runtime_sha256\": recorded}"
+      },
+      "after": {
+        "path": "src/prismabuild/core.py",
+        "source_git_blob": "f59006fa598a901b8f85efb544b976b475b7df75",
+        "owner": "_validate_worker_runtime",
+        "owner_present": true,
+        "line": 947,
+        "end_line": 1001,
+        "source": "def _validate_worker_runtime(value: object) -> dict[str, object]:\n    # Retained v1 receipts predate the split and keep their exact recorded body.\n    keys = _RUNTIME_KEYS | {\n        name for name in (\"digest_primitives\", *_RUNTIME_CONTAINER_MODULES)\n        if isinstance(value, Mapping) and name in value\n    }\n    if isinstance(value, Mapping) and \"immutable_files\" in value:\n        keys = keys | {\"immutable_files\"}\n    raw = _exact_mapping(value, keys=keys, where=\"worker attestation.runtime\")\n    if raw[\"schema\"] != WORKER_RUNTIME_SCHEMA_V1:\n        _fail(\n            \"worker attestation.runtime.schema must be \"\n            f\"{WORKER_RUNTIME_SCHEMA_V1!r}\"\n        )\n    launch_kind = _text(\n        raw[\"launch_kind\"], where=\"worker attestation.runtime.launch_kind\"\n    )\n    if launch_kind not in {\"in_process\", \"script\"}:\n        _fail(\"worker attestation.runtime.launch_kind is unsupported\")\n    core = _normalize_runtime_source(\n        raw[\"core\"], where=\"worker attestation.runtime.core\"\n    )\n    launcher_raw = raw[\"launcher\"]\n    launcher = (\n        None\n        if launcher_raw is None\n        else _normalize_runtime_source(\n            launcher_raw, where=\"worker attestation.runtime.launcher\"\n        )\n    )\n    if (launch_kind == \"in_process\") != (launcher is None):\n        _fail(\"worker attestation runtime launch_kind and launcher disagree\")\n    body: dict[str, object] = {\n        \"schema\": WORKER_RUNTIME_SCHEMA_V1,\n        \"launch_kind\": launch_kind,\n        \"core\": core,\n        \"launcher\": launcher,\n    }\n    if \"digest_primitives\" in raw:\n        body[\"digest_primitives\"] = _normalize_runtime_source(\n            raw[\"digest_primitives\"], where=\"worker attestation.runtime.digest_primitives\")\n    for name in _RUNTIME_CONTAINER_MODULES:\n        if name in raw:\n            body[name] = _normalize_runtime_source(\n                raw[name], where=f\"worker attestation.runtime.{name}\")\n    if \"immutable_files\" in raw:\n        body[\"immutable_files\"] = _normalize_runtime_source(\n            raw[\"immutable_files\"], where=\"worker attestation.runtime.immutable_files\")\n    recorded = _sha256(\n        raw[\"runtime_sha256\"],\n        where=\"worker attestation.runtime.runtime_sha256\",\n    )\n    if recorded != canonical_sha256(body):\n        _fail(\"worker attestation runtime digest does not match its body\")\n    return {**body, \"runtime_sha256\": recorded}"
+      }
+    },
+    {
+      "change": "added",
+      "row": {
+        "path": "src/prismabuild/core.py",
+        "owner": "_validate_worker_runtime",
+        "unresolved": "_RUNTIME_KEYS | {name for name in ('digest_primitives', *_RUNTIME_CONTAINER_MODULES) if isinstance(value, Mapping) and name in value}",
+        "binding": "keys"
+      },
+      "count": 1,
+      "reason": "Permit only the three named container helper source identities in addition to the existing digest source. Normalize each source, bind it into runtime_sha256, compare against import-time identities and re-read it before execution. Includes the transitive launch context helper. Historical bodies are not augmented during validation.",
+      "before": {
+        "path": "src/prismabuild/core.py",
+        "source_git_blob": "8fe571d89e1d34e0d1c4f28dfa4fe4b299640517",
+        "owner": "_validate_worker_runtime",
+        "owner_present": true,
+        "line": 789,
+        "end_line": 836,
+        "source": "def _validate_worker_runtime(value: object) -> dict[str, object]:\n    # Retained v1 receipts predate the split and keep their exact recorded body.\n    keys = _RUNTIME_KEYS | {\"digest_primitives\"} if isinstance(value, Mapping) and \"digest_primitives\" in value else _RUNTIME_KEYS\n    if isinstance(value, Mapping) and \"immutable_files\" in value:\n        keys = keys | {\"immutable_files\"}\n    raw = _exact_mapping(value, keys=keys, where=\"worker attestation.runtime\")\n    if raw[\"schema\"] != WORKER_RUNTIME_SCHEMA_V1:\n        _fail(\n            \"worker attestation.runtime.schema must be \"\n            f\"{WORKER_RUNTIME_SCHEMA_V1!r}\"\n        )\n    launch_kind = _text(\n        raw[\"launch_kind\"], where=\"worker attestation.runtime.launch_kind\"\n    )\n    if launch_kind not in {\"in_process\", \"script\"}:\n        _fail(\"worker attestation.runtime.launch_kind is unsupported\")\n    core = _normalize_runtime_source(\n        raw[\"core\"], where=\"worker attestation.runtime.core\"\n    )\n    launcher_raw = raw[\"launcher\"]\n    launcher = (\n        None\n        if launcher_raw is None\n        else _normalize_runtime_source(\n            launcher_raw, where=\"worker attestation.runtime.launcher\"\n        )\n    )\n    if (launch_kind == \"in_process\") != (launcher is None):\n        _fail(\"worker attestation runtime launch_kind and launcher disagree\")\n    body: dict[str, object] = {\n        \"schema\": WORKER_RUNTIME_SCHEMA_V1,\n        \"launch_kind\": launch_kind,\n        \"core\": core,\n        \"launcher\": launcher,\n    }\n    if \"digest_primitives\" in raw:\n        body[\"digest_primitives\"] = _normalize_runtime_source(\n            raw[\"digest_primitives\"], where=\"worker attestation.runtime.digest_primitives\")\n    if \"immutable_files\" in raw:\n        body[\"immutable_files\"] = _normalize_runtime_source(\n            raw[\"immutable_files\"], where=\"worker attestation.runtime.immutable_files\")\n    recorded = _sha256(\n        raw[\"runtime_sha256\"],\n        where=\"worker attestation.runtime.runtime_sha256\",\n    )\n    if recorded != canonical_sha256(body):\n        _fail(\"worker attestation runtime digest does not match its body\")\n    return {**body, \"runtime_sha256\": recorded}"
+      },
+      "after": {
+        "path": "src/prismabuild/core.py",
+        "source_git_blob": "f59006fa598a901b8f85efb544b976b475b7df75",
+        "owner": "_validate_worker_runtime",
+        "owner_present": true,
+        "line": 947,
+        "end_line": 1001,
+        "source": "def _validate_worker_runtime(value: object) -> dict[str, object]:\n    # Retained v1 receipts predate the split and keep their exact recorded body.\n    keys = _RUNTIME_KEYS | {\n        name for name in (\"digest_primitives\", *_RUNTIME_CONTAINER_MODULES)\n        if isinstance(value, Mapping) and name in value\n    }\n    if isinstance(value, Mapping) and \"immutable_files\" in value:\n        keys = keys | {\"immutable_files\"}\n    raw = _exact_mapping(value, keys=keys, where=\"worker attestation.runtime\")\n    if raw[\"schema\"] != WORKER_RUNTIME_SCHEMA_V1:\n        _fail(\n            \"worker attestation.runtime.schema must be \"\n            f\"{WORKER_RUNTIME_SCHEMA_V1!r}\"\n        )\n    launch_kind = _text(\n        raw[\"launch_kind\"], where=\"worker attestation.runtime.launch_kind\"\n    )\n    if launch_kind not in {\"in_process\", \"script\"}:\n        _fail(\"worker attestation.runtime.launch_kind is unsupported\")\n    core = _normalize_runtime_source(\n        raw[\"core\"], where=\"worker attestation.runtime.core\"\n    )\n    launcher_raw = raw[\"launcher\"]\n    launcher = (\n        None\n        if launcher_raw is None\n        else _normalize_runtime_source(\n            launcher_raw, where=\"worker attestation.runtime.launcher\"\n        )\n    )\n    if (launch_kind == \"in_process\") != (launcher is None):\n        _fail(\"worker attestation runtime launch_kind and launcher disagree\")\n    body: dict[str, object] = {\n        \"schema\": WORKER_RUNTIME_SCHEMA_V1,\n        \"launch_kind\": launch_kind,\n        \"core\": core,\n        \"launcher\": launcher,\n    }\n    if \"digest_primitives\" in raw:\n        body[\"digest_primitives\"] = _normalize_runtime_source(\n            raw[\"digest_primitives\"], where=\"worker attestation.runtime.digest_primitives\")\n    for name in _RUNTIME_CONTAINER_MODULES:\n        if name in raw:\n            body[name] = _normalize_runtime_source(\n                raw[name], where=f\"worker attestation.runtime.{name}\")\n    if \"immutable_files\" in raw:\n        body[\"immutable_files\"] = _normalize_runtime_source(\n            raw[\"immutable_files\"], where=\"worker attestation.runtime.immutable_files\")\n    recorded = _sha256(\n        raw[\"runtime_sha256\"],\n        where=\"worker attestation.runtime.runtime_sha256\",\n    )\n    if recorded != canonical_sha256(body):\n        _fail(\"worker attestation runtime digest does not match its body\")\n    return {**body, \"runtime_sha256\": recorded}"
+      }
+    }
+  ],
+  "scanner_git_blob": "7e3839b1cfb3d66218b8340d30dfe1ec16b167ef"
+}
