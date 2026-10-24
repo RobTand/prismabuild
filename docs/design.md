@@ -2006,7 +2006,7 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `7`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
@@ -2015,7 +2015,28 @@ selected immutable attempt and exact execution receipt (#1481). Version 6
 exposes the generation-bound scratch lifetime contract (Refs #1360): the
 `scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
 field, its sealed variable, and a builder for the sealed selection. Earlier
-exports and capability tags remain available.
+exports and capability tags remain available. Version 7 adds the direct
+`validate_logical_request` re-export (#2149), with no new capability tag.
+
+`validate_logical_request(value: object) -> dict[str, Any]` returns the existing
+validator's canonicalized, independently owned request, including detached nested
+declarations, without mutating the input or reordering tasks. It checks common
+shape, the task roster and estimates, batching policy, placeholder use, residency
+pricing and optional task-data projections. Refusals preserve the owner's
+`ActionContractError` type and diagnostics and are `ValueError`-compatible;
+there is no additional public error alias or public planning API.
+
+Validation does not plan, stage, submit or publish anything, and does not prove
+execution feasibility. Structurally valid requests with impossible batching
+budgets still validate. Declared cwd, argv and manifests do not establish that
+executable inputs or resources exist or are available.
+
+This is a source-only additive SDK release. Source availability does not establish
+availability in PQ's installed or sealed generation. Handoff must identify the
+reviewed PB revision and SDK7 contract for TrustLadder/the authorized publisher
+to publish before consumer adoption. This change neither requires a concurrent
+PQ change nor modifies PQ's pinned runtime, publishes fleet runtime or performs
+workflow transitions.
 
 The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
 SDK5 consumers must keep their existing behavior.
@@ -2046,10 +2067,11 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 6).**
+**The surface (version 7).**
 
 | Area | Names |
 |---|---|
+| Logical-request validation | `validate_logical_request` |
 | Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
 | The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
 | The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
@@ -2064,8 +2086,8 @@ names the generation root, never `src`; the client appends `src` itself.
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
 `prismabuild.data_manifest` owns manifest parsing, validation, format limits and
-the declared-input identifier. The SDK keeps its existing manifest names and
-version 6. The parser uses Core's existing validation helpers; Core does not
+the declared-input identifier. SDK7 keeps the existing manifest names and
+behavior. The parser uses Core's existing validation helpers; Core does not
 import the manifest module. Manifest changes therefore stay outside the
 attested run-local and profiling implementation. `manifest_layout` retains
 the pure read-order operations.
@@ -5568,7 +5590,8 @@ launch through the declared-manifest branch of `residency_map_environment`.
 Slow movers keep fences on the hosts that their gang siblings elect.
 The claim pass tears down a gang after it confirms `residency_lead_terminal`.
 This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
-The sweep withdraws all members and releases their fences (#1543).
+The recorded teardown makes the reservation census ignore the gang; the ordinary
+sweep finishes withdrawing members (#1543).
 
 The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
 The mark contains a signature of each pending lead's records and generations.
@@ -5589,18 +5612,37 @@ It cannot confirm that member until the reset succeeds.
 A new queue instance resets inherited evidence before use.
 This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
 
-Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
-Every other verdict state ends the window and clears the mark.
+Only `lead_not_resident` and `lead_unpinned` can start or confirm the terminal-lead proof.
+Without terminal plan evidence, every other verdict state ends the window and clears the mark.
 This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
 The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
 A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
 A dead member therefore holds no fence there, and the teardown still ends the gang.
 
-Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
-A READY member with a plan refusal still holds its siblings' fences until withdrawal.
-Issue #1543 remains open for that scope.
-Submit movers before the gang.
-Withdraw the gang when its member's plan cannot become resident.
+Terminal plan evidence also uses this confirmation window, independently of whether
+leads have failed, are absent, or remain pinned. It requires positively readable
+filed bytes deterministically refused by plan validation, or a supersession marker
+verified by the plan owner against the current body and filing incarnation.
+The signature binds the evidence kind, filing, exact plan bytes, and (for
+supersession) marker identity. Recovery, failed reads, unverified markers, and
+changed evidence reset confirmation; a denial named `plan_unreadable` alone is
+not proof. Existing public denial names are unchanged, including supersession
+that is discovered without an ended lead in the verdict. A resident map does
+not override verified supersession: the member still defers admission and
+confirms teardown while READY, even if no other resource blocks its launch.
+A failed plan read anywhere in that scan resets confirmation even when another
+read succeeds later in the same scan; it cannot reuse the aged observation.
+After the same terminal evidence has been observed for 120 seconds, the next
+successful eligible claim scan must freshly confirm it and record teardown.
+Plan proof and commit hold the consumer's transition lock; the distinct
+terminal-lead proof retains all the lead-lock and generation safeguards above.
+Reservation census then ignores the gang, removing its fences; ordinary gang
+and stage-pin sweeps subsequently finish member withdrawal and pin retirement,
+without withdrawing an executed mover. This is not an unconditional wall-clock
+bound during unavailable scans, failed evidence reads, or unavailable storage.
+Ordinary mover waits and merely absent leads without terminal plan evidence
+remain nonterminal and have no ready-wait timeout. Submit movers before the gang;
+a requeue after confirmed teardown cannot resurrect it.
 These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:
@@ -6147,9 +6189,22 @@ attributed job at a time. Absent power *without* the declaration remains
 invalid, so this narrows one declared class of device rather than weakening the
 contract for every sample.
 
-Attribution on such a host is a census of the GPU device node's open handles in
-`/proc`, routed through the same PID start-time and cgroup-identity checks as
-the NVML rows. It resolves ownership and reports no per-process bytes, which
+NVIDIA process attribution first runs a bounded compute-app discovery query,
+then captures start-time and cgroup membership only for those candidate PIDs.
+A separate compute-app query supplies measured bytes; fresh identities after
+measurement must match the pre-measurement identities. Discovery counters are
+never attributed. Empty discovery still requires measurement, and a PID first
+seen in measurement stays unknown/incomplete. Failed discovery performs no
+process-identity census, including with no active scopes; idle foreign inventory
+is still collected. Both queries and identity work share one collection deadline,
+with each query capped by the remaining budget and exhaustion incomplete even
+for empty rows. Scope inode fencing and Guard confirmations remain unchanged.
+
+Attribution on an AMD/WSL host is still a census of the GPU device node's open
+handles in `/proc`, bracketed by fresh PID start-time and cgroup-identity reads.
+The pre-measurement identities cover host PIDs because previously idle processes
+can open handles; pidfds do not announce those opens. This is not event-driven
+discovery, and mutable memberships, counters and capacity are not stably cached. It resolves ownership and reports no per-process bytes, which
 the sample declares as `gpu_process_bytes: false` and each scope as
 `gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
 violation it has no counter for. Ownership unknown still refuses; bytes unknown
@@ -9961,6 +10016,14 @@ sequence behavior. It invalidates descendants observed and deleted before their
 watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
+
+Host-tree watch removal compares normalized path strings (#2173). The removed
+root and its slash-terminated prefix are computed once per removal. Each
+installed Path supplies its cached normalized string; the watch loop compares
+that string for equality or the descendant prefix, without constructing Paths
+or running per-watch pathlib ancestry checks. Exact component boundaries keep
+sibling host names distinct. Removal order, inode-watch retirement, coverage
+resets, event ordering and v1/v2 reply fields are unchanged.
 
 The v2 client methods perform one bounded request. They positively check requested
 topics before accepting a cursor or successful wait. They introduce no consumer
@@ -19930,6 +19993,9 @@ retained driver. Complete inherited environment values are bound by a canonical
 digest. The parent captures one environment dictionary, hashes it and passes
 that same dictionary explicitly to the archival subprocess. Native library
 changes to the C environment cannot alter the selected launch environment.
+The expected pre-driver TMPDIR comes from that captured environment and must
+be nonempty and absolute. An unset, empty or relative TMPDIR refuses archival
+replay before launch. No host scratch path is part of runtime qualification.
 The environment observation logs only native thread variables, TMPDIR
 and TZ values. The driver then changes TMPDIR to its private store as its
 retained source requires.

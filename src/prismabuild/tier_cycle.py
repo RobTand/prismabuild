@@ -5351,6 +5351,12 @@ def window_pressure(
         stage_needs = stage_probe.advance
         stage_newcomer = _is_newcomer(consumer, stage_needs, already)
         if stage_newcomer:
+            if capacity > 0 and _newcomer_movement_impossible(
+                    {"plan": plan, "accepted": accepted},
+                    mover_role="mover_row", capacity_gib=int(capacity)):
+                # Relief cannot repair a later movement larger than the
+                # entire tier, even if the bounded probe could publish now.
+                continue
             if admissions is None:
                 admissions = _commitment_admissions(_commitment_census(
                     queue, tiers, consumers=consumers, unknown=unknown or (), store=store))
@@ -5466,10 +5472,16 @@ def window_pressure(
                 int(entry["start_bytes"]), int(entry["end_bytes"]),
                 state["stage_resident"])]
         if ram_wanted:
+            ram_needs = ram_probe.advance
+            ram_newcomer = _is_newcomer(consumer, ram_needs, set(state["already"]))
+            if (ram_newcomer and ram_capacity > 0
+                    and _newcomer_movement_impossible(
+                        {"plan": plan, "accepted": accepted},
+                        mover_role="ram_mover_row", capacity_gib=ram_capacity)):
+                continue
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
-            ram_needs = ram_probe.advance
-            if _is_newcomer(consumer, ram_needs, set(state["already"])):
+            if ram_newcomer:
                 newcomers.setdefault(ram_tier_id, []).append(
                     {**ram_needs, "consumer": str(_key),
                      "extra_held_gib": obligated.get(ram_tier_id, 0)})
@@ -6007,6 +6019,21 @@ def _advance_wants(
     return wants, unknown
 
 
+def _newcomer_movement_impossible(want: Mapping[str, object], *,
+                                  mover_role: str, capacity_gib: int) -> bool:
+    """Positive plan geometry witness only; never an admission certificate.
+
+    The caller has already read a validated frozen plan and authoritative
+    minted supply.  Do not use free capacity, bounded read footprint, or a
+    commitment refusal as evidence of impossibility.  Recompute each cycle;
+    neither the plan nor admitted-consumer continuity is changed.
+    """
+    window = residency_plan.ConsumerWindow(
+        want["plan"], want["accepted"],  # type: ignore[arg-type]
+        residency_plan.LegObservation(mover_role=mover_role))
+    return window.remaining_movement_minimum_gib > capacity_gib
+
+
 def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
                 grant: str, key: str, plan: Mapping[str, object],
                 leg: Mapping[str, object], demand: int) -> bool:
@@ -6510,6 +6537,17 @@ def _protect_tier_advances(
                 admitted_currents[key] = _unpublished_current_gib(
                     needs, held=held, rowed=ready_by_key, kind=kind)
             if want["newcomer"]:
+                # A bounded publication footprint can hide an impossible
+                # later leg/overlap (#1772). Refuse before publication,
+                # relief, or establishing the feasible-wait priority barrier.
+                if _newcomer_movement_impossible(
+                        want, mover_role=mover_role, capacity_gib=capacity_gib):
+                    gated[(key, tier_id)] = {
+                        "reason": window_credit.REASON_OVERSIZE,
+                        "permanent": True, "need_gib": cur,
+                        "tier_id": tier_id, "output_note": output_note,
+                    }
+                    continue
                 priority = priority_of(want)
                 if (priority_candidate(want) and waiting_priority is not None
                         and priority < waiting_priority):
@@ -6600,8 +6638,8 @@ def _protect_tier_advances(
                     # windows while existing promises drain. Only a feasible
                     # transient wait establishes this barrier; oversized or
                     # unknown work cannot block otherwise useful newcomers.
-                    # A commitment wait is feasible by construction: a read
-                    # footprint never exceeds the tier (#907).
+                    # The remaining movement minimum was checked separately
+                    # above: a bounded read footprint alone cannot prove it.
                     if (priority_candidate(want)
                             and decision["reason"] in (
                                 window_credit.REASON_STALL,

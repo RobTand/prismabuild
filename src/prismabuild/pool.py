@@ -16950,8 +16950,14 @@ class PoolQueue:
         # ``tolerate_stale`` inside the by-key readers, whose loudness
         # is what turns a broken mount into a visible failure instead
         # of a confident wrong verdict.
+        from . import residency_plan
+
         try:
-            residency = self.residency_verdict(item)
+            # Best-effort plan readers may swallow an I/O error before a
+            # later read succeeds in this same verdict. Preserve that reset
+            # signal privately, without changing the public verdict shape.
+            with residency_plan._observe_read_uncertainty() as plan_uncertainty:
+                residency = self.residency_verdict(item)
         except (OSError, PoolContractError) as exc:
             residency_block = item.get("residency")
             leads = (residency_block.get("leads")
@@ -16974,6 +16980,18 @@ class PoolQueue:
                    if carried is not None else {})})
             return scan
         reason = candidate_policy.residency_denial(residency)
+        if reason is None and item.get("gang") is not None:
+            # A resident map does not make a retired filing usable. Inspect
+            # plan retirement independently of the host's residency verdict,
+            # including while resources keep this member READY. Keep the
+            # existing denial name and defer admission during confirmation.
+            try:
+                if self._terminal_plan_signature(key) is not None:
+                    reason = "residency_plan_unreadable"
+            except (OSError, ValueError, pb.PrismaBuildError):
+                self._gang_clear_terminal(item, key)
+                return candidate_policy.CandidateDenial(
+                    "residency_plan_unreadable", {'residency': residency}, scan)
         if reason is not None:
             # Before any token is taken, and without ``record_pass``:
             # the bytes are not there, so this box should go do other
@@ -17002,7 +17020,19 @@ class PoolQueue:
             # loop's next recomposition drops the prior-epoch
             # fragment (#640).
             if item.get("gang") is not None:
-                if reason != "residency_lead_terminal":
+                interrupted = bool(plan_uncertainty)
+                if (interrupted and not any(plan_uncertainty)
+                        and reason == "residency_lead_terminal"):
+                    # An absent plan is ordinary for lead-only consumers.
+                    # Preserve their separate proof, but never bridge a
+                    # missing observation into a now-readable plan proof.
+                    try:
+                        interrupted = self._terminal_plan_signature(key) is not None
+                    except (OSError, ValueError, pb.PrismaBuildError):
+                        pass
+                if interrupted:
+                    # No successful reproof in this scan may bridge an
+                    # unavailable earlier plan/marker observation.
                     self._gang_clear_terminal(item, key)
                 elif self._gang_terminal_confirmed(item, key, residency):
                     # This member can never start, so its gang cannot:
@@ -17011,15 +17041,14 @@ class PoolQueue:
                     # elections never expire and the sweep tears a
                     # gang down only on an unsuccessful member
                     # (#1543).  The confirmation above proved the
-                    # verdict once more under the leads' locks and
-                    # filed the one-shot teardown marker there, so no
-                    # requeue can win between the proof and the
-                    # commit; the siblings are withdrawn here, after
-                    # the leads' locks are released, and this row's
-                    # lock is held, so the sweep withdraws it.
+                    # terminal plan under this consumer's lock, or the
+                    # lead verdict under the leads' locks, and filed
+                    # the one-shot teardown marker. The siblings are
+                    # withdrawn here after any lead locks are released;
+                    # this row's lock is held, so the sweep withdraws it.
                     self._gang_teardown_withdraw(
                         item, by=key, exclude={key},
-                        reason=f"member {key[:12]} cannot start: residency_lead_terminal")
+                        reason=f"member {key[:12]} cannot start: {reason}")
             return candidate_policy.CandidateDenial(
                 reason, {'residency': residency}, scan)
         if item.get("gang") is not None:
@@ -20304,8 +20333,77 @@ class PoolQueue:
             return None
         return sorted({str(entry.get("lead")) for entry in pending})
 
+    def _terminal_plan_signature(self, key: str) -> str | None:
+        """Positive terminal plan proof, independent of lead presence or verdict.
+
+        The consumer's transition lock is held by the claim pass: plan filing,
+        retirement and reaping use that same lock. Bracket the reads as well,
+        so a changed filing or unavailable read cannot confirm old evidence.
+        A denial string alone deliberately proves nothing here.
+        """
+        from . import residency_plan
+
+        path = self.records.residency_plan_path(key)
+        filing = residency_plan.incarnation(path)
+        if filing is None:
+            return None
+        refused = False
+        try:
+            document = self.records.text_document_at(path)
+        except ValueError:
+            # Readable bytes with invalid JSON are deterministic refusal too.
+            refused = True
+        if not refused:
+            try:
+                plan = residency_plan.validate_plan(document)
+            except ValueError:
+                refused = True
+        raw = path.read_bytes()
+        if residency_plan.incarnation(path) != filing:
+            return None
+        if refused:
+            return pb.canonical_sha256(["plan-refused", filing, pb.raw_sha256(raw)])
+        marker = residency_plan.superseded(self, plan)
+        if marker is None:
+            return None
+        if marker.get("unreadable"):
+            raise ValueError("unverified residency supersession")
+        if residency_plan.incarnation(path) != filing:
+            return None
+        return pb.canonical_sha256(
+            ["plan-superseded", filing, pb.raw_sha256(raw), marker])
+
     def _gang_terminal_confirmed(self, item: Mapping[str, object], key: str,
                                  residency: Mapping[str, object]) -> bool:
+        """Confirm plan evidence first; retain the distinct locked lead proof."""
+        from . import _gang
+
+        try:
+            signature = self._terminal_plan_signature(key)
+            if signature is None:
+                if candidate_policy.residency_denial(residency) == "residency_lead_terminal":
+                    return self._gang_lead_terminal_confirmed(item, key, residency)
+                self._gang_clear_terminal(item, key)
+                return False
+            group = self._gang_member_group(item)
+            if group is None:
+                return False
+            if self._gang_terminal_resets.get((group, key), True):
+                if not self._gang_clear_terminal(item, key):
+                    return False
+            if not _gang.note_terminal(self, group, key, signature, now=_now()):
+                return False
+            if self._terminal_plan_signature(key) != signature:
+                self._gang_clear_terminal(item, key)
+                return False
+            return self._gang_teardown_mark(
+                item, reason=f"member {key[:12]} cannot start: terminal residency plan", by=key)
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            self._gang_clear_terminal(item, key)
+            return False
+
+    def _gang_lead_terminal_confirmed(self, item: Mapping[str, object], key: str,
+                                      residency: Mapping[str, object]) -> bool:
         """Whether a member's terminal reading has stood and still holds (#1543).
 
         One reading is not enough: a lead mid-requeue (READY -> CLAIMED) reads
