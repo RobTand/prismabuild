@@ -15,6 +15,10 @@ hide a stage that is only draining.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -78,7 +82,7 @@ def fleet(tmp_path: Path) -> fx.Fleet:
         worker_script=str(built.base / 'worker.py'),
     )
     claimed = queue.claim(tags=["mover"],
-                          capacity={"cpu": 8, "mem_gb": 16})
+                          **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     assert claimed is not None and claimed["action_key"] == MOVER_CLAIMED
     ActionRows(built.queue).publish(
         MOVER_READY,

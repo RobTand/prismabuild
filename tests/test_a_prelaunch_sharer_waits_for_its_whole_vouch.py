@@ -14,6 +14,10 @@ tier cycle.  Nothing touches a live queue.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -199,7 +203,7 @@ def test_the_claim_pass_waits_and_names_the_denial(
     _fan_out(queue, stage)
     _cycle(queue, stage)
     held = queue.ledger().held()
-    assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     denial = _denial(queue, SECOND)
     assert denial is not None and denial["reason"] == "residency_map_incomplete", denial
@@ -224,7 +228,7 @@ def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
     the denial names the source it could not read."""
 
     held, passes = queue.ledger().held(), queue.passes(key)
-    assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, key).exists()
     denial = _denial(queue, key)
     assert denial is not None and denial["reason"] == "residency_map_unreadable", denial

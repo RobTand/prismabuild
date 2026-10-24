@@ -13,6 +13,10 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -63,7 +67,7 @@ def _fail(q: pool.PoolQueue, key: str) -> None:
         max_attempts=1,
         retry_safe=False,
     )
-    claim = q.claim(owner="mover", capacity={"cpu": 4})
+    claim = q.claim(owner="mover", **simulated_admission(q, simulated_capacity({"cpu": 4})))
     assert claim is not None and claim["action_key"] == key
     q.finish(key, status="failed", claim_snapshot=claim)
 
@@ -81,7 +85,7 @@ def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
 def test_a_failed_lead_is_terminal_not_pending(queue: pool.PoolQueue) -> None:
     _fail(queue, MOVER)
     _publish_consumer(queue, [MOVER])
-    assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"] == [
@@ -98,7 +102,7 @@ def test_a_failed_lead_beside_a_queued_one_stays_pending(
 
     _fail(queue, MOVER)
     _publish_consumer(queue, [MOVER, SECOND_MOVER])
-    assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_not_resident"

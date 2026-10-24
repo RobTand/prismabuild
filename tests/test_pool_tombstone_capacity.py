@@ -1,3 +1,7 @@
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import claim_identity
 """A concluded tombstone remains the owner of unfinished capacity cleanup."""
 import pytest
@@ -21,7 +25,7 @@ def test_cancelled_tombstone_recovers_capacity_after_lease_removal(
 ):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, tmp_path)
-    first = queue.claim(owner="original", capacity={"cpu": 1})
+    first = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     queue.withdraw(KEY, signal_child=False)
     def crash_before_release(self, key):
         raise RuntimeError("interrupted before reservation return")
@@ -47,7 +51,7 @@ def test_cancelled_tombstone_recovers_capacity_after_lease_removal(
     )
     if successor:
         assert queue.records.item_path(pool.record_store.READY, KEY).read_bytes() == pending
-        assert queue.claim(owner="successor", capacity={"cpu": 1}) is not None
+        assert queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is not None
 
 
 @pytest.mark.parametrize("refusal", ["scope", "release", "ambiguous"])
@@ -56,7 +60,7 @@ def test_tombstone_retains_recovery_authority_when_cleanup_is_unknown(
 ):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, tmp_path)
-    first = queue.claim(owner="original", capacity={"cpu": 1})
+    first = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     queue.withdraw(KEY, signal_child=False)
     tombstone, _ = queue._entomb_claim(KEY, expect=first)
     queue.records.lease_path(KEY).unlink()
@@ -77,12 +81,12 @@ def test_tombstone_retains_recovery_authority_when_cleanup_is_unknown(
 def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, tmp_path)
-    first = queue.claim(owner="original", capacity={"cpu": 1})
+    first = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     queue.withdraw(KEY, signal_child=False)
     saved = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
     queue.finish(KEY, status="withdrawn", claim_snapshot=first)
     publish(queue, tmp_path)
-    successor = queue.claim(owner="successor", capacity={"cpu": 1})
+    successor = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     # An old runtime's delayed tombstone appears beside the new live owner.
     tombstone = queue.records.dir(
         pool.record_store.CLAIMED,

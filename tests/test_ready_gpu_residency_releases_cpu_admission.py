@@ -1,6 +1,10 @@
 """Recorded residency refusals release CPU work until ordinary GPU admission resumes."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 import json
 from pathlib import Path
@@ -171,7 +175,7 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     cpu = publish("portable-cpu-before-real-lead", priority=1,
                   cpu=1, gpu=0, mem_gb=24 if drain else 3, tags=["gb10"])
     tick()
-    claimed = queue.claim(capacity={"cpu": 20, "mem_gb": 120, "gpu": 1},
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 20, "mem_gb": 120, "gpu": 1})),
         cpu_tiers={"preferred": list(range(20)), "fallback": []}, adaptive_cpu=True,
         has_gpu=True, tags=worker_tags,
         cpu_sampler=lambda: cpu_sample(clock, readings),

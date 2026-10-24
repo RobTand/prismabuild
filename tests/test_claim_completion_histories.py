@@ -1,4 +1,8 @@
 """Native reservation boundaries retained while the claim driver changes."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import FleetWorld
 import json
 
@@ -57,7 +61,7 @@ def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, m
 
         monkeypatch.setattr(queue, "write_lease", fail_lease)
     with pytest.raises(LookupError) as caught:
-        queue.claim(owner="publication-owner", capacity={"cpu": 2, "mem_gb": 2})
+        queue.claim(owner="publication-owner", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 2})))
     assert caught.value is cause
     assert exits == []
     assert queue.ledger().holder_tokens(KEY) == {"cpu": 1, "mem_gb": 1}
@@ -90,7 +94,7 @@ def test_incomplete_commit_keeps_a_newer_ready_publication_byte_exact(tmp_path, 
         return filed
 
     monkeypatch.setattr(pool.ResourceLedger, "commit_acquire", commit_then_publish)
-    assert queue.claim(owner="incomplete-owner", capacity={"cpu": 2, "mem_gb": 2}) is None
+    assert queue.claim(owner="incomplete-owner", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 2}))) is None
     assert len(newer) == 1 and newer[0] != old
     assert queue.records.item_path(pool.READY, KEY).read_bytes() == newer[0]
     assert queue.records.item_path(pool.CLAIMED, KEY).read_bytes() == old
@@ -171,7 +175,7 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
     monkeypatch.setattr(pool.os, "rename", replace_then_rename)
     monkeypatch.setattr(queue, "_fresh_reader_plan", observe_plan)
     monkeypatch.setattr(measurement.CensusReader, "_census", observe_census)
-    assert queue.claim(owner="views-owner", capacity={"cpu": 8, "mem_gb": 8}) is None
+    assert queue.claim(owner="views-owner", **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 8}))) is None
     assert len(replaced) == 1
     assert queue.records.item_path(pool.READY, first).read_bytes() == replaced[0]
     assert queue.records.item_path(pool.READY, second).read_bytes() == second_bytes

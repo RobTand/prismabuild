@@ -1,4 +1,8 @@
 """Holder queries retain physical reservations and their record error policies."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from pathlib import Path
 import errno
 import time
@@ -116,7 +120,7 @@ def test_claim_commit_distinguishes_absent_metadata_from_a_present_empty_record(
                 marker.write_bytes(b'' if damage == 'empty_bytes' else b'{}')
         return filed
     monkeypatch.setattr(pool.ResourceLedger, 'commit_acquire', damage_committed_record)
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     if damage == 'empty_object':
         assert claimed is not None
         assert claimed['cpu_allocation'] == {'preferred': [8], 'fallback': []}

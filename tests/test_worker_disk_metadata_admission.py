@@ -11,6 +11,8 @@ live capacity, observation, bounded discovery/publication, full-demand claims,
 token acquisition and finish all run normally against one private host ledger.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_claim_parameters
 from fleet_world import ActionRows
 
 import importlib.util
@@ -225,7 +227,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
                           "capacity": offer["observed_capacity"],
                           "cpu_tiers": offer["cpu_tiers"],
                           "adaptive_cpu": not assume_idle}
-            assert sibling.claim(owner="metadata-sibling", **claim_args) is None
+            assert sibling.claim(owner="metadata-sibling", **simulated_claim_parameters(claim_args, queue=sibling)) is None
             denial = _denial(sibling, SECOND)
             assert denial["reason"].startswith("reservation_unavailable"), denial
             assert denial["evidence"]["demand"] == DEMAND
@@ -248,7 +250,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
                 max_attempts=1,
                 retry_safe=False,
             )
-            ordinary = sibling.claim(owner="ordinary-sibling", **claim_args)
+            ordinary = sibling.claim(owner="ordinary-sibling", **simulated_claim_parameters(claim_args, queue=sibling))
             assert ordinary is not None and ordinary["action_key"] == ORDINARY
             assert ledger.holder_tokens(ORDINARY) == {"cpu": 1, "mem_gb": 1}
             assert ledger.held()[KIND] == 1

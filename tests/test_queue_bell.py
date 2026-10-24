@@ -1,4 +1,8 @@
 """Real local inotify, HTTP and waiter boundaries, never a live queue (#1894)."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from concurrent.futures import ThreadPoolExecutor
 import errno
 import http.client
@@ -864,7 +868,7 @@ def test_real_requeue_supersession_wakes_exact_publication_waiter(bell):
     queue.announce(host=socket.gethostname(), tags=(), has_gpu=False,
         capacity=DEMAND, cpu_tiers={"preferred": sorted(os.sched_getaffinity(0))[:1], "fallback": []})
     _publish(queue)
-    original = queue.claim(owner="bell-requeue-test", capacity=DEMAND)
+    original = queue.claim(owner="bell-requeue-test", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     _publish(queue)
     cursor = bell.client.now()

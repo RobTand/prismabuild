@@ -1,4 +1,8 @@
 """New low-priority windows cannot indefinitely refill ahead of a larger lead."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 import test_window_multiconsumer_liveness as base
 
 
@@ -48,7 +52,7 @@ def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp
             queue.records.item(base.pool.record_store.READY, key),
         )
         claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='drain-existing',
-                              capacity={'cpu': 4, 'mem_gb': 4})
+                              **simulated_admission(queue, simulated_capacity({'cpu': 4, 'mem_gb': 4})))
         assert claimed and claimed['action_key'] == key
         queue.finish(key, status='executed', detail={'returncode': 0})
         cycle(queue, tmp_path)
@@ -60,7 +64,7 @@ def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp
         queue.records.item(base.pool.record_store.READY, high),
     )
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='native-lead',
-                          capacity={'cpu': 4, 'mem_gb': 4})
+                          **simulated_admission(queue, simulated_capacity({'cpu': 4, 'mem_gb': 4})))
     assert claimed and claimed['action_key'] == high
     assert ledger.holdings(high)['stage_gib'] == 18
     assert all(

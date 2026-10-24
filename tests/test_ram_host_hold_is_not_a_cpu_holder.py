@@ -11,6 +11,10 @@ dl380g10 was refused for as long as the RAM tier held any bytes.
 The memory side must still count the hold: a row that needs the memory the
 fill took is refused, and admitted once the fill releases it.
 """
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from pathlib import Path
 import sys
@@ -65,7 +69,7 @@ def test_a_ram_fill_hold_does_not_refuse_a_cpu_row(tmp_path, monkeypatch, measur
         worker_script='worker.py',
         resources={'cpu': 1, 'mem_gb': 1},
     )
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'b' * 64
 
 
@@ -80,7 +84,7 @@ def test_a_ram_fill_hold_does_not_block_an_unbounded_row(tmp_path, monkeypatch):
         worker_script='worker.py',
         resources={'mem_gb': 1},
     )
-    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
@@ -94,9 +98,9 @@ def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
         worker_script='worker.py',
         resources={'cpu': 1, 'mem_gb': 2},
     )
-    assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.tier('ram:' + str(queue.ledger().host))._release_host(GRANT) == 7
-    claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'd' * 64
 
 

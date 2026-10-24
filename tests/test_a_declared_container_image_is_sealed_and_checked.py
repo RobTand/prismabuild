@@ -10,6 +10,10 @@ token spent.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -122,7 +126,7 @@ def test_a_record_requiring_the_capability_without_refs_is_denied(tmp_path):
     record = json.loads(path.read_text(encoding="utf-8"))
     record["tags"] = [*record["tags"], contracts.CONTAINER_IMAGE_TAG]
     path.write_text(json.dumps(record), encoding="utf-8")
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[ID_A]) is None
     assert denials(queue)[-1]["reason"] == "container_image_requirement_missing"
     assert path.exists()
@@ -171,7 +175,7 @@ def test_an_action_without_images_has_no_field_and_no_requirement(tmp_path):
     assert "container_images" not in record
     # And it is claimable on a box with no inventory at all: ordinary work is
     # untouched by the new field, including a Docker-less box.
-    assert queue.claim(capacity=CAPACITY, observed_images=None)["action_key"] == KEY_A
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), observed_images=None)["action_key"] == KEY_A
 
 
 def test_an_offer_reports_only_what_it_positively_observed(tmp_path):
@@ -230,7 +234,7 @@ def test_a_missing_image_denies_by_name_and_leaves_the_item_ready(tmp_path):
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[REF_A])
 
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[]) is None
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_absent"
@@ -241,7 +245,7 @@ def test_a_missing_image_denies_by_name_and_leaves_the_item_ready(tmp_path):
     record = item_of(queue, KEY_A)
     assert record["attempts"] == 0
     assert ledger.held() == {}
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[REF_A])["action_key"] == KEY_A
 
 
@@ -268,7 +272,7 @@ def test_an_action_sealed_on_one_image_store_is_claimed_from_the_other(tmp_path)
     queue.ledger().ensure_capacity(CAPACITY)
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[sparky_id])
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=sorted(sparklina)) is None
     assert denials(queue)[-1]["reason"] == "container_image_absent"
 
@@ -278,7 +282,7 @@ def test_an_action_sealed_on_one_image_store_is_claimed_from_the_other(tmp_path)
         portable_queue.ledger().ensure_capacity(CAPACITY)
         publish(portable_queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
                 container_images=[portable])
-        claimed = portable_queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+        claimed = portable_queue.claim(**simulated_admission(portable_queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                                        observed_images=sorted(observed))
         assert claimed is not None and claimed["action_key"] == KEY_A
 
@@ -289,10 +293,10 @@ def test_an_action_sealed_on_one_image_store_is_claimed_from_the_other(tmp_path)
     refusing.ledger().ensure_capacity(CAPACITY)
     publish(refusing, KEY_B, resources={"cpu": 1, "mem_gb": 1},
             container_images=[divergent])
-    assert refusing.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert refusing.claim(**simulated_admission(refusing, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                           observed_images=sorted(sparklina)) is None
     assert denials(refusing)[-1]["reason"] == "container_image_absent"
-    assert refusing.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert refusing.claim(**simulated_admission(refusing, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                           observed_images=sorted(sparky))["action_key"] == KEY_B
 
 
@@ -314,7 +318,7 @@ def test_an_unknown_inventory_denies_fail_closed(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[REF_A])
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=None) is None
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_presence_unknown"
@@ -330,7 +334,7 @@ def test_a_malformed_item_field_is_a_denial_not_a_poll_failure(tmp_path):
     record = json.loads(path.read_text(encoding="utf-8"))
     record["container_images"] = "sha256:" + "a" * 64      # not a list
     path.write_text(json.dumps(record), encoding="utf-8")
-    assert queue.claim(capacity=CAPACITY, observed_images=[ID_A]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), observed_images=[ID_A]) is None
     assert denials(queue)[-1]["reason"] == "malformed_container_images"
 
 
@@ -340,10 +344,10 @@ def test_presence_does_not_bypass_a_resource_gate(tmp_path):
             container_images=[REF_A])
     # Image present, no GPU capacity: the ordinary never-fits refusal still
     # decides, and the item is not claimed.
-    assert queue.claim(capacity={"cpu": 4, "mem_gb": 16}, has_gpu=True,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})), has_gpu=True,
                        tags=CLAIM_TAGS, observed_images=[REF_A]) is None
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
-    assert queue.claim(capacity=CAPACITY, has_gpu=True, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), has_gpu=True, tags=CLAIM_TAGS,
                        observed_images=[REF_A])["action_key"] == KEY_A
 
 
@@ -352,10 +356,10 @@ def test_one_box_denying_leaves_the_item_for_the_box_that_has_it(tmp_path):
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[REF_A])
     # The wrong box polls first and refuses...
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[ID_B]) is None
     # ...and the right box, on its next pass, takes it.
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[ID_A, REF_A])["action_key"] == KEY_A
 
 
@@ -363,7 +367,7 @@ def test_a_stale_positive_is_reported_as_a_missing_reference(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
             container_images=[REF_A, ID_B])
-    assert queue.claim(capacity=CAPACITY, tags=CLAIM_TAGS,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=CLAIM_TAGS,
                        observed_images=[REF_A]) is None
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_absent"

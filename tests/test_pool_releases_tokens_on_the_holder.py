@@ -28,6 +28,10 @@ are one box.
 Issue #261.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -83,7 +87,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
         with mock.patch.object(pool.immutable_files, 'write_json_atomic',
                                dies_before_naming_itself):
             with pytest.raises(_ClaimantDied):
-                q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity=DEMAND)
+                q.claim(owner=f"{HELD_BY}:1:abcd1234", **simulated_admission(q, simulated_capacity(DEMAND)))
 
     # The window, as the claimant left it.  If any of these stop holding, the
     # window has moved and the assertions below are about something else.

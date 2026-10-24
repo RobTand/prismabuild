@@ -17,6 +17,10 @@ denial cache, and timestamps (#983 pattern 4):
 The fixtures below are those three shapes at test size.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import census as fleet_census
 import pbstatus
 
@@ -88,7 +92,7 @@ def _publish_export(queue: pool.PoolQueue, owner: str, seed: str) -> dict:
 def _claim_pass(queue: pool.PoolQueue) -> dict | None:
     # Reuse the holder's immutable map when this fixture really executes.
     tiers = pool.record_store.read_document(queue.ledger().base / "cpu-map.json")
-    return queue.claim(capacity=CAPACITY, tags=[socket.gethostname()],
+    return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=[socket.gethostname()],
                        cpu_tiers=CPU_TIERS if tiers is None else tiers,
                        adaptive_cpu=True)
 

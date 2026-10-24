@@ -52,6 +52,10 @@ Runs under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import errno
 import os
 import stat
@@ -178,7 +182,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
 
             def _claimant() -> None:
                 claim_out["row"] = queue.claim(
-                    owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
+                    owner="worker:1:abcd0001", **simulated_admission(queue, simulated_capacity(dict(HOST_CAP))),
                     tags=["dl380g10"])
 
             thread = threading.Thread(target=_claimant, daemon=True)
@@ -358,7 +362,7 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
         _unreadable(guarded, [holder], path_impl)
         for _cycle in range(3):
             reports.append(queue.tier(TIER).mint(dict(WANTED))['census_unreadable'])
-        row = queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
+        row = queue.claim(owner="worker:1:abcd0001", **simulated_admission(queue, simulated_capacity(dict(HOST_CAP))),
                           tags=["dl380g10"])
         starvation = fleet_census.starvation(queue.root)
     assert [report["cycles"] for report in reports] == [1, 2, 3]

@@ -1,6 +1,10 @@
 """Causal PB1419 admission-front-door controls, not metadata exemptions."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import pytest
 
 from prismabuild import pool
@@ -39,7 +43,7 @@ def test_capacity_does_not_invent_positive_declared_demand(tmp_path, monkeypatch
     publish(queue, resources)
     refused = []
     monkeypatch.setattr(queue, "record_denial", lambda item, reason, evidence=None: refused.append(reason))
-    assert queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4}))) is None
     assert refused[-1] == "admission_demand_required"
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.ledger().held_keys()
@@ -59,7 +63,7 @@ def test_missing_capacity_stops_serve_before_execute(tmp_path, monkeypatch):
 def test_explicit_controlled_admission_retains_normal_claim(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, {"cpu": 1, "mem_gb": 1})
-    claimed = queue.claim(capacity={"cpu": 2, "mem_gb": 4})
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4})))
     assert claimed is not None and claimed["action_key"] == KEY
     assert queue.ledger().holder_tokens(KEY) == {"cpu": 1, "mem_gb": 1}
 
@@ -77,7 +81,7 @@ def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monke
                       "range_end_bytes": 1})
     refused = []
     monkeypatch.setattr(queue, "record_denial", lambda item, reason, evidence=None: refused.append(reason))
-    assert queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4}))) is None
     assert refused[-1] == "admission_demand_required"
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()

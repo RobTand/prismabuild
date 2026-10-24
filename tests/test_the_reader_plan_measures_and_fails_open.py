@@ -14,6 +14,10 @@ end to end.  These pin the pieces those cases rest on:
 Everything runs on ``tmp_path`` queues (#628).
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import FleetWorld
 
 import json
@@ -189,7 +193,7 @@ def _mover(queue: pool.PoolQueue, key: str, ordinal: int, *,
 
 
 def _claim(queue: pool.PoolQueue) -> str | None:
-    item = queue.claim(capacity={"cpu": 16, "mem_gb": 64}, tags=["dl380g10"])
+    item = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 16, "mem_gb": 64})), tags=["dl380g10"])
     return None if item is None else str(item["action_key"])
 
 

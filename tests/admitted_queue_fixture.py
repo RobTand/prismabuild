@@ -8,9 +8,34 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from prismabuild import pool
+from prismabuild import pool, host_cap
 
 _OMITTED = object()
+
+
+def simulated_capacity(value):
+    """Mint explicit fixture observations through the real uncapped clamp."""
+    if value is None:
+        return None
+    if type(value) is host_cap.CappedCapacity:
+        return host_cap.require_capped_capacity(value)
+    return host_cap.enforce_host_cap(value, None, {})
+
+
+def simulated_claim_parameters(parameters, *, queue):
+    """Convert only an explicitly supplied test capacity, at the call."""
+    result = dict(parameters)
+    if "capacity" in result:
+        result["capacity"] = simulated_capacity(result["capacity"])
+        if result["capacity"] is not None and "admission_open" not in result:
+            owner = queue.queue if isinstance(queue, AdmittedQueueFixture) else queue
+            result["admission_open"] = host_cap.prepare_claim_fence(owner, result["capacity"])
+    return result
+
+
+def simulated_admission(queue, capacity):
+    """Supply a queue-bound fence with one explicit simulated observation."""
+    return simulated_claim_parameters({"capacity": capacity}, queue=queue)
 
 
 class AdmittedQueueFixture:
@@ -40,9 +65,9 @@ class AdmittedQueueFixture:
         return self.queue.publish(*args, resources=declared, **kwargs)
 
     def claim(self, *args, capacity=_OMITTED, **kwargs):
-        observed = dict(self.capacity) if capacity is _OMITTED else capacity
-        return self.queue.claim(*args, capacity=observed, **kwargs)
+        observed = simulated_capacity(self.capacity) if capacity is _OMITTED else capacity
+        return self.queue.claim(*args, **simulated_claim_parameters({"capacity": observed, **kwargs}, queue=self.queue))
 
     def serve_once(self, *args, capacity=_OMITTED, **kwargs):
-        observed = dict(self.capacity) if capacity is _OMITTED else capacity
-        return self.queue.serve_once(*args, capacity=observed, **kwargs)
+        observed = simulated_capacity(self.capacity) if capacity is _OMITTED else capacity
+        return self.queue.serve_once(*args, **simulated_claim_parameters({"capacity": observed, **kwargs}, queue=self.queue))

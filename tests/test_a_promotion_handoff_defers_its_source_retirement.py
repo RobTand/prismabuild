@@ -20,6 +20,10 @@ promotion row -> claim -> ram_promote.promote; then stage_release.evict.  Runs
 under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import hashlib
@@ -93,7 +97,7 @@ def fleet(tmp_path: Path):
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
-    claimed = queue.claim(owner=WORKER, capacity=dict(HOST_CAP),
+    claimed = queue.claim(owner=WORKER, **simulated_admission(queue, simulated_capacity(dict(HOST_CAP))),
                           tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == key, claimed
 

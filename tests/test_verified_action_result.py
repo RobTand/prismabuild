@@ -6,6 +6,10 @@ PrismaBuildCAS receipt and execution receipt, and a real PoolQueue
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -112,7 +116,7 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
                   checkout_root=base / "checkout",
                   worker_script=worker_script or base / "worker.py",
                   tags=["x86"], resources={"cpu": 1, "mem_gb": 1})
-    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     if native is not None:
         claimed_path = queue.records.item_path(pool.record_store.CLAIMED, key)
         claimed = json.loads(claimed_path.read_text())
@@ -260,13 +264,13 @@ def test_a_poisoned_historical_attempt_is_never_read_for_a_later_success(
                   worker_script=base / "worker.py", tags=["x86"],
                   resources={"cpu": 1, "mem_gb": 1},
                   max_attempts=2, retry_safe=True)
-    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     queue.finish(key, status="failed", detail={
         "returncode": 1, "status": "failed",
         "stdout": '{"receipt": {"receipt_sha256": "' + "0" * 64 + '"}}\n',
         "stderr": "poisoned historical attempt\n"})
     fx.settle_publishers()
-    queue.claim(tags=["x86"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     announcement = json.dumps({
         "status": "published", "receipt": receipt,
         "payload_path": str(cas.blob_path(str(receipt["result"]["sha256"]))),

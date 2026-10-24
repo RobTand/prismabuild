@@ -31,6 +31,10 @@ all three READY items carried ``tags: ["sparky"]``.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -206,7 +210,7 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     local_sample.write_bytes(sample.read_bytes())
     for _ in range(3):
         assert queue.claim(tags=["cpu", "dl380g10", "x86"], has_gpu=False,
-                           owner="dl380g10", capacity=X86,
+                           owner="dl380g10", **simulated_admission(queue, simulated_capacity(X86)),
                            cpu_tiers=_tiers(X86), adaptive_cpu=True) is None
 
     assert json.loads(sample.read_text())["sampled_unix"] == before
@@ -234,7 +238,7 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     local_matched.write_bytes(matched.read_bytes())
     assert sampled_at > stale_on_sparky
     queue.claim(tags=["gb10", "sparky"], has_gpu=False, owner="sparky",
-                capacity=GB10, cpu_tiers=_tiers(GB10), adaptive_cpu=True)
+                **simulated_admission(queue, simulated_capacity(GB10)), cpu_tiers=_tiers(GB10), adaptive_cpu=True)
     assert json.loads(local_matched.read_text())["sampled_unix"] == sampled_at
     # The old assertion raced this copy. Equality here is expected while
     # publication is deferred; accepting >= would lose the positive control.

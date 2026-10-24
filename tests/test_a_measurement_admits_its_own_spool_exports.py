@@ -23,6 +23,10 @@ measurement is claimed through the real adaptive path, so its holder carries
 the metadata a live measurement does.  Only the CPU sample is stated.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from prismabuild import submission as submit_core
 
@@ -101,7 +105,7 @@ def _sample(busy_cpus: float):
 
 
 def _claim(queue: pool.PoolQueue, cpu_sampler):
-    return queue.claim(capacity=CAPACITY, tags=[HOST], cpu_tiers=CPU_TIERS,
+    return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=[HOST], cpu_tiers=CPU_TIERS,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 

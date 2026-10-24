@@ -1,5 +1,9 @@
 """Real ownership controls for C05 L; run only through published PrismaBuild."""
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from prismabuild import output_contract as oc
 import errno
 import json
@@ -71,7 +75,7 @@ def test_uncertain_reclaim_keeps_actual_reservation(tmp_path, monkeypatch, state
     key = orphan.KEY
     queue.publish(action_key=key, cas_root='/cas', checkout_root='/checkout',
                   worker_script='/worker.py', resources={'cpu': 1, 'mem_gb': 3})
-    claim = queue.claim(capacity={'cpu': 1, 'mem_gb': 3})
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 3})))
     terminal = dict(claim, status='executed', finished_host=claim['claimed_host'])
     queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps(terminal))
     if state != 'claimed':
@@ -270,7 +274,7 @@ def test_finish_never_rewrites_an_ending_when_its_presence_is_unknown(tmp_path, 
     key = orphan.KEY
     queue.publish(action_key=key, cas_root='/cas', checkout_root='/checkout',
                   worker_script='/worker.py', resources={'cpu': 1, 'mem_gb': 3})
-    queue.claim(capacity={'cpu': 1, 'mem_gb': 3})
+    queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 3})))
     queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
     path = queue.records.item_path(pool.record_store.DONE, key)
     path.write_bytes(b'')

@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import socket
 import stat
@@ -1057,7 +1058,8 @@ def _live_resource_scopes(proc_root='/proc'):
             continue
         except OSError:
             return None
-        if 'prismabuild.slice' in text:
+        if ('prismabuild.slice' in text
+                or re.search(r'/([A-Za-z0-9_]+)\.slice/\1-job[0-9a-f]{32}\.slice(?:/|$)', text)):
             found.append(int(entry))
     return found
 

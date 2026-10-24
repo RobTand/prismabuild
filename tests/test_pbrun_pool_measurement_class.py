@@ -1,6 +1,10 @@
 """Opt-in class placement retains real platform and producer identity (#366)."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import copy
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,9 +70,9 @@ def test_either_matching_worker_claims_and_attests_one_complete_pair(
     queue.publish(action_key=action["action_key"], cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script="/worker.py",
                   tags=action["params"]["placement"]["required_tags"], resources={"cpu": 1})
-    assert queue.claim(tags=["x86"], capacity={"cpu": 1}) is None
+    assert queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
-    item = queue.claim(tags=["gb10", host], capacity={"cpu": 1})
+    item = queue.claim(tags=["gb10", host], **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert item is not None and item["action_key"] == action["action_key"]
     monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **kw: _evidence(host, uuid))
     result = pb.run_local_action(action, cas_root=tmp_path / "cas", checkout_root=tmp_path)

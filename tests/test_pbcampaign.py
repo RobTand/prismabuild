@@ -8,6 +8,10 @@ order, ``--cpus`` where the row says ``demand.cpu``, tags the other way round
 -- because those are the differences a person actually types.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
 from pbtest_shard_output import finish_submission
@@ -61,7 +65,7 @@ def _drain(queue, count: int, stop: threading.Event) -> None:
     while served < count and not stop.is_set():
         outcome = queue.serve_once(
             tags=["sparky", "gb10"], python=sys.executable, timeout_s=120.0,
-            capacity=dict(CAPACITY),
+            **simulated_admission(queue, simulated_capacity(dict(CAPACITY))),
         )
         if outcome is None:
             time.sleep(0.01)

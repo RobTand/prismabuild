@@ -157,6 +157,9 @@ REFERENCE_TEST = ("tests/gate_campaign_shape.py::"
 MAX_IDLE_CYCLES = 12
 
 
+from worker_loop import capped_simulation_parameters
+
+
 class ShapeGateFailure(Exception):
     """The gate's verdict when it is not a pass, with a reason a caller can match."""
 
@@ -867,7 +870,7 @@ class ShapeGate:
             if not ready:
                 return ran
             got = self.queue.claim(tags=[self.host], owner=self.worker_owner,
-                                   capacity=self.capacity, ready=ready)
+                                   **capped_simulation_parameters(self.queue, self.capacity), ready=ready)
             if got is None:
                 return ran
             self._execute(got)
@@ -881,7 +884,7 @@ class ShapeGate:
         if not ready:
             return None
         got = self.queue.claim(tags=[self.host], owner=self.reader_owner,
-                               capacity=self.capacity, ready=ready)
+                               **capped_simulation_parameters(self.queue, self.capacity), ready=ready)
         if got is None:
             return None
         if str(got.get("action_key")) != self.consumer:

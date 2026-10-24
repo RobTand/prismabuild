@@ -358,8 +358,28 @@ _PROXY_PACKAGE_DEPENDENCIES = (
 )
 
 
-def _checked_control_identity(action_key: str, control: object) -> tuple[str, str]:
-    """Pure identity half of pool scope recovery; no host check or broker RPC."""
+def declared_scope_parent(host: str | None = None) -> str:
+    """Read containment authority from the roster, never a broker response."""
+    from prismabuild import fleet_roster, host_cap
+    box = fleet_roster.Roster.for_host(
+        host or socket.gethostname(), roots=(Path(__file__).resolve().parents[2],))
+    return (host_cap.HostCap.parse(box.entry["cap"]).slice
+            if box is not None and "cap" in box.entry else "prismabuild.slice")
+
+
+def scope_path_matches(path: str | Path, unit: str, *, host: str | None = None) -> bool:
+    """Require the canonical attempt inside its roster-declared parent."""
+    path = Path(path)
+    parent = declared_scope_parent(host)
+    if (SCOPE_RE.fullmatch(unit) is None
+            or re.fullmatch(r'[A-Za-z0-9_]+\.slice', parent) is None):
+        return False
+    kernel_unit = parent[:-6] + '-' + unit.removeprefix('prismabuild-')
+    return path == Path('/sys/fs/cgroup') / parent / kernel_unit
+
+
+def _checked_control_identity(action_key: str, control: object, *, host: str | None = None) -> tuple[str, str]:
+    """Verify attempt identity and roster containment before any recovery RPC."""
     from .produced_output import _broker_scope_id
 
     if not isinstance(control, dict):
@@ -370,7 +390,8 @@ def _checked_control_identity(action_key: str, control: object) -> tuple[str, st
         raise ValueError("invalid resource scope recovery identity")
     unit = _broker_scope_id(action_key, nonce)
     if (control.get("action_key") != action_key or control.get("scope_id") != unit
-            or control.get("cgroup_path") != "/sys/fs/cgroup/prismabuild.slice/" + unit
+            or not isinstance(control.get("cgroup_path"), str)
+            or not scope_path_matches(control["cgroup_path"], unit, host=host)
             or control.get("socket_path") != str(BROKER_SOCKET)
             or not isinstance(control.get("token"), str)
             or re.fullmatch(r"[a-f0-9]{64}", control["token"]) is None):
@@ -462,7 +483,7 @@ class ResourceScope:
         expected = _expected_scope_id(self.action_key, self.nonce)
         if (not isinstance(unit, str) or unit != expected
                 or not isinstance(token, str) or re.fullmatch('[a-f0-9]{64}', token) is None
-                or path != Path('/sys/fs/cgroup/prismabuild.slice') / unit):
+                or not scope_path_matches(path, unit)):
             raise OSError('resource broker returned an invalid scope identity')
         acknowledged_gpu = response.get('gpu_memory_max_bytes')
         if (acknowledged_gpu is not None and (type(acknowledged_gpu) is not int

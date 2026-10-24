@@ -258,10 +258,14 @@ def _load_gpu_module(filename='gpu_memory.py'):
     return module
 
 class SystemdBackend:
-    def __init__(self, root=Path('/sys/fs/cgroup')):self.root=Path(root)
-    def path(self, scope):
+    def __init__(self, root=Path('/sys/fs/cgroup'), *, scope_parent='prismabuild.slice'):
+        if not re.fullmatch(r'[A-Za-z0-9_]+\.slice',scope_parent):raise ValueError('invalid scope parent slice')
+        self.root=Path(root);self.scope_parent=scope_parent
+    def unit(self, scope):
         if not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):raise ValueError('invalid scope')
-        return self.root/'prismabuild.slice'/scope
+        return self.scope_parent[:-6]+'-'+scope.removeprefix('prismabuild-')
+    def path(self, scope):
+        return self.root/self.scope_parent/self.unit(scope)
     def command(self,*argv):
         r=subprocess.run(['/usr/bin/systemctl',*argv],capture_output=True,text=True,timeout=15)
         if r.returncode:raise ValueError('systemd resource operation failed: '+r.stderr.strip()[:500])
@@ -271,8 +275,8 @@ class SystemdBackend:
         if existing.exists() and 'populated 1' in (existing/'cgroup.events').read_text():
             raise ValueError('refusing to adopt a populated pre-existing scope')
         # No process enters until the complete aggregate envelope is installed.
-        self.command('start',scope)
-        self.command('set-property','--runtime',scope,
+        self.command('start',self.unit(scope))
+        self.command('set-property','--runtime',self.unit(scope),
                      f'MemoryMax={budget}','MemoryHigh=infinity',
                      'MemorySwapMax=0','CPUAccounting=yes','CPUWeight=100','MemoryAccounting=yes')
         group=self.path(scope)
@@ -389,7 +393,7 @@ class SystemdBackend:
     def healthy(self):
         return {'cpu','memory'}<=set((self.root/'cgroup.controllers').read_text().split())
     def inventory(self):
-        parent=self.root/'prismabuild.slice'
+        parent=self.root/self.scope_parent
         try:entries=list(parent.iterdir())
         except FileNotFoundError:return {}
         result={}
@@ -399,7 +403,10 @@ class SystemdBackend:
             events=dict(line.split() for line in (path/'cgroup.events').read_text().splitlines())
             populated=events.get('populated')
             if populated not in {'0','1'}:raise ValueError('invalid cgroup population evidence')
-            result[path.name]={'populated':populated=='1',
+            suffix=path.name.removeprefix(self.scope_parent[:-6]+'-')
+            scope='prismabuild-'+suffix
+            if not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):continue
+            result[scope]={'populated':populated=='1',
                 'frozen':(path/'cgroup.freeze').read_text().strip()=='1',
                 'identity':[info.st_dev,info.st_ino]}
         return result
@@ -409,7 +416,7 @@ class SystemdBackend:
             if 'populated 1' in (group/'cgroup.events').read_text():raise ValueError('scope still populated')
             leaf=group/'payload'
             if leaf.exists():leaf.rmdir()
-        self.command('stop',scope)
+        self.command('stop',self.unit(scope))
 
 class Authority:
     def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None):
@@ -1454,6 +1461,8 @@ def main():
                         help='explicitly initialize an unconfigured persistent maintenance authority open')
     parser.add_argument('--uid',type=int,default=1000,
                         help='local execution user allowed to create and control job scopes')
+    parser.add_argument('--scope-parent',default='prismabuild.slice',
+                        help='top-level system slice containing every action on this host')
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource broker must run as root')
     if args.initialize_maintenance_state:
@@ -1480,7 +1489,7 @@ def main():
                        'reason':'explicit initial installation'},mode=0o600)
         return
     total=next(int(x.split()[1])*1024 for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))
-    authority=Authority(args.state_dir,args.uid,SystemdBackend(),max_memory_bytes=total,
+    authority=Authority(args.state_dir,args.uid,SystemdBackend(scope_parent=args.scope_parent),max_memory_bytes=total,
                         maintenance_state=args.maintenance_state)
     endpoint=Path(args.socket);endpoint.parent.mkdir(mode=0o755,parents=True,exist_ok=True)
     if endpoint.exists():

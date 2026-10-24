@@ -16,6 +16,8 @@ an optional ``status``:
   converges its loops to zero and starts none).
 * ``"offline"``: the same exclusion, but the box is expected back; the
   operator clears the state by publishing a roster without it.
+* ``"enrolling"``: excluded from publication quorums and general placement;
+  its supervisor may start workers for explicitly host-pinned proofs.
 
 A non-active box must say who declared it absent and when: ``status_reason``
 (non-blank), ``status_by`` (non-blank) and ``status_unix`` (a finite
@@ -43,9 +45,10 @@ from .digest_primitives import raw_sha256, unique_json_object
 ACTIVE = "active"
 RETIRED = "retired"
 OFFLINE = "offline"
+ENROLLING = "enrolling"
 
 #: Every presence a roster box may declare.  Absent means active.
-STATUSES = (ACTIVE, RETIRED, OFFLINE)
+STATUSES = (ACTIVE, RETIRED, OFFLINE, ENROLLING)
 
 #: States excluded from barrier quorums, attestation preflight and placement.
 ABSENT = (RETIRED, OFFLINE)
@@ -232,6 +235,9 @@ class Roster:
                 box.loop_args
                 box.loops
                 box.roles
+                if "cap" in entry:
+                    from .host_cap import HostCap
+                    HostCap.parse(entry["cap"])
 
 
 @dataclass(frozen=True)
@@ -338,7 +344,7 @@ def class_members(roster: object, klass: str) -> dict[str, tuple[str, ...]]:
     for key, entry in roster["boxes"].items():
         if not isinstance(entry, Mapping):
             raise RosterPresenceError(f"invalid roster box {key!r}")
-        if is_absent(key, entry):
+        if box_status(key, entry)[0] != ACTIVE:
             continue
         args = entry.get("args")
         if not isinstance(args, list) or "--class" not in args:

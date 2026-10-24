@@ -37,6 +37,10 @@ the fill ledger -- never host CPU or memory -- is the admission bound.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import socket
 import sys
@@ -172,7 +176,7 @@ def _frozen_queue(tmp_path: Path, ceiling: float = ARCHIVED_CEILING,
 def _claim(queue: pool.PoolQueue) -> dict[str, object] | None:
     """The real claim-time admission path: host capacity, then tier tokens."""
 
-    return queue.claim(capacity=dict(HOST), tags=["dl380g10"])
+    return queue.claim(**simulated_admission(queue, simulated_capacity(dict(HOST))), tags=["dl380g10"])
 
 
 def _copy_ended(queue: pool.PoolQueue, key: str) -> None:

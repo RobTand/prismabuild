@@ -18,6 +18,10 @@ M/H investment.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import contextlib
 import fcntl
 import os
@@ -99,7 +103,7 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
 
     def admit():
         outcome["claimed"] = queue.claim(
-            capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+            **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
             has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record],
             cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
             gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
@@ -176,7 +180,7 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
             queue.records.item(pool.record_store.READY, candidate),
         )
         started = time.monotonic()
-        result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
+        result = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                              adaptive_cpu=True, has_gpu=True,
                              tags=["gb10", "sparklina"], ready=[candidate_record],
                              cpu_sampler=lambda: fleet_cpu_sample(clock, readings),

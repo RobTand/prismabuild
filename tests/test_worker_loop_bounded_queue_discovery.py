@@ -15,6 +15,10 @@ mutation may still finish later and needs ownership-safe reconciliation,
 which a disposable child cannot give (#266).
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import importlib.util
@@ -79,7 +83,7 @@ def test_provided_snapshot_is_consumed_without_rescanning(
         raise AssertionError("ready_items must not run when ready= is given")
 
     monkeypatch.setattr(queue, "ready_items", exploded)
-    claimed = queue.claim(owner="sparky:1:abcd1234", capacity={"cpu": 1},
+    claimed = queue.claim(owner="sparky:1:abcd1234", **simulated_admission(queue, simulated_capacity({"cpu": 1})),
                           ready=snapshot)
     assert claimed is not None
     assert claimed["action_key"] == KEY
@@ -94,7 +98,7 @@ def test_empty_snapshot_is_an_empty_queue_not_a_rescan(
         raise AssertionError("ready_items must not run when ready= is given")
 
     monkeypatch.setattr(queue, "ready_items", exploded)
-    assert queue.claim(owner="sparky:1:abcd1234", capacity={"cpu": 1},
+    assert queue.claim(owner="sparky:1:abcd1234", **simulated_admission(queue, simulated_capacity({"cpu": 1})),
                        ready=[]) is None
 
 
@@ -119,7 +123,7 @@ def test_serve_once_forwards_the_snapshot_to_claim(
         return None
 
     with mock.patch.object(pool.PoolQueue, "claim", capture):
-        assert queue.serve_once(capacity={"cpu": 1}, ready=snapshot) is None
+        assert queue.serve_once(**simulated_admission(queue, simulated_capacity({"cpu": 1})), ready=snapshot) is None
     assert seen.get("ready") is snapshot
 
 

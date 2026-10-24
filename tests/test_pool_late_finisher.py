@@ -10,6 +10,10 @@ and removed its claim.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from prismabuild import claim_identity
@@ -49,12 +53,12 @@ def test_a_late_finisher_does_not_conclude_the_newer_retry(
         max_attempts=2,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
     # The documented path: the heartbeat is lost, the reaper requeues, and a
     # second worker claims the retry before attempt 1 calls finish.
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
-    retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
+    retry = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert retry is not None and retry["attempts"] == 1
 
     result = queue.finish(
@@ -104,7 +108,7 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
         max_attempts=3,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
     # A second claim of the same key without a reaper in between: the claim
     # was concluded by an operator's reset and re-claimed, so no attempt was
@@ -121,7 +125,7 @@ def test_a_late_result_is_archived_when_its_attempt_is_free(
         max_attempts=3,
         retry_safe=True,
     )
-    retry = queue.claim(owner="attempt-2", capacity={"cpu": 1})
+    retry = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert retry is not None
     assert retry["published_unix"] != first["published_unix"]
 
@@ -156,7 +160,7 @@ def test_the_finisher_of_its_own_claim_is_not_treated_as_late(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    claimed = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed is not None
     result = queue.finish(
         KEY_A, status="executed", detail={"returncode": 0},
@@ -181,7 +185,7 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    claimed = queue.claim(owner="attempt-1", capacity={"cpu": 1})
+    claimed = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed is not None
     live_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     record = json.loads(live_path.read_text())

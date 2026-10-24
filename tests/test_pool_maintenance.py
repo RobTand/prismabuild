@@ -1,4 +1,8 @@
 """Maintenance defers only unstarted attempts and preserves later publication."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 import json
 from functools import partial
@@ -26,7 +30,7 @@ def test_maintenance_after_claim_returns_capacity_without_burning_attempt(tmp_pa
     def execute(*args, **kwargs):
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
-    assert queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True) is None
+    assert queue.serve_once(**simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 1})), containment=True) is None
     ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert ready['attempts'] == 0
     assert 'claimed_by' not in ready
@@ -55,7 +59,7 @@ def test_maintenance_deferral_never_overwrites_a_later_submission(tmp_path, monk
         )
         raise resource_scope.ResourceUnavailable('draining')
     monkeypatch.setattr(queue, 'execute', execute)
-    assert queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True) is None
+    assert queue.serve_once(**simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 1})), containment=True) is None
     ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     assert ready['priority'] == 9 and ready['attempts'] == 0
     assert queue.ledger().held() == {}
@@ -74,7 +78,7 @@ def test_ordinary_broker_failure_is_not_misreported_as_maintenance(tmp_path, mon
         raise OSError('broker disconnected')
     monkeypatch.setattr(queue, 'execute', execute)
     with pytest.raises(OSError, match='disconnected'):
-        queue.serve_once(capacity={'cpu': 1, 'mem_gb': 1}, containment=True)
+        queue.serve_once(**simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 1})), containment=True)
     assert queue.records.item_path(pool.record_store.FAILED, KEY).exists()
 
 

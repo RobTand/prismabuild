@@ -4,6 +4,10 @@ Use the real #1332 planner fixture, not a hand-written consumer block. A
 planner leaves the READY row bare; discovery and claim must read its same
 filed leads. Plain/advisory rows with no filed plan remain unchanged.
 """
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 import json
 from pathlib import Path
 import sys
@@ -71,7 +75,7 @@ def test_explicit_consumer_leads_are_not_replaced_by_a_filed_plan(tmp_path):
 def test_claim_does_not_take_a_bare_consumer_before_its_lead(tmp_path):
     fleet = Fleet(tmp_path)
     key, _ = _planner_row(fleet, "gate-real-claim")
-    claimed = fleet.queue.claim(owner="test-consumer", capacity={"cpu": 2, "mem_gb": 2})
+    claimed = fleet.queue.claim(owner="test-consumer", **simulated_admission(fleet.queue, simulated_capacity({"cpu": 2, "mem_gb": 2})))
     assert claimed is None
     assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
     assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, key).exists()

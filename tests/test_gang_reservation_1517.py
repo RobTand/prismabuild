@@ -7,6 +7,10 @@ group record is filed by ``_gang.publish_group`` after both rows exist.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import platform
 import secrets
@@ -44,7 +48,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         if advance is not None:
             tick(advance)
-        result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+        result = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                              has_gpu=True, tags=["gb10", host, _gang.TAG],
                              cpu_sampler=lambda: cpu_sample(clock, readings),
                              gpu_sampler=lambda: gpu_sample(sample, readings), ready=ready)

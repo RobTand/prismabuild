@@ -22,6 +22,10 @@ Nothing here touches the live queue, a real pool or a real device.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import sys
@@ -117,7 +121,7 @@ def _make_the_lead_resident(queue: pool.PoolQueue, plan: dict[str, object]) -> N
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py",
                   resources={"cpu": 1})
-    claimed = queue.claim(owner="mover", capacity={"cpu": 4, "mem_gb": 4})
+    claimed = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4})))
     assert claimed is not None and claimed["action_key"] == lead
     queue.finish(lead, status="executed", claim_snapshot=claimed)
 
@@ -240,7 +244,7 @@ def test_the_claim_says_the_plan_is_unreadable_not_that_the_map_is_late(
     # the map -- and the map is what a plan nobody can read never gets.
     _make_the_lead_resident(queue, plan)
 
-    assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_plan_unreadable", \
@@ -257,7 +261,7 @@ def test_a_missing_map_with_a_readable_plan_is_still_map_not_composed(
     _publish_consumer(queue, plan, pinned_tier=False)
     _make_the_lead_resident(queue, plan)
 
-    assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
 
@@ -274,5 +278,5 @@ def test_a_missing_map_with_a_readable_plan_is_still_map_not_composed(
                 "stage_path": "/stage/prewarm/a.bin", "bytes": 4096,
                 "offset": 0, "sha256": "d" * 64}},
         }]))
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4})
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4})))
     assert claimed is not None and claimed["action_key"] == CONSUMER

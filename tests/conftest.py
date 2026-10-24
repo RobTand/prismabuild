@@ -411,6 +411,7 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
+    ("prismabuild.host_cap", "HOST_CAP_CONFIG", "host-cap.conf"),
     ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
@@ -440,6 +441,7 @@ LIVE_DEFAULTS = (
     # for as long as the mount was unreachable.
     ("supervise", "MIRROR", "fleet"),
     ("supervise", "SYSTEMD_UNIT", "systemd/prismabuild-supervisor.service"),
+    ("supervise", "SYSTEMD_SYSTEM_UNIT", "systemd/system/prismabuild-supervisor.service"),
     # The mount probe times real syscalls against whatever this names, and
     # creates a directory under it.  Left pointed at the live store, the suite
     # would write to the fleet's mount on every run and block on it whenever

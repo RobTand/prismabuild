@@ -25,6 +25,10 @@ Issue #272.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import time
 from pathlib import Path
@@ -72,7 +76,7 @@ def _win_but_die_before_naming_itself(q: pool.PoolQueue) -> None:
     with mock.patch.object(pool.socket, "gethostname", lambda: WON_BY):
         with mock.patch.object(pool.immutable_files, 'write_json_atomic', dies):
             with pytest.raises(_ClaimantDied):
-                q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity=DEMAND)
+                q.claim(owner=f"{WON_BY}:1:aaaa0001", **simulated_admission(q, simulated_capacity(DEMAND)))
 
     assert q.ledger(WON_BY).held() == DEMAND, "the winner committed nothing"
     assert not q.records.item_path(pool.record_store.READY, KEY).exists(
@@ -95,7 +99,7 @@ def _a_second_box_races_and_loses(q: pool.PoolQueue, stale: list) -> None:
 
     with mock.patch.object(pool.socket, "gethostname", lambda: LOST_BY):
         with mock.patch.object(pool.PoolQueue, "ready_items", lambda self: stale):
-            assert q.claim(owner=f"{LOST_BY}:1:bbbb0002", capacity=DEMAND) is None
+            assert q.claim(owner=f"{LOST_BY}:1:bbbb0002", **simulated_admission(q, simulated_capacity(DEMAND))) is None
     assert q.ledger(LOST_BY).held() == {}, "the loser kept tokens"
 
 
@@ -250,7 +254,7 @@ def test_a_legacy_zero_token_claim_still_falls_back_to_the_marker(queue, tmp_pat
         worker_script=q.root / "worker.py", resources={},
         max_attempts=1, retry_safe=True,
     )
-    assert q.claim(owner=f"{WON_BY}:1:aaaa0001", capacity={}) is None
+    assert q.claim(owner=f"{WON_BY}:1:aaaa0001", **simulated_admission(q, simulated_capacity({}))) is None
     assert q.records.item_path(pool.record_store.READY, KEY).exists()
     assert not q.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not q.ledger().held_keys()

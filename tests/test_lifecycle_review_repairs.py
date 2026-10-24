@@ -1,4 +1,8 @@
 """Review controls use real queue effects, then interrupt before conclusion."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from contextlib import ExitStack
 import json
 import os
@@ -17,7 +21,7 @@ def _new_claim(root):
     queue.publish(action_key=KEY, cas_root=root / "cas", checkout_root=root / "checkout",
                   worker_script=root / "worker.py", resources={"cpu": 1},
                   retry_safe=True, max_attempts=2)
-    item = queue.claim(owner="original", capacity={"cpu": 1})
+    item = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert item is not None
     return queue, item
 
@@ -134,7 +138,7 @@ def test_withdrawn_recovery_preserves_real_containment_and_live_successor(
         _closed(stopped_claim, scope, process, queue, request, capsys)
         assert process.returncode != 0 and not scope.cgroup_path.exists()
         _publication(queue, tmp_path)
-        successor = queue.claim(owner="live successor", capacity={"cpu": 1})
+        successor = queue.claim(owner="live successor", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         assert successor is not None
         new_scope, new_process, _ = _owned_scope(queue, successor, stack)
         paths = [queue.records.item_path(record_store.CLAIMED, KEY), queue.records.lease_path(KEY)]

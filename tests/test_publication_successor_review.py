@@ -1,6 +1,10 @@
 """Independent B16 successor-proof boundary counterexamples; execute through PB."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 
@@ -18,7 +22,7 @@ from test_pool_requeue_preserves_newer_generation import (
 
 def _collision(queue: pool.PoolQueue, clock: list[float]):
     _publish(queue)
-    original = queue.claim(owner="original", capacity=DEMAND)
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     clock[0] += 1
     _publish(queue)
@@ -66,7 +70,7 @@ def test_structurally_unusable_successor_demand_cannot_end_old_publication(
 
     with monkeypatch.context() as patch:
         patch.setattr(consumer, "record_denial", record_denial)
-        assert consumer.claim(owner="consumer", capacity=DEMAND) is None
+        assert consumer.claim(owner="consumer", **simulated_admission(consumer, simulated_capacity(DEMAND))) is None
     required = ("malformed_tier_demand" if damage == "malformed_tier_key"
                 else "admission_demand_required")
     assert required in denials
@@ -96,7 +100,7 @@ def test_positive_host_demand_does_not_require_both_cpu_and_memory(
     ending = queue.publication_ending(KEY, generation=original["published_unix"])
     assert isinstance(ending, endings.PublicationSupersession)
     assert ending.successor_published_unix == successor["published_unix"]
-    claimed = queue.claim(owner="successor", capacity=DEMAND)
+    claimed = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert claimed is not None
     assert claimed["published_unix"] == successor["published_unix"]
 

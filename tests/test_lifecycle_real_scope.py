@@ -1,4 +1,8 @@
 """Qualify conclusion recovery against disposable real broker scopes under PB."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from contextlib import ExitStack
 import json
 import time
@@ -78,7 +82,7 @@ def test_late_finish_stops_only_its_saved_scope_beside_live_successor(tmp_path, 
         old_record = pool.record_store.read_document(restarted.records.item_path(state, KEY))
         _closed(old_record, old_scope, old_process, restarted, request, capsys)
         _publication(restarted, tmp_path)
-        successor = restarted.claim(owner="successor", capacity={"cpu": 1})
+        successor = restarted.claim(owner="successor", **simulated_admission(restarted, simulated_capacity({"cpu": 1})))
         assert successor is not None
         scope, process, started = _owned_scope(restarted, successor, stack)
         paths = (restarted.records.item_path(pool.record_store.CLAIMED, KEY),
@@ -121,7 +125,7 @@ def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(
         queue.records.lease_path(KEY).unlink()
         queue.ledger().release(KEY)
         _publication(queue, tmp_path)
-        successor = queue.claim(owner="successor", capacity={"cpu": 1})
+        successor = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         assert successor is not None
         scope, process, started = _owned_scope(queue, successor, stack)
         assert old_scope.nonce != scope.nonce

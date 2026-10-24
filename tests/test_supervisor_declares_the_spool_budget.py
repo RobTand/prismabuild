@@ -25,6 +25,10 @@ to a claim on a ``tmp_path`` queue.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 import os
 from pathlib import Path
@@ -179,7 +183,7 @@ def test_a_covered_declaration_reaches_the_worker_and_its_producer_is_claimed(
     queue.records.ensure_layout()
     key = "a" * 64
     _producer(queue, key)
-    claimed = queue.claim(owner="w", capacity=offer)
+    claimed = queue.claim(owner="w", **simulated_admission(queue, simulated_capacity(offer)))
     assert claimed is not None and claimed["action_key"] == key
     assert claimed["resources"][KIND] == 32
     assert queue.ledger().available().get(KIND, 0) == 0
@@ -197,7 +201,7 @@ def test_a_box_that_declares_too_little_leaves_the_producer_queued_with_a_reason
     queue.records.ensure_layout()
     key = "b" * 64
     _producer(queue, key)
-    assert queue.claim(owner="w", capacity=offer) is None
+    assert queue.claim(owner="w", **simulated_admission(queue, simulated_capacity(offer))) is None
     assert (queue.records.dir(pool.record_store.READY) / f"{key}.json").exists()
     [denial] = _denials(queue)
     assert denial["reason"] == "never_fits_capacity"
@@ -226,7 +230,7 @@ def test_a_number_the_disk_cannot_cover_is_lowered_to_the_room(
     queue.records.ensure_layout()
     key = "c" * 64
     _producer(queue, key)
-    assert queue.claim(owner="w", capacity=offer) is None
+    assert queue.claim(owner="w", **simulated_admission(queue, simulated_capacity(offer))) is None
     [denial] = _denials(queue)
     assert denial["reason"] == "never_fits_capacity"
     assert denial["evidence"]["capacity_total"][KIND] == 20
@@ -371,8 +375,8 @@ def test_a_holder_freezes_the_live_offer_until_it_is_released(
     shape = supervise.declared_shape("boxa", 0)
     first, second = "a" * 64, "b" * 64
     _scratch_holder(queue, first, 150)
-    assert queue.claim(owner="w1", capacity=_worker_offer(
-        shape[1], queue.ledger()))["action_key"] == first
+    assert queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(_worker_offer(
+        shape[1], queue.ledger()))))["action_key"] == first
 
     calls = len(stat.calls)
     stat.f_bavail = 350 * GIB // 4096
@@ -382,14 +386,14 @@ def test_a_holder_freezes_the_live_offer_until_it_is_released(
     offer = _worker_offer(shape[1], queue.ledger())
     assert offer[KIND] == 200
     _scratch_holder(queue, second, 100)
-    assert queue.claim(owner="w2", capacity=offer) is None
+    assert queue.claim(owner="w2", **simulated_admission(queue, simulated_capacity(offer))) is None
 
     queue.ledger().release(first)
     assert supervise.declared_shape("boxa", 0, shape) == shape
     assert len(stat.calls) == calls + 1
     offer = _worker_offer(shape[1], queue.ledger())
     assert offer[KIND] == 300
-    assert queue.claim(owner="w2", capacity=offer)["action_key"] == second
+    assert queue.claim(owner="w2", **simulated_admission(queue, simulated_capacity(offer)))["action_key"] == second
 
 
 @pytest.mark.parametrize("how", ["full", "unreadable"])
@@ -650,7 +654,7 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
     offer = _worker_offer(args)
     first, second = "d" * 64, "e" * 64
     _scratch_holder(queue, first, 166)
-    assert queue.claim(owner="w1", capacity=offer)["action_key"] == first
+    assert queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(offer)))["action_key"] == first
 
     stat.f_bavail = 240 * GIB // 4096               # the holder wrote 10 GiB
     monkeypatch.setattr(supervise, "_SPOOL_VERDICTS", {})   # a restart
@@ -664,7 +668,7 @@ def test_a_running_holder_is_neither_charged_twice_nor_credited_twice(
 
     _scratch_holder(queue, second, 166)
     assert _worker_offer(args, queue.ledger())[KIND] == 200
-    assert queue.claim(owner="w2", capacity=_worker_offer(args, queue.ledger())) is None
+    assert queue.claim(owner="w2", **simulated_admission(queue, simulated_capacity(_worker_offer(args, queue.ledger())))) is None
     assert queue.ledger().capacity()[KIND] == 200
     assert (queue.records.dir(pool.record_store.READY) / f"{second}.json").exists()
 
@@ -699,13 +703,13 @@ def test_freed_disk_reaches_the_offer_on_the_next_tick(roster, monkeypatch, tmp_
     assert shape[1][-2:] == ["--spool-gb", "241"]
     row = "a" * 64
     _scratch_holder(queue, row, 250)
-    assert queue.claim(owner="w1", capacity=_worker_offer(shape[1], queue.ledger())) is None
+    assert queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(_worker_offer(shape[1], queue.ledger())))) is None
 
     stat.f_bavail = 352 * GIB // 4096               # the scratch is pruned
     assert supervise.declared_shape("boxa", 0, shape) == shape
     offer = _worker_offer(shape[1], queue.ledger())
     assert offer[KIND] == 302
-    assert queue.claim(owner="w1", capacity=offer)["action_key"] == row
+    assert queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(offer)))["action_key"] == row
 
 
 def test_a_holder_that_claims_during_the_reading_defers_it(

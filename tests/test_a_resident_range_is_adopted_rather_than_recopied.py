@@ -22,6 +22,10 @@ are held throughout, by one key or the other, and at no point by neither.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 
 from contextlib import contextmanager
 import json
@@ -423,7 +427,7 @@ def test_the_adopted_range_admits_the_consumer_that_took_it_over(
     assert_ledger_matches_the_stage(queue)
     second_mover = _hexkey("secondmover0")
     assert not queue.records.item_path(pool.record_store.DONE, second_mover).exists()
-    claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == SECOND
     assert claimed["residency_verdict"]["state"] == "resident"
     # And the map it reads names the files the first consumer's copy verified.

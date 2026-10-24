@@ -28,6 +28,10 @@ re-stage fixture is the prepaid writer integration's real mover run through
 row is outside what is under test.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import batch_ledger as bl
 from prismabuild import submission as submit_core
 
@@ -89,7 +93,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
         "manifest_sha256": residency["manifest_sha256"], "entries": entries})
 
     queue.publish(**mover_row)
-    claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == mover
     span = int(residency["range_end_bytes"]) - int(residency["range_start_bytes"])
     queue.record_move(mover, {
@@ -119,7 +123,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     held = queue.tier(TIER).holdings(mover)
 
     queue.publish(**egress_row)
-    claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == egress
     real_unlink = os.unlink
 
@@ -142,7 +146,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     assert not queue.records.item_path(pool.record_store.FAILED, egress).exists()
     assert queue.tier(TIER).holdings(mover) == held
 
-    claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == egress
     second = staged_path.evict(queue, mover, consumer_action_key=CONSUMER,
                                  stage_root=str(stage))

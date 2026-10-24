@@ -11,6 +11,10 @@ scans: discovery plus refresh.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
 from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
@@ -53,7 +57,7 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     monkeypatch.setattr(reservation.CensusReader, "_census", counted)
 
     assert queue.claim(
-        capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+        **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
         has_gpu=True, tags=["gb10", "sparklina"], ready=records,
         cpu_sampler=lambda: cpu_sample(clock, readings),
         gpu_sampler=lambda: gpu_sample(sample, readings)) is None

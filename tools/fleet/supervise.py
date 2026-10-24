@@ -94,6 +94,7 @@ CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
 PROC = Path("/proc")
 SYSTEMD_UNIT = Path.home() / ".config/systemd/user/prismabuild-supervisor.service"
+SYSTEMD_SYSTEM_UNIT = Path("/etc/systemd/system/prismabuild-supervisor.service")
 SYSTEMD_EXEC = ("ExecStart=/usr/bin/python3 "
                 "/mnt/shared/prismabuild-fleet/repo/tools/supervise.py --ensure --systemd")
 
@@ -1955,10 +1956,13 @@ def _systemd_managed() -> bool:
     undo an operator's stop. Older installed units retain their old contract
     until the installer replaces them with the explicit --systemd invocation.
     """
-    try:
-        return SYSTEMD_EXEC in SYSTEMD_UNIT.read_text().splitlines()
-    except FileNotFoundError:
-        return False
+    for unit in (SYSTEMD_UNIT, SYSTEMD_SYSTEM_UNIT):
+        try:
+            if SYSTEMD_EXEC in unit.read_text().splitlines():
+                return True
+        except FileNotFoundError:
+            continue
+    return False
 
 
 def _shutdown_workers() -> None:
@@ -2074,7 +2078,7 @@ def _run_supervisor(stop_requested) -> int:
 
     if (not args.systemd and _systemd_managed()
             and not (args.cycle_stale and args.once)):
-        print("supervisor is managed by systemd; use systemctl --user "
+        print("supervisor is managed by systemd; use systemctl (system mode) or systemctl --user "
               "start/stop prismabuild-supervisor.service", flush=True)
         return 0 if args.ensure else 1
 

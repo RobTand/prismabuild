@@ -1,6 +1,10 @@
 """Real publication/claim histories with synthetic clock and offer inputs."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import json
 from pathlib import Path
 import socket
@@ -73,7 +77,7 @@ def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 3
     for tick in ticks:
         clock[0] = tick
         try:
-            claimed = queue.claim(capacity=CAPACITY, cpu_tiers=local_tiers,
+            claimed = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=local_tiers,
                                   has_gpu=rule != "preferred_cpu")
             records = queue.latest_denials({key}).get(key) or []
             denial = next((record for record in records if record.get("host") == LOCAL), {})

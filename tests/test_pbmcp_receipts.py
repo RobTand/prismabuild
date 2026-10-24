@@ -14,6 +14,10 @@ mistaking "returncode 0" for "every case passed".
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import sys
 import time
@@ -41,7 +45,7 @@ def fleet(tmp_path: Path) -> fx.Fleet:
                   cas_root=built.cas_root,
                   checkout_root=str(built.checkout),
                   worker_script=str(built.base / "worker.py"))
-    queue.claim(tags=["oops"], capacity={"cpu": 8, "mem_gb": 16})
+    queue.claim(tags=["oops"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     queue.finish(FAILED_KEY, status="failed",
                  detail={"returncode": 3, "elapsed_s": 0.5,
                          "stdout": "1 failed, 9 passed\n",

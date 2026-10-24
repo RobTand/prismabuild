@@ -13,6 +13,10 @@ now checks only the measurement's own predicted CPUs against
 * holder-free complete clearance can actually claim (#1422).
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
@@ -74,7 +78,7 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 
 def _claim(q, capacity, *, tiers, cpu_sampler):
-    item = q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    item = q.claim(**simulated_admission(q, simulated_capacity(capacity)), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     return None if item is None else item["action_key"]
 
 

@@ -1,6 +1,10 @@
 """A retry keeps distant donors reclaimable until its missing frontier arrives."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import hashlib
 
 import test_a_resident_range_is_adopted_rather_than_recopied as base
@@ -115,7 +119,7 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
         queue.records.item(base.pool.record_store.READY, mover),
     )
     claim = queue.claim(ready=[ready], tags=['dl380g10'], owner='frontier-reader-test',
-                        capacity={'cpu': 4, 'mem_gb': 4})
+                        **simulated_admission(queue, simulated_capacity({'cpu': 4, 'mem_gb': 4})))
     assert claim and claim['action_key'] == mover
     result = copy(base.SECOND, mover, 1)
     assert result['bytes_staged'] == size and result['entries_staged'] == 1

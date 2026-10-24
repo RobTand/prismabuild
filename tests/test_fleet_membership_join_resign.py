@@ -8,6 +8,10 @@ gates are the real ``worker_loop`` drain shape on tmp paths.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -82,7 +86,7 @@ def test_two_matching_workers_either_may_claim(queue: pool.PoolQueue) -> None:
     item = queue.ready_items()[0]
     assert queue.placeable(item) is True
     assert queue.placeable_hosts(item) == ["sparklina", "sparky"]
-    got = queue.claim(tags=["gb10", "sparky"], owner="sparky:1:q1", capacity={"cpu": 4})
+    got = queue.claim(tags=["gb10", "sparky"], owner="sparky:1:q1", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert got is not None and got["action_key"] == key
 
 
@@ -104,7 +108,7 @@ def test_cpu_x86_vs_cuda_class_conjunction(queue: pool.PoolQueue) -> None:
     assert queue.placeable(item) is False
     assert queue.placeable_hosts(item) == []
     assert queue.claim(tags=["x86", "dl380g10"], owner="dl380:1:q1",
-                       capacity={"cpu": 4}) is None
+                       **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     _offer(queue, "sparky", ["gb10", "sparky"], has_gpu=True,
            capacity={"gpu": 1, "mem_gb": 16})
     assert queue.placeable(queue.ready_items()[0]) is True
@@ -299,7 +303,7 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
         needs_gpu=False,
     )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
-                           capacity={"cpu": 4})
+                           **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert snapshot is not None
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False, "changed_unix": 1.0}))
@@ -611,7 +615,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
         needs_gpu=False,
     )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
-                           capacity={"cpu": 4})
+                           **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert snapshot is not None
     authority.admin(0, {"op": "maintenance_begin", "reason": "t",
                         "owner": me})

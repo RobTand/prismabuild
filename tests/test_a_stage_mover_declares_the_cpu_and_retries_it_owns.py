@@ -16,6 +16,10 @@ the shipped row had -- is asserted to refuse, so the test would have failed
 before the fix and fails again if the ``cpu`` key is dropped.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 import pbrun
 from prismabuild import submission as submit_core
 
@@ -153,7 +157,7 @@ def _hold_one_cpu(queue: pool.PoolQueue, tiers, cpu_sampler) -> dict[str, object
     queue.publish(action_key=HOLDER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="worker.py",
                   resources={"cpu": 1})
-    claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"], cpu_tiers=tiers,
                         adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == HOLDER
     return claim
@@ -184,7 +188,7 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     # keep the key, because the key is the whole difference.
     row["resources"] = {**row["resources"], "cpu": 1}
     queue.publish(**row)
-    claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"], cpu_tiers=tiers,
                         adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None, "a bounded mover must run beside one holder"
     assert claim["action_key"] == row["action_key"]
@@ -195,7 +199,7 @@ def test_a_mover_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
                               for key, value in row["resources"].items()
                               if key != "cpu"}
     queue.publish(**unbounded)
-    assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), tags=["dl380g10"], cpu_tiers=tiers,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
     assert queue.records.item_path(pool.record_store.READY, unbounded["action_key"]).exists()
 

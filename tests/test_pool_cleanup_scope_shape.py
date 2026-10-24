@@ -1,4 +1,8 @@
 """Malformed scope metadata must remain inside the cleanup refusal gate."""
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 import pytest
 from prismabuild import pool
 
@@ -10,7 +14,7 @@ def test_cached_cleanup_with_invalid_scope_preserves_finish(tmp_path, control):
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py",
                   resources={"cpu": 1})
-    record = queue.claim(capacity={"cpu": 1})
+    record = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     record["resource_scope"] = control
     record["resource_scope_cleanup"] = {"complete": True, "nonce": "old"}
     path = queue.records.item_path(pool.record_store.CLAIMED, key)

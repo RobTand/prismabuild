@@ -18,6 +18,10 @@ outside its scope.
 Issues #227, #262.
 """
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from prismabuild import submission as submit_core
 
 import json
@@ -64,7 +68,7 @@ def lost_claim(tmp_path: Path) -> tuple[pool.PoolQueue, Path, dict]:
         max_attempts=1, retry_safe=True,
     )
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
-        assert q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity={"cpu": 1})
+        assert q.claim(owner=f"{HELD_BY}:1:abcd1234", **simulated_admission(q, simulated_capacity({"cpu": 1})))
 
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with mock.patch.object(pool, "_now", lambda: later):

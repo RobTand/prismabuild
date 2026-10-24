@@ -29,6 +29,9 @@ import uuid
 MARK = '/pb266b-marker'
 
 
+from worker_loop import capped_simulation_parameters
+
+
 def git_head():
     """HEAD of the working directory's checkout, through the repo's git runner."""
     src = str(Path(__file__).resolve().parents[2] / 'src')
@@ -93,7 +96,7 @@ def child(args):
                                    'scope_id': record['scope_unit'], 'complete': True})
 
     def claim():
-        return queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, has_gpu=gpu,
+        return queue.claim(**capped_simulation_parameters(queue, capacity), cpu_tiers=tiers, adaptive_cpu=True, has_gpu=gpu,
             cpu_sampler=cpu_sampler,
             gpu_sampler=gpu_sampler)
 

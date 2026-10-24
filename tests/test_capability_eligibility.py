@@ -1,5 +1,9 @@
 """Offer and live interpreter evidence preserve placement and claim authority."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
@@ -68,7 +72,7 @@ def test_worker_offer_and_live_claim_agree_on_observed_paths(tmp_path, kind):
 
     assert queue.placeable({"tags": [TAG], "interpreter": named,
                             "resources": CAPACITY}) is expected
-    claimed = queue.claim(tags=[TAG], capacity=CAPACITY)
+    claimed = queue.claim(tags=[TAG], **simulated_admission(queue, simulated_capacity(CAPACITY)))
 
     assert (claimed is not None) is expected
     if not expected:
@@ -106,7 +110,7 @@ def test_live_claim_uses_current_path_instead_of_offer_answer(tmp_path, offered_
 
     assert queue.placeable({"tags": [TAG], "interpreter": named,
                             "resources": CAPACITY}) is offered_present
-    claimed = queue.claim(tags=[TAG], capacity=CAPACITY)
+    claimed = queue.claim(tags=[TAG], **simulated_admission(queue, simulated_capacity(CAPACITY)))
 
     assert (claimed is not None) == (not offered_present)
     if offered_present:
@@ -143,7 +147,7 @@ def test_publication_and_foreign_claim_keep_their_existing_validation(tmp_path, 
     record["interpreter"] = value
     path.write_text(json.dumps(record))
 
-    assert queue.claim(tags=[TAG], capacity=CAPACITY) is None
+    assert queue.claim(tags=[TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is None
 
     denial = _denials(queue)[-1]
     assert denial["reason"] == reason
@@ -197,10 +201,10 @@ def test_missing_path_stays_missing_for_the_pass_and_refreshes_next_pass(tmp_pat
 
     monkeypatch.setattr(eligibility.os.path, "isfile", installed_after_lookup)
 
-    assert queue.claim(tags=[TAG], capacity=CAPACITY) is None
+    assert queue.claim(tags=[TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is None
     assert {denial["reason"] for denial in _denials(queue)} == {"interpreter_not_present"}
     assert len(_denials(queue)) == 2
-    assert queue.claim(tags=[TAG], capacity=CAPACITY) is not None
+    assert queue.claim(tags=[TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is not None
 
 
 def _publish_dependencies(queue, key, *, files=None, local=None):
@@ -262,7 +266,7 @@ def test_offer_path_presence_does_not_prove_required_bytes(tmp_path, monkeypatch
     assert queue.placeable({"tags": [contracts.DEPENDENCY_DIGEST_TAG],
                             "requires_files": [entry], "resources": CAPACITY}) is (
                                 kind not in ("directory", "missing"))
-    claimed = queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], capacity=CAPACITY)
+    claimed = queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY)))
 
     assert (claimed is not None) == (reason is None)
     if reason is not None:
@@ -311,7 +315,7 @@ def test_local_path_offer_and_claim_share_requirement_semantics(tmp_path, requir
 
     assert queue.placeable({"tags": [contracts.LOCAL_DEPENDENCY_TAG],
                             "local_dependencies": local, "resources": CAPACITY}) is expected
-    assert (queue.claim(tags=[contracts.LOCAL_DEPENDENCY_TAG], capacity=CAPACITY) is not None) is expected
+    assert (queue.claim(tags=[contracts.LOCAL_DEPENDENCY_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is not None) is expected
     if not expected:
         denial = _denials(queue)[-1]
         assert denial["reason"] == "local_dependency_not_present"
@@ -340,7 +344,7 @@ def test_local_refusal_precedes_a_foreign_digest_error(tmp_path, monkeypatch, ma
 
     monkeypatch.setattr(dependency_digest, "claim_digest", cannot_hash)
     assert queue.claim(tags=[contracts.LOCAL_DEPENDENCY_TAG, contracts.DEPENDENCY_DIGEST_TAG],
-                       capacity=CAPACITY) is None
+                       **simulated_admission(queue, simulated_capacity(CAPACITY))) is None
     assert _denials(queue)[-1]["reason"] == reason
     assert queue.passes("a" * 64) == 0
 
@@ -357,7 +361,7 @@ def test_first_digest_failure_follows_the_foreign_rows_declared_order(tmp_path):
     record["requires_files"] = files
     ready.write_text(json.dumps(record))
 
-    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], capacity=CAPACITY) is None
+    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is None
 
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_digest_mismatch"
@@ -438,13 +442,13 @@ def test_live_digest_keeps_its_first_answer_but_reobserves_presence_each_candida
     monkeypatch.setattr(dependency_digest, "claim_digest", removed_after_hash)
     monkeypatch.setattr(eligibility.os.path, "isfile", installed_after_missing_observation)
 
-    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], capacity=CAPACITY) is None
+    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is None
     denials = _denials(queue)
     assert len(denials) == 2
     assert {denial["reason"] for denial in denials} == {"dependency_digest_mismatch"}
     assert {denial["evidence"]["observed"] for denial in denials} == {hashlib.sha256(b"old").hexdigest()}
     assert path.read_bytes() == b"new"
-    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], capacity=CAPACITY) is not None
+    assert queue.claim(tags=[contracts.DEPENDENCY_DIGEST_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY))) is not None
 
 
 IMAGE = "content:sha256:" + "a" * 64
@@ -502,7 +506,7 @@ def test_offer_image_class_report_never_authorizes_a_live_claim(tmp_path, monkey
     assert queue.placeable({"tags": [contracts.CONTAINER_IMAGE_TAG],
                             "container_images": [IMAGE], "resources": CAPACITY}) is (
                                 report_kind in ("omitted", "fresh"))
-    assert queue.claim(tags=[contracts.CONTAINER_IMAGE_TAG], capacity=CAPACITY,
+    assert queue.claim(tags=[contracts.CONTAINER_IMAGE_TAG], **simulated_admission(queue, simulated_capacity(CAPACITY)),
                        observed_images=[IMAGE]) is not None
 
 

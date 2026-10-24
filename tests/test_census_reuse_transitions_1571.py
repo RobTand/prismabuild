@@ -11,6 +11,10 @@ proves live membership exactly as the full census does.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import os
 import sys
 import time
@@ -44,7 +48,7 @@ def _chosen(queue, key):
 def _claim_row(queue, key, host="sparklina", *, cpu_sampler, gpu_sampler):
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(row, dict)
-    result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+    result = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", host], ready=[row],
                          cpu_sampler=cpu_sampler,
                          gpu_sampler=gpu_sampler)
@@ -149,7 +153,7 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     monkeypatch.setattr(reader, "bounded", observed_bounded)
     monkeypatch.setattr(reservation.CensusReader, "_census", counted_census)
     monkeypatch.setattr(reservation, "REFRESH_BUDGET_S", 0.2)
-    result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+    result = queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                          has_gpu=True, tags=["gb10", "sparklina"], ready=rows,
                          cpu_sampler=lambda: cpu_sample(clock, readings),
                          gpu_sampler=lambda: gpu_sample(sample, readings))

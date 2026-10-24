@@ -15,6 +15,10 @@ real sealed members and filed plans of ``test_prelaunch_admission_1594``:
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_prelaunch_admission_1594 import (
@@ -27,7 +31,7 @@ def _fail_lead(queue, clock, monkeypatch, lead: str, sha: str) -> None:
     """Publish one movement node, claim it and end it failed."""
     _publish_lead(queue, clock, lead, sha)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["sparklina"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
     assert claimed is not None and claimed["action_key"] == lead, claimed
     queue.finish(lead, status="failed")
 

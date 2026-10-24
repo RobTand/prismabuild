@@ -10,6 +10,10 @@ files an ordinary cancellation and still retires the window.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 from prismabuild import claim_identity
@@ -68,7 +72,7 @@ def _owner(host: str) -> str:
 
 def _claim(queue: pool.PoolQueue, host: str, tag: str = "x86") -> dict:
     snap = queue.claim(tags=[tag], owner=f"{host}:1:{tag}",
-                       capacity={"cpu": 4, "mem_gb": 16})
+                       **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert snap is not None
     return snap
 
@@ -154,7 +158,7 @@ def test_proven_handoff_persists_exact_decision(
     owner = _owner(host)
     _staged(queue, tmp_path)
     snap = queue.claim(tags=["dl380g10"], owner=f"{host}:1:mm",
-                       capacity={"cpu": 4, "mem_gb": 16})
+                       **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert snap is not None and snap["action_key"] == MOVER
     requeue = queue.plan_requeue(dict(snap))
     queue.withdraw(MOVER, reason=f"resign {owner}: test", by=owner,
@@ -228,7 +232,7 @@ def test_handoff_proof_refuses_before_withdrawal(
         tags=['x86'],
     )
     spent = queue.claim(tags=["x86"], owner=f"{host}:1:spent",
-                        capacity={"cpu": 4, "mem_gb": 16})
+                        **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert spent is not None
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(spent_key, reason="t", by=owner,
@@ -279,7 +283,7 @@ def test_forged_snapshot_bindings_refuse(
         tags=['x86'],
     )
     flip_live = queue.claim(tags=["x86"], owner=f"{host}:1:flip",
-                            capacity={"cpu": 4, "mem_gb": 16})
+                            **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert flip_live is not None
     assert flip_live["retry_safe"] is False
     forged_safe = dict(flip_live, retry_safe=True, max_attempts=3)
@@ -301,7 +305,7 @@ def test_forged_snapshot_bindings_refuse(
         tags=['x86'],
     )
     inflate_live = queue.claim(tags=["x86"], owner=f"{host}:1:inflate",
-                               capacity={"cpu": 4, "mem_gb": 16})
+                               **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert inflate_live is not None
     forged_budget = dict(inflate_live, max_attempts=3)
     with pytest.raises(pool.PoolContractError):

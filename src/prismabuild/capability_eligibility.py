@@ -30,6 +30,11 @@ class HostPresence:
     tags: frozenset[str]
     gpu: Presence
 
+    @property
+    def enrollment_pins(self) -> frozenset[str]:
+        return frozenset(tag.removeprefix("enrolling-only:") for tag in self.tags
+                         if tag.startswith("enrolling-only:"))
+
     @classmethod
     def from_observed(cls, tags: Iterable[str], *, has_gpu: bool) -> HostPresence:
         return cls(frozenset(str(tag) for tag in tags),
@@ -63,12 +68,13 @@ def placement_matches(
         except (TypeError, ValueError, OverflowError):
             pass  # demand validation follows the live capability gates
     presence = HostPresence.from_observed(tags, has_gpu=has_gpu)
-    if not presence.matches((), needs_gpu=needs_gpu):
-        return False
     required = item.get("tags") or []
     if not isinstance(required, list):
         raise ValueError("pool item tags must be a list")
-    return presence.matches(required, needs_gpu=False)
+    enrolling = presence.enrollment_pins
+    if enrolling and not enrolling.intersection(required):
+        return False
+    return presence.matches(required, needs_gpu=needs_gpu)
 
 
 @dataclass(frozen=True)

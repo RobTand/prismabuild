@@ -12,6 +12,10 @@ Nothing here touches the live queue, a real pool or a real device.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 from pathlib import Path
 import sys
 
@@ -61,13 +65,13 @@ def test_polling_claims_issues_no_layout_mkdirs(
     assert all(path.is_dir() for path in layout)
 
     seen.clear()
-    assert q.claim(owner="worker", capacity={"cpu": 1}) is not None
+    assert q.claim(owner="worker", **simulated_admission(q, simulated_capacity({"cpu": 1}))) is not None
     seen.clear()
     # The queue is empty now: idle polls must cost the mount nothing.  (The
     # taking poll above still writes -- intent, lease, claim record -- and
     # every write creates its parent, which is per-write, not per-poll.)
-    assert q.claim(owner="worker", capacity={"cpu": 1}) is None
-    assert q.claim(owner="worker", capacity={"cpu": 1}) is None
+    assert q.claim(owner="worker", **simulated_admission(q, simulated_capacity({"cpu": 1}))) is None
+    assert q.claim(owner="worker", **simulated_admission(q, simulated_capacity({"cpu": 1}))) is None
     assert not [path for path in seen if path in layout], \
         "idle polls re-check nothing on the mount"
 

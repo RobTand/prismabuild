@@ -33,6 +33,10 @@ Nothing here touches the live queue.
 """
 
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
 import json
@@ -129,7 +133,7 @@ def test_the_other_records_still_claim(queue: pool.PoolQueue) -> None:
     )
     _poison(queue, POISON, "priority", "high")
 
-    claimed = queue.claim(owner="worker", capacity={"cpu": 4})
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
 
     assert claimed is not None and claimed["action_key"] == GOOD
 

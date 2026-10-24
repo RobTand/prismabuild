@@ -27,6 +27,10 @@ Issue #302.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
+
 import errno
 import json
 from pathlib import Path
@@ -57,7 +61,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def _uncontained_claim_with_a_container(queue: pool.PoolQueue) -> dict:
     """A claim that entered the Docker shim and has no resource scope."""
 
-    item = queue.claim(capacity={"cpu": 1})
+    item = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert item is not None and item.get("resource_scope") is None
     marker = queue.container_marker(OWNER)
     marker.parent.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,7 @@
+
+from admitted_queue_fixture import simulated_admission
+
+from admitted_queue_fixture import simulated_capacity
 from pathlib import Path
 import socket
 import time
@@ -19,7 +23,7 @@ def test_plain_and_simulated_admission_keep_explicit_refusals(tmp_path):
     plain.actions.publish(plain_key)
     row = record_store.value_or_raise(plain.queue.records.item(record_store.READY, plain_key))
     assert row["resources"] == {}
-    assert plain.queue.claim(capacity={"cpu": 2, "mem_gb": 4}) is None
+    assert plain.queue.claim(**simulated_admission(plain.queue, simulated_capacity({"cpu": 2, "mem_gb": 4}))) is None
     world = FleetWorld(tmp_path / "admitted", admission=Admission(
         capacity={"cpu": 2, "mem_gb": 4},
         default_demand={"cpu": 1, "mem_gb": 1}))
