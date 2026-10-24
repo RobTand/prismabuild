@@ -107,6 +107,29 @@ The agreed implementation design is
 [PB #517](docs/design_work_decomposition_2026-09-11.md); PR #518 implements its synchronous MVP. Durable queued parents and parent
 withdrawal remain proposed; source support does not establish deployed support.
 
+## Test quality — Rob, 2026-10-24 (#2249)
+
+"Please fix the flaky tests and create guidance that no longer creates them.
+Flaky tests derail this entire platform." Every test you add or change must
+be deterministic and able to fail.
+
+1. Deterministic.
+   - No wall-clock or elapsed-time thresholds. Inject or fake clocks instead.
+   - No sleeping to wait for a condition. Synchronize on explicit events;
+     timeouts are only generous failure bounds.
+   - No dependence on host load, CPU count, scheduling order, inode or mtime
+     reuse, listing order or test order.
+   - Seed randomness, make no network calls and use `tmp_path`.
+   - Fit the declared CPU and memory under xdist, and pass identically when
+     rerun or run in parallel.
+2. Not tautological. A test must be able to fail when the behavior is wrong.
+   Don't write self-comparisons, constant asserts, asserts on a mock's own
+   configured return, expectations recomputed with the code under test, or
+   "called with what I passed". Remove tautological tests you find.
+
+Fix a flaky test at its root. Retries, quarantine, xfail, skips and widened
+timeouts are not fixes. The method is in [the contributing guide](docs/contributing.md).
+
 ## Code design principles — Rob, 2026-09-30
 
 When two principles collide, pick the one that cuts future cost in THIS codebase.
