@@ -1440,10 +1440,16 @@ class Controller:
         # measurement_foreign_ambient refusal, never a decision input.
         self._foreign_pid_cache = None
         self._sampler = sampler
-        self._lending_identity = {
-            'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-            'tiers': tiers, 'ramp_cap': cpu_lending.lending_ramp_cap(len(tiers['preferred']), ramp_cap)}
         self._ramp_cap = cpu_lending.lending_ramp_cap(len(tiers['preferred']), ramp_cap)
+        self._lending_identity = None
+        if self._ramp_cap:
+            try:
+                boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            except OSError:
+                boot_id = None
+            if boot_id:
+                self._lending_identity = {'boot_id': boot_id, 'tiers': tiers,
+                                          'ramp_cap': self._ramp_cap}
 
     def idle(self, sample, holders):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
@@ -1602,6 +1608,8 @@ class Controller:
             return {**previous, 'generation': generation, 'open': False,
                     'budget': 0, 'reason': reason}
 
+        if self._lending_identity is None:
+            return skipped('identity_unavailable')
         at, last = sample.get('sampled_unix'), previous.get('sampled_unix')
         if type(at) not in (int, float) or not math.isfinite(at) or not 0 <= now - at <= 5:
             return skipped('unknown_or_stale')
@@ -1629,7 +1637,10 @@ class Controller:
         current = read_json(path)
         if current.get('generation', 0) != previous.get('generation', 0) or current != previous:
             return skipped('history_generation_changed')
-        self.write_state('cpu-lending.json', updated)
+        try:
+            self.write_state('cpu-lending.json', updated)
+        except OSError:
+            return skipped('history_unavailable')
         return updated
 
     def _predicted_cpus(self, need: int, *, eligible_cpus=None) -> list[int] | None:
@@ -1833,7 +1844,10 @@ class Controller:
         # Passive observation never replaces main's cached sample or verdict.
         sample = self._host_sample
         if self._ramp_cap:
-            self._observe_lending(sample, time.time())
+            try:
+                self._observe_lending(sample, time.time())
+            except OSError:
+                pass  # Optional control history cannot change main's verdict.
         evidence = {'cap': self._ramp_cap, 'generation': None,
                     'sampled_unix': sample.get('sampled_unix'), 'gate_open': None,
                     'loan_budget': None, 'gate_reason': 'legacy_adaptive'}

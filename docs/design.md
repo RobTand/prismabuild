@@ -6737,7 +6737,9 @@ borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 The existing adaptive lending remains the default (#2156). With cap 0 and no
 `--cpu-qos` declaration, main and this implementation make identical decisions,
 including refusals, preferred borrowing, wide loans and physical allocations.
-Cap 0 never reads or writes `cpu-lending.json`. The permanent regression compares all 27 reviewer and builder fixtures with
+Cap 0 never reads the opted boot identity or reads or writes `cpu-lending.json`.
+At positive caps, passive history I/O and missing boot identity cannot refuse
+undeclared work; they only close the additive lending view. The permanent regression compares all 27 reviewer and builder fixtures with
 SHA-pinned outcomes captured from the adopted main commit through PB on ARM
 and x86. It needs no old Git history. The same 27 undeclared traces also match main
 with a positive cap. A second structural regression compares
