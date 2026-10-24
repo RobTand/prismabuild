@@ -19920,6 +19920,15 @@ Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical
 custody, drain, performance or RootGO credit.
 
+Controller record tests partition the existing native population by family so
+file-level fanout can admit independent shards. Verified generation and writer
+source closures live until pytest configuration cleanup and are shared across
+imported fixture definitions through that configuration's stash. Every replay
+still creates a fresh isolated process and private store, including its bundle
+cache and TMPDIR. Definition indexes share immutable names by exact source
+bytes; each lookup rereads its path so source mutations cannot reuse an index
+for older content. Executing source/code attestation remains per replay.
+
 Native historical byte reproduction selects an explicit qualified archival
 replay runtime from the `archival-replay` test capability. That source
 declaration is the sole executable path and SHA-256 authority. The test
