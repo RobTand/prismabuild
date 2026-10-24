@@ -592,7 +592,7 @@ def test_returning_a_lost_claim_s_borrow_never_overwrites_a_newer_one(loan_rig, 
     previous = controller.admitted(spent)
     ledger.abandon_acquire(handle)
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 132.)
-    controller._host_sample = observation(132.)
+    monkeypatch.setattr(controller, '_sampler', lambda: observation(132.))
     newer = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
     assert newer and newer['borrowing']
     handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=newer, cpu_tiers=tiers)

@@ -183,13 +183,23 @@ def _refresh_controller(args):
     if args.report.exists():
         raise ValueError("adoption report already exists")
     old_manifest = data / f"capture-{suffix}.json"
-    if not old_manifest.is_file():
+    has_manifest = old_manifest.is_file()
+    if not has_manifest and args.profile != "cpu-lending-records":
         raise ValueError("full original capture metadata must exist for preservation")
-    old_manifest_raw = old_manifest.read_bytes()
+    old_manifest_raw = old_manifest.read_bytes() if has_manifest else None
     baseline_head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     baseline_git = {"head": baseline_head, "files": {}}
     pre_profile = {}
-    for path, raw in ((prior, old_raw), (old_manifest, old_manifest_raw)):
+    originals = [(prior, old_raw)] + ([(old_manifest, old_manifest_raw)] if has_manifest else [])
+    if not has_manifest:
+        relative = str(old_manifest.relative_to(root))
+        absent = subprocess.run(["git", "-C", str(root), "cat-file", "-e",
+                                 baseline_head + ":" + relative], capture_output=True)
+        if absent.returncode == 0:
+            raise ValueError("an existing baseline capture manifest was removed")
+        baseline_git["files"][relative] = {"absent": True}
+        pre_profile[relative] = {"absent": True, "matches_baseline_git": True}
+    for path, raw in originals:
         relative = str(path.relative_to(root))
         committed = subprocess.check_output(["git", "-C", str(root), "show", baseline_head + ":" + relative])
         baseline_git["files"][relative] = {"sha256": sha(committed), "bytes": len(committed)}
@@ -253,7 +263,7 @@ def _refresh_controller(args):
             raise ValueError("unselected current row bytes changed")
         provenance = {"profile": args.profile, "selected_cases": sorted(expected),
                       "credit": "superseded current fixture; no supported historical-generation credit",
-                      "reason": ("CPU lending changes only the reviewed PSI or registered-loan fixture contract"
+                      "reason": ("CPU lending changes only the reviewed PSI, registered-loan or durable admission fixture contract"
                                  if args.profile.startswith('cpu-lending-') else
                                  "Only actual updater source identity changed" if args.profile == "upgrade-attestation"
                                  else "Real current qualification builder requires the supplied park fixture member"),
@@ -261,12 +271,15 @@ def _refresh_controller(args):
                       "exact_pre_profile_working_tree": pre_profile,
                       "preceding_verified_adoption": preceding,
                       "capture_source_parent": producer, "differences": changes,
-                      "preserved_files": {prior.name: sha(old_raw), old_manifest.name: sha(old_manifest.read_bytes())},
+                      "preserved_files": {path.name: sha(raw) for path, raw in originals},
+                      "previous_capture_manifest_present": has_manifest,
                       "historical_sha256": sha(historical_path.read_bytes()), "source_identities": source_identities}
-        if prior.read_bytes() != old_raw or old_manifest.read_bytes() != old_manifest_raw:
+        present_manifest = old_manifest.read_bytes() if old_manifest.is_file() else None
+        if prior.read_bytes() != old_raw or present_manifest != old_manifest_raw:
             raise ValueError("pre-profile current files changed before preservation")
         archive.mkdir(parents=True)
-        for name, raw in ((prior.name, old_raw), (old_manifest.name, old_manifest_raw)):
+        for original_path, raw in originals:
+            name = original_path.name
             archived = archive / name
             archived.write_bytes(raw)
             readback = archived.read_bytes()
