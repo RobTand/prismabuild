@@ -287,6 +287,7 @@ _OBSERVE = r'''
 import io, json, os, sys, time
 from pathlib import Path
 source, root, moment = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3])
+exporter_families = json.loads(sys.argv[4])
 sys.path[:0] = [str(source / p) for p in ("src", "tools/fleet", "tests")]
 import pbstatus, pbmcp, pbmetrics
 current = (source / "src/prismabuild/census.py").is_file()
@@ -322,8 +323,10 @@ for name, read in questions:
     events.clear()
     value = read()
     if name == "metrics":
-        value = [line for line in value.splitlines() if not line.startswith((
-            "prismabuild_exporter_", "prismabuild_scrape_seconds"))]
+        # Compare queue facts; the extra stamp read changes exporter work.
+        prefixes = tuple(prefix + family + suffix for family in exporter_families
+                         for prefix in ("", "# HELP ", "# TYPE ") for suffix in (" ", "{"))
+        value = [line for line in value.splitlines() if not line.startswith(prefixes)]
     values[name], schedules[name] = value, list(events)
 print(json.dumps({"values": values, "schedules": schedules}))
 '''
@@ -342,7 +345,8 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
     environment = {**os.environ, "PYTHONPATH": ""}
     readings = []
     for source in (original, repository, strict_reference):
-        run = subprocess.run([sys.executable, "-c", _OBSERVE, str(source), str(fleet.queue_root), now],
+        run = subprocess.run([sys.executable, "-c", _OBSERVE, str(source), str(fleet.queue_root), now,
+                              json.dumps(sorted(pbmetrics.EXPORTER_FAMILIES))],
                              env=environment, capture_output=True, text=True, timeout=60)
         assert run.returncode == 0, run.stderr
         readings.append(json.loads(run.stdout))
