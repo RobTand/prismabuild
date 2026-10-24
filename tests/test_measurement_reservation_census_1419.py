@@ -204,8 +204,9 @@ def test_two_host_election_is_one_persisted_generation_choice(fleet, monkeypatch
         token = host_context.set(host)
         try:
             start.wait(timeout=5)
-            return pool.PoolQueue(queue.root).claim(
-                **simulated_admission(pool.PoolQueue(queue.root), simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120})),
+            host_queue = pool.PoolQueue(queue.root)
+            return host_queue.claim(
+                **simulated_admission(host_queue, simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 120})),
                 cpu_tiers={"preferred": list(range(20)), "fallback": []},
                 adaptive_cpu=True, has_gpu=True, tags=["gb10", host], ready=[row],
                 cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
