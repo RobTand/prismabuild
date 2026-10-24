@@ -1,8 +1,4 @@
 """Refused opted rows cannot change the state or verdict of legacy admission."""
-from pathlib import Path
-
-import pytest
-
 from prismabuild import adaptive_cpu, pool
 
 
@@ -31,7 +27,7 @@ def test_refused_opted_row_cannot_replace_legacy_pass_sample(tmp_path, monkeypat
             assert controller.decision(legacy, legacy['resources'], identity=('legacy', False), owner=None) is None
             clock[0] = 101.2
             if interleave:
-                opted = {'action_key': 'b' * 64, 'resources': {'cpu': 1},
+                opted = {'action_key': 'b' * 64, 'resources': {'cpu': 9},
                          'cpu_qos': 'opportunistic', 'priority': 0}
                 assert controller.decision(opted, opted['resources'], identity=('opted', False), owner=None) is None
             result = controller.decision(legacy, legacy['resources'], identity=('legacy', False), owner=None)
@@ -100,7 +96,7 @@ def test_opted_idle_and_counter_sampling_never_write_legacy_history(tmp_path, mo
         names = ('cpu-sample.json', 'idle-baseline.json')
         before = {name: (controller.base / name).read_bytes() for name in names}
         clock[0] = 102.4
-        opted = {'action_key': 'b' * 64, 'resources': {'cpu': 1},
+        opted = {'action_key': 'b' * 64, 'resources': {'cpu': 9},
                  'cpu_qos': 'opportunistic', 'priority': 0}
         assert controller.decision(opted, opted['resources'], identity=('opted', False), owner=None) is None
         assert before == {name: (controller.base / name).read_bytes() for name in names}
