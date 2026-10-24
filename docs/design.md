@@ -6147,9 +6147,22 @@ attributed job at a time. Absent power *without* the declaration remains
 invalid, so this narrows one declared class of device rather than weakening the
 contract for every sample.
 
-Attribution on such a host is a census of the GPU device node's open handles in
-`/proc`, routed through the same PID start-time and cgroup-identity checks as
-the NVML rows. It resolves ownership and reports no per-process bytes, which
+NVIDIA process attribution first runs a bounded compute-app discovery query,
+then captures start-time and cgroup membership only for those candidate PIDs.
+A separate compute-app query supplies measured bytes; fresh identities after
+measurement must match the pre-measurement identities. Discovery counters are
+never attributed. Empty discovery still requires measurement, and a PID first
+seen in measurement stays unknown/incomplete. Failed discovery performs no
+process-identity census, including with no active scopes; idle foreign inventory
+is still collected. Both queries and identity work share one collection deadline,
+with each query capped by the remaining budget and exhaustion incomplete even
+for empty rows. Scope inode fencing and Guard confirmations remain unchanged.
+
+Attribution on an AMD/WSL host is still a census of the GPU device node's open
+handles in `/proc`, bracketed by fresh PID start-time and cgroup-identity reads.
+The pre-measurement identities cover host PIDs because previously idle processes
+can open handles; pidfds do not announce those opens. This is not event-driven
+discovery, and mutable memberships, counters and capacity are not stably cached. It resolves ownership and reports no per-process bytes, which
 the sample declares as `gpu_process_bytes: false` and each scope as
 `gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
 violation it has no counter for. Ownership unknown still refuses; bytes unknown

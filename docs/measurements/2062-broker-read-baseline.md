@@ -178,3 +178,95 @@ Compact projection evidence (additional x86 run):
 
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"560e78c94797b94fb16af54b2d537d64c77b327c141d9e27b9785b24b356c64c","size":178373}},"operation":"fbb83d8e08f74075ff13be7c8d7b8c164b79b2e58deec28c60cc2a0d3790256e","receipt":"a895239bce359e4d1cb9eaa0e3a77e213a6b7722deb043de55fcd349212acf00"}]
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"6be7145a5480852b3cf42d34693ff0b93a5322a153f38803e284c2e43c5727f3","size":178379}},"operation":"86e2120f4762272de8974bb03a742146976c61674c20b42c4bc15f2da00edd7b","receipt":"ae47d868345065bdc21f59cf6fdbdf6bae51f82889975723a3524f0da51e1a92"}]
+
+
+## W2 comparison — candidate-first NVIDIA attribution (#2063)
+
+These are new synthetic observations, not a relabelling of the historical W1
+measurements above. The existing W1 observer and real ResourceMonitor fixture
+were reused, along with the W2 compact projection in
+`test_w2_nvidia_read_counts_remove_w1_unrelated_pid_slope`. No acceptance tests,
+compatibility inventories or goldens were edited during implementation.
+
+Measured source SHA-256 identities (both arms):
+
+| Source | SHA-256 |
+| --- | --- |
+| `src/prismabuild/gpu_memory.py` | `dfbef5d3d1771303ff6da249aecd0b9f3676b98a6256fefb3150925ed1e018b9` |
+| `src/prismabuild/gpu_capacity.py` (unchanged) | `6c61d4543e60e5e42c0a0879cbff6566442ea07969e764afbf563374860c7f28` |
+| `tools/fleet/resource_broker.py` (unchanged) | `0f8dfa4bca6633aa8d86aecf81c2d6fe06bba756cf376acb91f7fdeaff54be1c` |
+
+The supplied acceptance fixture sources were retained:
+`tests/test_broker_read_baseline.py` SHA-256
+`a8b3571ba7c34150a53908a677a0e1fcc4af7343a3f4eea0cee96026dac0c2df`,
+and `tests/test_gpu_memory.py` SHA-256
+`ddc994d083f1dff35500a2f4fa3647ac9361256d1193b74e7661835513580634`.
+Base: `9dce28460e76d4115c925bac8efc4f397160f9cf`.
+
+All totals below are **two calls**, with N = unrelated fixture PIDs.
+W2 counts/bytes are identical at each of N=0, 8 and 64 on both CPU arms.
+
+| Scenario | Phase | W1 reads N=0/8/64 | W2 reads N=0/8/64 | W2 returned file bytes (each N) | W2 stat / cgroup attempts (each N) |
+| --- | --- | --- | --- | --- | --- |
+| empty | collector | 4/36/260 | 4/4/4 | 280 | 0 / 0 |
+| empty | monitor | 6/38/262 | 6/6/6 | 468 | 0 / 0 |
+| no_gpu | collector | 10/42/266 | 6/6/6 | 296 | 0 / 0 |
+| no_gpu | monitor | 16/48/272 | 12/12/12 | 552 | 0 / 0 |
+| gpu_error | collector | 10/42/266 | 6/6/6 | 296 | 0 / 0 |
+| gpu_error | monitor | 16/48/272 | 12/12/12 | 552 | 0 / 0 |
+| gpu_present | collector | 14/46/270 | 14/14/14 | 820 | 4 / 4 |
+| gpu_present | monitor | 20/52/276 | 20/20/20 | 1076 | 4 / 4 |
+
+Thus W1's unrelated-PID slope of 4 file reads / 142 returned bytes per PID
+per two calls is zero in W2, for collector and monitor alike. For byte
+comparison against W1, empty/gpu_present remove exactly `142*N` bytes;
+no_gpu/gpu_error also remove the single non-GPU PID's 262 bytes of identity
+reads over two calls (`2*(55+76)`), for a total reduction of `142*N+262` bytes.
+Empty or failed discovery performs no candidate identity
+reads. GPU-present identities are read before and after measurement, not just
+after a query. Discovery counters are discarded; newly measured PIDs without
+matching pre-measurement identity proof stay incomplete. Scope inode fencing,
+unknown-not-zero semantics, memory domains and Guard logic remain in force.
+
+### Subprocess cost (separate from file bytes)
+
+At every N, successful discovery adds one compute-app query per collection:
+W1's 2 become W2's 4 compute-app calls over two collections. Empty and no_gpu
+return 0 stdout bytes; gpu_present returns 76 bytes total instead of W1's 38.
+Failed discovery (gpu_error) ends after the original 2 failed compute-app
+calls, with 0 stdout bytes; it does not attempt measurement. The monitor also
+retains its 2 capacity queries, so total vendor calls are 6 for successful
+scenarios and 4 for gpu_error. GPU-present capacity stdout remains 182 bytes,
+separate from the 76 compute-app bytes. These are stubbed subprocess calls and
+returned stdout, **not** traced utility-internal reads, driver work or latency.
+Both NVIDIA queries and identity work consume the same collection deadline;
+the second query is not started after exhaustion. AMD/WSL still uses fresh
+host identities bracketing its measured descriptor census, not an event-driven
+or cached holder inventory.
+
+### Verification and retained evidence
+
+Command (plain pytest through run_tests, separately on x86/Python 3.14 and
+ARM/Python 3.12):
+
+```sh
+python -m pytest tests/test_gpu_memory.py tests/test_gpu_capacity.py tests/test_resource_broker.py tests/test_broker_read_baseline.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q -s --basetemp="$TMPDIR/pytest"
+```
+
+Observed: **300 passed**, exit 0 on each arm (77.88s x86, 32.89s ARM).
+This includes O1–O3 selectors, AMD/WSL, foreign inventory, memory-domain,
+Guard/sample-gap and capacity/broker regressions and all four repo-wide guards.
+Retained stdout was inspected for the compact projection, source identities,
+subprocess stdout and terminal outcomes. O5's narrative/refactor/public-shape
+review remains a reviewer responsibility, not an executable-test claim.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"18b29671ed73eebfee515cd3f960b984ff833f11bcd6454b8653b70eaa458ee5","size":49983}},"operation":"85d392c2a2275be66814ca440e365c0491387fb2dd9dbd10a6d8eadcba71b44e","receipt":"5f1da693db428c54b4f15fd246c5c1a14545f1eaaa98947e94fa2fb843d013cf"}]
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"0400bccfaf60e96b14fc4d3aa162751e248e5bcf071268e31ae664198ffebd7f","size":49986}},"operation":"74a3ea191076ff047d25c1c5ecf9b27e73e6d07219ae8c38e195511e0e1545f5","receipt":"ff2f12f78418f9d99a4546485f4a09ba4d585fbcc8efea6f547f5dacdd4a2951"}]
+
+No privileged broker was deployed or restarted, and no live GPU qualification
+was run. Synthetic fixture results cannot authenticate the reported production
+17,000 reads/s or 153 MB/s, or establish any live reduction. W1's original
+limitations and historical identities above remain applicable. This is not a
+standalone shipping authorization: reconciliation/resubmission with upstream
+prismabuild-558f83d0567e-wp1's issues and publication remain with TrustLadder,
+as Rob instructed on 2026-10-23. No #2040 UMA accounting redesign is included.

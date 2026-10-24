@@ -43,6 +43,56 @@ def query(monkeypatch, text='', rc=0, effect=None):
     monkeypatch.setattr(gm.subprocess, 'run', run)
 
 
+def _gm_staged_query(monkeypatch, discovery, measured=None, *, effect=None, clock=None, elapsed=(),
+                     measured_failure=None):
+    """Keep discovery rows distinct; mutate identities during measurement only.
+
+    Accept PID-only or full-row discovery without prescribing a private API.
+    """
+    calls = []
+
+    def run(argv, **kwargs):
+        assert argv[0] == gm.NVIDIA_SMI
+        calls.append((argv, kwargs))
+        assert len(calls) <= 2, 'one discovery and one measured query per sample'
+        if len(calls) == 2 and effect is not None:
+            effect()
+        if clock is not None and len(calls) <= len(elapsed):
+            clock[0] += elapsed[len(calls) - 1]
+        if len(calls) == 2 and measured_failure is not None:
+            if measured_failure == 'missing':
+                raise FileNotFoundError('fixture vendor disappeared')
+            if measured_failure == 'timeout':
+                raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+            if measured_failure == 'exit':
+                return subprocess.CompletedProcess(argv, 1, '', 'fixture failed')
+            assert measured_failure == 'malformed'
+            return subprocess.CompletedProcess(argv, 0, 'not-a-pid', '')
+        text = discovery if len(calls) == 1 else (discovery if measured is None else measured)
+        fields = next(arg.split('=', 1)[1] for arg in argv if arg.startswith('--query-compute-apps='))
+        if fields == 'pid':
+            text = '\n'.join(dict.fromkeys(row.split(',')[0].strip() for row in text.splitlines()))
+        else:
+            assert fields == 'pid,gpu_uuid,used_gpu_memory'
+        return subprocess.CompletedProcess(argv, 0, text, '')
+
+    monkeypatch.setattr(gm.subprocess, 'run', run)
+    return calls
+
+
+def _gm_identity_reads(monkeypatch, proc, calls):
+    reads = []
+    original = Path.read_text
+
+    def observe(path, *args, **kwargs):
+        if path.parent.parent == proc and path.parent.name.isdigit() and path.name in {'stat', 'cgroup'}:
+            reads.append((int(path.parent.name), path.name, len(calls)))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', observe)
+    return reads
+
+
 def test_exact_nested_scope_attribution_and_foreign_accounting(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
     process(proc, 10, f'/prismabuild.slice/{SID}/payload')
@@ -129,19 +179,26 @@ def test_pid_reuse_invalidates_gpu_attribution(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
     group = f'/prismabuild.slice/{SID}/payload'
     process(proc, 10, group, start=8)
-    query(monkeypatch, '10, GPU-abc, 2048\n', effect=lambda: process(proc, 10, group, start=9))
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 2048\n',
+                             effect=lambda: process(proc, 10, group, start=9))
     sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
                         gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert len(calls) == 2
+    assert not sample.gpu_query_complete
     assert not sample.jobs[0].complete
     assert not sample.jobs[0].processes
 
 
 def test_new_pid_during_query_is_unknown_this_sample(tmp_path, monkeypatch):
     proc, cgroup, scope = system(tmp_path)
-    query(monkeypatch, '10, GPU-abc, 2048\n',
-          effect=lambda: process(proc, 10, f'/prismabuild.slice/{SID}/payload'))
-    assert not gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
-                        gpu_memory_domains={'GPU-abc': 'shared_system'}).jobs[0].complete
+    calls = _gm_staged_query(monkeypatch, '', '10, GPU-abc, 2048\n',
+                             effect=lambda: process(proc, 10, f'/prismabuild.slice/{SID}/payload'))
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert len(calls) == 2, 'even empty discovery cannot prove the measured inventory is empty'
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert not sample.jobs[0].processes
 
 
 def test_shared_gpu_bytes_and_host_charges_are_never_summed_for_kill(tmp_path, monkeypatch):
@@ -188,9 +245,10 @@ def test_changed_cgroup_inode_cannot_be_stopped(tmp_path, monkeypatch):
         path.rename(path.with_name('retired'))
         path.mkdir()
         (path / 'memory.current').write_text(str(2000 * gm.MIB))
-    query(monkeypatch, effect=replace_group)
+    calls = _gm_staged_query(monkeypatch, '', effect=replace_group)
     sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
                         gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert len(calls) == 2
     assert not sample.jobs[0].complete
 
 
@@ -362,6 +420,20 @@ def test_open_gpu_handles_attribute_ownership_without_inventing_bytes(tmp_path, 
     assert job.upper_bound_bytes == 100 * gm.MIB
     json.dumps(sample.as_dict())
 
+    # Stable PID identities do not announce new GPU-handle opens. Re-inventory
+    # descriptors and membership on the next sample, including foreign users.
+    holder(proc, node, 30, '/user.slice/idle')
+    process(proc, 20, f'/prismabuild.slice/{SID}/payload')
+    fresh = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                       gpu_devices=[AMD_DEVICE], gpu_device_node=node)
+    assert fresh.gpu_query_complete and fresh.jobs[0].complete
+    assert {row['pid'] for row in fresh.jobs[0].processes} == {10, 20}
+    assert [row['pid'] for row in fresh.foreign_processes] == [30]
+    assert fresh.foreign_gpu_reported_bytes is None
+    assert fresh.jobs[0].gpu_reported_bytes is None
+    assert fresh.gpu_process_bytes is False
+    assert fresh.foreign_inventory_scope == gm.FOREIGN_SCOPE_HOST_HANDLES
+
 
 def test_an_unreadable_descriptor_table_refuses_the_handle_census(tmp_path, monkeypatch):
     proc, cgroup, scope, node = amd_system(tmp_path)
@@ -469,3 +541,180 @@ def test_nvidia_hosts_keep_the_compute_apps_reader_and_its_bytes(tmp_path, monke
     assert sample.foreign_inventory_scope == gm.FOREIGN_SCOPE_COMPUTE_APPS
     assert sample.jobs[0].gpu_reported_bytes == 512 * gm.MIB
     assert sample.jobs[0].gpu_budget_enforceable is True
+
+
+@pytest.mark.parametrize('unrelated', [0, 64])
+@pytest.mark.parametrize('active_scope', [False, True])
+def test_nvidia_candidate_identity_reads_do_not_scale_with_host_pids(tmp_path, monkeypatch, unrelated, active_scope):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    process(proc, 20, '/user.slice/foreign')
+    for pid in range(1000, 1000 + unrelated):
+        process(proc, pid, '/unrelated')
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 8192\n20, GPU-abc, 4096\n',
+                             '10, GPU-abc, 512\n20, GPU-abc, 800\n')
+    reads = _gm_identity_reads(monkeypatch, proc, calls)
+    enumerations = []
+    original_iterdir = Path.iterdir
+
+    def observe_iterdir(path):
+        if path == proc:
+            enumerations.append(path)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, 'iterdir', observe_iterdir)
+    sample = gm.collect([scope] if active_scope else [], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert not enumerations, 'NVIDIA candidate attribution must not enumerate host PIDs'
+    assert len(calls) == 2
+    assert {pid for pid, _, _ in reads} == {10, 20}
+    assert len(reads) == 8, 'two identity files, before/after measurement, for each GPU candidate'
+    for pid in (10, 20):
+        for name in ('stat', 'cgroup'):
+            assert [phase for observed, file, phase in reads if observed == pid and file == name] == [1, 2]
+    assert sample.gpu_query_complete
+    assert sample.foreign_inventory_scope == gm.FOREIGN_SCOPE_COMPUTE_APPS
+    if active_scope:
+        assert sample.jobs[0].complete
+        assert sample.jobs[0].gpu_reported_bytes == 512 * gm.MIB
+        assert sample.foreign_gpu_reported_bytes == 800 * gm.MIB
+        assert [row['pid'] for row in sample.foreign_processes] == [20]
+    else:
+        assert sample.jobs == ()
+        assert sample.foreign_gpu_reported_bytes == 1312 * gm.MIB
+        assert {row['pid'] for row in sample.foreign_processes} == {10, 20}
+
+
+@pytest.mark.parametrize('outcome', ['empty', 'exit', 'missing', 'timeout', 'malformed'])
+def test_nvidia_failed_or_empty_discovery_avoids_identity_census(tmp_path, monkeypatch, outcome):
+    proc, cgroup, scope = system(tmp_path)
+    for pid in (10, *range(1000, 1064)):
+        process(proc, pid, '/unrelated')
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if outcome == 'missing':
+            raise FileNotFoundError('fixture vendor unavailable')
+        if outcome == 'timeout':
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        return subprocess.CompletedProcess(argv, int(outcome == 'exit'),
+                                           'not-a-pid' if outcome == 'malformed' else '', '')
+
+    monkeypatch.setattr(gm.subprocess, 'run', run)
+    reads = _gm_identity_reads(monkeypatch, proc, calls)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    assert reads == [], 'unavailable/empty GPU inventory must not read unrelated process identities'
+    assert len(calls) == (2 if outcome == 'empty' else 1)
+    assert sample.gpu_query_complete is (outcome == 'empty')
+    assert sample.jobs[0].complete is (outcome == 'empty')
+    assert sample.jobs[0].gpu_reported_bytes == (0 if outcome == 'empty' else None)
+    if outcome != 'empty':
+        assert sample.errors
+        guard = gm.Guard()
+        assert guard.observe(sample) == []
+        assert guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+
+
+@pytest.mark.parametrize('failure', ['exit', 'missing', 'timeout', 'malformed'])
+def test_nvidia_failed_measurement_does_not_use_discovery_bytes_or_scan_host(tmp_path, monkeypatch, failure):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    for pid in range(1000, 1064):
+        process(proc, pid, '/unrelated')
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 2048\n', measured_failure=failure)
+    reads = _gm_identity_reads(monkeypatch, proc, calls)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert len(calls) == 2
+    assert {pid for pid, _, _ in reads} == {10}, 'failure must not fall back to a host identity census'
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert sample.jobs[0].processes == ()
+    assert sample.jobs[0].gpu_reported_bytes is None
+    assert sample.foreign_gpu_reported_bytes is None
+    assert sample.errors
+    guard = gm.Guard()
+    assert guard.observe(sample) == []
+    assert guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_nvidia_preexisting_but_undiscovered_pid_is_not_attributed(tmp_path, monkeypatch, foreign):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, '/user.slice/foreign' if foreign else f'/prismabuild.slice/{SID}/payload')
+    calls = _gm_staged_query(monkeypatch, '', '10, GPU-abc, 2048\n')
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    assert len(calls) == 2
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert sample.jobs[0].processes == ()
+    assert sample.foreign_processes == ()
+    assert sample.foreign_gpu_reported_bytes is None
+
+
+@pytest.mark.parametrize('moving_out', [False, True])
+def test_nvidia_cgroup_move_during_measured_query_is_incomplete(tmp_path, monkeypatch, moving_out):
+    proc, cgroup, scope = system(tmp_path)
+    owned, foreign = f'/prismabuild.slice/{SID}/payload', '/user.slice/foreign'
+    process(proc, 10, owned if moving_out else foreign)
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 2048\n',
+                             effect=lambda: process(proc, 10, foreign if moving_out else owned))
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup)
+    assert len(calls) == 2
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert sample.jobs[0].processes == ()
+    assert sample.foreign_processes == ()
+    assert sample.foreign_gpu_reported_bytes is None
+
+
+@pytest.mark.parametrize('name', ['stat', 'cgroup'])
+@pytest.mark.parametrize('stage', ['before', 'after'])
+def test_nvidia_unreadable_candidate_identity_is_unknown(tmp_path, monkeypatch, name, stage):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    target = proc / '10' / name
+    if stage == 'before':
+        target.unlink()
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 2048\n',
+                             effect=target.unlink if stage == 'after' else None)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup,
+                        gpu_memory_domains={'GPU-abc': 'shared_system'})
+    assert len(calls) == 2
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert sample.jobs[0].processes == ()
+    assert sample.jobs[0].gpu_reported_bytes is None
+    assert sample.foreign_gpu_reported_bytes is None
+    guard = gm.Guard()
+    assert guard.observe(sample) == []
+    assert guard.observe(replace(sample, sampled_monotonic=sample.sampled_monotonic + 1)) == []
+
+
+def test_nvidia_queries_share_collection_deadline(tmp_path, monkeypatch):
+    proc, cgroup, scope = system(tmp_path)
+    process(proc, 10, f'/prismabuild.slice/{SID}/payload')
+    clock = [100.0]
+    monkeypatch.setattr(gm.time, 'monotonic', lambda: clock[0])
+    calls = _gm_staged_query(monkeypatch, '10, GPU-abc, 512\n', clock=clock, elapsed=(0.6, 0.1))
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup, timeout_s=1, max_collect_s=1)
+    assert len(calls) == 2
+    assert 0 < calls[0][1]['timeout'] <= 1
+    assert 0 < calls[1][1]['timeout'] <= 0.400001
+    assert sample.gpu_query_complete
+    assert sample.jobs[0].complete
+
+
+@pytest.mark.parametrize('elapsed', [(1.1,), (0.6, 0.5)])
+def test_nvidia_deadline_exhaustion_even_with_empty_rows_is_incomplete(tmp_path, monkeypatch, elapsed):
+    proc, cgroup, scope = system(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(gm.time, 'monotonic', lambda: clock[0])
+    calls = _gm_staged_query(monkeypatch, '', clock=clock, elapsed=elapsed)
+    sample = gm.collect([scope], proc_root=proc, cgroup_root=cgroup, timeout_s=1, max_collect_s=1)
+    assert len(calls) == len(elapsed), 'do not launch a measured query after the budget is exhausted'
+    assert not sample.gpu_query_complete
+    assert not sample.jobs[0].complete
+    assert sample.errors
+    assert any('deadline' in error or 'timeout' in error.lower() for error in sample.errors)
