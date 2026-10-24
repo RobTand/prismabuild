@@ -6734,13 +6734,202 @@ identity retains command, code, environment, inputs, parameters and resources,
 while excluding result bookkeeping. Custom or unverifiable launch shapes never
 borrow. Declared CPU remains the peak contract and is not rewritten by learning.
 
-When preferred tokens are exhausted, freshly attributed low use may make a
-running generation action's preferred CPU IDs lendable. Admission shares those
-IDs before consuming free fallback CPUs. If total free tokens are insufficient,
-the same evidence may lend reserved IDs, but only while the fresh host sample
-shows enough aggregate headroom. Unknown startup intervals are charged in full,
-protected and excluded from the lending set. CPUs assigned to any busy, unknown
-or measurement action remain protected.
+The existing adaptive lending remains the default (#2156). The accepted
+equivalence scope is: cap 0 equals main for every row that doesn't declare
+`--cpu-qos protected`; no client or default sets it today. This includes
+refusals, preferred borrowing, wide loans and physical allocations. Explicit
+protected donors do not lend, even at cap 0.
+Cap 0 never reads the opted boot identity or reads or writes `cpu-lending.json`.
+At positive caps, passive history I/O and missing boot identity cannot refuse
+undeclared work; they only close the additive lending view. The permanent regression compares all 27 reviewer and builder fixtures with
+SHA-pinned outcomes captured from the adopted main commit through PB on ARM
+and x86. It needs no old Git history. The same 27 undeclared traces also match main
+with a positive cap. A second structural regression compares
+main statements with the restored legacy methods, removing only the named
+explicit-policy and actual-opportunistic-occupancy identity guards.
+
+`pbrun --cpu-qos protected|opportunistic` adds explicit execution policy outside
+the action-result cache identity. Explicit protected work neither lends nor
+borrows. The additive opportunistic path requires effective priority -10, a known
+generation shape and a positive ramp cap. At cap 0 the direct controller keeps
+main behavior even for that declaration, at weight 100. Published opted rows
+require `cpu-qos-v1`, so a cap-0 worker cannot claim them. Measurements, unknown shapes,
+exclusive GPU work and funded dependent allocations cannot opt in. Priority or
+publication changes before acquisition invalidate eligibility. Undeclared work
+keeps legacy lending at weight 100; explicit opportunistic attempts use 10.
+Protected work excludes opportunistic borrowed IDs, including after their donor
+exits. It retains main's treatment of legacy orphan loans, so protected means
+neither lending nor borrowing and does not promise physical disjointness from
+an orphaned legacy borrower. TL timing-sensitive shards can declare protected
+policy. `pbtest` leaves QoS
+undeclared and retains its current adaptive behavior.
+
+Protected rows require `cpu-protect-v1`, offered whenever this implementation
+is loaded, including at cap 0. Opportunistic rows require `cpu-qos-v1`, offered
+only by an adaptive loop with a valid positive cap. A manually supplied tag
+cannot override that check. Drain all admission loops on a host and upgrade
+its broker before enabling a positive cap. Before rollback, disable new opted
+publication and drain every opportunistic attempt, even one with no loan.
+Holders with ambiguous older QoS provenance count as protected until drained.
+
+For the additive mechanism, each preferred ID has its owner plus at most one borrower. The new mechanism
+permits at most two opportunistic borrowers per host. A surviving borrower's
+ID stays excluded after its donor exits, including in #1929 guest release
+projections and READY-GPU room counts. Only actual opportunistic loans activate
+those projections, including when their cap is later disabled. Legacy-only
+loans, repeated lending, orphaned IDs, SMT donors, telemetry rewrites, unrelated
+releases and cached sample acquisition retain main's decisions. Unknown holder
+affinity refuses opted acquisition with `unknown_holder_affinity`. If an actual
+opportunistic loan has unreadable affinity, ordinary admission also refuses
+until its occupied IDs are known or released. Older static
+holders retain main's fallback on the legacy path. x86 SMT remains fallback and
+is never a new opted lending target. Spark P-core masks are unchanged.
+
+Claims, immutable attempts and terminal records retain `cpu_admission` with
+actual borrowed CPU IDs, the sample timestamp, history generation, cap, gate,
+budget and gate reason. Refusal decisions retain the same gate evidence in
+existing bounded denial records. For legacy decisions the gate and budget are explicitly unknown and the reason
+is `legacy_adaptive`; the recorded cap is the actual loop setting. Requeue clears selected QoS,
+weight and admission evidence while preserving the declaration and archived
+attempts. These diagnostic records cannot authorize a loan.
+
+`cpu-lending.json` is authoritative host-local state under the existing admission
+lock. A strictly newer timestamp advances the shared generation once. Equal
+samples reuse it; older samples, observations more than five seconds late and
+lost generation comparisons skip without rewriting the winner's history.
+Per-CPU busy EMA uses `alpha = 1 - exp(-elapsed / 30)`, a 30-second time
+constant. CPU-map changes, boot changes, counter resets, nonfinite readings,
+and telemetry gaps discard history. New loans need 30 seconds of continuous
+fresh observations. A proposed borrowed preferred ID needs both raw and EMA
+busy below 50%. The larger preferred raw or EMA sum, plus startup demand and
+the candidate's full expected cost, must fit 85% of preferred capacity. Mixed
+preferred and fallback usage grants no assumed per-tier discount. Existing
+95% raw whole-mask and projected-cost gates remain in force, as do the 25%
+shape margin, three-sample minimum, one-day expiry, and once-per-sample loan.
+
+The lending gate closes at CPU PSI some interval >= 0.10, avg10 >= 10%, avg60 >= 10%, or a
+preferred raw-budget breach. Unknown or stale PSI also closes the gate. It
+reopens only after avg10 and avg60 both stay below 5% for 30 seconds. PSI
+averages are percent values; the interval remains a fraction. After reopening, each healthy
+10-second observation period can add at most one borrowed affinity ID to the
+future-admission budget. Only outstanding opted loans and opted borrowers
+consume this additive budget and its two-borrower limit; legacy loans retain
+main accounting. A breach halves that budget. The operator setting
+`worker_loop --cpu-lending-ramp-cap` defaults to 0, disabling only the additive opted mechanism. Valid
+caps are 0 through 4 with more than ten preferred CPUs, and 0 through 2 otherwise.
+Invalid settings disable the additive mechanism. The initial rollout uses caps 2 then 4 on
+dl380g10, and 1 then 2 on one Spark at a time.
+
+Existing loans retain their affinity and low weight until completion. Lending
+pressure never kills a test or widens its affinity; explicit restartable
+preemption, cancellation, lease recovery and memory enforcement remain separate.
+The broker sets cpu.weight
+10 for opportunistic scopes and 100 for protected scopes. Weight controls
+relative service during contention, not a CPU quota or a latency guarantee.
+Opportunistic eligibility and loan grants are process-local registered
+capabilities. Both public and private opted acquisition refuse forged, copied,
+deserialized, or stale capabilities. Undeclared admission never enters these
+validators. Persisted metadata cannot reconstruct a grant. Opted loans require
+a current AdmissionGate epoch; direct calls outside it cannot mint or acquire
+one. Their grants bind actual reservation demand, so historical GPU slot
+counts remain publication identity while a one-device reservation binds one
+GPU. Legacy loans retain main's unbound dictionary contract. Opted learning
+and sample spending use `jobs-opportunistic.json` and
+`last-opportunistic-borrow.json`, separate from legacy history and freshness.
+Opportunistic decisions never replace the pass's legacy sample. They use
+`cpu-sample-opportunistic.json`, `profiles-opportunistic.json` and
+`idle-baseline-opportunistic.json` for their counter windows, live profile
+updates and idle history. Main profiles may seed opted estimates read-only.
+Interleaving refused opted rows leaves legacy samples and history byte exact.
+A returning counter series with an interval over five seconds cannot lend and
+skips the shared lending-history update. It cannot reset coverage another
+series kept fresh. Real gaps in shared observations still reset continuity.
+Eight SHA-pinned main CPU test files also run unchanged at cap 0 beside the
+opted tests, using fixture bytes and no old Git history.
+Release-remnant retirement is an ungated cleanup change that applies to all
+rows, independently of lending and the ramp cap. After complete resource
+return, a holder directory that cannot be removed is retired under
+`released-holders/`, outside the authoritative held namespace. It retires only
+empty directories or directories containing solely `.nfs*` metadata-unlink
+remnants. Retirement refuses with `OSError` while any non-`.nfs*` file remains,
+including a resource token. Main swallowed that removal error. The retired
+directory has no automatic retention policy; measure its file count and bytes
+at the canary.
+
+Before upgrading, capture main's borrowed IDs while each attempt still owns
+its tokens. The observation-only launcher
+`tools/maintenance/cpu_lending_baseline_worker.py` wraps main's successful claim
+construction and refuses any pool or adaptive source whose SHA-256 differs
+from adopted main `43234d0fbd42d6ed76da38658cb9f447ed19a606`. The operator copies
+this standalone file beside that main checkout, drains and restarts the
+baseline admission loops through it, using the unchanged main worker arguments:
+
+```sh
+PYTHONPATH=MAIN/src MAIN_PYTHON cpu_lending_baseline_worker.py \
+  --output-root BASELINE_DIR MAIN_WORKER ORIGINAL_WORKER_ARGS
+```
+
+The wrapper adds no admission decision. Before launch or release it writes
+immutable sidecars keyed by exact publication, claim identity and attempt, with
+source commit, host, topology digest, assigned IDs, owned-token IDs and their
+difference. Funded allowance IDs are excluded. Refusals remain in main's
+existing denial records. Sidecar write failures invalidate the cohort. Reconcile
+sidecars one-to-one against immutable attempts and endings, excluding abandoned
+claims; any missing attempt makes the period inconclusive. Archive those
+sidecars, refusal records and CAS receipts before replacing main. Attempts
+without an allocation still write a sidecar with null assigned and borrowed
+IDs; unknown affinity cannot be counted as zero borrowing. The observer takes
+the census lock without waiting, preserving main's admission latency. A busy
+lock writes an immutable sidecar with `capture_status` set to
+`skipped_census_reader_busy`, null physical and borrowed IDs, and the same
+attempt identity. Successful captures record `captured`. Count and report all
+skipped captures separately; never treat them as zero borrowing. Dry-run the
+observer before the baseline. Each comparison period needs at least 100
+complete borrowed-ID observations and a skipped-capture rate at most 1% of
+reconciled attempts. A higher rate or fewer complete observations makes the
+comparison inconclusive; extend or repeat collection. No /proc probe is
+involved. Record observer overhead and apply the same collection cost to
+comparison periods. Main endings alone cannot reconstruct released physical
+tokens.
+
+First compare this baseline with upgraded cap 0 using the same undeclared
+workload and per-attempt `cpu_admission.borrowed_cpus`. The 27 deterministic
+paired traces require identical admissions, refusals and exact borrowed IDs.
+Separate live periods compare borrowed-ID rates and refusal distributions
+across matched workloads; scheduling does not make attempts pairwise identical.
+Then compare cap 0 with cap N, opting in only the eligible cohort and keeping
+TL timing-sensitive shards explicitly protected throughout.
+Rollout compares matched, post-retier cohorts for at least one hour and 100
+useful distinct successful jobs per period. Count jobs/hour and CPU-seconds,
+exclude cached duplicate results and failed or retried starts, and retain sample
+counts. Record lending refusals by reason, observation cadence and the cap on
+every admission loop; mismatched caps reset history and keep lending closed.
+Track normal-priority x86 publication-to-claim wait p95, host PSI avg60,
+protected elapsed-time p95, unexpected OOMs, and each named TL timing-test flake
+rate. Promotion requires at least 5% useful-throughput gain in the eligible
+cohort, at most 5% protected p95 regression, normal-priority x86 wait p95 below
+600 seconds, and no material regression from the matched baseline. Material
+means a normal-priority wait or protected elapsed p95 increase over 5%, a host
+PSI avg60 increase of at least 1 percentage point or an absolute avg60 of at
+least 10%, any unexpected OOM, or any increase in a named TL timing-test flake
+rate. Each named timing shard needs at least 1,000 uncached attempts in each
+period, even if collection takes longer than one hour. Retain failures and
+retry counts; below that minimum the flake comparison is inconclusive. Sparse
+periods cannot qualify promotion. Set the cap to 0 on a sustained pressure or
+SLA breach and let existing scopes drain.
+
+Canary measurements also cover the accepted S3 and S4 effects, with no code
+change for either. For S3, compare admission-lock hold and claim latency p50,
+p95 and p99 on the NFS-backed Sparks, holder-census read counts and errors,
+static-holder metadata write cost, and broker `cpu.weight` readback latency
+and failures for every scope. For S4, count weight-10 opted completions that
+teach legacy profiles and compare legacy per-shape sample counts, cost
+estimates and refusal rates with the baseline. The profile decay is bounded
+at 2% per completion. Use existing records and approved ordinary PB actions;
+CPU-cost A/B measurements use interleaved `getrusage` in one ordinary action,
+without new /proc lock or other-process fd probes. Broker rollout requires a
+drained canary and version support; this source change does not claim
+deployment or measured throughput gains.
 
 A measurement holds its host alone, with one exception (#982): an action whose
 sealed request names the holder in `params.produced_spool.owner` -- the spool
@@ -6950,8 +7139,13 @@ ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
 
-The pool persists the creation key, nonce, memory budget and broker endpoint in
-both claim and lease before requesting a scope. A lost reply is reconciled by
+The pool persists the creation key, nonce, memory budget, selected CPU weight,
+and broker endpoint in both claim and lease before requesting a scope.
+`create` and `recover_create` bind CPU weight immutably to that attempt. The
+broker validates exactly 10 or 100, applies the value through systemd, and reads
+actual `cpu.weight` before creation acknowledgement, recovery, and launch.
+An opportunistic request without an exact acknowledgement refuses launch.
+Legacy protected creation defaults to 100. A lost reply is reconciled by
 `recover_create` using that exact identity, without creating a kernel group.
 When the group and authority are absent, recovery persists a cancelled attempt
 tombstone before reporting absence, so a delayed original create cannot revive

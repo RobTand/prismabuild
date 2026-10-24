@@ -267,8 +267,8 @@ def test_settlement_of_an_incomplete_setup_is_refused(authority, monkeypatch):
     a, b = authority
     original = b.create
 
-    def partial(scope, budget):
-        original(scope, budget)
+    def partial(scope, budget, cpu_weight=100):
+        original(scope, budget, cpu_weight=cpu_weight)
         raise OSError('controller setup failed')
 
     monkeypatch.setattr(b, 'create', partial)

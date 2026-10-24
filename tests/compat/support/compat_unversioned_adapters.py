@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
+import runpy
 
 C, G = "c" * 64, "7" * 32
 TIERS = {"preferred": [0, 1], "fallback": []}
@@ -61,24 +63,38 @@ def operate(request, store, load):
                     facts.update(borrowing=True, preferred_borrow=1, borrowable_cpus=[1])
                 if variant == "allowance":
                     facts["dependent_allowance"] = {"cpu": 1, "mem_gb": 1, "slots": 1, "basis": "fixture"}
-                handle = ledger.begin_acquire(C, {"cpu": demand}, adaptive=facts, cpu_tiers=TIERS)
+                holder = C
+                if variant == 'borrowed' and hasattr(cpu, 'cpu_lending'):
+                    helper = runpy.run_path(str(Path(__file__).with_name('compat_adaptive_state_adapters.py')))['registered_borrow']
+                    ledger, controller, item, facts = helper(cpu, pool, load('prismabuild.core'), store)
+                    holder = item['action_key']
+                    handle = None
+                else:
+                    handle = ledger.begin_acquire(C, {"cpu": demand}, adaptive=facts, cpu_tiers=TIERS)
                 marker = cpu.METADATA
             else:
                 ledger.ensure_capacity({"gpu": 1})
                 facts = {"measurement": variant == "measurement", "exclusive": variant == "exclusive", "admitted_unix": 100.}
                 handle = ledger.begin_acquire(C, {"gpu": 1}, adaptive_gpu=facts)
                 marker = gpu.METADATA
-            assert handle and ledger.commit_acquire(C, handle) > 0
-            path = ledger.held_dir / C / marker
+            if handle is not None:
+                assert ledger.commit_acquire(C, handle) > 0
+            else:
+                assert family == 'host-cpu-metadata' and variant == 'borrowed'
+            path = ledger.held_dir / (holder if family == 'host-cpu-metadata' else C) / marker
             if not writing:
                 path.write_bytes(base64.b64decode(request["raw"]))
                 if family == "host-cpu-metadata":
-                    sample = {"sampled_unix": 100., "cpu_count": 2, "busy_cpus": 0., "psi_some": 0., "interval_s": 1.}
-                    controller = cpu.Controller(ledger, TIERS)
+                    tiers = cpu.read_json(ledger.base / 'cpu-map.json') or TIERS
+                    count = len(tiers['preferred'] + tiers['fallback'])
+                    sample = {"sampled_unix": 100., "cpu_count": count, "busy_cpus": 0., "psi_some": 0., "interval_s": 1.}
+                    controller = cpu.Controller(ledger, tiers)
                     controller.sample = lambda: sample
                     request["_consumer_boundary"]()
-                    result = controller.decision({"action_key": "d" * 64}, {"cpu": 1}, identity=("compat-shape", False), owner=None)
-                    assert result is None and controller.last_decision["reason"] == "measurement_holder", controller.last_decision
+                    result = controller.decision({"action_key": "d" * 64}, {'cpu': count if variant == 'borrowed' else 1},
+                                                 identity=("compat-shape", False), owner=None)
+                    reasons = ('measurement_holder', 'projected_cpu_cost') if variant == 'borrowed' else ('measurement_holder',)
+                    assert result is None and controller.last_decision['reason'] in reasons, controller.last_decision
                 else:
                     controller = gpu.Controller(ledger)
                     controller.sample = lambda: {}

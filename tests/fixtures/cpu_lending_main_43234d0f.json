@@ -1,0 +1,3663 @@
+{
+  "capture": {
+    "action_key": "f6923029c6738bc595a23bf3faaf40ebcde7779c6dd12654e8df3f08002e705e",
+    "receipt_sha256": "14a6fb6089a13fb24833baa7363864262e94d73dd39dc617440fa7c5d651d46c",
+    "stdout_sha256": "fe23957958dbccfebfe09f73387685ae060884e8543a45d36c337530eb686b36"
+  },
+  "fixture_sha256": {
+    "cpu_lending_cap0_fixture.py": "be60c48b415eddf3447a68fdf08b0bfd9fbdecd2c6ecce764fe09d6e1edff8e7",
+    "cpu_lending_review_cap0_fixture.py": "f90d8cc510134b7a9b71c3cddaa47b51646237777a7866ef07f3e9e4bd3ddcb4"
+  },
+  "main_commit": "43234d0fbd42d6ed76da38658cb9f447ed19a606",
+  "main_src_tree": "06c31d951c99df29d80dfebcee2dfe46a9c0e2c5",
+  "outcomes": {
+    "builder_busy": {
+      "allocation": {
+        "fallback": [
+          4
+        ],
+        "preferred": []
+      },
+      "free": {
+        "cpu": 3,
+        "mem_gb": 8
+      },
+      "tokens": {
+        "cpu": 1
+      },
+      "trace": [
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ]
+    },
+    "builder_measurement": {
+      "allocation": null,
+      "free": {
+        "cpu": 4,
+        "mem_gb": 8
+      },
+      "tokens": {},
+      "trace": [
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        },
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "measurement_holder"
+        }
+      ]
+    },
+    "builder_ordinary": {
+      "allocation": {
+        "fallback": [],
+        "preferred": [
+          0
+        ]
+      },
+      "free": {
+        "cpu": 4,
+        "mem_gb": 8
+      },
+      "tokens": {},
+      "trace": [
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 1.0,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ]
+    },
+    "builder_unknown": {
+      "allocation": {
+        "fallback": [
+          4
+        ],
+        "preferred": []
+      },
+      "free": {
+        "cpu": 3,
+        "mem_gb": 8
+      },
+      "tokens": {
+        "cpu": 1
+      },
+      "trace": [
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": false,
+          "cost": 1.0,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ]
+    },
+    "builder_wide": {
+      "allocation": {
+        "fallback": [
+          4
+        ],
+        "preferred": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "free": {
+        "cpu": 3,
+        "mem_gb": 8
+      },
+      "tokens": {
+        "cpu": 1
+      },
+      "trace": [
+        {
+          "admitted": false,
+          "borrowing": null,
+          "cost": null,
+          "preferred_borrow": null,
+          "reason": "projected_cpu_cost"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        },
+        {
+          "admitted": true,
+          "borrowing": true,
+          "cost": 5.0,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        }
+      ]
+    },
+    "q01_spark_loan_then_adaptive_gpu_row": [
+      [
+        "donor",
+        {
+          "cpu_allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "cpu_guest": true,
+          "key": "a"
+        }
+      ],
+      [
+        "borrower_pass_0",
+        null
+      ],
+      [
+        "borrower_pass_1",
+        {
+          "cpu_allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              4,
+              5,
+              6,
+              7
+            ]
+          },
+          "cpu_guest": true,
+          "key": "b"
+        }
+      ],
+      [
+        "borrower_holder",
+        {
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              4,
+              5,
+              6,
+              7
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ]
+        }
+      ],
+      [
+        "counts_after_donor_exit",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ],
+      [
+        "gpu_pass_0",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ],
+      [
+        "gpu_pass_1",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ],
+      [
+        "gpu_pass_2",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ]
+    ],
+    "q02_spark_guest_loan_then_static_gpu_row": [
+      [
+        "donor",
+        {
+          "cpu_allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "cpu_guest": true,
+          "key": "a"
+        }
+      ],
+      [
+        "borrower_pass_0",
+        null
+      ],
+      [
+        "borrower_pass_1",
+        {
+          "cpu_allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              4,
+              5,
+              6,
+              7
+            ]
+          },
+          "cpu_guest": true,
+          "key": "b"
+        }
+      ],
+      [
+        "borrower_holder",
+        {
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              4,
+              5,
+              6,
+              7
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ]
+        }
+      ],
+      [
+        "counts_after_donor_exit",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ],
+      [
+        "gpu_pass_0",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ],
+      [
+        "gpu_pass_1",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ],
+      [
+        "gpu_pass_2",
+        {
+          "borrower_stopped_by": [],
+          "claimed": null,
+          "gpu_denial_reasons": [
+            "residency_plan_unreadable:None"
+          ]
+        }
+      ]
+    ],
+    "s01_x86_free_preferred": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              2
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 5,
+          "free_tokens": 5
+        }
+      ]
+    ],
+    "s02_x86_preferred_exhausted": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s03_x86_fallback_only_donor": [
+      [
+        "busy_preferred",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "smt_donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4,
+              5,
+              6
+            ],
+            "preferred": []
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts",
+        {
+          "admission_cpu": 1,
+          "free_tokens": 1
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4,
+              5,
+              7
+            ],
+            "preferred": []
+          },
+          "borrowed": [
+            4,
+            5
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 0,
+          "free_tokens": 0
+        }
+      ]
+    ],
+    "s04_x86_mixed_tier_donor": [
+      [
+        "busy_preferred",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "mixed_donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4,
+              5
+            ],
+            "preferred": [
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              6
+            ],
+            "preferred": [
+              2,
+              3
+            ]
+          },
+          "borrowed": [
+            2,
+            3
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 1,
+          "free_tokens": 1
+        }
+      ]
+    ],
+    "s05_spark_pcore_borrow": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8,
+              9,
+              15,
+              16,
+              17
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              18,
+              19
+            ]
+          },
+          "borrowed": [
+            5,
+            6
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 0,
+          "free_tokens": 0
+        }
+      ]
+    ],
+    "s06_spark_orphan_one_cpu": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8,
+              9,
+              15,
+              16,
+              17
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              18,
+              19
+            ]
+          },
+          "borrowed": [
+            5,
+            6
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts_after_donor_exit",
+        {
+          "admission_cpu": 8,
+          "free_tokens": 8
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "next_one_cpu",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 7,
+          "free_tokens": 7
+        }
+      ]
+    ],
+    "s07_spark_orphan_eight_cpu": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8,
+              9,
+              15,
+              16,
+              17
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              18,
+              19
+            ]
+          },
+          "borrowed": [
+            5,
+            6
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts_after_donor_exit",
+        {
+          "admission_cpu": 8,
+          "free_tokens": 8
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "next_eight_cpu",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8,
+              9,
+              15,
+              16,
+              17
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 0,
+          "free_tokens": 0
+        }
+      ]
+    ],
+    "s08_x86_second_borrower_same_cpu": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "borrower_one",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0
+            ]
+          },
+          "borrowed": [
+            0
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "borrower_two",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0
+            ]
+          },
+          "borrowed": [
+            0
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s09_x86_telemetry_tick_before_acquire": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s10_x86_unrelated_release_before_acquire": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "unrelated",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4
+            ],
+            "preferred": []
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s11_x16_near_full": [
+      [
+        "busy",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "donor",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts",
+        {
+          "admission_cpu": 10,
+          "free_tokens": 10
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              8,
+              9,
+              10
+            ],
+            "preferred": [
+              6,
+              7
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "second",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              11,
+              12
+            ],
+            "preferred": []
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 3,
+          "free_tokens": 3
+        }
+      ]
+    ],
+    "s12_mixed_static_and_adaptive": [
+      [
+        "static",
+        {
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": []
+        }
+      ],
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4,
+              5
+            ],
+            "preferred": [
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              6
+            ],
+            "preferred": [
+              2,
+              3
+            ]
+          },
+          "borrowed": [
+            2,
+            3
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "second",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              7
+            ],
+            "preferred": []
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 0,
+          "free_tokens": 0
+        }
+      ]
+    ],
+    "s13_mixed_producer_and_dependent": [
+      [
+        "producer",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "dependent",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [
+              4
+            ],
+            "preferred": [
+              3
+            ]
+          },
+          "borrowed": [
+            3
+          ],
+          "borrowing": false,
+          "funded_by": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+          "preferred_borrow": 0,
+          "reason": "admitted_on_allowance"
+        }
+      ],
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2
+            ]
+          },
+          "borrowed": [
+            0,
+            1,
+            2
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 3,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 3,
+          "free_tokens": 3
+        }
+      ]
+    ],
+    "s14_x86_pressure_attribution": [
+      [
+        "busy_preferred",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "fits_idle_smt",
+        {
+          "admitted": false,
+          "reason": "host_pressure_unproven"
+        }
+      ],
+      [
+        "needs_busy_smt",
+        {
+          "admitted": false,
+          "reason": "host_pressure_unproven"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s15_spark_orphan_under_pressure": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8,
+              9,
+              15,
+              16,
+              17
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              18,
+              19
+            ]
+          },
+          "borrowed": [
+            5,
+            6
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts_after_donor_exit",
+        {
+          "admission_cpu": 8,
+          "free_tokens": 8
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "pressure_four",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              7,
+              8,
+              9,
+              15
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "pressure_seven",
+        {
+          "admitted": false,
+          "reason": "host_pressure_unproven"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s16_x86_sample_ages_before_acquire": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s17_preupgrade_holder_without_metadata": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts",
+        {
+          "admission_cpu": 3,
+          "free_tokens": 3
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0
+            ]
+          },
+          "borrowed": [
+            0
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 3,
+          "free_tokens": 3
+        }
+      ]
+    ],
+    "s18_spark_near_full_two_donors": [
+      [
+        "busy",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              9,
+              15,
+              16,
+              17,
+              18
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": false,
+          "reason": "projected_cpu_cost"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts",
+        {
+          "admission_cpu": 1,
+          "free_tokens": 1
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              9,
+              15,
+              19
+            ]
+          },
+          "borrowed": [
+            9,
+            15
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "second",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              16,
+              17
+            ]
+          },
+          "borrowed": [
+            16,
+            17
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 2,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 0,
+          "free_tokens": 0
+        }
+      ]
+    ],
+    "s19_x86_smt_donor_beside_preferred_donor": [
+      [
+        "preferred_donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "smt_donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2
+            ]
+          },
+          "borrowed": [
+            0,
+            1,
+            2
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 3,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ],
+      [
+        "candidate",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 4,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ],
+    "s20_multislot_gpu_row_borrows_cpu": [
+      [
+        "donor",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "borrowed": [],
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": false,
+          "funded_by": null,
+          "preferred_borrow": 0,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "warm",
+        {
+          "admitted": true,
+          "borrowing": true,
+          "funded_by": null,
+          "preferred_borrow": 1,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "multislot_gpu_row",
+        {
+          "acquired": true,
+          "admitted": true,
+          "allocation": {
+            "fallback": [],
+            "preferred": [
+              0,
+              1
+            ]
+          },
+          "borrowed": [
+            0,
+            1
+          ],
+          "borrowing": true,
+          "reason": "admitted"
+        }
+      ],
+      [
+        "final_counts",
+        {
+          "admission_cpu": 4,
+          "free_tokens": 4
+        }
+      ]
+    ]
+  }
+}

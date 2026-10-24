@@ -47,7 +47,8 @@ def broker_request(request: dict, *, socket_path: Path = BROKER_SOCKET) -> dict:
     if (request.get('op') == 'create' and request.get('recovery_protocol') == 1
             and isinstance(response, dict) and response.get('ok') is False
             and response.get('error') == 'unknown request field'):
-        feature = ('GPU memory budget' if 'gpu_memory_max_bytes' in request
+        feature = ('CPU weight' if 'cpu_weight' in request
+                   else 'GPU memory budget' if 'gpu_memory_max_bytes' in request
                    else 'durable creation recovery')
         raise ResourceUnavailable(f'installed broker needs {feature} support')
     if (isinstance(response, dict) and response.get('ok') is False
@@ -386,6 +387,22 @@ def _wrapped_scope_argv(argv: list[str], *, python: str, helper: str | Path,
             action_key, "--nonce", nonce, "--token", token, "--", *argv]
 
 
+def scope_cpu_weight(record, saved):
+    """Resolve one durable attempt contract, rejecting contradictory records."""
+    weight = saved.get('cpu_weight', 100)
+    if type(weight) is not int or weight not in (10, 100):
+        raise ValueError('unsupported saved CPU weight')
+    if ('cpu_weight' in record and (type(record['cpu_weight']) is not int or record['cpu_weight'] != weight)
+            or record.get('cpu_qos_selected') == 'opportunistic' and weight != 10):
+        raise ValueError('saved CPU weight differs from selected attempt policy')
+    for field in ('resource_scope_intent', 'resource_scope'):
+        other = record.get(field)
+        if isinstance(other, dict) and (type(other.get('cpu_weight', 100)) is not int
+                                        or other.get('cpu_weight', 100) != weight):
+            raise ValueError('resource scope intent and control CPU weight differ')
+    return weight
+
+
 class ResourceScope:
     """One exact key+nonce kernel slice; sampling never signals work.
 
@@ -397,6 +414,7 @@ class ResourceScope:
                  telemetry_path: Path, *, docker_owner: str | None = None,
                  shape_key: str | None = None, socket_path: Path = BROKER_SOCKET,
                  gpu_memory_max_bytes: int | None = None,
+                 cpu_weight: int = 100,
                  authority_path: Path | None = None):
         if not re.fullmatch('[a-f0-9]{64}', action_key) or not re.fullmatch('[a-f0-9]{32}', nonce):
             raise ValueError('resource scope needs an action key and 32-hex attempt nonce')
@@ -405,6 +423,9 @@ class ResourceScope:
         if gpu_memory_max_bytes is not None and (type(gpu_memory_max_bytes) is not int
                 or not 0 < gpu_memory_max_bytes <= 2**63 - 1):
             raise ValueError('resource scope GPU memory limit must be positive integer bytes')
+        if type(cpu_weight) is not int or cpu_weight not in (10, 100):
+            raise ValueError('unsupported CPU weight')
+        self.cpu_weight = cpu_weight
         self.action_key = action_key
         self.nonce = nonce
         self.memory_max_bytes = memory_max_bytes
@@ -436,6 +457,8 @@ class ResourceScope:
         if self.token is not None:
             raise RuntimeError('resource scope is already created')
         extra = {'gpu_memory_max_bytes': self.gpu_memory_max_bytes} if self._explicit_gpu_budget else {}
+        if self.cpu_weight != 100:
+            extra['cpu_weight'] = self.cpu_weight
         response = self._request('create', memory_max_bytes=self.memory_max_bytes, recovery_protocol=1, **extra)
         self._adopt_created_scope(response)
         return self.control_record()
@@ -443,6 +466,8 @@ class ResourceScope:
     def recover_create(self) -> bool:
         """Recover authority or fence a missing attempt against delayed creation."""
         extra = {'gpu_memory_max_bytes': self.gpu_memory_max_bytes} if self._explicit_gpu_budget else {}
+        if self.cpu_weight != 100:
+            extra['cpu_weight'] = self.cpu_weight
         response = self._request('recover_create', memory_max_bytes=self.memory_max_bytes, **extra)
         if response.get('missing') is True:
             expected = 'prismabuild-job' + hashlib.sha256((self.action_key + self.nonce).encode()).hexdigest()[:32] + '.slice'
@@ -469,6 +494,9 @@ class ResourceScope:
                                             or acknowledged_gpu != self.gpu_memory_max_bytes)
                 or self._explicit_gpu_budget and acknowledged_gpu is None):
             raise OSError('resource broker did not acknowledge the exact GPU memory budget')
+        if (type(response.get('cpu_weight', 100)) is not int
+                or response.get('cpu_weight', 100) != self.cpu_weight):
+            raise OSError('resource broker did not acknowledge the exact CPU weight')
         self.unit, self.token, self.cgroup_path = unit, token, path
 
     def control_record(self) -> dict:
@@ -477,7 +505,8 @@ class ResourceScope:
                 'scope_id': self.unit, 'cgroup_path': str(self.cgroup_path),
                 'token': self.token, 'socket_path': str(self.socket_path),
                 'memory_max_bytes': self.memory_max_bytes,
-                'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
+                'gpu_memory_max_bytes': self.gpu_memory_max_bytes,
+                'cpu_weight': self.cpu_weight}
 
     def _sealed_member(self, root: Path, rel: str, receipt) -> Path:
         """One manifest-covered sealed member, or raise ``OSError``.

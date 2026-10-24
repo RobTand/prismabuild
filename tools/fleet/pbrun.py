@@ -347,6 +347,8 @@ def argument_parser() -> argparse.ArgumentParser:
              "--max-attempts greater than 1: a retry needs somebody alive to "
              "see the attempt fail",
     )
+    ap.add_argument("--cpu-qos", choices=("protected", "opportunistic"), default=None,
+                    help="explicit CPU policy; omitted preserves legacy adaptive lending, protected forbids loans, opportunistic opts priority -10 work into bounded low-weight lending")
     ap.add_argument("--priority", type=int, default=0,
                     help="a queue hint, higher runs sooner; not part of the "
                          "action's identity, so two submissions that differ "

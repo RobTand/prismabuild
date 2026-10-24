@@ -28,7 +28,7 @@ KEY_B = "b" * 64
 #: Fields that describe the claim that has just ended.  A ready item is not
 #: claimed by anybody, so none of them may survive a requeue.
 CLAIM_TRANSIENTS = ("claimed_by", "claimed_unix", "claimed_host", "reserved_on",
-                    "cpu_allocation")
+                    "cpu_allocation", "cpu_qos_selected", "cpu_weight", "cpu_admission")
 
 #: Fields whose values legitimately differ between two requeues of two
 #: different actions: which action it is, where it may run, when it was
@@ -142,3 +142,12 @@ def test_a_consumer_handles_both(queue: pool.PoolQueue) -> None:
         assert claimed["cas_root"] == "/cas"
         assert claimed["checkout_root"] == "/co"
         queue.finish(claimed["action_key"], status="executed")
+
+
+@pytest.mark.parametrize('field,value', [('cpu_qos_selected', 'opportunistic'),
+                                        ('cpu_weight', 10),
+                                        ('cpu_admission', {'borrowed_cpus': [0]})])
+def test_requeue_clears_cpu_attempt_evidence(queue, field, value):
+    record = {'action_key': KEY_A, field: value, 'cpu_qos': 'opportunistic'}
+    queue._shape_as_ready_item(record, action_key=KEY_A)
+    assert field not in record and record['cpu_qos'] == 'opportunistic'

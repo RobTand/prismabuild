@@ -98,7 +98,8 @@ class OperationRuntimeEvidence:
                   "executed_lines", "executing_code_sha256", "wire_identity_verified",
                   "caller_input_constructor_verified", "driver_sha256",
                   "selected_adapter_sha256", "attestation_error", "entry_error", "error", "stdout", "stderr",
-                  "writer_context_producer", "writer_context", "reader_fixture_derivation", "adapters_sha256")
+                  "writer_context_producer", "writer_context", "reader_fixture_derivation",
+                  "loan_reader_fixture_derivation", "adapters_sha256")
         observed = {key: record[key] for key in fields if key in record}
         if raw is None and isinstance(record.get("result"), dict) and "raw" in record["result"]:
             raw = base64.b64decode(record["result"]["raw"])

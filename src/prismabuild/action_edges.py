@@ -88,7 +88,7 @@ _PUBLICATION_KEYS = frozenset({
 #: declaration and with sharing at its default.
 _OPTIONAL_PUBLICATION_KEYS = frozenset({
     "residency_prefetch_depth_gib", "residency_read_mb_s", "residency_share",
-    "priority_reason", "d38_receipt", "d38_exception", "retry_scope",
+    "priority_reason", "d38_receipt", "d38_exception", "retry_scope", "cpu_qos",
 })
 
 

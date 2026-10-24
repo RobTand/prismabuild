@@ -1,0 +1,3521 @@
+from __future__ import annotations
+
+import ast
+from contextlib import contextmanager
+import copy
+import fcntl
+import hashlib
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from prismabuild import core as pb, immutable_files
+
+
+def test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link(tmp_path):
+    source = Path(pb.__file__).parent
+    bundles = []
+    for generation in ("first", "second"):
+        bundle = tmp_path / generation
+        bundle.mkdir()
+        for name in ("core.py", "digest_primitives.py", "immutable_files.py"):
+            raw = (source / name).read_bytes()
+            (bundle / name).write_bytes(raw)
+        bundles.append(bundle)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_file = tmp_path / "action.json"
+    action_file.write_text(json.dumps(action))
+    program = r'''
+import json
+from pathlib import Path
+import runpy
+import sys
+
+first = runpy.run_path(str(Path(sys.argv[1]) / "core.py"))
+first_owner = first["immutable_files"]
+second = runpy.run_path(str(Path(sys.argv[2]) / "core.py"))
+owner = second["immutable_files"]
+expected = Path(sys.argv[2]) / "immutable_files.py"
+assert owner is not first_owner
+assert Path(owner.__file__) == expected
+assert Path(owner.publish_immutable.__code__.co_filename) == expected
+assert Path(owner.read_replaced_record.__code__.co_filename) == expected
+assert first["CASTamperError"] is first_owner.CASTamperError
+assert first["ReplacedRecordError"] is first_owner.ReplacedRecordError
+assert first_owner.PrismaBuildError is first["PrismaBuildError"]
+assert second["CASTamperError"] is owner.CASTamperError
+assert second["ReplacedRecordError"] is owner.ReplacedRecordError
+assert owner.PrismaBuildError is second["PrismaBuildError"]
+digest_owner = second["digest_primitives"]
+assert owner.ActionContractError is digest_owner.ActionContractError
+assert Path(digest_owner.decode_strict_json.__code__.co_filename) == expected.with_name("digest_primitives.py")
+probe = expected.with_name("native-record.json")
+probe.write_bytes(b'{"generation":2}')
+assert owner.read_replaced_record(probe, where="second generation", max_bytes=64) == probe.read_bytes()
+assert digest_owner.decode_strict_json(probe.read_bytes(), where="second generation") == {"generation": 2}
+try:
+    owner.read_immutable_file(probe, where="second generation")
+except second["CASTamperError"]:
+    pass
+else:
+    raise AssertionError("writable bytes crossed the immutable read profile")
+probe.chmod(0o444)
+assert owner.read_immutable_file(probe, where="second generation") == probe.read_bytes()
+try:
+    digest_owner.decode_strict_json(b'{"x":1,"x":2}', where="second generation")
+except second["ActionContractError"]:
+    pass
+else:
+    raise AssertionError("strict decoder lost the second generation's canonical error")
+action = json.loads(Path(sys.argv[3]).read_text())
+cas_root, checkout = Path(sys.argv[4]), Path(sys.argv[5])
+cas = second["PrismaBuildCAS"](cas_root)
+attestation = second["preflight_action"](
+    action, cas_root=cas_root, checkout_root=checkout)
+assert "immutable_files" not in attestation["runtime"]
+assert second["_LOADED_WORKER_IMMUTABLE_IDENTITY"]["path"] == str(expected)
+result = Path(sys.argv[4]).parent / "candidate.bin"
+result.write_bytes(b"candidate")
+receipt, won = cas.publish_result(action, result, attestation=attestation)
+assert won and cas.lookup(action) == receipt
+changed = second["PrismaBuildCAS"](cas_root / "changed")
+def change_owner():
+    expected.write_bytes(expected.read_bytes() + b"\n# changed at precommit\n")
+try:
+    changed.publish_result(action, result, attestation=attestation,
+                           precommit_verify=change_owner)
+except second["LocalActionError"] as exc:
+    assert "immutable files changed after module import" in str(exc)
+else:
+    raise AssertionError("changed executed source reached the receipt link")
+assert changed.lookup(action) is None
+'''
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", program,
+         str(bundles[0]), str(bundles[1]), str(action_file),
+         str(tmp_path / "cas"), str(checkout)],
+        capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, (done.stdout, done.stderr)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_synthetic_launch_context(monkeypatch):
+    """Standalone synthetic unit contexts never inherit an outer attempt tuple.
+
+    Post-deploy harnesses and nested fleet runs export a complete
+    broker-owned tuple (nonce/scope/helper root) that production
+    ``_reader_identity_environment`` refuses rather than feeds into an
+    unrelated synthetic action. These unit tests seal and run their own
+    synthetic actions, so each one starts with that ambient identity
+    removed; the admitted-launch regression in
+    ``test_reader_launch_identity`` seeds and exercises the real proxy
+    context instead. Production validity checks are never weakened to
+    accommodate this contamination.
+    """
+
+    for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
+                 "PRISMABUILD_READER_HELPER_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _body(
+    checkout: Path,
+    *,
+    task_class: str = "generation",
+    determinism: str = "deterministic",
+    artifact_family: str = "generic",
+    artifact_kind: str = "generic",
+    portability: str = "portable",
+    platform_key: str | None = None,
+    host_class: str | None = None,
+    argv: list[str] | None = None,
+    result_path: str = "result.bin",
+) -> dict[str, object]:
+    code = checkout / "task_code.py"
+    if not code.exists():
+        code.write_text("# closure member\n", encoding="utf-8")
+    resolved_argv = argv or [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib; "
+            f"pathlib.Path({result_path!r}).write_bytes(b'result')"
+        ),
+    ]
+    # These generic actions do not consume Torch. Keep their contract limited
+    # to facts that matter to execution so the suite is portable across the
+    # supported producer images.
+    toolchain: dict[str, str] = {}
+    if portability != "portable":
+        toolchain.update(pb.executable_toolchain_contract(resolved_argv[0]))
+        evidence = pb._collect_worker_evidence()
+        toolchain.update(
+            {
+                "system": str(evidence["system"]),
+                "machine": str(evidence["machine"]),
+                "libc": str(evidence["libc"]),
+            }
+        )
+    return {
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            "definition_id": "tests/build-result",
+            "definition_version": "v1",
+            "task_class": task_class,
+            "determinism": determinism,
+            "artifact_family": artifact_family,
+            "artifact_kind": artifact_kind,
+            "argv": resolved_argv,
+            "working_directory": ".",
+            "result_path": result_path,
+        },
+        "inputs": [
+            {"id": "model/config", "sha256": "2" * 64, "bytes": 20},
+            {"id": "model/weights", "sha256": "3" * 64, "bytes": 30},
+        ],
+        "code_closure": pb.build_code_closure(checkout, ["task_code.py"]),
+        "params": {"alpha": 1, "nested": {"enabled": True}},
+        "environment": {
+            "variables": {"DECLARED": "yes"},
+            "toolchain": toolchain,
+        },
+        "execution_scope": {
+            "portability": portability,
+            "platform_key": platform_key,
+            "host_class": host_class,
+        },
+    }
+
+
+def _action(checkout: Path, **kwargs: object) -> dict[str, object]:
+    return pb.seal_action(_body(checkout, **kwargs))
+
+
+def _attestation(
+    checkout: Path, action: dict[str, object], cas_root: Path
+) -> dict[str, object]:
+    return pb.preflight_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+
+
+def _live_nonportable_body(
+    checkout: Path,
+    *,
+    inputs: list[dict[str, object]] | None = None,
+    argv: list[str] | None = None,
+) -> dict[str, object]:
+    evidence = pb._collect_worker_evidence()
+    platform_key = pb._platform_key_from_evidence(evidence)
+    body = _body(
+        checkout,
+        portability="platform_keyed",
+        platform_key=platform_key,
+        argv=argv,
+    )
+    body["inputs"] = [] if inputs is None else inputs
+    toolchain = {
+        **pb.executable_toolchain_contract(body["task"]["argv"][0]),  # type: ignore[index]
+        "system": str(evidence["system"]),
+        "machine": str(evidence["machine"]),
+        "libc": str(evidence["libc"]),
+    }
+    accelerators = evidence["accelerators"]
+    if accelerators:
+        toolchain.update(
+            {
+                "cuda_compute_capability": accelerators[0]["compute_capability"],
+                "nvidia_driver": accelerators[0]["driver_version"],
+            }
+        )
+    body["environment"]["toolchain"] = toolchain  # type: ignore[index]
+    return body
+
+
+def test_action_key_is_canonical_and_inputs_are_sorted(tmp_path: Path):
+    body = _body(tmp_path)
+    body["inputs"] = list(reversed(body["inputs"]))  # type: ignore[index]
+    first = pb.seal_action(body)
+    second_body = _body(tmp_path)
+    second_body["params"] = {"nested": {"enabled": True}, "alpha": 1}
+    second = pb.seal_action(second_body)
+
+    assert first == second
+    assert [row["id"] for row in first["inputs"]] == [  # type: ignore[index]
+        "model/config",
+        "model/weights",
+    ]
+    assert pb.validate_action(first) == first
+
+
+def test_unsealed_or_non_normalized_action_is_rejected(tmp_path: Path):
+    action = _action(tmp_path)
+    action["inputs"] = list(reversed(action["inputs"]))  # type: ignore[index]
+    with pytest.raises(pb.ActionContractError, match="normalized contract form"):
+        pb.validate_action(action)
+
+    body = _body(tmp_path)
+    body["campaign_id"] = "must-not-enter-action-key"
+    with pytest.raises(pb.ActionContractError, match="extra=.*campaign_id"):
+        pb.seal_action(body)
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("task", "definition_version"), "v2"),
+        (("task", "artifact_family"), "codebook"),
+        (("task", "argv"), ["/bin/true", "different"]),
+        (("inputs", 0, "sha256"), "4" * 64),
+        (("code_closure", "closure_sha256"), "5" * 64),
+        (("params", "alpha"), 2),
+        (("environment", "variables", "DECLARED"), "different"),
+        (("environment", "toolchain", "system"), "different"),
+        (("execution_scope", "host_class"), "different"),
+    ],
+)
+def test_action_key_binds_every_semantic_input(
+    tmp_path: Path, path: tuple[object, ...], replacement: object
+):
+    original_body = _body(
+        tmp_path, portability="host_class_keyed", host_class="gb10"
+    )
+    original = pb.seal_action(original_body)
+    changed = copy.deepcopy(original_body)
+    cursor: object = changed
+    for component in path[:-1]:
+        cursor = cursor[component]  # type: ignore[index]
+    cursor[path[-1]] = replacement  # type: ignore[index]
+    if path == ("code_closure", "closure_sha256"):
+        with pytest.raises(pb.ActionContractError, match="does not match"):
+            pb.seal_action(changed)
+    else:
+        assert pb.seal_action(changed)["action_key"] != original["action_key"]
+
+
+def test_portability_is_declared_by_the_submitter_not_by_the_family(tmp_path: Path):
+    with pytest.raises(pb.ActionContractError, match="measurement actions"):
+        _action(tmp_path, task_class="measurement")
+    # ``artifact_family`` is a submitter-chosen label (#1076). Core used to
+    # refuse a portable ``codebook`` action for one client's format; now the
+    # submitter that knows its bytes drift across architectures declares a
+    # keyed scope, and core seals whatever scope and label it is given.
+    for family, artifact_kind in (("codebook", "fp8-lut"), ("generic", "nvfp4-recbuild"),
+                                  ("scale-book", "fp8-cbor-dump")):
+        action = _action(tmp_path, artifact_family=family, artifact_kind=artifact_kind)
+        assert action["task"]["artifact_family"] == family  # type: ignore[index]
+        assert (
+            action["execution_scope"]["portability"]  # type: ignore[index]
+            == "portable"
+        )
+
+    platform = _action(
+        tmp_path,
+        artifact_family="codebook",
+        artifact_kind="fp8-lut",
+        portability="platform_keyed",
+        platform_key="linux-aarch64-sm121",
+    )
+    assert (
+        platform["execution_scope"]["platform_key"]  # type: ignore[index]
+        == "linux-aarch64-sm121"
+    )
+
+    host = _action(
+        tmp_path,
+        task_class="measurement",
+        portability="host_class_keyed",
+        host_class="gb10",
+    )
+    assert host["execution_scope"]["host_class"] == "gb10"  # type: ignore[index]
+
+
+def test_action_v2_requires_an_artifact_family_token_and_refuses_v1(tmp_path: Path):
+    body = _body(tmp_path)
+    body["task"]["artifact_family"] = "codebook-ish"  # type: ignore[index]
+    assert pb.seal_action(body)["task"]["artifact_family"] == "codebook-ish"  # type: ignore[index]
+    for malformed in ("Codebook", "two words", ""):
+        body["task"]["artifact_family"] = malformed  # type: ignore[index]
+        with pytest.raises(pb.ActionContractError, match="artifact_family"):
+            pb.seal_action(body)
+
+    legacy = _body(tmp_path)
+    legacy["schema"] = pb.ACTION_SCHEMA_V1
+    del legacy["task"]["artifact_family"]  # type: ignore[index]
+    with pytest.raises(
+        pb.ActionContractError,
+        match="v1 actions must be redeclared and resealed",
+    ):
+        pb.seal_action(legacy)
+
+
+def test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0(
+    tmp_path: Path,
+):
+    body = _body(
+        tmp_path,
+        portability="platform_keyed",
+        platform_key="linux-aarch64-sm121",
+    )
+    # A field outside the platform set names a Python distribution the worker
+    # probes (#1076); one that cannot be a distribution name has no probe.
+    for field in ("container image", "-leading-dash", "trailing."):
+        body["environment"]["toolchain"] = {field: "claimed-not-probed"}  # type: ignore[index]
+        with pytest.raises(pb.ActionContractError, match="no worker preflight"):
+            pb.seal_action(body)
+
+    body["environment"]["toolchain"] = {"python": "3.12"}  # type: ignore[index]
+    with pytest.raises(pb.ActionContractError, match=r"bind argv\[0\]"):
+        pb.seal_action(body)
+
+
+def test_platform_scope_is_derived_from_live_facts_not_a_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = _body(
+        tmp_path,
+        portability="platform_keyed",
+        platform_key="linux-aarch64-sm121",
+    )
+    body["inputs"] = []
+    body["environment"]["toolchain"].update(  # type: ignore[index]
+        {
+            "cuda_compute_capability": "8.9",
+            "nvidia_driver": "550.54",
+            "system": "linux",
+            "machine": "x86_64",
+            "libc": "glibc-2.39",
+        }
+    )
+    action = pb.seal_action(body)
+    monkeypatch.setattr(
+        pb,
+        "_collect_worker_evidence",
+        lambda **_kw: {
+            "source": "local",
+            "hostname": "foreign-worker",
+            "system": "linux",
+            "machine": "x86_64",
+            "libc": "glibc-2.39",
+            "accelerators": [
+                {
+                    "kind": "nvidia",
+                    "compute_capability": "8.9",
+                    "driver_version": "550.54",
+                }
+            ],
+            "slurm": None,
+        },
+    )
+    with pytest.raises(pb.ActionContractError, match="platform_key"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_host_class_requires_kernel_attested_slurm_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    body = _body(
+        tmp_path,
+        portability="host_class_keyed",
+        host_class="gb10",
+    )
+    body["inputs"] = []
+    action = pb.seal_action(body)
+    monkeypatch.setenv("SLURM_JOB_ID", "4242")
+    monkeypatch.setenv("SLURMD_NODENAME", "claimed-node")
+    monkeypatch.setenv("SLURM_JOB_PARTITION", "gb10")
+    with pytest.raises(pb.ActionContractError, match="cgroup membership"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cgroup = b"2:cpu:/slurm/job_4242/step_batch\n3:memory:/slurm/job_4242/step_batch\n"
+    monkeypatch.setattr(pb.immutable_files, "read_regular_leaf", lambda *args, **kwargs: cgroup)
+    assert (
+        pb._verify_slurm_process_membership("4242")
+        == "/slurm/job_4242/step_batch"
+    )
+
+
+def _controller_attested_slurm(
+    *, job_features=("gb10",), node_active_features=("aarch64", "gb10", "sparky")
+) -> dict[str, object]:
+    """SLURM evidence shaped as the worker records it inside a gb10 job."""
+
+    return {
+        "job_id": "77",
+        "node_name": "sparky",
+        "partition": "gpu",
+        "constraints": [],
+        "cgroup": "/slurm/job_77/step_batch",
+        "controller": {
+            "partition": "gpu",
+            "batch_host": "sparky",
+            "job_features": sorted(job_features),
+            "node_active_features": sorted(node_active_features),
+        },
+    }
+
+
+def _host_class_action(tmp_path: Path) -> dict[str, object]:
+    body = _live_nonportable_body(tmp_path)
+    body["execution_scope"] = {
+        "portability": "host_class_keyed",
+        "platform_key": None,
+        "host_class": "gb10",
+    }
+    return pb.seal_action(body)
+
+
+def test_host_class_preflight_records_controller_attested_slurm_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = _controller_attested_slurm()
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    result = pb.run_local_action(
+        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    )
+    producer = result["receipt"]["producer"]  # type: ignore[index]
+    assert producer["worker_id"] == "sparky"
+    assert producer["host_class"] == "gb10"
+    assert producer["evidence"]["slurm"]["cgroup"] == "/slurm/job_77/step_batch"
+    assert producer["evidence"]["slurm"]["controller"]["job_features"] == ["gb10"]
+    assert pb.validate_worker_attestation(producer, action=action) == producer
+
+
+@pytest.mark.parametrize(
+    ("slurm", "message"),
+    [
+        # The node does not carry the Feature: a job constrained to `gb10`
+        # cannot land here, so this is a controller that disagrees with itself
+        # or a class that was never a Feature.
+        (
+            _controller_attested_slurm(node_active_features=("x86", "dl380g10")),
+            "does not carry the Feature 'gb10'",
+        ),
+        # The node carries it, but nothing made the scheduler put the job
+        # there: the class was observed, not enforced.
+        (
+            _controller_attested_slurm(job_features=()),
+            "constraint does not require the Feature 'gb10'",
+        ),
+    ],
+)
+def test_host_class_is_refused_unless_the_controller_enforced_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slurm, message
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = slurm
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match=message):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_env_only_slurm_evidence_no_longer_attests_a_host_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pre-fix verdict: partition == class, or class in constraints.
+
+    Neither holds on the fleet -- partitions are `all`/`gpu`/`cpu` and
+    `SLURM_JOB_CONSTRAINTS` is never set inside a job -- and both were
+    writable by the batch script.  Evidence in exactly that shape, with
+    the partition named after the class and the class in the constraint
+    list, is refused for want of the controller's record.
+    """
+
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = {
+        "job_id": "77",
+        "node_name": "sparky",
+        "partition": "gb10",
+        "constraints": ["gb10"],
+        "cgroup": "/slurm/job_77/step_batch",
+    }
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match="environment variables attest no class"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_persisted_controller_evidence_must_name_the_worker_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    action = _host_class_action(tmp_path)
+    live = pb._collect_worker_evidence()
+    live["source"] = "slurm"
+    live["slurm"] = _controller_attested_slurm()
+    live["slurm"]["controller"]["batch_host"] = "sparklina"
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match="batch_host differs"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+class _FakeScontrol:
+    """Answers `scontrol --oneliner show job|node` the way 25.11.2 does."""
+
+    def __init__(self, *, job: str, node: str, fail_first: int = 0,
+                 error: str = "slurm_load_jobs error: Unable to contact slurm controller (connect failure)"):
+        self.job, self.node, self.fail_first, self.error = job, node, fail_first, error
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if len(self.calls) <= self.fail_first:
+            return subprocess.CompletedProcess(argv, 1, "", self.error + "\n")
+        kind = argv[2]
+        return subprocess.CompletedProcess(
+            argv, 0, (self.job if kind == "job" else self.node) + "\n", ""
+        )
+
+
+_JOB_LINE = (
+    "JobId=77 JobName=pb-3f2a UserId=rob(1000) GroupId=rob(1000) MCS_label=N/A "
+    "Priority=1 Nice=0 Account=(null) QOS=(null) JobState=RUNNING Reason=None "
+    "Partition=gpu AllocNode:Sid=dl380g10:12 BatchHost=sparky NumNodes=1 "
+    "Features=gb10 DelayBoot=00:00:00 Command=/mnt/shared/x.sh WorkDir=/mnt/shared"
+)
+_NODE_LINE = (
+    "NodeName=sparky Arch=aarch64 CoresPerSocket=10 CPUAlloc=1 CPUTot=20 "
+    "AvailableFeatures=gb10,aarch64,sm121,sparky ActiveFeatures=gb10,aarch64,sm121,sparky "
+    "Gres=gpu:1,shard:2 NodeAddr=sparky State=MIXED Partitions=all,gpu"
+)
+_SLURM_ENV = {
+    "SLURM_JOB_ID": "77", "SLURMD_NODENAME": "sparky", "SLURM_JOB_PARTITION": "gpu",
+    "SLURM_CLUSTER_NAME": "prismabuild",
+}
+
+
+def _no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pb, "SCONTROL_RETRY_DELAYS_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(pb.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        pb, "_slurm_job_from_cgroup", lambda: ("77", "/slurm/job_77/step_batch")
+    )
+
+
+def test_fake_scontrol_attests_the_class_the_job_was_constrained_to(
+    monkeypatch: pytest.MonkeyPatch
+):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    controller = evidence["slurm"]["controller"]
+    assert controller == {
+        "partition": "gpu",
+        "batch_host": "sparky",
+        "job_features": ["gb10"],
+        "node_active_features": ["aarch64", "gb10", "sm121", "sparky"],
+    }
+    assert fake.calls == [
+        ["--oneliner", "show", "job", "77"],
+        ["--oneliner", "show", "node", "sparky"],
+    ]
+    assert pb._host_class_from_evidence(evidence, expected="gb10") == "gb10"
+    # And the partition did not need to be the class for that to hold.
+    assert evidence["slurm"]["partition"] == "gpu"
+
+
+def test_fake_scontrol_wrong_node_feature_is_refused(monkeypatch):
+    _no_wait(monkeypatch)
+    node = _NODE_LINE.replace("ActiveFeatures=gb10,aarch64,sm121,sparky",
+                              "ActiveFeatures=x86,sparky")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=_JOB_LINE, node=node))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    with pytest.raises(pb.ActionContractError, match="does not carry the Feature 'gb10'"):
+        pb._host_class_from_evidence(evidence, expected="gb10")
+
+
+@pytest.mark.parametrize("features", ["(null)", "", "gb10|x86", "[gb10*1]", "sparky"])
+def test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused(
+    monkeypatch, features
+):
+    _no_wait(monkeypatch)
+    job = _JOB_LINE.replace("Features=gb10", f"Features={features}")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=job, node=_NODE_LINE))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    with pytest.raises(pb.ActionContractError, match="constraint does not require"):
+        pb._host_class_from_evidence(evidence, expected="gb10")
+
+
+def test_fake_scontrol_conjunction_still_requires_the_class(monkeypatch):
+    _no_wait(monkeypatch)
+    job = _JOB_LINE.replace("Features=gb10", "Features=sparky&gb10")
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=job, node=_NODE_LINE))
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    assert evidence["slurm"]["controller"]["job_features"] == ["gb10", "sparky"]
+    assert pb._host_class_from_evidence(evidence, expected="gb10") == "gb10"
+
+
+def test_unreachable_controller_retries_then_refuses_by_name(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=99)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    with pytest.raises(pb.ActionContractError) as raised:
+        pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    # One attempt per delay, plus the last one after the final delay.
+    assert len(fake.calls) == len(pb.SCONTROL_RETRY_DELAYS_S) + 1
+    message = str(raised.value)
+    assert "the SLURM controller (cluster 'prismabuild'" in message
+    assert "connect failure" in message
+    assert "refused" in message
+
+
+def test_a_controller_that_recovers_within_the_backoff_attests(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=2)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV, attest_host_class="gb10")
+    assert evidence["slurm"]["controller"]["batch_host"] == "sparky"
+    assert len(fake.calls) == 4          # two refusals, then job, then node
+
+
+def test_node_name_that_disagrees_with_the_controller_is_refused(monkeypatch):
+    _no_wait(monkeypatch)
+    monkeypatch.setattr(pb, "_run_scontrol", _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE))
+    env = {**_SLURM_ENV, "SLURMD_NODENAME": "sparklina"}
+    with pytest.raises(pb.ActionContractError, match="SLURMD_NODENAME disagrees"):
+        pb._collect_worker_evidence(env, attest_host_class="gb10")
+
+
+def test_portable_work_in_a_job_never_asks_the_controller(monkeypatch):
+    _no_wait(monkeypatch)
+    fake = _FakeScontrol(job=_JOB_LINE, node=_NODE_LINE, fail_first=99)
+    monkeypatch.setattr(pb, "_run_scontrol", fake)
+    evidence = pb._collect_worker_evidence(_SLURM_ENV)
+    assert "controller" not in evidence["slurm"]
+    assert fake.calls == []
+
+
+def test_the_job_id_is_the_cgroup_s_and_the_environment_must_agree(monkeypatch):
+    cgroup = b"0::/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0\n"
+    monkeypatch.setattr(pb.immutable_files, "read_regular_leaf", lambda *args, **kwargs: cgroup)
+    assert pb._slurm_job_from_cgroup() == (
+        "4242", "/system.slice/slurmstepd.scope/job_4242/step_batch/user/task_0"
+    )
+    env = {"SLURM_JOB_ID": "4243", "SLURMD_NODENAME": "sparky",
+           "SLURM_JOB_PARTITION": "gpu"}
+    with pytest.raises(pb.ActionContractError, match="cgroup membership"):
+        pb._collect_worker_evidence(env)
+    agreed = pb._collect_worker_evidence({**env, "SLURM_JOB_ID": "4242"})
+    assert agreed["slurm"]["job_id"] == "4242"
+    assert agreed["slurm"]["constraints"] == []
+
+
+def test_worker_runtime_attestation_binds_core_and_optional_launcher(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# exact launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
+
+    direct = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    assert direct["schema"] == pb.WORKER_ATTESTATION_SCHEMA_V2
+    assert direct["runtime"]["schema"] == pb.WORKER_RUNTIME_SCHEMA_V1
+    assert direct["runtime"]["launch_kind"] == "in_process"
+    assert direct["runtime"]["launcher"] is None
+    assert direct["runtime"]["core"]["sha256"] == hashlib.sha256(
+        Path(pb.__file__).read_bytes()
+    ).hexdigest()
+
+    launched = pb.preflight_action(
+        action,
+        cas_root=tmp_path / "cas",
+        checkout_root=checkout,
+        worker_launcher_identity=launcher_identity,
+    )
+    assert launched["runtime"]["launch_kind"] == "script"
+    assert launched["runtime"]["launcher"]["sha256"] == hashlib.sha256(
+        launcher.read_bytes()
+    ).hexdigest()
+    assert pb.validate_worker_attestation(launched, action=action) == launched
+
+    malformed = copy.deepcopy(launched)
+    malformed["runtime"]["unrecognized"] = True
+    runtime_body = {
+        key: value
+        for key, value in malformed["runtime"].items()
+        if key != "runtime_sha256"
+    }
+    malformed["runtime"]["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    attestation_body = {
+        key: value for key, value in malformed.items() if key != "attestation_sha256"
+    }
+    malformed["attestation_sha256"] = pb.canonical_sha256(attestation_body)
+    with pytest.raises(pb.ActionContractError, match="runtime fields differ"):
+        pb.validate_worker_attestation(malformed, action=action)
+
+    inconsistent = copy.deepcopy(direct)
+    inconsistent["runtime"]["launch_kind"] = "script"
+    runtime_body = {
+        key: value
+        for key, value in inconsistent["runtime"].items()
+        if key != "runtime_sha256"
+    }
+    inconsistent["runtime"]["runtime_sha256"] = pb.canonical_sha256(runtime_body)
+    attestation_body = {
+        key: value
+        for key, value in inconsistent.items()
+        if key != "attestation_sha256"
+    }
+    inconsistent["attestation_sha256"] = pb.canonical_sha256(attestation_body)
+    with pytest.raises(
+        pb.ActionContractError, match="launch_kind and launcher disagree"
+    ):
+        pb.validate_worker_attestation(inconsistent, action=action)
+
+
+def test_worker_core_has_no_unattested_repository_imports():
+    source = Path(pb.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    runtime = pb._worker_runtime_identity(None)
+    attested = {Path(value["resolved_path"]) for value in runtime.values()
+                if isinstance(value, dict) and "resolved_path" in value}
+    core_source = Path(runtime["core"]["resolved_path"]).read_bytes()
+    assert hashlib.sha256(core_source).hexdigest() == runtime["core"]["sha256"]
+    pins = [ast.literal_eval(node.value) for node in ast.parse(core_source).body
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                and target.id == "_IMMUTABLE_FILES_SOURCE" for target in node.targets)]
+    assert len(pins) == 1
+    helper = pb._LOADED_WORKER_IMMUTABLE_IDENTITY
+    assert {key: helper[key] for key in pins[0]} == pins[0]
+    helper_path = Path(helper["resolved_path"])
+    assert helper_path == Path(pb.immutable_files.__file__).resolve()
+    assert hashlib.sha256(helper_path.read_bytes()).hexdigest() == pins[0]["sha256"]
+    assert helper_path.stat().st_size == pins[0]["bytes"]
+    attested.add(helper_path)
+    repository_imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            names = [node.module] if node.module else [alias.name for alias in node.names]
+            repository_imports.extend(Path(pb.__file__).parent / (name.replace(".", "/") + ".py")
+                                      for name in names)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = ([node.module] if isinstance(node, ast.ImportFrom)
+                     else [alias.name for alias in node.names])
+            assert not any(name == "prismaquant" or name.startswith("prismaquant.")
+                           or name == "prismabuild" or name.startswith("prismabuild.")
+                           for name in names)
+    assert set(repository_imports) <= attested
+
+
+def test_slurm_worker_entrypoint_attests_its_early_launcher_snapshot(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    # Derive the root from this test file, as the other three worker-launcher
+    # sites do.  Deriving it from the package instead broke at the split: the
+    # module moved from prismaquant/prismabuild.py to src/prismabuild/core.py,
+    # so parents[1] became src/ rather than the repository root.
+    repository_root = Path(__file__).resolve().parents[1]
+    launcher = repository_root / "tools" / "prismabuild_worker.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(launcher),
+            "preflight",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(tmp_path / "cas"),
+            "--checkout-root",
+            str(checkout),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    attestation = json.loads(completed.stdout)
+    runtime = attestation["runtime"]
+    assert runtime["launch_kind"] == "script"
+    assert runtime["launcher"]["sha256"] == hashlib.sha256(
+        launcher.read_bytes()
+    ).hexdigest()
+    assert runtime["core"]["sha256"] == hashlib.sha256(
+        Path(pb.__file__).read_bytes()
+    ).hexdigest()
+
+
+def test_preflight_refuses_core_changed_after_module_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# loaded worker core\n", encoding="utf-8")
+    captured = pb._identify_runtime_source(fake_core, where="test worker core")
+    monkeypatch.setattr(pb, "_LOADED_WORKER_CORE_IDENTITY", captured)
+    # The old implementation took its first snapshot from __file__ during
+    # preflight and therefore accepted these changed bytes as the loaded core.
+    monkeypatch.setattr(pb, "__file__", str(fake_core))
+    fake_core.write_text("# changed before first preflight\n", encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError, match="core changed after module import"):
+        pb.preflight_action(
+            _action(checkout),
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+
+def test_preflight_refuses_launcher_changed_after_entrypoint_capture(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# launched bytes\n", encoding="utf-8")
+    captured = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
+    launcher.write_text("# changed before preflight\n", encoding="utf-8")
+
+    with pytest.raises(
+        pb.LocalActionError, match="launcher changed after entry-point capture"
+    ):
+        pb.preflight_action(
+            _action(checkout),
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_identity=captured,
+        )
+
+
+def test_nonportable_preflight_refuses_unknown_libc_attestation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    live = pb._collect_worker_evidence()
+    body = _live_nonportable_body(tmp_path)
+    body["environment"]["toolchain"]["libc"] = "unknown"  # type: ignore[index]
+    action = pb.seal_action(body)
+    live["libc"] = "unknown"
+    monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **_kw: live)
+    with pytest.raises(pb.ActionContractError, match="unknown libc"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+
+def test_preflight_refuses_toolchain_mismatch_before_execution(tmp_path: Path):
+    body = _body(tmp_path)
+    body["inputs"] = []
+    body["environment"]["toolchain"] = {"python": "0.0"}  # type: ignore[index]
+    action = pb.seal_action(body)
+    with pytest.raises(pb.ActionContractError, match="toolchain field 'python'"):
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+    assert not (tmp_path / "result.bin").exists()
+
+
+def test_input_ingestion_publishes_canonical_readback_verified_contract(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    payload = b"immutable input payload"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    entry, won = cas.ingest_input(
+        source,
+        input_id="model/weights",
+        expected_sha256=digest,
+        expected_bytes=len(payload),
+    )
+
+    assert won
+    assert entry == {
+        "id": "model/weights",
+        "sha256": digest,
+        "bytes": len(payload),
+    }
+    path = cas.input_path(entry)
+    assert path == cas._blob_path(digest)
+    assert path.read_bytes() == payload
+    assert path.stat().st_mode & 0o222 == 0
+    source.write_bytes(b"source may change after the stable snapshot")
+    assert cas.input_path(entry).read_bytes() == payload
+
+
+def test_input_ingestion_rejects_expectation_mismatch_before_publication(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"actual")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.ActionContractError, match="sha256 differs"):
+        cas.ingest_input(
+            source,
+            input_id="dataset",
+            expected_sha256="0" * 64,
+        )
+    with pytest.raises(pb.ActionContractError, match="byte count differs"):
+        cas.ingest_input(
+            source,
+            input_id="dataset",
+            expected_bytes=999,
+        )
+
+    assert not list((tmp_path / "cas" / "blobs").rglob("*"))
+    assert not list((tmp_path / "cas" / ".staging").glob("*.tmp"))
+
+
+def test_input_ingestion_rejects_symlink_source_and_malformed_contract(
+    tmp_path: Path,
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"actual")
+    alias = tmp_path / "alias.bin"
+    alias.symlink_to(source)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.LocalActionError, match="readable regular file"):
+        cas.ingest_input(alias, input_id="dataset")
+    with pytest.raises(pb.ActionContractError, match="fields differ"):
+        cas.input_path(
+            {
+                "id": "dataset",
+                "sha256": hashlib.sha256(b"actual").hexdigest(),
+                "bytes": len(b"actual"),
+                "path": str(source),
+            }
+        )
+
+
+def test_input_ingestion_race_reuses_one_verified_content_address(tmp_path: Path):
+    payload = b"same immutable bytes"
+    sources = [tmp_path / f"source-{index}.bin" for index in range(2)]
+    for source in sources:
+        source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    barrier = threading.Barrier(2)
+    results: list[tuple[dict[str, object], bool]] = []
+    errors: list[BaseException] = []
+
+    def ingest(index: int) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                cas.ingest_input(sources[index], input_id=f"source/{index}")
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=ingest, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert sum(won for _, won in results) == 1
+    assert {entry["sha256"] for entry, _ in results} == {
+        hashlib.sha256(payload).hexdigest()
+    }
+    assert all(cas.input_path(entry).read_bytes() == payload for entry, _ in results)
+
+
+@pytest.mark.parametrize("transition", ["two-to-one", "one-to-one"])
+def test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+):
+    payload_bytes = b"stable content-addressed payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    extra_link = tmp_path / "publication-link"
+    if transition == "two-to-one":
+        os.link(payload, extra_link)
+        assert payload.stat().st_nlink == 2
+
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_change_link_metadata(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            if transition == "two-to-one":
+                extra_link.unlink()
+            else:
+                # Model a link/unlink ctime disturbance whose before/after
+                # link count remains one.  The first attempt must be thrown
+                # away rather than accepted under a ctime exception.
+                time.sleep(0.001)
+                os.link(payload, extra_link)
+                extra_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_change_link_metadata)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    assert pb.immutable_files.file_identity_nofollow(
+        payload,
+        where="test payload",
+        expected_sha256=digest,
+        expected_bytes=len(payload_bytes),
+    ) == (digest, len(payload_bytes), payload.stat().st_mode)
+    assert open_count == 2
+    assert payload.stat().st_nlink == 1
+
+
+def test_stable_receipt_read_replays_publication_link_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    receipt_bytes = b'{"receipt":"stable"}\n'
+    receipt = tmp_path / "receipt.json"
+    receipt.write_bytes(receipt_bytes)
+    receipt.chmod(0o444)
+    publication_link = tmp_path / "receipt-publication-link"
+    os.link(receipt, publication_link)
+
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_unlink(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            publication_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_unlink)
+
+    assert pb.immutable_files.read_immutable_file(receipt, where="test receipt") == receipt_bytes
+    assert open_count == 2
+
+
+def test_stable_file_identity_refuses_perpetual_one_link_ctime_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload_bytes = b"same bytes, hostile metadata churn"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    transient_link = tmp_path / "transient-link"
+
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutation_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_churn_link(descriptor: int, count: int) -> bytes:
+        nonlocal mutation_count
+        chunk = original_read(descriptor, count)
+        if chunk:
+            time.sleep(0.001)
+            os.link(payload, transient_link)
+            transient_link.unlink()
+            mutation_count += 1
+        return chunk
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_churn_link)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    with pytest.raises(
+        pb.CASTamperError,
+        match=f'did not stabilize after {pb.immutable_files._STABLE_FILE_READ_ATTEMPTS} fresh reads',
+    ):
+        pb.immutable_files.file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == pb.immutable_files._STABLE_FILE_READ_ATTEMPTS
+    assert mutation_count == pb.immutable_files._STABLE_FILE_READ_ATTEMPTS
+    assert payload.stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("mutation", ["mode", "mtime"])
+def test_stable_file_identity_refuses_substantive_mutation_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    payload_bytes = b"immutable payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    original = payload.stat()
+
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+    mutated = False
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_mutate(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            if mutation == "mode":
+                payload.chmod(0o400)
+            else:
+                os.utime(
+                    payload,
+                    ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000),
+                )
+        return chunk
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_mutate)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        pb.immutable_files.file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == 1
+
+
+def test_stable_file_identity_refuses_owner_mutation_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload_bytes = b"immutable payload"
+    payload = tmp_path / "payload"
+    payload.write_bytes(payload_bytes)
+    payload.chmod(0o444)
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_fstat = pb.os.fstat
+    payload_descriptor: int | None = None
+    payload_fstat_count = 0
+    open_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count, payload_descriptor
+        open_count += 1
+        payload_descriptor, parent_fd = original_open(path, where=where)
+        return payload_descriptor, parent_fd
+
+    def fstat_with_changed_owner(descriptor: int) -> os.stat_result:
+        nonlocal payload_fstat_count
+        observed = original_fstat(descriptor)
+        if descriptor != payload_descriptor:
+            return observed
+        payload_fstat_count += 1
+        if payload_fstat_count != 2:
+            return observed
+        return SimpleNamespace(
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino,
+            st_size=observed.st_size,
+            st_mode=observed.st_mode,
+            st_uid=observed.st_uid + 1,
+            st_gid=observed.st_gid,
+            st_mtime_ns=observed.st_mtime_ns,
+            st_nlink=observed.st_nlink,
+            st_ctime_ns=observed.st_ctime_ns,
+        )  # type: ignore[return-value]
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "fstat", fstat_with_changed_owner)
+
+    with pytest.raises(pb.CASTamperError, match="changed substantively"):
+        pb.immutable_files.file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256=digest,
+            expected_bytes=len(payload_bytes),
+        )
+    assert open_count == 1
+
+
+def test_stable_file_identity_refuses_wrong_address_before_metadata_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = tmp_path / "payload"
+    payload.write_bytes(b"wrong address")
+    payload.chmod(0o444)
+    transient_link = tmp_path / "transient-link"
+    original_open = pb.immutable_files.open_regular_nofollow
+    original_read = pb.os.read
+    open_count = 0
+
+    def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
+        nonlocal open_count
+        open_count += 1
+        return original_open(path, where=where)
+
+    def read_then_churn_link(descriptor: int, count: int) -> bytes:
+        chunk = original_read(descriptor, count)
+        if chunk and not transient_link.exists():
+            os.link(payload, transient_link)
+            transient_link.unlink()
+        return chunk
+
+    monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
+    monkeypatch.setattr(pb.os, "read", read_then_churn_link)
+
+    with pytest.raises(pb.CASTamperError, match="expected address"):
+        pb.immutable_files.file_identity_nofollow(
+            payload,
+            where="test payload",
+            expected_sha256="0" * 64,
+            expected_bytes=len(b"wrong address"),
+        )
+    assert open_count == 1
+
+
+def test_input_ingestion_and_lookup_detect_conflict_and_tampering(tmp_path: Path):
+    payload = b"trusted input"
+    digest = hashlib.sha256(payload).hexdigest()
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    blob = cas._blob_path(digest)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"wrong content")
+
+    with pytest.raises(pb.CASTamperError, match="payload content differs"):
+        cas.ingest_input(source, input_id="dataset")
+
+    blob.write_bytes(payload)
+    with pytest.raises(pb.CASTamperError, match="input payload is writable"):
+        cas.ingest_input(source, input_id="dataset")
+    blob.chmod(0o444)
+    entry, won = cas.ingest_input(source, input_id="dataset")
+    assert not won
+    blob.chmod(0o644)
+    with pytest.raises(pb.CASTamperError, match="input payload is writable"):
+        cas.input_path(entry)
+
+
+def test_input_ingestion_revalidates_canonical_inode_after_winning_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"trusted input"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_link = pb.os.link
+
+    def link_then_corrupt(
+        source_path: Path, destination_path: str, **kwargs: object
+    ) -> None:
+        original_link(source_path, destination_path, **kwargs)
+        directory_fd = kwargs["dst_dir_fd"]
+        destination = Path(f"/proc/self/fd/{directory_fd}") / destination_path
+        destination.chmod(0o644)
+        destination.write_bytes(b"changed input")
+
+    monkeypatch.setattr(pb.os, "link", link_then_corrupt)
+    with pytest.raises(pb.CASTamperError, match="verified staging inode") as caught:
+        cas.ingest_input(source, input_id="dataset")
+    identity = json.loads(str(caught.value).split("; identity=", 1)[1])
+    assert set(identity) == {"staged", "published"}
+    assert set(identity["staged"]) == {
+        "st_dev", "st_ino", "st_size", "st_mode", "st_uid", "st_gid", "st_mtime_ns"
+    }
+    assert identity["staged"]["st_mode"] == stat.S_IFREG | 0o444
+    assert identity["published"]["st_mode"] == stat.S_IFREG | 0o644
+    assert identity["staged"]["st_ino"] == identity["published"]["st_ino"]
+    assert identity["staged"]["st_size"] == len(payload)
+    assert identity["published"]["st_size"] == len(b"changed input")
+
+
+def test_blob_publication_skips_only_winning_inode_rehash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = b"trusted input"
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_identity = pb.immutable_files.file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
+    entry, won = cas.ingest_input(source, input_id="dataset")
+    assert won is True
+    assert consumed == []
+
+    assert cas.input_path(entry) == cas._blob_path(str(entry["sha256"]))
+    assert consumed == [cas._blob_path(str(entry["sha256"]))]
+
+    consumed.clear()
+    repeated, won = cas.ingest_input(source, input_id="dataset")
+    assert repeated == entry
+    assert won is False
+    assert consumed == [cas._blob_path(str(entry["sha256"]))]
+
+
+def test_input_ingestion_refuses_symlinked_cas_shard(tmp_path: Path):
+    payload = b"trusted input"
+    digest = hashlib.sha256(payload).hexdigest()
+    source = tmp_path / "source.bin"
+    source.write_bytes(payload)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    blobs = tmp_path / "cas" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / digest[:2]).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(pb.CASTamperError, match="not a real directory"):
+        pb.PrismaBuildCAS(tmp_path / "cas").ingest_input(
+            source, input_id="dataset"
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_input_ingestion_refuses_source_changed_during_stable_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"a" * (5 * 1024 * 1024))
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_read = pb.os.read
+    changed = False
+
+    def read_then_change(descriptor: int, count: int) -> bytes:
+        nonlocal changed
+        chunk = original_read(descriptor, count)
+        if chunk and not changed:
+            changed = True
+            with source.open("ab") as handle:
+                handle.write(b"changed")
+        return chunk
+
+    monkeypatch.setattr(pb.os, "read", read_then_change)
+    with pytest.raises(pb.LocalActionError, match="changed while it was copied"):
+        cas.ingest_input(source, input_id="dataset")
+    assert not list((tmp_path / "cas" / "blobs").rglob("*"))
+
+
+def test_nonportable_preflight_requires_and_verifies_cas_inputs(tmp_path: Path):
+    payload = b"immutable upstream"
+    digest = hashlib.sha256(payload).hexdigest()
+    entry = {"id": "upstream/result", "sha256": digest, "bytes": len(payload)}
+    action = pb.seal_action(_live_nonportable_body(tmp_path, inputs=[entry]))
+    with pytest.raises(pb.ActionContractError, match="input is absent"):
+        pb.preflight_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+
+    source = tmp_path / "input.bin"
+    source.write_bytes(payload)
+    observed, won = pb.PrismaBuildCAS(tmp_path / "cas").ingest_input(
+        source,
+        input_id="upstream/result",
+        expected_sha256=digest,
+        expected_bytes=len(payload),
+    )
+    assert won
+    assert observed == entry
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+    )
+    assert attestation["inputs"] == [entry]
+
+
+def test_nonportable_preflight_binds_executable_bytes(tmp_path: Path):
+    executable = tmp_path / "task-executable"
+    executable.write_text(
+        "#!/usr/bin/python3.12\nimport pathlib\npathlib.Path('result.bin').write_bytes(b'ok')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    body = _live_nonportable_body(tmp_path, argv=[str(executable)])
+    body["environment"]["toolchain"] = {  # type: ignore[index]
+        **pb.executable_toolchain_contract(executable),
+        **{
+            key: value
+            for key, value in body["environment"]["toolchain"].items()  # type: ignore[index]
+            if key
+            in {
+                "cuda_compute_capability",
+                "nvidia_driver",
+                "system",
+                "machine",
+                "libc",
+            }
+        },
+    }
+    action = pb.seal_action(body)
+    executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    with pytest.raises(pb.ActionContractError, match=r"argv0\.(sha256|bytes)"):
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=tmp_path
+        )
+    assert not (tmp_path / "result.bin").exists()
+
+
+def test_code_closure_is_root_independent_and_live_verified(tmp_path: Path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    for root in (left, right):
+        (root / "a.py").write_text("A\n", encoding="utf-8")
+        (root / "b.py").write_text("B\n", encoding="utf-8")
+    first = pb.build_code_closure(left, ["b.py", "a.py"])
+    second = pb.build_code_closure(right, ["a.py", "b.py"])
+    assert first == second
+    assert [row["path"] for row in first["files"]] == ["a.py", "b.py"]
+    assert pb.verify_code_closure(first, right) == first
+
+    (right / "b.py").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.verify_code_closure(first, right)
+
+
+def test_code_closure_refuses_traversal_duplicates_and_symlinks(tmp_path: Path):
+    (tmp_path / "a.py").write_text("A", encoding="utf-8")
+    with pytest.raises(pb.ActionContractError, match="relative POSIX"):
+        pb.build_code_closure(tmp_path, ["../a.py"])
+    with pytest.raises(pb.ActionContractError, match="unique"):
+        pb.build_code_closure(tmp_path, ["a.py", "a.py"])
+    (tmp_path / "link.py").symlink_to("a.py")
+    with pytest.raises(pb.ActionContractError, match="regular file"):
+        pb.build_code_closure(tmp_path, ["link.py"])
+
+
+def test_paths_and_nested_params_reject_ambiguous_json(tmp_path: Path):
+    for path in (r"sub\result.bin", "C:result.bin"):
+        with pytest.raises(pb.ActionContractError, match="relative POSIX"):
+            _action(tmp_path, result_path=path)
+
+    for params in (
+        {"nested": {1: "coerced"}},
+        {"nested": {"nul\x00key": 1}},
+        {"nested": {"bad\nkey": 1}},
+        {"nested": ["nul\x00value"]},
+    ):
+        body = _body(tmp_path)
+        body["params"] = params
+        with pytest.raises(pb.ActionContractError):
+            pb.seal_action(body)
+
+    # A string *value* is payload, not a name: canonical JSON escapes it
+    # unambiguously, and a multiline command recorded in params is ordinary
+    # (issue #21).  Only keys keep the control-character rule.
+    body = _body(tmp_path)
+    body["params"] = {"nested": ["multi\nline"]}
+    assert pb.seal_action(body)["params"] == {"nested": ["multi\nline"]}
+
+
+def test_local_worker_uses_exact_argv_and_closed_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setenv("UNDECLARED_SECRET", "must-not-leak")
+    code = (
+        "import os,pathlib; "
+        "pathlib.Path('result.bin').write_text("
+        "os.environ.get('DECLARED','missing')+'|' + "
+        "str('UNDECLARED_SECRET' in os.environ))"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    result = pb.run_local_action(
+        action,
+        cas_root=tmp_path / "cas",
+        checkout_root=checkout,
+    )
+
+    assert result["status"] == "published"
+    payload = Path(result["payload_path"]).read_text(encoding="utf-8")
+    assert payload == "yes|False"
+    assert pb.PrismaBuildCAS(tmp_path / "cas").lookup(action) == result["receipt"]
+
+
+def test_cache_hit_skips_execution_and_fully_revalidates(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import pathlib; p=pathlib.Path('marker'); "
+        "p.write_text(p.read_text()+'x' if p.exists() else 'x'); "
+        "pathlib.Path('result.bin').write_bytes(b'ok')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    arguments = dict(
+        action=action,
+        cas_root=tmp_path / "cas",
+        checkout_root=checkout,
+    )
+    first = pb.run_local_action(**arguments)
+    second = pb.run_local_action(**arguments)
+    assert first["status"] == "published"
+    assert second["status"] == "cache_hit"
+    assert (checkout / "marker").read_text(encoding="utf-8") == "x"
+
+    (checkout / "task_code.py").write_text("# closure changed\n", encoding="utf-8")
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(**arguments)
+
+
+def _run_worker_after_initial_miss(action, checkout, cas_root, barrier, connection):
+    lookup = pb.PrismaBuildCAS.lookup
+    observed = []
+
+    def controlled_lookup(cas, candidate):
+        cached = lookup(cas, candidate)
+        observed.append(None if cached is None else cached["receipt_sha256"])
+        if len(observed) == 1:
+            connection.send(("initial_lookup", os.getpid(), str(cas.root), cached))
+            barrier.wait(timeout=30)
+        return cached
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(pb.PrismaBuildCAS, "lookup", controlled_lookup)
+            result = pb.run_local_action(
+                action, cas_root=cas_root, checkout_root=checkout,
+                timeout_seconds=15,
+            )
+        connection.send((result, observed))
+    finally:
+        connection.close()
+
+
+def test_two_workers_recheck_initial_misses_under_output_lock(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import os,pathlib; "
+        "fd=os.open('task-starts',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600); "
+        "os.write(fd,(str(os.getpid())+'\\n').encode()); os.close(fd); "
+        "pathlib.Path('result.bin').write_bytes(b'once')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(3)
+    channels = [context.Pipe(duplex=False) for _ in range(2)]
+    workers = [
+        context.Process(
+            target=_run_worker_after_initial_miss,
+            args=(action, checkout, cas_root, barrier, sender),
+        )
+        for _, sender in channels
+    ]
+    deadline = time.monotonic() + 60
+    reports = []
+    try:
+        for worker, (_, sender) in zip(workers, channels):
+            worker.start()
+            sender.close()
+        for receiver, _ in channels:
+            assert receiver.poll(max(0, deadline - time.monotonic()))
+            kind, pid, root, cached = receiver.recv()
+            assert kind == "initial_lookup"
+            assert pid in {worker.pid for worker in workers}
+            assert root == str(cas_root)
+            assert cached is None
+            reports.append(pid)
+        assert len(set(reports)) == 2
+        assert os.getpid() not in reports
+        assert cas.lookup(action) is None
+        assert not (checkout / "task-starts").exists()
+        assert not (checkout / "result.bin").exists()
+        barrier.wait(timeout=30)
+        outcomes = []
+        for receiver, _ in channels:
+            assert receiver.poll(max(0, deadline - time.monotonic()))
+            outcomes.append(receiver.recv())
+        for worker in workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+            assert not worker.is_alive()
+            assert worker.exitcode == 0
+    finally:
+        for worker in workers:
+            if worker.pid is not None:
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(timeout=5)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=5)
+            assert not worker.is_alive()
+        for receiver, sender in channels:
+            receiver.close()
+            sender.close()
+
+    (tmp_path / "worker-observations.json").write_text(
+        json.dumps({"worker_pids": reports, "outcomes": outcomes})
+    )
+    starts = (checkout / "task-starts").read_text().splitlines()
+    assert len(starts) == 1, starts
+    assert int(starts[0]) > 0
+    assert int(starts[0]) not in reports + [os.getpid()]
+    assert (checkout / "result.bin").read_bytes() == b"once"
+    assert sorted(result["status"] for result, _ in outcomes) == [
+        "cache_hit", "published",
+    ]
+    receipt_path = cas.receipt_path(action["action_key"])
+    assert list((cas_root / "actions" / "v3").rglob("*.json")) == [receipt_path]
+    receipt = json.loads(receipt_path.read_bytes())
+    assert cas.lookup(action) == receipt
+    assert receipt["action_key"] == action["action_key"]
+    assert receipt["receipt_sha256"] == pb.canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    execution_paths = list((cas_root / "executions" / "v1").rglob("*.json"))
+    assert len(execution_paths) == 1
+    assert json.loads(execution_paths[0].read_bytes()) == receipt
+    assert cas.lookup_execution(action, receipt["receipt_sha256"]) == receipt
+    for result, observed in outcomes:
+        assert result["receipt"] == receipt
+        assert Path(result["payload_path"]).read_bytes() == b"once"
+        assert observed == [
+            None, None if result["status"] == "published" else receipt["receipt_sha256"],
+        ]
+
+
+def test_local_miss_and_hit_preserve_exact_result_shapes(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+
+    arguments = {
+        "action": action,
+        "cas_root": tmp_path / "cas",
+        "checkout_root": checkout,
+    }
+    first = pb.run_local_action(**arguments)
+    second = pb.run_local_action(**arguments)
+    assert set(first) == {
+        "status",
+        "receipt",
+        "payload_path",
+        "recovered_declared_result",
+        "reaped_staging_files",
+        "local_result_claim_sha256",
+    }
+    assert set(second) == {"status", "receipt", "payload_path"}
+
+
+def test_regular_identity_fifo_swap_never_performs_blocking_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "record.json"
+    path.write_bytes(b"{}\n")
+    descriptor, parent_fd = pb.immutable_files.open_regular_nofollow(
+        path,
+        where="FIFO-swap fixture",
+    )
+    path.unlink()
+    os.mkfifo(path)
+    real_open = pb.os.open
+
+    def guarded_open(candidate: object, *args: object, **kwargs: object) -> int:
+        if candidate == path.name and kwargs.get("dir_fd") == parent_fd:
+            raise AssertionError("blocking canonical FIFO reopen attempted")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(pb.os, "open", guarded_open)
+    try:
+        with pytest.raises(pb.CASTamperError, match="changed during operation"):
+            pb.immutable_files.assert_regular_identity(
+                descriptor,
+                parent_fd,
+                path,
+                where="FIFO-swap fixture",
+            )
+    finally:
+        os.close(descriptor)
+        os.close(parent_fd)
+
+
+def test_atomic_publish_fifo_swap_never_performs_blocking_readback_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "published.json"
+    real_link = pb.os.link
+    real_open = pb.os.open
+    swapped = False
+
+    def swapping_link(*args: object, **kwargs: object) -> None:
+        nonlocal swapped
+        real_link(*args, **kwargs)
+        destination = args[1]
+        destination_directory = kwargs["dst_dir_fd"]
+        os.unlink(destination, dir_fd=destination_directory)
+        os.mkfifo(destination, dir_fd=destination_directory)
+        swapped = True
+
+    def guarded_open(candidate: object, *args: object, **kwargs: object) -> int:
+        if swapped and candidate == path.name:
+            raise AssertionError("blocking published FIFO readback open attempted")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(pb.os, "link", swapping_link)
+    monkeypatch.setattr(pb.os, "open", guarded_open)
+    with pytest.raises(pb.CASTamperError, match="changed before readback"):
+        immutable_files.publish_immutable(path, b"immutable\n")
+
+
+def _run_local_argv(action_path: Path, *, cas_root: Path, checkout: Path):
+    return [
+        "run-local",
+        "--action", str(action_path),
+        "--cas-root", str(cas_root),
+        "--checkout-root", str(checkout),
+    ]
+
+
+def test_the_worker_leaves_the_action_status_where_it_was_asked_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transport that asks for the action's ending gets it as a number.
+
+    The worker exits 1 whatever the action did, so the number cannot ride its
+    exit status. It rides a sidecar the transport names, and the error the
+    worker raises is unchanged by writing one.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert str(caught.value) == "action argv exited with status 7"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": 7
+    }
+
+
+def test_a_signalled_action_leaves_its_signal_in_the_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "action_returncode": -9, "action_signal": 9,
+    }
+
+
+def test_a_worker_verdict_leaves_no_action_status_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No file rather than a null: absent means the action did not end itself."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    sidecar = tmp_path / "lane" / "12345.action.json"
+    monkeypatch.setenv(pb.ACTION_STATUS_PATH_ENV, str(sidecar))
+
+    with pytest.raises(pb.LocalActionError, match="without its declared result"):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not sidecar.exists()
+
+
+def test_an_unasked_worker_writes_no_action_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The pull queue asks for nothing and gets nothing new."""
+
+    monkeypatch.delenv(pb.ACTION_STATUS_PATH_ENV, raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action_path = tmp_path / "action.json"
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError):
+        pb.main(
+            _run_local_argv(
+                action_path, cas_root=tmp_path / "cas", checkout=checkout
+            )
+        )
+
+    assert not list((tmp_path).glob("*.action.json"))
+
+
+def test_a_failed_action_carries_its_own_exit_status(tmp_path: Path):
+    """The action's status is an attribute, not a substring of the message.
+
+    Every transport folded a non-zero action status into the text of this
+    error, exited 1 itself, and filed 1.  The number an operator wants is the
+    action's, so the error carries it.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout, argv=[sys.executable, "-c", "raise SystemExit(7)"]
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert str(caught.value) == "action argv exited with status 7"
+    assert caught.value.returncode == 7
+    assert caught.value.signal is None
+
+
+def test_a_signalled_action_carries_the_signal(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(
+        checkout,
+        argv=[
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+    )
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode == -9
+    assert caught.value.signal == 9
+
+
+def test_a_worker_verdict_carries_no_action_status(tmp_path: Path):
+    """An error the worker raised about the action is not the action's status."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    with pytest.raises(pb.LocalActionError) as caught:
+        pb.run_local_action(
+            action, cas_root=tmp_path / "cas", checkout_root=checkout
+        )
+    assert caught.value.returncode is None
+    assert caught.value.signal is None
+
+
+def test_local_worker_fails_closed_on_dirty_output_or_missing_result(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    dirty = _action(checkout)
+    (checkout / "result.bin").write_bytes(b"stale")
+    with pytest.raises(pb.LocalActionError, match="must be absent"):
+        pb.run_local_action(
+            dirty,
+            cas_root=tmp_path / "cas-dirty",
+            checkout_root=checkout,
+        )
+    (checkout / "result.bin").unlink()
+    missing = _action(checkout, argv=[sys.executable, "-c", "pass"])
+    with pytest.raises(pb.LocalActionError, match="without its declared result"):
+        pb.run_local_action(
+            missing,
+            cas_root=tmp_path / "cas-missing",
+            checkout_root=checkout,
+        )
+
+
+def test_sigkill_after_result_staging_is_reaped_and_retry_recomputes(
+    tmp_path: Path,
+):
+    """A killed worker cannot permanently wedge its declared result path."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    crash_worker = """
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+from prismabuild import core as pb, immutable_files
+
+action = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+real_atomic_publish = immutable_files.publish_immutable
+
+def kill_after_receipt_staging(path, raw, *, prelink_verify=None):
+    if "/actions/v3/" in str(path):
+        def kill_at_prelink():
+            if prelink_verify is not None:
+                prelink_verify()
+            os.kill(os.getpid(), signal.SIGKILL)
+        return real_atomic_publish(path, raw, prelink_verify=kill_at_prelink)
+    return real_atomic_publish(path, raw, prelink_verify=prelink_verify)
+
+immutable_files.publish_immutable = kill_after_receipt_staging
+pb.run_local_action(
+    action,
+    cas_root=Path(sys.argv[2]),
+    checkout_root=Path(sys.argv[3]),
+)
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            crash_worker,
+            str(action_path),
+            str(cas_root),
+            str(checkout),
+        ],
+        cwd=repository_root,
+        check=False,
+    )
+    assert crashed.returncode == -signal.SIGKILL
+    assert (checkout / "result.bin").read_bytes() == b"result"
+    assert pb.PrismaBuildCAS(cas_root).lookup(action) is None
+    claims = list((cas_root / "local-results" / "v1").glob("*/*.json"))
+    assert len(claims) == 1
+    staging = list(
+        (cas_root / ".staging" / "local-results").glob("*/*.tmp")
+    )
+    assert len(staging) == 1
+
+    recovered = pb.run_local_action(
+        action,
+        cas_root=cas_root,
+        checkout_root=checkout,
+    )
+    assert recovered["status"] == "published"
+    assert recovered["recovered_declared_result"] is True
+    assert recovered["reaped_staging_files"] == 1
+    assert not list(
+        (cas_root / ".staging" / "local-results").glob("*/*.tmp")
+    )
+    assert Path(recovered["payload_path"]).read_bytes() == b"result"
+
+
+def test_sigkill_during_action_keeps_output_locked_until_orphan_exits(
+    tmp_path: Path,
+):
+    """A retry cannot overlap an action child that survived worker death."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "f=open('starts.log','ab',buffering=0); "
+        "f.write((str(os.getpid())+'\\n').encode()); os.fsync(f.fileno()); "
+        "time.sleep(1.25); pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    argv = [
+        sys.executable,
+        str(worker),
+        "run-local",
+        "--action",
+        str(action_path),
+        "--cas-root",
+        str(cas_root),
+        "--checkout-root",
+        str(checkout),
+    ]
+    first = subprocess.Popen(argv)
+    retry: subprocess.Popen[bytes] | None = None
+    action_process_groups: set[int] = set()
+    starts = checkout / "starts.log"
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if starts.exists():
+                lines = starts.read_text(encoding="utf-8").splitlines()
+                if len(lines) == 1:
+                    action_process_groups.add(int(lines[0]))
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("first action process did not start")
+
+        first.send_signal(signal.SIGKILL)
+        assert first.wait(timeout=2.0) == -signal.SIGKILL
+        retry = subprocess.Popen(argv)
+        time.sleep(0.25)
+
+        # The inherited flock must keep the retry outside the action body.
+        assert retry.poll() is None
+        assert starts.read_text(encoding="utf-8").splitlines() == lines
+
+        assert retry.wait(timeout=8.0) == 0
+        all_starts = starts.read_text(encoding="utf-8").splitlines()
+        assert len(all_starts) == 2
+        action_process_groups.update(int(value) for value in all_starts)
+        receipt = pb.PrismaBuildCAS(cas_root).lookup(action)
+        assert receipt is not None
+        assert (checkout / "result.bin").read_bytes() == b"result"
+    finally:
+        for process in (first, retry):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=2.0)
+        for process_group in action_process_groups:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_closing_worker_lock_copy_does_not_unlock_inheriting_action(
+    tmp_path: Path,
+):
+    """No explicit unlock may defeat a surviving task's shared lock lease."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    output = checkout / "result.bin"
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    holder: subprocess.Popen[bytes] | None = None
+    try:
+        with pb._local_output_lock(cas, checkout, output) as descriptor:
+            holder = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(1)"],
+                pass_fds=(descriptor,),
+            )
+
+        lock_paths = list((cas.root / ".worker-locks").glob("*.lock"))
+        assert len(lock_paths) == 1
+        with lock_paths[0].open("r+b") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert holder.wait(timeout=3.0) == 0
+            fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(contender.fileno(), fcntl.LOCK_UN)
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=2.0)
+
+
+def test_sigint_worker_reaps_action_group_before_releasing_output_lock(
+    tmp_path: Path,
+):
+    """Handled worker interruption cannot leave an unlocked action writer."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "first=pathlib.Path('first-attempt'); "
+        "f=open('starts.log','ab',buffering=0); "
+        "f.write((str(os.getpid())+'\\n').encode()); os.fsync(f.fileno()); "
+        "is_retry=first.exists(); first.touch(); "
+        "time.sleep(0 if is_retry else 10); "
+        "pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    argv = [
+        sys.executable,
+        str(worker),
+        "run-local",
+        "--action",
+        str(action_path),
+        "--cas-root",
+        str(cas_root),
+        "--checkout-root",
+        str(checkout),
+    ]
+    interrupted = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    retry: subprocess.Popen[bytes] | None = None
+    starts = checkout / "starts.log"
+    action_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if starts.exists():
+                lines = starts.read_text(encoding="utf-8").splitlines()
+                if len(lines) == 1:
+                    action_pid = int(lines[0])
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("interrupted action process did not start")
+
+        interrupted.send_signal(signal.SIGINT)
+        # The bound is the production contract, not a round number: a handled
+        # interrupt TERMs the action group and waits at most one grace period
+        # before KILL; a child that honours TERM (this one) is gone well
+        # inside it (issue #25).
+        assert interrupted.wait(timeout=pb._PROCESS_GROUP_GRACE_SECONDS) != 0
+        assert action_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(action_pid, 0)
+
+        retry = subprocess.Popen(argv)
+        assert retry.wait(timeout=5.0) == 0
+        assert len(starts.read_text(encoding="utf-8").splitlines()) == 2
+        assert pb.PrismaBuildCAS(cas_root).lookup(action) is not None
+    finally:
+        for process in (interrupted, retry):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=2.0)
+        if action_pid is not None:
+            try:
+                os.killpg(action_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_sigterm_worker_reaps_action_group_before_exiting(tmp_path: Path):
+    """A SIGTERM at the worker must not orphan the action it launched.
+
+    The action runs in its own session on purpose, so a signal aimed at the
+    worker never reaches it.  Under the default disposition the worker dies
+    where it stands, the reap never runs, and the action keeps the GPU with
+    nothing watching it -- which is how ``pool``'s timeout failed to bound a
+    wedged run.  Handling the signal turns termination into the unwind that
+    already reaps the group.
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    task = (
+        "import os,pathlib,time; "
+        "f=open('action.pid','w'); f.write(str(os.getpid())); f.close(); "
+        "time.sleep(60); "
+        "pathlib.Path('result.bin').write_bytes(b'result')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", task])
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    cas_root = tmp_path / "cas"
+    repository_root = Path(__file__).resolve().parents[1]
+    worker = repository_root / "tools" / "prismabuild_worker.py"
+    terminated = subprocess.Popen(
+        [
+            sys.executable,
+            str(worker),
+            "run-local",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(cas_root),
+            "--checkout-root",
+            str(checkout),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    pidfile = checkout / "action.pid"
+    action_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if pidfile.exists():
+                text = pidfile.read_text(encoding="utf-8").strip()
+                if text:
+                    action_pid = int(text)
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("action process did not start")
+
+        terminated.send_signal(signal.SIGTERM)
+        # 143, not -15: the worker handled the signal and unwound, which is
+        # what gave the reap below a chance to run at all.
+        assert terminated.wait(timeout=20.0) == 128 + signal.SIGTERM
+        assert action_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(action_pid, 0)
+        assert pb.PrismaBuildCAS(cas_root).lookup(action) is None
+    finally:
+        if terminated.poll() is None:
+            terminated.kill()
+            terminated.wait(timeout=2.0)
+        # Reap the action before draining: it inherited the worker's pipes, so
+        # an unbounded read here would wait out the whole ``time.sleep`` of an
+        # action this test just proved should not have survived.
+        if action_pid is not None:
+            try:
+                os.killpg(action_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            terminated.communicate(timeout=10.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def test_local_result_repair_requires_exact_claim_and_refuses_symlink(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    output = checkout / "result.bin"
+    output.write_bytes(b"unclaimed")
+    with pytest.raises(pb.LocalActionError, match="no matching immutable"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.read_bytes() == b"unclaimed"
+
+    output.unlink()
+    claim = pb._ensure_local_result_claim(cas, action, checkout)
+    target = checkout / "target.bin"
+    target.write_bytes(b"must remain")
+    output.symlink_to(target.name)
+    with pytest.raises(pb.LocalActionError, match="escapes|symlink"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.is_symlink()
+    assert target.read_bytes() == b"must remain"
+
+    output.unlink()
+    output.write_bytes(b"claimed partial")
+    repaired = pb.repair_local_result(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+    assert repaired == {
+        "status": "removed",
+        "action_key": action["action_key"],
+        "claim_sha256": claim["claim_sha256"],
+        "result_path": str(output),
+        "reaped_staging_files": 0,
+    }
+    assert not output.exists()
+
+    output.write_bytes(b"claimed partial again")
+    action_path = tmp_path / "repair-action.json"
+    action_path.write_text(json.dumps(action), encoding="utf-8")
+    assert pb.main(
+        [
+            "repair-local-result",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(cas_root),
+            "--checkout-root",
+            str(checkout),
+        ]
+    ) == 0
+    cli_repair = json.loads(capsys.readouterr().out)
+    assert cli_repair["status"] == "removed"
+    assert cli_repair["claim_sha256"] == claim["claim_sha256"]
+
+    published = pb.run_local_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+    assert published["status"] == "published"
+    with pytest.raises(pb.LocalActionError, match="has a CAS receipt"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+
+
+def test_local_result_repair_rechecks_receipt_after_lock_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Repair cannot erase output certified while it waits for exclusion."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas_root = tmp_path / "cas"
+    cas = pb.PrismaBuildCAS(cas_root)
+    output = checkout / "result.bin"
+    output.write_bytes(b"result")
+    pb._ensure_local_result_claim(cas, action, checkout)
+    attestation = pb.preflight_action(
+        action, cas_root=cas_root, checkout_root=checkout
+    )
+
+    @contextmanager
+    def publish_while_repair_waits(*_args: object, **_kwargs: object):
+        receipt, won = cas.publish_result(
+            action, output, attestation=attestation
+        )
+        assert won is True
+        assert receipt["result"]["sha256"] == hashlib.sha256(b"result").hexdigest()
+        yield
+
+    monkeypatch.setattr(pb, "_local_output_lock", publish_while_repair_waits)
+    with pytest.raises(pb.LocalActionError, match="has a CAS receipt"):
+        pb.repair_local_result(
+            action, cas_root=cas_root, checkout_root=checkout
+        )
+    assert output.read_bytes() == b"result"
+    assert cas.lookup(action) is not None
+
+
+def test_local_worker_refuses_closure_changed_by_action_before_publish(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    code = (
+        "import pathlib; "
+        "pathlib.Path('task_code.py').write_text('# changed by action\\n'); "
+        "pathlib.Path('result.bin').write_bytes(b'untrusted')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert (checkout / "result.bin").read_bytes() == b"untrusted"
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_closure_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        (checkout / "task_code.py").write_text(
+            "# changed during CAS staging\n", encoding="utf-8"
+        )
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_closure_at_receipt_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_publish = immutable_files.publish_immutable
+
+    def publish_after_receipt_staging(
+        path: Path,
+        raw: bytes,
+        *,
+        prelink_verify=None,
+    ):
+        if prelink_verify is None:
+            return original_publish(path, raw)
+
+        def mutate_then_verify():
+            (checkout / "task_code.py").write_text(
+                "# changed while receipt was staged\n", encoding="utf-8"
+            )
+            prelink_verify()
+
+        return original_publish(
+            path,
+            raw,
+            prelink_verify=mutate_then_verify,
+        )
+
+    monkeypatch.setattr(immutable_files, "publish_immutable", publish_after_receipt_staging)
+    with pytest.raises(pb.ActionContractError, match="live code closure differs"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_refuses_launcher_changed_by_action_before_publish(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# original launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
+    code = (
+        "import pathlib; "
+        f"pathlib.Path({str(launcher)!r}).write_text('# changed launcher\\n'); "
+        "pathlib.Path('result.bin').write_bytes(b'untrusted')"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", code])
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+
+    with pytest.raises(pb.LocalActionError, match="worker launcher changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_identity=launcher_identity,
+        )
+
+    assert (checkout / "result.bin").read_bytes() == b"untrusted"
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_launcher_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    launcher = tmp_path / "worker-launcher.py"
+    launcher.write_text("# original launcher\n", encoding="utf-8")
+    launcher_identity = pb._identify_runtime_source(
+        launcher, where="test worker launcher"
+    )
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        launcher.write_text("# changed during CAS staging\n", encoding="utf-8")
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.LocalActionError, match="worker launcher changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            worker_launcher_identity=launcher_identity,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_rechecks_core_after_result_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    original_copy = pb._copy_to_staging
+
+    def copy_then_mutate(source: Path, staging_dir: Path):
+        staged = original_copy(source, staging_dir)
+        fake_core.write_text("# changed during CAS staging\n", encoding="utf-8")
+        return staged
+
+    monkeypatch.setattr(pb, "_copy_to_staging", copy_then_mutate)
+    with pytest.raises(pb.LocalActionError, match="worker core changed"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_local_worker_refuses_symlinked_result_parent(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    outside = tmp_path / "outside"
+    checkout.mkdir()
+    outside.mkdir()
+    (checkout / "sub").symlink_to(outside, target_is_directory=True)
+    action = _action(checkout, result_path="sub/result.bin")
+    with pytest.raises(pb.LocalActionError, match="traverses a symlink"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+        )
+    assert not (outside / "result.bin").exists()
+
+
+def test_local_worker_serializes_shared_checkout_output(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    actions = [
+        _action(
+            checkout,
+            argv=[
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib,time; time.sleep(0.15); "
+                    f"pathlib.Path('shared.bin').write_bytes({payload!r})"
+                ),
+            ],
+            result_path="shared.bin",
+        )
+        for payload in (b"AAAA", b"BBBB")
+    ]
+    errors: list[BaseException] = []
+    results: list[dict[str, object]] = []
+    barrier = threading.Barrier(2)
+
+    def run(action: dict[str, object]) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                pb.run_local_action(
+                    action,
+                    cas_root=tmp_path / "cas",
+                    checkout_root=checkout,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(action,)) for action in actions]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], pb.LocalActionError)
+    published = Path(str(results[0]["payload_path"])).read_bytes()
+    assert published == (checkout / "shared.bin").read_bytes()
+
+
+def test_timeout_terminates_child_process_group(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    marker = tmp_path / "grandchild-marker"
+    child_code = f"import time,pathlib; time.sleep(0.8); pathlib.Path({str(marker)!r}).write_text('alive')"
+    parent_code = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable,'-c',{child_code!r}]); time.sleep(5)"
+    )
+    action = _action(checkout, argv=[sys.executable, "-c", parent_code])
+    with pytest.raises(pb.LocalActionError, match="timed out"):
+        pb.run_local_action(
+            action,
+            cas_root=tmp_path / "cas",
+            checkout_root=checkout,
+            timeout_seconds=0.1,
+        )
+    time.sleep(1.0)
+    assert not marker.exists()
+
+
+def test_deterministic_recompute_must_match(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.write_bytes(b"canonical")
+    second.write_bytes(b"different")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    receipt, won = cas.publish_result(
+        action,
+        first,
+        attestation=attestation,
+    )
+    assert won
+    with pytest.raises(pb.CASConflictError, match="deterministic recomputation"):
+        cas.publish_result(
+            action,
+            second,
+            attestation=attestation,
+        )
+    assert cas.lookup(action) == receipt
+
+
+def test_fresh_result_publish_reuses_verified_winning_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"canonical")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    original_identity = pb.immutable_files.file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
+    receipt, won = cas.publish_result(
+        action, output, attestation=attestation
+    )
+    assert won is True
+    assert consumed == []
+    assert cas._verified_receipt_result_path(receipt).is_file()
+    assert consumed == []
+
+    assert cas.lookup(action) == receipt
+    assert consumed == [cas._blob_path(str(receipt["result"]["sha256"]))]
+
+
+def test_stochastic_receipt_loser_hashes_different_canonical_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, determinism="stochastic")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.write_bytes(b"first canonical result")
+    second.write_bytes(b"different losing result")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    canonical, won = cas.publish_result(
+        action, first, attestation=attestation
+    )
+    assert won is True
+    original_identity = pb.immutable_files.file_identity_nofollow
+    consumed: list[Path] = []
+
+    def track_identity(path: Path, **kwargs: object):
+        consumed.append(path)
+        return original_identity(path, **kwargs)
+
+    monkeypatch.setattr(pb.immutable_files, "file_identity_nofollow", track_identity)
+    observed, won = cas.publish_result(
+        action, second, attestation=attestation
+    )
+    assert won is False
+    assert observed == canonical
+    assert consumed == [
+        cas._blob_path(str(canonical["result"]["sha256"]))
+    ]
+
+
+def test_cas_publish_refuses_worker_core_changed_after_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+    fake_core.write_text("# changed worker core\n", encoding="utf-8")
+
+    with pytest.raises(pb.LocalActionError, match="worker core changed"):
+        cas.publish_result(action, result, attestation=attestation)
+
+    assert cas.lookup(action) is None
+
+
+def test_cas_refuses_attestation_from_a_different_loaded_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    first_core = tmp_path / "first-prismabuild.py"
+    second_core = tmp_path / "second-prismabuild.py"
+    first_core.write_text("# first loaded core\n", encoding="utf-8")
+    second_core.write_text("# second loaded core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(first_core, where="first test worker core"),
+    )
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(second_core, where="second test worker core"),
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+
+    with pytest.raises(
+        pb.LocalActionError, match="core differs from module import identity"
+    ):
+        cas.publish_result(action, result, attestation=attestation)
+
+    assert cas.lookup(action) is None
+
+
+def test_cas_runs_runtime_recheck_after_action_precommit_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    fake_core = tmp_path / "prismabuild.py"
+    fake_core.write_text("# original worker core\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pb,
+        "_LOADED_WORKER_CORE_IDENTITY",
+        pb._identify_runtime_source(fake_core, where="test worker core"),
+    )
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = pb.preflight_action(
+        action, cas_root=tmp_path / "cas", checkout_root=checkout
+    )
+    result = tmp_path / "result"
+    result.write_bytes(b"candidate")
+
+    def mutate_core_during_action_check() -> None:
+        fake_core.write_text(
+            "# changed by action-specific callback\n", encoding="utf-8"
+        )
+
+    with pytest.raises(pb.LocalActionError, match="core changed after module import"):
+        cas.publish_result(
+            action,
+            result,
+            attestation=attestation,
+            precommit_verify=mutate_core_during_action_check,
+        )
+
+    assert cas.lookup(action) is None
+
+
+def test_stochastic_action_is_atomic_first_result_wins(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout, determinism="stochastic")
+    outputs = []
+    for index in range(2):
+        path = tmp_path / f"candidate-{index}"
+        path.write_bytes(f"candidate-{index}".encode())
+        outputs.append(path)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    barrier = threading.Barrier(2)
+    results: list[tuple[dict[str, object], bool]] = []
+    errors: list[BaseException] = []
+
+    def publish(index: int) -> None:
+        try:
+            barrier.wait()
+            results.append(
+                cas.publish_result(
+                    action,
+                    outputs[index],
+                    attestation=attestation,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=publish, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert sum(won for _, won in results) == 1
+    assert results[0][0] == results[1][0] == cas.lookup(action)
+    receipt = results[0][0]
+    winner_payload = cas.result_path(receipt, action).read_bytes()
+    assert winner_payload in {b"candidate-0", b"candidate-1"}
+
+
+def test_cache_detects_payload_and_receipt_tampering(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"trusted")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    receipt, _ = cas.publish_result(
+        action,
+        output,
+        attestation=attestation,
+    )
+    payload = cas.result_path(receipt, action)
+    payload.chmod(0o644)
+    payload.write_bytes(b"tampered")
+    with pytest.raises(pb.CASTamperError, match="payload (?:content|size) differs"):
+        cas.lookup(action)
+
+    # Restore the content and then alter the immutable receipt's bytes.
+    payload.write_bytes(b"trusted")
+    receipt_path = cas._receipt_path(str(action["action_key"]))
+    receipt_path.chmod(0o644)
+    receipt_path.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(pb.CASTamperError, match="writable|fields differ"):
+        cas.lookup(action)
+
+    receipt_path.write_text("{broken\n", encoding="utf-8")
+    with pytest.raises(pb.CASTamperError, match="writable|strict UTF-8 JSON"):
+        cas.lookup(action)
+
+
+def test_cas_lookup_rejects_receipt_parent_swapped_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"trusted")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    receipt, _ = cas.publish_result(
+        action,
+        output,
+        attestation=_attestation(checkout, action, tmp_path / "cas"),
+    )
+    actions = cas.root / "actions"
+    parked = tmp_path / "parked-actions"
+    outside = tmp_path / "outside-actions"
+    hostile = (
+        outside
+        / "v3"
+        / str(action["action_key"])[:2]
+        / f"{action['action_key']}.json"
+    )
+    hostile.parent.mkdir(parents=True)
+    hostile.write_text("{}\n", encoding="utf-8")
+    hostile.chmod(0o444)
+    original_open = pb.os.open
+    swapped = False
+
+    def open_then_swap(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if path == "actions" and dir_fd is not None and not swapped:
+            swapped = True
+            actions.rename(parked)
+            actions.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(pb.os, "open", open_then_swap)
+    with pytest.raises(pb.CASTamperError, match="not a real directory|changed"):
+        cas.lookup(action)
+    assert hostile.read_bytes() == b"{}\n"
+    assert receipt["action_key"] == action["action_key"]
+
+
+def test_cas_publish_result_parent_swap_never_writes_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    output = tmp_path / "output"
+    output.write_bytes(b"trusted")
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    attestation = _attestation(checkout, action, tmp_path / "cas")
+    actions = cas.root / "actions"
+    parked = tmp_path / "parked-publish-actions"
+    outside = tmp_path / "outside-publish-actions"
+    outside.mkdir()
+    original_open = pb.os.open
+    swapped = False
+
+    def open_then_swap(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if path == "actions" and dir_fd is not None and not swapped:
+            swapped = True
+            actions.rename(parked)
+            actions.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(pb.os, "open", open_then_swap)
+    with pytest.raises(pb.CASTamperError, match="not a real directory|changed"):
+        cas.publish_result(action, output, attestation=attestation)
+    assert list(outside.rglob("*")) == []
+    assert not list((cas.root / ".staging").glob("*.tmp"))
+
+
+def test_cache_structural_error_is_not_a_clean_miss(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    shard = cas._receipt_path(str(action["action_key"])).parent
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b"not-a-directory")
+    with pytest.raises(pb.CASTamperError):
+        cas.lookup(action)
+
+
+def test_v3_receipt_namespace_preserves_and_ignores_legacy_v2(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    action = _action(checkout)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    action_key = str(action["action_key"])
+    legacy_path = cas._legacy_v2_receipt_path(action_key)
+    legacy_path.parent.mkdir(parents=True)
+    current_attestation = _attestation(
+        checkout, action, tmp_path / "cas"
+    )
+    legacy_producer_body = {
+        key: value
+        for key, value in current_attestation.items()
+        if key not in {"runtime", "attestation_sha256"}
+    }
+    legacy_producer_body["schema"] = (
+        "prismaquant.prismabuild.worker_attestation.v1"
+    )
+    legacy_producer = {
+        **legacy_producer_body,
+        "attestation_sha256": pb.canonical_sha256(legacy_producer_body),
+    }
+    legacy_payload = b"legacy v2 result"
+    legacy_digest = hashlib.sha256(legacy_payload).hexdigest()
+    legacy_blob = cas._blob_path(legacy_digest)
+    legacy_blob.parent.mkdir(parents=True)
+    legacy_blob.write_bytes(legacy_payload)
+    legacy_body = {
+        "schema": "prismaquant.prismabuild.cas_receipt.v2",
+        "action_key": action_key,
+        "action_manifest_sha256": pb.canonical_sha256(action),
+        "result": {"sha256": legacy_digest, "bytes": len(legacy_payload)},
+        "producer": legacy_producer,
+    }
+    legacy_receipt = {
+        **legacy_body,
+        "receipt_sha256": pb.canonical_sha256(legacy_body),
+    }
+    legacy_bytes = (
+        json.dumps(
+            legacy_receipt,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    legacy_path.write_bytes(legacy_bytes)
+    legacy_path.chmod(0o444)
+
+    # A legacy entry is not v3 tamper and cannot satisfy a v3 lookup.
+    assert cas.lookup(action) is None
+    output = tmp_path / "output"
+    output.write_bytes(b"v3 result")
+    receipt, won = cas.publish_result(
+        action,
+        output,
+        attestation=current_attestation,
+    )
+
+    assert won
+    assert receipt["schema"] == pb.CAS_RECEIPT_SCHEMA_V3
+    assert cas.lookup(action) == receipt
+    assert cas._receipt_path(action_key) != legacy_path
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert legacy_blob.read_bytes() == legacy_payload
+
+
+def test_cli_seals_keys_runs_and_verifies(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    body = _body(checkout)
+    body_path = tmp_path / "body.json"
+    action_path = tmp_path / "action.json"
+    body_path.write_text(json.dumps(body), encoding="utf-8")
+
+    assert pb.main(["seal-action", "--body", str(body_path), "--output", str(action_path)]) == 0
+    action = json.loads(action_path.read_text(encoding="utf-8"))
+    assert pb.main(["key", "--action", str(action_path)]) == 0
+    assert str(action["action_key"]) in capsys.readouterr().out
+    assert pb.main(
+        [
+            "run-local",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(tmp_path / "cas"),
+            "--checkout-root",
+            str(checkout),
+        ]
+    ) == 0
+    assert '"status": "published"' in capsys.readouterr().out
+    assert pb.main(
+        [
+            "verify",
+            "--action",
+            str(action_path),
+            "--cas-root",
+            str(tmp_path / "cas"),
+        ]
+    ) == 0
+    assert str(action["action_key"]) in capsys.readouterr().out
+
+
+def test_cli_ingests_and_verifies_input_contract(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    source = tmp_path / "model.bin"
+    payload = b"model bytes"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    cas_root = tmp_path / "cas"
+
+    command = [
+        "ingest-input",
+        "--source",
+        str(source),
+        "--cas-root",
+        str(cas_root),
+        "--input-id",
+        "model/weights",
+        "--expected-sha256",
+        digest,
+        "--expected-bytes",
+        str(len(payload)),
+    ]
+    assert pb.main(command) == 0
+    published = json.loads(capsys.readouterr().out)
+    assert published["status"] == "published"
+    assert published["input"] == {
+        "id": "model/weights",
+        "sha256": digest,
+        "bytes": len(payload),
+    }
+
+    assert pb.main(command) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_present"
+
+    contract_path = tmp_path / "input.json"
+    contract_path.write_text(json.dumps(published["input"]), encoding="utf-8")
+    assert pb.main(
+        [
+            "verify-input",
+            "--input-contract",
+            str(contract_path),
+            "--cas-root",
+            str(cas_root),
+        ]
+    ) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["input"] == published["input"]
+    assert Path(verified["payload_path"]).read_bytes() == payload
+
+
+def _two_commit_checkout(tmp_path: Path) -> tuple[Path, str, str, str]:
+    checkout = tmp_path / "ancestry"
+    checkout.mkdir()
+    for argv in (
+        ["init", "-q"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "PrismaBuild test"],
+    ):
+        subprocess.run(["git", "-C", str(checkout), *argv], check=True)
+    ids = []
+    for index in range(2):
+        (checkout / f"f{index}.txt").write_text(f"{index}\n")
+        subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "commit", "-qm", f"commit {index}"],
+            check=True,
+        )
+        ids.append(
+            subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+        )
+    branch = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return checkout, ids[0], ids[1], branch
+
+
+def test_pbrun_preflight_proves_the_sealed_parent_and_refs(
+    tmp_path: Path,
+) -> None:
+    """Ancestry is attested where it will be used, not assumed from a record.
+
+    A bundle that omitted the parent still checks out clean at the sealed
+    commit, so the head/dirty proof cannot see the difference -- the action
+    finds out inside its own gate, on a worker, after the queue said yes.
+    """
+
+    checkout, first, second, branch = _two_commit_checkout(tmp_path)
+    snapshot = {
+        "commit": second, "parent": first, "refs": {branch: second},
+    }
+    pb._verify_pbrun_checkout_ancestry(snapshot, checkout)
+
+    with pytest.raises(pb.ActionContractError, match="sealed parent"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": None, "refs": {}}, checkout
+        )
+    with pytest.raises(pb.ActionContractError, match="sealed parent"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": second, "refs": {}}, checkout
+        )
+    with pytest.raises(pb.ActionContractError, match=f"ref '{branch}'"):
+        pb._verify_pbrun_checkout_ancestry(
+            {"commit": second, "parent": first, "refs": {branch: first}},
+            checkout,
+        )
+
+
+def _snapshot_input(tmp_path: Path) -> dict[str, object]:
+    bundle = tmp_path / "checkout.bundle"
+    bundle.write_bytes(b"not a real bundle, only a CAS input\n")
+    cas = pb.PrismaBuildCAS(tmp_path / "snapshot-cas")
+    entry, _ = cas.ingest_input(
+        bundle, input_id=pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID
+    )
+    return entry
+
+
+def test_pbrun_snapshot_v2_carries_parent_and_named_refs(tmp_path: Path) -> None:
+    """Ancestry is part of the contract, so it is part of what is validated."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": "b" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {"release": "c" * 40, "main": "d" * 40},
+        }
+    )
+    assert validated["parent"] == "b" * 40
+    assert list(validated["refs"]) == ["main", "release"]      # sorted
+
+
+def test_pbrun_snapshot_v2_accepts_an_unborn_parent(tmp_path: Path) -> None:
+    """``null`` is the only other honest answer, and it is spelled once."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            "commit": "a" * 40,
+            "parent": None,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+            "refs": {},
+        }
+    )
+    assert validated["parent"] is None
+    assert validated["refs"] == {}
+
+
+def test_pbrun_snapshot_v1_keeps_its_exact_shape(tmp_path: Path) -> None:
+    """A queued v1 item predates ancestry and must not grow keys."""
+
+    validated = pb.validate_pbrun_checkout_snapshot(
+        {
+            "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+            "commit": "a" * 40,
+            "subdirectory": ".",
+            "input": _snapshot_input(tmp_path),
+        }
+    )
+    assert set(validated) == {"schema", "commit", "subdirectory", "input"}
+
+
+def test_pbrun_snapshot_v1_refuses_ancestry_keys(tmp_path: Path) -> None:
+    """Each schema owns one exact key set; a hybrid record is neither."""
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "master:evil",
+        "--upload-pack=touch",
+        "../escape",
+        "refs/heads/main",
+        "HEAD",
+        "prismabuild-snapshot",
+        "main^{}",
+        "with space",
+        "",
+    ],
+)
+def test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name(
+    tmp_path: Path, name: str,
+) -> None:
+    """These names become ``git fetch`` refspecs inside a claiming worker.
+
+    The record arrives over the queue, so its ref names are input, not a
+    constant. A colon splits a refspec, a leading dash becomes an option, and
+    ``HEAD`` or the snapshot's own ref name makes the materialized checkout's
+    later revision lookups ambiguous.
+    """
+
+    with pytest.raises(pb.ActionContractError):
+        pb.validate_pbrun_checkout_snapshot(
+            {
+                "schema": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+                "commit": "a" * 40,
+                "parent": "b" * 40,
+                "subdirectory": ".",
+                "input": _snapshot_input(tmp_path),
+                "refs": {name: "c" * 40},
+            }
+        )
+
+
+def test_action_key_has_expected_plain_sha256_shape(tmp_path: Path):
+    action = _action(tmp_path)
+    assert len(action["action_key"]) == 64
+    int(str(action["action_key"]), 16)
+    body = {key: action[key] for key in action if key != "action_key"}
+    expected = hashlib.sha256(
+        json.dumps(
+            body,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert action["action_key"] == expected
+
+
+def test_payload_text_may_carry_newlines_and_tabs(tmp_path: Path) -> None:
+    """``execve`` and JSON carry any character but NUL (issue #21).
+
+    A ``bash -lc`` script with a newline is an ordinary argument, and so are
+    an environment value and the params string ``pbrun`` records the command
+    in: refusing them turned a legal program into a contract error, and
+    ``pbrun`` surfaced that as a raw traceback before any action existed.
+    Keys and identifiers keep the strict rule
+    (``test_paths_and_nested_params_reject_ambiguous_json``).
+    """
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    script = "set -e\nprintf 'line1\\nline2\\n'\n\techo tabbed\n"
+    body = _body(checkout, argv=["/bin/bash", "-lc", script])
+    body["environment"]["variables"]["MULTI"] = "a\tb\nc"
+    body["params"]["command"] = ["/bin/bash", "-lc", script]
+
+    action = pb.seal_action(body)
+
+    assert action["task"]["argv"][2] == script
+    assert action["environment"]["variables"]["MULTI"] == "a\tb\nc"
+    assert action["params"]["command"][2] == script
+    assert pb.validate_action(action) == action
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda body: body["task"]["argv"].append("a\x00b"),
+        lambda body: body["environment"]["variables"].__setitem__("E", "a\x00b"),
+        lambda body: body["params"].__setitem__("p", "a\x00b"),
+    ],
+    ids=["argv", "environment", "params"],
+)
+def test_nul_is_still_refused_in_payload_text(tmp_path: Path, mutate) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    body = _body(checkout)
+    mutate(body)
+    with pytest.raises(pb.ActionContractError, match="NUL"):
+        pb.seal_action(body)
+
+
+def test_identifiers_still_refuse_control_characters(tmp_path: Path) -> None:
+    """Only payload text was relaxed; a name with a newline is still refused."""
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    body = _body(checkout)
+    body["environment"]["variables"]["BAD\nKEY"] = "x"
+    with pytest.raises(pb.ActionContractError, match="control character"):
+        pb.seal_action(body)
+
+
+def test_the_worker_probes_exactly_the_distributions_the_action_declares():
+    # No list of runtimes lives in core (#1076): the probe asks the action's
+    # interpreter for the names the submitter declared, passed as data.
+    observed = pb._probe_python_toolchain(
+        Path(sys.executable), ["pytest", "no-such-distribution-1076"])
+    assert observed["pytest"] == pytest.__version__
+    assert "no-such-distribution-1076" not in observed
+    assert set(observed) == {"python", "pytest"}
+    assert pb._declared_distributions(
+        {"argv0.sha256": "0" * 64, "python": "3.12", "torch": "2.11", "vllm": "0.20"}
+    ) == ["torch", "vllm"]

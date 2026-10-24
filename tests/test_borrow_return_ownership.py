@@ -1,9 +1,36 @@
 """An abandoned claim cannot return a later claimant's borrow."""
 from pathlib import Path
 import os
+import json
 import pytest
 from test_adaptive_cpu import rig
+from test_cpu_lending import loan_rig
 from prismabuild import pool
+
+
+@pytest.mark.parametrize('field,value', [('priority', 0), ('cpu_qos', 'protected')])
+def test_changed_publication_unwinds_before_claim_commit(rig, monkeypatch, field, value):
+    from prismabuild import adaptive_cpu
+    queue, clock, state, donor, first, publish, claim, telemetry = rig
+    key = f'{2:064x}'
+    ready = queue.records.item_path(pool.record_store.READY, key)
+    original = os.rename
+    before = queue.ledger().held()
+    marker = adaptive_cpu.local_state_base(queue.ledger().base) / 'last-borrow.json'
+    previous = adaptive_cpu.read_json(marker)
+    def republish(source, target):
+        if Path(source) == ready:
+            row = json.loads(ready.read_text())
+            row[field] = value
+            queue.records.replace_record_at(ready, row)
+        return original(source, target)
+    monkeypatch.setattr(pool.os, 'rename', republish)
+    assert claim() is None
+    assert ready.exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert not queue.records.lease_path(key).exists()
+    assert queue.ledger().held() == before
+    assert adaptive_cpu.read_json(marker) == previous
 
 
 def test_exception_after_borrow_return_does_not_return_a_peers_borrow(rig, monkeypatch):
@@ -42,20 +69,17 @@ def test_exception_after_borrow_return_does_not_return_a_peers_borrow(rig, monke
 
 
 @pytest.mark.parametrize('write_then_raise', [False, True])
-def test_repeated_return_cannot_clear_a_peer_with_the_same_sample(rig, monkeypatch, write_then_raise):
+def test_repeated_return_cannot_clear_a_peer_with_the_same_sample(loan_rig, monkeypatch, write_then_raise):
     from prismabuild import adaptive_cpu
-    queue, clock, state, donor, first, publish, claim, telemetry = rig
-    controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [0], 'fallback': [1]})
-    old = {'borrowing': True, 'sampled_unix': clock[0]}
+    ledger, tiers, controller, donor, candidate, old = loan_rig
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=old, cpu_tiers=tiers)
+    assert handle
     previous = controller.admitted(old)
-    # Retain a separate copy to check durable ownership, not just local state.
     delayed = dict(old)
     write = controller.write_state
-
     def completed_write_then_error(name, record):
         write(name, record)
         raise OSError('write completed before error')
-
     if write_then_raise:
         monkeypatch.setattr(controller, 'write_state', completed_write_then_error)
         with pytest.raises(OSError, match='write completed'):
@@ -64,21 +88,27 @@ def test_repeated_return_cannot_clear_a_peer_with_the_same_sample(rig, monkeypat
     else:
         controller.withdrew(old, previous)
     assert 'borrow_id' not in old
-    peer = {'borrowing': True, 'sampled_unix': clock[0]}
+    ledger.abandon_acquire(handle)
+    peer = controller.decision(candidate, candidate['resources'], identity=('candidate', False), owner=None)
+    assert peer and peer['borrowing']
+    handle = ledger.begin_acquire(candidate['action_key'], candidate['resources'], adaptive=peer, cpu_tiers=tiers)
+    assert handle
     controller.admitted(peer)
-    expected = adaptive_cpu.read_json(controller.base / 'last-borrow.json')
+    expected = adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json')
     assert peer['borrow_id'] != delayed['borrow_id']
     controller.withdrew(old, previous)
     controller.withdrew(delayed, previous)
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == expected
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == expected
 
 
-def test_unowned_legacy_rollback_cannot_return_a_current_borrow(rig):
+def test_unissued_opted_rollback_cannot_return_a_current_borrow(loan_rig):
     from prismabuild import adaptive_cpu
-    queue, clock, state, donor, first, publish, claim, telemetry = rig
-    controller = adaptive_cpu.Controller(queue.ledger(), {'preferred': [0], 'fallback': [1]})
-    current = {'borrowing': True, 'sampled_unix': clock[0]}
+    ledger, tiers, controller, donor, item, current = loan_rig
+    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=current, cpu_tiers=tiers)
+    assert handle
     controller.admitted(current)
-    expected = adaptive_cpu.read_json(controller.base / 'last-borrow.json')
-    controller.withdrew({'borrowing': True, 'sampled_unix': clock[0]}, {})
-    assert adaptive_cpu.read_json(controller.base / 'last-borrow.json') == expected
+    expected = adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json')
+    with pytest.raises(ValueError, match='unissued'):
+        controller.withdrew({'cpu_qos': 'opportunistic', 'cpu_weight': 10,
+                             'borrowing': True, 'sampled_unix': current['sampled_unix']}, {})
+    assert adaptive_cpu.read_json(controller.base / 'last-opportunistic-borrow.json') == expected

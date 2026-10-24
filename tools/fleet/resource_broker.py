@@ -265,7 +265,9 @@ class SystemdBackend:
     def command(self,*argv):
         r=subprocess.run(['/usr/bin/systemctl',*argv],capture_output=True,text=True,timeout=15)
         if r.returncode:raise ValueError('systemd resource operation failed: '+r.stderr.strip()[:500])
-    def create(self, scope, budget):
+    def create(self, scope, budget, cpu_weight=100):
+        if type(cpu_weight) is not int or cpu_weight not in (10,100):
+            raise ValueError('unsupported CPU weight')
         # A generated name already containing processes is not ours to adopt.
         existing=self.path(scope)
         if existing.exists() and 'populated 1' in (existing/'cgroup.events').read_text():
@@ -274,7 +276,7 @@ class SystemdBackend:
         self.command('start',scope)
         self.command('set-property','--runtime',scope,
                      f'MemoryMax={budget}','MemoryHigh=infinity',
-                     'MemorySwapMax=0','CPUAccounting=yes','CPUWeight=100','MemoryAccounting=yes')
+                     'MemorySwapMax=0','CPUAccounting=yes',f'CPUWeight={cpu_weight}','MemoryAccounting=yes')
         group=self.path(scope)
         # Older supported systemd releases lack a MemoryOOMGroup property.
         # Install and verify the kernel contract directly before any launch.
@@ -283,6 +285,7 @@ class SystemdBackend:
                 or (group/'memory.high').read_text().strip()!='max'
                 or (group/'memory.oom.group').read_text().strip()!='1'):
             raise ValueError('kernel memory envelope differs from requested scope')
+        self.verify_cpu_weight(scope,cpu_weight)
         available=set((group/'cgroup.controllers').read_text().split())
         if not {'cpu','memory'}<=available:raise ValueError('CPU/memory controllers unavailable')
         (group/'cgroup.subtree_control').write_text('+cpu +memory')
@@ -303,6 +306,10 @@ class SystemdBackend:
                 'cgroup_identity':[info.st_dev,info.st_ino],
                 'memory_oom_kill_baseline':int(events.get('oom_kill',0)),
                 'memory_oom_local_baseline':int(local_events['oom'])}
+    def verify_cpu_weight(self, scope, expected):
+        if int((self.path(scope)/'cpu.weight').read_text())!=expected:
+            raise ValueError('kernel CPU weight differs from requested scope')
+
     def run(self, scope, uid, command, stdio):
         helper=_trusted_file(Path(__file__).resolve().with_name('resource_payload.py'))
         read_fd=os.memfd_create('pb-user-command',os.MFD_CLOEXEC)
@@ -598,12 +605,15 @@ class Authority:
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
-        allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
-                 else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
+        allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','cpu_weight','recovery_protocol'} if op=='create'
+                 else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','cpu_weight'} if op=='recover_create'
                  else {'op','action_key','nonce','token','evidence'} if op=='settle'
                  else {'op','action_key','nonce','token','reason','memory_max_bytes'})
         if set(request)-allowed:raise ValueError('unknown request field')
         if op in {'create','recover_create'}:
+            cpu_weight=request.get('cpu_weight',100)
+            if type(cpu_weight) is not int or cpu_weight not in (10,100):
+                raise ValueError('unsupported CPU weight')
             gpu_budget=request.get('gpu_memory_max_bytes',request.get('memory_max_bytes'))
             # VRAM can exceed system RAM on a discrete host. Host RAM bounds
             # do not describe this independent logical budget; admission uses
@@ -621,16 +631,20 @@ class Authority:
                     # A timed-out create may still be queued on this lock.
                     # Fence it durably before declaring this attempt absent.
                     record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                            'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'token':secrets.token_hex(32),
+                            'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'cpu_weight':cpu_weight,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
                     _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
                     return {'ok':True,'scope_id':scope,'missing':True}
-                if (record['memory_max_bytes']!=budget
+                if (record.get('cpu_weight',100)!=cpu_weight or record['memory_max_bytes']!=budget
                         or record.get('gpu_memory_max_bytes',record['memory_max_bytes'])!=gpu_budget):
                     raise ValueError('attempt budget cannot change')
                 if 'gpu_memory_max_bytes' not in record:
                     record['gpu_memory_max_bytes']=gpu_budget
                     _atomic(self.state_dir/(scope+'.json'),record)
+                if (not record.get('released_unix') and not record.get('pending')
+                        and self.backend.exists(scope)):
+                    try:self.backend.verify_cpu_weight(scope,cpu_weight)
+                    except FileNotFoundError:pass  # vanished scopes remain recoverable for stop/release
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
@@ -642,7 +656,7 @@ class Authority:
                     return {'ok':False,'maintenance':True,'retryable':True,
                             'error':'resource broker is draining for maintenance'}
                 if existing:
-                    if (existing['memory_max_bytes']!=budget
+                    if (existing.get('cpu_weight',100)!=cpu_weight or existing['memory_max_bytes']!=budget
                             or existing.get('gpu_memory_max_bytes',existing['memory_max_bytes'])!=gpu_budget):
                         raise ValueError('attempt budget cannot change')
                     if 'gpu_memory_max_bytes' not in existing:
@@ -651,17 +665,18 @@ class Authority:
                     if existing.get('released_unix'):raise ValueError('attempt is released')
                     if existing.get('stopped_unix'):raise ValueError('attempt is stopped')
                     if existing.get('pending'):
-                        existing.update(self.backend.create(scope,budget));existing.pop('pending',None)
+                        existing.update(self.backend.create(scope,budget,cpu_weight=cpu_weight));existing.pop('pending',None)
                         _atomic(self.state_dir/(scope+'.json'),existing)
+                    self.backend.verify_cpu_weight(scope,cpu_weight)
                     return {'ok':True,**existing}
                 record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
-                        'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,
+                        'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'cpu_weight':cpu_weight,
                         'token':secrets.token_hex(32),'created_unix':time.time()}
                 # Persist authority before OS creation so a broker restart can
                 # retain exact recovery ownership even after partial setup.
                 path=self.state_dir/(scope+'.json');record['pending']=True
                 _atomic(path,record);self.records[scope]=record
-                try:record.update(self.backend.create(scope,budget))
+                try:record.update(self.backend.create(scope,budget,cpu_weight=cpu_weight))
                 except Exception:
                     # No payload was attached. Retain pending evidence; do not
                     # silently treat a partially configured scope as runnable.
@@ -1176,6 +1191,8 @@ class Authority:
             if record.get('launched_unix'):raise ValueError('attempt already launched')
             # Persist launch intent before spawning; ambiguous restart refuses
             # a duplicate, retaining the exact scope for stop/recovery.
+            if record.get('pending'):raise ValueError('scope creation is pending')
+            self.backend.verify_cpu_weight(record['scope_id'],record.get('cpu_weight',100))
             record['launched_unix']=time.time()
             _atomic(self.state_dir/(record['scope_id']+'.json'),record)
             return self.backend.run(record['scope_id'],uid,command,stdio)
@@ -1191,6 +1208,7 @@ class Authority:
             if record.get('released_unix'):raise ValueError('attempt is released')
             if op=='container_begin':
                 if record.get('stopped_unix'):raise ValueError('attempt is stopped')
+                self.backend.verify_cpu_weight(scope,record.get('cpu_weight',100))
                 # This check grants only conservative intent registration, not
                 # process migration or a kill capability. A vanished peer
                 # cannot make another scope runnable or clear an intent.

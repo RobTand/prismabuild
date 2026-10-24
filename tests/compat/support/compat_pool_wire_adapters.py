@@ -10,6 +10,45 @@ import runpy
 C, OWNER, TIER = "c" * 64, "compat-owner", "prismabuild-stage:compat"
 
 
+def borrowed_claim_record(queue, core, pool, store, record):
+    """Current queue writers retain an actual cap-zero legacy loan."""
+    cpu = pool.cpu_admission
+    tiers = {'preferred': list(range(4)), 'fallback': list(range(4, 8))}
+    ledger = queue.ledger('compat-host')
+    ledger.ensure_capacity({'cpu': 8, 'mem_gb': 8})
+    ledger.configure_cpu_tiers(tiers)
+    clock = [97.]
+    cpu.time.time = lambda: clock[0]
+    def sample():
+        return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
+                'busy_cpus': .4, 'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0.,
+                'per_cpu_busy': {str(c): .1 if c < 4 else 0. for c in range(8)}}
+    controller = cpu.Controller(ledger, tiers, sampler=sample)
+    body = runpy.run_path(str(Path(__file__).with_name('compat_core_adapters.py')))['action_body'](core, store)
+    donor = core.seal_action({**body, 'params': {**body['params'], 'loan_fixture': 'donor'}})
+    cas = core.PrismaBuildCAS(store / 'cas')
+    cas.publish_action_request(donor)
+    item = {'action_key': donor['action_key'], 'cas_root': str(cas.root), 'resources': {'cpu': 4}}
+    with controller.locked():
+        metadata = controller.decision(item, item['resources'], owner=None)
+        handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+        assert handle and ledger.commit_acquire(item['action_key'], handle)
+    for at in (98., 99., 100.):
+        clock[0] = at
+        cpu.write_json(controller.base / 'telemetry' / (item['action_key'] + '.json'), {
+            'action_key': item['action_key'], 'nonce': 'e' * 32, 'complete': True,
+            'sampled_unix': at, 'wall_seconds': at - 97., 'cpu_seconds': (at - 97.) * .1})
+        if at < 100.:
+            with controller.locked():
+                controller._host_sample = None
+                controller.decision(record, record['resources'], owner=None)
+    claimed = queue.claim(owner=OWNER, capacity={'cpu': 8, 'mem_gb': 8}, cpu_tiers=tiers,
+                          adaptive_cpu=True, cpu_sampler=sample)
+    assert claimed and claimed['action_key'] == record['action_key']
+    assert claimed['cpu_admission']['borrowed_cpus'] == [0]
+    return claimed
+
+
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     if family == "q-outcome" and variant.endswith("writer"):
@@ -83,6 +122,8 @@ def operate(request, store, load):
             queue.write_lease(C, owner=OWNER, **kw)
     elif family == "q-attempt":
         _, record = publish()
+        if write and variant == "executed":
+            record = borrowed_claim_record(queue, core, pool, store, record)
         record.update(claimed_by=OWNER, claimed_host="compat-host", claimed_unix=100.0,
                       finished_unix=100.0, finished_host="compat-host")
         status = "executed" if variant == "legacy-retry" else variant
@@ -102,11 +143,13 @@ def operate(request, store, load):
                                preempted_by=C if variant == "preempted" else None, signal_child=False)
                 path = queue.records.item_path(pool.WITHDRAWN, key)
             else:
-                # A valid legacy unscoped claim, made only in this private
-                # store. No physical broker proof is fabricated or bypassed.
-                queue.records.item_path(pool.READY, key).unlink()
-                record.update(claimed_by=OWNER, claimed_host="compat-host", claimed_unix=100.0)
-                queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), record)
+                if variant == "executed":
+                    record = borrowed_claim_record(queue, core, pool, store, record)
+                else:
+                    # Older unscoped cases remain unchanged and need no broker.
+                    queue.records.item_path(pool.READY, key).unlink()
+                    record.update(claimed_by=OWNER, claimed_host="compat-host", claimed_unix=100.0)
+                    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), record)
                 path = queue.finish(key, status=variant, detail={"returncode": 0 if variant != "failed" else 1,
                                                                "stdout": "compat", "stderr": ""})
         else:

@@ -33,10 +33,24 @@ def scoped(tmp_path, monkeypatch, request):
     cas = pb.PrismaBuildCAS(tmp_path / 'cas')
     cas.publish_action_request(action)
     queue = pool.PoolQueue(tmp_path / 'queue')
+    opportunistic = getattr(request, 'param', None) == 'opportunistic'
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout, worker_script='/worker.py',
-                  resources=demand, max_attempts=2, retry_safe=True)
-    item = queue.claim(has_gpu='gpu' in demand, capacity=demand)
+                  resources=demand, max_attempts=2, retry_safe=True,
+                  priority=-10 if opportunistic else 0,
+                  cpu_qos='opportunistic' if opportunistic else None)
+    options = {}
+    if opportunistic:
+        from prismabuild import adaptive_cpu
+        options = dict(adaptive_cpu=True, tags=[pool.contracts.CPU_QOS_TAG],
+                       cpu_lending_ramp_cap=2,
+                       cpu_tiers={'preferred': [0, 1], 'fallback': []},
+                       cpu_sampler=lambda: dict(sampled_unix=pool._now(), cpu_count=2,
+                                                interval_s=1., busy_cpus=0., psi_some=0.,
+                                                psi_avg10=0., psi_avg60=0.,
+                                                per_cpu_busy={'0': 0., '1': 0.}))
+    item = queue.claim(has_gpu='gpu' in demand, capacity=demand, **options)
+    assert item
     calls = []
 
     def request(scope, op, **extra):
@@ -44,7 +58,8 @@ def scoped(tmp_path, monkeypatch, request):
         if op == 'create':
             unit = 'prismabuild-job' + hashlib.sha256((scope.action_key + scope.nonce).encode()).hexdigest()[:32] + '.slice'
             return {'ok': True, 'scope_id': unit, 'token': 'b'*64,
-                    'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit}
+                    'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit,
+                    'cpu_weight': extra.get('cpu_weight', 100)}
         return {'ok': True}
 
     def sample(scope):
@@ -66,6 +81,17 @@ def scoped(tmp_path, monkeypatch, request):
     monkeypatch.setattr(pool.cpu_admission.adaptive_snapshot, 'publish',
                         lambda *args, **kw: None)
     return queue, item, calls
+
+
+@pytest.mark.parametrize('scoped', ['opportunistic'], indirect=True)
+def test_opted_queue_claim_persists_weight_through_scope_reconstruction(scoped):
+    queue, item, calls = scoped
+    assert item['cpu_weight'] == 10 and item['cpu_qos_selected'] == 'opportunistic'
+    scope = queue._start_resource_scope(item)
+    stored = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
+    assert stored['resource_scope_intent']['cpu_weight'] == 10
+    assert stored['resource_scope']['cpu_weight'] == 10
+    assert scope.cpu_weight == queue.scope_for_record(stored).cpu_weight == 10
 
 
 def _process(monkeypatch, queue, item, calls, *, ticks=0, returncode=0):

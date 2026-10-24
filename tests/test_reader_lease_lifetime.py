@@ -980,9 +980,12 @@ class _FakeBrokerBackend:
     def __init__(self):
         self.groups = {}
 
-    def create(self, scope, budget):
-        self.groups[scope] = {"populated": False}
+    def create(self, scope, budget, cpu_weight=100):
+        self.groups[scope] = {"populated": False, "cpu_weight": cpu_weight}
         return {}
+
+    def verify_cpu_weight(self, scope, expected):
+        assert self.groups[scope]['cpu_weight'] == expected
 
     def stop(self, scope):
         self.groups[scope]["populated"] = False
@@ -1027,9 +1030,12 @@ class _KernelBackend:
     def __init__(self):
         self.groups = {}
 
-    def create(self, scope, budget):
-        self.groups[scope] = {"populated": False}
+    def create(self, scope, budget, cpu_weight=100):
+        self.groups[scope] = {"populated": False, "cpu_weight": cpu_weight}
         return {"cgroup_path": f"/sys/fs/cgroup/prismabuild.slice/{scope}"}
+
+    def verify_cpu_weight(self, scope, expected):
+        assert self.groups[scope]['cpu_weight'] == expected
 
     def stop(self, scope):
         self.groups[scope]["populated"] = False
