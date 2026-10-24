@@ -61,10 +61,12 @@ def test_archival_writer_uses_the_selected_environment_after_ambient_change(gene
                                                                          native_only):
     case = "shape-table/unhashed"
     generation, old, manifest = historical_shape(generations, case)
+    selected_tmpdir = os.environ.get("TMPDIR")
     monkeypatch.setenv("COMPAT_ARCHIVAL_ENV_CONTROL", "selected")
     run = record_compat.subprocess.run
 
     def change_ambient_environment(command, **kwargs):
+        assert kwargs["env"].get("TMPDIR") == selected_tmpdir
         if native_only:
             os.putenv("COMPAT_ARCHIVAL_ENV_CONTROL", "changed-before-spawn")
         else:
@@ -76,6 +78,10 @@ def test_archival_writer_uses_the_selected_environment_after_ambient_change(gene
                       archival_runtime=archival_runtime(),
                       runtime_observe=runtime_observer("archival-environment-snapshot-control", generation, case))
     assert observed["returncode"] == 0, observed
+    binding = observed["archival_runtime"]
+    assert binding["selected"]["environment_before_driver"]["TMPDIR"] == selected_tmpdir
+    assert binding["observed"]["environment_before_driver"]["TMPDIR"] == selected_tmpdir
+    assert os.environ.get("TMPDIR") == selected_tmpdir
     assert base64.b64decode(accepted(observed)["raw"]) == decoded(HISTORY[generation, case])
 
 

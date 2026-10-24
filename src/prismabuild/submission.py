@@ -4935,6 +4935,10 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         if "=" not in entry:
             raise SubmissionRefused(f"--env expects K=V, got {entry!r}")
         key, value = entry.split("=", 1)
+        if key in movement_actions._WORKER_PATH_ENV_KEYS:
+            raise SubmissionRefused(
+                f"pbrun: {key} is derived by the worker layout; "
+                "callers may not set it")
         if key in {CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV}:
             raise SubmissionRefused(
                 f"pbrun: {key} is derived by the container lifecycle; "

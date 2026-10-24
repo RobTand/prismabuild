@@ -2308,6 +2308,68 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
             None if requested is None else float(requested))
 
 
+_SHARED_EXECUTION_LAYOUT = "pbtest-source-readonly-v1"
+_PRIVATE_EXECUTION_LAYOUT = "private-checkout-v1"
+
+
+def _shared_execution_action(item: Mapping[str, object]) -> dict[str, object] | None:
+    """Select only the explicit, host pbtest recipe, before any checkout work.
+
+    Queue metadata is not authority to opt in. The validated request must seal
+    the layout and exact capture recipe; legacy/custom workers, containers and
+    existing-root submissions keep their private execution path.
+    """
+    if (not isinstance(item.get("checkout_snapshot"), dict)
+            or item.get("container_owner") or item.get("container_images")):
+        return None
+    from . import runtime_paths
+
+    worker = Path(str(item.get("worker_script", ""))).resolve()
+    runtime_root = Path(__file__).resolve().parents[2]
+    if worker not in {path.resolve() for path in runtime_paths.tool_candidates(
+            "prismabuild_worker.py", root=runtime_root)}:
+        return None
+    key = str(item["action_key"])
+    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
+    try:
+        raw = immutable_files.read_stable_file(request, where="pool action request")
+    except FileNotFoundError:
+        return None
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"))
+    if action["action_key"] != key:
+        raise PoolContractError("pool action request does not match the claimed key")
+    params, task = action["params"], action["task"]
+    from . import action_result, movement_actions
+
+    conflicts = movement_actions._WORKER_PATH_ENV_KEYS.intersection(
+        action["environment"]["variables"])
+    if conflicts:
+        raise PoolContractError(
+            "reserved worker path variables: " + ", ".join(sorted(conflicts)))
+    if params.get("execution_layout") == _SHARED_EXECUTION_LAYOUT:
+        # The layout discriminator alone is not authority to replace where an
+        # arbitrary shell recipe writes. Bind the exact new capture recipe
+        # before materializing or launching anything.
+        try:
+            action_result.bind_standard_capture_command(action)
+        except action_result.ActionResultError as exc:
+            raise PoolContractError(str(exc)) from exc
+    command = params.get("command")
+    if (params.get("execution_layout") != _SHARED_EXECUTION_LAYOUT
+            or params.get("profile")
+            or task.get("definition_id") != "fleet/pbrun"
+            or task.get("working_directory") != "."
+            or params.get("cwd") != "."
+            or params.get("checkout_snapshot") != item["checkout_snapshot"]
+            or not isinstance(command, list) or len(command) < 3
+            or command[1] != "-c"
+            or "# A pbtest shard: pytest under pbtest_outcomes' recorder.\n" not in command[2]
+            or "roster_parent=_pb_source_readonly_helper," not in command[2]):
+        return None
+    return action
+
+
 @contextmanager
 def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
     """Yield the live path or a private checkout of the sealed snapshot.
@@ -7203,6 +7265,7 @@ class PoolQueue:
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
         "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        "execution_layout",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -21472,6 +21535,30 @@ class PoolQueue:
 
     # -- execution ------------------------------------------------------
 
+    @_serialized_key
+    def _record_execution_layout(self, key: str, *, item: Mapping[str, object],
+                                 layout: str) -> None:
+        """Publish the effective choice in the live attempt before launch."""
+        path = self.records.item_path(CLAIMED, key)
+        current = record_store.read_document(path)
+        if current is not None and claim_identity.same_claim(current, item):
+            current["execution_layout"] = layout
+            self.records.replace_record_at(path, current)
+        if isinstance(item, dict):
+            item["execution_layout"] = layout
+
+    @staticmethod
+    def _shared_source_failure(exc: Exception, *, outcome: Mapping[str, object] | None = None
+                               ) -> dict[str, object]:
+        failed = dict(outcome or {"elapsed_s": 0.0, "stdout": "", "stderr": ""})
+        failed.update(status="failed", returncode=1,
+                      execution_layout=_SHARED_EXECUTION_LAYOUT)
+        failed["stderr"] = (str(failed.get("stderr", ""))
+                            + f"\nshared source contract failed: {exc}\n")
+        # A rejected generation is an attempt failure, never a request to replay
+        # the shard with a private checkout after its possible side effects.
+        return failed
+
     def execute(
         self,
         item: Mapping[str, object],
@@ -21503,13 +21590,76 @@ class PoolQueue:
         # still governs, progress or no progress.
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
-        with _execution_checkout(item) as checkout_root:
-            outcome = self._execute_in_checkout(
-                item, checkout_root=checkout_root, python=python,
-                timeout_s=budget.effective, heartbeat_s=heartbeat_s,
-                timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy, clock=clock,
-            )
+        from . import materialize
+
+        shared_action = _shared_execution_action(item)
+        layout = (_SHARED_EXECUTION_LAYOUT if shared_action is not None
+                  else _PRIVATE_EXECUTION_LAYOUT)
+        with ExitStack() as checkouts:
+            lease = None
+            environment = None
+            source_error = None
+            if shared_action is not None:
+                try:
+                    lease = checkouts.enter_context(materialize._shared_source_checkout(
+                        item, local_checkout_root=LOCAL_CHECKOUT_ROOT))
+                    lease.preflight(shared_action)
+                except Exception as exc:
+                    # Failed proof/materialization is not permission to replay
+                    # this attempt using different source bytes or a layout.
+                    source_error = exc
+            self._record_execution_layout(str(item["action_key"]), item=item, layout=layout)
+            if source_error is not None:
+                outcome = self._shared_source_failure(source_error)
+            else:
+                checkout_root = (lease.checkout_root if lease is not None
+                                 else checkouts.enter_context(_execution_checkout(item)))
+                # Keep the parent pin through worker execution, descendant drain
+                # and result publication. The worker adopts a live lease itself;
+                # neither its environment nor queue metadata carries a proof.
+                execution_options = dict(
+                    checkout_root=checkout_root, python=python,
+                    timeout_s=budget.effective, heartbeat_s=heartbeat_s,
+                    timeout_grace_s=timeout_grace_s, containment=containment,
+                    progress=policy, clock=clock,
+                )
+                if lease is None:
+                    # Preserve the existing private/custom worker call contract.
+                    outcome = self._execute_in_checkout(item, **execution_options)
+                else:
+                    try:
+                        from . import _pbtest_layout
+
+                        # Keep all private writes alive through descendant drain
+                        # and publication, without putting any in shared source.
+                        environment = checkouts.enter_context(
+                            _pbtest_layout._attempt_environment(
+                                shared_action, checkout_root=checkout_root,
+                                local_checkout_root=LOCAL_CHECKOUT_ROOT))
+                        outcome = self._execute_in_checkout(
+                            item, layout_environment=environment, **execution_options)
+                    except Exception as exc:
+                        outcome = self._shared_source_failure(exc)
+                    try:
+                        lease.preflight(shared_action)
+                    except Exception as exc:
+                        outcome = self._shared_source_failure(exc, outcome=outcome)
+            outcome["execution_layout"] = layout
+            if item.get("resource_scope") is not None:
+                telemetry = self._sample_resource_scope(self.scope_for_record(item))
+                outcome["resource_telemetry"] = telemetry
+                resource_failure = self._resource_failure(telemetry)
+                if resource_failure:
+                    outcome.update(status="failed", returncode=137,
+                                   termination_reason=resource_failure,
+                                   termination_evidence=telemetry.get("termination_evidence"))
+                    outcome["stderr"] = str(outcome.get("stderr") or "") + (
+                        f"\nPrismaBuild: action resource containment stopped this attempt: {resource_failure}.\n")
+            if environment is not None:
+                # The worker's finally/drain and the source/resource verdicts
+                # have completed. The attempt context still checks inherited
+                # readers before removing successful scratch.
+                environment.record_outcome(outcome)
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's
@@ -21521,16 +21671,6 @@ class PoolQueue:
         outcome["execution_governed_by"] = "progress" if policy is not None else "deadline"
         if policy is not None:
             outcome.update(policy.as_record())
-        if item.get("resource_scope") is not None:
-            telemetry = self._sample_resource_scope(self.scope_for_record(item))
-            outcome["resource_telemetry"] = telemetry
-            resource_failure = self._resource_failure(telemetry)
-            if resource_failure:
-                outcome.update(status="failed", returncode=137,
-                               termination_reason=resource_failure,
-                               termination_evidence=telemetry.get("termination_evidence"))
-                outcome["stderr"] = str(outcome.get("stderr") or "") + (
-                    f"\nPrismaBuild: action resource containment stopped this attempt: {resource_failure}.\n")
         # Last, because it folds what every step above measured -- and inside a
         # guard, because an action that ran must not be filed as a failure by
         # the instrumentation that was only describing it.
@@ -21679,6 +21819,7 @@ class PoolQueue:
         containment: bool = False,
         clock: ExecutionClock | None = None,
         progress: ProgressPolicy | None = None,
+        layout_environment: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -21834,7 +21975,8 @@ class PoolQueue:
             # travel in a file because this process's exit status cannot
             # carry them.
             env={**os.environ, pb.ACTION_STATUS_PATH_ENV: str(status_path),
-                 **progress_environment, **self.launch_environment(item)},
+                 **progress_environment, **self.launch_environment(item),
+                 **(layout_environment or {})},
             # The launcher leads its own group so the timeout can signal the
             # group rather than the single pid.  ``kill()`` on the pid reaches
             # the launcher only, and leaves the action holding the GPU.

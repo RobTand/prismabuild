@@ -1990,12 +1990,38 @@ def _verify_pbrun_checkout_ancestry(
             )
 
 
+class _CheckoutSnapshotProof:
+    """Internal proof capability owned by core and the generation materializer.
+
+    The materializer owns the accompanying immutability census and lease. Only
+    its validated host-local publication may restore this capability in another
+    interpreter; actions and environment cannot provide verification claims.
+    """
+
+    def __init__(self, snapshot: Mapping[str, object], root: Path):
+        self.snapshot = dict(snapshot)
+        self.root = root.resolve()
+
+
+def _prove_checkout_snapshot(raw_snapshot: object, root: Path) -> _CheckoutSnapshotProof:
+    snapshot = validate_pbrun_checkout_snapshot(raw_snapshot)
+    live = git_checkout_identity(root)
+    if live != {"head": snapshot["commit"],
+                "dirty_sha256": digest_primitives.raw_sha256(b"")}:
+        raise ActionContractError(
+            "materialized pbrun checkout differs from its sealed commit")
+    if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
+        _verify_pbrun_checkout_ancestry(snapshot, root)
+    return _CheckoutSnapshotProof(snapshot, root)
+
+
 def _verify_pbrun_checkout_snapshot(
     action: Mapping[str, object],
     root: Path,
     raw_snapshot: object,
     *,
     subdirectory: str | None,
+    generation_proof: _CheckoutSnapshotProof | None = None,
 ) -> None:
     """Prove the live tree is the sealed commit, clean, with its ancestry.
 
@@ -2014,18 +2040,17 @@ def _verify_pbrun_checkout_snapshot(
         raise ActionContractError(
             "pbrun checkout snapshot is absent from action.inputs"
         )
-    live = git_checkout_identity(root)
-    clean = hashlib.sha256(b"").hexdigest()
-    if live != {"head": snapshot["commit"], "dirty_sha256": clean}:
-        raise ActionContractError(
-            "materialized pbrun checkout differs from its sealed commit"
-        )
-    if snapshot["schema"] == PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2:
-        _verify_pbrun_checkout_ancestry(snapshot, root)
+    if generation_proof is None:
+        _prove_checkout_snapshot(snapshot, root)
+    elif (not isinstance(generation_proof, _CheckoutSnapshotProof)
+          or generation_proof.snapshot != snapshot
+          or generation_proof.root != root.resolve()):
+        raise ActionContractError("generation proof differs from action snapshot binding")
 
 
 def _verify_pbrun_checkout_identity(
-    action: Mapping[str, object], root: Path
+    action: Mapping[str, object], root: Path,
+    *, generation_proof: _CheckoutSnapshotProof | None = None,
 ) -> None:
     """Verify the live Git semantics an action's checkout claims.
 
@@ -2053,7 +2078,8 @@ def _verify_pbrun_checkout_identity(
             # declares no cwd, so there is no cwd to cross-check. The
             # snapshot still names the commit the tree must be.
             _verify_pbrun_checkout_snapshot(
-                action, root, raw_snapshot, subdirectory=None
+                action, root, raw_snapshot, subdirectory=None,
+                generation_proof=generation_proof,
             )
         return
     closure = action["code_closure"]
@@ -2097,7 +2123,8 @@ def _verify_pbrun_checkout_identity(
         )
     if raw_snapshot is not None:
         _verify_pbrun_checkout_snapshot(
-            action, root, raw_snapshot, subdirectory=source_cwd
+            action, root, raw_snapshot, subdirectory=source_cwd,
+            generation_proof=generation_proof,
         )
         return
     if git_checkout_identity(root) != recorded:
@@ -3147,7 +3174,7 @@ def _verified_toolchain(
 
 
 def _verified_input_contracts(
-    action: Mapping[str, object], cas: "PrismaBuildCAS"
+    action: Mapping[str, object], cas: "PrismaBuildCAS", *, require_all: bool = False,
 ) -> list[dict[str, object]]:
     scope = action["execution_scope"]
     assert isinstance(scope, Mapping)
@@ -3159,9 +3186,9 @@ def _verified_input_contracts(
         try:
             path.lstat()
         except FileNotFoundError:
-            if required:
+            if required or require_all:
                 raise ActionContractError(
-                    f"nonportable action input is absent from the CAS: {entry['id']}"
+                    f"action input is absent from the CAS: {entry['id']}"
                 )
             continue
         except OSError as exc:
@@ -3182,12 +3209,23 @@ def preflight_action(
 ) -> dict[str, object]:
     """Derive and verify the execution facts required before launching argv."""
 
+    return _preflight_with_generation(
+        action, cas_root=cas_root, checkout_root=checkout_root,
+        worker_launcher_identity=worker_launcher_identity)
+
+
+def _preflight_with_generation(
+    action: object, *, cas_root: str | Path, checkout_root: str | Path,
+    proof: _CheckoutSnapshotProof | None = None,
+    worker_launcher_identity: object | None = None,
+) -> dict[str, object]:
+    """Same attestation and per-action checks, with a materializer-owned proof."""
     normalized = validate_action(action)
     root = Path(checkout_root)
     if not root.is_absolute():
         _fail("checkout_root must be absolute")
     verify_code_closure(normalized["code_closure"], root)
-    _verify_pbrun_checkout_identity(normalized, root)
+    _verify_pbrun_checkout_identity(normalized, root, generation_proof=proof)
     scope = normalized["execution_scope"]
     assert isinstance(scope, Mapping)
     expected_host = (
@@ -3211,7 +3249,8 @@ def preflight_action(
     verified = _verified_toolchain(
         declared, executable=executable, evidence=evidence  # type: ignore[arg-type]
     )
-    inputs = _verified_input_contracts(normalized, PrismaBuildCAS(cas_root))
+    inputs = _verified_input_contracts(
+        normalized, PrismaBuildCAS(cas_root), require_all=proof is not None)
     body: dict[str, object] = {
         "schema": WORKER_ATTESTATION_SCHEMA_V2,
         "action_key": normalized["action_key"],
@@ -6124,11 +6163,42 @@ def run_local_action(
 ) -> dict[str, object]:
     """Execute one action locally and publish its declared file result."""
 
+    from contextlib import nullcontext
+
+    normalized = validate_action(action)
+    context = nullcontext(None)
+    if normalized["params"].get("execution_layout") == "pbtest-source-readonly-v1":
+        from prismabuild import _pbtest_layout
+        context = _pbtest_layout._worker_layout(
+            normalized, cas_root=cas_root, checkout_root=checkout_root,
+            worker_launcher_identity=worker_launcher_identity)
+    with context as layout:
+        return _run_local_action(
+            normalized, cas_root=cas_root, checkout_root=checkout_root,
+            timeout_seconds=timeout_seconds, recompute=recompute,
+            worker_launcher_identity=worker_launcher_identity, layout=layout)
+
+
+def _run_local_action(
+    action: object,
+    *,
+    cas_root: str | Path,
+    checkout_root: str | Path,
+    timeout_seconds: float | None = None,
+    recompute: bool = False,
+    worker_launcher_identity: object | None = None,
+    layout=None,
+) -> dict[str, object]:
+    """Execute one action locally and publish its declared file result."""
+
     normalized = validate_action(action)
     root = Path(checkout_root)
     if not root.is_absolute():
         raise ActionContractError("checkout_root must be absolute")
     cas = PrismaBuildCAS(cas_root)
+    owned_root = root if layout is None else layout.result_root
+    if layout is not None:
+        layout.preflight()
     if not recompute:
         cached = cas.lookup(normalized)
         if cached is not None:
@@ -6145,6 +6215,10 @@ def run_local_action(
     cwd, output = _validate_execution_paths(
         root, str(task["working_directory"]), str(task["result_path"])
     )
+    result_cwd = cwd
+    if layout is not None:
+        result_cwd, output = _validate_execution_paths(
+            owned_root, ".", str(task["result_path"]))
     # Before the output lock and before any checkout is touched: a box that
     # cannot honour the profile the action asked for refuses here, having done
     # nothing.
@@ -6153,7 +6227,7 @@ def run_local_action(
     assert isinstance(variables, Mapping)
     recovered_declared_result = False
     reaped_staging_files = 0
-    with _local_output_lock(cas, root, output) as output_lock_descriptor, \
+    with _local_output_lock(cas, owned_root, output) as output_lock_descriptor, \
             _profile_scratch(profile):
         # A concurrent producer may have filled the cache while this worker
         # waited for the checkout/output lock.
@@ -6166,13 +6240,13 @@ def run_local_action(
                     "receipt": cached,
                     "payload_path": str(cas._verified_receipt_result_path(cached)),
                 }
-        attestation = preflight_action(
+        attestation = layout.preflight() if layout is not None else preflight_action(
             normalized,
             cas_root=cas_root,
             checkout_root=root,
             worker_launcher_identity=worker_launcher_identity,
         )
-        claim = _load_local_result_claim(cas, normalized, root)
+        claim = _load_local_result_claim(cas, normalized, owned_root)
         if claim is not None:
             reaped_staging_files = _reap_local_result_staging(cas, claim)
         if output.exists() or output.is_symlink():
@@ -6181,11 +6255,11 @@ def run_local_action(
                     "declared result path must be absent before execution and "
                     f"has no matching recovery claim: {output}"
                 )
-            _remove_claimed_local_result(output, cwd)
+            _remove_claimed_local_result(output, result_cwd)
             recovered_declared_result = True
-        _refuse_existing_result_symlink_prefix(output, cwd)
+        _refuse_existing_result_symlink_prefix(output, result_cwd)
         if claim is None:
-            claim = _ensure_local_result_claim(cas, normalized, root)
+            claim = _ensure_local_result_claim(cas, normalized, owned_root)
         # The claim is durable before task argv. Recheck the owned path after
         # publication so an out-of-protocol checkout writer cannot silently
         # pre-populate the result in the claim-publication interval.
@@ -6193,7 +6267,7 @@ def run_local_action(
             raise LocalActionError(
                 f"declared result appeared before action execution: {output}"
             )
-        _refuse_existing_result_symlink_prefix(output, cwd)
+        _refuse_existing_result_symlink_prefix(output, result_cwd)
         process: subprocess.Popen[bytes] | None = None
         execution_deadline: float | None = None
         launch_argv = list(task["argv"])
@@ -6202,6 +6276,8 @@ def run_local_action(
         }
         launch_environment.update(_progress_environment(normalized, launch_environment))
         launch_environment.update(_residency_environment(normalized, launch_environment))
+        if layout is not None:
+            launch_environment.update(layout.environment)
         if profile is not None:
             launch_environment.update(profile.environment(launch_environment))
             # The sealed argv is exec'd verbatim underneath what this returns.
@@ -6221,7 +6297,8 @@ def run_local_action(
                     # The action keeps exclusion alive if this worker is killed.
                     # ``pass_fds`` clears close-on-exec in the child while the
                     # parent's descriptor remains CLOEXEC for unrelated execs.
-                    pass_fds=(output_lock_descriptor,),
+                    pass_fds=(output_lock_descriptor,) + (
+                        () if layout is None else layout.action_pass_fds),
                 )
                 if timeout_seconds is not None:
                     execution_deadline = time.monotonic() + timeout_seconds
@@ -6362,12 +6439,16 @@ def run_local_action(
         # writer) can change a closure member while argv is running.  Check
         # once before an expensive result copy, then again at the CAS receipt
         # commit point so copying a large artifact cannot reopen that gap.
+        if layout is not None:
+            layout.verify_source()
         verify_code_closure(normalized["code_closure"], root)
         _verify_attested_executable_unchanged(attestation, normalized)
         _verify_attested_worker_runtime_unchanged(attestation, normalized)
-        _validate_result_containment(output, cwd)
+        _validate_result_containment(output, result_cwd)
 
         def verify_publication_provenance() -> None:
+            if layout is not None:
+                layout.verify_source()
             verify_code_closure(normalized["code_closure"], root)
             _verify_attested_executable_unchanged(attestation, normalized)
 

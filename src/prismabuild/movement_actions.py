@@ -26,19 +26,35 @@ from . import pool
 #: so the log the wrapper tees IS the declared result.
 SEALED_ARGV0 = "/bin/bash"
 
+# Private worker-layout API. Only the layout name and recipe enter the seal;
+# the worker supplies these absolute, attempt-private paths after admission.
+_PBTEST_SOURCE_READONLY_LAYOUT = "pbtest-source-readonly-v1"
+_RESULT_PATH_ENV = "PRISMABUILD_RESULT_PATH"
+_PBTEST_HELPER_DIR_ENV = "PRISMABUILD_PBTEST_HELPER_DIR"
+_PBTEST_CACHE_DIR_ENV = "PRISMABUILD_PBTEST_CACHE_DIR"
+_PBTEST_SURFACE_DIR_ENV = "PRISMABUILD_PBTEST_SURFACE_DIR"
+_WORKER_PATH_ENV_KEYS = frozenset({
+    _RESULT_PATH_ENV, _PBTEST_HELPER_DIR_ENV, _PBTEST_CACHE_DIR_ENV,
+    _PBTEST_SURFACE_DIR_ENV,
+})
 
-def _capture_pipeline(producer: str, log_name: str) -> str:
+
+def _capture_pipeline(
+    producer: str, log_name: str, *, worker_result: bool = False,
+) -> str:
     """Capture bytes with scoped GNU preference and retain both pipeline codes.
 
     Selection uses the action's existing PATH. The resolved executable and
     capture failures are retained in the ordinary action stderr evidence.
     """
+    destination = (f'"${{{_RESULT_PATH_ENV}}}"' if worker_result
+                   else shlex.quote(log_name))
     return (
         'if _pb_capture=$(command -v gnutee); then :; '
         'elif _pb_capture=$(command -v tee); then :; '
         'else printf "pbrun: log capture executable unavailable\\n" >&2; exit 127; fi; '
         'printf "pbrun: log capture executable=%s\\n" "$_pb_capture" >&2; '
-        f'{producer} 2>&1 | "$_pb_capture" {shlex.quote(log_name)}; '
+        f'{producer} 2>&1 | "$_pb_capture" {destination}; '
         '_pb_status=("${PIPESTATUS[@]}"); '
         'if (( _pb_status[1] != 0 )); then '
         'printf "pbrun: capture status=%s; producer status=%s\\n" '
@@ -76,6 +92,26 @@ def capture_argv_matches(
     """
     return any(argv == _capture_argv(command, log_name, path_prefix=path_prefix, legacy=legacy)
                for legacy in (False, True))
+
+
+def _source_readonly_capture_argv(
+    command: Sequence[str], *, path_prefix: str,
+) -> list[str]:
+    """Exact W4 recipe; the declared result name remains logical, not a path.
+
+    The worker must create/validate the private physical destination and its
+    parent before exec. No worker-specific path is interpolated into this seal.
+    Never accept the inline/legacy capture recipe for this layout.
+    """
+    prefix = f"export PATH={shlex.quote(path_prefix)}:$PATH; "
+    setup = (
+        f'if [[ "${{{_RESULT_PATH_ENV}:-}}" != /* ]]; then '
+        'printf "pbrun: worker result path must be absolute\\n" >&2; exit 125; fi; '
+        'export PYTHONDONTWRITEBYTECODE=1; '
+    )
+    return [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+            prefix + setup + _capture_pipeline('"$@"', "", worker_result=True),
+            "bash", *command]
 
 
 def standard_capture_argv(

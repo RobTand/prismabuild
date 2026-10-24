@@ -34,6 +34,7 @@ import socket
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -983,6 +984,40 @@ def admission_refusal(*, changed: bool, expired: bool) -> str | None:
     return None
 
 
+@contextmanager
+def _profile_verification_checkout(action, *, cas_root, local_checkout_root):
+    """Borrow source for verification only; never run the profile in it."""
+    from . import core, materialize
+
+    params = action["params"]
+    paths = [entry["path"] for entry in action["code_closure"]["files"]]
+    compatible = (
+        isinstance(params.get("checkout_snapshot"), Mapping)
+        and params.get("cwd") == "."
+        and action["task"].get("working_directory") == "."
+        and all(isinstance(name, str) and name
+                and not PurePosixPath(name).is_absolute()
+                and ".." not in PurePosixPath(name).parts
+                and ".git" not in PurePosixPath(name).parts
+                for name in paths)
+    )
+    item = {"action_key": action["action_key"], "cas_root": str(cas_root),
+            "checkout_snapshot": params.get("checkout_snapshot")}
+    if compatible:
+        with materialize._shared_source_checkout(
+                item, local_checkout_root=local_checkout_root) as lease:
+            lease.preflight(action)
+            yield lease.checkout_root
+            # A stamp read must not silently outlive the generation proof.
+            lease.preflight(action)
+    else:
+        with materialize._execution_checkout(
+                item, local_checkout_root=local_checkout_root) as checkout:
+            core._verify_pbrun_checkout_identity(action, checkout)
+            core.verify_code_closure(action["code_closure"], checkout)
+            yield checkout
+
+
 class ProfileInputs:
     """Configured executed CAS profiles, verified outside host admission.
 
@@ -1016,7 +1051,7 @@ class ProfileInputs:
         )
 
     def _load(self, ref):
-        from . import core, materialize, movement_actions
+        from . import core, movement_actions
         keys = {"cas_root", "action_key", "artifact_sha256", "root", "profile_contract"}
         if (not isinstance(ref, dict) or set(ref) != keys
                 or _canonical_root(ref["root"]) is None or _canonical_root(ref["cas_root"]) is None):
@@ -1118,12 +1153,9 @@ class ProfileInputs:
         key = (str(cas.root), action["action_key"], receipt["receipt_sha256"],
                receipt["result"]["sha256"], expected, self.producer_python)
         if key not in self.verified:
-            with materialize._execution_checkout(
-                    {"action_key": action["action_key"], "cas_root": str(cas.root),
-                     "checkout_snapshot": params["checkout_snapshot"]},
+            with _profile_verification_checkout(
+                    action, cas_root=cas.root,
                     local_checkout_root=self.checkout_root) as checkout:
-                core._verify_pbrun_checkout_identity(action, checkout)
-                core.verify_code_closure(action["code_closure"], checkout)
                 stamps = [f["path"] for f in action["code_closure"]["files"]
                           if Path(f["path"]).name.startswith(core.PBRUN_STAMP_PREFIX)]
                 stamp = core.digest_primitives.decode_strict_json(

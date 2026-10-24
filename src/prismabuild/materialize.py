@@ -9,12 +9,12 @@ worker, and remove the tree afterwards without ever turning completed work into
 a retry -- and a second copy of that sequence is how two transports end up
 executing two different trees for one action key.
 
-So the code lives here and both transports import it.  The functions keep the
-names and bodies they had in ``pool.py``; only the module they live in changed.
-The one addition is ``local_checkout_root``: the root is a deployment fact, and
-each transport keeps its own spelling of it (``pool.LOCAL_CHECKOUT_ROOT`` stays
-the pull queue's), so the caller passes the root it means rather than this
-module deciding for it.
+Both transports share the low-level population code here. Private execution
+checkouts retain their per-action ownership and cleanup contract. Immutable
+shared source generations use a separate, kernel-locked lifecycle in the
+internal ``shared_sources`` module; they are not execution sandboxes and never
+use legacy per-action owner names. ``local_checkout_root`` remains a deployment
+fact supplied by the caller, with this module's existing configuration default.
 
 Stdlib only, like everything a worker node has to import.
 """
@@ -189,7 +189,6 @@ def _release_checkout(base: Path, temporary: Path, lock: int) -> None:
         os.close(root)
 
 
-@contextmanager
 def _require_contained_materialized_links(repository: Path) -> None:
     """Refuse a materialized checkout whose symlinks reach outside it.
 
@@ -239,6 +238,117 @@ def _require_contained_materialized_links(repository: Path) -> None:
                 continue
             if entry.is_dir(follow_symlinks=False) and candidate != root / ".git":
                 pending.append(candidate)
+
+
+@contextmanager
+def _shared_source_checkout(
+    item: Mapping[str, object], *, local_checkout_root: str | Path | None = None,
+) -> Iterator[object]:
+    """Pin immutable sealed source bytes; the lease supplies generation preflight.
+
+    Unlike ``_execution_checkout``, this requires a sealed snapshot, never uses
+    the live checkout_root, and leaves a warm generation after the last release.
+    Callers must retain this context for the complete source-reader lifetime.
+    """
+    from . import shared_sources
+
+    base = LOCAL_CHECKOUT_ROOT if local_checkout_root is None else local_checkout_root
+    shared_sources.retire_idle_sources(local_checkout_root=base, now=time.time())
+    with shared_sources.checkout(item, local_checkout_root=base) as lease:
+        yield lease
+
+
+def _reap_shared_sources(*, local_checkout_root: str | Path | None = None,
+                         now: float | None = None) -> None:
+    """Bounded best-effort retirement, disjoint from legacy checkout reaping."""
+    from . import shared_sources
+
+    shared_sources.retire_idle_sources(
+        local_checkout_root=LOCAL_CHECKOUT_ROOT if local_checkout_root is None
+        else local_checkout_root,
+        now=time.time() if now is None else now,
+    )
+
+
+def _populate_checkout(
+    repository: Path, bundle: Path, snapshot: Mapping[str, object]
+) -> Path:
+    """Populate a new repository; lifecycle and ownership belong to the caller."""
+
+    _run_materializer_git(
+        ["git", "init", "-q", str(repository)],
+        where="initialize materialized checkout",
+    )
+    heads = _run_materializer_git(
+        ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
+        where="read checkout snapshot bundle",
+    )
+    commit = str(snapshot["commit"])
+    advertised = {
+        fields[1]: fields[0]
+        for line in heads.splitlines()
+        if len(fields := line.split(maxsplit=1)) == 2
+    }
+    sealed = [name for name, oid in advertised.items() if oid == commit]
+    if not sealed:
+        raise MaterializationContractError(
+            "checkout snapshot bundle does not advertise its sealed commit"
+        )
+    refspecs = [sealed[0]]
+    # A v2 record names branches the action will spell -- ``master...HEAD``
+    # in a diff-derived gate.  The record and the bundle travel separately,
+    # so the record alone cannot be the authority for where a branch
+    # points: creating ``refs/heads/master`` at an id nothing in the bundle
+    # reaches would make every later comparison a silent lie rather than a
+    # refusal.  Both must say the same thing before either is used.
+    for name, sealed_id in sorted(dict(snapshot.get("refs") or {}).items()):
+        qualified = f"refs/heads/{name}"
+        if advertised.get(qualified) != sealed_id:
+            raise MaterializationContractError(
+                f"checkout snapshot bundle contradicts sealed ref {name!r}"
+            )
+        refspecs.append(f"{qualified}:{qualified}")
+    # ``git init`` leaves HEAD a symref to the unborn default branch, and
+    # ``git fetch`` refuses to update the branch HEAD points at -- which is
+    # exactly ``master`` on the checkout whose gate this exists for.  Point
+    # HEAD at the snapshot's own reserved name, which no record may claim,
+    # before fetching anything.  Only a record that names branches needs
+    # this: the sealed ref is fetched as a bare refspec into FETCH_HEAD and
+    # updates no local branch, so a v1 record runs the same Git commands it
+    # always did.
+    if len(refspecs) > 1:
+        _run_materializer_git(
+            [
+                "git", "-C", str(repository), "symbolic-ref", "HEAD",
+                f"refs/heads/"
+                f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
+            ],
+            where="detach materialized HEAD from a fetched branch",
+        )
+    _run_materializer_git(
+        [
+            "git", "-C", str(repository), "fetch", "-q", "--no-tags",
+            str(bundle), *refspecs,
+        ],
+        where="fetch checkout snapshot bundle",
+    )
+    _run_materializer_git(
+        [
+            "git",
+            "-c", "core.autocrlf=false",
+            "-c", "core.attributesFile=/dev/null",
+            "-C", str(repository), "checkout", "-q", "--detach", commit,
+        ],
+        where="check out sealed commit",
+        environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
+    )
+    _require_contained_materialized_links(repository)
+    subdirectory = repository / str(snapshot["subdirectory"])
+    if not subdirectory.is_dir():
+        raise MaterializationContractError(
+            "checkout snapshot subdirectory is absent after materialization"
+        )
+    return subdirectory
 
 
 @contextmanager
@@ -292,79 +402,7 @@ def _execution_checkout(
         on_temporary(temporary)
     repository = temporary / "checkout"
     try:
-        _run_materializer_git(
-            ["git", "init", "-q", str(repository)],
-            where="initialize materialized checkout",
-        )
-        heads = _run_materializer_git(
-            ["git", "-C", str(repository), "bundle", "list-heads", str(bundle)],
-            where="read checkout snapshot bundle",
-        )
-        commit = str(snapshot["commit"])
-        advertised = {
-            fields[1]: fields[0]
-            for line in heads.splitlines()
-            if len(fields := line.split(maxsplit=1)) == 2
-        }
-        sealed = [name for name, oid in advertised.items() if oid == commit]
-        if not sealed:
-            raise MaterializationContractError(
-                "checkout snapshot bundle does not advertise its sealed commit"
-            )
-        refspecs = [sealed[0]]
-        # A v2 record names branches the action will spell -- ``master...HEAD``
-        # in a diff-derived gate.  The record and the bundle travel separately,
-        # so the record alone cannot be the authority for where a branch
-        # points: creating ``refs/heads/master`` at an id nothing in the bundle
-        # reaches would make every later comparison a silent lie rather than a
-        # refusal.  Both must say the same thing before either is used.
-        for name, sealed_id in sorted(dict(snapshot.get("refs") or {}).items()):
-            qualified = f"refs/heads/{name}"
-            if advertised.get(qualified) != sealed_id:
-                raise MaterializationContractError(
-                    f"checkout snapshot bundle contradicts sealed ref {name!r}"
-                )
-            refspecs.append(f"{qualified}:{qualified}")
-        # ``git init`` leaves HEAD a symref to the unborn default branch, and
-        # ``git fetch`` refuses to update the branch HEAD points at -- which is
-        # exactly ``master`` on the checkout whose gate this exists for.  Point
-        # HEAD at the snapshot's own reserved name, which no record may claim,
-        # before fetching anything.  Only a record that names branches needs
-        # this: the sealed ref is fetched as a bare refspec into FETCH_HEAD and
-        # updates no local branch, so a v1 record runs the same Git commands it
-        # always did.
-        if len(refspecs) > 1:
-            _run_materializer_git(
-                [
-                    "git", "-C", str(repository), "symbolic-ref", "HEAD",
-                    f"refs/heads/"
-                    f"{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}.materializing",
-                ],
-                where="detach materialized HEAD from a fetched branch",
-            )
-        _run_materializer_git(
-            [
-                "git", "-C", str(repository), "fetch", "-q", "--no-tags",
-                str(bundle), *refspecs,
-            ],
-            where="fetch checkout snapshot bundle",
-        )
-        _run_materializer_git(
-            [
-                "git",
-                "-c", "core.autocrlf=false",
-                "-c", "core.attributesFile=/dev/null",
-                "-C", str(repository), "checkout", "-q", "--detach", commit,
-            ],
-            where="check out sealed commit",
-            environment={**os.environ, "GIT_ATTR_NOSYSTEM": "1"},
-        )
-        _require_contained_materialized_links(repository)
-        subdirectory = repository / str(snapshot["subdirectory"])
-        if not subdirectory.is_dir():
-            raise MaterializationContractError(
-                "checkout snapshot subdirectory is absent after materialization"
-            )
+        subdirectory = _populate_checkout(repository, bundle, snapshot)
         yield subdirectory
     finally:
         # The path was created by mkdtemp below a validated local-only root;

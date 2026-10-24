@@ -967,11 +967,12 @@ def bind_standard_capture_command(request: object) -> list[str]:
     ``task.argv`` to equal one byte for byte. It returns the matched sealed argv
     on success.
 
-    The first implementation supports the standard captured-log result only,
-    where the declared ``result_path`` *is* the captured log's name.  A
-    file-result recipe (a declared result other than the log), a scratch
-    recorder or any other wrapper refuses explicitly; nothing here
-    parses a shell, imports a CLI, or clones PrismaQuant.
+    A standard private recipe captures to the declared ``result_path``. The
+    explicit pbtest source-readonly layout instead binds its one exact worker
+    result-path recipe; the physical destination is supplied by the worker,
+    not sealed as a portable path. Cross-layout and unknown-layout recipes
+    refuse. A file-result recipe, scratch recorder or any other wrapper also
+    refuses; nothing here parses a shell, imports a CLI, or clones PrismaQuant.
     """
 
     try:
@@ -999,8 +1000,17 @@ def bind_standard_capture_command(request: object) -> list[str]:
     if not isinstance(log_name, str) or not log_name:
         raise ActionResultError("the request declares no result_path to bind")
     sealed = task.get("argv")
-    if not isinstance(sealed, list) or not movement_actions.capture_argv_matches(
-        sealed, command, log_name, path_prefix=path.split(":", 1)[0]):
+    layout = params.get("execution_layout")
+    prefix = path.split(":", 1)[0]
+    if "execution_layout" not in params:
+        matches = movement_actions.capture_argv_matches(
+            sealed, command, log_name, path_prefix=prefix)
+    elif layout == movement_actions._PBTEST_SOURCE_READONLY_LAYOUT:
+        matches = sealed == movement_actions._source_readonly_capture_argv(
+            command, path_prefix=prefix)
+    else:
+        matches = False
+    if not isinstance(sealed, list) or not matches:
         raise ActionResultError(
             "the sealed task.argv is not the standard captured-log recipe; "
             "file-result and unsupported recipes are refused")

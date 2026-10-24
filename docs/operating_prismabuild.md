@@ -2008,6 +2008,15 @@ exact path and claim-time admission checks it. Explicit `--tag` constraints
 still narrow eligibility. The published/shared runtime uses the existing
 `--anywhere` for untagged work; local source runtimes retain their host pin.
 
+`pbtest --source-readonly` explicitly opts compatible, unprofiled pool shards
+into host-local shared source with separate attempt-owned writable state.
+Unsupported transports/profiles/recipes retain the private recipe; a source
+contract failure after admission is not a private rerun. See the
+[shared source generation operational contract](shared_source_generations.md)
+for configuration, proof/census gates, descendant reader locks, retained failed
+attempts, and acquisition-driven idle retirement. This is a cooperative runtime
+contract, not a hostile-same-UID sandbox or a performance/acceptance claim.
+
 Environment settings use the existing `pbrun --env` contract: TMPDIR, native
 thread limits, per-test/shard alarms, PYTHONPATH and an explicit empty
 PYTEST_ADDOPTS are sealed as values. The command starts with Python, so the

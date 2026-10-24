@@ -288,6 +288,104 @@ class _Prepared:
         self.refusal = refusal
 
 
+# Prepended only by the explicit source-readonly resealing helper. Physical
+# worker paths are read at exec, never substituted into the portable program.
+_SOURCE_READONLY_PROGRAM = f'''\
+import os as _pb_layout_os
+import sys as _pb_layout_sys
+from pathlib import Path as _pb_layout_Path
+_pb_layout_sys.dont_write_bytecode = True
+def _pb_layout_directory(name):
+    value = _pb_layout_os.environ.get(name, "")
+    path = _pb_layout_Path(value)
+    source = _pb_layout_Path.cwd().resolve()
+    physical = path.resolve()
+    if not value or not path.is_absolute() or physical == source or source in physical.parents:
+        raise RuntimeError("pbtest: missing or non-private worker directory: " + name)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+_pb_source_readonly_helper = str(_pb_layout_directory({movement_actions._PBTEST_HELPER_DIR_ENV!r}))
+_pb_layout_cache = _pb_layout_directory({movement_actions._PBTEST_CACHE_DIR_ENV!r})
+_pb_layout_surface = _pb_layout_directory({movement_actions._PBTEST_SURFACE_DIR_ENV!r})
+_pb_layout_start = @ARG_START@
+_pb_layout_args = _pb_layout_sys.argv[_pb_layout_start:]
+_pb_layout_index = 0
+while _pb_layout_index < len(_pb_layout_args):
+    word = _pb_layout_args[_pb_layout_index]
+    if word in ("-o", "--override-ini") and _pb_layout_index + 1 < len(_pb_layout_args):
+        if _pb_layout_args[_pb_layout_index + 1].startswith("cache_dir="):
+            _pb_layout_args[_pb_layout_index + 1] = "cache_dir=" + str(_pb_layout_cache)
+    elif word.startswith("--override-ini=cache_dir=") or word.startswith("-ocache_dir="):
+        _pb_layout_args[_pb_layout_index] = "--override-ini=cache_dir=" + str(_pb_layout_cache)
+    elif word == "--surface-json" and _pb_layout_index + 1 < len(_pb_layout_args):
+        _pb_layout_index += 1
+        name = _pb_layout_Path(_pb_layout_args[_pb_layout_index]).name or "surface.json"
+        _pb_layout_args[_pb_layout_index] = str(_pb_layout_surface / name)
+    elif word.startswith("--surface-json="):
+        name = _pb_layout_Path(word.split("=", 1)[1]).name or "surface.json"
+        _pb_layout_args[_pb_layout_index] = "--surface-json=" + str(_pb_layout_surface / name)
+    _pb_layout_index += 1
+_pb_layout_sys.argv[_pb_layout_start:] = ["--override-ini=cache_dir=" + str(_pb_layout_cache), *_pb_layout_args]
+'''
+
+
+def _source_readonly_supported(
+    request: SubmissionRequest, action: dict | None = None,
+) -> bool:
+    # Decide before resealing: a private fallback must retain the *private*
+    # capture/program too, not merely skip shared checkout acquisition later.
+    if (request.transport != "pool" or request.profile or request.container_image):
+        return False
+    if action is None:
+        return True
+    params, task = action.get("params", {}), action.get("task", {})
+    return (task.get("definition_id") == "fleet/pbrun"
+            and task.get("working_directory") == "."
+            and isinstance(params.get("checkout_snapshot"), dict)
+            and params.get("cwd") == "."
+            and not params.get("profile")
+            and not params.get("container_images")
+            and not params.get("container_owner"))
+
+
+def _source_readonly_action(action: dict) -> dict:
+    """Reseal a generated pbtest shard for the worker's readonly-source layout.
+
+    No tag or replay path opts in implicitly. The closure, snapshot and logical
+    result declaration are carried through unchanged; only the program, exact
+    capture recipe, and explicit layout discriminator differ.
+    """
+    from prismabuild import action_result
+
+    validated = core.validate_action(action)
+    params = dict(validated["params"])
+    if "execution_layout" in params:
+        raise ValueError("pbtest source-readonly requires a private input action")
+    if movement_actions._WORKER_PATH_ENV_KEYS.intersection(
+            validated["environment"]["variables"]):
+        raise ValueError("pbtest source-readonly paths must be supplied by the worker")
+    action_result.bind_standard_capture_command(validated)
+    command = list(params["command"])
+    roster = 'roster_parent=globals().get("_pb_attempt_directory"),'
+    if (len(command) < 3 or command[1] != "-c"
+            or "# A pbtest shard: pytest under pbtest_outcomes' recorder.\n" not in command[2]
+            or command[2].count(roster) != 1):
+        raise ValueError("pbtest source-readonly requires a generated shard program")
+    collection = '\nif True:\n    import json\n    selection = json.loads(sys.argv.pop(1))' in command[2]
+    setup = _SOURCE_READONLY_PROGRAM.replace("@ARG_START@", "2" if collection else "1")
+    command[2] = setup + command[2].replace(
+        roster, 'roster_parent=_pb_source_readonly_helper,', 1)
+    params["command"] = command
+    params["execution_layout"] = movement_actions._PBTEST_SOURCE_READONLY_LAYOUT
+    task = dict(validated["task"])
+    path = validated["environment"]["variables"]["PATH"]
+    task["argv"] = movement_actions._source_readonly_capture_argv(
+        command, path_prefix=path.split(":", 1)[0])
+    body = {key: value for key, value in validated.items() if key != "action_key"}
+    body.update(params=params, task=task)
+    return core.seal_action(body)
+
+
 class _Templates:
     """Each plan's checkout frozen once, and every shard sealed off it.
 
@@ -309,8 +407,9 @@ class _Templates:
     kept: the shard's retry asks again (#1102).
     """
 
-    def __init__(self, store) -> None:
+    def __init__(self, store, *, source_readonly: bool = False) -> None:
         self.store = store
+        self._source_readonly = source_readonly
         self._lock = threading.Lock()
         self._prepared: dict[object, _Prepared] = {}
         self._published: dict[int, _Prepared] = {}
@@ -458,6 +557,12 @@ def publish_shard(templates: _Templates, index: int, request: SubmissionRequest,
         refusal = record.refusal
         if refusal is None:
             action = submission.seal(record.template, command=command)
+            if templates._source_readonly:
+                if _source_readonly_supported(request, action):
+                    action = _source_readonly_action(action)
+                else:
+                    shown.line("pbrun: pbtest --source-readonly is unsupported for this "
+                               "sealed execution mode; using the private recipe\n")
             outcome = submission.submit_action(
                 action, template=record.template, request=replace(request, detach=True),
                 store=templates.store, display=shown, report=report)
@@ -1397,7 +1502,8 @@ def validate_shard_env(entries: list[str]) -> None:
     """Check caller additions before preparing or publishing any shard (#1891)."""
     owned = {"TMPDIR", *SHARD_THREAD_ENV, test_bound_contract.TIMEOUT_ENV,
              test_bound_contract.SHARD_BUDGET_ENV, "PYTHONPATH", "PYTEST_ADDOPTS",
-             pbtest_outcomes.RECORD_BINDING_ENV}
+             pbtest_outcomes.RECORD_BINDING_ENV,
+             *movement_actions._WORKER_PATH_ENV_KEYS}
     seen: set[str] = set()
     for entry in entries:
         if "\x00" in entry:
@@ -1644,6 +1750,13 @@ def main() -> int:
                          "runs sooner, negative yields to everything at 0 and "
                          "aging never lifts it past them (#362). Not part of "
                          "the action identity")
+    ap.add_argument("--source-readonly", action="store_true",
+                    help="explicitly opt snapshot-backed, unprofiled pull-queue "
+                         "shards into the sealed pbtest-source-readonly-v1 recipe. "
+                         "Existing-root, SLURM, profile and explicit scratch/basetemp "
+                         "modes retain the private recipe. "
+                         "Worker-private paths hold logs, pytest cache, helpers "
+                         "and surface output")
     ap.add_argument("--profile", default=None,
                     help="forwarded to every shard's pbrun --profile; a mode "
                          "runs a profiler around each shard's pytest and files "
@@ -2105,7 +2218,15 @@ def main() -> int:
             progress.observe(index, kwargs["result"], completed=True)
     # Pool shards are published from here, each plan's checkout frozen once
     # (``_Templates``); the SLURM lane keeps one ``pbrun`` client per shard.
-    templates = _Templates(store_for(__file__)) if args.transport == "pool" else None
+    source_readonly = (args.source_readonly
+                       and args.transport == "pool" and not args.profile
+                       and args.tmpdir is None and args.basetemp is None)
+    if args.source_readonly and not source_readonly:
+        print("pbtest: --source-readonly requires snapshot-backed, unprofiled "
+              "pull-queue shards with worker-managed scratch/basetemp; "
+              "using the private recipe", file=sys.stderr)
+    templates = (_Templates(store_for(__file__), source_readonly=source_readonly)
+                 if args.transport == "pool" else None)
     owners: dict[int, SubmissionRequest] = {}
     # A shard that writes its own --surface-json outside the checkout names a
     # path only it has; its placement answer is its own, so it seals alone.
