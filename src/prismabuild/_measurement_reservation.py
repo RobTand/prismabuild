@@ -136,7 +136,8 @@ def _admission_source_generation(queue: PoolQueue, census: dict) -> str:
     return core.canonical_sha256(observed)
 
 
-def _ordinary_election_census(queue: PoolQueue, item: dict, host: str) -> dict | None:
+def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
+                              dependent_owner: object) -> dict | None:
     """Prove no source election can fence this ordinary row, without retirement.
 
     Caller holds H through acquisition. Retired entries remain potential fences;
@@ -171,7 +172,8 @@ def _ordinary_election_census(queue: PoolQueue, item: dict, host: str) -> dict |
         if chosen is not None:
             if chosen["action_key"] != name[:-5]:
                 raise CensusUnavailable("ordinary selection sidecar key mismatch")
-            if chosen["host"] == host and item.get("priority", 0) < chosen["priority"]:
+            if (chosen["action_key"] == dependent_owner
+                    or (chosen["host"] == host and item.get("priority", 0) < chosen["priority"])):
                 return None
         if deadline.remaining() <= 0:
             raise CensusUnavailable("ordinary election proof budget exceeded")
@@ -1104,7 +1106,8 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
 
 @contextmanager
 def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
-                               ledger: ResourceLedger, controller, item: dict, refusal=None):
+                               ledger: ResourceLedger, controller, item: dict, refusal=None, *,
+                               dependent_owner: object):
     """Ordinary rows need the reader only when an election could fence them.
 
     Shared reads preserve M-before-H ordering and recheck every mutable source.
@@ -1146,14 +1149,16 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                 if current is None:
                     prior = pass_census.census
                     remembered = (prior is not None and (
-                        any(chosen["host"] == ledger.base.name
+                        dependent_owner in prior["elections"]
+                        or any(chosen["host"] == ledger.base.name
                             and item.get("priority", 0) < chosen["priority"]
                             for chosen in prior["elections"].values())
                         or any(chosen["host"] == ledger.base.name
                                and item.get("priority", 0) <= chosen["priority"]
                                for chosen in prior["gang_elections"].values())))
                     if not remembered:
-                        current = _ordinary_election_census(queue, item, ledger.base.name)
+                        current = _ordinary_election_census(
+                            queue, item, ledger.base.name, dependent_owner)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
                     core.PrismaBuildError, _gang.GangContractError, local_scratch.LocalScratchError):
                 current = None

@@ -43,7 +43,7 @@ def test_paired_ordinary_admission_latency(fleet, monkeypatch, legacy):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     if legacy:
         monkeypatch.setattr(reservation, "candidate_admission_census",
-                            lambda stored, active, ledger, controller, item, refusal:
+                            lambda stored, active, ledger, controller, item, refusal, **kwargs:
                             reservation.pass_admission_census(stored, active, ledger, controller))
     key = publish("paired-ordinary-contended", gpu=0)
     with _fixture_census_fence(queue):
@@ -346,7 +346,7 @@ def test_a_vanished_sidecar_cannot_clear_a_pass_remembered_election(fleet, monke
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
         with reservation.candidate_admission_census(
-                remembered, queue, queue.ledger(), gate, row) as census:
+                remembered, queue, queue.ledger(), gate, row, dependent_owner=None) as census:
             assert "unavailable" in census
     assert queue.ledger().held_keys() == []
 
@@ -374,6 +374,62 @@ def test_boot_identity_loss_after_a_complete_read_only_disables_shared_reuse(fle
         assert census["elections"] == {}
     assert len(captures) == 2
     assert not reservation.CensusReader(queue, queue.ledger()).shared_path.exists()
+
+
+@pytest.mark.parametrize("erase_owner", [False, True], ids=["sealed-owner", "mutation-erased-owner"])
+def test_an_elected_measurement_owner_is_not_reclassified_as_an_incumbent(
+        fleet, monkeypatch, erase_owner):
+    """Equal priority still needs the election's incumbent/dependent distinction."""
+    from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
+
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    owner = publish("elected-owner", measurement=True, priority=-10, gpu=0)
+    _fixture_selection(queue, owner, priority=-10)
+    assert claim() == owner
+    template = publish("dependent-template", priority=-10, gpu=0)
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, template))
+    action = dict(pool._sealed_action_request(row["cas_root"], template))
+    action.pop("action_key")
+    action["params"] = dict(action["params"], produced_spool={"owner": owner})
+    dependent = pool.pb.seal_action(action)
+    pool.pb.PrismaBuildCAS(row["cas_root"]).publish_action_request(dependent)
+    queue.withdraw(template)
+    key = dependent["action_key"]
+    queue.publish(action_key=key, cas_root=row["cas_root"], checkout_root=row["checkout_root"],
+                  worker_script=row["worker_script"], resources=row["resources"],
+                  needs_gpu=False, priority=-10, dependent_of=owner)
+    child = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
+    assert adaptive_cpu.dependent_owner(child) == owner
+    positions = []
+    original = pool.candidate_policy.held_back_unfunded
+
+    def observe(scan, *, held_back, serves_incumbent):
+        positions.append(serves_incumbent)
+        return original(scan, held_back=held_back, serves_incumbent=serves_incumbent)
+
+    monkeypatch.setattr(pool.candidate_policy, "held_back_unfunded", observe)
+    if erase_owner:
+        original_context = reservation.candidate_admission_census
+
+        def erase_link(*args, **kwargs):
+            kwargs["dependent_owner"] = None
+            return original_context(*args, **kwargs)
+
+        monkeypatch.setattr(reservation, "candidate_admission_census", erase_link)
+
+    def verify_role():
+        queue.claim(capacity={"cpu": 20, "gpu": 1, "mem_gb": 120},
+                    cpu_tiers={"preferred": list(range(20)), "fallback": []},
+                    adaptive_cpu=True, has_gpu=True, tags=["gb10", "sparklina"], ready=[child],
+                    cpu_sampler=lambda: cpu_sample(clock, readings),
+                    gpu_sampler=lambda: gpu_sample(sample, readings))
+        assert positions == [False], "an elected measurement is not an ordinary incumbent"
+
+    if erase_owner:
+        with pytest.raises(AssertionError, match="not an ordinary incumbent"):
+            verify_role()
+    else:
+        verify_role()
 
 
 @pytest.mark.parametrize("state", ["retired", "garbled"])

@@ -734,7 +734,10 @@ election on another host cannot fence this row. A measurement at the row's
 priority or below cannot fence it; an equal-priority gang still can reserve
 demand after maturation. Only when no source can fence the candidate does
 admission proceed without the reader. H remains held through reservation, so a
-new election cannot race between the proof and acquisition. Unreadable,
+new election cannot race between the proof and acquisition. A dependent whose
+sealed owner has a selection also needs a complete or verified shared census.
+An elected measurement remains distinct from an ordinary incumbent even when
+the dependent is outside its direct priority fence. Unreadable,
 malformed, vanished, over-budget or ambiguous sources take the complete census
 path. No publisher or election writer gains a new participation requirement.
 

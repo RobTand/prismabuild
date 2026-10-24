@@ -18918,7 +18918,8 @@ class PoolQueue:
                         from . import _measurement_reservation as measurement_reservation
                         with measurement_reservation.candidate_admission_census(
                                 scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate,
-                                item, scan_pass.census_refusal) as census:
+                                item, scan_pass.census_refusal,
+                                dependent_owner=prepared.dependent_owner) as census:
                             host_claim = self._reserve_claim_host(
                                 prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:
