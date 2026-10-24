@@ -237,3 +237,42 @@ def test_borrowed_ids_and_gate_survive_release_in_attempt_and_ending(real_loan_g
     attempts = fleet.queue.attempt_outcomes(ending)
     assert len(attempts) == 1 and attempts[0]['cpu_admission'] == evidence
     assert attempts[0]['cpu_weight'] == 100 and attempts[0]['cpu_qos_selected'] == 'legacy'
+
+
+def test_gpu_drain_reclaims_an_orphaned_metadata_only_real_borrow(guest_fleet, monkeypatch):
+    fleet = guest_fleet
+    clock = [time.time()]
+    monkeypatch.setattr(pool, '_now', lambda: clock[0])
+    monkeypatch.setattr(pool.cpu_admission.time, 'time', lambda: clock[0])
+    def sample():
+        return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
+                'busy_cpus': 0., 'psi_some': 0.,
+                'per_cpu_busy': {str(cpu): 0. for cpu in range(8)}}
+    donor = fleet.publish('a', cpu=8, tags=['sparky'])
+    owner = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
+    assert owner and owner['action_key'] == donor and not owner.get('cpu_guest')
+    borrower = 'c' * 64
+    fleet.queue.publish(action_key=borrower, cas_root='/cas', checkout_root='/co',
+        worker_script='/w.py', resources={'cpu': 1}, priority=20,
+        retry_safe=True, max_attempts=3)
+    ledger = fleet.queue.ledger()
+    controller = pool.cpu_admission.Controller(ledger, fleet.tiers)
+    start, guest = clock[0], None
+    for step in range(1, 4):
+        clock[0] = start + step
+        pool.cpu_admission.write_json(controller.base / 'telemetry' / (donor + '.json'), {
+            'action_key': donor, 'complete': True, 'nonce': 'e' * 32,
+            'sampled_unix': clock[0], 'wall_seconds': float(step), 'cpu_seconds': step * .1})
+        guest = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
+        if guest is not None:
+            break
+    assert guest and guest['action_key'] == borrower and guest['cpu_guest']
+    assert guest['cpu_admission']['borrowed_cpus'] == [0]
+    assert ledger.holder_tokens(borrower) == {}
+    fleet.finish(owner)
+    assert ledger.available()['cpu'] == 8 and ledger.admission_available()['cpu'] == 7
+    gpu = fleet.publish('b', gpu=True, cpu=8)
+    assert fleet.claim() is None
+    assert fleet.stopped(borrower)[0]['preempted_by'] == gpu
+    fleet.finish(guest, 'withdrawn')
+    assert fleet.claim()['action_key'] == gpu
