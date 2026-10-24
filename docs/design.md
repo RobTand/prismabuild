@@ -5590,7 +5590,8 @@ launch through the declared-manifest branch of `residency_map_environment`.
 Slow movers keep fences on the hosts that their gang siblings elect.
 The claim pass tears down a gang after it confirms `residency_lead_terminal`.
 This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
-The sweep withdraws all members and releases their fences (#1543).
+The recorded teardown makes the reservation census ignore the gang; the ordinary
+sweep finishes withdrawing members (#1543).
 
 The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
 The mark contains a signature of each pending lead's records and generations.
@@ -5611,18 +5612,37 @@ It cannot confirm that member until the reset succeeds.
 A new queue instance resets inherited evidence before use.
 This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
 
-Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
-Every other verdict state ends the window and clears the mark.
+Only `lead_not_resident` and `lead_unpinned` can start or confirm the terminal-lead proof.
+Without terminal plan evidence, every other verdict state ends the window and clears the mark.
 This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
 The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
 A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
 A dead member therefore holds no fence there, and the teardown still ends the gang.
 
-Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
-A READY member with a plan refusal still holds its siblings' fences until withdrawal.
-Issue #1543 remains open for that scope.
-Submit movers before the gang.
-Withdraw the gang when its member's plan cannot become resident.
+Terminal plan evidence also uses this confirmation window, independently of whether
+leads have failed, are absent, or remain pinned. It requires positively readable
+filed bytes deterministically refused by plan validation, or a supersession marker
+verified by the plan owner against the current body and filing incarnation.
+The signature binds the evidence kind, filing, exact plan bytes, and (for
+supersession) marker identity. Recovery, failed reads, unverified markers, and
+changed evidence reset confirmation; a denial named `plan_unreadable` alone is
+not proof. Existing public denial names are unchanged, including supersession
+that is discovered without an ended lead in the verdict. A resident map does
+not override verified supersession: the member still defers admission and
+confirms teardown while READY, even if no other resource blocks its launch.
+A failed plan read anywhere in that scan resets confirmation even when another
+read succeeds later in the same scan; it cannot reuse the aged observation.
+After the same terminal evidence has been observed for 120 seconds, the next
+successful eligible claim scan must freshly confirm it and record teardown.
+Plan proof and commit hold the consumer's transition lock; the distinct
+terminal-lead proof retains all the lead-lock and generation safeguards above.
+Reservation census then ignores the gang, removing its fences; ordinary gang
+and stage-pin sweeps subsequently finish member withdrawal and pin retirement,
+without withdrawing an executed mover. This is not an unconditional wall-clock
+bound during unavailable scans, failed evidence reads, or unavailable storage.
+Ordinary mover waits and merely absent leads without terminal plan evidence
+remain nonterminal and have no ready-wait timeout. Submit movers before the gang;
+a requeue after confirmed teardown cannot resurrect it.
 These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:

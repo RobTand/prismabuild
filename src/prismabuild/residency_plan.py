@@ -79,6 +79,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 import bisect
 import contextlib
+import contextvars
 from dataclasses import dataclass
 from functools import cached_property
 import hashlib
@@ -719,6 +720,31 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     return checked
 
 
+# Claim confirmation must remember uncertainty even when a best-effort reader
+# converts an error to None and a later read in the same scan succeeds. Keep
+# this private, scoped and thread-local; do not change public verdict/SDK shapes.
+_PLAN_READ_UNCERTAINTY: contextvars.ContextVar[list[bool] | None] = (
+    contextvars.ContextVar("residency_plan_read_uncertainty", default=None))
+
+
+@contextlib.contextmanager
+def _observe_read_uncertainty():
+    observations: list[bool] = []
+    token = _PLAN_READ_UNCERTAINTY.set(observations)
+    try:
+        yield observations
+    finally:
+        _PLAN_READ_UNCERTAINTY.reset(token)
+
+
+def _note_read_uncertainty(*, absent: bool = False) -> None:
+    observations = _PLAN_READ_UNCERTAINTY.get()
+    if observations is not None:
+        # Absence interrupts plan proof, but is ordinary for a lead-only
+        # consumer with no filed plan. Actual read failure blocks either.
+        observations.append(not absent)
+
+
 def read(queue, consumer_action_key: str, *,
          on_unreadable: Callable[[Exception], None] | None = None,
          ) -> dict[str, object] | None:
@@ -749,8 +775,10 @@ def read(queue, consumer_action_key: str, *,
             Path(queue.records.residency_plan_path(consumer_action_key)),
         )
     except FileNotFoundError:
+        _note_read_uncertainty(absent=True)
         return None                       # the ordinary answer: none was filed
     except OSError as error:
+        _note_read_uncertainty()
         # A plan that is there and unreadable -- a torn write, or this mount's
         # quarter-hourly ESTALE (#575).  Not the same as absent.
         refused(error)
@@ -780,8 +808,10 @@ def _stat_incarnation(path: Path) -> tuple[tuple[int, int, int] | None, OSError 
     try:
         info = path.stat()
     except FileNotFoundError:
+        _note_read_uncertainty(absent=True)
         return None, None
     except OSError as error:
+        _note_read_uncertainty()
         return None, error
     return (int(info.st_ino), int(info.st_mtime_ns), int(info.st_size)), None
 
@@ -974,6 +1004,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if state == "absent":
         return None
     if state == "unreadable" or marker is None:
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
@@ -983,6 +1014,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if (marker.get("schema") != RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1
             or marker.get("consumer_action_key") != key
             or marker.get("plan_sha256") != digest):
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
@@ -993,6 +1025,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if stamped is None:
         # A stamp this reader cannot parse says nothing about which filing
         # the marker covers, and unknown retirement is not "not retired".
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
