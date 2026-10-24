@@ -2,6 +2,7 @@
 import ast
 import copy
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
 import os
 import pickle
@@ -16,6 +17,15 @@ import pytest
 
 from prismabuild import core, sealed_bundle_cache as cache_module, submission
 from test_pbrun_bundle_determinism import _action_key, _repository
+
+
+_AMPLE_VFS = (4096, 4096, 1 << 30, 1 << 29, 1 << 29, 1000000, 900000, 900000, 0, 255)
+
+
+@pytest.fixture(autouse=True)
+def ample_cache_space(monkeypatch):
+    # Space policy has its own injected boundary cases below.
+    monkeypatch.setattr(cache_module.os, "statvfs", lambda path: os.statvfs_result(_AMPLE_VFS))
 
 
 @pytest.fixture
@@ -223,8 +233,93 @@ def test_uncertain_attribute_context_seals_fresh(sealing, tmp_path, monkeypatch,
         monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
         monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
         monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(link))
-    assert seal()[1] == seal()[1]
+    seal()
+    seal()
     assert len(packs) == 2
+
+
+@pytest.mark.parametrize("planted", ("info/grafts", "shallow"))
+def test_git_init_template_cannot_poison_cached_history(sealing, tmp_path, monkeypatch, planted):
+    checkout, cache, _, seal = sealing
+    (checkout / "f00001.txt").write_text("second commit\n")
+    subprocess.run(["git", "-C", str(checkout), "commit", "-qam", "second"], check=True)
+    head = subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    template = tmp_path / "template"
+    (template / "info").mkdir(parents=True)
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+    (template / planted).write_text(head + "\n")
+    seal()
+    (template / planted).unlink()
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", "off")
+    fresh = seal()[1]
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
+    assert seal()[1] == fresh
+
+
+def test_attribute_aba_inside_pack_cannot_publish_the_old_address(sealing, tmp_path, monkeypatch):
+    _, cache, _, seal = sealing
+    attrs = tmp_path / "external-attributes"
+    attrs.write_text("")
+    before = attrs.stat()
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(attrs))
+    entered, pack, packed, recheck = (threading.Event() for _ in range(4))
+    native = submission._write_bundle_pack
+
+    def gated_pack(*args, **kwargs):
+        entered.set()
+        pack.wait()
+        try:
+            return native(*args, **kwargs)
+        finally:
+            packed.set()
+            recheck.wait()
+
+    monkeypatch.setattr(submission, "_write_bundle_pack", gated_pack)
+    # Keep the old inode alive so replacement cannot reuse its number.
+    with attrs.open("rb"), ThreadPoolExecutor(max_workers=1) as workers:
+        result = workers.submit(seal)
+        try:
+            assert entered.wait(120)
+            attrs.write_text("* -delta\n")
+            pack.set()
+            assert packed.wait(120)
+            replacement = tmp_path / "restored-attributes"
+            replacement.write_text("")
+            os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+            os.replace(replacement, attrs)
+        finally:
+            pack.set()
+            recheck.set()
+        during = result.result(timeout=120)[1]
+    monkeypatch.setattr(submission, "_write_bundle_pack", native)
+    assert not list(cache.glob("*/bundle"))
+    assert seal()[1] != during
+
+
+@pytest.mark.parametrize("filesystem_bytes", (4000, 20000))
+def test_free_space_floor_declines_cache_fills(tmp_path, monkeypatch, filesystem_bytes):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", str(cache))
+    monkeypatch.setattr(cache_module, "MAX_BYTES", 1000)
+    payload = b"ordinary fresh seal"
+    floor = max(1000, filesystem_bytes // 10)
+    available = floor + len(payload) - 1
+    monkeypatch.setattr(cache_module.os, "statvfs", lambda path: os.statvfs_result(
+        (1, 1, filesystem_bytes, available, available, 100, 99, 99, 0, 255)))
+    calls = []
+    destination = tmp_path / "bundle"
+
+    def fresh():
+        calls.append(None)
+        destination.write_bytes(payload)
+
+    cache_module.seal_bundle_cached(destination, {"space": "low"}, fresh)
+    cache_module.seal_bundle_cached(destination, {"space": "low"}, fresh)
+    assert len(calls) == 2
+    assert not list(cache.glob("*/bundle"))
 
 
 def test_attribute_change_during_pack_does_not_publish_under_the_old_key(sealing, tmp_path, monkeypatch):
@@ -296,8 +391,13 @@ def test_corrupt_or_partial_entry_is_resealed(sealing, damage):
 def test_cache_bounds_entries_bytes_and_oversize_bypass(sealing, monkeypatch):
     _, cache, packs, seal = sealing
     monkeypatch.setattr(cache_module, "MAX_ENTRIES", 2)
-    for payload in ("one", "two", "three"):
+    known = set()
+    for tick, payload in enumerate(("one", "two", "three"), 1):
         seal(stamp_name="closure", stamp_payload=payload)
+        current = set(cache.glob("*/bundle"))
+        created, = current - known
+        os.utime(created.parent, ns=(tick * 1000000000, tick * 1000000000))
+        known = current
     assert len(list(cache.glob("*/bundle"))) == 2
     seal(stamp_name="closure", stamp_payload="one")
     assert len(packs) == 4
@@ -353,9 +453,11 @@ def test_concurrent_processes_share_one_atomic_fill(sealing, tmp_path):
     marker = tmp_path / "packs"
     read_gate, write_gate = os.pipe()
     script = '''
-import os, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 from prismabuild import core, submission
+space = tuple(json.loads(sys.argv[5]))
+os.statvfs = lambda path: os.statvfs_result(space)
 native = subprocess.run
 def observed(args, **kwargs):
     if "pack-objects" in args:
@@ -370,7 +472,7 @@ snapshot = submission.snapshot_checkout(Path(sys.argv[1]), cas=cas)
 print(snapshot["input"]["sha256"])
 '''
     children = [subprocess.Popen([sys.executable, "-c", script, str(checkout),
-        str(tmp_path / f"cas-{index}"), str(marker), str(read_gate)],
+        str(tmp_path / f"cas-{index}"), str(marker), str(read_gate), json.dumps(_AMPLE_VFS)],
         pass_fds=(read_gate,), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env={**os.environ, "PYTHONPATH": str(Path(submission.__file__).resolve().parents[1])})
         for index in range(3)]
@@ -401,39 +503,38 @@ def test_distinct_addresses_with_one_prefix_never_serialize(tmp_path, monkeypatc
     prefix = core.canonical_sha256(first)[0]
     second = next({"case": i} for i in range(1, 1000)
                   if core.canonical_sha256({"case": i})[0] == prefix)
-    entered, release, other = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
     a, b = tmp_path / "a", tmp_path / "b"
 
     def seal_first():
         entered.set()
-        assert release.wait(15)
+        release.wait()
         a.write_bytes(b"first")
 
     def seal_second():
-        other.set()
         b.write_bytes(b"second")
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         first_result = workers.submit(cache_module.seal_bundle_cached, a, first, seal_first)
-        assert entered.wait(15)
-        second_result = workers.submit(cache_module.seal_bundle_cached, b, second, seal_second)
         try:
-            assert other.wait(5), "an unrelated address waited for the first sealer"
+            assert entered.wait(120)
+            second_result = workers.submit(cache_module.seal_bundle_cached, b, second, seal_second)
+            second_result.result(timeout=120)
         finally:
             release.set()
-        first_result.result(timeout=15)
-        second_result.result(timeout=15)
+        first_result.result(timeout=120)
     assert not list(cache.glob(".pin-*")) and not list(cache.glob(".lock-*"))
 
 
-def test_warm_deadline_callers_all_reuse_the_bundle(sealing):
+def test_warm_deadline_callers_all_reuse_the_bundle(sealing, monkeypatch):
     _, _, packs, seal = sealing
     expected = seal()[1]
     ready = threading.Barrier(4)
+    monkeypatch.setattr(core, "git_deadline_timeout", lambda deadline: None)
 
     def warm():
-        ready.wait(timeout=30)
-        return seal(deadline=core.time.monotonic() + 600)[1]
+        ready.wait(timeout=120)
+        return seal(deadline=1.0)[1]
 
     with ThreadPoolExecutor(max_workers=4) as workers:
         results = [future.result(timeout=120) for future in [workers.submit(warm) for _ in range(4)]]
@@ -450,14 +551,14 @@ def test_hit_copy_releases_inventory_and_survives_eviction(sealing, monkeypatch)
 
     def held_copy(source, destination, length=0):
         copying.set()
-        assert release.wait(30)
+        release.wait()
         return native_copy(source, destination, length)
 
     monkeypatch.setattr(shutil, "copyfileobj", held_copy)
     with ThreadPoolExecutor(max_workers=1) as workers:
         result = workers.submit(seal)
         try:
-            assert copying.wait(30)
+            assert copying.wait(120)
             with cache_module._bundle_cache_lock(cache / ".inventory", nonblocking=True) as locked:
                 assert locked is not None, "copy holds the inventory lock"
                 shutil.rmtree(entry)
@@ -471,10 +572,14 @@ def test_fallback_does_not_rewrite_a_valid_entry(sealing, monkeypatch):
     _, cache, packs, seal = sealing
     expected = seal()[1]
     bundle = next(cache.glob("*/bundle"))
-    identity = (bundle.parent.stat().st_ino, bundle.stat().st_ino)
-    monkeypatch.setattr(cache_module, "_reuse_bundle_cache", lambda *args, **kwargs: False)
-    assert seal()[1] == expected and len(packs) == 2
-    assert (bundle.parent.stat().st_ino, bundle.stat().st_ino) == identity
+    with ExitStack() as held:
+        held.enter_context(bundle.open("rb"))
+        directory = os.open(bundle.parent, os.O_RDONLY | os.O_DIRECTORY)
+        held.callback(os.close, directory)
+        identity = (bundle.parent.stat().st_ino, bundle.stat().st_ino)
+        monkeypatch.setattr(cache_module, "_reuse_bundle_cache", lambda *args, **kwargs: False)
+        assert seal()[1] == expected and len(packs) == 2
+        assert (bundle.parent.stat().st_ino, bundle.stat().st_ino) == identity
     assert not list(cache.glob(".pending-*"))
 
 
@@ -666,14 +771,15 @@ def test_digest_check_mutation_fails_the_corruption_invariant(sealing, tmp_path)
 
 
 @pytest.mark.parametrize("which_lock", ("address", "inventory"))
-def test_caller_deadline_bypasses_a_contended_cache_lock(sealing, which_lock):
+def test_caller_deadline_bypasses_a_contended_cache_lock(sealing, monkeypatch, which_lock):
     _, cache, packs, seal = sealing
     expected = seal()[1]
     address = next(cache.glob("*/bundle")).parent.name
     lock = (cache_module._bundle_cache_flight(cache, address, bounded_wait=False) if which_lock == "address"
             else cache_module._bundle_cache_lock(cache / ".inventory"))
+    monkeypatch.setattr(core, "git_deadline_timeout", lambda deadline: None)
     with lock:
-        assert seal(deadline=core.time.monotonic() + 60)[1] == expected
+        assert seal(deadline=1.0)[1] == expected
     assert len(packs) == (1 if which_lock == "address" else 2)
 
 

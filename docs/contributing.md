@@ -68,6 +68,27 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
+## Test quality
+
+Correctness tests assert state and event order, not elapsed-time or CPU
+thresholds. Measure performance in a PrismaBuild benchmark action.
+Use events, pipes or process exits to synchronise; never sleep to order work.
+A timeout is only a generous failure bound of at least 60 seconds.
+Inject clocks for timer behavior. Set timestamps explicitly and hold old
+files open when an assertion depends on distinct inode identities.
+
+Every new or changed assertion needs a failure against the pre-fix code or
+a named mutant. Record that RED action key and the passing key. Remove
+self-comparisons, checks of a mock's own configured answer and other
+tautologies found in touched tests, and list each removal.
+
+Before handoff, execute every added or changed test file at least five
+times on each supported architecture through the published PB clients.
+At least two executions use `--workers-per-shard 2 --cpus-per-shard 2
+--threads-per-shard 1`. Vary `--pytest-args '["--durations=N"]'` to produce
+distinct actions. A failure must be diagnosed and fixed; retries, skips,
+xfails and larger timeouts do not turn it into a pass.
+
 ## Pool regression fixtures
 
 Keep fixture inputs valid for the reviewed admission contract. Executable

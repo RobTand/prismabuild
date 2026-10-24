@@ -15,12 +15,25 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import mount_latency  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def private_sampler(tmp_path, monkeypatch):
+    locks = tmp_path / "admission-locks"
+    monkeypatch.setattr(mount_latency, "ADMISSION_LOCK_DIR", locks)
+    init = mount_latency.MountSampler.__init__
+    monkeypatch.setattr(init, "__kwdefaults__", {
+        **init.__kwdefaults__, "lock_dir": locks, "deadline_s": 120.0})
+    # Positive probe fixtures terminate; wait for their exit event.
+    monkeypatch.setattr(mount_latency.MountSampler, "_reap_within",
+                        staticmethod(lambda pid, grace: os.waitpid(pid, 0)[0]))
 
 
 def test_probe_failure_reaches_netdata_and_human_output():
@@ -99,18 +112,33 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     lock_dir = tmp_path / "worker-locks"
     lock_dir.mkdir(mode=0o700)
     (lock_dir / "admission.lock").touch()
-    command = [str(plugin), "15", "--mount", str(tmp_path / "probe"),
+    command = [str(plugin), "15", "--deadline-s", "120",
+               "--mount", str(tmp_path / "probe"),
                "--record-dir", str(tmp_path / "records"),
                "--lock-dir", str(lock_dir)]
     if not direct_exec:
         command.insert(0, sys.executable)
     with subprocess.Popen(command, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            stdout, stderr = process.communicate(timeout=5)
+        def first_sample():
+            lines, in_sample = [], False
+            for line in process.stdout:
+                lines.append(line)
+                if line.startswith("BEGIN prismabuild.mount_probe_state"):
+                    in_sample = True
+                elif in_sample and line.strip() == "END":
+                    break
+            return "".join(lines)
+
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            result = reader.submit(first_sample)
+            try:
+                stdout = result.result(timeout=120)
+            finally:
+                process.terminate()
+                process.wait(timeout=120)
+        stdout += process.stdout.read()
+        stderr = process.stderr.read()
     assert not stderr
     lines = stdout.splitlines()
     assert lines and lines[0].startswith("CHART "), stdout
@@ -131,13 +159,13 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
 
 @pytest.mark.parametrize("json_mode", [False, True])
 def test_once_cli_preserves_human_and_json_output(tmp_path, json_mode):
-    command = [sys.executable, mount_latency.__file__, "--once",
+    command = [sys.executable, mount_latency.__file__, "--once", "--deadline-s", "120",
                "--mount", str(tmp_path / "probe"),
                "--record-dir", str(tmp_path / "records"),
                "--lock-dir", str(tmp_path / "locks")]
     if json_mode:
         command.append("--json")
-    result = subprocess.run(command, text=True, capture_output=True, timeout=5)
+    result = subprocess.run(command, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert not result.stderr
     if json_mode:
@@ -291,16 +319,19 @@ def test_a_rate_is_never_reported_without_the_window_it_was_measured_over(
     sampler = mount_latency.MountSampler(
         probe=lambda *_a, **_k: {"status": "ok", "worst_ms": 0.01})
     healthy = _mount(HEALTHY)        # parsed before the reader is replaced
+    clock = [1000.0]
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
+    monkeypatch.setattr(sampler, "_run_probe", lambda: {"status": "ok", "worst_ms": 0.01})
     monkeypatch.setattr(mount_latency, "read_mountstats",
                         lambda *_a, **_k: healthy)
     first = sampler.sample()
-    time.sleep(0.01)
+    clock[0] = 1015.0
     second = sampler.sample()
 
     assert first["rpc"] is None
     assert first["window_s"] == 0.0
     assert "first sample" in first["note"]
-    assert second["window_s"] > 0
+    assert second["window_s"] == 15.0
 
 
 def test_a_remount_restarts_the_counters_and_the_window_says_so(monkeypatch):
@@ -315,11 +346,14 @@ def test_a_remount_restarts_the_counters_and_the_window_says_so(monkeypatch):
     after = _mount(HEALTHY)
     sampler = mount_latency.MountSampler(
         probe=lambda *_a, **_k: {"status": "ok", "worst_ms": 0.01})
+    clock = [1000.0]
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
+    monkeypatch.setattr(sampler, "_run_probe", lambda: {"status": "ok", "worst_ms": 0.01})
     readings = iter([before, before, after, after])
     monkeypatch.setattr(mount_latency, "read_mountstats",
                         lambda *_a, **_k: next(readings, after))
     sampler.sample()
-    time.sleep(0.01)
+    clock[0] = 1015.0
     second = sampler.sample()
 
     assert second["rpc"] is None
@@ -333,7 +367,7 @@ def test_counters_that_went_backwards_are_dropped_not_negated():
     assert "READ" in delta, "an op absent from the earlier snapshot still counts"
 
 
-def test_a_mount_that_does_not_answer_is_recorded_not_raised():
+def test_a_mount_that_does_not_answer_is_recorded_not_raised(monkeypatch):
     """A hard NFS mount waits rather than failing, and no signal reaches it.
 
     So the deadline has to be enforced by a process the parent can walk away
@@ -342,22 +376,23 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised():
     scrape interval is just a gap in the series where the incident was.
     """
 
-    def never_returns(*_args, **_kwargs):
-        time.sleep(30)
-        return {"status": "ok"}
+    clock = [1000.0]
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
+    monkeypatch.setattr(mount_latency.os, "fork", lambda: 4242)
+    monkeypatch.setattr(mount_latency.os, "kill", lambda pid, signum: None)
+    monkeypatch.setattr(mount_latency.os, "waitpid", lambda pid, flags=0: (pid, 0))
 
-    sampler = mount_latency.MountSampler(
-        deadline_s=0.2, probe=never_returns)
-    started = time.time()
+    def unavailable(readers, writers, errors, timeout):
+        clock[0] += 1.0
+        return [], [], []
+
+    monkeypatch.setattr(mount_latency.select, "select", unavailable)
+    sampler = mount_latency.MountSampler(deadline_s=0.2)
     record = sampler.sample()
-    elapsed = time.time() - started
 
     assert record["probe"]["status"] == "timed_out"
     assert record["probe"]["deadline_s"] == 0.2
-    assert elapsed < 5.0, "the deadline bounds the caller, not just the child"
-    # The child was merely slow, not wedged, so SIGKILL reached it and the
-    # next sample is free to probe again.  Only a child the kernel will not
-    # kill is allowed to suppress the following one.
+    # The injected wait result proves reaping; it must not leave a waiter.
     assert sampler._outstanding_pid is None
 
 
@@ -377,17 +412,17 @@ def test_a_wedged_probe_suppresses_the_next_one_instead_of_doubling_it(
     sampler = mount_latency.MountSampler(
         probe=lambda *_a, **_k: calls.append(1) or {"status": "ok"})
     sampler._outstanding_pid = 4242
-    sampler._outstanding_since = time.time() - 30.0
+    sampler._outstanding_since = 970.0
+    monkeypatch.setattr(mount_latency.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(mount_latency, "process_status", lambda *args, **kwargs: ("D", "fixture"))
     monkeypatch.setattr(mount_latency.os, "waitpid",
                         lambda _pid, _flags=0: (0, 0))    # still blocked
     record = sampler.sample()
 
     assert record["probe"]["status"] == "wedged"
     assert record["probe"]["outstanding_pid"] == 4242
-    assert record["probe"]["wedged_for_s"] == pytest.approx(30.0, abs=2.0)
+    assert record["probe"]["wedged_for_s"] == 30.0
     assert calls == [], "a wedged mount must not be given a second waiter"
-    # The leg that costs the mount nothing keeps reporting throughout.
-    assert record["mount"]["is_nfs"] in (True, False)
 
 
 def test_the_syscall_leg_really_runs_and_times_the_claim_path(tmp_path):
@@ -609,15 +644,21 @@ def test_the_gate_is_measured_on_the_box_that_exports_the_filesystem(
     assert record["locks"]["identity_complete"] is False
 
 
-def test_a_lock_key_retains_its_zero_padded_report_format(monkeypatch):
+def test_a_lock_key_retains_its_zero_padded_report_format(tmp_path, monkeypatch):
+    target = tmp_path / "anything"
+    native = os.stat
+
+    def observed(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == target:
+            return os.stat_result((0o100600, 104, os.makedev(0, 30), 1, 0, 0, 0, 0, 0, 0))
+        return native(path, *args, **kwargs)
+
     monkeypatch.setattr(
-        mount_latency.os, "stat",
-        lambda _path: os.stat_result(
-            (0o100600, 104, os.makedev(0, 30), 1, 0, 0, 0, 0, 0, 0)))
-    assert mount_latency.lock_key(Path("/dev/shm/anything")) == "00:1e:104"
+        mount_latency.os, "stat", observed)
+    assert mount_latency.lock_key(target) == "00:1e:104"
 
 
-def test_a_high_major_number_is_not_truncated_by_the_padding(monkeypatch):
+def test_a_high_major_number_is_not_truncated_by_the_padding(tmp_path, monkeypatch):
     """The width is a minimum, not a field size.
 
     sparky's ``/tmp`` is major 259, which the kernel writes ``103``.  A fix for
@@ -625,9 +666,14 @@ def test_a_high_major_number_is_not_truncated_by_the_padding(monkeypatch):
     was developed on.
     """
 
-    monkeypatch.setattr(
-        mount_latency.os, "stat",
-        lambda _path: os.stat_result(
-            (0o100600, 1441858, os.makedev(259, 2), 1, 0, 0, 0, 0, 0, 0)))
+    target = tmp_path / "key"
+    native = os.stat
 
-    assert mount_latency.lock_key(Path("/tmp/x")) == "103:02:1441858"
+    def observed(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == target:
+            return os.stat_result(
+                (0o100600, 1441858, os.makedev(259, 2), 1, 0, 0, 0, 0, 0, 0))
+        return native(path, *args, **kwargs)
+
+    monkeypatch.setattr(mount_latency.os, "stat", observed)
+    assert mount_latency.lock_key(target) == "103:02:1441858"

@@ -3647,7 +3647,9 @@ without the member or the ordinary package import boundary.
   (#2171). The default root is `prismabuild-sealed-bundles` under the client's
   `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
   under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
-  digest-record bytes, including active fill reservations.
+  digest-record bytes, including active fill reservations. Before staging a
+  fill, `statvfs` available bytes minus the bundle and digest-record size must
+  leave at least the greater of 2 GiB and 10% of the filesystem's total bytes.
   `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
   another absolute root; `off` disables the cache. The opened directory must
   be private to its owner and on a positively identified local disk filesystem
@@ -3664,7 +3666,8 @@ without the member or the ordinary package import boundary.
   Cache reuse requires the canonical bare repository and private index used by
   snapshot sealing. Other attribute contexts, unsupported Git attribute-path
   discovery and unreadable or changing inputs fall back to the original sealer.
-  A cold seal rechecks these mutable inputs before publication; a changed input
+  A cold seal rechecks these mutable inputs' contents and
+  `(dev, ino, size, mtime_ns, ctime_ns)` before publication; a changed input
   leaves the fresh bundle usable but prevents filling under the earlier key.
   The snapshot tip transitively binds the injected stamp or closure, tree,
   parent and reachable objects. Storage layout and temporary paths do not
@@ -3684,9 +3687,11 @@ without the member or the ordinary package import boundary.
   mints a registered, single-use `_VerifiedBundle` capability. Installation
   rejects plain, forged, copied or consumed capabilities and changed files;
   it rechecks the verified digest as well as stat identity, because same-size
-  writes can share filesystem timestamps. Tests force that metadata collision.
-  instances carry no minting authority. A miss runs the original
-  sealer. A fallback preserves an already valid cache entry. Fills reserve
+  writes can share filesystem timestamps. Writes made before the install-time
+  re-hash are refused. A same-UID write after that re-hash, or a rename swap
+  after the last `lstat`, is outside this guarantee. Tests force the metadata
+  collision. Capability instances carry no minting authority. A miss runs the
+  original sealer. A fallback preserves an already valid cache entry. Fills reserve
   space and mark their staging owner under inventory protection, copy outside
   it, then rename the complete entry under it. Entries are disposable and
   digest-verified, so cache writes require no fsync. Failed staging is removed

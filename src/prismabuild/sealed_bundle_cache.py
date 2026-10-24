@@ -306,7 +306,13 @@ def _store_bundle_cache(root: Path, address: str, source: Path) -> None:
             if size + len(encoded) > MAX_BYTES:
                 _trim_bundle_cache(root)
                 return
-            if not _trim_bundle_cache(root, reserve_bytes=size + len(encoded), reserve_entries=1):
+            reservation = size + len(encoded)
+            if not _trim_bundle_cache(root, reserve_bytes=reservation, reserve_entries=1):
+                return
+            space = os.statvfs(root)
+            free_bytes = space.f_bavail * space.f_frsize
+            filesystem_bytes = space.f_blocks * space.f_frsize
+            if free_bytes - reservation < max(MAX_BYTES, (filesystem_bytes + 9) // 10):
                 return
             temporary = Path(tempfile.mkdtemp(prefix=f".pending-{address}-", dir=root))
             owner = ExitStack()

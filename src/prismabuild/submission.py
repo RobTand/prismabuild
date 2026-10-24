@@ -718,7 +718,8 @@ def deterministic_bundle_argv(git_dir: Path) -> list[str]:
 
 
 def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[str, str],
-                             config: str, *, deadline: float | None) -> list[str | None]:
+                             config: str, *, deadline: float | None
+                             ) -> tuple[list[str | None], list[tuple[int, ...] | None]]:
     """Bind attributes outside the object closure in the private bare sealer."""
     if (not environment.get("GIT_INDEX_FILE")
             or any(name in environment for name in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_ATTR_SOURCE",
@@ -739,11 +740,12 @@ def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[st
                       if line.startswith(("GIT_ATTR_GLOBAL=", "GIT_ATTR_SYSTEM=")))
     if "GIT_ATTR_GLOBAL" not in attributes:
         raise ValueError("Git cannot identify external attribute files")
-    fingerprints = []
+    fingerprints, stamps = [], []
     for index, raw in enumerate([*paths[1:], attributes["GIT_ATTR_GLOBAL"],
                                  attributes.get("GIT_ATTR_SYSTEM", "")]):
         if not raw:
             fingerprints.append(None)
+            stamps.append(None)
             continue
         path = Path(raw)
         if not path.is_absolute():
@@ -754,19 +756,23 @@ def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[st
             if index == 0:
                 raise
             fingerprints.append(None)
+            stamps.append(None)
             continue
         try:
             before = os.fstat(fd)
+            stamp = (before.st_dev, before.st_ino, before.st_size,
+                     before.st_mtime_ns, before.st_ctime_ns)
             if not stat.S_ISREG(before.st_mode) or before.st_size > CHECKOUT_SNAPSHOT_MAX_BYTES:
                 raise ValueError("attribute input is not a bounded regular file")
             fingerprints.append(pb.stream_sha256(Path(f"/proc/self/fd/{fd}")))
             after = os.fstat(fd)
-            if ((after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                    != (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+            if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    != stamp):
                 raise ValueError("attribute input changed while hashing")
+            stamps.append(stamp)
         finally:
             os.close(fd)
-    return fingerprints
+    return fingerprints, stamps
 
 
 def write_deterministic_bundle(
@@ -835,7 +841,7 @@ def write_deterministic_bundle(
         "tips": tips, "pack_configuration": BUNDLE_PACK_CONFIGURATION,
         "pack_options": BUNDLE_PACK_OPTIONS, "git_version": git_version,
         "effective_config": effective_config if git_version else "",
-        "attribute_inputs": attribute_inputs if git_version else None,
+        "attribute_inputs": attribute_inputs[0] if git_version and attribute_inputs is not None else None,
         "git_environment": git_environment,
     }
 
@@ -1092,7 +1098,7 @@ def snapshot_checkout(
             deadline=deadline,
         )
         bare = temporary / "bundle.git"
-        _snapshot_git(root, ["init", "-q", "--bare", str(bare)], deadline=deadline)
+        _snapshot_git(root, ["init", "-q", "--template=", "--bare", str(bare)], deadline=deadline)
         ref = f"refs/heads/{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}"
         _snapshot_git(
             root,
