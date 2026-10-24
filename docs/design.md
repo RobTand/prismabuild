@@ -17994,8 +17994,8 @@ The cap does not establish an action's D1 headroom.
 When `supervise.py` starts, it measures `f_bavail` on `local_disk` minus the
 floor, in whole GiB, and passes that as `--spool-gb`. A number in the roster
 caps the measured value; `auto` does not. No measured value is written in the
-roster. The start measurement is not the last one: see "The disk is measured
-on every tick" below. The supervisor refuses the declaration, and drops the flag, when `local_disk`
+roster. The start measurement is not the last one: see "The supervisor's independent
+disk observation producer" below. The supervisor refuses the declaration, and drops the flag, when `local_disk`
 is missing, relative or not on a local disk (the same mount check
 `ProducedSpool` makes), when the floor is missing, when the filesystem cannot
 be read, and when the measurement is 0 GiB. It logs one line with the reason
@@ -18015,62 +18015,65 @@ reservation back, as the `mem_gb` offer does with `MemAvailable`, would credit
 the part it has not yet written, which the next holder could then reserve as
 well: a 200 GiB box holding one 166 GiB holder that has written 10 GiB would
 offer 356 GiB and admit a second 166 GiB holder. So while any `spool_gb` is
-held, the loops keep the ledger's current total, which is the last measured
-value (capped by a numeric declaration), and the supervisor measures again on
-each tick until nothing is held. The ledger's census is error-visible: a
-holder directory it cannot list makes the supervisor wait, never measure.
+held, the supervisor defers measurement and does not renew the offer's proof.
+The ledger's census is error-visible: a holder directory it cannot list also
+makes the supervisor wait, never measure. A first waiting declaration can use
+the ledger's current total (capped by a numeric declaration) as its argument;
+that fallback is not a fresh disk observation. Existing holders keep their
+reservations, but saved live proof still expires as described below.
 
-**The disk is measured on every tick (#1190).** The loops' arguments are
-settled once per distinct declaration in a supervisor process, at start and
-again after a publish's re-exec. They do not follow the disk, because the
-supervisor compares every running loop's arguments with the declared ones and
-cycles each idle loop that differs; other writers move free space all the time.
-Settling the value as well cost a measurement row on 2026-09-26: sparky's
-loops started with 241 GiB, two agents then freed their scratch, leaving
-352 GiB free, and a 250 GiB row was still refused on the start-time number.
+**The supervisor's independent disk observation producer (#1190, #1946).**
+Once positively settled, the loops' arguments do not track changing free space:
+the supervisor compares running arguments with declared ones and cycles idle
+loops that differ. Live capacity therefore travels through a separate offer
+file. `_SpoolObservationProducer` owns one recurring numeric thread per
+supervisor, not per worker, with a five-second monotonic schedule independent
+of ordinary supervision work. It checks the roster for `--spool-gb` interest;
+without that interest it does not acquire disk capacity. Work and failures
+consume the period; overruns skip missed slots rather than replaying probes.
+Holder checks remain on both sides of `statvfs`. No kernel notification can
+supply this numeric disk measurement.
 
-So the value travels on a second path. On every tick after the first, while
-nothing holds `spool_gb`, the supervisor measures again, with the same holder
-reads on both sides of `statvfs`, and records the result in a host-local offer
-file (`local_scratch.write_spool_offer`), named by the digest
-`adaptive_cpu.box_identity` gives the host ledger the loops share. The file is
-under `/home/rob/tmp/prismabuild-spool-offer`, beside the supervisor's claim
-file, and not in `box_state`'s directory, which defaults under `/tmp`: the
-fleet writes nothing new there, because an OOM once cleared it. Each
-loop reads it on every poll (`worker_loop.live_host_capacity`) and declares
-that value in place of its argument: the observer offers it, the ledger mints
-up to it at the next claim, and `retire_free_capacity` retires free tokens down
-to it. A tick with no room above the floor records 0, and so does one that
-cannot read the disk; the flag, and the loops, stay. While a holder runs, the
-tick records nothing, so the offer stays what it was. It is raised only by a
-measurement of a disk nothing holds, which is the rule the start measurement
-already follows. A first measurement that waits on a holder, or is refused,
-removes the file, and so does an owner whose first tick finds a holder, so a
-value from an earlier process never stands in for one this process has not
-taken. Only the supervisor that owns the box writes or removes the file: the
-shape `_run_supervisor` reads before it takes the ownership claim, and a
-one-shot `--cycle-stale --once`, leave it alone (`declared_shape(...,
-record=False)`).
+Successful observations atomically replace the host-local offer
+(`local_scratch.write_spool_offer`), even at unchanged rounded GiB capacity,
+with `measured_unix` taken before acquisition. The path is named by the host
+ledger's `adaptive_cpu.box_identity` digest under the configured
+`PRISMABUILD_SPOOL_OFFER_ROOT`. Workers read it in
+`worker_loop.live_host_capacity`; the ledger mints up to the live value at
+claim time and `retire_free_capacity` retires only free tokens down to it.
+A later refusal or no-room reading records zero; a holder-deferred turn does
+not renew proof. A first refused/waiting recurring observation revokes proof
+with zero rather than unlinking it. Startup with a spool-bearing shape,
+interest transitions and producer close also attempt zero revocation. Initial
+shape acquisition before the ownership claim and `--cycle-stale --once` do
+not write or remove the offer (`record=False`). Ordinary `--once` retains the
+synchronous declaration path rather than starting a recurring producer.
 
-A missing file is no information: a first start has not written it, and a
-supervisor that has not measured removes it. A loop then declares its argument capped at the
-ledger's current total, which the loops have been retiring to the live value:
-declaring the uncapped argument would mint back room the disk may no longer
-have while a holder runs. The offer record's `capacity`, which `placeable`
-reads at submission, carries the larger of the argument and the live value
-(`worker_loop.stable_host_capacity`): `placeable` asks whether the box could
-ever run the item, and a disk another writer has filled for now is a slow
-submission, not an impossible one, just as a box running someone else's
-encode is. Claims use the live value.
+`read_spool_offer` accepts a valid nonnegative integer offer only with a
+finite timestamp whose wall-clock age satisfies
+`0 <= now - measured_unix <= 5.0` seconds. Exactly five seconds is valid;
+older, future-dated or invalid/missing timestamps yield **zero**, not the
+argument fallback. Slow acquisition can therefore publish already-expired
+proof. A missing/unreadable/malformed file or invalid capacity yields `None`:
+the worker then falls back to its argument capped at the ledger's current
+total. Do not unlink an expired/revoked offer to restore capacity. No expiry
+or downward renewal takes tokens from running holders. The worker offer's
+`capacity`, read by `placeable` at submission, still carries the larger of the
+argument and live value (`worker_loop.stable_host_capacity`): temporary disk
+pressure should queue a submission rather than make it impossible. Claims
+use the live value, not that stable placement ceiling.
 
-Two limits remain. A declaration refused at start, including one that
-measured 0 GiB, drops the flag, and the box offers no `spool_gb` until the
-supervisor restarts or re-execs. A refusal, or a later roster without the
-flag, does not shrink the host ledger: `ensure_capacity` only grows it, and
-the worker loop retires free tokens only for the kinds its offer names, so
-`spool_gb` tokens minted by an earlier declaration stay until a smaller
-positive value retires them. The runtime `statvfs` check in `reserve_group`
-still fails a spool producer closed when the disk is short.
+Refused/zero declarations are retried on the producer's schedule; recovery
+no longer requires restart or re-exec. A successful observation can establish
+a spool-bearing shape which the main supervisor subsequently reconciles with
+idle workers. Acquisition or publication may block, so the five-second
+schedule is not an end-to-end completion guarantee. Cancellation and ownership
+handover limitations are recorded in "Producer clocks and consumer boundaries"
+below; they are not qualified by ordinary-file fixtures. Removing a kind from
+the roster still does not guarantee removal of previously minted ledger tokens:
+workers retire free tokens only for the kinds they offer. The runtime `statvfs`
+check in `reserve_group` still fails a spool producer closed when the disk is
+short.
 
 Both GB10s declare `auto` on `/home/rob`. At 2026-09-23T03:50Z, `statvfs`
 there gave sparky 138,829,066,240 B free of 1,968,362,958,848 B, which is
@@ -20875,11 +20878,32 @@ normal publication/rollout authorization remain required. The five-second
 unavailable-notification target, CPU cadence limits and exact health boundary
 must be qualified, not promoted from configured timers to observed results.
 
-Disk/statvfs has no kernel notification authority. The retained supervisor owner
-currently sleeps `--interval-s` (default 30 seconds), shortened to five seconds
-when busy/backlogged, **after cycle work**. A holder defers its no-holder measurement;
-the saved spool offer has no age expiry. Thus the requested interested-disk
-five-second bound is not implemented by this patch. Separating that existing
-supervisor producer/deadline and its freshness contract is outstanding; merely
-changing the interval would not prove the bound. No second worker disk census is
-introduced, and scratch admission/claim reconciliation remain with their owners.
+Disk/statvfs has no kernel notification authority. The supervisor now separates
+its recurring `_SpoolObservationProducer` from general supervision. The disk
+period is `local_scratch.SPOOL_OBSERVATION_INTERVAL_S` (**5.0 seconds**), not
+`--interval-s`. Its first turn is immediately due; following monotonic deadlines
+advance by the period, skipping missed slots after work/failure. Without roster
+`--spool-gb` interest it checks for interest on that schedule but does not sample.
+Holder deferral does not renew proof. Readers accept finite measurement ages
+from zero through **5.0 seconds inclusive**; expired/invalid/future-dated proof
+returns zero. A fresh successful measurement renews proof at equal capacity.
+The regular supervisor still retains its 30-second default post-cycle sleep,
+shortened to five seconds while busy/backlogged, for worker/role reconciliation;
+it is not the disk observation clock. Ordinary `--once` has no recurring timer.
+
+Producer close takes its commit lock, sets the stop event and, when interested,
+attempts zero revocation. The stop event interrupts the deadline wait; after
+cancellation is recorded, the commit fence rejects late acquisition results.
+Close does not join or interrupt a blocked statvfs/ledger acquisition, and the
+producer is not replaced with another sampler while blocked. Publication and
+revocation currently perform filesystem I/O under the same lock required by
+close, so recording cancellation itself can block on publication; revocation
+I/O can also block. The outer ExitStack registers producer cleanup, but the
+supervisor ownership handle is local to the inner supervision function; keeping
+ownership until cleanup finishes is not guaranteed on every return, including
+systemd handover. These are unresolved lifecycle limitations, not a claim of
+bounded cancellation or race-free handover. Failed revocation leaves old proof
+to expire at readers; a healthy renewal must come from a new authoritative
+measurement. No second worker disk census is introduced. These source deadlines
+are not real-kernel/GPU or slice-0 performance qualification, and scratch
+admission/claim reconciliation remain with their owners.

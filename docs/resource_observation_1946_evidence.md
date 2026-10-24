@@ -1,6 +1,47 @@
 # #1946 local producer evidence and remaining populations
 
-## O5 qualification disposition (this assigned slice)
+## Review repair: disk documentation and qualification disposition
+
+Repair base: `01a462233d05639d03d83e58e1afd3dc4f58180b`.
+Source inspection confirmed the O4 mismatch: the independent disk producer and
+inclusive five-second offer expiry already exist. The design and operating
+guide now describe their schedule, work/failure accounting, holder deferral,
+zero revocation, capped fallback, recovery without restart and equal-capacity
+renewal. They distinguish these source deadlines from hard I/O completion
+bounds and document the current commit-lock cancellation and ownership-handover
+limitations rather than claiming those implementation findings are repaired.
+This repair changes documentation only, not production code or listener behavior.
+
+O5 is still **not met**. No new isolated lane, real-scenario action/attempt or
+CAS evidence, GPU admission, or slice-0 budget records were supplied by the
+review request. Every real population in the inventory below remains at zero;
+#2176 is the existing qualification dependency, not a defective acceptance test.
+The prior read-only preflight is retained without repetition. No new real-kernel
+or GPU scenario, activation, publication or production service mutation was
+attempted in this repair.
+
+The following fixture/guard command completed through the admitted runner on
+both x86 and ARM; retained stdout was read back with `read_test_artifact`:
+
+```sh
+python -m pytest tests/test_supervisor_disk_observation_1946.py tests/test_supervisor_declares_the_spool_budget.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"
+```
+
+Each arm: **168 passed, zero failures, zero skips, zero warnings**, exit 0.
+No required executable was missing. These are disk fixtures and repository
+guards, not real-broker/kernel/GPU qualification or evidence of bounded shutdown.
+Semantic correctness of the documentation requires source review in addition
+to these checks.
+
+x86:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"0ea0387e3da6b02d7df4fcb06ed18c212122dc4535ec7fe91205973428a265ac","size":2316}},"operation":"b93359d70a5746fcb9108a48a8548ed2c44fead2be5843538820a0cdb7c629c4","receipt":"507f4c24a8dbb9251a23d8e927dcaa996d468a795faf6e039354cba75e9b64be"}]
+
+ARM:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"85ce06314d411ae2994abba699656e75caa547fcaed94aab4f369ed1509e809e","size":2316}},"operation":"c39bb0c319c6dfb02779ef50068f3ba4531e31516af5f8623d3ed025c4f4ef4e","receipt":"02cab937b63dd38c6ad8bb9860ab2ac6e1f6b43d977d8ce87f8ed89a8a8e70e8"}]
+
+## O5 qualification disposition (prior assigned slice)
 
 Inspected checkout: `f291a4b2dd37eac39d8e7afb7f7de3a0c5b23cc5`.
 The implementation evidence below is inherited; this slice does not rerun or
@@ -161,12 +202,17 @@ GPU confirmations. These do **not** qualify real delegated cgroup poll/OOM,
 forced PID reuse, live broker socket loss with a stale endpoint, or real GPU
 telemetry. No missing external executable was encountered by the checks.
 
-O3's disk bound remains outstanding in the existing supervisor owner:
-`supervise.py` uses a default 30-second post-cycle sleep, busy/backlogged
-five-second post-cycle sleep; holder-deferred statvfs has no completion bound,
-and local spool offers have no age expiry. No duplicate worker disk census or
-supervisor scheduler rewrite was introduced. That owner needs an independent
-interest deadline/freshness contract, coordinated with adjacent supervisor work.
+The historical disk gap at the implementation base above is superseded in
+reviewed head `01a462233d05639d03d83e58e1afd3dc4f58180b`: it includes a separate
+supervisor `_SpoolObservationProducer` on a five-second monotonic schedule and
+`read_spool_offer` accepts proof only at ages zero through five seconds inclusive.
+General supervision's post-cycle sleep is no longer the disk sampling clock.
+Holder deferral does not renew proof, and equal-capacity success does. These
+implemented source deadlines are not a hard bound on blocking acquisition or
+publication, nor proof of bounded cancellation or race-free ownership handover.
+The corrected design and operating sections describe those limitations.
+No current disk or broader runtime qualification is inferred from the inherited
+fixture runs.
 
 O5 is **unverified**, not passed: zero real delegated-cgroup OOM/empty, forced
 PID-reuse, stale-endpoint loss/restart, and real GPU qualification populations

@@ -4927,22 +4927,27 @@ or a whole number of GiB that caps it. Such a box also names `local_disk`, a
 directory on the filesystem the budget comes from, and the roster states the
 fleet's free floor once, as `local_disk_free_floor_percent` (5). The supervisor
 turns the roster value into a number, `f_bavail` on `local_disk` minus the
-floor, in whole GiB, and measures it twice over:
+floor, in whole GiB, using two paths:
 
-- At each start, including the re-exec after a publish, it passes the first
-  measurement to the loops as `--spool-gb N` and logs
-  `--spool-gb auto measured N GiB` with the free space and the floor. The
-  argument does not change for the life of the process, because a loop whose
-  arguments change is cycled.
-- On every tick after that, it measures again and records the value in a
-  host-local offer file, `<digest>.spool-offer.json` under
-  `/home/rob/tmp/prismabuild-spool-offer` (`PRISMABUILD_SPOOL_OFFER_ROOT`),
-  beside the supervisor's claim file; nothing is written under `/tmp`. Each
-  loop reads the file on every poll
-  and offers that value in place of its argument (#1190). The supervisor logs
-  `--spool-gb live offer N GiB` when the value changes. A freed disk raises
-  the offer on the next tick, and a filling one lowers it, to 0 when there is
-  no room above the floor.
+- At start, including re-exec after a publish, the synchronous declaration
+  resolves the initial `--spool-gb N` argument and logs a successful
+  `--spool-gb auto measured N GiB` with the free space and floor. Initial
+  shape acquisition before the ownership claim does not write the offer.
+  Once positively settled, arguments do not track changing free space;
+  argument changes would cycle idle loops.
+- Recurring supervision starts one `_SpoolObservationProducer`, independent
+  of the ordinary supervision cycle. While the roster declares `--spool-gb`,
+  its five-second monotonic schedule measures and atomically records the live
+  value in `<digest>.spool-offer.json` under the configured
+  `PRISMABUILD_SPOOL_OFFER_ROOT`. Workers read this file on each poll in place
+  of their argument (#1190). Measurement work and failures consume the period;
+  overruns skip missed slots rather than queue catch-up probes. The supervisor
+  logs `--spool-gb live offer N GiB` when capacity changes, but refreshes proof
+  after every successful observation, including equal-capacity recovery,
+  without logging each healthy renewal. A freed disk can raise the next
+  no-holder observation; pressure or a later read refusal lowers it to zero.
+  Ordinary `--once` uses the synchronous path, not a recurring sampler;
+  `--cycle-stale --once` leaves the offer untouched.
 
 On dl380g10, the roster uses `/tmp/pbscratch` and caps `--spool-gb` at 8 GiB
 (#1689). `tmp-pbscratch.mount` binds a root-NVMe Btrfs subvolume at that path.
@@ -4953,25 +4958,36 @@ offer does not replace that check.
 Roster `args` are the supervisor's input: do not copy `--spool-gb auto` onto
 a `worker_loop.py` command line, which takes only integers.
 
-While an action on the box holds `spool_gb`, the supervisor does not measure,
-because the disk cannot say which bytes the holder has already written. The
-offer stays what it was: the file is left alone, and a first measurement that
-has to wait passes the loops the host ledger's current total. The supervisor
-logs `--spool-gb measurement waits` once and measures on the first tick when
-nothing is held. The live offer is therefore raised only by a measurement of a
-disk nothing holds. A missing offer file (a first start, or one removed
-because this supervisor has not measured yet) is no information: the loops
-then offer their argument capped at the ledger's current total, so a lost file
-cannot raise the offer either.
+While an action holds `spool_gb`, the supervisor defers measurement: the disk
+cannot distinguish bytes already written by that holder from other use.
+No-holder ledger checks bracket `statvfs`; an unreadable holder census also
+waits rather than claiming free room. A first waiting declaration can use the
+ledger's current total, capped by a numeric declaration, as its argument; this
+is not a fresh measurement. The supervisor logs changed
+`--spool-gb measurement waits` reasons and retries on the producer schedule.
+A wait does not renew the saved proof, and expiry never revokes a holder's
+reservation.
+
+`read_spool_offer` accepts a valid nonnegative integer capacity only while its
+finite `measured_unix` age is **0 through 5.0 seconds inclusive**. The timestamp
+is taken before acquisition, so slow work does not make old proof fresh.
+Expired, future-dated or invalid/missing timestamps yield **zero**; missing,
+unreadable or malformed files and invalid capacity values yield `None`, which
+uses the argument capped at the ledger's current total. Recurring startup with
+a spool-bearing shape, interest changes and close attempt to revoke proof by
+writing zero, not unlinking the offer. Do not remove an expired/revoked file to
+restore admission. Workers retire only free tokens on a downward offer.
 
 When a declaration cannot stand at start (no `local_disk`, no floor, a disk
-that is not local or cannot be read, or no room above the floor), the
-supervisor starts its loops without `--spool-gb` and logs a line that begins
-`--spool-gb declaration refused`. Such a box offers no `spool_gb` until the
-supervisor restarts or re-execs, even after space is freed. The box keeps
-offering its other kinds; an action that needs disk records
-`never_fits_capacity` there and waits for a box where it fits. A disk that
-cannot be read on a later tick offers 0 until it can.
+that is not local or cannot be read, or no room above the floor), the supervisor
+starts its loops without `--spool-gb` and logs `--spool-gb declaration refused`.
+The recurring producer retries refused/zero declarations too: recovery does
+not require restart or re-exec. A successful measurement can establish the
+spool-bearing shape for subsequent idle-worker reconciliation; active workers
+are left alone. Until then the box offers its other kinds, and disk actions may
+record `never_fits_capacity` there. Later read refusals publish zero until a
+fresh measurement succeeds. The five-second timer is not a bound on blocking
+filesystem acquisition or publication; see the timing and recovery checklist.
 
 To see what a box offers, read `capacity.spool_gb` in
 `pb-queue/workers/<host>.json`, or the latest `live offer` line in the
@@ -6113,7 +6129,9 @@ hint into a queue bell or shared diagnostic publication.
 | Local source repair | One source-wide two-second metadata/watch repair deadline, reset after completion; events may repair earlier | No numeric per-subscription polling or catch-up; close cancels recurring work; inspect coverage errors and restoration |
 | CPU producer | One-second delta floor and start-to-start period; work is inside the period; overruns skip ticks with a 50 ms yield | Gate contention skips a tick; stop interrupts sleep and joins after in-flight work; no catch-up census |
 | CPU owner recovery | Follower retries the permanent host-local sampler lock once per second | OS releases ownership on exit; follower never collects while another owner holds the lock |
-| Disk/statvfs (outstanding bound) | Existing supervisor: default 30 s post-cycle sleep, busy/backlogged 5 s post-cycle; holder-deferred reads have no completion bound | Stop checked between operations; sleep/statvfs are not cancellation-aware. Existing offer has no age expiry. This does not meet the requested interested-disk five-second deadline |
+| Disk/statvfs producer | `SPOOL_OBSERVATION_INTERVAL_S = 5.0 s`; first turn immediately due, then monotonic scheduled slots independent of supervision; work/failures consume the period and missed slots are skipped | Without roster `--spool-gb` interest, checks interest but does not sample; stop event interrupts deadline wait; close does not join blocked acquisition. Cancellation/publication caveats below preclude a hard completion bound |
+| Disk offer proof | Reader accepts finite wall-clock age `0 <= now - measured_unix <= 5.0 s`; timestamp taken before acquisition | Expired/future-dated/invalid timestamp returns zero; holder waits do not renew. Missing/unreadable/malformed file or invalid capacity returns `None` (capped argument fallback), not fresh proof. Fresh measurement renews even at equal capacity |
+| General supervision (not disk sampling) | `--interval-s` default 30 s post-cycle sleep, shortened to 5 s while busy/backlogged | Stop checked between operations; existing sleep is not cancellation-aware. Ordinary `--once` has no recurring producer or cycle sleep |
 | CPU evidence | Existing freshness requires age from zero through **5.0 seconds inclusive**, plus validity checks | Failed collection preserves the old timestamp; absent/stale is unknown, never measured idle |
 | Broker local observer | One-second source wait for inventory refresh; on observer exception, conservative reread then two-second retry | Stop interrupts retry, source close wakes wait; successful turns clear the fallback error; no vendor calls on this path |
 | Broker numeric sampler | Effective period `min(interval_s, 1.0)`; vendor timeout parameter defaults to **1.0 second** | Work and failed queries consume the period; overruns skip ticks and wait at most `min(period, 0.05)`; stop interrupts waits, not an in-flight vendor call |
@@ -6126,7 +6144,21 @@ path retries after two seconds. Those are configured schedules, not measured
 end-to-end guarantees: filesystem work, scheduling and sequential vendor calls
 can add time. A one-second per-call vendor timeout is not a one-second total
 sample budget. Retain actual latency and cancellation observations during
-qualification. Neither numeric loop replays missed ticks after slow work.
+qualification. CPU, broker and disk numeric loops skip missed ticks after slow
+work rather than replaying them.
+
+Disk close takes the commit lock, records cancellation and attempts zero
+revocation; once cancellation is recorded, late acquisition results cannot
+renew proof. It does not join or interrupt a blocked acquisition, and a stuck
+producer is not replaced by another sampler. Publication and revocation I/O
+currently share that lock with close, so cancellation can itself wait on blocked
+publication, and revocation I/O is not bounded. Cleanup is registered in the
+outer ExitStack while the ownership handle lives in the inner supervisor
+function: the current handover path does not guarantee ownership retention
+until cleanup completes. Do not infer bounded shutdown or race-free handover
+from the cancellation fixture. If revocation fails, readers still expire the
+old proof; do not bypass freshness or remove the file to restore capacity.
+These lifecycle limitations remain subject to repair and qualification.
 
 Watches are armed before the initial authoritative reread. Lexical target and
 ancestor coverage handles absent names, atomic replacement, parent replacement
@@ -6157,7 +6189,19 @@ The source's diagnostics property is local; the CPU wrapper exposes coverage,
 `sampler_leader` and `sample_error` through `diagnostics`, without inventing a
 shared CPU diagnostic record.
 
-A producer exception emits a final hint and closes. Closed `wait()` returns
+For disk, correlate offer `measured_unix` and `detail` with the supervisor's
+changed-value `live offer`, `measurement waits` and `declaration refused` lines.
+Handled producer exceptions log `disk observation unavailable; retry within 5s`
+once per changed error, followed by `disk observation recovered` when a turn
+succeeds. A successful turn or recovery log can still mean holder deferral, not
+a fresh positive disk measurement. `disk proof revocation unavailable` reports
+failed zero publication; old proof still has its reader expiry. Check the
+configured local disk, holder census and offer storage on failures, then require
+a new authoritative measurement; healthy equal-capacity renewals are not logged
+individually. These logs and the five-second retry schedule do not establish a
+five-second completion bound under stalled filesystem I/O.
+
+A local notification producer exception emits a final hint and closes. Closed `wait()` returns
 without raising. The broker observer explicitly detects closed sources and
 reconstructs them on its two-second retry. Qualify this separately from
 recoverable watch/path loss. Likewise, CPU shutdown joins an in-progress
