@@ -286,7 +286,7 @@ def _prepare_scratch_directory(declaration: Mapping[str, object]) -> list[dict[s
             fds.append(os.open(name, flags, dir_fd=fds[-1]))
             identities.append(_directory_identity(fds[-1], name))
             if index == root_index:
-                scratch_declarations._descriptor_identity(fds[-1])
+                scratch_declarations.descriptor_identity(fds[-1])
             if index > root_index:
                 info = os.fstat(fds[-1])
                 if (info.st_uid != os.getuid() or info.st_mode & 0o077
