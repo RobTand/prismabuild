@@ -44,6 +44,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,7 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-from prismabuild import pool, residency_map  # noqa: E402
+from prismabuild import kept_reads, pool, residency_map  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
@@ -111,7 +112,7 @@ class _Loop:
         self._directory_clock = time.time_ns()
 
     def changed_directory(self, path: Path) -> None:
-        self._directory_clock += 1000000000
+        self._directory_clock = max(self._directory_clock, time.time_ns()) + 1000000000
         os.utime(path, ns=(self._directory_clock, self._directory_clock))
 
     def record_move(self, key: str, document: dict) -> None:
@@ -119,10 +120,18 @@ class _Loop:
         self.changed_directory(self.queue.root / tier_loop.MOVER_RECEIPTS)
 
     def cycle(self) -> list[dict[str, object]]:
-        return tier_loop.cycle(
-            self.queue, host=bench.HOST, source_pool="storage_pool",
-            receipts=self.receipts,
-            discover=lambda **_kw: {bench.TIER: bench._tier_record(self.stage)})
+        # Keep the production trust checks, but put their fence after both
+        # explicitly advanced mtimes and kernel-assigned ctimes. Real time
+        # need not catch up with the fixture's directory clock. Patch only
+        # kept_reads' clock binding, not the process-wide time module.
+        clock = SimpleNamespace(clock_gettime_ns=lambda _clock: max(
+            self._directory_clock, time.time_ns()) + 1000000000)
+        with pytest.MonkeyPatch.context() as trust_clock:
+            trust_clock.setattr(kept_reads, "time", clock)
+            return tier_loop.cycle(
+                self.queue, host=bench.HOST, source_pool="storage_pool",
+                receipts=self.receipts,
+                discover=lambda **_kw: {bench.TIER: bench._tier_record(self.stage)})
 
 
 def _listings(monkeypatch: pytest.MonkeyPatch,

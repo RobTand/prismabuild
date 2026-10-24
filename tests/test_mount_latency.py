@@ -12,10 +12,11 @@ import io
 import os
 import json
 from pathlib import Path
+import selectors
+import signal
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -100,6 +101,64 @@ def test_forked_probe_error_is_retained_verbatim(tmp_path):
     assert saved["recording"] == {"status": "ok", "path": str(path)}
 
 
+def _read_plugin_sample(stdout, stderr, *, timeout_s=120.0,
+                        clock=time.monotonic,
+                        selector_factory=selectors.DefaultSelector):
+    """Read a complete probe-state frame, even if a child holds the pipes.
+
+    No reader thread or buffered read can outlive the handshake deadline.
+    stderr is drained too, so a diagnostic cannot block the producer.
+    """
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    pending = b""
+    in_sample = False
+    deadline = clock() + timeout_s
+    with selector_factory() as ready:
+        for stream, name in ((stdout, "stdout"), (stderr, "stderr")):
+            os.set_blocking(stream.fileno(), False)
+            ready.register(stream, selectors.EVENT_READ, name)
+        while True:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise TimeoutError(f"incomplete plugin sample: {captured!r}")
+            for key, _events in ready.select(remaining):
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    ready.unregister(key.fileobj)
+                    if key.data == "stdout":
+                        raise AssertionError(f"plugin stdout ended before sample: {captured!r}")
+                    continue
+                captured[key.data].extend(chunk)
+                if sum(map(len, captured.values())) > 1024 * 1024:
+                    raise AssertionError("plugin output exceeded 1 MiB before sample")
+                if key.data == "stdout":
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        if line == b"BEGIN prismabuild.mount_probe_state":
+                            in_sample = True
+                        elif in_sample and line == b"END":
+                            return bytes(captured["stdout"]), bytes(captured["stderr"])
+
+
+def _stop_plugin(process, *, timeout_s=120.0):
+    """Kill the private group, including pipe-owning probes, then bound cleanup."""
+    try:
+        # Do this even if the group leader has already exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate(timeout=timeout_s)
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        process.wait(timeout=timeout_s)
+
+
 @pytest.mark.parametrize("direct_exec", [False, True])
 def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec):
     """Exercise the installed symlink and Netdata's positional interval argv.
@@ -118,27 +177,15 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
                "--lock-dir", str(lock_dir)]
     if not direct_exec:
         command.insert(0, sys.executable)
-    with subprocess.Popen(command, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True) as process:
-        def first_sample():
-            lines, in_sample = [], False
-            for line in process.stdout:
-                lines.append(line)
-                if line.startswith("BEGIN prismabuild.mount_probe_state"):
-                    in_sample = True
-                elif in_sample and line.strip() == "END":
-                    break
-            return "".join(lines)
-
-        with ThreadPoolExecutor(max_workers=1) as reader:
-            result = reader.submit(first_sample)
-            try:
-                stdout = result.result(timeout=120)
-            finally:
-                process.terminate()
-                process.wait(timeout=120)
-        stdout += process.stdout.read()
-        stderr = process.stderr.read()
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0,
+                               start_new_session=True)
+    try:
+        stdout, stderr = _read_plugin_sample(process.stdout, process.stderr)
+    finally:
+        tail_stdout, tail_stderr = _stop_plugin(process)
+    stdout = (stdout + tail_stdout).decode("utf-8")
+    stderr = (stderr + tail_stderr).decode("utf-8")
     assert not stderr
     lines = stdout.splitlines()
     assert lines and lines[0].startswith("CHART "), stdout
@@ -155,6 +202,72 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     assert record["probe"]["status"] == "ok"
     assert record["locks"]["present"] is True
     assert record["locks"]["identity_complete"] is False
+
+
+@pytest.mark.parametrize("partial_end", [b"", b"EN"])
+def test_plugin_handshake_expires_with_inherited_pipe_writers(partial_end):
+    clock = [0.0]
+
+    class ExpiringSelector(selectors.DefaultSelector):
+        def select(self, timeout):
+            assert 0 < timeout <= 120.0
+            events = super().select(0)
+            if not events:
+                clock[0] = 120.0
+            return events
+
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    try:
+        # An earlier END and a partial probe frame must not finish the
+        # handshake. Open writers model a descendant surviving its parent.
+        os.write(out_write, b"BEGIN other_chart\nEND\n"
+                 b"BEGIN prismabuild.mount_probe_state\nSET ok = 1\n" + partial_end)
+        os.write(err_write, b"fixture diagnostic\n")
+        with os.fdopen(out_read, "rb", buffering=0) as stdout, os.fdopen(
+                err_read, "rb", buffering=0) as stderr:
+            with pytest.raises(TimeoutError, match="incomplete plugin sample") as error:
+                _read_plugin_sample(stdout, stderr, clock=lambda: clock[0],
+                                    selector_factory=ExpiringSelector)
+            assert "SET ok = 1" in str(error.value)
+            assert "fixture diagnostic" in str(error.value)
+    finally:
+        os.close(out_write)
+        os.close(err_write)
+
+
+def test_plugin_cleanup_stops_pipe_owners_after_the_parent_exits():
+    # The leader exits, but its child holds both output pipes and is blocked
+    # on a private pipe. Killing only the leader cannot deliver output EOF.
+    command = [sys.executable, "-c", """
+import os
+read_fd, write_fd = os.pipe()
+if os.fork() == 0:
+    os.read(read_fd, 1)
+    os._exit(0)
+os.write(1, b'BEGIN prismabuild.mount_probe_state\\nSET ok = 1\\nEND\\n')
+os._exit(0)
+"""]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0,
+                               start_new_session=True)
+    try:
+        stdout, stderr = _read_plugin_sample(process.stdout, process.stderr)
+        assert b"SET ok = 1\nEND\n" in stdout
+        assert stderr == b""
+        assert process.wait(timeout=120) == 0
+    finally:
+        try:
+            tail = _stop_plugin(process)
+        except BaseException:
+            # Also contain the fixture if the cleanup helper regresses.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            raise
+    assert tail == (b"", b"")
+    assert process.stdout.closed and process.stderr.closed
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
@@ -447,7 +560,13 @@ def test_counters_that_went_backwards_are_dropped_not_negated():
     assert "READ" in delta, "an op absent from the earlier snapshot still counts"
 
 
-def test_a_mount_that_does_not_answer_is_recorded_not_raised(monkeypatch):
+@pytest.mark.parametrize("setup_s, expected_waits, expected_elapsed", [
+    (0.0, [0.2], 0.2),
+    (0.05, [0.15], 0.2),
+    (0.25, [], 0.25),
+])
+def test_a_mount_that_does_not_answer_is_recorded_not_raised(
+        monkeypatch, setup_s, expected_waits, expected_elapsed):
     """A hard NFS mount waits rather than failing, and no signal reaches it.
 
     So the deadline has to be enforced by a process the parent can walk away
@@ -457,13 +576,23 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised(monkeypatch):
     """
 
     clock = [1000.0]
+    wait_budgets = []
     monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
-    monkeypatch.setattr(mount_latency.os, "fork", lambda: 4242)
+
+    def start_unanswered_probe():
+        clock[0] += setup_s
+        return 4242
+
+    monkeypatch.setattr(mount_latency.os, "fork", start_unanswered_probe)
     monkeypatch.setattr(mount_latency.os, "kill", lambda pid, signum: None)
     monkeypatch.setattr(mount_latency.os, "waitpid", lambda pid, flags=0: (pid, 0))
 
     def unavailable(readers, writers, errors, timeout):
-        clock[0] += 1.0
+        wait_budgets.append(timeout)
+        # Model an unanswered wait consuming its requested budget. The
+        # independent expected budgets below catch an oversized select wait,
+        # even when no data ever becomes ready.
+        clock[0] += timeout
         return [], [], []
 
     monkeypatch.setattr(mount_latency.select, "select", unavailable)
@@ -472,6 +601,8 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised(monkeypatch):
 
     assert record["probe"]["status"] == "timed_out"
     assert record["probe"]["deadline_s"] == 0.2
+    assert wait_budgets == pytest.approx(expected_waits)
+    assert record["probe"]["elapsed_s"] == expected_elapsed
     # The injected wait result proves reaping; it must not leave a waiter.
     assert sampler._outstanding_pid is None
 
@@ -488,9 +619,9 @@ def test_a_wedged_probe_suppresses_the_next_one_instead_of_doubling_it(
     this module makes.
     """
 
-    calls = []
-    sampler = mount_latency.MountSampler(
-        probe=lambda *_a, **_k: calls.append(1) or {"status": "ok"})
+    sampler = mount_latency.MountSampler()
+    monkeypatch.setattr(mount_latency.os, "fork", lambda: pytest.fail(
+        "a wedged mount must not be given a second waiter"))
     sampler._outstanding_pid = 4242
     sampler._outstanding_since = 970.0
     monkeypatch.setattr(mount_latency.time, "time", lambda: 1000.0)
@@ -502,7 +633,6 @@ def test_a_wedged_probe_suppresses_the_next_one_instead_of_doubling_it(
     assert record["probe"]["status"] == "wedged"
     assert record["probe"]["outstanding_pid"] == 4242
     assert record["probe"]["wedged_for_s"] == 30.0
-    assert calls == [], "a wedged mount must not be given a second waiter"
 
 
 def test_the_syscall_leg_really_runs_and_times_the_claim_path(tmp_path):
