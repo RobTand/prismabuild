@@ -599,6 +599,7 @@ class Authority:
         if op in {'container_begin','container_end'}:return self.container(uid,pid,request)
         key,nonce=self.identity(request);scope=scope_id(key,nonce)
         allowed=({'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes','recovery_protocol'} if op=='create'
+                 else {'op','action_key','nonce','challenge'} if op=='cleanup_verdict'
                  else {'op','action_key','nonce','memory_max_bytes','gpu_memory_max_bytes'} if op=='recover_create'
                  else {'op','action_key','nonce','token','evidence'} if op=='settle'
                  else {'op','action_key','nonce','token','reason','memory_max_bytes'})
@@ -611,6 +612,29 @@ class Authority:
             if type(gpu_budget) is not int or not 0<gpu_budget<=2**63-1:
                 raise ValueError('GPU memory budget outside supported bounds')
         with self.lock:
+            if op=='cleanup_verdict':
+                challenge=request.get('challenge')
+                if not isinstance(challenge,str) or HEX64.fullmatch(challenge) is None:
+                    raise ValueError('invalid cleanup challenge')
+                record=self.records.get(scope)
+                if self.backend.exists(scope):
+                    raise ValueError('cleanup scope still exists')
+                if record is None:
+                    # Fence a delayed create before attesting absence. A zero
+                    # budget is a cancelled identity, never launch authority.
+                    record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
+                            'memory_max_bytes':0,'token':secrets.token_hex(32),
+                            'released_unix':time.time(),'creation_cancelled_unix':time.time()}
+                    _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
+                if (record.get('uid')!=uid or record.get('action_key')!=key
+                        or record.get('nonce')!=nonce or not record.get('released_unix')):
+                    raise ValueError('cleanup scope is not released')
+                if record.get('container_tickets') and not record.get('settled_unix'):
+                    raise ValueError('cleanup scope has unresolved container tickets')
+                return {'ok':True,'action_key':key,'nonce':nonce,'scope_id':scope,
+                        'challenge':challenge,'empty':True,'released':True,
+                        'stopped':True,'settled':True,'tickets_pending':False,
+                        'creation_cancelled':bool(record.get('creation_cancelled_unix'))}
             if op=='recover_create':
                 budget=request.get('memory_max_bytes')
                 if type(budget) is not int or not 0<budget<=self.max_memory_bytes:
@@ -624,6 +648,9 @@ class Authority:
                             'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
                     _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
+                    return {'ok':True,'scope_id':scope,'missing':True}
+                if record.get('creation_cancelled_unix') and record['memory_max_bytes']==0:
+                    if self.backend.exists(scope):raise ValueError('cancelled scope still exists')
                     return {'ok':True,'scope_id':scope,'missing':True}
                 if (record['memory_max_bytes']!=budget
                         or record.get('gpu_memory_max_bytes',record['memory_max_bytes'])!=gpu_budget):
