@@ -22,12 +22,12 @@ def test_main_cpu_tests_run_unchanged_at_cap_zero(tmp_path, filename):
     assert MANIFEST['main_commit'] == '43234d0fbd42d6ed76da38658cb9f447ed19a606'
     checkout = tmp_path / 'snapshot'
     tests = checkout / 'tests'
-    tests.mkdir(parents=True)
+    shutil.copytree(ROOT / 'tests', tests,
+                    ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache'))
     for name, pin in MANIFEST['files'].items():
         raw = (REFERENCE / (name + '.fixture')).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == pin['sha256']
         (tests / name).write_bytes(raw)
-    shutil.copyfile(ROOT / 'tests/conftest.py', tests / 'conftest.py')
     for name in ('src', 'tools'):
         shutil.copytree(ROOT / name, checkout / name)
     for name in ('pyproject.toml', 'pytest.ini'):
