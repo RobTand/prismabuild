@@ -1232,3 +1232,198 @@ def elect(queue: PoolQueue, ledger: ResourceLedger, controller, item: dict,
         prior["action_key"] = item["action_key"]
         queue.records.replace_record_at(queue.records.passes_path(item["action_key"]), prior)
         return chosen
+
+
+def consume_claim_election(queue: PoolQueue, claim: dict, chosen: dict | None) -> bool:
+    """Consume only the captured pre-claim selection, with action lock held.
+
+    Called after both claim and lease commit. Never acquires an action lock:
+    admission may already hold host admission after the action transition key.
+    Recovery supplies the same proof under its own action transition lock.
+    """
+    key = claim["action_key"]
+    if (chosen is None or chosen["action_key"] != key
+            or chosen["generation"] != queue.records.attempt_generation(claim)):
+        return False
+    path = queue.records.passes_path(key)
+    current = _read(path, optional=True)
+    if current is None or selection(current) != chosen:
+        return False
+    current.pop(FIELD)
+    queue.records.replace_record_at(path, current)
+    return True
+
+
+def recover_claim_election(queue: PoolQueue, key: str) -> bool:
+    """Recover the claim/retirement crash window using committed authority."""
+    from . import pool, claim_identity
+
+    try:
+        with queue.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                return False
+            chosen = selection(_read(queue.records.passes_path(key), optional=True) or {})
+            claim = _read(queue.records.item_path(pool.record_store.CLAIMED, key), optional=True)
+            lease = _read(queue.records.lease_path(key), optional=True)
+            if (chosen is None or claim is None or lease is None
+                    or claim.get("action_key") != key
+                    or not claim.get("claimed_by")
+                    or lease.get("owner") != claim["claimed_by"]
+                    or lease.get("claimed_unix") != claim.get("claimed_unix")
+                    or lease.get("published_unix") != claim.get("published_unix")
+                    or chosen["epoch_unix"] > claim.get("claimed_unix", -math.inf)):
+                return False
+            claim_identity.check_lease_identity(key, claim, lease, invalid=pool.AmbiguousClaimHolder)
+            return consume_claim_election(queue, claim, chosen)
+    except Exception:
+        return False
+
+
+def protect_ready_destination(queue: PoolQueue, claim: dict) -> None:
+    """Publish fresh protection before a measurement claim becomes a mark.
+
+    The claim's physical holdings still exclude lower work. Its canonical
+    destination owner installs the new election before releasing those holdings;
+    the old, consumed pre-claim selection is never resurrected.
+    """
+    from . import pool
+
+    if "claimed_unix" not in claim or "claimed_host" not in claim:
+        # READY may have been renamed before claim metadata/lease commit. That
+        # was not a successful claim: keep its pre-claim election untouched and
+        # allow the existing unstarted recovery to restore READY unchanged.
+        return
+    action = pool._sealed_action_request(str(claim.get("cas_root")), claim["action_key"],
+                                         max_bytes=MAX_RECORD_BYTES)
+    task = action.get("task") if action is not None else None
+    if not isinstance(task, Mapping) or task.get("task_class") != "measurement":
+        return
+    key = claim["action_key"]
+    with queue.action_transition_lock(key):
+        current_claim = _read(queue.records.item_path(pool.record_store.CLAIMED, key), optional=True)
+        from . import claim_identity
+        if current_claim is None or not claim_identity.same_claim(current_claim, claim):
+            return
+        path = queue.records.passes_path(key)
+        current = _read(path, optional=True) or {"action_key": key}
+        previous = selection(current)
+        generation = queue.records.attempt_generation(claim)
+        if FIELD in current and (previous is None or previous["generation"] != generation):
+            raise CensusUnavailable("READY protection encountered a replacement election")
+        # Distinguish this destination protection from pre-claim authority even
+        # on coarse/equal clocks, so crash recovery cannot consume it.
+        epoch = max(pool._now(), math.nextafter(float(claim["claimed_unix"]), math.inf))
+        current[FIELD] = {
+            "schema": SCHEMA, "action_key": key,
+            "generation": queue.records.attempt_generation(claim),
+            "host": claim["claimed_host"], "published_unix": float(claim["published_unix"]),
+            "priority": int(claim.get("priority", 0)), "epoch_unix": epoch,
+            "opportunity_unix": epoch,
+        }
+        queue.records.replace_record_at(path, current)
+
+
+def retire_concluded_sidecar(queue: PoolQueue, key: str) -> bool:
+    """Delete an election only with exact ending and no retained authority.
+
+    The action lock is acquired before reading any proof and held through the
+    unlink. Callers must not hold host admission: cleanup never reverses the
+    action -> host lock order. Refusal (including unreadable evidence) retains
+    the complete sidecar for a later canonical settlement or maintenance pass.
+    """
+    from . import pool
+
+    if not pool.record_store.key_shaped(key):
+        return False
+    try:
+        with queue.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                return False
+            return _retire_concluded_sidecar_locked(queue, key)
+    except Exception:
+        # This is optional reclamation, not permission to weaken admission.
+        return False
+
+
+def _retire_concluded_sidecar_locked(queue: PoolQueue, key: str,
+                                     generation: str | None = None) -> bool:
+    from . import pool
+
+    path = queue.records.passes_path(key)
+    record = _read(path, optional=True)
+    if record is None:
+        return False
+    chosen = selection(record)
+    if chosen is None:
+        # Canonical finish can also reclaim counters remaining after successful
+        # consumption. Its exact claim generation supplies the ending identity;
+        # malformed election fields are never interpreted as counter-only rows.
+        if FIELD in record or generation is None or record.get("action_key") != key:
+            return False
+        chosen = {"action_key": key, "generation": generation}
+    if chosen["action_key"] != key:
+        return False
+
+    # Any live publication, including a successor, and every physical finish
+    # mark is retained authority. Missing current rows alone prove nothing.
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        for entry in immutable_files.scan_required(queue.root / state):
+            if entry.name.startswith(key):
+                return False
+    try:
+        queue.records.lease_path(key).lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        return False
+
+    # Read the physical host and persistent-tier namespaces strictly. Do not
+    # use held(), whose absent/unreadable compatibility policy is too weak for
+    # deletion. Private acquisitions naming this key also retain the election.
+    roots = (queue.root / pool.RESERVATIONS,
+             queue.root / pool.record_store.TIER_RESERVATIONS)
+    for root in roots:
+        try:
+            owners = immutable_files.scan_required(root)
+        except FileNotFoundError:
+            continue
+        for owner in owners:
+            try:
+                holders = immutable_files.scan_required(owner / "held")
+            except FileNotFoundError:
+                continue
+            for holder in holders:
+                parts = holder.name.split(".")
+                relevant = holder.name == key or (
+                    len(parts) >= 3 and parts[0] == "claiming" and parts[2] == key)
+                if relevant and immutable_files.scan_required(holder):
+                    return False
+
+    # Only positive, validated, exact-generation terminal evidence counts.
+    # A retry successor or an archived failed *attempt* is not a terminal end.
+    ended = False
+    for state in (pool.record_store.DONE, pool.record_store.FAILED,
+                  pool.record_store.WITHDRAWN):
+        ending = pool.record_store.value_or_raise(
+            queue.records.confirmed_item(state, key, max_bytes=MAX_RECORD_BYTES))
+        if ending is None:
+            continue
+        stamp = ending.get("withdrawn_unix" if state == pool.record_store.WITHDRAWN
+                           else "finished_unix")
+        if (ending.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1
+                or ending.get("action_key") != key
+                or not isinstance(ending.get("status"), str) or not ending["status"]
+                or (state == pool.record_store.WITHDRAWN and ending["status"] != "withdrawn")
+                or type(stamp) not in (int, float) or not math.isfinite(stamp)):
+            raise CensusUnavailable("incomplete measurement retirement proof")
+        if queue.records.attempt_generation(ending) == chosen["generation"]:
+            ended = True
+    if not ended:
+        return False
+    # Keep a replacement selection or a concurrent counter update. The action
+    # transition lock serializes canonical writers; compare the entire current
+    # document as well before authorizing destructive reclamation.
+    if _read(path, optional=True) != record:
+        return False
+    path.unlink()
+    return True

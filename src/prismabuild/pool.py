@@ -9337,9 +9337,10 @@ class PoolQueue:
         or withdrawal record and is neither READY nor CLAIMED, re-checked
         under the key's transition lock (taken non-blocking, as the reaper
         does; ``record_pass`` and ``elect`` write under that same lock), and
-        its bytes carry no ``measurement_reservation`` field at all -- valid,
-        retired or malformed, an election is kept. Unreadable or foreign
-        records are kept. Losing a counter only restarts that key's aging,
+        any election passes the election owner's exact-generation ending and
+        retained-authority/physical-holdings checks. Legacy counters need no
+        election proof. Unreadable or foreign records are kept.
+        Losing a counter only restarts that key's aging,
         exactly as a successful claim already does. At most ``limit``
         concluded sidecars are inspected per call; failures are per row. The
         existing host-local sweep marker retains the last inspected name, so
@@ -9389,6 +9390,9 @@ class PoolQueue:
                 if not name.endswith(".json") or not record_store.key_shaped(key):
                     continue
                 path = self.records.passes_path(key)
+                inspected += 1
+                after = name  # every observation, including a live crash window, is bounded
+                measurement_reservation.recover_claim_election(self, key)
                 try:
                     if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
                             or bool(
@@ -9402,8 +9406,6 @@ class PoolQueue:
                     )
                                for state in (DONE, FAILED, WITHDRAWN)):
                         continue
-                    inspected += 1
-                    after = name  # kept, unreadable and busy rows still advance
                     with self.action_transition_lock(key, blocking=False) as acquired:
                         if not acquired:
                             continue
@@ -9417,10 +9419,17 @@ class PoolQueue:
                                 )):
                             continue
                         record = record_store.read_document(path)
-                        if (record is None or record.get("action_key") != key
-                                or measurement_reservation.FIELD in record):
+                        if record is None or record.get("action_key") != key:
                             continue
-                        path.unlink()
+                        if measurement_reservation.FIELD in record:
+                            try:
+                                retired = measurement_reservation._retire_concluded_sidecar_locked(self, key)
+                            except Exception:
+                                retired = False  # unreadable authority retains the fence
+                            if not retired:
+                                continue
+                        else:
+                            path.unlink()
                 except (OSError, PoolContractError):
                     continue
                 pruned.append(key)
@@ -18466,6 +18475,9 @@ class PoolQueue:
                     PREWARM_RECEIPT_REF: key,
                     "manifest_sha256": digest,
                 }
+        from . import _measurement_reservation as measurement_reservation
+        preclaim_election = measurement_reservation.selection(
+            measurement_reservation._read(self.records.passes_path(key), optional=True) or {})
         try:
             self.records.replace_record_at(dst, claimed)
         except (OSError, PoolContractError, ValueError) as exc:
@@ -18538,12 +18550,9 @@ class PoolQueue:
                     "adaptive_gpu": adaptive_gpu is not None,
                 })
                 return None
-        # Keep a canonical election through unstarted deferral/retry.
-        # Neither READY absence nor a successful rename retires it.
-        from . import _measurement_reservation as measurement_reservation
-        pass_record = record_store.read_document(self.records.passes_path(key)) or {}
-        if measurement_reservation.selection(pass_record) is None:
-            self.records.passes_path(key).unlink(missing_ok=True)
+        # Both claim and lease committed. Preserve counters and holdings;
+        # consume only the election captured before this claim's commit.
+        measurement_reservation.consume_claim_election(self, claimed, preclaim_election)
         return claimed
 
     def _start_claim_scan(
@@ -21448,6 +21457,12 @@ class PoolQueue:
         if preempted_by is None and handoff_proof is None:
             plan_superseded = self.mark_residency_plan_superseded(
                 key, reason=reason or "withdrawn")
+
+        # This serialized action transition may have removed the last READY
+        # authority. Claimed workers/leases/holdings still retain the election.
+        from . import _measurement_reservation
+        with suppress(Exception):
+            _measurement_reservation._retire_concluded_sidecar_locked(self, key)
 
         return {
             "action_key": key,

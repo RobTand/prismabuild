@@ -680,10 +680,15 @@ The census input is bounded by retiring what cannot be authority, not by
 skipping reads: on the reaper's `_sweep_due` schedule `sweep_orphan_passes`
 unlinks at most 256 `passes/` sidecars per call whose key has a done, failed
 or withdrawn record, is neither READY nor CLAIMED under its non-blocking
-transition lock, and whose record carries no `measurement_reservation` field
-(valid, retired or malformed elections, unreadable and foreign records stay).
+transition lock. Election-bearing sidecars additionally require positive exact-
+generation terminal/withdrawal proof and no live publication, finish mark,
+lease or physical host/tier holding. Logical `retired()` is not unlink proof:
+absence, newer generations, malformed/unreadable evidence and ambiguous
+ownership retain the sidecar. The election owner revalidates the current
+selection and complete sidecar before unlink; immutable outcomes, attempts,
+withdrawal decisions, logs and CAS receipts are never removed.
 The same host-local `<box-identity>.sweep` marker owns the fair-start cursor
-(#1503): its bytes hold the last inspected concluded sidecar name, while its
+(#1503): its bytes hold the last inspected sidecar name, while its
 mtime retains the existing heartbeat schedule. Each call resumes strictly
 after that name in sorted order and wraps at most once, even if the cursor
 name has been deleted. Retained elections, foreign/unreadable rows and busy
@@ -711,8 +716,11 @@ reader ownership.
 
 The refresh compares complete selections, including their generation, host,
 priority, and timestamps. New or replacement selections immediately fence this
-host. Stored measurement elections remain fenced through claims and retirement;
-only a complete census proves their retirement. Gang elections require an exact
+host. A durable exact-generation claim and lease consume the captured pre-claim
+election on any matching host, without releasing holdings or resetting counters.
+Refused claims and failed claim/lease writes do not consume it. The bounded sweep
+also recovers interrupted consumption from matching CLAIMED/lease authority,
+without deleting the live pass or consuming a replacement selection. Gang elections require an exact
 live member generation, so completed gangs do not fence the host.
 
 Both readers use the 4096-record cap. The complete read has a five-second
@@ -745,10 +753,15 @@ the incumbent's life; holding it back deadlocked an undeclared producer against
 its exports (#1504 review). Every other row and every other withhold is unchanged.
 
 On the selected host, a lower-priority capacity claim without a verified funded
-measurement dependency cannot refill. The selector survives record_pass, claim,
-unstarted deferral and retry; READY/CLAIMED absence is not retirement, including
-the CLAIMED -> tombstone -> READY gap. Deadline expiry or evidence loss never
-retires it or grants refill/reclaim. Exact locked terminal/withdrawal/successor
+measurement dependency cannot refill. The selector survives record_pass but is
+consumed by successful claim. Canonical defer/retry installs fresh current
+protection before entombing the claim and releasing its physical holdings; it
+never inherits the consumed selection. This fences the CLAIMED -> tombstone ->
+READY gap and prevents lower refill after release. Claim consumption holds the
+existing action transition lock and never acquires one from host-locked code;
+census keeps reader -> sorted action keys -> host order. Canonical finish,
+withdrawal and the existing bounded sweep share the election owner's concluded
+reclamation policy. Deadline expiry or evidence loss never grants refill/reclaim. Exact locked terminal/withdrawal/successor
 proof may retire it only without old live claim/mark authority; retained tokens
 on its host still keep protection. Other hosts and legitimate equal/higher
 priority work keep existing admission, placement and resource gates. No token,

@@ -771,6 +771,9 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
     disposition = WITHDRAWN if cancelled else plan.disposition
     target = disposition if disposition in {DONE, FAILED, WITHDRAWN} else READY
     _legal_destination(transition, target)
+    if target == READY:
+        from . import _measurement_reservation
+        _measurement_reservation.protect_ready_destination(queue, plan.original)
     tombstone, mine = queue._entomb_claim(key, expect=plan.original)
     if not mine or tombstone is None:
         if cancelled:
@@ -816,6 +819,10 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                     with suppress(OSError, ValueError, pb.PrismaBuildError):
                         _gang.note_backfill_preemption(queue, election, timing)
         tombstone.unlink(missing_ok=True)
+        # Cancellation settlement runs outside host admission; acquire the
+        # action lock afresh only after returning physical reservations.
+        from . import _measurement_reservation
+        _measurement_reservation.retire_concluded_sidecar(queue, key)
         return destination
     if guarded_publication:
         with queue.action_transition_lock(key, blocking=True):
@@ -873,6 +880,13 @@ def _publish_claim_destination(queue, plan: ClaimCommit, tombstone: Path) -> Pat
     tombstone.unlink(missing_ok=True)
     if transition is Transition.FINISH and disposition in {DONE, FAILED}:
         queue.retire_residency_plan(key)
+    if disposition in {DONE, FAILED}:
+        # Terminal publication is action-locked; host release and finish-mark
+        # retirement are complete. Retained tier holdings still veto deletion.
+        from . import _measurement_reservation
+        with suppress(Exception):
+            _measurement_reservation._retire_concluded_sidecar_locked(
+                queue, key, queue.records.attempt_generation(plan.record))
     return destination
 
 
