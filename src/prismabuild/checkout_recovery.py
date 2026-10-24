@@ -207,8 +207,8 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
     if lease is not None:
         heartbeat = queue._effective_heartbeat(lease)
         if (lease.get('schema') != pool.POOL_LEASE_SCHEMA_V1
-                or lease.get('action_key') != key or not _finite(heartbeat)
-                or float(heartbeat) > time.time() - pool.LEASE_TIMEOUT_S):
+                or lease.get('action_key') != key or heartbeat is None
+                or heartbeat.age_s < pool.LEASE_TIMEOUT_S):
             _checkout_recovery_refuse('present lease is malformed or live')
         lifetime['lease'] = dict(sha256=lease_sha,
                                 identity=_checkout_recovery_identity(

@@ -875,6 +875,12 @@ class OfferTiming(NamedTuple):
     clock_skew_s: float | None
 
 
+class _LeaseHeartbeat(NamedTuple):
+    heartbeat_unix: float
+    age_s: float
+    lease_age_s: float
+
+
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
     """Usable age and observed future skew, relative to the reader's clock.
 
@@ -11420,10 +11426,13 @@ class PoolQueue:
                 or lease.get("claimed_unix") != claim.get("claimed_unix")
                 or self._heartbeat_conflicts(claim, lease)):
             return None
-        heartbeat = self._effective_heartbeat(lease, now=now)
-        age = None if heartbeat is None else now - heartbeat
-        if age is None:
+        try:
+            heartbeat = self._effective_heartbeat(lease, now=now)
+        except (OSError, ValueError, PoolContractError):
             return None
+        if heartbeat is None:
+            return None
+        age = heartbeat.age_s
         out: dict[str, object] = {"lease_heartbeat_age_s": round(age, 3),
                                   "lease_live": age <= LEASE_TIMEOUT_S}
         observation = lease.get("progress_observation")
@@ -11633,9 +11642,13 @@ class PoolQueue:
             return carried("unread")
         count = observation.get("accepted_count")
         credited = observation.get("staged_wait_exempt_s")
+        try:
+            heartbeat = self._effective_heartbeat(lease, now=now)
+        except (OSError, ValueError, PoolContractError):
+            return carried("unread")
         for field, value in (("quiet_s", observation.get("quiet_s")),
                              ("grace_s", observation.get("grace_s")),
-                             ("heartbeat_unix", self._effective_heartbeat(lease, now=now))):
+                             ("heartbeat_unix", None if heartbeat is None else heartbeat.heartbeat_unix)):
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[field] = float(value)
         if isinstance(count, bool) or not isinstance(count, int):
@@ -11660,36 +11673,36 @@ class PoolQueue:
         elif then is not None and now - then <= window_s:
             return carried("none")
         else:
-            within = self._ahead_within_grace(lease, observation, now=now)
+            within = self._ahead_within_grace(heartbeat, observation)
             if within is None:
                 return carried("none")
             out.update({"evidence": "ahead-within-grace", "evidence_unix": within[0],
                         "heartbeat_age_s": round(within[1], 3)})
         return True, out
 
-    def _ahead_within_grace(self, lease: Mapping[str, object],
-                            observation: Mapping[str, object], *, now: float
+    @staticmethod
+    def _ahead_within_grace(heartbeat: _LeaseHeartbeat | None,
+                            observation: Mapping[str, object]
                             ) -> tuple[float, float] | None:
         """``(heartbeat_unix, heartbeat_age_s)`` when a consumer's own watch
         has not ended it (#1022 review round 3), else ``None``.
 
-        Its heartbeat is within ``LEASE_TIMEOUT_S``, and ``quiet_s`` plus the
-        heartbeat's age is within ``grace_s``: the quiet its watch reported
-        at the heartbeat, projected to now, is inside the allowance the watch
+        Its effective heartbeat is within ``LEASE_TIMEOUT_S``, and ``quiet_s``
+        plus the lease's own age is within ``grace_s``: the quiet reported
+        at the lease write, projected to now, is inside the allowance the watch
         judges it by (``ProgressWatch.as_record``: ``quiet_s`` is measured
         from the deadline's base, which every credited exemption moves).
         """
 
-        heartbeat = self._effective_heartbeat(lease, now=now)
-        age = None if heartbeat is None else now - heartbeat
+        age = None if heartbeat is None else heartbeat.age_s
         quiet, grace = observation.get("quiet_s"), observation.get("grace_s")
         if (age is None or age > LEASE_TIMEOUT_S
                 or isinstance(quiet, bool) or not isinstance(quiet, (int, float))
                 or isinstance(grace, bool) or not isinstance(grace, (int, float))
                 or not math.isfinite(float(quiet)) or not math.isfinite(float(grace))
-                or float(quiet) + age > float(grace)):
+                or float(quiet) + heartbeat.lease_age_s > float(grace)):
             return None
-        return float(heartbeat), float(age)                 # type: ignore[arg-type]
+        return heartbeat.heartbeat_unix, age
 
     def _tier_loop_alive(self, tier_id: str, *, now: float
                          ) -> tuple[bool, float | None]:
@@ -11913,9 +11926,6 @@ class PoolQueue:
             if (claim is None or claim.get("claimed_by") != owner
                     or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
                 raise PoolContractError("claim changed before heartbeat publication")
-            previous = record_store.read_document(self.records.lease_path(action_key))
-            if previous is not None and self._heartbeat_conflicts(claim, previous):
-                raise AmbiguousClaimHolder("foreign heartbeat lease custody observed; retry admission after cleanup")
             for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                           "claimed_unix", "published_unix",
                           "scratch_declaration_record",
@@ -11952,10 +11962,16 @@ class PoolQueue:
         """
         lease = record_store.read_document(self.records.lease_path(action_key))
         live = record_store.read_document(self.records.item_path(CLAIMED, action_key))
-        if (lease is None or live is None or lease.get("owner") != owner
+        if (lease is None or live is None or lease.get("action_key") != action_key
+                or live.get("action_key") != action_key or lease.get("owner") != owner
                 or live.get("claimed_by") != owner or self._heartbeat_conflicts(live, lease)
-                or snapshot is not None and not claim_identity.same_claim(live, snapshot)
-                or not claim_identity.same_claim(live, lease)):
+                or snapshot is not None and not claim_identity.same_claim(live, snapshot)):
+            raise PoolContractError("claim changed before contended heartbeat")
+        if not all(live.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+            # No exact incarnation to stamp. Keep the legacy lease-age bound
+            # without turning lock contention into a payload failure.
+            return
+        if not claim_identity.same_claim(live, lease):
             raise PoolContractError("claim changed before contended heartbeat")
         ticks = _contained_worker_start_ticks(os.getpid())
         if (lease.get("pid") != os.getpid() or lease.get("host") != socket.gethostname()
@@ -11967,22 +11983,22 @@ class PoolQueue:
             "pid_start_ticks": ticks, "heartbeat_unix": _now()})
 
     @staticmethod
-    def _heartbeat_time(value: object, *, now: float) -> float | None:
-        # Offer clock-skew credit does not apply to claim liveness.
+    def _heartbeat_time(value: object) -> float | None:
         if type(value) not in (int, float):
             return None
         try:
             beat = float(value)
         except OverflowError:
             return None
-        return beat if math.isfinite(beat) and beat <= now else None
+        return beat if math.isfinite(beat) else None
 
     def _effective_heartbeat(self, lease: Mapping[str, object], *, now: float | None = None,
-                             read=None):
+                             read=None) -> _LeaseHeartbeat | None:
         """The one heartbeat observation used by all claim freshness readers.
 
-        Malformed/future lease time is unknown. A malformed or foreign stamp
-        contributes no credit. Unreadable stamp I/O propagates, retaining custody.
+        All ages use a clock sampled after the lease and stamp reads. A future
+        lease is live at age zero. A malformed/future or foreign stamp adds no
+        credit. Unreadable stamp I/O propagates, retaining custody.
         """
         observe = record_store.read_document if read is None else read
         stamp = (observe(self._heartbeat_stamp_path(lease))
@@ -11991,19 +12007,21 @@ class PoolQueue:
             raise stamp
         # Sample after the stamp read: a concurrent beat is not future merely
         # because this reader began before its publication.
-        now = _now() if now is None else now
-        beat = self._heartbeat_time(lease.get("heartbeat_unix"), now=now)
+        sampled = _now()
+        now = sampled if now is None else max(now, sampled)
+        beat = self._heartbeat_time(lease.get("heartbeat_unix"))
         if beat is None:
             return None
+        lease_age = max(0.0, now - beat)
         if (stamp is not None and claim_identity.same_claim(stamp, lease)
                 and all(stamp.get(field) == lease.get(field)
                         for field in ("action_key", "host", "pid", "pid_start_ticks"))
                 and type(lease.get("pid")) is int and lease["pid"] > 0
                 and type(lease.get("pid_start_ticks")) is int and lease["pid_start_ticks"] > 0):
-            stamped = self._heartbeat_time(stamp.get("heartbeat_unix"), now=now)
-            if stamped is not None:
+            stamped = self._heartbeat_time(stamp.get("heartbeat_unix"))
+            if stamped is not None and stamped <= now:
                 beat = max(beat, stamped)
-        return beat
+        return _LeaseHeartbeat(beat, max(0.0, now - beat), lease_age)
 
     @staticmethod
     def _heartbeat_conflicts(claim, lease):
@@ -12018,7 +12036,7 @@ class PoolQueue:
     def _heartbeat_cleanup_due(self, lease, *, timeout_s=LEASE_TIMEOUT_S):
         """Detection only; age or exact process death never proves cleanup."""
         beat = self._effective_heartbeat(lease)
-        stale = beat is not None and _now() - beat > timeout_s
+        stale = beat is not None and beat.age_s > timeout_s
         pid, ticks = lease.get("pid"), lease.get("pid_start_ticks")
         dead = (lease.get("host") == socket.gethostname()
                 and type(pid) is int and pid > 0 and type(ticks) is int and ticks > 0
@@ -19058,7 +19076,7 @@ class PoolQueue:
         beat = self._effective_heartbeat(record)
         if beat is None:
             raise PoolContractError(f"lease has no heartbeat: {action_key}")
-        return _now() - float(beat)
+        return beat.age_s
 
     def claim_intent_age(self, action_key: str) -> float | None:
         """Seconds since a claimant declared intent, or ``None`` without one.
@@ -19533,7 +19551,11 @@ class PoolQueue:
                     if result == self.records.item_path(READY, key):
                         requeued.append(key)
                     continue
-                age = self.lease_age(key)
+                try:
+                    age = self.lease_age(key)
+                except (OSError, ValueError, PoolContractError) as exc:
+                    print(f"pool reaper: unreadable heartbeat for {key}: {exc}; custody retained", file=sys.stderr)
+                    continue
                 if age is not None and age <= timeout_s:
                     continue
                 if age is None:

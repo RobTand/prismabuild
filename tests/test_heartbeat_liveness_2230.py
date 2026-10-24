@@ -109,16 +109,16 @@ def test_invalid_stamp_never_extends_liveness(holder, value):
     assert queue.lease_age(key) > pool.LEASE_TIMEOUT_S
 
 
-@pytest.mark.parametrize("value", [None, True, "100", float("nan"), float("inf"), 10**400, "future"])
+@pytest.mark.parametrize("value", [None, True, "100", float("nan"), float("inf"), 10**400])
 def test_invalid_lease_time_is_unknown_to_every_judge(holder, value):
     queue, key, item, clock = holder
     lease = record_store.read_document(queue.records.lease_path(key))
-    lease["heartbeat_unix"] = clock[0] + 1 if value == "future" else value
+    lease["heartbeat_unix"] = value
     queue.records.lease_path(key).write_text(json.dumps(lease))
     with pytest.raises(pool.PoolContractError, match="heartbeat"):
         queue.lease_age(key)
     assert queue._mover_lease(key, item, now=clock[0]) is None
-    assert queue._ahead_within_grace(lease, {"quiet_s": 0, "grace_s": 720}, now=clock[0]) is None
+    assert queue._ahead_within_grace(queue._effective_heartbeat(lease), {"quiet_s": 0, "grace_s": 720}) is None
     queue.records.item_path(record_store.CLAIMED, key).unlink()
     assert queue.sweep_widowed_leases() == []
     assert queue.ledger().holder_tokens(key) == {"cpu": 1}
@@ -240,13 +240,14 @@ def test_final_lease_read_cannot_borrow_successor_identity(holder, monkeypatch):
         value = original(path)
         if path == queue.records.lease_path(key):
             reads.append(path)
-            if len(reads) == 2:
+            if len(reads) == 1:
                 return dict(value, attempts=value["attempts"] + 1)
         return value
     monkeypatch.setattr(record_store, "read_document", changed)
     with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
         queue.write_lease(key, owner="worker", claim_snapshot=item)
     assert path.read_bytes() == before
+    assert len(reads) == 1
 
 
 def test_heartbeat_readers_use_the_shared_observation():
@@ -316,7 +317,7 @@ def test_partial_legacy_claim_keeps_its_lease_format_and_cannot_stamp(tmp_path):
     lease = record_store.read_document(path)
     assert set(lease) == {"schema", "action_key", "owner", "host", "pid", "child_pid", "heartbeat_unix"}
     with _busy_key(queue, key):
-        with pytest.raises(pool.PoolContractError, match="changed"):
-            queue.write_lease(key, owner="legacy")
+        queue.write_lease(key, owner="legacy")
+    assert not queue._heartbeat_stamp_path(lease).exists()
     assert path.read_bytes() == before
     assert queue.lease_age(key) < pool.LEASE_TIMEOUT_S

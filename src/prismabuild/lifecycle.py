@@ -1641,12 +1641,16 @@ def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
                 continue
             if bool(record_store.value_or_raise(queue.records.item_presence(CLAIMED, key))):
                 continue
-            record = record_store.read_document(lease) or {}
-            beat = queue._effective_heartbeat(record)
+            try:
+                record = record_store.read_document(lease) or {}
+                beat = queue._effective_heartbeat(record)
+            except (OSError, ValueError, PoolContractError) as exc:
+                print(f"pool lease sweep: unreadable heartbeat for {key}: {exc}; custody retained", file=sys.stderr)
+                continue
             if beat is None:
                 print(f"pool lease sweep: invalid heartbeat for {key}; custody retained", file=sys.stderr)
                 continue
-            age = pool._now() - beat
+            age = beat.age_s
             if age <= timeout_s:
                 continue
             try:

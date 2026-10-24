@@ -81,6 +81,8 @@ print(rc)
 @pytest.mark.parametrize("state,age,ended,attaches", [
     (pool.record_store.READY, None, False, True),
     (pool.record_store.CLAIMED, 0.0, False, True),
+    (pool.record_store.CLAIMED, -2.0, False, True),
+    (pool.record_store.CLAIMED, "invalid", False, True),
     (pool.record_store.CLAIMED, pool.LEASE_TIMEOUT_S + 60, False, False),
     (pool.record_store.READY, None, True, False),
 ])
@@ -95,7 +97,7 @@ def test_pool_attachment_keeps_generation_and_liveness(
     record = queue.records.item_path(state, key)
     record.write_text(json.dumps(row))
     if age is not None:
-        queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age}))
+        queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age if isinstance(age, (float, int)) else age}))
     if ended:
         queue.records.replace_record_at(
             queue.records.item_path(pool.record_store.DONE, key),
