@@ -1512,7 +1512,10 @@ A heartbeat takes the transition lock non-blocking. If another thread or
 process holds it, the current worker publishes a liveness-only stamp under
 `lease-heartbeats/<action_key>/<claim-identity-digest>.json`. Its identity uses
 `claim_identity.CLAIM_IDENTITY_FIELDS`, plus the recorded host, PID and process
-start ticks. New leases carry those fields for every claim. The contended
+start ticks. New leases carry those fields when the durable claim has the
+complete immutable identity. Partial legacy claims keep their existing lease
+wire format and cannot issue an incarnation stamp; they retain the ordinary
+lease-age recovery bound. The contended
 writer verifies the durable claim, lease and caller snapshot before writing;
 a delayed predecessor can replace only its own incarnation's stamp.
 

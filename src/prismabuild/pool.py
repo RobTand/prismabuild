@@ -11917,12 +11917,18 @@ class PoolQueue:
             if previous is not None and self._heartbeat_conflicts(claim, previous):
                 raise AmbiguousClaimHolder("foreign heartbeat lease custody observed; retry admission after cleanup")
             for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                          "claimed_unix", "published_unix", "claimed_by", "claimed_host", "attempts",
+                          "claimed_unix", "published_unix",
                           "scratch_declaration_record",
                           scratch_lifetime.SCRATCH_LIFETIME_FIELD):
                 if field in claim:
                     lease[field] = claim[field]
-            lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
+            if all(claim.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+                # Partial legacy claims have no exact incarnation to stamp.
+                # Preserve their lease wire format rather than invent identity.
+                for field in ("claimed_by", "claimed_host", "attempts"):
+                    if field in claim:
+                        lease[field] = claim[field]
+                lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
             previous = record_store.read_document(self.records.lease_path(action_key))
             # A delayed final read must not import another attempt's envelope.
             # Re-read the claim under the same transition before publishing too.

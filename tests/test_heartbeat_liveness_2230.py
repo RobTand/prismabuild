@@ -302,3 +302,21 @@ def test_fresh_foreign_lease_does_not_renew_this_claim(holder, judge, field, val
         live, evidence = queue._claim_order_ahead_live(key, now=clock[0], window_s=60.,
             prior={"evidence_unix": clock[0] - 120, "accepted_count": 0, "staged_wait_exempt_s": 0.})
         assert not live and evidence["evidence"] == "unread"
+
+
+def test_partial_legacy_claim_keeps_its_lease_format_and_cannot_stamp(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    key = uuid.uuid4().hex + uuid.uuid4().hex
+    queue.records.replace_record_at(queue.records.item_path(record_store.CLAIMED, key),
+        {"action_key": key, "claimed_by": "legacy", "claimed_host": pool.socket.gethostname()})
+    queue.write_lease(key, owner="legacy")
+    path = queue.records.lease_path(key)
+    before = path.read_bytes()
+    lease = record_store.read_document(path)
+    assert set(lease) == {"schema", "action_key", "owner", "host", "pid", "child_pid", "heartbeat_unix"}
+    with _busy_key(queue, key):
+        with pytest.raises(pool.PoolContractError, match="changed"):
+            queue.write_lease(key, owner="legacy")
+    assert path.read_bytes() == before
+    assert queue.lease_age(key) < pool.LEASE_TIMEOUT_S
