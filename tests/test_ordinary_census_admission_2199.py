@@ -251,7 +251,7 @@ def test_a_live_census_is_shared_without_another_reader_fence(fleet, monkeypatch
             assert denial(candidate)["reason"] == "deferred_for_measurement_reservation"
 
 
-@pytest.mark.parametrize("damage", ["expired", "garbled", "other_pool", "other_boot"])
+@pytest.mark.parametrize("damage", ["expired", "garbled", "other_pool", "other_boot", "boot_unknown"])
 def test_a_retirement_cache_must_be_verifiable_before_ordinary_admission(
         fleet, monkeypatch, damage):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
@@ -271,9 +271,13 @@ def test_a_retirement_cache_must_be_verifiable_before_ordinary_admission(
         saved["pool"] += "-other"
     elif damage == "other_boot":
         saved["boot"] = "00000000-0000-0000-0000-000000000000"
-    else:
+    elif damage == "garbled":
         saved["census"] = {}
     pool.immutable_files.write_json_atomic(cache, saved)
+    if damage == "boot_unknown":
+        def unreadable_boot(proc):
+            raise reservation.reader.ReaderOwnershipUnavailable("fixture boot identity unavailable")
+        monkeypatch.setattr(reservation.reader, "_boot_id", unreadable_boot)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
         result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
@@ -345,6 +349,31 @@ def test_a_vanished_sidecar_cannot_clear_a_pass_remembered_election(fleet, monke
                 remembered, queue, queue.ledger(), gate, row) as census:
             assert "unavailable" in census
     assert queue.ledger().held_keys() == []
+
+
+def test_boot_identity_loss_after_a_complete_read_only_disables_shared_reuse(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    captures = []
+    original_census = reservation.CensusReader._census
+    original_boot = reservation.reader._boot_id
+
+    def counted(self, directory):
+        value = original_census(self, directory)
+        captures.append(value)
+        return value
+
+    def boot_after_refresh(proc):
+        if len(captures) == 2:
+            raise reservation.reader.ReaderOwnershipUnavailable("fixture boot source disappeared")
+        return original_boot(proc)
+
+    monkeypatch.setattr(reservation.CensusReader, "_census", counted)
+    monkeypatch.setattr(reservation.reader, "_boot_id", boot_after_refresh)
+    with reservation.locked_census(
+            queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())) as census:
+        assert census["elections"] == {}
+    assert len(captures) == 2
+    assert not reservation.CensusReader(queue, queue.ledger()).shared_path.exists()
 
 
 @pytest.mark.parametrize("state", ["retired", "garbled"])

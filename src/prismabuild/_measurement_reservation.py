@@ -651,7 +651,8 @@ class CensusReader:
             self._checked_census(saved["census"])
             return saved
         except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
-                core.PrismaBuildError, local_scratch.LocalScratchError):
+                core.PrismaBuildError, local_scratch.LocalScratchError,
+                reader.ReaderOwnershipUnavailable):
             return None
 
     @contextmanager
@@ -1047,7 +1048,8 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
                     if len(core._canonical_bytes(saved)) <= MAX_RECORD_BYTES:
                         immutable_files.write_json_atomic(
                             census_reader.shared_path, saved)
-            except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError):
+            except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError,
+                    reader.ReaderOwnershipUnavailable):
                 pass  # Optional reuse cannot change a successful complete census.
             yield current
 

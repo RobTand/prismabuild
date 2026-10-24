@@ -176,9 +176,11 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in keys)
 
 
-def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
+@pytest.mark.parametrize("shared", [False, True], ids=["owned-refresh", "shared-census"])
+def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, shared):
     """Elections without a live READY/CLAIMED member are not fences."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60 if shared else -1)
     incumbents = {}
     for host in ("sparklina", "sparky"):
         incumbents[host] = publish(f"incumbent-{host}", priority=-10, timeout_s=None,
@@ -224,8 +226,11 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
 
     monkeypatch.setattr(reservation.CensusReader, "refresh_elections", observed_refresh)
     result = gclaim("sparklina", ready=rows, advance=None)
-    assert len(refreshes) == 1, "the follower must reach election refresh"
-    assert refreshes[0]["gang_elections"] == {}
+    if shared:
+        assert refreshes == [], "a verified complete census needs no refresh child"
+    else:
+        assert len(refreshes) == 1, "an expired shared result uses the owned refresh"
+        assert refreshes[0]["gang_elections"] == {}
     assert queue.records.item_path(pool.record_store.READY, probe).exists()
     assert result is not None, denial(follower, "sparklina")
     assert result == follower
