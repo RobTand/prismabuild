@@ -23,6 +23,13 @@ from prismabuild import fleet_roster, host_cap, pool, pool_reconcile, resource_s
 
 from test_capped_partial_host import capped  # noqa: F401  (fixture)
 
+def _evidence(label, value):
+    """pbtest forwards no -s/-r; the warnings summary carries the evidence."""
+    text = label + " " + json.dumps(value, sort_keys=True, default=str)
+    print(text)
+    warnings.warn(text, UserWarning, stacklevel=2)
+
+
 ROUTES = ["claim", "serve_once", "_claim", "_claim_pass", "_start_claim_scan", "commit"]
 
 class _PickledNew:
