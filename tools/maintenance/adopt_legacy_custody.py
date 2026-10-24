@@ -18,14 +18,23 @@ from prismabuild.legacy_custody import LegacyCustodyMigration  # noqa: E402
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--queue-root", required=True, type=Path)
+    parser.add_argument("--queue-root", type=Path)
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--inventory", type=Path, help="write a new pre-deploy inventory, refusing overwrite")
     choice.add_argument("--apply", type=Path, help="apply the reviewed pre-deploy inventory")
+    choice.add_argument("--observe-host", action="store_true", help="verify local stopped writers and scan the roots requested on stdin")
+    parser.add_argument("--roots", type=Path, help="reviewed complete historical e9 root coverage, including separate occupancy roots")
     parser.add_argument("--writers-stopped", action="store_true", help="operator confirms legacy writers and new admissions are stopped")
     parser.add_argument("--report", type=Path, help="write adoption outcomes, refusing overwrite")
     args = parser.parse_args()
-    migration = LegacyCustodyMigration(pool.PoolQueue(args.queue_root))
+    if args.observe_host:
+        from prismabuild.legacy_custody_host import observe_legacy_custody_host
+        print(json.dumps(observe_legacy_custody_host(json.load(sys.stdin))))
+        return 0
+    if args.queue_root is None:
+        parser.error("--queue-root is required for inventory or apply")
+    migration = LegacyCustodyMigration(pool.PoolQueue(args.queue_root), roots=(
+        None if args.roots is None else json.loads(args.roots.read_bytes())))
     if not args.writers_stopped:
         parser.error("--writers-stopped is required; see the operating guide deploy step")
     if args.inventory:

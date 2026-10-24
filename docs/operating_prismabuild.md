@@ -6151,46 +6151,149 @@ decision parity.
 
 ## Deploying the checkout custody contract (#1429)
 
-This is a required operator step for a queue with reservations made before the
-release-certificate contract. The port does not perform a live rollout.
+This is an operator migration, not a live rollout performed by the port. It is
+one-way once the new writers resume. Do not restart e9 against adopted manifests.
+A rollback before resuming writers requires the full pre-adoption queue backup,
+with every writer still stopped. A later rollback needs a reviewed runtime that
+understands the new custody contract; it cannot silently return to e9.
 
-1. Stop new admissions and all old queue/lease writers, including storage roles.
-   Drain old snapshot actions with the previous runtime where practical. Keep
-   the queue and reservation directories intact. Keep a durable queue backup.
-2. Before enabling the new contract, run the new checkout's coordinator tool:
+1. Pause producers and publication automation. Record the running generation,
+   queue, enrolled hosts and outstanding action keys. While the old workers can
+   still run, let every admitted snapshot finish and let storage finish its
+   active cycle. Use `pbwait.py` for the recorded keys and inspect `pbstatus`.
+   Resolve queued work through its producers or ordinary withdrawal. Do not
+   stop the writers first and then ask them to drain.
+2. Prepare a committed candidate on the shared mount, for example
+   `/mnt/shared/pb1429-candidate`. Complete its PB shape gate, capture the
+   installed-updater proof actions required by the rolling publisher, and stage
+   the generation through an admitted PB action **before** closing admission:
 
    ```bash
-   python3 tools/maintenance/adopt_legacy_custody.py --queue-root QUEUE \
-     --inventory EVIDENCE/legacy-inventory.json --writers-stopped
+   TMPDIR=/home/rob/pbt17 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+     --cwd /mnt/shared/pb1429-candidate --tag x86 --cpus 2 --demand mem_gb=4 \
+     --priority -10 --priority-reason 'PB port during TL uplift' \
+     --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+     python3 tools/fleet/publish_runtime.py --stage-only --rollout rolling \
+     --rollout-reason 'quiesced one-way checkout custody migration' \
+     --shape-gate-action SHAPE_KEY
    ```
 
-   Review each eligible or retained hold. The inventory binds token device/inode
-   facts and the exact durable attempt. It includes host, tier and RAM mirror
-   reservations. No tokens are released.
-3. With writers still stopped, apply the reviewed inventory:
+   Verify the staging terminal, logs, CAS receipt and immutable generation name.
+   Keep this candidate available at the same shared path on every participant;
+   the adopter runs that candidate's host observer over SSH. No test action can
+   be submitted after all workers have stopped. Keep each archival test file in
+   its own shard. Do not merge #2069 into this migration.
+3. Close the broker maintenance gate on **sparky, sparklina and dl380g10** using
+   one recorded owner. Finish any last admitted work before stopping roles:
 
    ```bash
-   python3 tools/maintenance/adopt_legacy_custody.py --queue-root QUEUE \
-     --apply EVIDENCE/legacy-inventory.json --writers-stopped \
-     --report EVIDENCE/legacy-adoption.json
+   for host in sparky sparklina dl380g10; do
+     ssh "$host" 'PYTHONPATH=/mnt/shared/prismabuild-fleet/repo/src python3 -' <<'PYCODE'
+   from prismabuild.resource_scope import broker_request
+   status = broker_request({"op": "maintenance_begin", "owner": "pb1429-adoption"})
+   print({key: status.get(key) for key in ("draining", "maintenance_owner", "active_scopes", "health")})
+   PYCODE
+   done
+   for host in sparky sparklina dl380g10; do
+     ssh "$host" systemctl --user stop prismabuild-supervisor.service
+     ssh "$host" systemctl --user show prismabuild-supervisor.service --property=ActiveState,MainPID
+   done
    ```
 
-   Exit 2 means some holds remain charged; read the report and `pbstatus`'s
-   `legacy cleanup custody` section (`legacy_custody` in JSON). Unknown status
-   is shown explicitly when the inventory cannot be read. Ambiguous legacy
-   snapshots or missing attempt identities must be drained with the previous
-   runtime or have their exact durable owner restored. Do not delete a holder
-   directory, fabricate an empty registration list, or reinterpret a new hold
-   as legacy. A successful pre-contract terminal may be adopted under its old
-   complete-cleanup rules; its immutable record is preserved.
-4. Resume an interrupted apply using the **same inventory**, choosing a new
-   report filename. Adoption is journaled and idempotent. A changed token or
-   owner is refused. Never create a new legacy inventory after enabling the
-   contract. Resume new writers only after reviewing retained custody; proven
-   adopted holds return through normal finish, recovery or tier egress.
+   A foreign maintenance owner must be resolved by that owner. Never force its
+   gate open. `systemctl stop` waits for attributed workers and storage roles;
+   blocked cleanup remains pending. Stop separately launched roles by their
+   verified PID/start identities. Require inactive supervisors, MainPID=0, no
+   worker/one-shot/prewarm/tier/localtier writers and healthy zero-scope broker
+   status on every active roster host. The installed unit must use `--systemd`
+   so cron cannot restart a deliberately stopped supervisor. Wait until old
+   queue heartbeat and worker-offer freshness expires; time alone is not the
+   stopped-writer proof. Retain a durable queue/reservation backup now.
+4. Prepare `EVIDENCE/legacy-roots.json` from the actual historical e9 runtime
+   configuration. It names the full runtime SHA, each canonical roster host,
+   configuration evidence and **every historical root**, including environment
+   overrides. A minimal host declaration has this shape:
 
-Adoption only establishes custody. It neither certifies a registered inode's
-unlink nor returns capacity. Unproved holds stay charged and visible until the
-operator resolves their legacy evidence. New registered checkout removals retain
-the descriptor-held unlink guarantee. The design records the accepted unbound
-mkdir-to-registration crash/rename residual (N2).
+   ```json
+   {
+     "runtime": "e9e9d907721282f517e4e8feca40eda1aec79e5d",
+     "hosts": {
+       "dl380g10": {
+         "coverage_evidence": "reviewed historical worker configuration and e9 in-place remover",
+         "all_historical_roots": true,
+         "roots": [
+           {"path": "/home/rob/tmp/prismabuild-checkouts", "kind": "checkout"},
+           {"path": "/home/rob/tmp/prismabuild-checkouts/cleanup-failures", "kind": "cleanup-failures"}
+         ],
+         "occupancy_roots": {}
+       }
+     }
+   }
+   ```
+
+   Add every quarantine, rename-for-delete and other checkout-bearing tier root
+   the host actually used, with kind `quarantine` or `checkout`. Stock e9 removes
+   in place and has no quarantine. Unknown historical coverage keeps the hold
+   charged. For a tier pin or RAM mirror, `occupancy_roots` must separately name
+   its complete physical roots under the key `KIND:LEDGER:HOLDER`; those scans
+   run on the storage host derived from the ledger, and inspect **all** entries,
+   regardless of filename. An occupied or unproved
+   physical root remains held. Checkout absence cannot free tier occupancy.
+5. Inventory, review and apply from the shared candidate:
+
+   ```bash
+   python3 /mnt/shared/pb1429-candidate/tools/maintenance/adopt_legacy_custody.py \
+     --queue-root QUEUE --inventory EVIDENCE/legacy-inventory.json --writers-stopped
+   python3 /mnt/shared/pb1429-candidate/tools/maintenance/adopt_legacy_custody.py \
+     --queue-root QUEUE --apply EVIDENCE/legacy-inventory.json --writers-stopped \
+     --roots EVIDENCE/legacy-roots.json --report EVIDENCE/legacy-adoption.json
+   ```
+
+   The flag acknowledges the operation; it supplies no stopped-writer authority.
+   Apply independently verifies broker gates and stopped loops on the whole
+   roster, before and after its host scans. It refuses fresh heartbeat/offer
+   evidence. Every root is scanned by held descriptors without globbing or
+   symlink traversal. A prefix collision, matching failure/quarantine name,
+   EACCES or unreadable entry cannot certify absence. A unique normal surviving
+   checkout is bound to its inode without returning tokens. Later cleanup uses
+   the normal certifier. Every absence proof records host, roots, scan time,
+   entries examined and stopped-writer evidence in the adoption journal.
+   `pbstatus` shows these per-hold proofs and unresolved reasons.
+
+   Exit 2 means custody remains charged. Resume interrupted apply with the same
+   inventory and a new report filename. Never delete holders or fabricate an
+   empty registration. Keep unresolved custody visible; resolve active claims
+   before publication's idle-queue gate. All three hosts remain stopped here.
+6. Activate the already staged generation from the control plane, outside an
+   action whose own scope would prevent the drain:
+
+   ```bash
+   python3 /mnt/shared/pb1429-candidate/tools/fleet/publish_runtime.py \
+     --activate-generation STAGED_NAME --rollout rolling \
+     --rollout-reason 'quiesced one-way checkout custody migration' \
+     --installed-updater-proof SPARKY_KEY --installed-updater-proof SPARKLINA_KEY \
+     --installed-updater-proof DL380_KEY
+   ```
+
+   Use the publisher's required canary and receipt checks. Rolling publication
+   drains dl380g10; the staging action must already have ended and the queue must
+   be idle. The adopter has established custody before pointer movement, and no
+   old writer is restarted between adoption and publication. If an updater
+   proof expires or publication refuses, retain the gates and stopped writers;
+   resolve that refusal through the supported rolling procedure. Do not bypass
+   a source guard or treat a flag as stopped-host evidence.
+7. With the new generation and installed clients verified on every host, start
+   each supervisor while the maintenance gate remains closed:
+
+   ```bash
+   for host in sparky sparklina dl380g10; do
+     ssh "$host" systemctl --user start prismabuild-supervisor.service
+   done
+   ```
+
+   Verify the resolved new generation of every worker and storage role. Release
+   only the original `pb1429-adoption` broker hold through `maintenance_end`,
+   one host at a time, and verify a healthy open gate and fresh offers. Resume
+   producers only after recording retained-hold counts and the fleet acceptance.
+   A person's settlement decision and live timed-backfill qualification remain
+   separate #1429 acceptance work. This port performs none of these live steps.

@@ -688,7 +688,10 @@ def legacy_custody_lines(holds):
     if not holds:
         return ["no pre-contract holds awaiting custody adoption"]
     return render_table(("LEDGER", "HOLDER", "CUSTODY", "REASON"), (
-        (row["kind"] + ":" + row["ledger"], row["holder"][:12], row["status"], row["reason"])
+        (row["kind"] + ":" + row["ledger"], row["holder"][:12], row["status"], row["reason"] + (
+            " host=" + str(row["proof"].get("host")) + " roots=" + ",".join(
+                str(scan["path"]) for scan in row["proof"]["scan"]["roots"])
+            if row.get("proof") else ""))
         for row in holds))
 
 
@@ -1551,7 +1554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if transport == "pool":
         from prismabuild.legacy_custody import LegacyCustodyMigration
         read = bounded("legacy-custody", lambda: LegacyCustodyMigration(
-            pool.PoolQueue(args.queue_root)).inventory()["holds"],
+            pool.PoolQueue(args.queue_root)).status_rows(),
             deadline=deadline, abandoned=abandoned)
         if read["status"] == "ok":
             legacy_custody = read["value"]

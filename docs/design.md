@@ -20972,31 +20972,68 @@ atomic directory creation and durable registration. Registered inodes retain the
 strong descriptor-held unlink guarantee. Kernel, root and filesystem defects
 remain outside the threat model.
 
-A foreign heartbeat never renews the successor's claim. Recovery tries after
-the heartbeat bound, or immediately for a local PID whose recorded start ticks
-prove death or reuse. The exact predecessor scope and registration envelope are
-cleaned through the certifier, using its late-finish journal; no PID-only signal
-or age-only release is permitted. Unproved custody remains charged and appears
-as cleanup pending. Admission rolls back only its own receipt and leaves any
-foreign lease for certified recovery, so a stale heartbeat cannot silently hold
-an unstarted successor forever.
+A heartbeat reads and writes under the claim transition exclusion. Its final
+lease read and final claim read must still name its own admission identity;
+foreign registrations are never copied. Recovery tries after the heartbeat
+bound, or for a local PID whose recorded start ticks prove death or reuse.
+A tagged heartbeat journal survives interruption and is resumed by the finish
+sweep. Cleanup failure, a crash after either unlink, and a journal left at the
+next admission all converge through the same recovery. Older untagged lease
+journals are recognized by their lease schema, exact derived name and absence
+of a late payload result. A corrupt pre-r6 heartbeat carrying successor
+registrations supplies no predecessor deletion authority: recovery stops only
+its exact scope, then certifies the current claim's own checkout records.
+Reservation manifests independently bind that current claim. Unproved custody
+stays charged. Neither heartbeat recovery nor a deadline returns tokens.
 
-Pre-contract deployment requires the explicit operator adoption in the operating
-guide before enabling new writers. Stop old writers and admissions, inventory
-manifest-less host, tier and RAM mirror holds, then review and apply that exact
-inventory with `tools/maintenance/adopt_legacy_custody.py`. Adoption checks token
-inodes and the durable attempt, journals the operation before updating live
-mirrors, and is resumable with the same inventory. It never returns tokens.
-Legacy live-root actions can adopt an empty registration list; an immutable
-successful terminal with a complete pre-contract cleanup verdict can qualify
-once under the rules it was made with, without pretending to have an inode
-proof. Snapshot holds with ambiguous cleanup, ownerless holds and changed
-inventories retain custody. Restore their exact durable owner or drain them with
-the previous runtime before adoption; never delete tokens or invent an empty
-registration list. `pbstatus` shows every remaining pre-contract hold and its
-qualification reason, or explicitly reports unavailable inventory. Ordinary
-cleanup, finish and egress then consume the adopted custody through the same
-certifier. Do not generate a fresh legacy inventory after enabling the contract.
+Callers cannot choose the cleanup owner's path. The certifier derives live
+leases, exact claims, matching finish tombstones, attempt journals and adopted
+custody from durable names and registration manifests. Private rollback also
+requires its own acquisition receipt, and can return only that receipt's new
+token names. A journal cannot replace a live lease's newer registration list.
+
+Pre-contract deployment requires the stopped-writer operator procedure in the
+operating guide. Inventory recognizes the fields e9e9d907 actually wrote:
+executed/cache-hit terminals use `detail.returncode`, without a top-level
+return code or container-cleanup verdict. Those fields qualify an inventory
+candidate; they never prove checkout absence.
+
+Rob's r6 grandfathering permits a stopped-host namespace proof when e9 saved no
+path or inode. Every historical checkout root, its cleanup-failures directory,
+any quarantine or rename-for-delete root and any other checkout-bearing tier
+root must be named with recorded configuration provenance. e9's stock remover
+works in place and has no quarantine; an operator customization must name its
+additional roots. Unknown historical roots retain custody. Each named root is
+opened component by component without following symlinks. A full readdir and
+parent-relative lstat examine every matching key-prefix or cleanup-failure
+name. An absent root requires ENOENT relative to its held parent. Matches,
+prefix collisions, namespace changes, EACCES and unreadable evidence prevent
+absence certification. A unique surviving normal checkout can instead adopt
+its observed device/inode, with no release, and later clean through the normal
+certifier. Failure records, nonstandard rename paths and ambiguous matches stay
+charged for manual recovery.
+
+The adopter independently verifies healthy closed broker gates, zero scopes,
+inactive systemd supervisors with cron startup fenced, and no worker, one-shot,
+prewarm, tier or local-tier writer processes on every participating host. It
+uses the existing process-identity census; it never reads process fd tables or
+`/proc/locks`. Fresh queue heartbeats or offers contradict stopped writers.
+A flag supplies no proof. Host scans verify the unchanged gate before and after
+observation. The adoption journal records host, complete root coverage, scan
+times, entries examined and stopped-writer evidence. Host, tier and RAM mirror
+holds share one per-key checkout owner, so one inode cleanup settles the same
+registration everywhere. Each ledger still binds its own inventory and tokens.
+A same-holder token addition invalidates old certificates while preserving the
+legacy owner binding. Tier pins and RAM mirrors require separate physical
+occupancy root evidence; checkout absence alone cannot qualify them.
+
+Apply journals custody before updating mirrors and reservation manifests. It
+returns no capacity. Certified absence still goes through the ordinary
+certificate mint; surviving inodes need its normal unlink proof. Reusing the
+same inventory resumes interrupted writes. `pbstatus` retains per-hold proof
+and named roots for certified absences as well as reasons for unresolved holds.
+The operation is one-way once new writers resume; restarting e9 on adopted
+custody is unsafe. No generation is deployed by this port.
 
 `materialize.certify_checkout_cleanup` is the sole checkout certification
 function. Cleanup, deferral, recovery and the reservation-return boundary use

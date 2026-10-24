@@ -107,7 +107,7 @@ from __future__ import annotations
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
-from . import claim_identity
+from . import claim_identity, digest_primitives
 
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
@@ -3667,20 +3667,18 @@ class ResourceLedger:
             current.update(claim=None, checkout_snapshot=None, nonce=uuid.uuid4().hex)
             self.release_records.replace_record_at(path, current)
 
-    def certify_release(self, action_key, *, claim_snapshot=None, nonce=None, owner_path=None):
+    def certify_release(self, action_key, *, claim_snapshot=None, nonce=None):
         queue = PoolQueue(self.release_records.root)
         custody_key = (action_key.removeprefix(storage_tiers.RAM_HOST_MEMORY_PREFIX)
                        if action_key.startswith(storage_tiers.RAM_HOST_MEMORY_PREFIX) else action_key)
-        owner = owner_path
-        if owner is None:
-            owner = queue.records.lease_path(custody_key)
-            if not owner.exists():
-                owner = queue.records.item_path(CLAIMED, custody_key)
+        owner = queue.records.lease_path(custody_key)
+        if not owner.exists():
+            owner = queue.records.item_path(CLAIMED, custody_key)
         record = claim_snapshot or record_store.read_document(owner)
         if record is None:
             record = record_store.read_document(self.release_owner_path(action_key)) or {"action_key": action_key}
         result = materialize.certify_checkout_cleanup(
-            queue, record, owner_path=owner, recover=False,
+            queue, record, recover=False,
             local_checkout_root=LOCAL_CHECKOUT_ROOT, release_ledger=self,
             reservation_nonce=nonce, release_holder=action_key,
             release_custody_key=custody_key, select_owner=claim_snapshot is None)
@@ -5471,8 +5469,7 @@ class _ClaimReservation:
                     and not immutable_files.confirmed_metadata_absence(self.ledger.held_dir / self.action_key)):
                 try:
                     self.ledger.release(self.action_key, certificate=self.ledger.certify_release(
-                        self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot,
-                        owner_path=self.queue.records.item_path(CLAIMED, self.action_key)))
+                        self.action_key, nonce=self.host_handle, claim_snapshot=self.claim_snapshot))
                 except (OSError, PoolContractError, ValueError) as exc:
                     pending = dict(self.claim_snapshot or {})
                     pending["finish_pending"] = {"status": "defer", "detail": {}}
@@ -12214,6 +12211,15 @@ class PoolQueue:
                 lease[field] = claim[field]
             lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
         previous = record_store.read_document(self.records.lease_path(action_key))
+        # A delayed final read must not import another attempt's envelope.
+        # Re-read the claim under the same transition before publishing too.
+        current = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+        if current is None or not claim_identity.same_claim(current, claim):
+            raise PoolContractError("claim changed before heartbeat publication")
+        claim_identity.check_lease_identity(action_key, current, previous, invalid=AmbiguousClaimHolder)
+        if (previous is not None and "checkout_registrations" in previous
+                and not claim_identity.same_claim(previous, current)):
+            raise AmbiguousClaimHolder("heartbeat registration attempt differs")
         if previous is not None and "checkout_registrations" in previous:
             # Registration is lease-owned. A stale heartbeat cannot erase an
             # execute that durably registered before its claim mirror landed.
@@ -12272,50 +12278,129 @@ class PoolQueue:
             old.setdefault("claimed_host", old.get("host"))
             journal_path = self.records.late_finish_path(old)
             journal = record_store.read_document(journal_path)
-            created_journal = journal is None
-            if created_journal:
+            if journal is None:
+                old["heartbeat_recovery"] = {"lease_sha256": digest_primitives.canonical_sha256(lease)}
                 self.records.replace_record_at(journal_path, old)
-            elif not claim_identity.same_claim(journal, old):
-                raise PoolContractError("foreign heartbeat journal belongs to another attempt")
-            else:
-                def registrations(value):
-                    entries = value.get("checkout_registrations")
-                    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
-                        raise PoolContractError("foreign heartbeat registration envelope missing")
-                    return [{k: v for k, v in entry.items() if k not in ("cleanup", "completion_claim")}
-                            for entry in entries]
-                if (lifetime_fence.attempt_identity(journal) != lifetime_fence.attempt_identity(old)
-                        or registrations(journal) != registrations(old)
-                        or any(entry.get("completion_claim", lifetime_fence.attempt_identity(old))
-                               != saved.get("completion_claim", lifetime_fence.attempt_identity(old))
-                               for entry, saved in zip(old["checkout_registrations"], journal["checkout_registrations"]))):
-                    raise PoolContractError("foreign heartbeat journal has different checkout custody")
-                old = journal
-            cleanup = self.cleanup_action_containers(old, reason="stale-heartbeat", scope_only=True)
+                journal = old
+            return self._resume_heartbeat_recovery(journal_path, journal)
+        except (OSError, ValueError, TypeError, KeyError, PoolContractError) as exc:
+            self._heartbeat_recovery_pending(key, claim, exc)
+            return False
+
+    def _heartbeat_recovery_pending(self, key, claim, error):
+        live_path = self.records.item_path(CLAIMED, key)
+        live = record_store.read_document(live_path)
+        if live is not None and claim_identity.same_claim(live, claim):
+            pending = dict(live)
+            self._note_cleanup_attempt(pending, live, {
+                "complete": False, "error": "foreign heartbeat cleanup: " + str(error)})
+            self.records.replace_record_at(live_path, pending)
+
+    def _resume_heartbeat_recovery(self, journal_path, journal):
+        """Resume a tagged heartbeat journal under the key transition lock.
+
+        No token is returned here. A stale lease and this journal are retired
+        only after their scope and the authoritative checkout custody certify.
+        A crash after either unlink is harmless on the next finishing sweep.
+        """
+        key = str(journal.get("action_key", ""))
+        claim = record_store.read_document(self.records.item_path(CLAIMED, key))
+        try:
+            if journal_path != self.records.late_finish_path(journal):
+                raise PoolContractError("heartbeat recovery journal identity differs")
+            lease_path = self.records.lease_path(key)
+            lease = record_store.read_document(lease_path)
+            recovery = journal.get("heartbeat_recovery")
+            if recovery is None:
+                # r5 could leave an untagged lease snapshot in this namespace.
+                # Distinguish it from a completed late finisher before adopting.
+                if (journal.get("schema") != POOL_LEASE_SCHEMA_V1
+                        or "finish_pending" in journal or "late_finish" in journal):
+                    raise PoolContractError("not a heartbeat recovery journal")
+                recovery = {"lease_sha256": digest_primitives.canonical_sha256(lease)
+                            if lease is not None and claim_identity.same_claim(lease, journal) else None}
+                journal["heartbeat_recovery"] = recovery
+                self.records.replace_record_at(journal_path, journal)
+            same_lease = lease is not None and claim_identity.same_claim(lease, journal)
+            if same_lease:
+                if not self._heartbeat_cleanup_due(lease):
+                    raise PoolContractError("heartbeat recovery lease is still live")
+                observed_hash = digest_primitives.canonical_sha256(lease)
+                if observed_hash != recovery.get("lease_sha256"):
+                    # A crash or failed cleanup may be followed by another
+                    # heartbeat. Resume its durable union of registrations,
+                    # preserving earlier unlink evidence rather than wedging
+                    # forever on the old heartbeat's byte fingerprint.
+                    previous_scope = lifetime_fence.attempt_identity(journal)
+                    next_scope = lifetime_fence.attempt_identity(dict(lease, claimed_by=lease.get("owner"), claimed_host=lease.get("host")))
+                    if any(value.get("checkout_snapshot") is not None
+                           and not isinstance(value.get("checkout_registrations"), list) for value in (lease, journal)):
+                        raise PoolContractError("heartbeat recovery checkout envelope missing")
+                    if (previous_scope["nonce"] != next_scope["nonce"]
+                            or previous_scope["scope_id"] not in (None, next_scope["scope_id"])):
+                        raise PoolContractError("heartbeat recovery scope incarnation changed")
+                    registrations = {}
+                    for entry in [*(journal.get("checkout_registrations") or []), *(lease.get("checkout_registrations") or [])]:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("execution_id"), str):
+                            raise PoolContractError("heartbeat recovery registration malformed")
+                        prior = registrations.get(entry["execution_id"])
+                        if prior is not None:
+                            identity = lambda value: {k: v for k, v in value.items() if k not in ("cleanup", "completion_claim")}
+                            if identity(prior) != identity(entry) or prior.get("completion_claim") != entry.get("completion_claim"):
+                                raise PoolContractError("heartbeat recovery registration incarnation changed")
+                            if (prior.get("cleanup") or {}).get("complete") is True:
+                                entry = dict(entry, cleanup=prior["cleanup"])
+                        registrations[entry["execution_id"]] = entry
+                    journal = dict(lease, claimed_by=journal["claimed_by"], claimed_host=journal["claimed_host"],
+                                   checkout_registrations=list(registrations.values()),
+                                   heartbeat_recovery=dict(recovery, lease_sha256=observed_hash))
+                    self.records.replace_record_at(journal_path, journal)
+            old_identity = {k: v for k, v in lifetime_fence.attempt_identity(journal).items()
+                            if k not in ("nonce", "scope_id")}
+            hosts = self.claim_reservation_hosts(key)
+            for host in hosts:
+                manifest = record_store.read_document(self.ledger(host).release_owner_path(key))
+                if manifest is None or manifest.get("claim") in (None, old_identity):
+                    raise PoolContractError("predecessor reservation still has custody; defer successor rollback")
+                if claim is None or manifest.get("claim") != {
+                        k: v for k, v in lifetime_fence.attempt_identity(claim).items()
+                        if k not in ("nonce", "scope_id")}:
+                    raise PoolContractError("current reservation identity unproved")
+            entries = journal.get("checkout_registrations")
+            borrowed = isinstance(entries, list) and any(
+                isinstance(entry, dict) and entry.get("claim") != old_identity for entry in entries)
+            if borrowed:
+                # Keep borrowed evidence for diagnosis, without making it
+                # predecessor deletion authority or discarding genuine debt.
+                journal["heartbeat_recovery"]["borrowed_registrations"] = [
+                    entry for entry in entries if entry.get("claim") != old_identity]
+                journal["checkout_registrations"] = [entry for entry in entries if entry.get("claim") == old_identity]
+                self.records.replace_record_at(journal_path, journal)
+            borrowed = borrowed or bool(journal["heartbeat_recovery"].get("borrowed_registrations"))
+            cleanup = self.cleanup_action_containers(journal, reason="stale-heartbeat", scope_only=True)
+            if borrowed:
+                # A pre-r6 delayed heartbeat could copy a successor's list.
+                # It is not predecessor deletion authority. Clean only its
+                # exact scope, then certify the current claim's own records.
+                if cleanup.get("complete") and claim is not None:
+                    checkout = materialize.certify_checkout_cleanup(
+                        self, claim, local_checkout_root=LOCAL_CHECKOUT_ROOT)
+                    cleanup = {**cleanup, "complete": checkout.get("complete") is True}
+                else:
+                    cleanup = {**cleanup, "complete": False}
             if not cleanup.get("complete"):
                 raise PoolContractError(str(cleanup.get("error") or "predecessor cleanup remains unproved"))
-            observed = record_store.read_document(path)
-            if observed != lease:
-                raise PoolContractError("foreign heartbeat changed during cleanup")
-            old_identity = {k: v for k, v in lifetime_fence.attempt_identity(old).items()
-                            if k not in ("nonce", "scope_id")}
-            for host in self.claim_reservation_hosts(key):
-                ledger = self.ledger(host)
-                manifest = record_store.read_document(ledger.release_owner_path(key))
-                if manifest is None or manifest.get("claim") == old_identity:
-                    raise PoolContractError("predecessor reservation still has custody; defer successor rollback")
-            path.unlink()
-            if created_journal:
-                journal_path.unlink(missing_ok=True)
+            self.records.replace_record_at(journal_path, journal)
+            observed = record_store.read_document(lease_path)
+            if observed is not None and claim_identity.same_claim(observed, journal):
+                if observed != lease:
+                    raise PoolContractError("foreign heartbeat changed during cleanup")
+                lease_path.unlink()
+            journal_path.unlink(missing_ok=True)
             return True
         except (OSError, ValueError, TypeError, KeyError, PoolContractError) as exc:
-            pending = dict(claim)
-            self._note_cleanup_attempt(pending, claim, {
-                "complete": False, "error": "foreign heartbeat cleanup: " + str(exc)})
-            live_path = self.records.item_path(CLAIMED, key)
-            live = record_store.read_document(live_path)
-            if live is not None and claim_identity.same_claim(live, claim):
-                self.records.replace_record_at(live_path, pending)
+            if claim is not None:
+                self._heartbeat_recovery_pending(key, claim, exc)
             return False
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
@@ -13027,7 +13112,7 @@ class PoolQueue:
             raise PoolContractError("release belongs to another claim; reservation retained")
         if custody is not None:
             certification = materialize.certify_checkout_cleanup(
-                self, custody, owner_path=owner, recover=False,
+                self, custody, recover=False,
                 local_checkout_root=LOCAL_CHECKOUT_ROOT)
             if not certification["complete"]:
                 raise PoolContractError("checkout cleanup is not certified; reservation retained")
@@ -13039,7 +13124,7 @@ class PoolQueue:
             ledger = self.ledger(host)
             if not immutable_files.confirmed_metadata_absence(ledger.held_dir / action_key):
                 released = ledger.release(action_key, certificate=ledger.certify_release(
-                    action_key, claim_snapshot=custody, owner_path=owner))
+                    action_key, claim_snapshot=custody))
         if reclaim_tier:
             return released + tier_holdings.egress_all(self, action_key)
         if keep_tier:
@@ -13088,10 +13173,10 @@ class PoolQueue:
                     if unknown:
                         continue
                     if keep:
-                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody, owner_path=owner,
+                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody,
                                                 nonce=None if reservation_nonces is None else reservation_nonces[tier_id]))
                     else:
-                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody, owner_path=owner,
+                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED, certificate=ledger.certify_release(str(action_key), claim_snapshot=custody,
                                                 nonce=None if reservation_nonces is None else reservation_nonces[tier_id]))
                 except (OSError, PoolContractError, ValueError):
                     continue
@@ -15386,8 +15471,7 @@ class PoolQueue:
             return result
         if record.get("checkout_registrations") or record.get("checkout_snapshot") is not None:
             checkout = materialize.certify_checkout_cleanup(
-                self, record, proof=checkout_proof, local_checkout_root=LOCAL_CHECKOUT_ROOT,
-                owner_path=(self.records.late_finish_path(record) if scope_only else scratch_owner_path))
+                self, record, proof=checkout_proof, local_checkout_root=LOCAL_CHECKOUT_ROOT)
             result = {**result, "checkout_cleanup": checkout,
                       "complete": checkout.get("complete") is True}
             if not result["complete"]:

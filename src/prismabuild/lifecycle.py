@@ -1204,6 +1204,12 @@ def _sweep_finish_tombstones(
                         raise PoolContractError("invalid late-finish recovery record")
                     if record.get("claimed_host") != socket.gethostname():
                         continue
+                    if ("heartbeat_recovery" in record or (
+                            record.get("schema") == pool.POOL_LEASE_SCHEMA_V1
+                            and "finish_pending" not in record and "late_finish" not in record)):
+                        if queue._resume_heartbeat_recovery(tombstone, record):
+                            swept.append(key)
+                        continue
                     result = _retry_late_finish(queue, tombstone, record)
                 except Exception as exc:                         # noqa: BLE001
                     print(f"pool: late finish {key} retained: {type(exc).__name__}: {exc}",

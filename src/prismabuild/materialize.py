@@ -572,12 +572,15 @@ class ReleaseCertificate:
                     and (pb._canonical_bytes(lifetime_fence.attempt_identity(live)) != binding.claim
                          or live.get("attempts") != binding.attempt)):
                 raise invalid("release certificate conflicts with live claim custody")
+            if (path == lease_path and live is not None and "checkout_registrations" in live
+                    and pb._canonical_bytes(live["checkout_registrations"]) != binding.registrations):
+                raise invalid("release certificate does not name the lease's current registrations")
         return binding
 
 
 def certify_checkout_cleanup(
     queue, record: Mapping[str, object], *, proof: Mapping[str, object] | None = None,
-    owner_path: Path | None = None, recover: bool = True,
+    recover: bool = True,
     local_checkout_root: Path, release_ledger=None, reservation_nonce=None, release_holder=None, release_custody_key=None, select_owner=False,
 ) -> dict[str, object]:
     """Certify every registered inode from its durable custody owner.
@@ -593,12 +596,57 @@ def certify_checkout_cleanup(
         with queue.action_transition_lock(key, blocking=release_ledger is None) as acquired:
             if not acquired:
                 return {"complete": False, "used": True, "error": "checkout custody is busy"}
-            path = owner_path
-            if path is None:
-                path = queue.records.lease_path(key)
-                if not path.exists():
-                    path = queue.records.item_path(record_store.CLAIMED, key)
+            # Custody paths are derived here, never supplied by a caller.
+            # Recovery may certify an exact journal beside a successor; a
+            # private rollback may return only its own receipt's token names.
+            path = queue.records.lease_path(key)
             owner = record_store.read_document(path)
+            claim_path = queue.records.item_path(record_store.CLAIMED, key)
+            live_claim = record_store.read_document(claim_path)
+            if owner is None:
+                path, owner = claim_path, live_claim
+            elif not claim_identity.same_claim(owner, record):
+                if live_claim is not None and claim_identity.same_claim(live_claim, record):
+                    path, owner = claim_path, live_claim
+            journal_path = queue.records.late_finish_path(record)
+            journal = record_store.read_document(journal_path)
+            if (journal is not None and lifetime_fence.attempt_identity(journal) == lifetime_fence.attempt_identity(record)
+                    and (owner is None or "heartbeat_recovery" in journal
+                         or lifetime_fence.attempt_identity(owner) != lifetime_fence.attempt_identity(record))):
+                path, owner = journal_path, journal
+            if owner is None:
+                try:
+                    names = queue.records.claimed_names().finishes
+                except FileNotFoundError:
+                    names = ()
+                matches = []
+                for name in names:
+                    if name.startswith(key + "."):
+                        candidate_path = queue.records.dir(record_store.CLAIMED) / name
+                        candidate = record_store.read_document(candidate_path)
+                        if candidate is not None and lifetime_fence.attempt_identity(candidate) == lifetime_fence.attempt_identity(record):
+                            matches.append((candidate_path, candidate))
+                if len(matches) > 1:
+                    return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
+                if matches:
+                    path, owner = matches[0]
+            if owner is None and release_ledger is None and record.get("inventory_id") is not None:
+                # An operator-adopted inode has no live lease. Discover its
+                # journal through the reservation manifests, never its caller.
+                from .legacy_custody import LegacyCustodyMigration, legacy_checkout_owner_path
+                for _, _, ledger in LegacyCustodyMigration(queue)._ledgers():
+                    candidate_path = ledger.legacy_owner_path(key)
+                    candidate = record_store.read_document(candidate_path)
+                    binding = record_store.read_document(ledger.release_owner_path(key))
+                    if (candidate is not None and binding is not None
+                            and binding.get("legacy_adoption") == candidate.get("inventory_id")
+                            and binding.get("legacy_owner_nonce") == candidate.get("manifest_nonce")
+                            and lifetime_fence.attempt_identity(candidate) == lifetime_fence.attempt_identity(record)):
+                        path = legacy_checkout_owner_path(queue.root, key)
+                        owner = record_store.read_document(path)
+                        if owner is None or owner.get("inventory_id") != candidate["inventory_id"]:
+                            return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
+                        break
             holder = release_holder or key
             manifest = None
             token_names = None
@@ -628,12 +676,16 @@ def certify_checkout_cleanup(
                     if marks:
                         path, owner = marks[0], record_store.read_document(marks[0])
                 if owner is None and manifest.get("legacy_adoption") is not None:
+                    from .legacy_custody import legacy_checkout_owner_path
                     legacy_path = release_ledger.legacy_owner_path(holder)
                     legacy = record_store.read_document(legacy_path)
                     if (legacy is None or legacy.get("inventory_id") != manifest["legacy_adoption"]
-                            or legacy.get("manifest_nonce") != manifest.get("nonce")):
+                            or legacy.get("manifest_nonce") != manifest.get("legacy_owner_nonce", manifest.get("nonce"))):
                         return {"complete": False, "used": True, "error": "legacy custody journal differs"}
-                    path, owner = legacy_path, legacy
+                    path = legacy_checkout_owner_path(queue.root, key)
+                    owner = record_store.read_document(path)
+                    if owner is None or owner.get("inventory_id") != legacy["inventory_id"]:
+                        return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
                 if owner is None:
                     # The reservation's durable empty registration is authority
                     # only before it was bound to an executable claim.
@@ -703,10 +755,15 @@ def certify_checkout_cleanup(
                     return {"complete": False, "used": True,
                             "error": "checkout completion incarnation differs"}
                 directory = Path(str(registration.get("path") or ""))
+                registered_root = local_checkout_root
+                if (owner.get("inventory_id") is not None and any(
+                        row.get("kind") == "checkout" and Path(row.get("path", "")) == directory.parent
+                        for row in (owner.get("legacy_proof") or {}).get("scan", {}).get("roots", []))):
+                    registered_root = directory.parent
                 execution = registration.get("execution_id")
                 if (not isinstance(execution, str) or not re.fullmatch(r"[0-9a-f]{32}", execution)
                         or execution in seen or registration.get("claim") != base_claim
-                        or directory.parent != local_checkout_root
+                        or directory.parent != registered_root
                         or not CHECKOUT_TREE.fullmatch(directory.name)
                         or not directory.name.startswith(key[:12] + ".")):
                     return {"complete": False, "used": True, "error": "checkout registration identity differs"}
@@ -764,7 +821,7 @@ def certify_checkout_cleanup(
                         valid = {"complete": False, "error": f"registered checkout has no unlink proof: {exc}"}
                     else:
                         verdict = _cleanup_execution_checkout(
-                            local_checkout_root, directory, owner,
+                            registered_root, directory, owner,
                             expect=(registration["device"], registration["inode"]))
                         valid = {**registration, **verdict, "claim": dict(execution_claim),
                                  "registration": registration}
@@ -792,7 +849,7 @@ def certify_checkout_cleanup(
                     record["checkout_cleanup"] = result
             # A live lease owns the list. Keep its claim mirror current without
             # ever writing a successor or a separate late-finish journal.
-            if recover and owner_path is None:
+            if recover and path == queue.records.lease_path(key):
                 mirror = queue.records.item_path(record_store.CLAIMED, key)
                 live = record_store.read_document(mirror)
                 if live is not None and claim_identity.same_claim(live, owner):

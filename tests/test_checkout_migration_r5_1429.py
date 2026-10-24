@@ -12,6 +12,7 @@ from prismabuild import lifetime_fence, materialize, pool, record_store, storage
 from prismabuild.materialize import ReleaseCertificate
 from lifetime_fixtures_1429 import WORKER, claim, fenced_snapshot_queue
 from test_lifetime_contract_1429 import _execute, _finish, broker, Skew
+from legacy_custody_fixtures_1429 import stopped_legacy_hosts
 
 canonical = materialize.pb._canonical_bytes
 
@@ -408,7 +409,7 @@ def test_legacy_terminal_adoption_preserves_immutable_bytes(tmp_path):
     queue, key, ledger = _legacy_fixture(tmp_path, snapshot=True, lease=False)
     live = queue.records.item_path(pool.CLAIMED, key)
     owner = record_store.read_document(live)
-    owner.update(status="executed", returncode=0, container_cleanup={"complete": True})
+    owner.update(status="executed", detail={"returncode": 0})
     terminal = queue.records.item_path(pool.DONE, key)
     queue.records.replace_record_at(terminal, owner)
     live.unlink()
@@ -468,8 +469,12 @@ def test_legacy_operator_cli_inventory_and_resumable_apply(tmp_path):
     for index in range(2):
         report = tmp_path / f"result-{index}.json"
         result = subprocess.run(command + ["--apply", str(plan), "--writers-stopped", "--report", str(report)], capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert all(row["status"] == "adopted" for row in json.loads(report.read_bytes()))
+        assert result.returncode == 2, result.stderr
+        assert all(row["status"] == "retained" for row in json.loads(report.read_bytes()))
+    # A flag alone cannot prove a stopped real fleet. The isolated verified
+    # host fixture exercises the same adoption and idempotence in-process.
+    assert all(row["status"] == "adopted" for row in _adopt_inventory(queue))
+
     assert ledger.holder_tokens(key) == {"cpu": 1}
     assert queue._release_reservation(key, host=ledger.host) == 1
 
