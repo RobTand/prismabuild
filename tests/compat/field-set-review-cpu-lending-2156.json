@@ -224,7 +224,7 @@
       "unresolved": "{str(c) for c in cpus}"
     },
     "count": 1,
-    "reason": "Freeze every lending, measurement, funding and affinity input in the registered single-use loan grant."
+    "reason": "Validate exact CPU-ID coverage before updating per-CPU EMA and gate history."
   },
   {
     "change": "added",

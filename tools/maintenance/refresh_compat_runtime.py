@@ -90,17 +90,6 @@ def validate_delta(profile, old_row, new_row, root, declarations):
             added.update(cpu_allocation={'preferred': [0], 'fallback': []},
                          served_from='canonical', reserved_on='compat-host')
         expected = {**before, **added}
-        if 'attempt_history' in expected:
-            # The immutable attempt now binds these exact additive fields.
-            if (len(after.get('attempt_history', [])) != 1
-                    or len(before['attempt_history']) != 1):
-                raise ValueError('CPU evidence refresh requires the one actual executed attempt')
-            old_link, new_link = before['attempt_history'][0], after['attempt_history'][0]
-            if (set(old_link) != set(new_link) or any(
-                    new_link[k] != v for k, v in old_link.items() if k != 'sha256')
-                    or re.fullmatch('[a-f0-9]{64}', new_link.get('sha256', '')) is None):
-                raise ValueError('CPU evidence changed an attempt link beyond its digest')
-            expected['attempt_history'] = after['attempt_history']
         if after != expected or set(added) & set(before):
             raise ValueError('CPU attempt evidence changed outside the exact additive loan fixture')
         return {'added': sorted(added), 'borrowed_cpus': [0], 'selected_weight': 100,

@@ -1615,7 +1615,9 @@ class Controller:
             if (previous.get('identity') != self._lending_identity
                     or previous.get('observation', observation) != observation):
                 return skipped('sample_generation_changed')
-            return previous
+            return cpu_lending.advance_lending_history(
+                previous, sample, identity=self._lending_identity, cpus=self.cpus,
+                preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)
         updated = cpu_lending.advance_lending_history(
             previous, sample, identity=self._lending_identity, cpus=self.cpus,
             preferred=self.tiers['preferred'], now=now, cap=self._ramp_cap)

@@ -1,0 +1,103 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue",
+      "unresolved": "('cpu_guest', 'gang_backfill', 'gang_backfill_release', 'gang_backfill_preemption', 'claimed_by', 'claimed_unix', 'claimed_host', 'reserved_on', 'passes', 'gpu_admission', 'cpu_allocation', 'tier_reservations', 'tier_funding', 'residency_verdict', 'container_cleanup_pending', 'container_cleanup_checked_unix', 'container_cleanup_attempts', 'container_cleanup_first_failed_unix', 'stop_pending', 'resource_scope', 'resource_scope_cleanup', 'finish_pending', 'resource_scope_intent', 'scratch_declaration_record', scratch_lifetime.SCRATCH_LIFETIME_FIELD, local_scratch.PLACEMENT)",
+      "binding": "_CLAIM_SCOPED_FIELDS"
+    },
+    "count": 1,
+    "reason": "Clear selected CPU policy, weight and per-attempt admission evidence on every requeue."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/cpu_lending.py",
+      "owner": "<module>",
+      "fields": [
+        "borrowable_cpus",
+        "borrowing",
+        "cpu_qos",
+        "cpu_weight",
+        "declared_cpu",
+        "dependent_allowance",
+        "eligible_cpus",
+        "funded",
+        "funded_by",
+        "measurement",
+        "opportunistic_policy",
+        "preferred_borrow",
+        "sampled_unix",
+        "serves_measurement",
+        "shape",
+        "unbounded_cpu"
+      ],
+      "binding": "_LOAN_FIELDS"
+    },
+    "count": 1,
+    "reason": "Freeze the diagnostic lending decision together with every loan-authorizing field."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.free_cpu_tokens",
+      "unresolved": "(set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None else set(eligible_cpus)) - assigned",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Move the unchanged borrower-exclusion set into the shared physical-ID selection used by acquisition and hypothetical release."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue",
+      "unresolved": "('cpu_guest', 'gang_backfill', 'gang_backfill_release', 'gang_backfill_preemption', 'claimed_by', 'claimed_unix', 'claimed_host', 'reserved_on', 'passes', 'gpu_admission', 'cpu_allocation', 'cpu_admission', 'cpu_qos_selected', 'cpu_weight', 'tier_reservations', 'tier_funding', 'residency_verdict', 'container_cleanup_pending', 'container_cleanup_checked_unix', 'container_cleanup_attempts', 'container_cleanup_first_failed_unix', 'stop_pending', 'resource_scope', 'resource_scope_cleanup', 'finish_pending', 'resource_scope_intent', 'scratch_declaration_record', scratch_lifetime.SCRATCH_LIFETIME_FIELD, local_scratch.PLACEMENT)",
+      "binding": "_CLAIM_SCOPED_FIELDS"
+    },
+    "count": 1,
+    "reason": "Clear selected CPU policy, weight and per-attempt admission evidence on every requeue."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/cpu_lending.py",
+      "owner": "<module>",
+      "fields": [
+        "_lending_decision",
+        "borrowable_cpus",
+        "borrowing",
+        "cpu_qos",
+        "cpu_weight",
+        "declared_cpu",
+        "dependent_allowance",
+        "eligible_cpus",
+        "funded",
+        "funded_by",
+        "measurement",
+        "opportunistic_policy",
+        "preferred_borrow",
+        "sampled_unix",
+        "serves_measurement",
+        "shape",
+        "unbounded_cpu"
+      ],
+      "binding": "_LOAN_FIELDS"
+    },
+    "count": 1,
+    "reason": "Freeze the diagnostic lending decision together with every loan-authorizing field."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.cpu_token_selection",
+      "unresolved": "(set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None else set(eligible_cpus)) - assigned",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Move the unchanged borrower-exclusion set into the shared physical-ID selection used by acquisition and hypothetical release."
+  }
+]

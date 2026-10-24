@@ -214,6 +214,11 @@ def test_guest_drain_cannot_reuse_a_surviving_real_borrow(real_loan_guest):
     fleet.finish(guest)
     assert ledger.available()['cpu'] == 4
     assert ledger.admission_available()['cpu'] == 3
+    gpu_row = pool.record_store.read_document(fleet.queue.records.item_path(pool.READY, gpu))
+    _, first = fleet.queue._gpu_first_order([gpu_row], ledger=ledger,
+        total=fleet.capacity, tags=frozenset({'sparky', 'gb10'}),
+        has_gpu=True, gpu_controller=None)
+    assert gpu not in first
     assert fleet.claim() is None
     assert not fleet.stopped(borrower['action_key'])
     fleet.finish(borrower)
