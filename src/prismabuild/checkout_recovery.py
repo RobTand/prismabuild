@@ -205,7 +205,7 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
     except FileNotFoundError:
         lease = None
     if lease is not None:
-        heartbeat = lease.get('heartbeat_unix')
+        heartbeat = queue._effective_heartbeat(lease)
         if (lease.get('schema') != pool.POOL_LEASE_SCHEMA_V1
                 or lease.get('action_key') != key or not _finite(heartbeat)
                 or float(heartbeat) > time.time() - pool.LEASE_TIMEOUT_S):

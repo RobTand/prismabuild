@@ -11419,7 +11419,8 @@ class PoolQueue:
         if (not isinstance(lease, Mapping)
                 or lease.get("claimed_unix") != claim.get("claimed_unix")):
             return None
-        age = offer_timing(lease.get("heartbeat_unix"), now=now).age_s
+        heartbeat = self._effective_heartbeat(lease, now=now)
+        age = None if heartbeat is None else now - heartbeat
         if age is None:
             return None
         out: dict[str, object] = {"lease_heartbeat_age_s": round(age, 3),
@@ -11632,7 +11633,7 @@ class PoolQueue:
         credited = observation.get("staged_wait_exempt_s")
         for field, value in (("quiet_s", observation.get("quiet_s")),
                              ("grace_s", observation.get("grace_s")),
-                             ("heartbeat_unix", lease.get("heartbeat_unix"))):
+                             ("heartbeat_unix", self._effective_heartbeat(lease, now=now))):
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[field] = float(value)
         if isinstance(count, bool) or not isinstance(count, int):
@@ -11664,8 +11665,7 @@ class PoolQueue:
                         "heartbeat_age_s": round(within[1], 3)})
         return True, out
 
-    @staticmethod
-    def _ahead_within_grace(lease: Mapping[str, object],
+    def _ahead_within_grace(self, lease: Mapping[str, object],
                             observation: Mapping[str, object], *, now: float
                             ) -> tuple[float, float] | None:
         """``(heartbeat_unix, heartbeat_age_s)`` when a consumer's own watch
@@ -11678,8 +11678,8 @@ class PoolQueue:
         from the deadline's base, which every credited exemption moves).
         """
 
-        heartbeat = lease.get("heartbeat_unix")
-        age = offer_timing(heartbeat, now=now).age_s
+        heartbeat = self._effective_heartbeat(lease, now=now)
+        age = None if heartbeat is None else now - heartbeat
         quiet, grace = observation.get("quiet_s"), observation.get("grace_s")
         if (age is None or age > LEASE_TIMEOUT_S
                 or isinstance(quiet, bool) or not isinstance(quiet, (int, float))
@@ -11862,7 +11862,6 @@ class PoolQueue:
         if isinstance(marker, Mapping) and marker.get("owner") == owner:
             path.unlink(missing_ok=True)
 
-    @_serialized_key
     def write_lease(
         self,
         action_key: str,
@@ -11885,43 +11884,135 @@ class PoolQueue:
         writes, because at that moment nothing is running yet.
         """
 
-        lease = {
-                "schema": POOL_LEASE_SCHEMA_V1,
-                "action_key": action_key,
-                "owner": owner,
-                "host": socket.gethostname(),
-                "pid": os.getpid(),
-                "child_pid": int(child_pid) if child_pid is not None else None,
-                "heartbeat_unix": _now(),
-            }
-        if container_owner is not None:
-            lease["container_owner"] = str(container_owner)
-        if execution_observation is not None:
-            lease["execution_observation"] = dict(execution_observation)
-        if progress_observation is not None:
-            # So ``pbstatus`` can say "last advanced 40 s ago, 768 anchors" while
-            # the action is still running.  Nobody has to *authorize* anything
-            # -- continuation is the loop's decision and stays the loop's -- but
-            # an operator who cannot see what governs cannot review it either.
-            lease["progress_observation"] = dict(progress_observation)
-        claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
-        if (claim is None or claim.get("claimed_by") != owner
-                or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
-            raise PoolContractError("claim changed before heartbeat publication")
-        # A stale claim read must not erase the successor lease's ownership
-        # evidence, including the evidence used by finish's cleanup guard.
-        claim_identity.check_lease_identity(
-            action_key,
-            claim,
-            record_store.read_document(self.records.lease_path(action_key)),
-            invalid=AmbiguousClaimHolder,
-        )
-        for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix", "scratch_declaration_record",
-                      scratch_lifetime.SCRATCH_LIFETIME_FIELD):
-            if field in claim:
-                lease[field] = claim[field]
-        self.records.replace_record_at(self.records.lease_path(action_key), lease)
+        with self.action_transition_lock(action_key, blocking=False) as acquired:
+            if not acquired:
+                self._stamp_contended_heartbeat(action_key, owner, claim_snapshot)
+                return  # The attempt-specific stamp needs no transition lock.
+            lease = {
+                    "schema": POOL_LEASE_SCHEMA_V1,
+                    "action_key": action_key,
+                    "owner": owner,
+                    "host": socket.gethostname(),
+                    "pid": os.getpid(),
+                    "child_pid": int(child_pid) if child_pid is not None else None,
+                    "heartbeat_unix": _now(),
+                }
+            if container_owner is not None:
+                lease["container_owner"] = str(container_owner)
+            if execution_observation is not None:
+                lease["execution_observation"] = dict(execution_observation)
+            if progress_observation is not None:
+                # So ``pbstatus`` can say "last advanced 40 s ago, 768 anchors" while
+                # the action is still running.  Nobody has to *authorize* anything
+                # -- continuation is the loop's decision and stays the loop's -- but
+                # an operator who cannot see what governs cannot review it either.
+                lease["progress_observation"] = dict(progress_observation)
+            claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
+            if (claim is None or claim.get("claimed_by") != owner
+                    or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
+                raise PoolContractError("claim changed before heartbeat publication")
+            previous = record_store.read_document(self.records.lease_path(action_key))
+            if previous is not None and self._heartbeat_conflicts(claim, previous):
+                raise AmbiguousClaimHolder("foreign heartbeat lease custody observed; retry admission after cleanup")
+            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
+                          "claimed_unix", "published_unix", "claimed_by", "claimed_host", "attempts",
+                          "scratch_declaration_record",
+                          scratch_lifetime.SCRATCH_LIFETIME_FIELD):
+                if field in claim:
+                    lease[field] = claim[field]
+            lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
+            previous = record_store.read_document(self.records.lease_path(action_key))
+            # A delayed final read must not import another attempt's envelope.
+            # Re-read the claim under the same transition before publishing too.
+            current = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+            if current is None or not claim_identity.same_claim(current, claim):
+                raise PoolContractError("claim changed before heartbeat publication")
+            if previous is not None and self._heartbeat_conflicts(current, previous):
+                raise AmbiguousClaimHolder("foreign heartbeat lease custody observed before publication")
+            self.records.replace_record_at(self.records.lease_path(action_key), lease)
+
+    def _heartbeat_stamp_path(self, lease: Mapping[str, object]) -> Path:
+        identity = {field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
+        return (self.root / "lease-heartbeats" / str(lease["action_key"])
+                / (pb.digest_primitives.canonical_sha256(identity) + ".json"))
+
+    def _stamp_contended_heartbeat(self, action_key, owner, snapshot):
+        """Publish liveness for this process and incarnation without a key lock.
+
+        A delayed rename can only replace its own attempt's stamp. The stamp
+        grants no cleanup or release authority, and never rewrites the lease.
+        """
+        lease = record_store.read_document(self.records.lease_path(action_key))
+        live = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+        if (lease is None or live is None or lease.get("owner") != owner
+                or live.get("claimed_by") != owner or self._heartbeat_conflicts(live, lease)
+                or snapshot is not None and not claim_identity.same_claim(live, snapshot)
+                or not claim_identity.same_claim(live, lease)):
+            raise PoolContractError("claim changed before contended heartbeat")
+        ticks = _contained_worker_start_ticks(os.getpid())
+        if (lease.get("pid") != os.getpid() or lease.get("host") != socket.gethostname()
+                or ticks is None or lease.get("pid_start_ticks") != ticks):
+            raise PoolContractError("contended heartbeat belongs to another process")
+        self.records.replace_record_at(self._heartbeat_stamp_path(lease), {
+            **{field: lease[field] for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+            "action_key": action_key, "host": socket.gethostname(), "pid": os.getpid(),
+            "pid_start_ticks": ticks, "heartbeat_unix": _now()})
+
+    @staticmethod
+    def _heartbeat_time(value: object, *, now: float) -> float | None:
+        # Offer clock-skew credit does not apply to claim liveness.
+        if type(value) not in (int, float):
+            return None
+        try:
+            beat = float(value)
+        except OverflowError:
+            return None
+        return beat if math.isfinite(beat) and beat <= now else None
+
+    def _effective_heartbeat(self, lease: Mapping[str, object], *, now: float | None = None):
+        """The one heartbeat observation used by all claim freshness readers.
+
+        Malformed/future lease time is unknown. A malformed or foreign stamp
+        contributes no credit. Unreadable stamp I/O propagates, retaining custody.
+        """
+        stamp = (record_store.read_document(self._heartbeat_stamp_path(lease))
+                 if isinstance(lease.get("action_key"), str) else None)
+        # Sample after the stamp read: a concurrent beat is not future merely
+        # because this reader began before its publication.
+        now = _now() if now is None else now
+        beat = self._heartbeat_time(lease.get("heartbeat_unix"), now=now)
+        if beat is None:
+            return None
+        if (stamp is not None and claim_identity.same_claim(stamp, lease)
+                and all(stamp.get(field) == lease.get(field)
+                        for field in ("action_key", "host", "pid", "pid_start_ticks"))
+                and type(lease.get("pid")) is int and lease["pid"] > 0
+                and type(lease.get("pid_start_ticks")) is int and lease["pid_start_ticks"] > 0):
+            stamped = self._heartbeat_time(stamp.get("heartbeat_unix"), now=now)
+            if stamped is not None:
+                beat = max(beat, stamped)
+        return beat
+
+    @staticmethod
+    def _heartbeat_conflicts(claim, lease):
+        try:
+            claim_identity.check_lease_identity(
+                str(claim.get("action_key", "")), claim, lease, invalid=PoolContractError)
+        except PoolContractError:
+            return True
+        return any(claim.get(field) is not None and lease.get(field) is not None
+                   and claim[field] != lease[field] for field in ("claimed_by", "claimed_host", "attempts"))
+
+    def _heartbeat_cleanup_due(self, lease, *, timeout_s=LEASE_TIMEOUT_S):
+        """Detection only; age or exact process death never proves cleanup."""
+        beat = self._effective_heartbeat(lease)
+        stale = beat is not None and _now() - beat > timeout_s
+        pid, ticks = lease.get("pid"), lease.get("pid_start_ticks")
+        dead = (lease.get("host") == socket.gethostname()
+                and type(pid) is int and pid > 0 and type(ticks) is int and ticks > 0
+                and (not _process_alive(pid) or (
+                    (observed := _contained_worker_start_ticks(pid)) is not None and observed != ticks)))
+        return stale or dead
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         """Host tokens share the reservation owner's reentrant mutation lock.
@@ -18952,8 +19043,8 @@ class PoolQueue:
         record = record_store.read_document(self.records.lease_path(action_key))
         if record is None:
             return None
-        beat = record.get("heartbeat_unix")
-        if not isinstance(beat, (int, float)):
+        beat = self._effective_heartbeat(record)
+        if beat is None:
             raise PoolContractError(f"lease has no heartbeat: {action_key}")
         return _now() - float(beat)
 

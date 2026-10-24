@@ -1508,6 +1508,26 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+A heartbeat takes the transition lock non-blocking. If another thread or
+process holds it, the current worker publishes a liveness-only stamp under
+`lease-heartbeats/<action_key>/<claim-identity-digest>.json`. Its identity uses
+`claim_identity.CLAIM_IDENTITY_FIELDS`, plus the recorded host, PID and process
+start ticks. New leases carry those fields for every claim. The contended
+writer verifies the durable claim, lease and caller snapshot before writing;
+a delayed predecessor can replace only its own incarnation's stamp.
+
+`PoolQueue._effective_heartbeat` is the shared freshness observation for lease
+age, mover and consumer-order verdicts, widowed-lease sweeps, checkout recovery
+and the status census. It uses the later valid lease/stamp time only for an
+exact matching incarnation and process. A valid time is a finite number, not a
+boolean or string, no later than the reader's clock. Future or malformed lease
+time is unknown and retains custody; an invalid stamp adds no credit. Offer
+clock-skew tolerance does not apply. A stamp renews liveness, not progress or
+execution observations. A dead exact local PID/start-time identity or an old
+effective heartbeat can trigger detection; neither proves checkout cleanup.
+The certified recovery transition belongs to #2231. Stamp retention belongs
+to #2232. This layer adds neither token-return authority nor checkout deletion.
+
 Before heartbeat publication or ordinary finish cleanup, available claim and
 lease identities must agree on owner, host, claim time and publication. A
 contradiction refuses the heartbeat before it overwrites the existing lease, preserving the evidence

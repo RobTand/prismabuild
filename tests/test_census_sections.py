@@ -356,4 +356,19 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                         and relative[0] == "tier-reservations" and relative[2] == "held"):
                     event[0] = "strict-holder-listing"
                     event[1] = str(Path(event[1]))
+    # #2230 adds one exact stamp lookup per lease freshness observation.
+    # Keep the historical comparison for every other read and fact.
+    stamps = {fleet.queue._heartbeat_stamp_path(pool.record_store.read_document(path))
+              for path in fleet.queue.records.claimed_lease_paths()}
+    added = []
+    for name, events in readings[1]["schedules"].items():
+        kept = []
+        for event in events:
+            if Path(event[1]).is_relative_to(fleet.queue_root / "lease-heartbeats"):
+                assert event[0] == "open" and Path(event[1]) in stamps
+                added.append((name, event[1]))
+            else:
+                kept.append(event)
+        readings[1]["schedules"][name] = kept
+    assert added
     assert readings[2]["schedules"] == readings[1]["schedules"]
