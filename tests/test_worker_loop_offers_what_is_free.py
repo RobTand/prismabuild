@@ -51,12 +51,13 @@ def _module():
     return module
 
 
-def _run(tmp_path: Path, argv, *, gpu_sample, mem_gb=100):
+def _run(tmp_path: Path, argv, *, gpu_sample, mem_gb=100, draining=False):
     worker = _module()
     for name in ("loaded.json", "published.json"):
         (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
     gate = tmp_path / "maintenance.json"
-    gate.write_text(json.dumps({"draining": False}))
+    gate.write_text(json.dumps({"draining": draining, "owner": "test",
+                                "reason": "worker offer", "changed_unix": 100.0}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \

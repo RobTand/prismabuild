@@ -5466,10 +5466,18 @@ space; add a measured numeric disk budget only after Rob approves it.
    drop-ins with the same slice and CPUs. The ancillary installers retain
    their own memory/task limits and reuse `/etc/prismabuild/host-cap.conf`
    when installed after the cap.
+   The supervisor installer writes that file with a `[Service]` section
+   containing `Slice=prismabuild.slice` and `AllowedCPUs=4-7,12-15` for this
+   example. It copies those settings into the updater and movement drop-ins;
+   the broker drop-in also sets its scope parent. The marker records that
+   this host has an installed cap. If its roster cap disappears or cannot be
+   read, workers fail closed instead of treating the host as uncapped.
    `PB_SCOPE_PARENT` configures the broker action parent on this host.
 5. Inspect `systemctl show prismabuild-supervisor.service` and the broker's
    unit, plus the client-upgrade and movement-publish services. Confirm all
-   four run inside the cap slice. Resume the ancillary timers afterward. Read its
+   four run inside the cap slice. Check that `/etc/prismabuild/host-cap.conf`
+   exists and its slice and CPUs match the roster and installed units.
+   Resume the ancillary timers afterward. Read the slice's
    `cpuset.cpus.effective`, `memory.max`, and `memory.current`, and the
    supervisor's cgroup membership. Expect `4-7,12-15` and 34359738368 bytes.
    Workers refuse claims if their live containment differs; `pbstatus` names
@@ -5489,6 +5497,15 @@ Its cooperative stop waits for current actions and cleanup. Cron respects
 both installed system and user units, including a deliberately stopped unit.
 These are operator steps after merge and publication. No root installation
 on celestia is part of the source change.
+
+To un-cap a host, drain it and wait for all actions and cleanup to finish.
+Stop the four services and ancillary timers before changing containment.
+Remove `/etc/prismabuild/host-cap.conf` as part of removing the roster cap
+and the installed slice settings and drop-ins, then reload systemd before
+restarting services. Removing only the roster cap leaves the marker in place
+and workers refuse admission. Removing only the marker leaves the roster cap
+and kernel limits in force. Verify the new offers and receipts before ending
+the drain.
 
 ### Keeping a supervisor alive across a reboot
 

@@ -870,6 +870,17 @@ def live_host_capacity(declared: dict[str, int], ledger) -> dict[str, int]:
     return {**declared, kind: live}
 
 
+def capped_host_declaration(declared, box):
+    """Keep stable declarations within the roster cap, even before polling."""
+    from prismabuild import host_cap
+    declared = dict(declared)
+    if box is not None and "cap" in box.entry:
+        cap = host_cap.HostCap.parse(box.entry["cap"])
+        declared["cpu"] = min(declared.get("cpu", 0), len(cap.cpus))
+        declared["mem_gb"] = min(declared.get("mem_gb", 0), cap.mem_gb)
+    return declared
+
+
 def observed_claim_capacity(queue, *, args, base_declared, observer,
                             gpu_sample, known_physical_gpus):
     """One producer for fresh claim capacity, including bracketed held reads."""
@@ -893,10 +904,7 @@ def observed_claim_capacity(queue, *, args, base_declared, observer,
     box = fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,))
     args.host_cap_detail = {}
     capacity = host_cap.enforce_host_cap(capacity, box, held, detail=args.host_cap_detail)
-    if box is not None and "cap" in box.entry:
-        cap = host_cap.HostCap.parse(box.entry["cap"])
-        declared["cpu"] = min(declared.get("cpu", 0), len(cap.cpus))
-        declared["mem_gb"] = min(declared.get("mem_gb", 0), cap.mem_gb)
+    declared = capped_host_declaration(declared, box)
     return declared, capacity, known_physical_gpus
 
 
@@ -1064,7 +1072,10 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     # count from the root-published snapshot, refreshed on every idle pass.
     # Positive legacy slot values are normalized to one device during rollout;
     # they no longer encode a hand-tuned concurrency ceiling.
-    base_declared = declared_host_capacity(args, cores=cores)
+    from prismabuild import fleet_roster
+    base_declared = capped_host_declaration(
+        declared_host_capacity(args, cores=cores),
+        fleet_roster.Roster.for_host(socket.gethostname(), roots=(RUNTIME_ROOT,)))
     gpu_capable = args.gpu or args.gpu_slots > 0
     # Capability and current admission are distinct. ``--gpu`` says this host
     # has a GPU so submissions remain queueable through a telemetry outage;

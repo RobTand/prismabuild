@@ -78,6 +78,19 @@ MUTANTS = {
     "b1_proof_not_consumed": [(POOL, 'host_cap.consume_claim_fence(proof, scan_pass.capacity, self, scan_pass, tiers.host.candidate.key)', 'pass')],
     "n2_reader_local_host": [("src/prismabuild/action_result.py", '_resource_scope._checked_control_identity(key, scope, host=host)',
                              '_resource_scope._checked_control_identity(key, scope)')],
+    # R3 survivors now have dedicated behavioural regressions.
+    "fresh_compare_dropped": [(HC, 'return "host_cap_refusal" not in detail and fresh == capacity',
+                               'return "host_cap_refusal" not in detail')],
+    "marker_oserror_open": [(HC, '    except OSError:\n        return True\n    return True',
+                             '    except OSError:\n        return False\n    return True')],
+    "fence_type_confusion": [(HC, 'if type(value) is not kind or registered is None',
+                              'if registered is None')],
+}
+
+REGRESSION_KILLS = {
+    "fresh_compare_dropped": "test_a_change_at_the_last_transition_cannot_claim",
+    "marker_oserror_open": "test_an_unreadable_marker_path_fails_closed",
+    "fence_type_confusion": "test_a_registered_fence_is_not_a_capped_capacity",
 }
 
 ORIGIN = '''from pathlib import Path
@@ -130,5 +143,7 @@ def test_review_mutant_is_killed(tmp_path, mutant):
             assert code == 0, record
         else:
             assert code == 1 and failures, record
+            if mutant in REGRESSION_KILLS:
+                assert any(REGRESSION_KILLS[mutant] in failure for failure in failures), record
     finally:
         shutil.rmtree(target, ignore_errors=True)

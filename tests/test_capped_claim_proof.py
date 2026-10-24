@@ -1,5 +1,6 @@
 """A final fence proof belongs to one real claim transition."""
 import copy
+import os
 import pickle
 from pathlib import Path
 import socket
@@ -134,3 +135,36 @@ def test_the_installed_cap_marker_is_an_isolated_real_file():
     detail = {}
     assert host_cap.enforce_host_cap({"cpu": 8}, None, {}, detail=detail) == {"cpu": 0}
     assert "no readable roster cap" in detail["host_cap_refusal"]
+
+
+@pytest.mark.parametrize("fault", ["eacces", "enotdir"])
+def test_an_unreadable_marker_path_fails_closed(tmp_path, monkeypatch, fault):
+    if fault == "eacces":
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        marker = locked / "host-cap.conf"
+        locked.chmod(0)
+    else:
+        blocker = tmp_path / "blocker"
+        blocker.write_text("")
+        marker = blocker / "host-cap.conf"
+    monkeypatch.setattr(host_cap, "HOST_CAP_CONFIG", marker)
+    try:
+        if fault == "eacces" and os.geteuid() == 0:
+            pytest.skip("root bypasses directory permissions")
+        detail = {}
+        capacity = host_cap.enforce_host_cap({"cpu": 8, "mem_gb": 32}, None, {}, detail=detail)
+    finally:
+        if fault == "eacces":
+            locked.chmod(0o755)
+    assert capacity == {"cpu": 0, "mem_gb": 0}
+    assert detail["host_cap_refusal"] == "installed host cap has no readable roster cap"
+
+
+def test_a_registered_fence_is_not_a_capped_capacity(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "uncreated")
+    capacity = host_cap.enforce_host_cap({"cpu": 2}, None, {})
+    fence = host_cap.prepare_claim_fence(queue, capacity)
+    with pytest.raises(TypeError, match="capacity from enforce_host_cap"):
+        host_cap.require_capped_capacity(fence)
+    assert not queue.root.exists()

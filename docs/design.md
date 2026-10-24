@@ -6303,6 +6303,8 @@ A roster entry may declare `cap: {cpus: "4-7,12-15", mem_gb: 32,
 slice: "prismabuild.slice"}`. The slice is a top-level system slice. The
 supervisor, its workers, the broker, client updater, movement publisher and
 all broker-created action cgroups share that slice. Uncapped hosts retain their existing capacity policy.
+Stable worker declarations respect the roster cap from startup, including a
+draining worker's announcement before its first open poll.
 
 `host_cap.enforce_host_cap` is the common final clamp used by
 `worker_loop.observed_claim_capacity`, including private executable callers.

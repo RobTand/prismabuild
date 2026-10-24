@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from prismabuild import pool
+from prismabuild import host_cap, pool
 from test_capped_partial_host import capped
 
 def test_private_claim_rechecks_cap_after_sampling(capped, tmp_path, monkeypatch):
@@ -60,7 +60,9 @@ def test_worker_final_fence_observes_cap_change(capped, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("route", ["private", "ordinary", "simulation"])
-@pytest.mark.parametrize("fault", ["membership", "cpuset", "memory", "maintenance"])
+@pytest.mark.parametrize("fault", [
+    "membership", "cpuset", "memory", "memory_current", "host_headroom", "maintenance",
+])
 def test_a_change_at_the_last_transition_cannot_claim(capped, tmp_path, monkeypatch, route, fault):
     worker, _, parent, membership = capped
     monkeypatch.setattr(worker.cpu_topology, "inherited_tiers", lambda: {
@@ -94,8 +96,19 @@ def test_a_change_at_the_last_transition_cannot_claim(capped, tmp_path, monkeypa
             (parent / "cpuset.cpus.effective").write_text("0-15")
         elif fault == "memory":
             (parent / "memory.max").write_text("max")
+        elif fault == "memory_current":
+            (parent / "memory.current").write_text(str(20 * host_cap.GIB))
+        elif fault == "host_headroom":
+            monkeypatch.setattr(worker.box_capacity, "mem_available_gb", lambda: 10)
         else:
             monkeypatch.setattr(worker.role_session, "read_maintenance_gate", lambda: {"draining": True})
+        if fault in ("memory_current", "host_headroom"):
+            detail = {}
+            fresh = host_cap.recheck_host_cap(parameters["capacity"], detail=detail)
+            assert "host_cap_refusal" not in detail
+            # The candidate still fits. Refusal must come from the changed
+            # envelope, rather than a zero offer or failed containment check.
+            assert 1 <= fresh["mem_gb"] < parameters["capacity"]["mem_gb"]
         return original(tiers, scan)
 
     monkeypatch.setattr(queue, "_rename_and_commit_claim", change_then_commit)
