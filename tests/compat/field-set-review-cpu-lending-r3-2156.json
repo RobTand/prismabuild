@@ -1,0 +1,79 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.cpu_allocation",
+      "fields": [
+        "fallback",
+        "preferred"
+      ]
+    },
+    "count": 1,
+    "reason": "Preferred/fallback allocation shape validation moves to opted admission; main allocation reading remains unchanged."
+  },
+  {
+    "change": "removed",
+    "row": {
+      "path": "src/prismabuild/adaptive_cpu.py",
+      "owner": "Controller.decision",
+      "unresolved": "{str(cpu) for cpu in self.cpus}"
+    },
+    "count": 1,
+    "reason": "The CPU-map coverage check uses dynamic CPU-ID strings in the now separate legacy and opted decision bodies; it does not enumerate wire fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger._legacy_free_cpu_tokens",
+      "unresolved": "set(eligible_cpus)",
+      "binding": "allowed"
+    },
+    "count": 1,
+    "reason": "Dynamic eligible CPU IDs retain main token filtering; these are affinity IDs, not record field names."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.opportunistic_cpu_allocation",
+      "fields": [
+        "fallback",
+        "preferred"
+      ]
+    },
+    "count": 1,
+    "reason": "Preferred/fallback allocation shape validation moves to opted admission; main allocation reading remains unchanged."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/adaptive_cpu.py",
+      "owner": "Controller._legacy_decision",
+      "unresolved": "{str(cpu) for cpu in self.cpus}"
+    },
+    "count": 1,
+    "reason": "The CPU-map coverage check uses dynamic CPU-ID strings in the now separate legacy and opted decision bodies; it does not enumerate wire fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/adaptive_cpu.py",
+      "owner": "Controller._opportunistic_decision",
+      "unresolved": "{str(cpu) for cpu in self.cpus}"
+    },
+    "count": 1,
+    "reason": "The CPU-map coverage check uses dynamic CPU-ID strings in the now separate legacy and opted decision bodies; it does not enumerate wire fields."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "ResourceLedger.opportunistic_borrowed_cpu_ids",
+      "unresolved": "set(own)"
+    },
+    "count": 1,
+    "reason": "Dynamic physical CPU IDs are subtracted from opted assigned affinity to retain only actual outstanding loan IDs."
+  }
+]

@@ -456,3 +456,36 @@ def test_none_epoch_cannot_mint_or_acquire_a_loan(loan_rig, private):
         cpu_lending._admission_epoch.reset(token)
 
 
+
+
+def test_opted_gpu_slot_demand_binds_the_physical_reservation(loan_rig):
+    ledger, tiers, controller, donor, item, _ = loan_rig
+    ledger.ensure_capacity({'cpu': 8, 'mem_gb': 8, 'gpu': 1})
+    item['resources']['gpu'] = 2
+    reservation = {'cpu': 1, 'gpu': 1}
+    metadata = controller.decision(item, item['resources'], identity=('candidate', False),
+                                   owner=None, reservation_demand=reservation)
+    assert metadata and metadata['borrowing']
+    handle = ledger.begin_acquire(item['action_key'], reservation, adaptive=metadata, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(item['action_key'], handle)
+    controller.admitted(metadata)
+    assert ledger.holder_tokens(item['action_key']) == {'gpu': 1}
+    assert ledger.cpu_allocation(item['action_key'], tiers) == {'preferred': [0], 'fallback': []}
+
+
+def test_legacy_and_opted_loans_spend_separate_samples_and_share_only_occupied_ids(loan_rig):
+    ledger, tiers, controller, donor, item, metadata = loan_rig
+    handle = ledger.begin_acquire(item['action_key'], item['resources'], adaptive=metadata, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(item['action_key'], handle)
+    controller.admitted(metadata)
+    assert not (controller.base / 'last-borrow.json').exists()
+    opted = (controller.base / 'last-opportunistic-borrow.json').read_bytes()
+    legacy_item = {'action_key': 'c' * 64, 'resources': {'cpu': 1}}
+    legacy = controller.decision(legacy_item, legacy_item['resources'], identity=('legacy', False), owner=None)
+    assert legacy and legacy['borrowing'] and '_loan_grant' not in legacy
+    handle = ledger.begin_acquire(legacy_item['action_key'], legacy_item['resources'], adaptive=legacy, cpu_tiers=tiers)
+    assert handle and ledger.commit_acquire(legacy_item['action_key'], handle)
+    assert ledger.cpu_allocation(legacy_item['action_key'], tiers)['preferred'] == [1]
+    controller.admitted(legacy)
+    assert (controller.base / 'last-borrow.json').exists()
+    assert (controller.base / 'last-opportunistic-borrow.json').read_bytes() == opted

@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-import textwrap
 
 import pytest
 
@@ -62,7 +61,8 @@ def test_explicit_policy_guards_are_identity_for_undeclared_rows():
     assert not cpu_lending.legacy_borrower_allowed({'cpu_qos': 'protected'})
 
 
-def test_legacy_acquisition_never_calls_opted_capability_checks(tmp_path, monkeypatch):
+@pytest.mark.parametrize('ramp_cap', [0, 2])
+def test_legacy_acquisition_never_calls_opted_capability_checks(tmp_path, monkeypatch, ramp_cap):
     from prismabuild import adaptive_cpu, cpu_lending, pool
     def forbidden(*args, **kwargs):
         raise AssertionError('legacy admission entered opted validation')
@@ -71,7 +71,7 @@ def test_legacy_acquisition_never_calls_opted_capability_checks(tmp_path, monkey
     ledger = pool.ResourceLedger(tmp_path / 'reservations', 'legacy-host')
     ledger.ensure_capacity({'cpu': 4})
     ledger.configure_cpu_tiers(tiers)
-    controller = adaptive_cpu.Controller(ledger, tiers, sampler=lambda: {
+    controller = adaptive_cpu.Controller(ledger, tiers, ramp_cap=ramp_cap, sampler=lambda: {
         'sampled_unix': adaptive_cpu.time.time(), 'busy_cpus': 0., 'psi_some': 0.,
         'cpu_count': 4, 'interval_s': 1.})
     monkeypatch.setattr(controller, '_opportunistic_decision', forbidden)
