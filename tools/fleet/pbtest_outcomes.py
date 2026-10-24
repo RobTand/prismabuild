@@ -679,6 +679,13 @@ def _judge_row(row, index):
             if verdict["failing_nodes"] and complete.get("collection_errors") and message in (
                     "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
                 continue
+            if (message == "selected tests have no completed teardown" and record is not None
+                    and set(complete["missing_teardown"]).issubset(
+                        r[0] for r in record.get("reports", [])
+                        if r[1:3] == ["???", "failed"])):
+                # xdist's synthetic crash report is a real terminal failure,
+                # even though the dead worker cannot finish its teardown.
+                continue
             problem("completion", message)
         if record is not None and "collected" in complete:
             if sorted(complete["collected"]) != sorted(verdict["collected"]):
@@ -879,7 +886,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
         collection_complete = collected is not None
         if state.expected_workers:
             collection_complete = (
-                len(state.worker_collections) == state.expected_workers
+                len(state.worker_collections) >= state.expected_workers
                 and all(ids == collected
                         for ids in state.worker_collections.values()))
         record = {
@@ -984,10 +991,15 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 emit_completion(session_finished=True)
 
     def after_hook(result, name, implementations, kwargs):
-        call = hook_calls.pop()
+        call = None
+        for index in range(len(hook_calls) - 1, -1, -1):
+            if hook_calls[index]["name"] == name:
+                call = hook_calls[index]
+                del hook_calls[index:]
+                break
         if name == "pytest_runtest_logreport":
-            record_test_report(call["kwargs"]["report"])
-        if not call["phase"]:
+            record_test_report(kwargs["report"])
+        if call is None or not call["phase"]:
             return
         if name == "pytest_sessionstart":
             state.sessionstart_finished = result.excinfo is None
