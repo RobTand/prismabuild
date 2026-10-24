@@ -195,7 +195,7 @@ def test_scope_token_returns_have_one_conclusion_boundary():
             return left + right if left is not None and right is not None else None
         return None
 
-    for path in (root / "src/prismabuild").glob("*.py"):
+    for path in [*(root / "src/prismabuild").glob("*.py"), *(root / "tools").rglob("*.py")]:
         tree = ast.parse(path.read_bytes())
         aliases = {"ReleaseCertificate"}
         for node in ast.walk(tree):
@@ -397,3 +397,35 @@ def test_each_execute_keeps_its_own_completion_incarnation(tmp_path, broker, mon
     assert len(item["checkout_registrations"]) == 2
     assert _finish(queue, item, outcome) == queue.records.item_path(pool.DONE, key)
     assert queue.ledger().held_keys() == []
+
+
+@pytest.mark.parametrize('reused_kind', ['directory', 'file'])
+def test_inode_number_reused_after_witnessed_unlink_does_not_strand_cleanup(tmp_path, broker, monkeypatch, reused_kind):
+    import os
+    import stat
+    queue, action, _ = fenced_snapshot_queue(tmp_path)
+    key = action['action_key']
+    monkeypatch.setattr(pool, 'LOCAL_CHECKOUT_ROOT', tmp_path / 'materialized')
+    item = claim(queue)
+    outcome = _execute(queue, item)
+    assert queue.cleanup_action_containers(item)['complete']
+    registration = item['checkout_registrations'][0]
+    retired, mine = queue.queue._entomb_claim(key, expect=item)
+    assert mine and retired is not None
+    later = Path(registration['path']).parent / 'cleanup-failures'
+    if reused_kind == 'directory':
+        later.mkdir()
+    else:
+        later.touch()
+    original = os.stat
+    def reused(name, *args, **kwargs):
+        info = original(name, *args, **kwargs)
+        if name == later.name and kwargs.get('dir_fd') is not None:
+            fields = list(info)
+            fields[1], fields[2] = registration['inode'], registration['device']
+            return os.stat_result(fields)
+        return info
+    monkeypatch.setattr(os, 'stat', reused)
+    certificate = queue.ledger().certify_release(key)
+    assert queue.ledger().release(key, certificate=certificate) == 2
+    assert later.is_dir() if reused_kind == 'directory' else later.is_file()

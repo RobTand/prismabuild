@@ -38,6 +38,7 @@ def scoped(tmp_path, monkeypatch, request):
                   resources=demand, max_attempts=2, retry_safe=True)
     item = queue.claim(has_gpu='gpu' in demand, capacity=demand)
     calls = []
+    stopped, released = set(), set()
 
     def request(scope, op, **extra):
         calls.append(op)
@@ -45,6 +46,15 @@ def scoped(tmp_path, monkeypatch, request):
             unit = 'prismabuild-job' + hashlib.sha256((scope.action_key + scope.nonce).encode()).hexdigest()[:32] + '.slice'
             return {'ok': True, 'scope_id': unit, 'token': 'b'*64,
                     'cgroup_path': '/sys/fs/cgroup/prismabuild.slice/' + unit}
+        if op == 'stop':
+            stopped.add(scope.nonce)
+        if op == 'release':
+            released.add(scope.nonce)
+        if op == 'export_stopped':
+            return {'ok': True, 'scope_id': scope.unit, 'empty': scope.nonce in stopped,
+                    'stopped_unix': pool._now() if scope.nonce in stopped else None,
+                    'released': scope.nonce in released, 'retired': False,
+                    'settled': scope.nonce in released, 'tickets_pending': False}
         return {'ok': True}
 
     def sample(scope):

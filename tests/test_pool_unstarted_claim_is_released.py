@@ -257,7 +257,8 @@ def test_a_claim_lost_before_its_record_was_rewritten_is_released(
     assert queue.claim(owner="sparklina:1:a", capacity={"cpu": 1}) is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     ledger = queue.ledger()
-    ledger.unbind_unstarted_claim(KEY, certificate=ledger.certify_release(KEY))
+    ledger.unbind_unstarted_claim(KEY, certificate=ledger.certify_release(
+        KEY, nonce=pool.record_store.read_document(ledger.release_owner_path(KEY))["acquisition_nonce"]))
     record = json.loads(path.read_text())
     for field in ("claimed_by", "claimed_unix", "claimed_host"):
         record.pop(field, None)

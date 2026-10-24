@@ -4289,7 +4289,7 @@ class ResourceLedger:
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                     continue
                 try:
-                    os.rename(token, self.free_dir / token.name)
+                    certificate._return_token(self, action_key, token.name)
                 except OSError:
                     continue
                 taken += 1
@@ -5142,7 +5142,7 @@ class ResourceLedger:
             if token.name.rsplit("-", 1)[0] not in kinds:
                 continue
             try:
-                os.rename(token, self.free_dir / token.name)
+                certificate._return_token(self, action_key, token.name)
             except OSError:
                 continue
             released += 1
@@ -5181,7 +5181,7 @@ class ResourceLedger:
             if token.name in keep:
                 continue
             try:
-                os.rename(token, self.free_dir / token.name)
+                certificate._return_token(self, action_key, token.name)
             except OSError:
                 continue
             released += 1
@@ -5218,7 +5218,10 @@ class ResourceLedger:
                     incomplete = True
                     continue
                 try:
-                    os.rename(token, self.free_dir / token.name)
+                    if certificate is not None:
+                        certificate._return_token(self, holder.name, token.name)
+                    else:
+                        os.rename(token, self.free_dir / token.name)
                 except OSError:
                     incomplete = True
                     continue
@@ -12155,7 +12158,8 @@ class PoolQueue:
 
         with self.action_transition_lock(action_key, blocking=False) as acquired:
             if not acquired:
-                return  # A later beat retries; a heartbeat never waits on cleanup.
+                self._stamp_contended_heartbeat(action_key, owner, claim_snapshot)
+                return  # The attempt-specific stamp needs no transition lock.
             lease = {
                     "schema": POOL_LEASE_SCHEMA_V1,
                     "action_key": action_key,
@@ -12223,6 +12227,35 @@ class PoolQueue:
                     lease["checkout_cleanup"] = previous["checkout_cleanup"]
             self.records.replace_record_at(self.records.lease_path(action_key), lease)
 
+    def _heartbeat_stamp_path(self, lease):
+        identity = {field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
+        return self.root / "lease-heartbeats" / str(lease["action_key"]) / (digest_primitives.canonical_sha256(identity) + ".json")
+
+    def _stamp_contended_heartbeat(self, action_key, owner, snapshot):
+        """Renew only this incarnation; an old beat cannot replace a successor."""
+        lease = record_store.read_document(self.records.lease_path(action_key))
+        live = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+        if (lease is None or live is None or lease.get("owner") != owner
+                or live.get("claimed_by") != owner or self._heartbeat_conflicts(live, lease)
+                or snapshot is not None and not claim_identity.same_claim(live, snapshot)):
+            raise PoolContractError("claim changed before contended heartbeat")
+        if lease.get("pid") != os.getpid() or lease.get("host") != socket.gethostname():
+            raise PoolContractError("contended heartbeat belongs to another process")
+        self.records.replace_record_at(self._heartbeat_stamp_path(lease), {
+            **{field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+            "action_key": action_key, "host": socket.gethostname(), "pid": os.getpid(),
+            "pid_start_ticks": _contained_worker_start_ticks(os.getpid()), "heartbeat_unix": _now()})
+
+    def _effective_heartbeat(self, lease):
+        beat = lease.get("heartbeat_unix")
+        stamp = record_store.read_document(self._heartbeat_stamp_path(lease))
+        if (stamp is not None and claim_identity.same_claim(stamp, lease)
+                and all(stamp.get(field) == lease.get(field) for field in ("host", "pid", "pid_start_ticks"))
+                and type(stamp.get("heartbeat_unix")) in (int, float)
+                and math.isfinite(stamp["heartbeat_unix"])):
+            beat = max(beat, stamp["heartbeat_unix"]) if type(beat) in (int, float) else stamp["heartbeat_unix"]
+        return beat
+
     @staticmethod
     def _heartbeat_conflicts(claim, lease):
         try:
@@ -12266,7 +12299,7 @@ class PoolQueue:
                   "current reservation identity unproved; custody retained", file=sys.stderr)
             return False
         try:
-            if not self._heartbeat_cleanup_due(lease):
+            if not self._heartbeat_cleanup_due(dict(lease, heartbeat_unix=self._effective_heartbeat(lease))):
                 raise PoolContractError("foreign heartbeat owner is live or its identity is unknown")
             old = dict(lease)
             old.setdefault("claimed_by", old.get("owner"))
@@ -12318,7 +12351,7 @@ class PoolQueue:
                 self.records.replace_record_at(journal_path, journal)
             same_lease = lease is not None and claim_identity.same_claim(lease, journal)
             if same_lease:
-                if not self._heartbeat_cleanup_due(lease):
+                if not self._heartbeat_cleanup_due(dict(lease, heartbeat_unix=self._effective_heartbeat(lease))):
                     raise PoolContractError("heartbeat recovery lease is still live")
                 observed_hash = digest_primitives.canonical_sha256(lease)
                 if observed_hash != recovery.get("lease_sha256"):
@@ -13104,7 +13137,8 @@ class PoolQueue:
 
         if claim_snapshot is not None and custody is not None and not claim_identity.same_claim(custody, claim_snapshot):
             raise PoolContractError("release belongs to another claim; reservation retained")
-        if custody is not None:
+        if custody is not None and not (custody.get("checkout_snapshot") is not None
+                                        and custody.get("checkout_registrations") == []):
             certification = materialize.CheckoutCertifier(self.root, recover=False).certify_checkout_cleanup(str(custody["action_key"]), attempt=custody.get("attempts"), claim_nonce=claim_identity.claim_nonce(custody))
             if not certification["complete"]:
                 raise PoolContractError("checkout cleanup is not certified; reservation retained")
@@ -19626,7 +19660,7 @@ class PoolQueue:
         record = record_store.read_document(self.records.lease_path(action_key))
         if record is None:
             return None
-        beat = record.get("heartbeat_unix")
+        beat = self._effective_heartbeat(record)
         if not isinstance(beat, (int, float)):
             raise PoolContractError(f"lease has no heartbeat: {action_key}")
         return _now() - float(beat)
@@ -22332,10 +22366,13 @@ class PoolQueue:
                 life.claim = lifetime_fence.attempt_identity(item)
                 item["lifetime_evidence"] = life.as_record()
             if registration is not None:
-                materialize.CheckoutCertifier(self.root)._journal_unlinked(
-                    str(item["action_key"]), attempt=item.get("attempts"), claim_nonce=claim_identity.claim_nonce(item))
                 checkout_cleanup["claim"] = lifetime_fence.attempt_identity(item)
                 self._write_checkout_registration(item, registration, cleanup=checkout_cleanup)
+                materialize.CheckoutCertifier(self.root)._execution_ended(
+                    str(item["action_key"]), execution_id=registration["execution_id"],
+                    attempt=item.get("attempts"), claim_nonce=claim_identity.claim_nonce(item))
+                materialize.CheckoutCertifier(self.root)._journal_unlinked(
+                    str(item["action_key"]), attempt=item.get("attempts"), claim_nonce=claim_identity.claim_nonce(item))
                 item["checkout_cleanup"] = dict(checkout_cleanup)
         if life is not None:
             outcome["lifetime_evidence"] = item["lifetime_evidence"]

@@ -20973,7 +20973,10 @@ strong descriptor-held unlink guarantee. Kernel, root and filesystem defects
 remain outside the threat model.
 
 A heartbeat reads and writes under the claim transition exclusion, acquired
-non-blocking. A busy key skips that beat; it never waits behind cleanup. Its final
+non-blocking. A busy key writes a separate incarnation-specific liveness stamp,
+with the exact lease identity, host, PID and start ticks. It never rewrites the
+lease or waits behind cleanup. Reapers and widowed-lease recovery use the newer
+matching stamp; a delayed predecessor stamp cannot renew or clobber a successor. Its final
 lease read and final claim read must still name its own admission identity;
 foreign registrations are never copied. Recovery tries after the heartbeat
 bound, or for a local PID whose recorded start ticks prove death or reuse.
@@ -20995,19 +20998,45 @@ are audit data and never authorize release. Initial execution keeps an original
 registered directory descriptor through removal. Only fstat of that descriptor
 with the exact registered device/inode and nlink zero writes the durable
 `checkout-unlinks` journal. Recovery produces the same journal after its own
-held-descriptor removal. Certification reads this journal and verifies that the
-registered identity is absent through a held-parent lstat. Missing authority
+held-descriptor removal. Certification reads this journal and its descriptor binding from the exact
+execution's durable end record. Recovery and initial unlink write that binding
+while they still hold the proven unlinked original directory descriptor. Missing authority
 retains custody, including a crash after unlink but before the journal commits.
-Certificates bind the queue root as well as the ledger and registration.
+Certificates bind descriptor identities of the queue root, reservation root,
+ledger base, manifest and custody owner. Every path component opens with
+O_NOFOLLOW. Consumers recheck those identities and move tokens relative to held
+holder/free descriptors, so an aliased reservation tree supplies no authority.
+A recovery authority cannot mint a release certificate. A live claim blocks
+minting and return, except its exact unstarted acquisition rollback receipt.
+Before checkout recovery or certification, each execution must have a matching
+durable end record, a proven dead owner, or stopped-host legacy adoption.
+Execution writes its end record after leaving the materialization context,
+including exceptional exits. The certifier takes each original sibling owner
+lock non-blocking through removal and certification, and refuses a live payload
+named by the lease. A planted unlink journal cannot hide a renamed inode: a
+journal file's descriptor identity must match the binding recorded by the
+unlink witness. That binding is written only while fstat of the original
+registered directory descriptor proves nlink zero. A planted JSON journal has
+no binding. Reuse of the old inode number by a later directory or failure file
+does not invalidate the original proven unlink. Checkout-bearing attempts with
+a scope also need the broker's exact stopped-and-empty export before recovery or certificate
+issuance; a returned launcher alone cannot prove detached work ended. Internal
+read-only observations can check unlink bindings without retiring another
+scope. Such a dictionary is not a release capability and removes nothing.
 Callers cannot choose the cleanup owner's path. The certifier derives live
 leases, exact claims, matching finish tombstones, attempt journals and adopted
 custody from durable names and registration manifests. Private rollback also
 requires its own acquisition receipt, and can return only that receipt's new
 token names. A journal cannot replace a live lease's newer registration list.
 
-Pre-contract deployment follows stop → activate → adopt → start in the operating
-guide. Activation precedes per-hold scans so the installed-updater proofs are
-consumed within their 900 s lifetime. Activation runs no canary. The adopter
+Pre-contract deployment first publishes and converges a broker-only generation
+through normal PB publication and client activation, with all managed client
+members identical to the later custody generation. The updater would revert a
+hand-installed broker. The custody phase follows stop → activate → adopt → start
+in the operating guide. The updater correctly remains held under the adoption
+gate; its already-installed members need no rotation. Activation precedes per-hold scans so the installed-updater proofs are
+consumed within their 900 s lifetime. The 300 s heartbeat wait and full backup
+follow activation and precede adoption. Activation runs no canary. The adopter
 uses an authorized unprivileged read-only broker maintenance query; it cannot
 clean kernel groups or mutate the gate. Root gate changes use the locally
 installed root-owned broker entrypoint, never NFS Python as root.
@@ -21024,7 +21053,10 @@ works in place and has no quarantine; an operator customization must name its
 additional roots. Unknown historical roots retain custody. Each named root is
 opened component by component without following symlinks. A full readdir and
 parent-relative lstat examine every matching key-prefix or cleanup-failure
-name. Every named root must exist; a missing root refuses. The scan host, terminal
+name. Required roots must exist. Only the code-defined lazy checkout children,
+currently `cleanup-failures`, may be absent under their opened, correctly owned
+checkout parent. That proof records the parent identity; every other missing
+root, including a typo, refuses. The scan host, terminal
 owner and ledger host must agree. Cross-host custody remains charged. Matches,
 prefix collisions, namespace changes, EACCES and unreadable evidence prevent
 absence certification. A unique surviving normal checkout can instead adopt

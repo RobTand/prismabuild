@@ -117,7 +117,12 @@ def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(
         old_scope, old_process, old_started = _owned_scope(queue, item, stack)
         # Reproduce the retained legacy/operator handoff covered by the original
         # late-scope tests: claim ownership moved, but the old exact scope lives.
-        queue.ledger().release(KEY, certificate=queue.ledger().certify_release(KEY))
+        # Preserve the predecessor's synthetic ledger and its charge rather
+        # than asking the current certifier to free a live scope. A fresh
+        # private ledger models the successor's independent reservation.
+        old_custody = tmp_path / "retained-precontract-ledger"
+        queue.ledger().base.rename(old_custody)
+        assert (old_custody / "held" / KEY).is_dir()
         queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
         queue.records.lease_path(KEY).unlink()
         _publication(queue, tmp_path)

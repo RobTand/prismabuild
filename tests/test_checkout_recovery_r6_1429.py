@@ -338,6 +338,9 @@ def test_pre_r6_heartbeat_with_borrowed_envelope_recovers_own_claim(tmp_path, br
     old_entry = dict(old_lease["checkout_registrations"][0])
     old_entry.pop("cleanup", None)
     old_entry.update(execution_id="1" * 32, path=str(retained), device=identity.st_dev, inode=identity.st_ino)
+    # Model the predecessor's recorded process incarnation as dead; these
+    # extra registrations were not produced by this test process's execute.
+    old_lease["pid_start_ticks"] -= 1
     borrowed = dict(old_lease, checkout_registrations=[old_entry, *own["checkout_registrations"]], checkout_cleanup=own["checkout_cleanup"])
     queue.records.replace_record_at(queue.records.lease_path(key), borrowed)
     _recover(queue, clock, pool.LEASE_TIMEOUT_S + 60)
@@ -367,6 +370,7 @@ def test_recovery_journal_resumes_a_changed_heartbeat_without_losing_debt(tmp_pa
     lease["heartbeat_unix"] += 1.
     extra = None
     if append:
+        lease["pid_start_ticks"] -= 1  # Exact predecessor death, not age as evidence.
         extra = tmp_path / "materialized" / (key[:12] + ".oldowned")
         extra.mkdir()
         identity = extra.stat()

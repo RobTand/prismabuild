@@ -396,7 +396,11 @@ def test_certificate_is_invalidated_by_another_execute(tmp_path, broker, monkeyp
     item = claim(queue)
     _execute(queue, item)
     key = action["action_key"]
+    assert queue.cleanup_action_containers(item)["complete"]
+    retired, mine = queue.queue._entomb_claim(key, expect=item)
+    assert mine and retired is not None
     certificate = queue.ledger().certify_release(key)
+    retired.rename(queue.records.item_path(pool.CLAIMED, key))
     monkeypatch.setattr(materialize.owned_tree, "remove_tree", _refuse)
     with pytest.raises(pool.PoolContractError, match="already owns"):
         _execute(queue, item)
@@ -411,7 +415,9 @@ def test_certificate_does_not_enter_persisted_cleanup_evidence(tmp_path, broker,
     monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
     item = claim(queue)
     outcome = _execute(queue, item)
-    queue.ledger().certify_release(action["action_key"], attempt=item.get("attempts"), claim_nonce=pool.claim_identity.claim_nonce(item))
+    # A live claim cannot mint even though its completed execution has proof.
+    with pytest.raises(pool.PoolContractError, match="still live"):
+        queue.ledger().certify_release(action["action_key"], attempt=item.get("attempts"), claim_nonce=pool.claim_identity.claim_nonce(item))
     json.dumps(item)
     assert "certificate" not in item["checkout_cleanup"]
     _finish(queue, item, outcome)
@@ -420,8 +426,10 @@ def test_certificate_does_not_enter_persisted_cleanup_evidence(tmp_path, broker,
 
 def test_certificate_is_bound_to_the_exact_attempt_counter(tmp_path, broker):
     queue, action, _ = fenced_snapshot_queue(tmp_path)
-    claim(queue)
+    item = claim(queue)
     key = action["action_key"]
+    retired, mine = queue.queue._entomb_claim(key, expect=item)
+    assert mine and retired is not None
     certificate = queue.ledger().certify_release(key)
     path = queue.records.lease_path(key)
     owner = record_store.read_document(path)

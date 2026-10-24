@@ -1668,7 +1668,7 @@ def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
             if bool(record_store.value_or_raise(queue.records.item_presence(CLAIMED, key))):
                 continue
             record = record_store.read_document(lease) or {}
-            beat = record.get("heartbeat_unix")
+            beat = queue._effective_heartbeat(record)
             try:
                 age = now - float(beat)
             except (TypeError, ValueError):

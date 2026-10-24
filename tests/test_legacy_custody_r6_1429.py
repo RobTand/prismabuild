@@ -220,5 +220,5 @@ def test_cross_host_occupancy_retains_custody(tmp_path, monkeypatch, stopped_leg
     row = next(row for row in rows if row["kind"] == "tier")
     assert row["status"] == "retained" and not row.get("certified_absent")
     assert "owner and ledger host" in row["reason"]
-    assert not requests
+    assert all(not request for request in requests), "remote peers prove stopped writers only"
     assert tier.holdings(key)

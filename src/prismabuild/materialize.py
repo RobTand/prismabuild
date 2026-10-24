@@ -22,6 +22,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+import contextvars
+import fcntl
+import json
+import stat
 import math
 import os
 from pathlib import Path
@@ -56,6 +60,9 @@ LOCAL_CHECKOUT_ROOT = Path(
 #: The only names ``_execution_checkout`` gives its private trees:
 #: ``<action key 12>.<mkdtemp suffix>``.  Each carries a sibling owner lock
 #: (``owned_tree``), never one inside the tree, which actions hash.
+# e9 creates this child only when removal fails. Operators cannot extend it.
+LEGACY_LAZY_CHECKOUT_ROOTS = frozenset({"cleanup-failures"})
+
 CHECKOUT_TREE = re.compile(r"[0-9a-f]{12}\.[a-z0-9_]{8}")
 
 
@@ -140,7 +147,7 @@ def _remove_tree_before(path: Path, deadline_unix: float, *, expect=None) -> Non
 
 def _cleanup_execution_checkout(
     base: Path, temporary: Path, item: Mapping[str, object],
-    *, deadline_unix: float | None = None, expect=None,
+    *, deadline_unix: float | None = None, expect=None, parent_fd=None,
 ) -> dict[str, object]:
     """Remove one private tree, recording a leak without changing task status.
 
@@ -150,7 +157,9 @@ def _cleanup_execution_checkout(
 
     error = ""
     try:
-        if deadline_unix is None:
+        if parent_fd is not None:
+            owned_tree.remove_tree(parent_fd, temporary.name, expect=expect)
+        elif deadline_unix is None:
             _remove_checkout_tree(temporary, **({} if expect is None else {"expect": expect}))
         else:
             _remove_tree_before(temporary, deadline_unix,
@@ -485,6 +494,81 @@ def _execution_checkout(
 
 
 
+@contextmanager
+def _custody_open(path, *, directory=False):
+    """Open every component without links; keep the resolved object held."""
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("custody path must be absolute without parent traversal")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for index, part in enumerate(path.parts[1:]):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            if directory or index < len(path.parts) - 2:
+                flags |= os.O_DIRECTORY
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+            raise ValueError("custody object has the wrong type")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _custody_child(parent, name):
+    if not name or "/" in name or name in {".", ".."}:
+        raise ValueError("custody child must be one directory name")
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _custody_identity(path, *, directory=False):
+    with _custody_open(path, directory=directory) as fd:
+        info = os.fstat(fd)
+        return info.st_dev, info.st_ino
+
+
+def _custody_document(path):
+    try:
+        with _custody_open(path) as fd, os.fdopen(os.dup(fd)) as stream:
+            document = json.load(stream)
+            if document is not None and not isinstance(document, dict):
+                raise ValueError("custody document is not an object")
+            return document
+    except FileNotFoundError:
+        return None
+
+
+def _record_checkout_unlink(root, registration, original_fd, ended_unix):
+    """Bind a durable journal inode while the original fd proves nlink zero."""
+    from . import record_store
+    original = os.fstat(original_fd)
+    if (original.st_dev, original.st_ino, original.st_nlink) != (
+            registration["device"], registration["inode"], 0):
+        raise ValueError("unlink witness is not the registered unlinked inode")
+    records = record_store.RecordStore(root)
+    receipt_path = root / "checkout-unlinks" / (registration["execution_id"] + ".json")
+    records.replace_record_at(receipt_path, {"registration": registration, "ended_unix": ended_unix})
+    with _custody_open(receipt_path) as receipt_fd:
+        journal = os.fstat(receipt_fd)
+        end_path = root / "checkout-ends" / (registration["execution_id"] + ".json")
+        end = _custody_document(end_path)
+        if end is not None and end.get("registration") != registration:
+            raise ValueError("unlink witness belongs to another execution")
+        end = dict(end or {"registration": registration, "ended_unix": ended_unix})
+        end["unlink_journal"] = [journal.st_dev, journal.st_ino]
+        records.replace_record_at(end_path, end)
+
+
+_RETURN_HANDLES = contextvars.ContextVar("checkout_token_return", default=None)
+
+
 # Issuance and immutable bindings stay in this module, never on a certificate.
 _ISSUED_RELEASE_CERTIFICATES = weakref.WeakKeyDictionary()
 
@@ -500,6 +584,7 @@ class _ReleaseBinding(NamedTuple):
     token_names: frozenset | None
     custody_key: str
     attempt: object
+    identities: tuple
 
 
 class ReleaseCertificate:
@@ -540,7 +625,24 @@ class ReleaseCertificate:
             if not acquired:
                 raise record_store.PoolContractError("release certificate custody is busy")
             ReleaseCertificate.require(certificate, ledger, holder)
-            yield
+            with ExitStack() as handles:
+                base = handles.enter_context(_custody_open(ledger.base, directory=True))
+                base_info = os.fstat(base)
+                expected_base = next(identity for path, directory, identity in binding.identities if path == binding.base)
+                if (base_info.st_dev, base_info.st_ino) != expected_base:
+                    raise record_store.PoolContractError("ledger base descriptor changed")
+                held = handles.enter_context(_custody_child(base, "held"))
+                source = None
+                try:
+                    source = handles.enter_context(_custody_child(held, holder))
+                except FileNotFoundError:
+                    pass
+                destination = handles.enter_context(_custody_child(base, "free"))
+                token = _RETURN_HANDLES.set((certificate, ledger, holder, source, destination))
+                try:
+                    yield
+                finally:
+                    _RETURN_HANDLES.reset(token)
 
     @staticmethod
     def require(certificate, ledger, holder):
@@ -550,8 +652,11 @@ class ReleaseCertificate:
         if (binding.root != ledger.release_records.root or not binding.owner_path.is_relative_to(binding.root)
                 or binding.base != ledger.base or binding.holder != holder):
             raise invalid("release certificate required for this reservation")
-        manifest = record_store.read_document(ledger.release_owner_path(holder))
-        owner = record_store.read_document(binding.owner_path)
+        for path, directory, identity in binding.identities:
+            if _custody_identity(path, directory=directory) != identity:
+                raise invalid("stale release certificate descriptor identity changed")
+        manifest = _custody_document(ledger.release_owner_path(holder))
+        owner = _custody_document(binding.owner_path)
         if (pb._canonical_bytes(manifest) != binding.manifest or owner is None
                 or pb._canonical_bytes(lifetime_fence.attempt_identity(owner)) != binding.claim
                 or owner.get("attempts") != binding.attempt
@@ -561,7 +666,7 @@ class ReleaseCertificate:
         lease_path = ledger.release_records.lease_path(key)
         claim_path = ledger.release_records.item_path(record_store.CLAIMED, key)
         own_unstarted_rollback = (
-            binding.token_names is not None and binding.owner_path == claim_path
+            binding.token_names is not None and binding.owner_path in (claim_path, lease_path)
             and owner.get("checkout_registrations") == []
             and owner.get("resource_scope") is None and owner.get("resource_scope_intent") is None)
         for path in (lease_path, claim_path):
@@ -569,7 +674,7 @@ class ReleaseCertificate:
             # Returning those cannot return a predecessor's same-key custody.
             if path == lease_path and own_unstarted_rollback:
                 continue
-            live = record_store.read_document(path)
+            live = _custody_document(path)
             if (live is not None and live.get("claimed_by") is not None
                     and (pb._canonical_bytes(lifetime_fence.attempt_identity(live)) != binding.claim
                          or live.get("attempts") != binding.attempt)):
@@ -577,7 +682,22 @@ class ReleaseCertificate:
             if (path == lease_path and live is not None and "checkout_registrations" in live
                     and pb._canonical_bytes(live["checkout_registrations"]) != binding.registrations):
                 raise invalid("release certificate does not name the lease's current registrations")
+        if ((_custody_document(claim_path) or {}).get("claimed_by") is not None and not own_unstarted_rollback
+                and owner.get("inventory_id") is None):
+            raise invalid("release certificate cannot return a live claim")
         return binding
+
+
+    def _return_token(self, ledger, holder, name):
+        """Move relative to held ledger directories, never re-resolve names."""
+        from .record_store import PoolContractError
+        handles = _RETURN_HANDLES.get()
+        if handles is None or handles[:3] != (self, ledger, holder) or handles[3] is None:
+            raise PoolContractError("token return requires held certificate descriptors")
+        self.require(self, ledger, holder)
+        if not self.permits(name) or not name or "/" in name or name in {".", ".."}:
+            raise PoolContractError("token is outside this release certificate")
+        os.rename(name, name, src_dir_fd=handles[3], dst_dir_fd=handles[4])
 
 
 # Original descriptors stay process-private until their unlink is journalled.
@@ -593,6 +713,55 @@ class CheckoutCertifier:
         self._recover = recover
         if ledger is not None and self._root != ledger.release_records.root:
             raise pb.PrismaBuildError("certificate authority and ledger queue differ")
+
+    def _execution_ended(self, action_key, *, execution_id, attempt=None, claim_nonce=None):
+        from . import claim_identity, record_store
+        queue_records = record_store.RecordStore(self._root)
+        candidates = [queue_records.lease_path(action_key), queue_records.item_path(record_store.CLAIMED, action_key)]
+        candidates.extend(queue_records.dir(record_store.CLAIMED) / name
+                          for name in queue_records.claimed_names().names
+                          if name.startswith(action_key + ".") and name.endswith(".late-finish"))
+        for path in candidates:
+            owner = _custody_document(path)
+            if owner is None or owner.get("attempts") != attempt or claim_identity.claim_nonce(owner) != claim_nonce:
+                continue
+            for entry in owner.get("checkout_registrations", []):
+                if entry.get("execution_id") == execution_id:
+                    registration = {k: v for k, v in entry.items() if k not in ("cleanup", "completion_claim")}
+                    queue_records.replace_record_at(self._root / "checkout-ends" / (execution_id + ".json"), {
+                        "registration": registration, "ended_unix": _now()})
+                    return
+        raise pb.PrismaBuildError("ended execution has no durable registration")
+
+    @staticmethod
+    @contextmanager
+    def _stopped_checkout(registration):
+        """Exclude the actual checkout owner through recovery and certification."""
+        directory = Path(registration["path"])
+        with _custody_open(directory.parent, directory=True) as parent:
+            info = os.fstat(parent)
+            if ("parent_device" in registration and (info.st_dev, info.st_ino) !=
+                    (registration["parent_device"], registration["parent_inode"])):
+                raise ValueError("checkout parent descriptor identity changed")
+            lock = None
+            try:
+                try:
+                    lock = os.open(directory.name + owned_tree.LOCK_SUFFIX,
+                                   os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+                except FileNotFoundError:
+                    pass  # Successfully removed checkouts remove their lock too.
+                if lock is not None:
+                    info = os.fstat(lock)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.fstat(parent).st_uid:
+                        raise ValueError("checkout owner lock is not private")
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    named = os.stat(directory.name + owned_tree.LOCK_SUFFIX, dir_fd=parent, follow_symlinks=False)
+                    if (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
+                        raise ValueError("checkout owner lock changed")
+                yield parent
+            finally:
+                if lock is not None:
+                    os.close(lock)
 
     def _hold_registered(self, action_key, *, attempt=None, claim_nonce=None):
         from . import claim_identity, record_store
@@ -628,8 +797,7 @@ class CheckoutCertifier:
             try:
                 info = os.fstat(fd)
                 if (info.st_dev, info.st_ino, info.st_nlink) == (registration["device"], registration["inode"], 0):
-                    records.replace_record_at(self._root / "checkout-unlinks" / (key[1] + ".json"), {
-                        "registration": registration, "ended_unix": _now()})
+                    _record_checkout_unlink(self._root, registration, fd, _now())
             finally:
                 del _CHECKOUT_WITNESSES[key]
                 os.close(fd)
@@ -639,6 +807,15 @@ class CheckoutCertifier:
         from . import claim_identity, lifetime_fence, record_store, pool, storage_tiers
 
         try:
+            root_identity = _custody_identity(self._root, directory=True)
+            authority_identities = [(self._root, True, root_identity)]
+            if self._ledger is not None:
+                if self._recover:
+                    raise ValueError("a recovery authority cannot mint release certificates")
+                if _custody_identity(self._ledger.release_records.root, directory=True) != root_identity:
+                    raise ValueError("certificate queue descriptor differs")
+                authority_identities.extend((path, True, _custody_identity(path, directory=True))
+                                            for path in (self._ledger.root, self._ledger.base))
             key = action_key.removeprefix(storage_tiers.RAM_HOST_MEMORY_PREFIX)
             queue = pool.PoolQueue(self._root)
             release_ledger = self._ledger
@@ -651,16 +828,16 @@ class CheckoutCertifier:
                         and (attempt is None or candidate.get("attempts") == attempt)
                         and (claim_nonce is None or claim_identity.claim_nonce(candidate) == claim_nonce))
             record = None
-            with queue.action_transition_lock(key, blocking=release_ledger is None) as acquired:
+            with ExitStack() as checkout_locks, queue.action_transition_lock(key, blocking=release_ledger is None) as acquired:
                 if not acquired:
                     return {"complete": False, "used": True, "error": "checkout custody is busy"}
                 # Custody paths are derived here, never supplied by a caller.
                 # Recovery may certify an exact journal beside a successor; a
                 # private rollback may return only its own receipt's token names.
                 path = queue.records.lease_path(key)
-                owner = record_store.read_document(path)
+                owner = _custody_document(path)
                 claim_path = queue.records.item_path(record_store.CLAIMED, key)
-                live_claim = record_store.read_document(claim_path)
+                live_claim = _custody_document(claim_path)
                 if not matches(owner):
                     path, owner = claim_path, live_claim if matches(live_claim) else None
                 # Late attempts are selected by identity, never by a supplied path.
@@ -672,7 +849,7 @@ class CheckoutCertifier:
                 for name in journals:
                     if name.startswith(key + "."):
                         candidate_path = queue.records.dir(record_store.CLAIMED) / name
-                        candidate = record_store.read_document(candidate_path)
+                        candidate = _custody_document(candidate_path)
                         if matches(candidate) and (owner is None or "heartbeat_recovery" in candidate):
                             path, owner = candidate_path, candidate
                 if owner is None:
@@ -684,7 +861,7 @@ class CheckoutCertifier:
                     for name in names:
                         if name.startswith(key + "."):
                             candidate_path = queue.records.dir(record_store.CLAIMED) / name
-                            candidate = record_store.read_document(candidate_path)
+                            candidate = _custody_document(candidate_path)
                             if matches(candidate):
                                 matches_finish.append((candidate_path, candidate))
                     if len(matches_finish) > 1:
@@ -696,13 +873,13 @@ class CheckoutCertifier:
                 if owner is None:
                     from .legacy_custody import LegacyCustodyMigration, legacy_checkout_owner_path
                     for _, _, ledger in LegacyCustodyMigration(queue)._ledgers():
-                        candidate = record_store.read_document(ledger.legacy_owner_path(action_key))
-                        binding = record_store.read_document(ledger.release_owner_path(action_key))
+                        candidate = _custody_document(ledger.legacy_owner_path(action_key))
+                        binding = _custody_document(ledger.release_owner_path(action_key))
                         if (matches(candidate) and binding is not None
                                 and binding.get("legacy_adoption") == candidate.get("inventory_id")
                                 and binding.get("legacy_owner_nonce") == candidate.get("manifest_nonce")):
                             path = legacy_checkout_owner_path(queue.root, key)
-                            owner = record_store.read_document(path)
+                            owner = _custody_document(path)
                             if not matches(owner) or owner.get("inventory_id") != candidate["inventory_id"]:
                                 return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
                             break
@@ -710,11 +887,11 @@ class CheckoutCertifier:
                 token_names = None
                 if release_ledger is not None:
                     manifest_path = release_ledger.release_owner_path(holder)
-                    manifest = record_store.read_document(manifest_path)
+                    manifest = _custody_document(manifest_path)
                     if manifest is None:
                         return {"complete": False, "used": True, "error": "reservation owner missing"}
                     if reservation_nonce is not None:
-                        receipt = record_store.read_document(
+                        receipt = _custody_document(
                             release_ledger.acquisition_receipt_path(holder, reservation_nonce))
                         if (receipt is None or receipt.get("nonce") != reservation_nonce
                                 or receipt.get("action_key") != holder
@@ -732,16 +909,16 @@ class CheckoutCertifier:
                         if len(marks) > 1:
                             return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
                         if marks:
-                            path, owner = marks[0], record_store.read_document(marks[0])
-                    if owner is None and manifest.get("legacy_adoption") is not None:
+                            path, owner = marks[0], _custody_document(marks[0])
+                    if manifest.get("legacy_adoption") is not None:
                         from .legacy_custody import legacy_checkout_owner_path
                         legacy_path = release_ledger.legacy_owner_path(holder)
-                        legacy = record_store.read_document(legacy_path)
+                        legacy = _custody_document(legacy_path)
                         if (legacy is None or legacy.get("inventory_id") != manifest["legacy_adoption"]
                                 or legacy.get("manifest_nonce") != manifest.get("legacy_owner_nonce", manifest.get("nonce"))):
                             return {"complete": False, "used": True, "error": "legacy custody journal differs"}
                         path = legacy_checkout_owner_path(queue.root, key)
-                        owner = record_store.read_document(path)
+                        owner = _custody_document(path)
                         if owner is None or owner.get("inventory_id") != legacy["inventory_id"]:
                             return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
                     if owner is None:
@@ -750,7 +927,7 @@ class CheckoutCertifier:
                         if manifest.get("claim") is not None:
                             for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
                                 candidate_path = queue.records.item_path(state, key)
-                                candidate = record_store.read_document(candidate_path)
+                                candidate = _custody_document(candidate_path)
                                 if candidate is not None and {k: v for k, v in lifetime_fence.attempt_identity(candidate).items() if k not in ("nonce", "scope_id")} == manifest["claim"]:
                                     path, owner = candidate_path, candidate
                                     break
@@ -790,6 +967,47 @@ class CheckoutCertifier:
                 registrations = owner.get("checkout_registrations")
                 if not isinstance(registrations, list):
                     return {"complete": False, "used": True, "error": "durable checkout registrations missing"}
+                if (release_ledger is not None and (live_claim or {}).get("claimed_by") is not None and token_names is None
+                        and owner.get("inventory_id") is None):
+                    return {"complete": False, "used": True, "error": "checkout claim is still live"}
+                # A returned payload persists its end separately from caller audit
+                # dictionaries. A dead recorded worker also cannot launch again.
+                lease = _custody_document(queue.records.lease_path(key))
+                matching_lease = lease if matches(lease) else None
+                ended_executions = all(
+                    (receipt := _custody_document(self._root / "checkout-ends" / (str(entry.get("execution_id")) + ".json")))
+                    and receipt.get("registration") == {k: v for k, v in entry.items() if k not in ("cleanup", "completion_claim")}
+                    for entry in registrations)
+                dead_worker = False
+                if matching_lease is not None:
+                    pid, ticks = matching_lease.get("pid"), matching_lease.get("pid_start_ticks")
+                    dead_worker = (matching_lease.get("host") == socket.gethostname()
+                                   and type(pid) is int and type(ticks) is int
+                                   and (not pool._process_alive(pid) or
+                                        (observed := pool._contained_worker_start_ticks(pid)) is not None and observed != ticks))
+                    child = matching_lease.get("child_pid")
+                    if type(child) is int and pool._process_alive(child):
+                        return {"complete": False, "used": True, "error": "checkout lease names a live payload"}
+                if (owner.get("checkout_snapshot") is not None and not registrations and not dead_worker
+                        and (live_claim or {}).get("claimed_by") is not None and owner.get("inventory_id") is None
+                        and release_ledger is None):
+                    return {"complete": False, "used": True, "error": "checkout claim has not ended"}
+                if registrations and not (ended_executions or dead_worker or owner.get("inventory_id") is not None):
+                    return {"complete": False, "used": True, "error": "checkout execution has not ended"}
+                # Read-only observations carry no capability and remove nothing.
+                # Recovery and the sole mint must also prove kernel settlement.
+                if ((registrations or owner.get("checkout_snapshot") is not None)
+                        and owner.get("resource_scope") is not None and owner.get("inventory_id") is None
+                        and (recover or release_ledger is not None)):
+                    from . import reader_lease
+                    try:
+                        scope = queue.scope_for_record(owner)
+                        empty, reason = reader_lease.export_verdict_proves_empty(
+                            scope.export_stopped_verdict(), scope_id=scope.unit)
+                    except Exception as exc:
+                        return {"complete": False, "used": True, "error": f"scope ending unproved: {exc}"}
+                    if not empty:
+                        return {"complete": False, "used": True, "error": f"scope is not proven ended: {reason}"}
                 claim = lifetime_fence.attempt_identity(owner)
                 base_claim = {k: claim[k] for k in claim if k not in ("nonce", "scope_id")}
                 updated = []
@@ -823,6 +1041,7 @@ class CheckoutCertifier:
                             or not directory.name.startswith(key[:12] + ".")):
                         return {"complete": False, "used": True, "error": "checkout registration identity differs"}
                     seen.add(execution)
+                    checkout_parent = checkout_locks.enter_context(self._stopped_checkout(registration))
                     unbound = "device" not in registration and "inode" not in registration
                     if unbound:
                         try:
@@ -860,37 +1079,30 @@ class CheckoutCertifier:
                     # Lease/outcome proof dictionaries are audit data, never authority.
                     # Only an unlink journal written from our held original fd counts.
                     receipt_path = self._root / "checkout-unlinks" / (execution + ".json")
-                    receipt = record_store.read_document(receipt_path)
+                    receipt = _custody_document(receipt_path)
                     valid = None
-                    if receipt is not None and receipt.get("registration") == registration:
-                        parent = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-                        try:
-                            try:
-                                named = os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
-                            except FileNotFoundError:
-                                named = None
-                            if named is not None and (named.st_dev, named.st_ino) == (registration["device"], registration["inode"]):
-                                raise ValueError("registered checkout still exists beside unlink journal")
-                        finally:
-                            os.close(parent)
+                    end = _custody_document(self._root / "checkout-ends" / (execution + ".json"))
+                    if (receipt is not None and receipt.get("registration") == registration
+                            and end is not None and end.get("registration") == registration
+                            and end.get("unlink_journal") == list(_custody_identity(receipt_path))):
                         valid = {**registration, "complete": True, "unlinked": True,
                                  "claim": dict(execution_claim), "registration": registration,
                                  "ended_unix": receipt["ended_unix"]}
                     if valid is None and recover:
                         held = None
                         try:
-                            held = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                            held = os.open(directory.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                           dir_fd=checkout_parent)
                             info = os.fstat(held)
                             if (info.st_dev, info.st_ino) != (registration["device"], registration["inode"]):
                                 raise ValueError("registered checkout was replaced")
                             verdict = _cleanup_execution_checkout(
                                 registered_root, directory, owner,
-                                expect=(registration["device"], registration["inode"]))
+                                expect=(registration["device"], registration["inode"]), parent_fd=checkout_parent)
                             if verdict.get("complete") is True:
                                 if os.fstat(held).st_nlink != 0:
                                     raise ValueError("registered inode remains linked")
-                                queue.records.replace_record_at(receipt_path, {
-                                    "registration": registration, "ended_unix": verdict["ended_unix"]})
+                                _record_checkout_unlink(self._root, registration, held, verdict["ended_unix"])
                             valid = {**registration, **verdict, "claim": dict(execution_claim),
                                      "registration": registration}
                         except (OSError, ValueError) as exc:
@@ -924,7 +1136,7 @@ class CheckoutCertifier:
                 # ever writing a successor or a separate late-finish journal.
                 if recover and path == queue.records.lease_path(key):
                     mirror = queue.records.item_path(record_store.CLAIMED, key)
-                    live = record_store.read_document(mirror)
+                    live = _custody_document(mirror)
                     if live is not None and claim_identity.same_claim(live, owner):
                         live["checkout_registrations"] = updated
                         if registrations:
@@ -932,13 +1144,17 @@ class CheckoutCertifier:
                         queue.records.replace_record_at(mirror, live)
                 if release_ledger is not None and result["complete"]:
                     certificate = object.__new__(ReleaseCertificate)
-                    observed = record_store.read_document(path)
+                    observed = _custody_document(path)
+                    for checked_path, is_directory, identity in authority_identities:
+                        if _custody_identity(checked_path, directory=is_directory) != identity:
+                            raise ValueError("certificate authority descriptor changed")
                     _ISSUED_RELEASE_CERTIFICATES[certificate] = _ReleaseBinding(
                         self._root, release_ledger.base, holder, pb._canonical_bytes(manifest), path,
                         pb._canonical_bytes(lifetime_fence.attempt_identity(owner)),
                         pb._canonical_bytes(observed.get("checkout_registrations")),
                         None if token_names is None else frozenset(token_names), key,
-                        owner.get("attempts"))
+                        owner.get("attempts"), tuple(authority_identities) + tuple(
+                            (p, False, _custody_identity(p)) for p in (manifest_path, path)))
                     return {**result, "certificate": certificate}
                 return result
         except (OSError, ValueError, TypeError, KeyError, record_store.PoolContractError) as exc:

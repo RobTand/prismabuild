@@ -36,7 +36,7 @@ def test_real_e9_terminal_host_tier_and_mirror_have_a_certified_return(tmp_path,
     host = socket.gethostname()
     _stopped_fleet(monkeypatch, [host], local_aliases={'storage': host})
     root, covered = _host_roots(tmp_path, host)
-    (world / 'materialized/cleanup-failures').mkdir(parents=True, exist_ok=True)
+    assert not (world / 'materialized/cleanup-failures').exists(), 'actual e9 lazily creates failures'
     covered['roots'] = [{'path': str(world / 'materialized'), 'kind': 'checkout'},
                         {'path': str(world / 'materialized/cleanup-failures'), 'kind': 'cleanup-failures'}]
     migration = LegacyCustodyMigration(queue, roots={'runtime': E9, 'hosts': {host: covered}})

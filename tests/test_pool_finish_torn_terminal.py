@@ -51,8 +51,10 @@ def lost(tmp_path: Path) -> tuple[pool.PoolQueue, dict]:
     assert item is not None
     # The reaper's half: the claim is gone and a terminal stands in its place.
     # Torn, which is what a foreign writer or a half-landed copy leaves.
-    queue.queue._release_reservation(KEY, host=item["claimed_host"], claim_snapshot=item)
-    queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
+    retired, mine = queue.queue._entomb_claim(KEY, expect=item)
+    assert mine and retired is not None
+    queue.queue._release_reservation(KEY, host=item["claimed_host"], claim_snapshot=item, cleanup_owner=retired)
+    retired.unlink()
     queue.records.lease_path(KEY).unlink(missing_ok=True)
     queue.records.item_path(pool.record_store.FAILED, KEY).write_text(
         '{"action_key": "' + KEY + '", "status": "fail', encoding="utf-8"

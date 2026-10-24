@@ -6157,12 +6157,42 @@ permits a stopped owner host to prove absence in its complete e9 checkout
 namespace when the old terminal has no exact path. A timer or acknowledgement
 flag never supplies that proof.
 
-Before starting, provision the reviewed broker and its maintenance client mode
-under `/opt/prismabuild-resource-broker`, using the broker's separate drained
-installation procedure. Verify root ownership and no writable ancestors. The
-new broker must support unprivileged `maintenance_query`. Root runs only the
-locally installed, root-owned broker entrypoint below. **Never run PB Python
-from NFS as root.** Keep the old runtime available until activation succeeds.
+This is a **two-phase deployment**. First publish a **broker-only generation**
+through the normal PB publish, rolling activation and enrolled client updater.
+That prerequisite contains `maintenance_query` and `--maintenance-begin`, with
+all updater-managed members byte-identical to the later custody generation.
+It retains the pre-contract checkout runtime. The lead prepares and reviews
+that separate source commit; do not publish this custody branch as the bridge.
+For example, from that committed broker-only checkout:
+
+```bash
+TMPDIR=/home/rob/pbt17 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
+  --cwd /mnt/shared/pb1429-broker-bridge --tag x86 --cpus 2 --demand mem_gb=4 \
+  --priority -10 --priority-reason 'PB port during TL uplift' \
+  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+  python3 tools/fleet/publish_runtime.py --rollout rolling \
+  --rollout-reason 'broker maintenance query prerequisite for checkout custody' \
+  --shape-gate-action BROKER_SHAPE_KEY
+```
+
+Verify that action's terminal, logs and receipt, the published generation, and
+normal activation/client convergence on every enrolled host. Verify the local
+root-owned installation and running broker hashes against that generation and
+an unprivileged `maintenance_query` on each host before step 1. A hand-installed
+broker is unsafe here: the updater reverts unmanaged bytes to the published
+generation on its next tick. Publishing the bridge makes those same bytes the
+updater's desired state. Keep the bridge available until migration succeeds.
+
+The second phase below changes the checkout custody runtime. Under the
+`pb1429-adoption` gate the updater reports `held`, even if its installed bytes
+already match. Do not expect it to rotate files through another owner's drain.
+Compare every updater-managed member of both generation receipts before the
+stop; if any differ, publish and converge a corrected bridge first. During the
+stop verify installed bytes and broker health against that bridge, accepting
+`held` only for the unchanged member set. Worker roles resolve the activated
+shared generation on restart; the root broker needs no replacement. Root runs
+only its locally installed, root-owned entrypoint. **Never run PB Python from
+NFS as root.**
 
 1. Pause producers and publication automation. Record the generation, queue,
    enrolled hosts and outstanding keys. Let admitted work and active storage
@@ -6199,7 +6229,8 @@ from NFS as root.** Keep the old runtime available until activation succeeds.
 
    Record all three keys and observation times. Proofs expire after **900 s**.
    Finish the stop and activation inside that window; per-hold adoption scans
-   happen afterward. Allow for the heartbeat freshness wait in step 3.
+   happen afterward. Reserve the proof window for stopping and activation only;
+   neither the 300 s freshness wait nor the full backup belongs in it.
 3. Stop admission and then the writer loops:
 
    ```bash
@@ -6218,9 +6249,9 @@ from NFS as root.** Keep the old runtime available until activation succeeds.
    local-tier writer processes. The supervisor's installed unit must use
    `--systemd`, which fences cron startup while it is deliberately stopped.
    Resolve separately launched roles by their recorded PID and start identity.
-   Wait for old offers and heartbeat freshness to expire, at least their 300 s
-   bound after the final beat. Elapsed time alone does not prove stopped writers.
-   Take the durable queue and reservation backup now. Leave all gates closed.
+   Record the final beat and prove stopped writers now. Leave gates closed and
+   proceed immediately to activation. Do not wait for heartbeat expiry or take
+   the full backup before consuming the fresh proofs.
 4. Activate the already staged generation **before adoption**:
 
    ```bash
@@ -6232,13 +6263,19 @@ from NFS as root.** Keep the old runtime available until activation succeeds.
    ```
 
    Run this unprivileged control-plane command outside a PB scope, which would
-   prevent the drain. Verify pointer movement and installed-client receipts.
+   prevent the drain. Verify pointer movement and unchanged installed-client
+   member hashes. The updater's `held` state under the adoption owner is expected;
+   no client replacement is required because the bridge installed those bytes.
    Activation runs **no canary** and rejects `--canary`; it preserves the staged
    generation's rollout records. All writers remain stopped. If proofs expire
    before activation, do not adopt or bypass the publisher. Abort this stop
    before any adoption, resume the unchanged old writers under the original
    gate owner, obtain fresh PB proofs, and repeat steps 2 through 4. A refused
    or ambiguous activation keeps the gates closed until its state is resolved.
+   After successful activation, wait for old offers and heartbeat freshness to
+   expire, at least 300 s after the final beat. Elapsed time is not the stopped
+   writer proof. Take and verify the full durable queue/reservation backup now,
+   before adoption. These potentially slow steps occur after proof consumption.
 5. Adopt custody on each hold's owner host. `EVIDENCE/legacy-roots.json` names
    the exact e9 runtime and every historical root used on that host, including
    environment overrides, cleanup-failures, quarantine and rename-for-delete
@@ -6261,10 +6298,14 @@ from NFS as root.** Keep the old runtime available until activation succeeds.
    }
    ```
 
-   Every named root must exist and be readable without following symlinks.
-   A missing root, prefix collision, matching failure name or unreadable entry
-   retains custody. A historical root that never existed needs operator
-   resolution; a typo cannot prove absence. A tier pin or RAM mirror also
+   Required checkout, quarantine and occupancy roots must exist and be readable
+   without symlinks in any component. The e9 lazy child set is defined in code,
+   currently only `cleanup-failures` directly beneath a declared checkout root.
+   Its ENOENT proves empty only relative to that opened, correctly owned parent;
+   the proof journals the parent's device/inode and absence observation. This
+   matches dl380g10's layout, which has never created that failure directory.
+   Every other missing root, including a misspelled lazy name, refuses. Prefix
+   collisions, matching failure names and unreadable entries retain custody. A tier pin or RAM mirror also
    needs its complete physical roots under `occupancy_roots`, keyed by
    `KIND:LEDGER:HOLDER`; every entry in those roots is examined.
    The observer, terminal owner and ledger host must agree. Cross-host custody
@@ -6307,14 +6348,21 @@ from NFS as root.** Keep the old runtime available until activation succeeds.
    for host in sparky sparklina dl380g10; do
      ssh "$host" systemctl --user start prismabuild-supervisor.service
    done
+   ```
+
+   While all gates remain closed, verify every role resolves the activated
+   generation, the local broker is the bridge's unchanged member, and no old
+   writer remains. If any check fails, keep the gates closed. Only after this
+   verification release each original gate owner:
+
+   ```bash
    for host in sparky sparklina dl380g10; do
      ssh "$host" sudo -n /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py \
        --maintenance-end pb1429-adoption
    done
    ```
 
-   Verify every role resolves the new generation before releasing its original
-   gate owner. Verify healthy open gates and fresh offers. Run a PB smoke action
+   Verify healthy open gates and fresh offers. Run a PB smoke action
    against the activated generation and verify its terminal, logs and receipt
    before resuming producers. This is a post-start check, not an activation
    canary. Record retained-hold counts in fleet acceptance.

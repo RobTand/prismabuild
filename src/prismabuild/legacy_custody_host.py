@@ -8,7 +8,9 @@ import stat
 import subprocess
 import time
 
-from . import park_proof, resource_scope, role_session
+from . import materialize, park_proof, resource_scope, role_session
+
+LEGACY_REQUIRED_ROOT_KINDS = frozenset({"checkout", "quarantine", "occupancy"})
 
 
 def legacy_stopped_host():
@@ -44,7 +46,7 @@ def legacy_stopped_host():
 def legacy_namespace_scan(key, roots):
     """Full readdir on held roots, with no symlink traversal or globbing.
 
-    Every reviewed historical root must exist; a typo proves no absence.
+    Only code-defined lazy children may be absent under their held owner root.
     """
     scans = []
     matches = []
@@ -55,11 +57,32 @@ def legacy_namespace_scan(key, roots):
             raise ValueError("invalid legacy root coverage")
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
-            for part in path.parts[1:]:
-                os.stat(part, dir_fd=fd, follow_symlinks=False)
+            absent = False
+            for index, part in enumerate(path.parts[1:]):
+                try:
+                    os.stat(part, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    if (index != len(path.parts) - 2 or spec["kind"] in LEGACY_REQUIRED_ROOT_KINDS
+                            or spec["kind"] != "cleanup-failures" or part not in materialize.LEGACY_LAZY_CHECKOUT_ROOTS
+                            or not any(r.get("kind") == "checkout" and Path(r["path"]) == path.parent for r in roots)):
+                        raise
+                    parent = os.fstat(fd)
+                    if parent.st_uid != os.geteuid():
+                        raise ValueError("lazy checkout root parent has a different owner")
+                    names = os.listdir(fd)
+                    if part in names:
+                        raise ValueError("lazy checkout root appeared during scan")
+                    scans.append({"path": str(path), "kind": spec["kind"], "absent": True,
+                                  "parent_device": parent.st_dev, "parent_inode": parent.st_ino,
+                                  "parent_uid": parent.st_uid, "entries_examined": len(names),
+                                  "matched": [], "scanned_unix": time.time()})
+                    absent = True
+                    break
                 child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
                 os.close(fd)
                 fd = child
+            if absent:
+                continue
             scan = {"path": str(path), "kind": spec["kind"], "entries_examined": 0,
                     "matched": [], "scanned_unix": time.time()}
             identity = os.fstat(fd)

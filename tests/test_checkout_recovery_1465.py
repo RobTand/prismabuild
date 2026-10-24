@@ -295,15 +295,24 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 (checkout / "empty-native-directory").mkdir()
         directory = held[0]
         assert directory.exists()
+        # The producer is intentionally the legacy materializer, outside
+        # execute's registration protocol. End its exact fixture claim and
+        # write the complete historical terminal that the bank reader consumes.
+        retired, mine = queue.queue._entomb_claim(action["action_key"], expect=claim)
+        assert mine and retired is not None
+        queue.queue._release_reservation(action["action_key"], host=claim["claimed_host"],
+                                         claim_snapshot=claim, cleanup_owner=retired)
+        queue.records.lease_path(action["action_key"]).unlink(missing_ok=True)
+        retired.unlink()
+        state = pool.record_store.WITHDRAWN if ending == "withdrawn" else (
+            pool.record_store.DONE if ending == "executed" else pool.record_store.FAILED)
+        terminal_path = queue.records.item_path(state, action["action_key"])
+        terminal = dict(claim, schema=pool.POOL_OUTCOME_SCHEMA_V1, status=ending,
+                        attempts=int(claim["attempts"]) + 1, finished_unix=pool._now(),
+                        finished_host=claim["claimed_host"], detail={"termination_reason": ending})
         if ending == "withdrawn":
-            queue.withdraw(action["action_key"], reason="fixture cancellation",
-                           by=OWNER, signal_child=False)
-            terminal_path = queue.finish(action["action_key"], status="withdrawn",
-                                         claim_snapshot=claim)
-        else:
-            terminal_path = queue.finish(action["action_key"], status=ending,
-                                         detail={"termination_reason": ending},
-                                         claim_snapshot=claim)
+            terminal["withdrawn_unix"] = pool._now()
+        queue.records.replace_record_at(terminal_path, terminal)
         cleanup_calls.clear()
         entry = {"action_key": action["action_key"], "path": str(directory),
                  "archive_path": str(bank_root / f"{directory.name}.tar"),
