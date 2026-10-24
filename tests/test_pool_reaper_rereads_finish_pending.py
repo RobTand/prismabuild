@@ -19,6 +19,8 @@ check between the two reads does not close it.  Issue #215.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -87,7 +89,7 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
         max_attempts=4,
         retry_safe=True,
     )
-    assert queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1})) is not None
+    assert queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
 
     landed = _finish_pending_lands_during(queue, host="a-foreign-box")
@@ -116,7 +118,7 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
         max_attempts=4,
         retry_safe=True,
     )
-    assert queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1})) is not None
+    assert queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is not None
 
     landed = _finish_pending_lands_during(queue, host=socket.gethostname())
 
@@ -142,7 +144,7 @@ def test_an_ordinary_stale_claim_is_still_reaped(queue: pool.PoolQueue) -> None:
         max_attempts=4,
         retry_safe=True,
     )
-    assert queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1})) is not None
+    assert queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]
 

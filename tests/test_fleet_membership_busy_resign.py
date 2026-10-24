@@ -10,6 +10,8 @@ a test), wired to ``Authority.handle`` directly.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 from functools import partial
@@ -143,7 +145,7 @@ def _publish_claim(queue: pool.PoolQueue, key: str, **kw) -> dict:
         retry_safe=kw.pop("retry_safe", True), tags=["x86"],
     )
     host = socket.gethostname()
-    got = queue.claim(tags=["x86"], owner=f"{host}:1:q1", capacity=simulated_capacity({"cpu": 4}))
+    got = queue.claim(tags=["x86"], owner=f"{host}:1:q1", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert got is not None
     return got
 
@@ -301,20 +303,20 @@ def test_fenced_claim_open_fence_claims(queue: pool.PoolQueue) -> None:
                   worker_script=queue.root / "worker.py",
                   resources={"cpu": 1}, max_attempts=1, retry_safe=True,
                   tags=["x86"])
-    got = queue.claim(tags=["x86"], owner="h:1:q1", capacity=simulated_capacity({"cpu": 4}),
-                      admission_open=lambda: True)
+    got = queue.claim(tags=["x86"], owner="h:1:q1", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert got is not None and got["action_key"] == key
 
 
-def test_fenced_claim_closed_fence_denies(queue: pool.PoolQueue) -> None:
+def test_fenced_claim_closed_fence_denies(queue: pool.PoolQueue, monkeypatch) -> None:
     key = "c" * 64
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py",
                   resources={"cpu": 1}, max_attempts=1, retry_safe=True,
                   tags=["x86"])
-    assert queue.claim(tags=["x86"], owner="h:1:q1", capacity=simulated_capacity({"cpu": 4}),
-                       admission_open=lambda: False) is None
+    from prismabuild import role_session
+    monkeypatch.setattr(role_session, "read_maintenance_gate", lambda: {"draining": True})
+    assert queue.claim(tags=["x86"], owner="h:1:q1", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, key).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
@@ -422,7 +424,7 @@ def test_terminal_is_exact_attempt_not_any_done(queue: pool.PoolQueue) -> None:
                   tags=["x86"])
     second = queue.claim(tags=["x86"],
                          owner=f"{socket.gethostname()}:1:q9",
-                         capacity=simulated_capacity({"cpu": 4}))
+                         **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert second is not None
     assert fm.terminal_of(queue, {
         "action_key": key, "published_unix": second["published_unix"],
@@ -913,7 +915,7 @@ def test_chained_resign_preserves_budget_a_b_c(
     assert int(generation_b.get("max_attempts")) == 4
     assert generation_b.get("resigned_by") == owner
 
-    snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:q2", capacity=simulated_capacity({"cpu": 4}))
+    snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:q2", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     t2 = threading.Thread(target=lambda: _finish_or_error(finish_when_withdrawn, errors))
     with mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
@@ -933,7 +935,7 @@ def test_chained_resign_preserves_budget_a_b_c(
     assert generation_c.get("resigned_by") == owner
     assert generation_c["supersedes_withdrawal"]["withdrawn_by"] == owner
 
-    snap_c = queue.claim(tags=["x86"], owner=f"{host}:1:q3", capacity=simulated_capacity({"cpu": 4}))
+    snap_c = queue.claim(tags=["x86"], owner=f"{host}:1:q3", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert snap_c is not None and int(snap_c["attempts"]) == 2
     queue.finish(key, status="executed", detail={}, claim_snapshot=snap_c)
     done = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text())
@@ -1269,7 +1271,7 @@ def test_closed_gate_poll_settles_through_drain_path(tmp_path: Path, monkeypatch
                        resources={"cpu": 1}, max_attempts=3, retry_safe=True,
                        tags=["x86"])
     snap = real_queue.claim(tags=["x86"], owner=f"{host}:1:q1",
-                            capacity=simulated_capacity({"cpu": 4}))
+                            **simulated_admission(real_queue, simulated_capacity({"cpu": 4})))
     assert snap is not None
     drain_plan = real_queue.plan_requeue(dict(snap))
     real_queue.withdraw(key, reason=f"resign {owner}: drain poll", by=owner,
@@ -1628,7 +1630,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
     assert mover in [e["action_key"] for e in events
                      if e["event"] == "mover-published"]
     snap_m = queue.claim(tags=["dl380g10"], owner=f"{host}:1:sm",
-                         capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
+                         **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert snap_m is not None and snap_m["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": tier, "manifest_sha256": manifest,
@@ -1646,7 +1648,7 @@ def test_resign_staged_consumer_drains_through_handoff_carrier(
     assert tier_loop.compose_map(queue, consumer) == queue.records.residency_map_path(
         consumer)
     snap = queue.claim(tags=["x86"], owner=f"{host}:1:sc",
-                       capacity=simulated_capacity({"cpu": 4, "mem_gb": 16}))
+                       **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16})))
     assert snap is not None and snap["action_key"] == consumer
 
     auth, _ = authority

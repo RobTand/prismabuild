@@ -1,6 +1,8 @@
 """#1221: one latest-only diagnostic commit per claim pass, never per row."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
@@ -35,7 +37,7 @@ def test_one_diagnostic_write_per_pass_not_per_candidate(tmp_path, monkeypatch, 
         publish(queue, f"{index:064x}", resources={"cpu": 2},
                 tags=["foreign"] if placement_mismatch else [])
     writes = _writes(monkeypatch)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     assert len(writes) == 1, f"one pass rewrote the full map {len(writes)} times"
     assert len(writes[0]["records"]) == 20
     if not placement_mismatch:
@@ -104,7 +106,7 @@ def test_exception_flushes_and_resets_context(tmp_path, monkeypatch):
 
     monkeypatch.setattr(queue, "record_denial", fail)
     with pytest.raises(LookupError, match="original pass failure"):
-        queue.claim(capacity=simulated_capacity({"cpu": 1}))
+        queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert len(writes) == 1
     assert pool._CLAIM_DIAGNOSTICS.get() is None
     assert queue.records.item_path(pool.record_store.READY, key).is_file()
@@ -130,7 +132,7 @@ def test_failed_flush_does_not_mask_original_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "write_json", broken_write)
     monkeypatch.setattr(queue, "record_denial", fail)
     with pytest.raises(LookupError, match="original pass failure"):
-        queue.claim(capacity=simulated_capacity({"cpu": 1}))
+        queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert pool._CLAIM_DIAGNOSTICS.get() is None
     assert queue.records.item_path(pool.record_store.READY, key).is_file()
     assert queue.ledger().held_keys() == []
@@ -149,7 +151,7 @@ def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypat
         assert not writes
 
     monkeypatch.setattr(queue, "record_denial", observe)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     assert len(writes) == 1
 
 
@@ -167,7 +169,7 @@ def test_other_queue_does_not_join_current_batch(tmp_path, monkeypatch):
         assert not local_records(queue)
 
     monkeypatch.setattr(queue, "record_denial", observe)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     assert local_records(queue)
 
 
@@ -243,8 +245,8 @@ def test_diagnostics_lock_contention_drops_batch_not_claim(tmp_path):
     base = adaptive_cpu.local_state_base(queue.ledger().base)
     with (base / "claim-denials.lock").open("a") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+        assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
         assert not local_records(queue)
         assert queue.records.denial_transitions_path("a" * 64).is_file()
-    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     assert local_records(queue)

@@ -21,6 +21,8 @@ is hashed.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import hashlib
@@ -480,7 +482,7 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
         queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                       worker_script="/w.py", resources={"cpu": 1},
                       max_attempts=1)
-        claimed = queue.claim(capacity=simulated_capacity({"cpu": 4}))
+        claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4})))
         assert claimed and claimed["action_key"] == key
         queue.finish(key, status=status,
                      detail={"returncode": 1 if status == "failed" else 0})

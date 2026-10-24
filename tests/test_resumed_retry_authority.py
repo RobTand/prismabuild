@@ -1,5 +1,7 @@
 """A recovered retry finisher cannot reset a later claim's attempt history."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 import json
@@ -24,10 +26,10 @@ def test_a_resumed_retry_preserves_the_later_attempt_counter(tmp_path, monkeypat
                   worker_script=tmp_path / "worker.py", resources={"cpu": 1},
                   retry_safe=True, max_attempts=4)
     for index in range(prior_attempts):
-        previous = queue.claim(owner=f"previous-{index}", capacity=simulated_capacity({"cpu": 1}))
+        previous = queue.claim(owner=f"previous-{index}", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         assert previous is not None
         queue.finish(KEY, status="failed", detail={"stderr": f"previous-{index}"}, claim_snapshot=previous)
-    original = queue.claim(owner="paused retry", capacity=simulated_capacity({"cpu": 1}))
+    original = queue.claim(owner="paused retry", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert original is not None and original["attempts"] == prior_attempts
     go_read, go_write = os.pipe()
     event_read, event_write = os.pipe()
@@ -63,7 +65,7 @@ def test_a_resumed_retry_preserves_the_later_attempt_counter(tmp_path, monkeypat
         assert queue.reap_stale(timeout_s=-1) == [KEY]
         ready = queue.records.ready_publication(KEY)
         assert ready["attempts"] == prior_attempts + 1
-        current = queue.claim(owner="later retry", capacity=simulated_capacity({"cpu": 1}))
+        current = queue.claim(owner="later retry", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         assert current is not None and current["attempts"] == prior_attempts + 1
         claim_path = queue.records.item_path(record_store.CLAIMED, KEY)
         lease_path = queue.records.lease_path(KEY)
@@ -88,7 +90,7 @@ def test_a_resumed_retry_preserves_the_later_attempt_counter(tmp_path, monkeypat
         assert ready["attempts"] == prior_attempts + 2, "resumed retry reset the attempt counter"
         attempt = queue.records.attempt_path(current, prior_attempts + 2)
         saved_attempt = attempt.read_bytes()
-        next_claim = queue.claim(owner="next retry", capacity=simulated_capacity({"cpu": 1}))
+        next_claim = queue.claim(owner="next retry", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         assert next_claim is not None and next_claim["attempts"] == prior_attempts + 2
         terminal = queue.finish(KEY, status="executed", detail={"stdout": "new execution"},
                                 claim_snapshot=next_claim)

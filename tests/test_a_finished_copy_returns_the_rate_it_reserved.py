@@ -11,6 +11,8 @@ lead that could not land (#636).
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -60,7 +62,7 @@ def _claim_mover(q: pool.PoolQueue, key: str = MOVER) -> dict[str, object]:
         max_attempts=1,
         retry_safe=False,
     )
-    claimed = q.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = q.claim(**simulated_admission(q, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == key
     return claimed
 
@@ -91,7 +93,7 @@ def test_a_mover_that_kept_its_pin_still_returns_its_bandwidth(
         max_attempts=1,
         retry_safe=False,
     )
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}),
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})),
                        tags=["dl380g10"]) is not None
 
 

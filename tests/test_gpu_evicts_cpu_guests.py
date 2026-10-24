@@ -1,6 +1,8 @@
 """GPU denials reclaim restartable CPU guests through ordinary preemption."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_claim_parameters
 
 from admitted_queue_fixture import simulated_capacity
@@ -55,7 +57,7 @@ class GuestFleet:
     def claim(self, host="sparky", **fields):
         self.use(host)
         return self.queue.claim(tags=[host, "gb10" if host == self.host else "x86"],
-            has_gpu=host == self.host, capacity=simulated_capacity(self.capacity), cpu_tiers=self.tiers, **simulated_claim_parameters(fields))
+            has_gpu=host == self.host, **simulated_admission(self.queue, simulated_capacity(self.capacity)), cpu_tiers=self.tiers, **simulated_claim_parameters(fields, queue=self.queue))
 
     def stopped(self, key):
         return [row for _, row in self.queue.records.withdrawal_decisions(key)]

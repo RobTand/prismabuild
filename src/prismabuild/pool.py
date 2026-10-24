@@ -5570,7 +5570,7 @@ class _ClaimScan:
     observed_images: Container[str] | None
     container_class_policy: image_inventory.ClassImagePolicy | None
     container_inventory: Mapping[str, object] | None
-    admission_open: Callable[[], bool] | None
+    admission_open: host_cap.ClaimFence | None
     memory: _ClaimMemory | None
     withdrawn: Container[str]
     released: Container[str]
@@ -16116,20 +16116,20 @@ class PoolQueue:
         observed_images: Container[str] | None = None,
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
-        admission_open: Callable[[], bool] | None = None,
+        admission_open: host_cap.ClaimFence | None = None,
         unified_memory: UnifiedMemoryEvidence | None = None,
         cpu_sampler: Callable[[], dict[str, object]] | None = None,
         gpu_sampler: Callable[[], Mapping[str, object] | None] | None = None,
     ) -> dict[str, object] | None:
         """Take one ready item, atomically.  ``None`` when nothing matches.
 
-        ``admission_open`` is an optional caller-owned fence (a worker resign
-        drain): ``_claim`` re-checks it under the per-key transition lock
-        immediately before the intent write, so a fence that closed after the
-        poll check is still observed. ``None`` preserves current behavior.
+        ``capacity`` requires its queue-bound ``admission_open`` ClaimFence.
+        The final transition mints and consumes one fresh fence proof under
+        the per-key lock, before writing intent or renaming.
         """
         if capacity is not None:
             host_cap.require_capped_capacity(capacity)
+            host_cap.require_claim_fence(admission_open, capacity, self)
         ledger = self.ledger()
         memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
                   if has_gpu else None)
@@ -16903,6 +16903,7 @@ class PoolQueue:
 
         if kwargs.get("capacity") is not None:
             host_cap.require_capped_capacity(kwargs["capacity"])
+            host_cap.require_claim_fence(kwargs.get("admission_open"), kwargs["capacity"], self)
         holds = _TransitionHolds()
         batch = _ClaimDiagnostics(self)
         token = _CLAIM_DIAGNOSTICS.set(batch)
@@ -17977,11 +17978,22 @@ class PoolQueue:
         self, tiers: _TakenClaimTiers, scan_pass: _ClaimScan,
     ) -> _CommittedClaim | _ClaimHandled:
         host_cap.require_capped_capacity(scan_pass.capacity)
+        key = tiers.host.candidate.key
+        proof = host_cap.check_claim_fence(scan_pass.admission_open, scan_pass.capacity, self, scan_pass, key)
+        if proof is None:
+            tiers.host.candidate.reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(tiers.host.candidate.item, "claim_fenced", {"action_key": key})
+            return _ClaimHandled.REFUSED
+        return self._rename_fenced_claim(tiers, scan_pass, proof)
+
+    def _rename_fenced_claim(
+        self, tiers: _TakenClaimTiers, scan_pass: _ClaimScan, proof: host_cap.ClaimFenceProof,
+    ) -> _CommittedClaim | _ClaimHandled:
+        host_cap.consume_claim_fence(proof, scan_pass.capacity, self, scan_pass, tiers.host.candidate.key)
         ledger = scan_pass.ledger
         owner = scan_pass.owner
         tagset = scan_pass.tags
         has_gpu = scan_pass.has_gpu
-        admission_open = scan_pass.admission_open
         image_host = scan_pass.image_host
         container_class_policy = scan_pass.container_class_policy
         reads = scan_pass.reads
@@ -18004,23 +18016,6 @@ class PoolQueue:
         _gang = host.arbitration.gang_api if host.arbitration is not None else None
         gang_backfill = host.arbitration.backfill if host.arbitration is not None else []
         backfill_binding = host.arbitration.backfill_binding if host.arbitration is not None else None
-        # Intent precedes the claim, so a crash in between leaves evidence.
-        # Resign fence, re-checked under this key's transition
-        # exclusion. This narrows the poll-check to rename race
-        # but does NOT lock the broker's gate: a drain can still
-        # begin after this check. A claim that wins then cannot
-        # execute — broker scope ``create`` refuses under its
-        # mutex and the loop's cleanup path releases it — and the
-        # resign proof (repeated census, bracketed park acks,
-        # empty scopes) accounts for it before SUCCESS. ``None``
-        # preserves current behavior for fenceless callers. The
-        # unwind mirrors the tier-shortage path above it.
-        if admission_open is not None and not admission_open():
-            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
-            self.record_denial(item, "resign_fenced", {
-                "action_key": key,
-            })
-            return _ClaimHandled.REFUSED
         # The pass listing is a hint (#993): a claim record or a
         # finish mark filed for this key since it was taken is
         # found by a fresh listing, under this key's lock, before
@@ -18659,12 +18654,13 @@ class PoolQueue:
         observed_images: Container[str] | None = None,
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
-        admission_open: Callable[[], bool] | None = None,
+        admission_open: host_cap.ClaimFence | None = None,
         memory: _ClaimMemory | None = None,
     ) -> _ClaimScan:
         """Prepare the ordered ready scan and its existing pass-lived views."""
         if capacity is not None:
             host_cap.require_capped_capacity(capacity)
+            host_cap.require_claim_fence(admission_open, capacity, self)
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         if memory is None and has_gpu:
@@ -18978,12 +18974,13 @@ class PoolQueue:
         observed_images: Container[str] | None = None,
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
-        admission_open: Callable[[], bool] | None = None,
+        admission_open: host_cap.ClaimFence | None = None,
         memory: _ClaimMemory | None = None,
     ) -> dict[str, object] | None:
         """Drive one ordered scan through T, canonical M/H, commit and publication."""
         if capacity is not None:
             host_cap.require_capped_capacity(capacity)
+            host_cap.require_claim_fence(admission_open, capacity, self)
         scan_pass = self._start_claim_scan(
             tags=tags, has_gpu=has_gpu, owner=owner, capacity=capacity,
             cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
@@ -22470,7 +22467,7 @@ class PoolQueue:
         observed_images: Container[str] | None = None,
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
-        admission_open: Callable[[], bool] | None = None,
+        admission_open: host_cap.ClaimFence | None = None,
         unified_memory: UnifiedMemoryEvidence | None = None,
         on_sweep: Callable[[], object] | None = None,
     ) -> dict[str, object] | None:
@@ -22489,8 +22486,9 @@ class PoolQueue:
         inventory, passed through to the claim check for items that declare
         one; absent means unknown, and unknown refuses (#714).
 
-        ``admission_open`` is an optional caller-owned fence re-checked under
-        the per-key transition lock just before the claim rename.
+        ``admission_open`` is a required queue-bound ClaimFence whenever
+        capacity is supplied. Final containment and maintenance are checked
+        under the per-key transition lock before the claim rename.
 
         ``on_sweep`` runs first in this box's sweep turn (:meth:`_sweep_due`),
         before the reaper: caller work that is due once per box per
@@ -22498,6 +22496,7 @@ class PoolQueue:
         """
         if capacity is not None:
             host_cap.require_capped_capacity(capacity)
+            host_cap.require_claim_fence(admission_open, capacity, self)
 
         if self._sweep_due():
             if on_sweep is not None:

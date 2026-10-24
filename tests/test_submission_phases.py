@@ -1,6 +1,8 @@
 """Submission diagnostics follow actual work and survive publication (#1936)."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -153,7 +155,7 @@ def test_publication_phases_reach_claim_terminal_attempt_and_both_wait_formats(s
     # A pending row exposes the same publisher's diagnostic snapshot.
     assert pbwait.main([key, "--endings", "--wait-s", "0"]) == 75
     assert _one_json_line(capsys.readouterr())["endings"][0]["phases"] == phases
-    claim = queue.claim(tags=["sparky", "gb10"], capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}))
+    claim = queue.claim(tags=["sparky", "gb10"], **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})))
     assert claim is not None and claim["phases"] == phases
     queue.finish(key, status="failed", claim_snapshot=claim,
         detail={"returncode": 7, "action_returncode": 7, "stdout": "failed fixture\n", "stderr": ""})

@@ -25,6 +25,8 @@ been created yet legitimately has no ``withdrawn/``.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import errno
@@ -118,7 +120,7 @@ def test_a_withdrawn_action_is_not_claimed_when_the_marker_cannot_be_listed(
 
     _listing_of(monkeypatch, queue.records.dir(pool.record_store.WITHDRAWN), STALE)
     with pytest.raises(OSError):
-        queue.claim(capacity=simulated_capacity({"cpu": 1}))
+        queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
 
 

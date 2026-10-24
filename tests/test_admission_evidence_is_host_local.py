@@ -16,6 +16,8 @@ stays on the mount. The ownership tests for it are elsewhere
 (``test_pool_ambiguous_holder_recovery``, ``test_pool_holder_contradiction``).
 """
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_claim_parameters
 
 from admitted_queue_fixture import simulated_capacity
@@ -68,7 +70,7 @@ def cpu_rig(tmp_path, monkeypatch):
         return key
 
     def claim():
-        return queue.claim(capacity=simulated_capacity({'cpu': 2, 'mem_gb': 4, 'gpu': 1}),
+        return queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 2, 'mem_gb': 4, 'gpu': 1})),
                            cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
     def record(key, cpu):
@@ -168,7 +170,7 @@ def gpu_rig(tmp_path, monkeypatch):
                                    'scope_id': record['scope_unit'], 'complete': True})
 
     def claim():
-        return queue.claim(**simulated_claim_parameters(args), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
+        return queue.claim(**simulated_claim_parameters(args, queue=queue), cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
 
     return queue, clock, sample, capacity, publish, tick, claim
 

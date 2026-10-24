@@ -14,6 +14,8 @@ box.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from submission_support import patch_store
@@ -236,14 +238,14 @@ def test_scratch_larger_than_a_box_is_never_claimed_there_and_is_claimed_where_i
     )
 
     _on(monkeypatch, "small")                       # a box declaring --spool-gb 32
-    assert queue.claim(owner="w-small", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4, KIND: 32})) is None
+    assert queue.claim(owner="w-small", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4, KIND: 32}))) is None
     denial = _denials(queue)[key]
     assert denial["reason"] == "never_fits_capacity"
     assert denial["evidence"]["demand"][KIND] == SPILL_GIB
     assert denial["evidence"]["capacity_total"][KIND] == 32
 
     _on(monkeypatch, "large")                       # a box declaring --spool-gb 200
-    claimed = queue.claim(owner="w-large", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4, KIND: 200}))
+    claimed = queue.claim(owner="w-large", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4, KIND: 200})))
     assert claimed is not None and claimed["action_key"] == key
     assert claimed["resources"][KIND] == SPILL_GIB
     assert queue.ledger("large").held()[KIND] == SPILL_GIB
@@ -267,11 +269,11 @@ def test_two_scratch_holders_cannot_jointly_exceed_one_box(tmp_path, monkeypatch
         resources={'cpu': 1, 'mem_gb': 1, KIND: SPILL_GIB},
     )
     capacity = {"cpu": 4, "mem_gb": 8, KIND: 200}
-    claimed = queue.claim(owner="w1", capacity=simulated_capacity(capacity))
+    claimed = queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(capacity)))
     assert claimed is not None
     held_by = claimed["action_key"]
     waiting = second if held_by == first else first
-    assert queue.claim(owner="w2", capacity=simulated_capacity(capacity)) is None
+    assert queue.claim(owner="w2", **simulated_admission(queue, simulated_capacity(capacity))) is None
     denial = _denials(queue)[waiting]
     assert denial["reason"].startswith("reservation_unavailable")
     assert denial["evidence"]["token_shortage"]["resource"] == KIND
@@ -296,8 +298,8 @@ def test_two_holders_that_fit_together_are_both_claimed(tmp_path, monkeypatch):
         resources={'cpu': 1, 'mem_gb': 1, KIND: 100},
     )
     capacity = {"cpu": 4, "mem_gb": 8, KIND: 200}
-    assert queue.claim(owner="w1", capacity=simulated_capacity(capacity)) is not None
-    assert queue.claim(owner="w2", capacity=simulated_capacity(capacity)) is not None
+    assert queue.claim(owner="w1", **simulated_admission(queue, simulated_capacity(capacity))) is not None
+    assert queue.claim(owner="w2", **simulated_admission(queue, simulated_capacity(capacity))) is not None
     assert queue.ledger().held()[KIND] == 200
 
 

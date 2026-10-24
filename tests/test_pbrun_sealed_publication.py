@@ -1,6 +1,8 @@
 """Consumer seal/publish verbs use fixture stores, never the live fleet."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -111,7 +113,7 @@ def test_a_verified_result_is_a_cache_hit(sealed_fleet, capsys):
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 0
     _one_json_line(capsys.readouterr())
     outcome = queue.serve_once(tags=["sparky", "gb10"],
-        python=submission.sys.executable, capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}), timeout_s=60)
+        python=submission.sys.executable, **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})), timeout_s=60)
     assert outcome["status"] == "executed", outcome
     capsys.readouterr()
     assert pbrun.main(["--publish-sealed", sealed["action_key"], "--detach"]) == 0

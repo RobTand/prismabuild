@@ -56,14 +56,15 @@ seen = {{}}
 def serve_once(self, **kwargs):
     seen["containment"] = kwargs.get("containment")
     item = self.claim(tags=kwargs["tags"], has_gpu=kwargs["has_gpu"],
-                      capacity=kwargs["capacity"])
+                      capacity=kwargs["capacity"], admission_open=kwargs["admission_open"])
     seen["claimed"] = item is not None
     return None
 wl.pool.PoolQueue.serve_once = serve_once
 def once(stop, **options):
     q = wl.pool.PoolQueue(Path({str(tmp_path / 'pb-queue')!r}))
-    result = q.serve_once(tags=["gb10"], has_gpu=True,
-                          capacity=host_cap.enforce_host_cap({{"cpu": 1}}, None, {{}}), containment=True)
+    capacity = host_cap.enforce_host_cap({{"cpu": 1}}, None, {{}})
+    result = q.serve_once(tags=["gb10"], has_gpu=True, capacity=capacity,
+                          admission_open=wl.claim_capacity_fence(q, capacity), containment=True)
     options["on_outcome"](result)
     return 0
 wl._run_loop = once

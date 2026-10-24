@@ -23,6 +23,8 @@ movers' fill is taken on the real tier ledger under their keys.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
@@ -68,7 +70,7 @@ def _paced_producer(tmp_path: Path, monkeypatch):
                   resources={**al.PRODUCER_DEMAND, **oc.owner_demand_terms(template)},
                   produced_output_template=template)
     cpu_sampler = al._sample(psi=0.)
-    claimed = queue.claim(owner="spool-producer", capacity=simulated_capacity(al.CAPACITY),
+    claimed = queue.claim(owner="spool-producer", **simulated_admission(queue, simulated_capacity(al.CAPACITY)),
                           cpu_tiers=al.CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     control = fx._broker_control(queue, owner)

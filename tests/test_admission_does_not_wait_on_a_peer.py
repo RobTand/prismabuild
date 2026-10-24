@@ -36,6 +36,8 @@ regression into a named failure.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import fcntl
@@ -152,7 +154,7 @@ def test_a_claim_refuses_at_once_rather_than_waiting_for_the_holder(rig, peer):
     ``_bounded`` rather than on the main thread.
     """
 
-    item = _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+    item = _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                       adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim')
     assert item is None, 'a claim that never held admission returned an item'
 
@@ -162,7 +164,7 @@ def test_claim_reports_the_enclosing_admission_gate(rig, peer, capsys, monkeypat
         pytest.fail('a refused admission reached candidate evaluation')
 
     monkeypatch.setattr(rig, '_claim', must_not_scan)
-    assert _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+    assert _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                       adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim') is None
     diagnostic = capsys.readouterr().err
     assert 'host admission lock busy' in diagnostic
@@ -176,7 +178,7 @@ def test_busy_diagnostic_is_bounded_across_polls_and_holder_changes(
     monkeypatch.setattr(pool.time, 'monotonic', lambda: clock[0])
 
     def claim():
-        return _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+        return _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                           adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim')
 
     assert claim() is None
@@ -211,7 +213,7 @@ def test_failed_busy_diagnostic_still_refuses_without_scanning(
 
     monkeypatch.setattr(pool, 'print', no_log, raising=False)
     monkeypatch.setattr(rig, '_claim', must_not_scan)
-    assert _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+    assert _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                       adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim') is None
 
 
@@ -224,7 +226,7 @@ def test_nothing_is_claimed_or_reserved_by_a_refused_admission(rig, peer):
     claimed by a loop which then declined to run it.
     """
 
-    assert _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+    assert _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                       adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim') is None
     assert not rig.ledger().held(), 'a refused admission held tokens'
     assert rig.ledger().available() == rig.ledger().capacity()
@@ -368,7 +370,7 @@ def test_stalled_ready_scan_does_not_exclude_a_sibling_claim(rig, monkeypatch):
 
     def run():
         try:
-            outcome['item'] = rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+            outcome['item'] = rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                         adaptive_cpu=True, cpu_sampler=_idle_sample)
         except BaseException as exc:
             outcome['error'] = exc
@@ -378,7 +380,7 @@ def test_stalled_ready_scan_does_not_exclude_a_sibling_claim(rig, monkeypatch):
     try:
         assert entered.wait(30), 'claim did not reach candidate discovery'
         sibling = pool.PoolQueue(rig.root)
-        winner = sibling.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+        winner = sibling.claim(**simulated_admission(sibling, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                adaptive_cpu=True, cpu_sampler=_idle_sample)
         assert winner is not None, 'a stalled ready scan held host admission'
         assert winner['action_key'] == 'a' * 64
@@ -396,7 +398,7 @@ def test_busy_admission_refuses_before_ready_discovery(rig, peer, monkeypatch):
         pytest.fail('busy admission started a shared ready scan')
 
     monkeypatch.setattr(rig, 'ready_items', forbidden)
-    assert rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
+    assert rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
 
 
 @pytest.mark.parametrize('replacement', [
@@ -416,7 +418,7 @@ def test_prefetched_replacement_requires_fresh_admission(rig, monkeypatch, repla
         return snapshot
 
     monkeypatch.setattr(rig, 'ready_items', replaced_scan)
-    assert rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
+    assert rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert not rig.ledger().held()
     assert not rig.records.item_path(pool.record_store.CLAIMED, 'a' * 64).exists()
     assert not rig.records.lease_path('a' * 64).exists()
@@ -436,7 +438,7 @@ def test_admission_is_reacquired_after_discovery(rig, monkeypatch):
 
     monkeypatch.setattr(rig, 'ready_items', peer_wins_after_scan)
     try:
-        assert rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+        assert rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
             cpu_sampler=_idle_sample) is None
         assert not rig.ledger().held()
         assert rig.records.item_path(pool.record_store.READY, 'a' * 64).exists()
@@ -453,7 +455,7 @@ def test_empty_discovery_is_not_repeated_under_admission(rig, monkeypatch):
         return []
 
     monkeypatch.setattr(rig, 'ready_items', empty_scan)
-    assert rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
+    assert rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert calls == [True]
     assert rig.records.item_path(pool.record_store.READY, 'a' * 64).exists()
     assert not rig.ledger().held()
@@ -489,7 +491,7 @@ def test_a_refusal_past_the_probe_does_not_claim_evaluation_never_started(
 
     rig.ready_items = peer_takes_admission_after_the_probe
     try:
-        item = _bounded(lambda: rig.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+        item = _bounded(lambda: rig.claim(**simulated_admission(rig, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                                           adaptive_cpu=True, cpu_sampler=_idle_sample), 'claim')
     finally:
         for descriptor in held:

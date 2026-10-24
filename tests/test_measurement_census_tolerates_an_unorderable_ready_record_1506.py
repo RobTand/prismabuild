@@ -12,6 +12,8 @@ cannot read is unknown, so that stays strict.  Identity mismatches stay strict.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -132,8 +134,8 @@ def test_a_skipped_record_is_never_claimed_so_it_cannot_reach_the_claimed_census
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority="high")
 
-    first = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
-    second = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    first = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
+    second = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
 
     assert first is not None and first["action_key"] == GOOD
     assert second is None
@@ -165,7 +167,7 @@ def test_an_elected_gang_keeps_its_fences_when_its_ready_members_are_unorderable
 def test_a_claimed_record_with_an_unreadable_priority_still_refuses(
         queue: pool.PoolQueue) -> None:
     _publish(queue, POISON)
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     _rewrite(queue.records.item_path(pool.record_store.CLAIMED, POISON), priority="high")
 
     with pytest.raises(mr.CensusUnavailable, match="unreadable publication priority"):
@@ -187,6 +189,6 @@ def test_the_claim_beside_an_unorderable_ready_record_is_not_denied_for_the_cens
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority="high")
 
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
 
     assert claimed is not None and claimed["action_key"] == GOOD

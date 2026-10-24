@@ -1,6 +1,8 @@
 """Recover staging files left when a requeue publisher dies after linking."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import Clock as FleetClock
 
@@ -76,7 +78,7 @@ def _crashed_requeue(
         checkout_root=queue.root / "checkout", worker_script=queue.root / "worker.py",
         resources=DEMAND, max_attempts=2, retry_safe=True,
     )
-    claim = queue.claim(owner="crashing-worker", capacity=simulated_capacity(DEMAND))
+    claim = queue.claim(owner="crashing-worker", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert claim is not None
     child = subprocess.run(
         [sys.executable, "-c", CRASH_AFTER_LINK, str(queue.root), KEY, str(clock[0]), hostname],
@@ -121,7 +123,7 @@ def test_sigkill_staging_orphan_is_reaped_without_changing_successor(
     ready = queue.records.item_path(pool.record_store.READY, KEY)
     ready_identity = (ready.stat().st_dev, ready.stat().st_ino)
     if successor_state != pool.record_store.READY:
-        claim = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
+        claim = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity(DEMAND)))
         assert claim is not None
         if successor_state == pool.record_store.DONE:
             queue.finish(KEY, status="executed", claim_snapshot=claim)

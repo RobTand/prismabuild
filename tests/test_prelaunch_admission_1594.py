@@ -8,6 +8,8 @@ with a declared prefix only. Tests use the two-host fixture from
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -208,7 +210,7 @@ def _stage_lead(queue, monkeypatch, lead: str, consumer: str, sha: str,
                 stage: Path) -> None:
     """Claim one mover and finish it executed and pinned."""
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}),
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})),
                           tags=["sparklina"])
     assert claimed is not None and claimed["action_key"] == lead, claimed
     queue.record_move(lead, {

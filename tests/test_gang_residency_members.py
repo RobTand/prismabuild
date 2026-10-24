@@ -32,6 +32,8 @@ census and controllers; only the clock and sampler are controlled.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -84,7 +86,7 @@ def _run_one_mover(queue, monkeypatch, lead: str, consumer: str, stage: Path,
                    *, start: int, end: int) -> None:
     """Claim, receipt and finish one movement node: executed and pinned."""
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["sparklina"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
     assert claimed is not None and claimed["action_key"] == lead, claimed
     queue.record_move(lead, {
         "consumer_action_key": consumer, "tier_id": TIER,
@@ -428,7 +430,7 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
                int(phase["mover_row"]["residency"]["range_end_bytes"]))
               for phase in plan["phases"]}
     for _ in ranges:
-        claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["sparklina"])
+        claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
         assert claimed is not None
         mover = str(claimed["action_key"])
         assert mover in ranges, mover
@@ -471,7 +473,7 @@ def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
     queue.tier(TIER).mint({'stage_gib': 8})
     _publish_lead(queue, clock, lead, stage)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["sparklina"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
     assert claimed is not None and claimed["action_key"] == lead, claimed
     queue.finish(lead, status="failed")
 
@@ -532,7 +534,7 @@ def _fail_lead_and_mark(gang_fleet, monkeypatch, tmp_path, name):
     queue.tier(TIER).mint({'stage_gib': 8})
     _publish_lead(queue, clock, lead, stage)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["sparklina"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
     assert claimed is not None and claimed["action_key"] == lead, claimed
     queue.finish(lead, status="failed")
     assert gclaim("sparklina") is None
@@ -875,7 +877,7 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
                              "range_start_bytes": 0, "range_end_bytes": 2 * GIB},
                   max_attempts=1, retry_safe=False, tags=["elsewhere"])
     if state == pool.record_store.CLAIMED:
-        claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["elsewhere"])
+        claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["elsewhere"])
         assert claimed is not None and claimed["action_key"] == lead
     live_path = queue.records.item_path(state, lead)
     real_read = pool.record_store._read_json
@@ -918,7 +920,7 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
         assert queue.records.item_path(pool.record_store.READY, second).exists()
 
     if state == pool.record_store.READY:
-        claimed = queue.claim(capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}), tags=["elsewhere"])
+        claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["elsewhere"])
         assert claimed is not None and claimed["action_key"] == lead
     queue.record_move(lead, {
         "consumer_action_key": first, "tier_id": TIER,

@@ -8,6 +8,8 @@ offers no capability at all.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 import pbrun
@@ -165,7 +167,7 @@ def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
 
     os_path = Path(entry["path"])
     os_path.unlink()
-    assert queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=[TAG]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=[TAG]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_not_present"
     assert denial["evidence"]["paths"] == [entry["path"]]
@@ -178,7 +180,7 @@ def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
     ActionRows(queue).publish('2' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     Path(entry["path"]).write_bytes(b"drifted")
-    assert queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=[TAG]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=[TAG]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_digest_mismatch"
     assert denial["evidence"]["expected"] == entry["sha256"]
@@ -192,7 +194,7 @@ def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
     entry = _dependency(tmp_path)
     ActionRows(queue).publish('3' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
-    claimed = queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=[TAG])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=[TAG])
     assert claimed is not None
     assert not queue.records.item_path(pool.record_store.READY, "3" * 64).exists()
 
@@ -204,7 +206,7 @@ def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
     item["tags"] = sorted([*item["tags"], TAG])
     queue.records.item_path(pool.record_store.READY, "4" * 64).write_text(json.dumps(item))
 
-    assert queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=[TAG]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=[TAG]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_requirement_missing"
 
@@ -217,7 +219,7 @@ def test_a_row_with_malformed_requirements_is_denied_not_run(tmp_path):
     item["requires_files"] = [{"path": "relative"}]
     queue.records.item_path(pool.record_store.READY, "5" * 64).write_text(json.dumps(item))
 
-    assert queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=[TAG]) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=[TAG]) is None
     denial = _denials(queue)[-1]
     assert denial["reason"] == "malformed_requires_files"
 
@@ -337,7 +339,7 @@ def test_first_use_unknown_files_publish_with_their_sealed_requirement(
     [row] = queue.ready_items()
     assert row["requires_files"] == [entry]
     assert TAG in row["tags"]
-    claimed = queue.claim(capacity=simulated_capacity(dict(CAPACITY)), tags=["sparky", TAG])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity(dict(CAPACITY))), tags=["sparky", TAG])
     assert claimed is not None and claimed["action_key"] == row["action_key"]
     queue.finish(row["action_key"], status="executed", claim_snapshot=claimed)
     assert queue.ledger().held_keys() == []

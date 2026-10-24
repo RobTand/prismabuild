@@ -21,6 +21,8 @@ touches a live queue or a real stage mountpoint (#628).
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -140,7 +142,7 @@ def test_a_ready_consumers_lead_is_listed_and_claimed_before_other_copies(
 
     claimed = []
     for _ in range(6):
-        item = queue.claim(capacity=simulated_capacity(dict(WORKER)), tags=["dl380g10"])
+        item = queue.claim(**simulated_admission(queue, simulated_capacity(dict(WORKER))), tags=["dl380g10"])
         if item is None:
             break
         claimed.append(str(item["action_key"]))
@@ -297,7 +299,7 @@ def test_a_lead_claimed_again_is_not_terminal_and_the_denial_names_the_claim(
     live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, mover).read_text())
     _publish_waiting(queue, mover)
 
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}), tags=["sparky"]) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})), tags=["sparky"]) is None
 
     denial = _denial(queue, WAITING)
     assert denial is not None
@@ -343,7 +345,7 @@ def test_an_ending_of_the_live_records_own_generation_stays_terminal(
                                 "finished_unix": time.time()}))
     _publish_waiting(queue, mover)
 
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}), tags=["sparky"]) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})), tags=["sparky"]) is None
 
     denial = _denial(queue, WAITING)
     assert denial is not None
@@ -365,7 +367,7 @@ def test_a_requeue_bound_to_another_manifest_stays_terminal(tmp_path: Path) -> N
     _claim_row(queue, mover)
     _publish_waiting(queue, mover)
 
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}), tags=["sparky"]) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})), tags=["sparky"]) is None
 
     denial = _denial(queue, WAITING)
     assert denial is not None

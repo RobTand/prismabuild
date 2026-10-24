@@ -1,5 +1,7 @@
 """A completed payload's cleanup retry preserves its real attempt outcome."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import json
 
@@ -116,7 +118,7 @@ def test_cleanup_retry_does_not_remove_a_newly_claimed_attempt(scoped, monkeypat
         if not raced:
             raced.append(True)
             queue.finish(key, status='failed', detail={'returncode': 1}, claim_snapshot=item)
-            retry = queue.claim(owner='second-attempt', capacity=simulated_capacity({'cpu': 1, 'mem_gb': 2}))
+            retry = queue.claim(owner='second-attempt', **simulated_admission(queue, simulated_capacity({'cpu': 1, 'mem_gb': 2})))
             assert retry is not None
         return result
 

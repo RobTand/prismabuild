@@ -13,6 +13,8 @@ real orphan mover still evicted exactly as before.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import time
@@ -71,7 +73,7 @@ def _fail_consumer(queue: pool.PoolQueue) -> str:
     queue.publish(
         action_key=key, cas_root="/cas", checkout_root="/co",
         worker_script="/w.py", resources={"cpu": 1}, max_attempts=1)
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == key
     queue.finish(key, status="failed", detail={"returncode": 1})
     return key

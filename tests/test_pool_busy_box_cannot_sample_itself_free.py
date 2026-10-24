@@ -44,6 +44,8 @@ they were the standing hypotheses:
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 from pathlib import Path
@@ -94,7 +96,7 @@ def box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return key
 
     def claim():
-        return queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS,
+        return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS,
                            adaptive_cpu=True)
 
     def telemetry(key: str, *, cpu: float = 0.1) -> None:

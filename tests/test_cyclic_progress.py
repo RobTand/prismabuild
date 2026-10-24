@@ -1,5 +1,7 @@
 """Repeated long phases retain their allowance without granting endless quiet."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from prismabuild import submission
 from prismabuild import submission as submit_core
@@ -167,8 +169,8 @@ def test_cycle_flag_seals_policy_and_blocks_an_old_worker(tmp_path, monkeypatch,
     linear["params"] = {**linear["params"], pb.PROGRESS_PARAM: _policy(False)}
     assert pb.seal_action(linear)["action_key"] != key
     old_tags = [tag for tag in item["tags"] if tag != contracts.PROGRESS_CYCLE_TAG]
-    assert queue.claim(tags=old_tags, capacity=simulated_capacity({"cpu": 2, "mem_gb": 16})) is None
-    claimed = queue.claim(tags=item["tags"], capacity=simulated_capacity({"cpu": 2, "mem_gb": 16}))
+    assert queue.claim(tags=old_tags, **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 16}))) is None
+    claimed = queue.claim(tags=item["tags"], **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 16})))
     assert claimed["action_key"] == key
     policy = pool.progress_policy(claimed, 100)
     assert policy.cycle is True

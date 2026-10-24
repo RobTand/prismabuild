@@ -1,6 +1,8 @@
 """An older claim's retry cannot replace a newer publication of the same key."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
@@ -69,7 +71,7 @@ def test_requeue_preserves_newer_ready_publication(
     queue: pool.PoolQueue, clock: list[float], ending: str,
 ) -> None:
     _publish(queue)
-    claim = queue.claim(owner="first-claim", capacity=simulated_capacity(DEMAND))
+    claim = queue.claim(owner="first-claim", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert claim is not None
     assert queue.ledger().held() == DEMAND
 
@@ -102,7 +104,7 @@ def test_requeue_preserves_newer_ready_publication(
             "a newer publication already owns ready after maintenance deferral"
         )
 
-    successor = queue.claim(owner="new-publication", capacity=simulated_capacity(DEMAND))
+    successor = queue.claim(owner="new-publication", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert successor is not None
     assert successor["published_unix"] == newer["published_unix"]
     assert successor["attempts"] == 0
@@ -129,7 +131,7 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
     queue: pool.PoolQueue, clock: list[float], ending: str,
 ) -> None:
     _publish(queue)
-    claim = queue.claim(owner="first-claim", capacity=simulated_capacity(DEMAND))
+    claim = queue.claim(owner="first-claim", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert claim is not None
     assert claim["attempts"] == 0
     assert queue.ledger().held() == DEMAND
@@ -158,7 +160,7 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
         assert not queue.records.attempt_path(claim, 1).exists()
 
     clock[0] += 1
-    successor = queue.claim(owner="first-claim", capacity=simulated_capacity(DEMAND))
+    successor = queue.claim(owner="first-claim", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert successor is not None
     assert successor["published_unix"] == claim["published_unix"]
     assert successor["attempts"] == int(charged)
@@ -173,7 +175,7 @@ def test_requeue_publication_error_retains_original_claim_for_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _publish(queue)
-    claim = queue.claim(owner="first-claim", capacity=simulated_capacity(DEMAND))
+    claim = queue.claim(owner="first-claim", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert claim is not None
     original_bytes = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
     ready = queue.records.item_path(pool.record_store.READY, KEY)

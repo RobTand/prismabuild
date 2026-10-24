@@ -10,6 +10,8 @@ leaves a reservation no reaper can find.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -55,7 +57,7 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
         max_attempts=2,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
 
     original_publish = queue._publish_requeued_claim
@@ -64,7 +66,7 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
     def publish(*args, **kwargs):
         result = original_publish(*args, **kwargs)
         # Poll after the real publication, before its caller removes the owner.
-        observed["retry"] = queue.claim(owner="attempt-2", capacity=simulated_capacity({"cpu": 1}))
+        observed["retry"] = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         return result
 
     with mock.patch.object(queue, "_publish_requeued_claim", publish):
@@ -74,7 +76,7 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
         )
 
     assert observed["retry"] is None, "cleanup retains ownership until its tombstone is removed"
-    retry = queue.claim(owner="attempt-2", capacity=simulated_capacity({"cpu": 1}))
+    retry = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert retry is not None and retry["claimed_by"] == "attempt-2"
     # Everything attempt 2 acquired survives attempt 1's cleanup.
     assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
@@ -104,7 +106,7 @@ def test_reap_stale_does_not_delete_the_retrys_claim_or_lease(
         max_attempts=3,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
 
     original_publish = queue._publish_requeued_claim
@@ -112,14 +114,14 @@ def test_reap_stale_does_not_delete_the_retrys_claim_or_lease(
 
     def publish(*args, **kwargs):
         result = original_publish(*args, **kwargs)
-        observed["retry"] = queue.claim(owner="attempt-2", capacity=simulated_capacity({"cpu": 1}))
+        observed["retry"] = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
         return result
 
     with mock.patch.object(queue, "_publish_requeued_claim", publish):
         assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
     assert observed["retry"] is None, "cleanup retains ownership until its tombstone is removed"
-    retry = queue.claim(owner="attempt-2", capacity=simulated_capacity({"cpu": 1}))
+    retry = queue.claim(owner="attempt-2", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert retry is not None and retry["claimed_by"] == "attempt-2"
     assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.records.lease_path(KEY_A).exists()
@@ -143,7 +145,7 @@ def test_a_finisher_interrupted_mid_publish_is_recovered(
         max_attempts=2,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
 
     class Interrupted(Exception):
@@ -204,7 +206,7 @@ def test_a_redundant_tombstone_is_filed_and_never_restored(
         max_attempts=2,
         retry_safe=True,
     )
-    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
     tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
     assert mine and tombstone is not None
@@ -246,7 +248,7 @@ def test_a_tombstone_is_invisible_to_every_reader_of_claimed(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    first = queue.claim(owner="attempt-1", capacity=simulated_capacity({"cpu": 1}))
+    first = queue.claim(owner="attempt-1", **simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert first is not None
     tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
     assert mine and tombstone is not None

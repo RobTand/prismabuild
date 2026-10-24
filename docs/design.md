@@ -6327,9 +6327,19 @@ at the final claim boundary. A shrinking envelope refuses that claim.
 The clamp alone mints immutable `CappedCapacity` values. Claim and admission
 check their exact type and a module-private identity registry before queue I/O;
 plain mappings, subclasses, copied, pickled or forged instances refuse.
-Missing capacity remains a refusal. Ordinary workers and private tools share
-`claim_capacity_fence`, which rechecks both the cap and maintenance under the
-last claim transition. Both benchmark entrypoints use that same private path. Private simulation
+The registry retains the original roster box and held-reservation source;
+instances contain no mint authority. Outside this module, capability class
+references are limited to annotations and `isinstance`; the AST guard also
+rejects aliases, reflected constructors and private-registry access.
+Missing capacity remains a refusal. Supplied capacity requires a `ClaimFence`
+bound to that exact observation, queue object, host and worker PID before queue
+I/O. Ordinary workers and private tools share `claim_capacity_fence`.
+The final claim transition unconditionally rechecks the original cap and
+maintenance, then alone mints a `ClaimFenceProof` bound to that queue, capacity,
+host, PID, pass, owner and candidate key. The rename primitive requires and
+consumes the proof once, including on a binding refusal. Plain callbacks,
+missing proofs, forgery, transfer and replay refuse. Both benchmark entrypoints
+use that same private path. Private simulation
 drivers retain their declared geometry through `capped_simulation_parameters`;
 it mints via the same live clamp and supplies the same final fence.
 
@@ -6349,6 +6359,15 @@ validators require that exact parent, child and identity relationship.
 Creation, adoption and recovery derive the permitted parent from the host
 roster. A broker reply cannot choose another parent. Receipt reconciliation
 uses the claiming host's roster entry, even when run on another host.
+Verified-result readers pass the selected attempt's claiming host to the same
+scope validator.
+
+If `/etc/prismabuild/host-cap.conf` exists but the roster cannot supply a cap,
+offers and admission close every resource with `host_cap_refusal`. Without
+that installed marker, an unknown host retains the existing uncapped policy.
+An already minted observation retains its original roster box even if a later
+lookup fails. The installed systemd slice remains the kernel backstop; this
+source change does not install or activate celestia.
 
 Roster `status: enrolling` requires the same reason, author and timestamp as
 other non-active declarations. Its supervisor runs, but publication preflight,

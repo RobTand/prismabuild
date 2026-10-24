@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 from prismabuild import submission as submit_core
@@ -112,7 +114,7 @@ def test_a_stochastic_external_output_defaults_to_one_attempt(
         tags=["sparky"],
         python=sys.executable,
         timeout_s=30.0,
-        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
+        **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})),
     )
     assert first is not None and first["status"] == "failed"
     assert (tmp_path / "external-output.bin").read_text(encoding="utf-8") == "artifact"
@@ -123,7 +125,7 @@ def test_a_stochastic_external_output_defaults_to_one_attempt(
         tags=["sparky"],
         python=sys.executable,
         timeout_s=30.0,
-        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
+        **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})),
     )
     assert second is None, "a failed default action reacquired fleet capacity"
 
@@ -312,7 +314,7 @@ def test_interruption_scope_is_sealed_and_worker_failure_is_final(tmp_path, monk
             checkout_snapshot=item["checkout_snapshot"], worker_script=item["worker_script"],
             tags=item["tags"], resources=item["resources"], max_attempts=3, retry_safe=True)
     result = queue.serve_once(tags=["sparky"], python=sys.executable, timeout_s=30.,
-                              capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}))
+                              **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})))
     assert result["status"] == "failed"
     terminal = json.loads(queue.records.item_path(pool.FAILED, item["action_key"]).read_text())
     assert terminal["retry_scope"] == "interruption" and terminal["attempts"] == 1

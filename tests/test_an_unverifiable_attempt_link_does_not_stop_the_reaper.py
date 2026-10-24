@@ -58,6 +58,8 @@ Pre-fix failure line: ``src/prismabuild/pool.py:3849`` at ``67a44bb``,
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import errno
@@ -87,7 +89,7 @@ def _stranded_tombstone(
         checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
         resources={"cpu": 1}, max_attempts=2, retry_safe=True,
     )
-    item = queue.claim(capacity=simulated_capacity({"cpu": 1}))
+    item = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert item is not None
     claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(claimed_path.read_text())

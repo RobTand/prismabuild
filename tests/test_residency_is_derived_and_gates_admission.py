@@ -21,6 +21,8 @@ Nothing here touches the live queue, a real pool or a real device.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -286,7 +288,7 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
     queue: pool.PoolQueue,
 ) -> None:
     _publish_consumer(queue, [MOVER])
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_lead_not_resident"
     assert denial["evidence"]["residency"]["pending"] == [
@@ -305,19 +307,19 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    mover_claim = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 4}))
+    mover_claim = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
 
     # ...once the loop has composed the map.  Until then the bytes are on the
     # stage and the consumer cannot address them, which is a full-cost pool
     # read wearing a clean receipt.
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
 
     composed = _compose_map(queue)
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"] == {
         "state": "resident", "leads": [MOVER], "map_path": str(composed)}
@@ -335,14 +337,14 @@ def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    mover_claim = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 4}))
+    mover_claim = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert mover_claim is not None
     queue.finish(MOVER, status="cache_hit", claim_snapshot=mover_claim)
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, MOVER))
     assert done is not None and done["status"] == "cache_hit"
 
     _publish_consumer(queue, [MOVER])
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     # Terminal, not pending: a cached mover will never move the byte, so the
     # denial says so instead of reading like a mover that has yet to run.
@@ -367,14 +369,14 @@ def test_every_lead_must_be_resident_not_merely_the_first(
             max_attempts=1,
             retry_safe=False,
         )
-        claim = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 4}))
+        claim = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
         assert claim is not None and claim["action_key"] == key
         if key == MOVER:
             queue.finish(key, status="executed", claim_snapshot=claim)
         else:
             queue.finish(key, status="failed", claim_snapshot=claim)
     _publish_consumer(queue, [MOVER, SECOND_MOVER])
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_terminal"
@@ -394,7 +396,7 @@ def test_mutating_the_gate_out_lets_an_unserved_consumer_claim(
         pool.PoolQueue, "residency_verdict",
         lambda self, item: {"state": "not_requested"})
     _publish_consumer(queue, [MOVER])
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert "residency_verdict" not in claimed
 
@@ -431,7 +433,7 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
     )
 
     _publish_consumer(queue, [MOVER])
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     # Terminal: the drop is filed, so no later poll repairs this consumer.
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
@@ -454,14 +456,14 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
         resources={'cpu': 1, STAGE: 1},
         residency=dict(_residency(range_start=0, range_end=GIB), manifest_sha256=other),
     )
-    mover_claim = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 4}))
+    mover_claim = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, MOVER))
     assert done is not None and done["status"] == "executed"
 
     _publish_consumer(queue, [MOVER])  # names manifest "a" * 64
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None
     assert denial["evidence"]["residency"]["pending"] == [{
@@ -532,14 +534,14 @@ def test_a_map_composed_before_the_lead_landed_does_not_admit(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    mover_claim = queue.claim(owner="mover", capacity=simulated_capacity({"cpu": 4}))
+    mover_claim = queue.claim(owner="mover", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert mover_claim is not None and mover_claim["action_key"] == MOVER
     queue.finish(MOVER, status="executed", claim_snapshot=mover_claim)
 
     # The previous cycle's map: composed from somebody else's fragment, so it
     # is a valid document that cannot address this consumer's first bytes.
     stale = _compose_map(queue, mover=SECOND_MOVER)
-    assert queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4})) is None
+    assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     denial = _denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_stale"
     assert denial["evidence"]["residency"]["missing_leads"] == [MOVER]
@@ -550,7 +552,7 @@ def test_a_map_composed_before_the_lead_landed_does_not_admit(
 
     # The loop recomposes and the same consumer goes straight in.
     composed = _compose_map(queue)
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"] == {
         "state": "resident", "leads": [MOVER], "map_path": str(composed)}

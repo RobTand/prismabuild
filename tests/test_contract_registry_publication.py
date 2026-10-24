@@ -1,6 +1,8 @@
 """A publisher cannot expose sealed work to a worker that ignores its contract."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 from submission_support import refusal_value
@@ -119,7 +121,7 @@ def test_an_alternate_publisher_derives_the_fence_from_the_sealed_request(
     row = json.loads(path.read_text())
     assert set(row["tags"]) == required
     assert action["params"]["placement"]["required_tags"] == []
-    assert queue.claim(tags=[], capacity=simulated_capacity({"cpu": 4, "mem_gb": 8})) is None
+    assert queue.claim(tags=[], **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8}))) is None
     assert queue.records.item_path(pool.record_store.READY, action["action_key"]).exists()
 
 

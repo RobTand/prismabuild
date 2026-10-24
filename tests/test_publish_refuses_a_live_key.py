@@ -25,6 +25,8 @@ already holds.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -85,7 +87,7 @@ def test_an_ordinary_publication_still_replaces_a_live_key(
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert _row(queue, pool.record_store.READY, KEY)["published_unix"] != first
 
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
@@ -100,7 +102,7 @@ def test_a_declared_publisher_is_refused_while_the_key_is_claimed(
     """The stale caller is refused, and the live claim is left exactly as it was."""
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     before = _row(queue, pool.record_store.CLAIMED, KEY)
 
     with pytest.raises(pool.PoolContractError) as refusal:
@@ -130,7 +132,7 @@ def test_a_stale_mover_republication_does_not_queue_a_second_run(
     """
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     claimed = _row(queue, pool.record_store.CLAIMED, KEY)
 
     monkeypatch.setattr(RecordStore, "mover",
@@ -155,7 +157,7 @@ def test_the_key_is_publishable_again_once_the_claim_has_concluded(
     """The refusal is about liveness, not about the key."""
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     queue.finish(KEY, status="executed")
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1}, recompute=True, refuse_if_live=True)
@@ -168,7 +170,7 @@ def test_a_live_cancellation_is_still_superseded_by_a_resubmission(
     """A marker means the submission is the replacement it asked for."""
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     queue.withdraw(KEY, signal_child=False)
     assert queue.live_withdrawal(KEY) is not None
 
@@ -193,7 +195,7 @@ def test_a_handoff_that_names_its_claim_is_not_judged_as_a_duplicate(
     """
 
     ActionRows(queue).publish(KEY, resources={'cpu': 1})
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None
 
     with pytest.raises(pool.PoolContractError) as refusal:
@@ -225,7 +227,7 @@ def test_a_duplicate_submission_keeps_the_first_generation(
 
     # What the first client was waiting for: the one run's ending, carrying the
     # generation it was given at submission time.
-    assert queue.claim(capacity=simulated_capacity({"cpu": 4})) is not None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4}))) is not None
     queue.finish(KEY, status="executed")
 
     landed, _ = submit_core.action_wait.outcome_poll(queue, KEY, first)

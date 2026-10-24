@@ -17,6 +17,8 @@ expectation pass.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import hashlib
@@ -109,13 +111,13 @@ def build(base: Path, *, host: str = "fixture-box") -> Fleet:
     # each state.
     queue.publish(action_key=DONE_KEY, tags=["x86"], priority=-10,
                   resources={"cpu": 2, "mem_gb": 4}, max_attempts=2, **common)
-    queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
+    queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     queue.finish(DONE_KEY, status="executed",
                  detail={"returncode": 0, "elapsed_s": 1.5, "status": "executed",
                          "stdout": STDOUT, "stderr": STDERR})
     queue.publish(action_key=CLAIMED_KEY, tags=["x86"], priority=0,
                   resources={"cpu": 1, "mem_gb": 2}, **common)
-    queue.claim(tags=["x86"], capacity=simulated_capacity({"cpu": 8, "mem_gb": 16}))
+    queue.claim(tags=["x86"], **simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})))
     queue.publish(action_key=READY_KEY, tags=["gb10"], priority=5,
                   resources={"cpu": 3, "mem_gb": 6}, **common)
     _write_manifest_and_receipt(fleet)

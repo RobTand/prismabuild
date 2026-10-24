@@ -30,6 +30,8 @@ under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import hashlib
@@ -143,7 +145,7 @@ def _claim(queue: pool.PoolQueue, key: str, digest: str,
                    "manifest_sha256": digest, "manifest_bytes": size,
                    "range_start_bytes": 0, "range_end_bytes": size},
         max_attempts=1, retry_safe=False)
-    claimed = queue.claim(owner=WORKER, capacity=simulated_capacity(dict(HOST_CAP)), tags=[tag])
+    claimed = queue.claim(owner=WORKER, **simulated_admission(queue, simulated_capacity(dict(HOST_CAP))), tags=[tag])
     assert claimed is not None and claimed["action_key"] == key, claimed
 
 

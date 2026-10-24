@@ -1,5 +1,7 @@
 """CPU bookkeeping must not put a remote writer under host admission."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from prismabuild import census as fleet_census
 import pbstatus
@@ -168,7 +170,7 @@ def test_publisher_launch_failure_does_not_override_claim_result(tmp_path, monke
     key = 'a' * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py', resources={'cpu': 1})
-    claimed = queue.claim(capacity=simulated_capacity({'cpu': 1}), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({'cpu': 1})), cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed['action_key'] == key
     assert queue.ledger().held_keys() == [key]
 

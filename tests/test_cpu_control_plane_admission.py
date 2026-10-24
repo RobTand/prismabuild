@@ -1,5 +1,7 @@
 """#1210: real private token ledger, scripted kernel samples, no live stores."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import time
 
@@ -29,7 +31,7 @@ def test_23_small_actions_pass_busy_first_free_cpu(tmp_path, monkeypatch):
         key = f'{i + 1:064x}'
         q.publish(action_key=key, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
                   worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
-        claim = q.claim(capacity=simulated_capacity({'cpu': 80, 'mem_gb': 96}), cpu_tiers=tiers, adaptive_cpu=True,
+        claim = q.claim(**simulated_admission(q, simulated_capacity({'cpu': 80, 'mem_gb': 96})), cpu_tiers=tiers, adaptive_cpu=True,
             cpu_sampler=cpu_sampler)
         assert claim is not None, f'one busy free CPU stranded action {i}'
         allocations += claim['cpu_allocation']['preferred']
@@ -96,7 +98,7 @@ def test_control_accounting_preserves_remaining_foreign_work(tmp_path, monkeypat
     cpu_sampler = lambda: observed
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
-    claim = q.claim(capacity=simulated_capacity({'cpu': 2, 'mem_gb': 2}),
+    claim = q.claim(**simulated_admission(q, simulated_capacity({'cpu': 2, 'mem_gb': 2})),
                     cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True,
                     cpu_sampler=cpu_sampler)
     if expected is None:
@@ -154,7 +156,7 @@ def test_skip_busy_uses_ordinal_mapping_and_preferred_tier(tmp_path, monkeypatch
     cpu_sampler = lambda: sample([8, 10, 2, 4], busy)
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': 1, 'mem_gb': 1})
-    claim = q.claim(capacity=simulated_capacity({'cpu': 4, 'mem_gb': 1}), cpu_tiers=tiers, adaptive_cpu=True,
+    claim = q.claim(**simulated_admission(q, simulated_capacity({'cpu': 4, 'mem_gb': 1})), cpu_tiers=tiers, adaptive_cpu=True,
         cpu_sampler=cpu_sampler)
     if expected is None:
         assert claim is None
@@ -173,7 +175,7 @@ def test_control_attribution_never_discounts_raw_saturation_or_isolation(tmp_pat
     cpu_sampler = lambda: observed
     q.publish(action_key='a' * 64, cas_root=str(tmp_path / 'cas'), checkout_root=str(tmp_path),
               worker_script='worker.py', resources={'cpu': need, 'mem_gb': 1})
-    assert q.claim(capacity=simulated_capacity({'cpu': 2, 'mem_gb': 1}),
+    assert q.claim(**simulated_admission(q, simulated_capacity({'cpu': 2, 'mem_gb': 1})),
                    cpu_tiers={'preferred': [11, 12], 'fallback': []}, adaptive_cpu=True,
                    cpu_sampler=cpu_sampler) is None
 

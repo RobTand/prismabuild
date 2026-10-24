@@ -1,6 +1,8 @@
 """Retained claims and immutable decisions survive interrupted supersession."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import errno
@@ -23,7 +25,7 @@ from test_publication_supersession import _assert_superseded, _decision_path, _r
 
 def _collision(queue: pool.PoolQueue, clock: list[float]):
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     clock[0] += 1
     _publish(queue)

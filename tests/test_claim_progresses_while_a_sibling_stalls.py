@@ -33,6 +33,8 @@ Issue #351.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import fcntl
@@ -84,7 +86,7 @@ def _pin_sibling(queue):
 
 
 def _claim(queue, *, cpu_sampler=_idle_sample):
-    return queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
+    return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _lock_path(queue):
@@ -434,7 +436,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     _pin_sibling(rig)
 
     def claim(queue):
-        return queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=TIERS,
+        return queue.claim(**simulated_admission(queue, simulated_capacity(capacity)), cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=True,
                            tags=[pool.socket.gethostname()], cpu_sampler=_idle_sample)
 
@@ -557,7 +559,7 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     monkeypatch.setattr(adaptive_cpu, 'read_json', paused_read)
 
     def claim(queue):
-        return queue.claim(capacity=simulated_capacity(capacity), cpu_tiers=TIERS,
+        return queue.claim(**simulated_admission(queue, simulated_capacity(capacity)), cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=gpu,
                            tags=[pool.socket.gethostname()],
                            gpu_sampler=gpu_sampler,
@@ -677,12 +679,12 @@ def test_empty_adaptive_poll_leaves_capacity_and_active_holders_untouched(rig, m
     capacity, held = ledger.capacity(), ledger.held()
     with monkeypatch.context() as patch:
         patch.setattr(rig, 'ready_items', lambda: [])
-        assert rig.claim(capacity=simulated_capacity({'cpu': 1, 'mem_gb': 4}), cpu_tiers=TIERS,
+        assert rig.claim(**simulated_admission(rig, simulated_capacity({'cpu': 1, 'mem_gb': 4})), cpu_tiers=TIERS,
                          adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity() == capacity, 'empty discovery rewrote capacity'
     assert ledger.held() == held
     # The lower offer still applies when this loop actually sees a candidate.
-    assert rig.claim(capacity=simulated_capacity({'cpu': 1, 'mem_gb': 4}), cpu_tiers=TIERS,
+    assert rig.claim(**simulated_admission(rig, simulated_capacity({'cpu': 1, 'mem_gb': 4})), cpu_tiers=TIERS,
                      adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity()['cpu'] == 1
     assert ledger.held() == held

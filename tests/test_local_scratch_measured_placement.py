@@ -18,6 +18,8 @@ receipt is separate from the synthetic inner queue's durable claim evidence.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
@@ -217,7 +219,7 @@ class ScratchFleet:
 
     def claim(self, host, *, gpu_sampler=None):
         self.host = host
-        return self.queue.claim(owner=f"worker-{host}", capacity=simulated_capacity(CAPACITY), cpu_tiers=self.tiers,
+        return self.queue.claim(owner=f"worker-{host}", **simulated_admission(self.queue, simulated_capacity(CAPACITY)), cpu_tiers=self.tiers,
                                 adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY],
                                 cpu_sampler=self.cpu_sample,
                                 gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
@@ -1068,7 +1070,7 @@ def test_local_token_shortage_still_reaches_real_background_preemption(fleet, op
     fleet.queue.finish(fleet.key, status="executed", detail={})
 
 
-def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdict(fleet):
+def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdict(fleet, monkeypatch):
     fleet.publish()
     a = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     fleet.gpu_fault = "foreign"
@@ -1097,9 +1099,16 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
         replacements.append(b)
         return True
 
-    claimed = fleet.queue.claim(owner="generation-race-control", capacity=simulated_capacity(CAPACITY),
+    original_commit = fleet.queue._rename_and_commit_claim
+
+    def publish_then_commit(tiers, scan):
+        reentrant_publication_gate()
+        return original_commit(tiers, scan)
+
+    monkeypatch.setattr(fleet.queue, "_rename_and_commit_claim", publish_then_commit)
+    claimed = fleet.queue.claim(owner="generation-race-control", **simulated_admission(fleet.queue, simulated_capacity(CAPACITY)),
                                 cpu_tiers=fleet.tiers, adaptive_cpu=True, has_gpu=True,
-                                tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate,
+                                tags=["gb10", CAPABILITY],
                                 cpu_sampler=fleet.cpu_sample,
                                 gpu_sampler=fleet.gpu_sample)
     assert replacements, "fixture did not reach the actual pre-rename gate"

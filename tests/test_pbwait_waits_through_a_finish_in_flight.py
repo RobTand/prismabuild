@@ -17,6 +17,8 @@ it then reads that generation's ending from the immutable attempt archive
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 from pathlib import Path
@@ -65,7 +67,7 @@ def test_a_wait_inside_the_finish_window_reports_the_archived_ending(
     monkeypatch.setattr(pool.PoolQueue, "_release_reservation", release_then_observe)
     served = queue.serve_once(
         tags=["sparky"], python=sys.executable, timeout_s=60.0,
-        capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
+        **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})),
     )
     assert served is not None and served["status"] == "executed", served
 

@@ -20,6 +20,8 @@ nothing else is.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import pbrun
 from prismabuild import submission as submit_core
@@ -174,7 +176,7 @@ def _stage_the_lead(fleet) -> dict[str, object]:
     _cycle(fleet)
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
@@ -213,7 +215,7 @@ def test_a_mover_the_loop_published_keeps_its_tokens_when_it_finishes(fleet) -> 
 
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
@@ -241,7 +243,7 @@ def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
     _cycle(fleet)
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
@@ -265,7 +267,7 @@ def test_the_consumer_reads_that_pin_as_a_resident_lead(fleet) -> None:
             "offset": 0, "sha256": "a" * 64}}})
     _cycle(fleet)
 
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"])
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
 
@@ -292,7 +294,7 @@ def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
     _cycle(fleet)
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready, "the filing's lead was not published for a bare row"
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
@@ -416,7 +418,7 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
     _cycle(fleet)
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": False,
@@ -455,7 +457,7 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
     _cycle(fleet)
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    claim = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    claim = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert claim is not None and claim["action_key"] == mover
     queue.record_move(mover, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": False,
@@ -470,7 +472,7 @@ def test_a_lead_that_is_claimed_right_now_is_not_pinned(fleet) -> None:
     _cycle(fleet)                                   # republished: unpinned, terminal
     lead_ready = [r for r in queue.ready_items() if r.get("action_key") == mover]
     assert lead_ready
-    again = queue.claim(capacity=simulated_capacity({"cpu": 4, "mem_gb": 8}), tags=["dl380g10"], ready=lead_ready)
+    again = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"], ready=lead_ready)
     assert again is not None and again["action_key"] == mover
     assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 

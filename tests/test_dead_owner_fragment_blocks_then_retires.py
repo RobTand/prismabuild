@@ -16,6 +16,8 @@ hashed beyond the small fixture bytes.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -68,7 +70,7 @@ def _publish(queue: pool.PoolQueue, key: str, **kw: object) -> dict:
         resources=kw.pop('resources', {'cpu': 1}),
         **kw,
     )
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == key
     return claimed
 

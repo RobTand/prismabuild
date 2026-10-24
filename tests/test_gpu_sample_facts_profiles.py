@@ -1,5 +1,7 @@
 """Consumer policy differences on synthetic observations and real queue holds."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -26,7 +28,7 @@ def _publish_cpu(queue):
 
 
 def _claim_here(queue, capacity, *, cpu_sampler, gpu_sampler):
-    return queue.claim(tags=[pool.socket.gethostname()], capacity=simulated_capacity(capacity),
+    return queue.claim(tags=[pool.socket.gethostname()], **simulated_admission(queue, simulated_capacity(capacity)),
                        cpu_tiers={'preferred': list(range(8)), 'fallback': []},
                        adaptive_cpu=True, has_gpu=True, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
 

@@ -28,6 +28,8 @@ CPU work that fits beside it is still admitted, and nothing is evicted.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows, Clock as FleetClock
 
@@ -149,10 +151,10 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 def _claimer(q: pool.PoolQueue, *, adaptive: bool, cpu_sampler):
     def claim() -> str | None:
-        item = (q.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+        item = (q.claim(has_gpu=True, **simulated_admission(q, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                         tags=[socket.gethostname(), *PROGRESS_CAPABILITIES],
                         cpu_sampler=cpu_sampler, gpu_sampler=idle_gpu_sample)
-                if adaptive else q.claim(has_gpu=True, capacity=simulated_capacity(CAPACITY),
+                if adaptive else q.claim(has_gpu=True, **simulated_admission(q, simulated_capacity(CAPACITY)),
                     tags=[socket.gethostname(), *PROGRESS_CAPABILITIES], cpu_sampler=cpu_sampler))
         return None if item is None else str(item["action_key"])
     return claim
@@ -403,7 +405,7 @@ def test_cpu_work_is_not_held_for_a_gpu_row_that_cannot_take_the_box(
 
     capacity = dict(CAPACITY, mem_gb=120)
     claim = lambda: (lambda item: None if item is None else item["action_key"])(  # noqa: E731
-        queue.claim(has_gpu=True, capacity=simulated_capacity(capacity),
+        queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity(capacity)),
                     tags=["gb10", socket.gethostname(), *PROGRESS_CAPABILITIES]))
     if case == "gpu-held":
         holder_key, cas_root, checkout = _sealed(tmp_path, "gpu-holder", progress=True)

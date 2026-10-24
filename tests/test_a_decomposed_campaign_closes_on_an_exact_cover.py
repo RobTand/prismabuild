@@ -10,6 +10,8 @@ appears only when the cover closes.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from submission_support import patch_store
 
@@ -123,7 +125,7 @@ def _serve(queue: pool.PoolQueue, *, limit: int | None = None) -> int:
         # that offers only ``sparky`` claims none of them (#1263).
         one = queue.serve_once(
             tags=["sparky", contracts.INTERPRETER_TAG], python=sys.executable, timeout_s=120.0,
-            capacity=simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1}),
+            **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 16, "gpu": 1})),
         )
         if one is None:
             break

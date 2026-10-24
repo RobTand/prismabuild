@@ -18,6 +18,8 @@ reads, writes or touches the live queue.
 
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 from fleet_world import ActionRows
 
@@ -59,7 +61,7 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None and "residency" not in item
 
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4})))
     assert claimed is not None and claimed["action_key"] == KEY
     # The two fields this change can add are both absent, so a reader of the
     # record cannot tell the branch is in the code.
@@ -123,7 +125,7 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
     )
     claimed = queue.claim(
         owner="sparky-worker-0",
-        capacity=simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 121}),
+        **simulated_admission(queue, simulated_capacity({"cpu": 20, "gpu": 1, "mem_gb": 121})),
         tags=CAMPAIGN_TAGS,
         has_gpu=True,
     )
@@ -203,7 +205,7 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1, 'mem_gb': 2},
     )
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 2, "mem_gb": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 2, "mem_gb": 4})))
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
 
@@ -232,7 +234,7 @@ def test_without_the_containment_that_finish_loses_the_outcome(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
     _uncontain(monkeypatch)
@@ -261,7 +263,7 @@ def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(
         worker_script=queue.root / 'worker.py',
         resources={'cpu': 1},
     )
-    claimed = queue.claim(owner="worker", capacity=simulated_capacity({"cpu": 4}))
+    claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
 

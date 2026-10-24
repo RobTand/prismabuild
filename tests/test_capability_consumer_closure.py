@@ -1,5 +1,7 @@
 """Capability decisions through publication, advisory placement and live claims."""
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 import hashlib
 import json
@@ -23,7 +25,7 @@ def test_direct_gpu_publication_requires_a_gpu_host_without_rewriting_the_row(tm
     assert row["resources"] == {"cpu": 1, "gpu": 1}
     assert queue.placeable_hosts(row) == []
 
-    assert queue.claim(has_gpu=False, capacity=simulated_capacity(capacity)) is None
+    assert queue.claim(has_gpu=False, **simulated_admission(queue, simulated_capacity(capacity))) is None
 
     assert path.read_bytes() == before
     denials = queue.latest_denials({"a" * 64})["a" * 64]
@@ -35,7 +37,7 @@ def test_direct_gpu_publication_requires_a_gpu_host_without_rewriting_the_row(tm
     queue.announce(host="gpu-host", tags=[], has_gpu=True,
                    capacity={"cpu": 2, "gpu": 1, "mem_gb": 2})
     assert queue.placeable_hosts(row) == ["gpu-host"]
-    claimed = queue.claim(has_gpu=True, capacity=simulated_capacity({"cpu": 2, "gpu": 1, "mem_gb": 2}))
+    claimed = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"cpu": 2, "gpu": 1, "mem_gb": 2})))
     assert claimed["action_key"] == "a" * 64
     assert claimed["needs_gpu"] is False
     assert claimed["resources"] == {"cpu": 1, "gpu": 1}
@@ -62,7 +64,7 @@ def test_falsey_nonmapping_declarations_are_refused_before_publication(tmp_path,
 
     queue.publish(action_key="b" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1}, **{field: {}})
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 1}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed["action_key"] == "b" * 64
     queue.finish("b" * 64, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held_keys() == []
@@ -153,7 +155,7 @@ def test_combined_offer_and_claim_use_current_evidence_at_each_capability_gate(t
         references.clear()
 
     assert queue.placeable_hosts(json.loads(before)) == ["observed"]
-    claimed = queue.claim(tags=tags, capacity=simulated_capacity({"cpu": 1}), observed_images=references)
+    claimed = queue.claim(tags=tags, **simulated_admission(queue, simulated_capacity({"cpu": 1})), observed_images=references)
 
     assert (claimed is not None) is (fault is None)
     if reason is not None:
@@ -232,7 +234,7 @@ def test_falsey_malformed_images_cannot_cross_actual_offer_or_claim_ingress(tmp_
 
     with pytest.raises(ValueError, match="container_images"):
         queue.placeable_hosts(row)
-    assert queue.claim(capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
 
     assert queue.latest_denials({"a" * 64})["a" * 64][0]["reason"] == "malformed_container_images"
     assert path.read_bytes() == before
@@ -243,7 +245,7 @@ def test_falsey_malformed_images_cannot_cross_actual_offer_or_claim_ingress(tmp_
     row["container_images"] = []
     path.write_text(json.dumps(row))
     assert queue.placeable_hosts(row) == ["observer"]
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 1}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed["action_key"] == "a" * 64
     queue.finish("a" * 64, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held_keys() == []
@@ -269,7 +271,7 @@ def test_a_code_tag_without_its_declaration_cannot_authorize_a_claim(tmp_path, t
     path.write_text(json.dumps(row))
     before = path.read_bytes()
 
-    assert queue.claim(tags=[tag], capacity=simulated_capacity({"cpu": 1})) is None
+    assert queue.claim(tags=[tag], **simulated_admission(queue, simulated_capacity({"cpu": 1}))) is None
     assert queue.placeable_hosts(row) == []
 
     assert queue.latest_denials({"a" * 64})["a" * 64][0]["reason"] == reason
@@ -281,7 +283,7 @@ def test_a_code_tag_without_its_declaration_cannot_authorize_a_claim(tmp_path, t
     row["tags"] = []
     path.write_text(json.dumps(row))
     assert queue.placeable_hosts(row) == ["advertiser"]
-    claimed = queue.claim(capacity=simulated_capacity({"cpu": 1}))
+    claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 1})))
     assert claimed["action_key"] == "a" * 64
     queue.finish("a" * 64, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held_keys() == []

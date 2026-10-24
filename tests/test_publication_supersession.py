@@ -1,6 +1,8 @@
 """A superseded exact publication ends without adopting successor execution."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import json
@@ -64,7 +66,7 @@ def test_old_wait_ends_before_and_after_exact_successor_execution(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     original_generation = original["published_unix"]
     clock[0] += 1
@@ -77,7 +79,7 @@ def test_old_wait_ends_before_and_after_exact_successor_execution(
     assert pbcampaign._pool_slot_occupied(queue, KEY) is True
     _assert_superseded(queue, original_generation, successor_generation)
 
-    successor = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
+    successor = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert successor is not None
     assert successor["published_unix"] == successor_generation
     queue.finish(KEY, status="executed", detail={"stdout": "successor-only\n"},
@@ -103,7 +105,7 @@ def test_same_generation_retry_remains_the_original_wait(
     queue: pool.PoolQueue, clock: list[float], ending: str,
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     generation = original["published_unix"]
 
@@ -112,7 +114,7 @@ def test_same_generation_retry_remains_the_original_wait(
     assert not _decision_path(queue, generation).exists()
     assert _ready(queue)["published_unix"] == generation
     assert submit_core.action_wait.outcome_poll(queue, KEY, generation) == (None, generation)
-    retry = queue.claim(owner="retry", capacity=simulated_capacity(DEMAND))
+    retry = queue.claim(owner="retry", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert retry is not None
     queue.finish(KEY, status="executed", claim_snapshot=retry)
     landed, watched = submit_core.action_wait.outcome_poll(queue, KEY, generation)
@@ -126,13 +128,13 @@ def test_an_original_execution_ending_remains_its_own_exact_answer(
     queue: pool.PoolQueue, clock: list[float],
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     queue.finish(KEY, status="executed", detail={"stdout": "original-only\n"},
                  claim_snapshot=original)
     clock[0] += 1
     _publish(queue)
-    successor = queue.claim(owner="successor", capacity=simulated_capacity(DEMAND))
+    successor = queue.claim(owner="successor", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert successor is not None
     queue.finish(KEY, status="executed", detail={"stdout": "successor-only\n"},
                  claim_snapshot=successor)
@@ -151,7 +153,7 @@ def test_exact_withdrawal_still_ends_the_original_wait_after_republication(
     queue: pool.PoolQueue, clock: list[float],
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     queue.withdraw(KEY, reason="operator decision", signal_child=False)
     clock[0] += 1
@@ -168,7 +170,7 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
     queue: pool.PoolQueue, clock: list[float],
 ) -> None:
     _publish(queue)
-    legacy = queue.claim(owner="legacy", capacity=simulated_capacity(DEMAND))
+    legacy = queue.claim(owner="legacy", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert legacy is not None
     queue.finish(KEY, status="executed", claim_snapshot=legacy)
     attempt = queue.records.attempt_path(legacy, 1)
@@ -184,7 +186,7 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
                               generation=legacy["published_unix"] + 100) == 0
     clock[0] += 1
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     clock[0] += 1
     _publish(queue)
@@ -207,7 +209,7 @@ def test_uncertain_successor_does_not_make_an_exact_wait_follow_another_row(
     queue: pool.PoolQueue, clock: list[float], damage: str,
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     generation = original["published_unix"]
     clock[0] += 1
@@ -265,11 +267,11 @@ def test_launcher_exit_seventy_six_cannot_impersonate_publication_supersession(
     queue: pool.PoolQueue, clock: list[float], capsys: pytest.CaptureFixture[str],
 ) -> None:
     _publish(queue)
-    original = queue.claim(owner="original", capacity=simulated_capacity(DEMAND))
+    original = queue.claim(owner="original", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert original is not None
     queue.finish(KEY, status="failed", detail={"returncode": 76},
                  claim_snapshot=original)
-    retry = queue.claim(owner="retry", capacity=simulated_capacity(DEMAND))
+    retry = queue.claim(owner="retry", **simulated_admission(queue, simulated_capacity(DEMAND)))
     assert retry is not None
     queue.finish(KEY, status="failed", detail={"returncode": 76},
                  claim_snapshot=retry)

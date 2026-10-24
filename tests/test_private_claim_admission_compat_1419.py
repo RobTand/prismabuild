@@ -48,7 +48,7 @@ def test_private_parameters_observe_the_actual_ledger_and_keep_admission(tmp_pat
     queue.publish(action_key=key, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={"cpu": 1, "mem_gb": 1})
-    assert queue.claim(**simulated_claim_parameters(parameters), cpu_sampler=cpu_sampler)["action_key"] == key
+    assert queue.claim(**simulated_claim_parameters(parameters, queue=queue), cpu_sampler=cpu_sampler)["action_key"] == key
     assert queue.ledger().holder_tokens(key) == {"cpu": 1, "mem_gb": 1}
     queue.finish(key, status="executed")
     assert queue.ledger().held_keys() == []

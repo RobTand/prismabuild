@@ -13,6 +13,8 @@ real claim path: per-record latency is injected into the census child's reads
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 from admitted_queue_fixture import simulated_capacity
 
 import fcntl
@@ -64,7 +66,7 @@ def _slow_reads(monkeypatch, seconds):
 
 def _claim(queue, key, *, cpu_sampler, gpu_sampler):
     candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
-    return queue.claim(capacity=simulated_capacity(CAPACITY), cpu_tiers=TIERS, adaptive_cpu=True,
+    return queue.claim(**simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=TIERS, adaptive_cpu=True,
                        has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate],
                        cpu_sampler=cpu_sampler,
                        gpu_sampler=gpu_sampler)
