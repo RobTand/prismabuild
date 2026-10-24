@@ -1,33 +1,44 @@
-"""D-19: tests validate correctness, without depending on the host's clock.
+"""D-19 guard mechanics, amended by the PB lead on 2026-10-24 (#1771).
 
-Scan every Python file in tests/, including conftest and support modules.
-The subject is imported time.sleep except literal 0 or 0.0, positional or
-timed .wait, timed or numeric-literal .join, and timed .get or .get(bool, x).
-The allowlist counts each kind per path::qualname, never per line number.
-It must match exactly in both directions. Growing it is reviewer-blocking
-unless the PB lead approves, as with test_duplication_baseline.py. This test
-reads no Git history; allowlist growth is a visible diff for review.
+Sleep sites are purely syntactic. Every `from time import sleep`, under any
+alias, is a finding, even when unused or followed only by sleep(0). Every
+<m>.sleep attribute whose name <m> occurs in `import time [as <m>]` in the
+file is a finding, except as the func of a Call with one literal numeric zero
+argument and no keywords. Use time.sleep(0) or t.sleep(0) for cooperative
+yields. Module names are collected across the file, conservatively including
+shadowed names. There is no alias-use, binding-order or deferred-call resolver.
+Imports and attribute sites guard lambdas, closures, generators, walrus
+bindings, functools.partial and passing the sleep object as a value.
 
-Only controlled timing that does not wait on the host's real clock may use
-an inline '# pb-timing-ok: <reason>' on the call's starting line. Reviewers
-must check the reason. Empty reasons and pragmas without a subject fail.
-Hang backstops such as join(timeout=60) belong in the allowlist, not pragmas;
-the harness --test-timeout-s already bounds hangs.
+Constant timeouts below 60 seconds are findings on .wait, .join, Queue-shaped
+.get/.put, subprocess.run and imported run aliases, .communicate and
+.settimeout. Numeric constants include signed literals and arithmetic using
++, -, *, /, // and %. Names, calls and other expressions are non-constant
+for this guard. Bounds of 60 seconds or more and None are allowed. Positional
+slots are wait/join/settimeout's first, communicate's second, get's second
+after a bool block flag, and put's third after an item and bool block flag.
+The broad method matching also conservatively catches unrelated objects
+with those same timeout shapes. Ordinary str.join and dict.get are unrelated.
 
-Out of scope and NON-BLOCKING for review: asyncio.sleep and asyncio.wait_for;
-subprocess timeout= and communicate(timeout=); select and poll timeouts;
-time.monotonic deadline loops; elapsed-time assertions; indirect calls such
-as functools.partial(time.sleep, 1) and getattr(time, 'sleep'); and sleeps in
-src/ or tools/ code called by tests. These are explicit policy limits, not
-reasons to reject this guard when a reviewer finds an exotic uncovered form.
+Out of scope: getattr strings (including computed strings), exec, eval,
+importlib tricks, non-constant timeouts, asyncio sleeps/waits, select/poll,
+monotonic deadline loops, elapsed assertions, and sleeps in src/ or tools/.
+Fixtures below assert those limits. The backstop is TrustLadder's test-quality
+checker on every PB pull request, the PB reviewer rules and the five-run flake
+check. See docs/contributing.md's Test quality section for authoring policy.
+
+Only controlled timing may use '# pb-timing-ok: <reason>' on the import,
+attribute or timed call's starting line. Reasons are mandatory; stale pragmas
+fail. Counts use path::qualname kind, never lines or source hashes. Existing
+debt matches exactly both ways. Regeneration may only shrink counts, preserves
+issue links and reads no Git history. Reviewers block allowlist growth.
+The scan reports its runtime through pytest durations; it never asserts it.
 """
 
 import ast
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
 from io import StringIO
-import multiprocessing
-import os
+import operator
 from pathlib import Path, PurePosixPath
 import re
 import tokenize
@@ -35,9 +46,7 @@ from typing import NamedTuple
 import unicodedata
 
 
-TIMING_KINDS = frozenset({"sleep", "wait", "join", "get"})
-TIMING_METHODS = TIMING_KINDS - {"sleep"}
-TIMING_WORDS = re.compile(r"\b(?:" + "|".join(sorted(TIMING_KINDS)) + r")\b")
+TIMING_KINDS = frozenset({"sleep", "wait", "join", "get", "put", "communicate", "run", "settimeout"})
 
 
 class TimingIdentity(NamedTuple):
@@ -52,226 +61,139 @@ class TimingScan(NamedTuple):
     skipped: int
 
 
-class _TimingScope:
-    def __init__(self, qualname, parent=None, is_class=False):
-        self.qualname = qualname
-        self.parent = parent
-        self.is_class = is_class
-        self.imports = {}
-        self.bound = set()
-        self.calls = []
-
-    def resolve(self, name):
-        if name in self.bound:
-            return None
-        if name in self.imports:
-            return self.imports[name]
-        return self.parent.resolve(name) if self.parent else None
-
-
-class _TimingScopes:
-    """Collect imports and candidate calls without importing test modules."""
-
-    def __init__(self):
-        self.scopes = [_TimingScope("<module>")]
-
-    def _nested(self, node, outer):
-        name = getattr(node, "name", None)
-        if name:
-            outer.bound.add(name)
-        qualname = outer.qualname
-        if name:
-            qualname = name if outer.qualname == "<module>" else f"{outer.qualname}.{name}"
-        scope = _TimingScope(qualname, outer.parent if outer.is_class else outer,
-                             isinstance(node, ast.ClassDef))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            args = node.args
-            scope.bound.update(arg.arg for arg in (
-                args.posonlyargs + args.args + args.kwonlyargs
-                + ([args.vararg] if args.vararg else [])
-                + ([args.kwarg] if args.kwarg else [])))
-        self.scopes.append(scope)
-        return scope
-
-    def visit(self, tree, relevant_lines=None):
-        # Avoid NodeVisitor's per-node dispatch and visiting operator/context
-        # leaves. On the full tests tree those costs dwarf classification.
-        work = [(self.scopes[0], [tree])]
-        scope_types = {ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda}
-        value_types = {ast.Attribute, ast.Expr, ast.keyword}
-        sequence_types = {ast.List, ast.Tuple, ast.Set}
-        while work:
-            scope, pending = work.pop()
-            while pending:
-                node = pending.pop()
-                if node is None or isinstance(node, str):
-                    continue
-                kind = type(node)
-                if kind is ast.Name:
-                    if isinstance(node.ctx, (ast.Store, ast.Del)):
-                        scope.bound.add(node.id)
-                    continue
-                if kind is ast.Constant:
-                    continue
-                if relevant_lines is not None and kind not in scope_types:
-                    start = getattr(node, "lineno", None)
-                    if start and relevant_lines[node.end_lineno] == relevant_lines[start - 1]:
-                        continue
-                if kind in scope_types:
-                    child = self._nested(node, scope)
-                    work.append((child, list(node.body) if isinstance(node.body, list) else [node.body]))
-                    # Defaults, annotations, decorators and bases use the outer scope.
-                    fields = (field for field in node._fields if field != "body")
-                elif kind is ast.Import:
-                    for alias in node.names:
-                        scope.imports[alias.asname or alias.name.split(".")[0]] = (
-                            "time" if alias.name == "time" else None)
-                    continue
-                elif kind is ast.ImportFrom:
-                    for alias in node.names:
-                        scope.imports[alias.asname or alias.name] = (
-                            "time.sleep" if node.level == 0 and node.module == "time"
-                            and alias.name == "sleep" else None)
-                    continue
-                elif kind is ast.Call:
-                    if isinstance(node.func, ast.Name) or (
-                            isinstance(node.func, ast.Attribute)
-                            and node.func.attr in TIMING_KINDS):
-                        scope.calls.append(node)
-                    pending.append(node.func)
-                    pending.extend(node.args)
-                    pending.extend(node.keywords)
-                    continue
-                elif kind in value_types:
-                    pending.append(node.value)
-                    continue
-                elif kind in sequence_types:
-                    pending.extend(node.elts)
-                    continue
-                else:
-                    fields = node._fields
-                for field in fields:
-                    value = getattr(node, field)
-                    if isinstance(value, list):
-                        pending.extend(reversed(value))
-                    elif isinstance(value, ast.AST):
-                        pending.append(value)
-
-
-# These lexical cues overapproximate the subject immediately below. Imports of
-# time.sleep necessarily contain "sleep", including every imported alias; all
-# timed methods contain "timeout". Positional subjects need their method prefix
-# and, for join/get, the start of a literal. Comments, parentheses and signs may
-# precede that literal. False positives are harmless: only the AST makes findings.
-_TIMING_MARKERS = ("sleep", "timeout", "pb-timing-ok")
-_TRIVIA = r"(?:\s|#[^\n]*(?:\n|$))*"
-_ARGUMENT_PREFIX = r"(?:\s|#[^\n]*(?:\n|$)|[()+-])*"
-_NUMBER_PREFIX = r"(?:[0-9]|\.[0-9])"
-# Closing parentheses may separate the method from its call: (event.wait)(1).
-_METHOD_PREFIXES = {kind: rf"\.{_TRIVIA}{kind}(?:{_TRIVIA}\))*{_TRIVIA}\(" for kind in TIMING_METHODS}
-_POSITIONAL_SUBJECTS = re.compile("|".join((
-    _METHOD_PREFIXES["wait"],
-    _METHOD_PREFIXES["join"] + _ARGUMENT_PREFIX + _NUMBER_PREFIX,
-    _METHOD_PREFIXES["get"] + _ARGUMENT_PREFIX + r"(?:True|False)\b",
-)))
-_JOIN_PREFIX = re.compile(_METHOD_PREFIXES["join"])
-_LATER_NUMBER = re.compile("," + _ARGUMENT_PREFIX + _NUMBER_PREFIX)
-
-
+# The prefilter only skips files lacking all subject spellings after Python's
+# identifier normalization. It does not decide whether a finding exists.
 def timing_source_needs_ast(source):
-    """Keep every possible subject or pragma; skipped files have zero findings."""
-    if any(marker in source for marker in _TIMING_MARKERS):
+    if "pb-timing-ok" in source:
         return True
-    if not source.isascii():
-        source = unicodedata.normalize("NFKC", source)
-    source = source.replace("\\\r\n", "").replace("\\\n", "")
-    if any(marker in source for marker in _TIMING_MARKERS):
-        return True
-    if _POSITIONAL_SUBJECTS.search(source):
-        return True
-    # The classifier also accepts a numeric literal in a later join position.
-    # This deliberately broad fallback preserves that subject without parsing.
-    return bool(_JOIN_PREFIX.search(source) and _LATER_NUMBER.search(source))
+    source = unicodedata.normalize("NFKC", source).replace("\\\n", "").replace("\\\r\n", "")
+    return any(word in source for word in (*TIMING_KINDS, "timeout", "pb-timing-ok"))
 
 
-def _timing_call_kind(call, scope):
-    callee = call.func
-    imported_sleep = (
-        isinstance(callee, ast.Name) and scope.resolve(callee.id) == "time.sleep"
-        or isinstance(callee, ast.Attribute) and callee.attr == "sleep"
-        and isinstance(callee.value, ast.Name) and scope.resolve(callee.value.id) == "time")
-    if imported_sleep:
-        duration = next((kw.value for kw in call.keywords if kw.arg == "secs"),
-                        call.args[0] if call.args else None)
-        zero = (isinstance(duration, ast.Constant)
-                and type(duration.value) in {int, float} and duration.value == 0)
-        return None if zero else "sleep"
-    if not isinstance(callee, ast.Attribute) or callee.attr not in TIMING_METHODS:
-        return None
-    timed = any(kw.arg == "timeout" and not (
-        isinstance(kw.value, ast.Constant) and kw.value.value is None) for kw in call.keywords)
-    if timed:
-        return callee.attr
-    if callee.attr == "wait" and call.args:
-        return "wait"
-    if callee.attr == "join":
-        for arg in call.args:
-            if isinstance(arg, ast.UnaryOp) and isinstance(arg.op, (ast.USub, ast.UAdd)):
-                arg = arg.operand
-            if isinstance(arg, ast.Constant) and type(arg.value) in {int, float, complex}:
-                return "join"
-    if callee.attr == "get" and len(call.args) == 2:
-        first = call.args[0]
-        if isinstance(first, ast.Constant) and type(first.value) is bool:
-            return "get"
+def _constant_timeout(node):
+    """Numeric literals and arithmetic only; names and calls are dynamic."""
+    if isinstance(node, ast.Constant) and type(node.value) in {int, float, bool}:
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _constant_timeout(node.operand)
+        if value is not None:
+            return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp) and type(node.op) in _TIMEOUT_ARITHMETIC:
+        left, right = _constant_timeout(node.left), _constant_timeout(node.right)
+        if left is not None and right is not None:
+            try:
+                return _TIMEOUT_ARITHMETIC[type(node.op)](left, right)
+            except ArithmeticError:
+                pass
     return None
 
 
-def _timing_import_names(tree):
-    """Find candidate alias spellings through statement bodies, not expressions."""
-    names = set()
-    pending = [tree]
-    containers = (ast.stmt, ast.ExceptHandler, ast.match_case)
-    while pending:
-        node = pending.pop()
-        if isinstance(node, ast.Import):
-            names.update(alias.asname or alias.name for alias in node.names if alias.name == "time")
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "time":
-            names.update(alias.asname or alias.name for alias in node.names if alias.name == "sleep")
-        for field in node._fields:
-            value = getattr(node, field)
-            if isinstance(value, list):
-                pending.extend(child for child in value if isinstance(child, containers))
-            elif isinstance(value, containers):
-                pending.append(value)
-    return names
+_TIMEOUT_ARITHMETIC = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+}
+
+
+def _timing_call_kind(call, subprocess_modules, subprocess_runs):
+    callee = call.func
+    if isinstance(callee, ast.Name) and callee.id in subprocess_runs:
+        method = "run"
+    elif isinstance(callee, ast.Attribute):
+        method = callee.attr
+        if method == "run" and not (
+            isinstance(callee.value, ast.Name) and callee.value.id in subprocess_modules
+        ):
+            return None
+    else:
+        return None
+    if method not in TIMING_KINDS - {"sleep"}:
+        return None
+    bounds = [kw.value for kw in call.keywords if kw.arg == "timeout"]
+    # The positional slots are timeout for wait/join/settimeout, after input
+    # for communicate, and after the blocking flag for Queue.get/put.
+    position = {"wait": 0, "join": 0, "settimeout": 0, "communicate": 1}.get(method)
+    if method in {"get", "put"}:
+        blocking = 0 if method == "get" else 1
+        if len(call.args) > blocking and isinstance(call.args[blocking], ast.Constant):
+            if type(call.args[blocking].value) is bool:
+                position = blocking + 1
+    if position is not None and len(call.args) > position:
+        bounds.append(call.args[position])
+    if method == "settimeout":
+        bounds.extend(kw.value for kw in call.keywords if kw.arg == "value")
+    return method if any((value := _constant_timeout(bound)) is not None and value < 60
+                         for bound in bounds) else None
+
+
+class _TimingReferences(ast.NodeVisitor):
+    """Identify syntax sites, without evaluating bindings or deferred code."""
+
+    def __init__(self, tree):
+        self.qualname = "<module>"
+        self.references = []
+        self.time_modules = set()
+        self.subprocess_modules = set()
+        self.subprocess_runs = set()
+        self.zero_callees = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                self.time_modules.update(alias.asname or alias.name for alias in node.names
+                                         if alias.name == "time")
+                self.subprocess_modules.update(alias.asname or alias.name for alias in node.names
+                                               if alias.name == "subprocess")
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "subprocess":
+                self.subprocess_runs.update(alias.asname or alias.name for alias in node.names
+                                            if alias.name == "run")
+            elif (isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords
+                  and isinstance(node.args[0], ast.Constant)
+                  and type(node.args[0].value) in {int, float} and node.args[0].value == 0):
+                self.zero_callees.add(node.func)
+
+    def visit_ImportFrom(self, node):
+        if node.level == 0 and node.module == "time":
+            for alias in node.names:
+                if alias.name == "sleep":
+                    self.references.append((self.qualname, node.lineno, "sleep"))
+
+    def visit_Attribute(self, node):
+        if (node.attr == "sleep" and isinstance(node.value, ast.Name)
+                and node.value.id in self.time_modules and node not in self.zero_callees):
+            self.references.append((self.qualname, node.lineno, "sleep"))
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        kind = _timing_call_kind(node, self.subprocess_modules, self.subprocess_runs)
+        if kind:
+            self.references.append((self.qualname, node.lineno, kind))
+        self.generic_visit(node)
+
+    def _definition(self, node):
+        for field, value in ast.iter_fields(node):
+            if field != "body":
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        self.visit(child)
+        outer = self.qualname
+        self.qualname = node.name if outer == "<module>" else f"{outer}.{node.name}"
+        for child in node.body:
+            self.visit(child)
+        self.qualname = outer
+
+    visit_FunctionDef = _definition
+    visit_AsyncFunctionDef = _definition
+    visit_ClassDef = _definition
 
 
 def scan_timing_source(source, path="tests/snippet.py"):
-    """Return counts by identity, checking actual comment tokens for pragmas."""
+    """Count syntax sites by identity; only actual comment tokens are pragmas."""
     try:
         tree = ast.parse(source, filename=path)
     except SyntaxError as exc:
         raise ValueError(f"{path}:{exc.lineno}: syntax error: {exc.msg}") from exc
-    # Skip walking subtrees whose source cannot
-    # contain a subject method or imported alias spelling. Alias spellings also
-    # keep every binding that could shadow them. Python normalizes identifiers
-    # with NFKC. Non-ASCII aliases and explicit continuations use the full walk.
-    relevant_lines = None
-    if "\\\n" not in source and "\\\r\n" not in source:
-        names = _timing_import_names(tree)
-        if all(name.isascii() for name in names):
-            words = re.compile(r"\b(?:" + "|".join(sorted(TIMING_KINDS | names)) + r")\b") if names else TIMING_WORDS
-            relevant_lines = [0]
-            for line in unicodedata.normalize("NFKC", source).split("\n"):
-                relevant_lines.append(relevant_lines[-1] + bool(words.search(line)))
-    scopes = _TimingScopes()
-    scopes.visit(tree, relevant_lines)
-    calls = [(scope.qualname, call.lineno, kind)
-             for scope in scopes.scopes for call in scope.calls
-             if (kind := _timing_call_kind(call, scope)) is not None]
-    pragmas = {}
-    errors = []
+    visitor = _TimingReferences(tree)
+    visitor.visit(tree)
+    references = visitor.references
+    pragmas, errors = {}, []
     if "pb-timing-ok" in source:
         for token in tokenize.generate_tokens(StringIO(source).readline):
             if token.type != tokenize.COMMENT or not re.match(r"#\s*pb-timing-ok\b", token.string):
@@ -281,43 +203,24 @@ def scan_timing_source(source, path="tests/snippet.py"):
             if not match:
                 errors.append(f"{path}:{line}: pb-timing-ok requires a reason")
             pragmas[line] = match is not None
-        for line in pragmas.keys() - {line for _, line, _ in calls}:
-            errors.append(f"{path}:{line}: stale pb-timing-ok; no in-scope call on this line")
+        for line in pragmas.keys() - {line for _, line, _ in references}:
+            errors.append(f"{path}:{line}: stale pb-timing-ok; no in-scope reference on this line")
     if errors:
         raise ValueError("\n".join(errors))
-    return Counter(TimingIdentity(path, qualname, kind) for qualname, line, kind in calls
+    return Counter(TimingIdentity(path, qualname, kind) for qualname, line, kind in references
                    if not pragmas.get(line))
 
 
-def _scan_timing_chunk(files):
-    counts = Counter()
-    skipped = 0
-    for path, relative in files:
+def scan_timing_tests(repository):
+    counts, files, skipped = Counter(), 0, 0
+    for path in sorted((repository / "tests").rglob("*.py")):
+        files += 1
         source = path.read_text(encoding="utf-8")
         if timing_source_needs_ast(source):
-            counts.update(scan_timing_source(source, relative))
+            counts.update(scan_timing_source(source, path.relative_to(repository).as_posix()))
         else:
             skipped += 1
-    return TimingScan(counts, len(files), skipped)
-
-
-def scan_timing_tests(repository):
-    files = [(path, path.relative_to(repository).as_posix())
-             for path in sorted((repository / "tests").rglob("*.py"))]
-    # The single-process pre-filtered x86 scan still exceeds the budget. Use
-    # at most two assigned CPUs without changing affinity or native threads.
-    workers = min(2, len(os.sched_getaffinity(0)))
-    if len(files) < 32 or workers == 1:
-        return _scan_timing_chunk(files)
-    counts = Counter()
-    skipped = 0
-    chunks = [files[index:index + 32] for index in range(0, len(files), 32)]
-    with ProcessPoolExecutor(max_workers=workers,
-                             mp_context=multiprocessing.get_context("spawn")) as pool:
-        for result in pool.map(_scan_timing_chunk, chunks):
-            counts.update(result.findings)
-            skipped += result.skipped
-    return TimingScan(counts, len(files), skipped)
+    return TimingScan(counts, files, skipped)
 
 
 def parse_timing_allowlist(contents):
@@ -390,17 +293,17 @@ POSITIVE_TIMING_CASES = [
     *[("import time", f"time.sleep({value})", "sleep") for value in (
         "-1", "-0.1", "+0", "-0.0", "False", "None", "1 - 1", "settings.delay", "duration()")],
     *[("", expression, "wait") for expression in (
-        "event.wait(0)", "event.wait(None)", "event.wait(delay)",
-        "event.wait(timeout=0)", "event.wait(timeout=False)", "event.wait(timeout=delay)")],
+        "event.wait(0)",
+        "event.wait(timeout=0)", "event.wait(timeout=False)")],
     *[("", expression, "join") for expression in (
         "thread.join(5)", "thread.join(0.0)", "thread.join(-1)", "thread.join(+1)",
-        "thread.join(timeout=0)", "thread.join(timeout=delay)", "thread.join(timeout=60)",
-        "thread.join(value, 5)", "thread.join((+.5))", "thread.join(0x10)",
-        "thread.join(2j)", "thread.join(\n# argument\n(-1))")],
+        "thread.join(timeout=0)",
+        "thread.join((+.5))", "thread.join(0x10)",
+        "thread.join(\n# argument\n(-1))")],
     *[("", expression, "get") for expression in (
-        "q.get(timeout=0)", "q.get(timeout=False)", "q.get(timeout=delay)",
-        "q.get(True, 5)", "q.get(False, delay)", "q.get((True), 5)",
-        "q.get(\n# blocking\nFalse, delay)")],
+        "q.get(timeout=0)", "q.get(timeout=False)",
+        "q.get(True, 5)", "q.get((True), 5)",
+        "q.get(\n# blocking\nFalse, 5)")],
     ("", "(event. # attribute\nwait # call\n(1))", "wait"),
     ("", "event.\uff57\uff41\uff49\uff54(1)", "wait"),
     ("", "event.\\\nwait(1)", "wait"),
@@ -437,15 +340,15 @@ def test_full_and_prefiltered_scans_agree_on_fixed_repository_sample():
 
 def test_untimed_unrelated_and_policy_out_of_scope_forms():
     cases = [
-        "time.sleep(0)", "time.sleep(0.0)", "time.sleep(secs=0)",
+        "time.sleep(0)", "time.sleep(0.0)",
         "clock.sleep(5)", "event.wait()", "event.wait(timeout=None)",
         "thread.join()", "thread.join(None)", "thread.join(timeout=None)",
         "thread.join(delay)", "', '.join(items)", "sep.join(parts)",
         "d.get('k', 5)", "q.get(True)", "q.get(timeout=None)",
         "asyncio.sleep(1)", "asyncio.wait_for(coro(), timeout=1)",
-        "subprocess.run(command, timeout=1)", "subprocess.Popen(command, timeout=1)",
-        "process.communicate(timeout=1)", "select.select(read, write, error, 1)",
-        "poller.poll(1000)", "functools.partial(time.sleep, 1)",
+        "subprocess.Popen(command, timeout=1)",
+        "select.select(read, write, error, 1)",
+        "poller.poll(1000)",
         "getattr(time, 'sleep')(1)", "'time.sleep(5)'", "# time.sleep(5)",
         "while time.monotonic() < deadline:\n    check()",
         "assert time.monotonic() - start < 1",
@@ -477,7 +380,7 @@ def unrelated():
 (lambda clock: clock.sleep(5))(fake_clock)
 """
     expected = {TimingIdentity("tests/snippet.py", scope, "sleep"): count for scope, count in (
-        ("<module>", 1), ("Example", 1), ("Example.test_one", 2),
+        ("<module>", 2), ("shadowed", 1), ("Example", 1), ("Example.test_one", 2),
         ("Example.test_one.inner", 1), ("Example.test_two", 1))}
     assert scan_timing_source(source) == expected
     assert scan_timing_source("\n\n# unrelated edit\n" + source) == expected
@@ -518,7 +421,7 @@ def test_skipped_file_still_rejects_stale_allowlist_debt(tmp_path):
 
     path = tmp_path / "tests/test_clean.py"
     path.parent.mkdir()
-    path.write_text("assert 1 + 1 == 2\n", encoding="utf-8")
+    path.write_text("value = 2\n", encoding="utf-8")
     scan = scan_timing_tests(tmp_path)
     assert scan.skipped == 1
     with pytest.raises(ValueError, match="stale entry/count mismatch, found 0, listed 1"):
@@ -550,7 +453,7 @@ def example(value=queue.get(True, 5)):
         assert timing_source_needs_ast(expression)
         assert scan_timing_source(expression) == {
             TimingIdentity("tests/snippet.py", "<module>", "wait"): 1}
-    for expression, kind in (("(event.wait)(delay)", "wait"), ("(thread.join)(5)", "join"),
+    for expression, kind in (("(event.wait)(5)", "wait"), ("(thread.join)(5)", "join"),
                              ("((q.get) )(True, 5)", "get")):
         assert timing_source_needs_ast(expression), expression
         assert scan_timing_source(expression) == {
@@ -619,3 +522,129 @@ def test_allowlist_rejects_missing_issues_and_malformed_lines():
     for row in cases:
         with pytest.raises(ValueError, match="expected|malformed|positive integer|unknown"):
             parse_timing_allowlist(row)
+
+
+# Amended #1771 criteria. Snippets are parsed, never executed.
+def test_amended_generator_lambda_walrus_reproducer():
+    source = """from time import sleep as nap
+callbacks = ((nap := print, lambda: nap(1))[1] for _ in (0,))
+callback = next(callbacks)
+from time import sleep as nap
+callback()
+"""
+    assert scan_timing_source(source) == {TimingIdentity("tests/snippet.py", "<module>", "sleep"): 2}
+
+
+def test_amended_sleep_routes_are_positive():
+    for source in (
+        "from time import sleep as nap",
+        "import time\ncallback = time.sleep",
+        "import time as clock\nregister(clock.sleep)",
+        "import time\nfunctools.partial(time.sleep, 1)",
+        "from time import sleep as nap\ncallback = lambda: nap",
+    ):
+        assert scan_timing_source(source), source
+
+
+def test_amended_generous_and_dynamic_timeout_bounds():
+    for method in ("wait", "join", "get", "put", "communicate", "run"):
+        for bound in ("60", "60.0", "120", "30 * 2", "None", "bound"):
+            source = f"subject.{method}(timeout={bound})"
+            assert not scan_timing_source(source), source
+    for bound in ("60", "120", "None", "bound"):
+        source = f"sock.settimeout({bound})"
+        assert not scan_timing_source(source), source
+
+
+def test_amended_short_timeout_subjects():
+    for expression in (
+        "event.wait(59)", "condition.wait(timeout=0.5)",
+        "thread.join(timeout=30)", "queue.get(True, 5)",
+        "queue.put(item, True, 5)", "queue.put(item, timeout=5)",
+        "process.wait(timeout=5)", "process.communicate(timeout=5)",
+        "subprocess.run(command, timeout=5)", "sock.settimeout(5)",
+        "sock.settimeout(value=5)", "event.wait(timeout=30 + 29)",
+    ):
+        assert scan_timing_source("import subprocess\n" + expression), expression
+
+
+def test_amended_dynamic_forms_are_out_of_scope():
+    for source in (
+        "import time\ngetattr(time, 'sl' + 'eep')(1)",
+        "exec('import time; time.sleep(1)')",
+        "eval('time.sleep(1)')",
+        "import importlib\nimportlib.import_module('time').sleep(1)",
+        "event.wait(timeout=settings.bound)",
+        "sock.settimeout(compute_bound())",
+    ):
+        assert not scan_timing_source(source), source
+
+
+def render_shrunk_timing_allowlist(counts, contents):
+    """Render debt reductions atomically; never admit a new identity or count."""
+    entries = parse_timing_allowlist(contents)
+    for key, count in counts.items():
+        if count > entries.get(key, (0, None))[0]:
+            raise ValueError(f"allowlist growth refused: {key.path}::{key.qualname} {key.kind}")
+    rows = ["# path::qualname kind count #issue; shrink only (PB #1771)"]
+    for key, count in sorted(counts.items()):
+        rows.append(f"{key.path}::{key.qualname} {key.kind} {count} {entries[key][1]}")
+    return "\n".join(rows) + "\n"
+
+
+def test_shrink_regeneration_preserves_links_and_refuses_growth():
+    import pytest
+
+    contents = ("tests/a.py::test_one sleep 2 #2246\n"
+                "tests/a.py::test_gone wait 1 #2247\n")
+    expected = ("# path::qualname kind count #issue; shrink only (PB #1771)\n"
+                "tests/a.py::test_one sleep 1 #2246\n")
+    counts = {TimingIdentity("tests/a.py", "test_one", "sleep"): 1}
+    assert render_shrunk_timing_allowlist(counts, contents) == expected
+    assert render_shrunk_timing_allowlist(counts, expected) == expected
+    for growth in (
+        {TimingIdentity("tests/a.py", "test_one", "sleep"): 3},
+        {TimingIdentity("tests/a.py", "test_new", "sleep"): 1},
+    ):
+        with pytest.raises(ValueError, match="growth refused"):
+            render_shrunk_timing_allowlist(growth, contents)
+
+
+def test_syntactic_sleep_subject_and_zero_yield_exception():
+    for source, count in (
+        ("from time import sleep as nap; nap(0)", 1),
+        ("from time import sleep as nap; nap = print; nap(0)", 1),
+        ("import time; time.sleep(0)", 0),
+        ("import time as t; t.sleep(0.0)", 0),
+        ("import time; time.sleep(secs=0)", 1),
+        ("import time; time.sleep(0, unexpected=True)", 1),
+        ("import time; time.sleep(False)", 1),
+        ("import time; time.sleep(-0)", 1),
+        ("import time as t; x = (lambda: t.sleep for _ in (0,))", 1),
+        ("import time; callback = (nap := time.sleep)", 1),
+        ("import time; time = fake_clock; time.sleep(1)", 1),
+    ):
+        expected = {TimingIdentity("tests/snippet.py", "<module>", "sleep"): count} if count else {}
+        assert scan_timing_source(source) == expected, source
+
+
+def test_all_timeout_slots_and_subprocess_aliases():
+    for expression, kind in (
+        ("condition.wait(30 * 1)", "wait"),
+        ("thread.join(-1)", "join"),
+        ("queue.get(False, 59.9)", "get"),
+        ("queue.put(item, True, timeout=0)", "put"),
+        ("process.communicate(data, 5)", "communicate"),
+        ("sp.run(command, timeout=1)", "run"),
+        ("launch(command, timeout=1)", "run"),
+        ("socket.settimeout(60 / 2)", "settimeout"),
+    ):
+        source = "import subprocess as sp\nfrom subprocess import run as launch\n" + expression
+        assert scan_timing_source(source) == {TimingIdentity("tests/snippet.py", "<module>", kind): 1}
+    for source in (
+        "queue.get('key', 1)", "queue.put(item, True, 60)",
+        "process.communicate(data, 60)", "subject.run(timeout=1)",
+        "thread.join(60)", "event.wait(30 * 2)", "event.wait(timeout=None)",
+        "event.wait(timeout=1 / 0)", "clock.sleep(1)",
+    ):
+        assert not scan_timing_source(source), source

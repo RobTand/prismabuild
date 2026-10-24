@@ -68,53 +68,40 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
-## Test timing (D-19)
+## Timing guard mechanics (#1771)
 
-Rob, 2026-10-11: tests validate correctness only. A test must not depend on
-timing: no wall-clock deadlines, sleep-based synchronization, or assertions
-that something happens within N seconds. Use an event, a controlled barrier,
-or an injected clock instead. Let the harness's `--test-timeout-s` bound hangs.
+See the Test quality section for the test-authoring rules. This guard scans
+all Python files under `tests/`, including conftest and support modules.
+It flags every `from time import sleep` and every imported time module's
+`.sleep` attribute, except a direct call with one literal zero argument and
+no keywords. Use `import time; time.sleep(0)` for cooperative yields; importing
+`sleep` separately is always a finding. Import names are collected syntactically
+across each file, including shadowed names, without resolving deferred uses.
 
-`tests/test_no_timing_sensitive_tests.py` scans every Python file under
-`tests/`, including conftest and support modules. It flags imported
-`time.sleep` calls except literal `0` or `0.0`, `.wait` with any positional
-argument or a non-`None` `timeout=`, `.join` with a numeric literal positional
-argument or a non-`None` `timeout=`, and `.get` with a non-`None` `timeout=` or
-two positional arguments whose first is a bool literal. Time imports may use
-aliases. A fake clock's `clock.sleep`, string joins and dictionary lookups
-are outside this subject.
+The guard also flags constant timeout expressions below 60 s on wait, join,
+Queue-shaped get/put, subprocess wait/communicate/run, and socket settimeout.
+Bounds of 60 s or more are allowed. The test module defines exact argument
+slots and constant arithmetic. Computed getattr, exec/eval, importlib tricks
+and non-constant bounds are outside its scope. TrustLadder's test-quality
+checker, PB reviewer rules and the five-run flake check cover those limits.
+The guard measures no pass/fail runtime threshold.
 
-For controlled timing that does not wait on the host's real clock, put
-`# pb-timing-ok: <reason>` on the call's starting line. Explain why the clock
-is controlled, for example that monkeypatch replaced `time.sleep` with a
-fake clock. The guard rejects missing reasons and stale pragmas. Reviewers
-check the reason; a real-clock hang backstop such as `join(timeout=60)` does
-not qualify.
+For a controlled clock, put `# pb-timing-ok: <reason>` on the import,
+attribute or call's starting line. Explain how the clock is controlled.
+Empty reasons and stale pragmas fail; reviewers check the reason.
 
-Existing debt is in `tests/timing_allowlist.txt`. Each entry is
-`path::qualname kind count #issue`, where `qualname` is the enclosing function
-or class, or `<module>`, and `kind` is `sleep`, `wait`, `join` or `get`.
-The live counts and the allowlist must match exactly in both directions.
-Fixes lower or remove their entries in the same change. Link an existing
-timing issue where one applies; otherwise use [#2035](https://github.com/RobTand/prismabuild/issues/2035).
-Growing the allowlist is reviewer-blocking unless the PB lead approves it.
-Review the visible allowlist diff, as with the duplication baseline; the
-guard does not read Git history.
+Existing debt is in `tests/timing_allowlist.txt`, keyed by
+`path::qualname kind count #issue`. Each entry links an issue. New offenders,
+stale entries and count mismatches fail. After fixing offenders, regenerate
+from the repository root with this single source-edit command:
 
-The full-tree scan uses at most two CPUs from the process's assigned affinity.
-A conservative source filter beside the subject definition skips files with no
-possible subject or pragma; each remaining file is parsed once. A skipped file
-contributes zero findings, so obsolete allowlist entries still fail. Small fixture
-trees use the calling process. The guard never asserts its own runtime.
+```bash
+python3 tools/maintenance/shrink_timing_allowlist.py
+```
 
-The following forms are explicitly out of scope and non-blocking for review
-of this guard: `asyncio.sleep` and `asyncio.wait_for`; subprocess `timeout=`
-and `communicate(timeout=)`; `select` and `poll` timeouts; `time.monotonic()`
-deadline loops; elapsed-time assertions; indirect forms such as
-`functools.partial(time.sleep, 1)` and `getattr(time, "sleep")`; and sleeps in
-`src/` or `tools/` code that tests call. The D-19 rule still guides test
-writing; these are the guard's detection limits under the
-[#1771 design ruling](https://github.com/RobTand/prismabuild/issues/1771#issuecomment-6350106206).
+The generator preserves issue links, removes resolved entries, and refuses new
+identities or larger counts before writing. Review the allowlist diff and
+validate through PB. It reads no Git history and never uses source hashes.
 
 ## Pool regression fixtures
 
