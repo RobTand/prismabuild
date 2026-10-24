@@ -30,9 +30,10 @@ for compatible, unprofiled, host-executed pbtest shards on the **pool** transpor
   must not seal those worker paths into the action environment.
 
 Without the flag, execution keeps its existing private-checkout path. SLURM,
-profiling (including plans selecting a profile), containers, and incompatible
-prepared actions do not get the new recipe: pbtest retains the private recipe
-and reports the unsupported fallback. Tags, replay, a matching snapshot, or an
+profiling (including plans selecting a profile), containers, explicit scratch or
+basetemp selections, absolute/parent-traversing surface destinations, and
+incompatible prepared actions do not get the new recipe: pbtest retains the
+private recipe and reports the unsupported fallback. Tags, replay, a matching snapshot, or an
 existing warm directory do not independently enable sharing. Legacy/custom
 worker and existing-root execution are not general shared-source interfaces.
 
@@ -154,7 +155,23 @@ pytest `cache_dir` and supported `--surface-json` arguments, and disables normal
 Python bytecode writes while supplying a private bytecode prefix. This does not
 redirect arbitrary application writes or arbitrary pytest/plugin output options.
 A workload needing to write into source is not made compatible by the flag.
-Surface redirects retain the requested basename, not its original directory.
+Only source-relative `--surface-json` destinations without a `..` component are
+supported, including the generated default and nested relative report names.
+For this opt-in layout those reports are **attempt-local intermediate artifacts**:
+redirects retain the requested basename, not its original directory. They follow
+attempt retention and are removed on acknowledged, drained success; the layout
+does not separately publish them or promise a report at the original pathname.
+
+Absolute surface destinations (even inside the submitter's checkout) and any
+parent-traversing destination select the unchanged **private recipe before shared
+creation**. Both split and `--surface-json=...` spellings are checked, in the
+original request and after sealing; preparation rebinding does not opt an
+external request into sharing. The private `_source_readonly_action` seam refuses such destinations
+rather than silently flattening them. This preserves existing private submission
+and output-path semantics, **not a guarantee that an external path is portable**:
+normal path binding/refusal still applies, and a worker may not have the caller's
+external filesystem. No external report is silently redirected into shared
+attempt scratch to make it appear supported.
 
 ## Kernel ownership and descendant lifetime
 
@@ -187,8 +204,23 @@ reason, and no action reported surviving kill. Before deletion, the pool must
 also obtain a nonblocking exclusive lock on the original attempt reader inode
 and verify the attempt directory identity.
 
+The generated shared shard allocates pytest's inner basetemp below this owned
+attempt without a second owner lock, standalone scratch-root registration or
+independent expiry/sweep. Returning zero from pytest **does not remove that inner
+tree**. It stays available through result/CAS publication, post-execution source
+validation and the final resource verdict, then follows the outer attempt's
+acknowledgement/reader gate. Successful outer deletion uses the existing
+inode-checked owned-tree remover, including for read-only directories pytest
+leaves behind. Ordinary private shards keep their existing standalone cleanup
+and expiry behavior.
+
 Failed, interrupted, unacknowledged, still-read, or uncleanable attempts remain
-on disk. The implementation intentionally uses no temporary-directory finalizer
+on disk, including their inner pytest scratch that pytest itself has retained.
+Pytest's own `tmp_path_retention_policy` and test/plugin cleanup remain independent:
+PB cannot restore data pytest has already deleted. This boundary is the final
+execution/resource verdict and publication of the result, not durable completion
+of the subsequent queue-status `finish()` call.
+The implementation intentionally uses no temporary-directory finalizer
 that would erase failure evidence, and has **no new background attempt reaper**.
 When a final outcome is available, its `attempt_scratch` entry records the path,
 retention decision, and reason. Abrupt process death need not produce that entry.

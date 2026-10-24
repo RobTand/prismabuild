@@ -199,3 +199,29 @@ if (_pb_tmpdir and _pb_key and "/" not in _pb_key
 
 
 """
+
+
+# Only the sealed source-readonly transform selects this program. The worker's
+# outer attempt owns all of TMPDIR through its final verdict and reader gate.
+# No independent owner lock, registered-root sweep or success cleanup may retire
+# this inner pytest tree before that boundary. Keep the private program above
+# byte-identical: its standalone ownership/expiry contract is unchanged.
+_SOURCE_READONLY_ATTEMPT_TEMP_PROGRAM = """\
+import os as _pb_os
+import sys as _pb_sys
+import tempfile as _pb_tempfile
+
+_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
+if not _pb_os.path.isabs(_pb_tmpdir):
+    raise SystemExit("pbtest: source-readonly requires worker-owned TMPDIR")
+_pb_attempt_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
+_pb_owned = _pb_os.path.join(_pb_attempt_directory, "pytest")
+_pb_os.mkdir(_pb_owned)
+_pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
+
+
+def _pb_run_and_clean_attempt_base(_pb_run):
+    return _pb_run()
+
+
+"""

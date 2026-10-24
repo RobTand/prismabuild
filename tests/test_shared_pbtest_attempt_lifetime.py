@@ -93,7 +93,7 @@ def test_success_cleanup_waits_for_context_exit_and_leaves_other_attempts(attemp
 
 
 @pytest.mark.parametrize("defect", [
-    "missing-lock", "symlink-lock", "replaced-lock", "renamed-root", "replaced-root", "rmtree"])
+    "missing-lock", "symlink-lock", "replaced-lock", "renamed-root", "replaced-root", "remove-tree"])
 def test_cleanup_uncertainty_retains_without_reclassifying_success(
         attempt_inputs, monkeypatch, defect):
     outcome = {"status": "executed", "returncode": 0}
@@ -119,7 +119,8 @@ def test_cleanup_uncertainty_retains_without_reclassifying_success(
         else:
             def fail(*args, **kwargs):
                 raise PermissionError("cleanup refused")
-            monkeypatch.setattr(layout.shutil, "rmtree", fail)
+            from prismabuild import owned_tree
+            monkeypatch.setattr(owned_tree, "remove_tree", fail)
         environment.record_outcome(outcome)
     assert scratch.exists()
     assert outcome["status"] == "executed"

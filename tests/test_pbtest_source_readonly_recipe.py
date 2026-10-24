@@ -223,6 +223,8 @@ def test_submission_refuses_worker_path_overrides_before_snapshot(
     ({}, "no-snapshot"), ({}, "cwd"), ({}, "missing-cwd"), ({}, "empty-cwd"),
     ({}, "working-directory"), ({}, "profile"),
     ({}, "container_images"), ({}, "container_owner"), ({}, "definition"),
+    ({}, "absolute-surface"), ({}, "parent-surface"),
+    ({}, "equals-surface"), ({}, "rebound-surface"), ({}, "sealed-surface"),
 ])
 def test_publication_falls_back_without_resealing(
         checkout, monkeypatch, request_overrides, action_defect):
@@ -231,6 +233,7 @@ def test_publication_falls_back_without_resealing(
 
     # Only publication selection is under test; no snapshot is materialized.
     private = _action(checkout)
+    original_command = copy.deepcopy(private["params"]["command"])
     private.pop("action_key")
     private["task"]["definition_id"] = "fleet/pbrun"
     private["params"].update(cwd=".", checkout_snapshot={"fixture": "metadata-only"})
@@ -246,11 +249,27 @@ def test_publication_falls_back_without_resealing(
         private["task"]["working_directory"] = "tools"
     elif action_defect == "definition":
         private["task"]["definition_id"] = "custom/producer"
+    elif action_defect in {"absolute-surface", "parent-surface", "equals-surface",
+                           "rebound-surface", "sealed-surface"}:
+        destination = ("reports/rebound.json" if action_defect == "rebound-surface"
+                       else "../external-report.json" if action_defect == "parent-surface"
+                       else str(checkout.parent / "external-report.json"))
+        command = private["params"]["command"]
+        command += (["--surface-json=" + destination] if action_defect == "equals-surface"
+                    else ["--surface-json", destination])
+        private["task"]["argv"] = movement_actions.standard_capture_argv(
+            command, private["task"]["result_path"],
+            path_prefix=private["environment"]["variables"]["PATH"].split(":", 1)[0])
     elif action_defect:
         private["params"][action_defect] = "enabled"
     private = core.seal_action(private)
-    request = SubmissionRequest(command=tuple(private["params"]["command"]),
-                                **request_overrides)
+    request_command = private["params"]["command"]
+    if action_defect == "rebound-surface":
+        request_command = original_command + [
+            "--surface-json", str(checkout / "reports/rebound.json")]
+    elif action_defect == "sealed-surface":
+        request_command = original_command + ["--surface-json", "reports/relative.json"]
+    request = SubmissionRequest(command=tuple(request_command), **request_overrides)
     record = SimpleNamespace(lines=[], refusal=None, template=object())
     templates = SimpleNamespace(
         _source_readonly=True, store=object(),
@@ -275,6 +294,115 @@ def test_publication_falls_back_without_resealing(
     assert seen == [private]
     assert "execution_layout" not in seen[0]["params"]
     assert action_result.bind_standard_capture_command(seen[0]) == private["task"]["argv"]
+
+
+@pytest.mark.parametrize("destination", ["/external/report.json", "../report.json",
+                                         "reports/../report.json"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_custom_surface_paths_are_not_resealed(checkout, destination, equals):
+    arguments = (["--surface-json=" + destination] if equals
+                 else ["--surface-json", destination])
+    private = _action(checkout, arguments=arguments)
+    before = copy.deepcopy(private)
+    with pytest.raises(ValueError, match="surface"):
+        pbtest._source_readonly_action(private)
+    assert private == before
+    # Inspect the original request too: preparation may rebind an absolute
+    # argument into a relative input path, but that does not authorize sharing.
+    request = SubmissionRequest(command=tuple(private["params"]["command"]))
+    assert not pbtest._source_readonly_supported(request)
+
+
+@pytest.mark.parametrize("equals", [False, True])
+def test_private_generated_shard_preserves_external_surface_report(checkout, tmp_path, equals):
+    import shutil
+
+    destination = tmp_path / "external-report.json"
+    (checkout / "conftest.py").write_text(
+        "from pathlib import Path\n"
+        "def pytest_addoption(parser):\n"
+        "    parser.addoption('--surface-json')\n"
+        "def pytest_sessionfinish(session):\n"
+        "    Path(session.config.getoption('--surface-json')).write_text('external')\n")
+    arguments = (["--surface-json=" + str(destination)] if equals
+                 else ["--surface-json", str(destination)])
+    private = _action(checkout, arguments=arguments)
+    request = SubmissionRequest(command=tuple(private["params"]["command"]))
+    assert not pbtest._source_readonly_supported(request)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    environment = {**os.environ, "TMPDIR": str(scratch), "PYTHONDONTWRITEBYTECODE": "1",
+                   "PYTEST_ADDOPTS": "", "PRISMABUILD_ACTION_KEY": private["action_key"],
+                   "PRISMABUILD_ACTION_ATTEMPT_NONCE": "f" * 32}
+    completed = subprocess.run(private["task"]["argv"], cwd=checkout, env=environment,
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    shutil.rmtree(scratch)
+    assert destination.read_text() == "external"
+
+
+@pytest.mark.parametrize("outcome,reader,retained", [
+    ({"status": "failed"}, False, True),
+    (None, False, True),
+    ({"status": "executed", "returncode": 0}, True, True),
+    ({"status": "executed", "returncode": 0}, False, False),
+])
+def test_generated_shard_scratch_follows_final_attempt_verdict(
+        checkout, tmp_path, monkeypatch, outcome, reader, retained):
+    import fcntl
+    from prismabuild import _pbtest_layout
+
+    # tmp_path's own failed-only policy is independent of wrapper cleanup.
+    # Keep pytest-managed data so this assertion exercises PB's boundary.
+    (checkout / "tests/test_one.py").write_text(
+        "def test_one(tmp_path):\n"
+        "    (tmp_path / 'final-verdict-evidence').write_text('retained')\n"
+        "    frozen = tmp_path / 'readonly'\n"
+        "    frozen.mkdir()\n"
+        "    (frozen / 'data').write_text('owned')\n"
+        "    frozen.chmod(0o555)\n")
+    # A second lifetime owner must not register/sweep the inner root, even
+    # after pytest succeeds. Only the outer attempt knows the final verdict.
+    monkeypatch.setattr(pbtest, "ROOTS_PROGRAM", pbtest.ROOTS_PROGRAM + '''
+
+def _unexpected_inner_retirement(*args, **kwargs):
+    raise AssertionError("shared inner scratch entered standalone retirement")
+_pb_temp_roots["register_pbtest_root"] = _unexpected_inner_retirement
+_pb_owned_tree["reap_dead_trees"] = _unexpected_inner_retirement
+''')
+    action = pbtest._source_readonly_action(_action(
+        checkout, arguments=("-o", "tmp_path_retention_policy=all")))
+
+    descriptor = None
+    try:
+        with _pbtest_layout._attempt_environment(
+                action, checkout_root=checkout,
+                local_checkout_root=tmp_path / "local") as attempt:
+            scratch = attempt.attempt
+            env = {**os.environ, **attempt,
+                   "PYTHONPATH": os.pathsep.join([str(ROOT / "src"),
+                                                  str(ROOT / "tools/fleet")]),
+                   "PRISMABUILD_ACTION_KEY": action["action_key"],
+                   "PRISMABUILD_ACTION_ATTEMPT_NONCE": "f" * 32,
+                   "PYTHONDONTWRITEBYTECODE": "1"}
+            completed = subprocess.run(action["task"]["argv"], cwd=checkout, env=env,
+                                       capture_output=True, text=True, timeout=30)
+            assert completed.returncode == 0, completed.stdout + completed.stderr
+            evidence = list(scratch.rglob("final-verdict-evidence"))
+            assert len(evidence) == 1, "pytest success erased data before final verdict"
+            assert evidence[0].read_text() == "retained"
+            if reader:
+                descriptor = os.open(scratch / ".readers", os.O_RDONLY)
+                fcntl.flock(descriptor, fcntl.LOCK_SH)
+            if outcome is not None:
+                attempt.record_outcome(outcome)
+        assert scratch.exists() is retained
+        assert evidence[0].exists() is retained
+        if outcome is not None:
+            assert outcome["attempt_scratch"]["retained"] is retained
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 @pytest.mark.parametrize("mode", ["tmpdir", "basetemp", "profile"])

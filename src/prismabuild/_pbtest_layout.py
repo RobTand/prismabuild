@@ -187,7 +187,18 @@ class _AttemptEnvironment(dict[str, str]):
                     self._directory_descriptor, self.attempt, where="pbtest attempt directory")
                 with _attempt_lock(self.attempt, fcntl.LOCK_EX | fcntl.LOCK_NB,
                                    expected_reader=self._reader_descriptor):
-                    shutil.rmtree(self.attempt)
+                    from . import owned_tree
+                    # Pytest may leave read-only directories. Use the same
+                    # fd-relative remover as private owned scratch, but only
+                    # after this outer attempt's reader/verdict gate.
+                    parent = immutable_files.open_directory_nofollow(
+                        self.attempt.parent, where="pbtest attempt parent")
+                    try:
+                        info = os.fstat(self._directory_descriptor)
+                        owned_tree.remove_tree(
+                            parent, self.attempt.name, expect=(info.st_dev, info.st_ino))
+                    finally:
+                        os.close(parent)
                 retained, reason = False, "success_drained"
             except BlockingIOError:
                 reason = "readers_present"

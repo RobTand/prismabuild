@@ -1,5 +1,10 @@
 # Shared-source generations: implementation and qualification disposition
 
+Release qualification remains **blocked**. The final repair section below
+supersedes the earlier O5/O6 coverage claims: it records external surface-path
+fallback and actual generated-shard inner-scratch retention, plus the still
+unadopted Core receipt bytes. Focused passes are not full-suite acceptance.
+
 This supersedes the earlier pre-implementation stop report. The operational
 contract is in [shared_source_generations.md](../shared_source_generations.md).
 Production W3/W4 support is now implemented; **release qualification remains
@@ -158,3 +163,111 @@ reserved worker path symbols; add the shared publication's exact
 `census,generation` key set. The tool reported **572 -> 574 rows, reviewed=true,
 applied=true**. Final wire guards pass on both arms. This AST inventory update
 is not record-golden capture/adoption.
+
+## Repair after review: surface selection and generated scratch lifetime
+
+The prior synthetic lifetime cases did not prove the generated shard's own
+cleanup boundary. Reproduction with a real transformed shard found pytest
+returning zero but `final-verdict-evidence` already absent before the final
+attempt outcome: **4 failed**. The earlier surface selection reproduction
+likewise reached the resealer for absolute/parent destinations (3 fallback
+assertions and 6 direct-transform refusals failed). That initial combined test
+run also had four new lifetime-fixture call-signature errors; those fixture
+errors were corrected before the separate real-shard reproduction below.
+These were not feature acceptance-file failures or impossible objectives.
+
+Surface-selection reproduction:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"b0831c0cadf7bc91511bd4f6ee552ae2a372e318e81257c18e314c0c49dfcedf","size":9322}},"operation":"03f75bdd1e90823bbb47e8a77fc89ae27cefcc83533966606c25eed981ae14fd","receipt":"9cf24da8c9b6c2c7f82e73b1f120cd3a74a3a64cd36ec74b67b2491487a6c621"}]
+
+Actual generated-shard lifetime reproduction:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"265f40e5968ea214d9cb41b904170a323b6443c798a5824d63446e7f51b8d51d","size":3407}},"operation":"0f2e5ce3ea4b2dac8a304a4d5e5e3efccb98e019866a2975ea4449e1be71816e","receipt":"0eb1502122013054b4a386a5951fe84443dc7ce544e5b31c2924ae099e9c6090"}]
+
+### Repairs and their limits
+
+- Check every surface option in both original request and sealed command before
+  resealing. Absolute paths (including submitter-checkout paths) and any `..`
+  component retain the private recipe; the transform also refuses them. Private
+  submission still enforces its existing portability/path-binding rules. This
+  is not a guarantee that external destinations are available on other workers.
+  Supported relative report names retain the documented opt-in attempt-local
+  semantics and are not promised as persistent external artifacts.
+- Only the shared resealing transform replaces the standalone attempt-temp
+  program. The new carried program creates inner pytest scratch under the outer
+  attempt without independent registration, sweep or successful-return cleanup.
+  The private program bytes and private 24-hour expiry contract are unchanged.
+  The outer attempt removes all scratch only after its acknowledged-success and
+  exclusive-reader gate, using the existing inode-checked owned-tree remover for
+  read-only directories too. Failed, unacknowledged and still-read attempts keep
+  the inner data pytest itself retained. Pytest/test/plugin cleanup remains
+  independent; PB cannot restore files pytest has already deleted.
+- Generated-shard tests execute pytest and then supply final attempt outcomes:
+  failed, unacknowledged, successful-with-reader, and drained success. They
+  verify the nested marker before the final verdict and after context exit,
+  and refuse standalone register/sweep calls. Existing pool tests separately
+  exercise final source/resource verdict ordering. This is not a claim of a new
+  live-broker end-to-end retention or durable queue-status publication probe.
+- Private real generated-shard controls in both surface-option spellings leave
+  their requested external report intact after temporary scratch removal.
+  Publication-selection tests additionally cover original-external to
+  rebound-relative and original-relative to sealed-external combinations.
+
+### Both-arm focused verification
+
+Ran the union of all O1–O6 named files plus the generation-proof, recipe and
+attempt-lifetime regressions with plain pytest, `-q --tb=short
+--basetemp="$TMPDIR/pytest"`: **937 passed, 20 skipped, 14 warnings on each arm**
+(x86 Python 3.14; ARM Python 3.12). This includes the unchanged acceptance files,
+legacy reaping/recovery/transport controls, producer/byte-derived proof checks,
+all four repo guards and the SDK surface guard. The source-sharing assertions
+still exercise **two overlapping real shards on one snapshot, one Git init,
+one checkout and one expensive checkout identity**, with distinct writable
+paths/actions/results/receipts. No larger shard count or performance improvement
+was measured.
+
+x86 union:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"ff69c8da0c227192ee869fb899366dc37a4f26fb3a9eb9e5472669438a43c76c","size":7074}},"operation":"bf94eb57938d276ce6e4262be23c7b9ac437ae75e4960e24327eb8eee27279da","receipt":"67530238875a9abdbfd6b727f87e24981beecb4571c63058ac549e1c0df88ce6"}]
+
+ARM union:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"3db0627fb5a736ec1e188906c24de2030451450ce4553f4e3fd9dd986a588bff","size":7088}},"operation":"6b34ae3a0addbcf12f6ffa0085e39813c51b566e747de11e031bb7afbc20ba2b","receipt":"469cca9d36717ebb34d0e03d2c622ec4c05ef3cc343143f66a4d551dbf4cc7df"}]
+
+After adding the two original-versus-sealed path cases and updating help/docs,
+reran `tests/test_pbtest_source_readonly_recipe.py`,
+`tests/test_shared_pbtest_attempt_lifetime.py`, `tests/test_wire_inventory.py`,
+`tests/test_fleet_tool_flags_have_help.py`, `tests/test_duplication_baseline.py`,
+`tests/test_design_doc_line_references.py`, and `tests/test_client_sdk_surface.py`
+with the same pytest options: **385 passed on each arm**. These counts overlap
+the union; they must not be summed. No field-set delta was introduced by this
+repair, and neither the inventory nor a record golden was edited.
+
+x86 final subset:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"8bed56e7482e63ec427edc37d47767c9c2d2dd42a04e1ae267e213b196dab6d3","size":2705}},"operation":"fdf40c4b3a7d58137a595c4d01361159c5d7cb31ac3a1d17d686ef88daac2793","receipt":"98b2e911fb24fb6860db110eee55efe721b7334218e2b187ac6f9f5f582bc478"}]
+
+ARM final subset:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"e092396ed831ebe2355f1b2aacd7cc0bd009ce671c6bf33912582ab848ff40ec","size":2707}},"operation":"8b4846e7fa37ca1706e6dc302c0c4956e41556abc961da7a06d0984495e4e786","receipt":"141b9bcedc11b19298b942fd590f3ab618d7ca32d38a93c7ad109632f6dec40c"}]
+
+### Required release stop, not passing compatibility
+
+Rechecked on both supplied arms:
+
+```sh
+python -m pytest tests/test_record_compatibility_core.py -k 'core-receipt and in-process' -q --tb=short --show-capture=no --basetemp="$TMPDIR/pytest"
+```
+
+Both returned **1 failed, 72 deselected**, at
+`tests/record_compat_contract.py:200`: `current writer changed golden bytes`,
+`core-receipt/in-process`. Retained stdout was read to verify that exact refusal.
+This is the change-induced, unadopted production-writer provenance delta, not a
+pass or an unrelated environmental failure. No capture/strict adoption was
+attempted in this check environment, and no golden was edited. The PB release
+owner must complete the admitted namespace-lane capture and strict runtime
+adoption, followed by compatibility and full-suite qualification, before
+publication. **Release qualification stops here.** Full suites were not repeated
+in this repair after the known capture/adoption stop; neither the earlier partial
+runs nor these focused passes establish full-suite success. No live fleet,
+storage-backend, universal-sharing or HDD-performance result is claimed.
+
+x86 release refusal:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"80ac56d82198cfeee3160edd785feb3513d2840118def13b2b520dc993c28ff9","size":48544}},"operation":"c9a603dcac8b08befbdbac3839df2eb328abd0bf793feb2f1ae7c9a1a05648fb","receipt":"abbdafa69f18b321f4559911cb4fb7b98a182285f0a943645804fc40e68835e9"}]
+
+ARM release refusal:
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"e5329bf37f29ea28fc1ba4bf1357fa9c4fdd44dac65e3ad566e6fd7026375958","size":48679}},"operation":"f8c10aa654f345b087daa8e7249002079c0b342e5a6c9be3c075ddf6791f3a8b","receipt":"510cc4894c51779847a573741e76496955dc51753d370d0245c01d1eaeafdeef"}]

@@ -55,7 +55,7 @@ import tempfile
 import traceback
 import uuid
 import zlib
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 _PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
@@ -329,12 +329,36 @@ _pb_layout_sys.argv[_pb_layout_start:] = ["--override-ini=cache_dir=" + str(_pb_
 '''
 
 
+def _source_readonly_surface_paths(command: Sequence[str]) -> bool:
+    """Only portable source-relative reports have attempt-owned semantics.
+
+    Never flatten an absolute/custom external destination: its existing private
+    submission/output contract (including any portability refusal) must survive.
+    Inspect all occurrences, including before preparation can rebind arguments.
+    """
+    for index, word in enumerate(command):
+        if word == "--surface-json":
+            if index + 1 == len(command):
+                return False
+            destination = command[index + 1]
+        elif word.startswith("--surface-json="):
+            destination = word.split("=", 1)[1]
+        else:
+            continue
+        path = PurePosixPath(destination)
+        if (not destination or "\x00" in destination or path.is_absolute()
+                or ".." in path.parts or not path.name):
+            return False
+    return True
+
+
 def _source_readonly_supported(
     request: SubmissionRequest, action: dict | None = None,
 ) -> bool:
     # Decide before resealing: a private fallback must retain the *private*
     # capture/program too, not merely skip shared checkout acquisition later.
-    if (request.transport != "pool" or request.profile or request.container_image):
+    if (request.transport != "pool" or request.profile or request.container_image
+            or not _source_readonly_surface_paths(request.command)):
         return False
     if action is None:
         return True
@@ -345,7 +369,8 @@ def _source_readonly_supported(
             and params.get("cwd") == "."
             and not params.get("profile")
             and not params.get("container_images")
-            and not params.get("container_owner"))
+            and not params.get("container_owner")
+            and _source_readonly_surface_paths(params.get("command", ())))
 
 
 def _source_readonly_action(action: dict) -> dict:
@@ -356,6 +381,7 @@ def _source_readonly_action(action: dict) -> dict:
     capture recipe, and explicit layout discriminator differ.
     """
     from prismabuild import action_result
+    from prismabuild.pbtest_owned_temp import _SOURCE_READONLY_ATTEMPT_TEMP_PROGRAM
 
     validated = core.validate_action(action)
     params = dict(validated["params"])
@@ -369,8 +395,13 @@ def _source_readonly_action(action: dict) -> dict:
     roster = 'roster_parent=globals().get("_pb_attempt_directory"),'
     if (len(command) < 3 or command[1] != "-c"
             or "# A pbtest shard: pytest under pbtest_outcomes' recorder.\n" not in command[2]
-            or command[2].count(roster) != 1):
+            or command[2].count(roster) != 1
+            or command[2].count(ATTEMPT_TEMP_PROGRAM) != 1):
         raise ValueError("pbtest source-readonly requires a generated shard program")
+    if not _source_readonly_surface_paths(command):
+        raise ValueError("pbtest source-readonly does not support external surface paths")
+    command[2] = command[2].replace(
+        ATTEMPT_TEMP_PROGRAM, _SOURCE_READONLY_ATTEMPT_TEMP_PROGRAM, 1)
     collection = '\nif True:\n    import json\n    selection = json.loads(sys.argv.pop(1))' in command[2]
     setup = _SOURCE_READONLY_PROGRAM.replace("@ARG_START@", "2" if collection else "1")
     command[2] = setup + command[2].replace(
@@ -1753,8 +1784,9 @@ def main() -> int:
     ap.add_argument("--source-readonly", action="store_true",
                     help="explicitly opt snapshot-backed, unprofiled pull-queue "
                          "shards into the sealed pbtest-source-readonly-v1 recipe. "
-                         "Existing-root, SLURM, profile and explicit scratch/basetemp "
-                         "modes retain the private recipe. "
+                         "Existing-root, SLURM, profile, explicit scratch/basetemp "
+                         "and absolute/parent-traversing surface-output paths retain "
+                         "the private recipe and its portability checks. "
                          "Worker-private paths hold logs, pytest cache, helpers "
                          "and surface output")
     ap.add_argument("--profile", default=None,

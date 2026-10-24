@@ -2010,8 +2010,12 @@ still narrow eligibility. The published/shared runtime uses the existing
 
 `pbtest --source-readonly` explicitly opts compatible, unprofiled pool shards
 into host-local shared source with separate attempt-owned writable state.
-Unsupported transports/profiles/recipes retain the private recipe; a source
-contract failure after admission is not a private rerun. See the
+Unsupported transports/profiles/recipes and absolute or parent-traversing
+`--surface-json` destinations retain the private recipe and its normal portability
+checks; this is not a promise that a caller's external filesystem is available on
+the worker. Compatible relative surface reports are attempt-local intermediates,
+not persistent reports at their original pathname. A source contract failure
+after admission is not a private rerun. See the
 [shared source generation operational contract](shared_source_generations.md)
 for configuration, proof/census gates, descendant reader locks, retained failed
 attempts, and acquisition-driven idle retirement. This is a cooperative runtime
@@ -2071,7 +2075,13 @@ unchanged; descriptor-based temporary-directory cleanup can therefore finish
 under the failed-only retention policy instead of failing in the fixture itself.
 Only `tmp_path` is removed per test. A directory made with `tmp_path_factory.mktemp`,
 and the directory of any failing test, lasts as long as the session's base temporary
-directory. Without `--basetemp` each attempt owns its base temp (#1542):
+directory. The following standalone cleanup/24-hour expiry contract applies to
+**private-layout** shards; shared-source shards instead keep their inner pytest
+tree under the outer worker attempt until its final execution/resource verdict
+and exclusive-reader boundary. They do not register or independently sweep the
+inner root, and retained shared attempts have no new automatic expiry. Pytest's
+own retention policy still applies in either mode. See the shared-source contract
+above. Without `--basetemp` each private attempt owns its base temp (#1542):
 `<tmpdir>/pb-<mkdtemp suffix>/pytest`, where `tmpdir` is the
 default `/home/rob/tmp` or the `--tmpdir` directory when one is given.
 `mkdtemp` creates each directory exclusively with mode 0700. It retries name
