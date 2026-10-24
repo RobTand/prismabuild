@@ -13,13 +13,15 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests/compat/support")]
 
 def run_setup_mutant():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mutant", choices=("path-cache", "no-sharing", "no-cleanup", "missing-definitions"))
+    parser.add_argument("mutant", choices=("path-cache", "no-sharing", "no-cleanup", "missing-definitions", "no-index"))
     args = parser.parse_args()
     import compat_references
     import compat_session
     import pytest
 
-    if args.mutant == "path-cache":
+    if args.mutant == "no-index":
+        compat_references.source_definitions = compat_references.source_definitions.__wrapped__
+    elif args.mutant == "path-cache":
         compat_references._has_definition = lru_cache(maxsize=128)(compat_references._has_definition)
     elif args.mutant == "missing-definitions":
         compat_references.source_definitions = lambda raw: frozenset()
