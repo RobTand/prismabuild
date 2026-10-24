@@ -104,9 +104,10 @@ To fix a flaky test:
   Retries, quarantine, deselection, xfail, skips, rerun plugins and widened
   timeouts are not fixes.
 - Before handoff, run each touched test file at least five times per
-  architecture through `pbtest`, including under xdist. Vary `--pytest-args`,
-  for example `-o junit_suite_name=flakeN`, so that no run is served from the
-  result cache. A single failure counts.
+  architecture through `pbtest`, at least twice under xdist
+  (`--workers-per-shard 2`). Vary `--pytest-args`, for example
+  `--durations=N`, so that no run is served from the result cache. A single
+  failure counts.
 
 ## Pool regression fixtures
 
