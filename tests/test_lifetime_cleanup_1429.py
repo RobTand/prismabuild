@@ -68,6 +68,9 @@ def test_cleanup_proof_from_another_attempt_never_returns_tokens(
     outcome = _execute(queue, item)
     assert outcome["status"] == "executed"
     valid = outcome["checkout_cleanup"]
+    journal = queue.root / "checkout-unlinks" / (valid["registration"]["execution_id"] + ".json")
+    retained_journal = tmp_path / "original-unlink-journal.json"
+    journal.rename(retained_journal)
     # Simulate loss of the durable proof too: a real stored completion remains
     # authoritative even when caller detail is missing or belongs elsewhere.
     path = queue.records.item_path(pool.CLAIMED, item["action_key"])
@@ -88,6 +91,10 @@ def test_cleanup_proof_from_another_attempt_never_returns_tokens(
     assert queue.ledger().held_keys() == [item["action_key"]]
     assert reservation.attempt_release_audit(queue.queue, record_store.read_document(pending)) is None
     outcome["checkout_cleanup"] = valid
+    # A caller cannot restore authority, even with the former exact dictionary.
+    assert _finish(queue, item, outcome) == path
+    assert queue.ledger().held_keys() == [item["action_key"]]
+    retained_journal.rename(journal)
     done = _finish(queue, item, outcome)
     assert done == queue.records.item_path(pool.DONE, item["action_key"])
     assert queue.ledger().held_keys() == []
