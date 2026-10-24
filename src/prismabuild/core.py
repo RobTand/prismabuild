@@ -4528,6 +4528,9 @@ class PySpyProfileBackend:
         return [
             self.locate(), "record",
             "--subprocesses",
+            # The payload's exec mediator owns ptrace. Do not compete for its
+            # trace relationship; sample remote memory without stopping it.
+            "--nonblocking",
             "--rate", str(self.rate_hz),
             "--format", "speedscope",
             "--output", str(profile_path),
@@ -5229,7 +5232,7 @@ class _ProfileSession:
             )
         return variables
 
-    def launch_argv(self, argv: Sequence[object]) -> list[str]:
+    def launch_argv(self, argv: Sequence[object], *, wrap_payload=None) -> list[str]:
         """What the worker launches instead of the sealed argv.
 
         The relay is wrapped here rather than inside each backend, so that a
@@ -5242,6 +5245,10 @@ class _ProfileSession:
         relayed = profile_exit_status_relay(
             [str(item) for item in argv], self.exit_status_path
         )
+        # Mediate the relay/payload subtree, not the profiler. In particular,
+        # py-spy must remain the untraced Popen leader for sampling and flush.
+        if wrap_payload is not None:
+            relayed = wrap_payload(relayed)
         return [
             str(word)
             for word in self.backend.launch_argv(  # type: ignore[attr-defined]
@@ -6458,11 +6465,6 @@ def run_local_action(
         launch_environment.update(_residency_environment(normalized, launch_environment))
         if profile is not None:
             launch_environment.update(profile.environment(launch_environment))
-            # The sealed argv is exec'd verbatim underneath what this returns.
-            # ``preflight_action`` attests ``task.argv[0]`` off the action, not
-            # off this list, so the executable this action names is still the
-            # one attested and rechecked after the run.
-            launch_argv = profile.launch_argv(task["argv"])
         # Runtime-only overlay: action-supplied context locators are not authority.
         launch_environment[_CONTAINER_CLASS_LAUNCH_ENV] = (
             _CONTAINER_CLASS_CONTEXT.get()
@@ -6474,8 +6476,17 @@ def run_local_action(
                     from ._container_exec import launch_argv as _mediate_container_exec
                 else:  # retained runtime's flat Core alias
                     from _container_exec import launch_argv as _mediate_container_exec
+                if profile is not None:
+                    # Keep the backend outside mediation, but mediate all of
+                    # the actual payload, including native descendants. Neither
+                    # wrapper changes the sealed argv or preflight identity.
+                    launch_argv = profile.launch_argv(
+                        task["argv"], wrap_payload=lambda argv: _mediate_container_exec(
+                            argv, launch_environment))
+                else:
+                    launch_argv = _mediate_container_exec(launch_argv, launch_environment)
                 process = subprocess.Popen(
-                    _mediate_container_exec(launch_argv, launch_environment),
+                    launch_argv,
                     cwd=cwd,
                     env=launch_environment,
                     shell=False,

@@ -81,6 +81,22 @@ private locator when redirecting; child environment replacements are not authori
 The sealed action and argv are not rewritten. Runtime identity attests the private
 mediation and qualification helpers alongside Core.
 
+A shim task may forward its daemon operation once; the forwarding permission
+ends at that exec, not at process-tree exit. A client's ordinary helpers and
+subsequent configured-client executions are mediated again, including exec
+replacements. Class qualification precedes missing ownership metadata handling:
+omitting owner or marker cannot turn work-start into inventory passthrough.
+Linux nonleader-thread exec is reconciled to its new leader TID without changing
+the native program's exit status.
+
+Profilers stay outside the ptrace mediator; their actual relay/payload subtree is
+mediated, including native descendants. Native py-spy sampling uses
+`--nonblocking --subprocesses` so it does not compete for ptrace ownership, and the
+profiler remains the process receiving profiler-flush signals. Nonblocking
+sampling can omit inconsistent individual samples; it does not relax profile
+usability requirements. Host remote-memory-read policy still applies; no
+privileges, kernel settings or Docker installation are changed.
+
 Only the local system Unix-socket Docker endpoint is qualified (the existing
 `/var/run/docker.sock` and `/run/docker.sock` spellings). Context overrides, alternate
 hosts and non-system endpoints cannot reuse local-store evidence. Unsupported

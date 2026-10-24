@@ -163,18 +163,20 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
 
         def launch_argv(self, argv, *, profile_path):
             code = (
-                'import sys, subprocess, time\n'
+                'import sys, subprocess, threading, time\n'
                 'from pathlib import Path\n'
-                'subprocess.Popen(sys.argv[3:])\n'
-                'deadline = time.monotonic() + 10\n'
-                'while not Path(sys.argv[8]).exists():\n'
+                'subprocess.Popen(sys.argv[4:])\n'
+                'deadline = time.monotonic() + 60\n'
+                'while not Path(sys.argv[3]).exists():\n'
                 '    assert time.monotonic() < deadline\n'
-                '    time.sleep(.01)\n'
+                '    threading.Event().wait(.01)\n'
                 'Path(sys.argv[1]).write_text(sys.argv[2])\n'
             )
             return [
                 sys.executable, '-c', code, str(profile_path),
-                _speedscope('window'), *argv,
+                # The backend may receive a mediated relay. Pass its status
+                # member explicitly, not an offset into the wrapped command.
+                _speedscope('window'), str(profile_path.with_name('exit_status')), *argv,
             ]
 
     monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())
@@ -213,18 +215,20 @@ def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
 
         def launch_argv(self, argv, *, profile_path):
             code = (
-                'import subprocess, sys, time\n'
+                'import subprocess, sys, threading, time\n'
                 'from pathlib import Path\n'
-                'subprocess.Popen(sys.argv[3:])\n'
-                'deadline = time.monotonic() + 10\n'
-                'while not Path(sys.argv[8]).exists():\n'
+                'subprocess.Popen(sys.argv[4:])\n'
+                'deadline = time.monotonic() + 60\n'
+                'while not Path(sys.argv[3]).exists():\n'
                 '    assert time.monotonic() < deadline\n'
-                '    time.sleep(.01)\n'
+                '    threading.Event().wait(.01)\n'
                 'Path(sys.argv[1]).write_text(sys.argv[2])\n'
             )
             return [
                 sys.executable, '-c', code, str(profile_path),
-                _speedscope('window'), *argv,
+                # The backend may receive a mediated relay. Pass its status
+                # member explicitly, not an offset into the wrapped command.
+                _speedscope('window'), str(profile_path.with_name('exit_status')), *argv,
             ]
 
     monkeypatch.setitem(pb.PROFILE_BACKENDS, 'fake', Early())

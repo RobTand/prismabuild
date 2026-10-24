@@ -989,14 +989,6 @@ def main() -> int:
     owner = os.environ.get(OWNER_ENV, "")
     marker_raw = os.environ.get(MARKER_ENV, "")
     real = _real_docker()
-    if not owner and not marker_raw:
-        os.execv(real, [real, *argv])
-    if len(owner) != 64 or any(ch not in "0123456789abcdef" for ch in owner):
-        sys.stderr.write(f"docker shim: {OWNER_ENV} is not a 64-hex digest\n")
-        return 125
-    if not marker_raw:
-        sys.stderr.write(f"docker shim: {MARKER_ENV} is missing\n")
-        return 125
     try:
         command = _verb_index(argv, GLOBAL_VALUE_OPTIONS, GLOBAL_FLAGS,
                               what="global")
@@ -1040,6 +1032,26 @@ def main() -> int:
         sys.stderr.write(
             "docker shim: start/compose-up cannot attach PrismaBuild's owner "
             "label; use docker run/create inside this action\n")
+        return 125
+
+    # Ownership is separate from class authority. A mediated local action may
+    # have neither owner nor marker; that must not make work-start a passthrough.
+    # Still forward inventory when ownership tracking was not requested.
+    if not owner or not marker_raw:
+        if route is not None:
+            try:
+                global_options, _ = _local_daemon(real, argv[:command])
+                _qualify_class_launch(global_options[-1])
+            except Refused as refusal:
+                sys.stderr.write(f"docker shim: {refusal}\n")
+                return 125
+        elif not owner and not marker_raw:
+            os.execv(real, [real, *argv])
+    if len(owner) != 64 or any(ch not in "0123456789abcdef" for ch in owner):
+        sys.stderr.write(f"docker shim: {OWNER_ENV} is not a 64-hex digest\n")
+        return 125
+    if not marker_raw:
+        sys.stderr.write(f"docker shim: {MARKER_ENV} is missing\n")
         return 125
 
     try:

@@ -155,7 +155,12 @@ def _run_container_command(client: str, argv: list[str]) -> int:
             print(f"container class exec mediation unavailable: {error}", file=sys.stderr)
             os._exit(125)
     live = {leader}
-    routed: set[int] = set()
+    # An injected shim exec is followed once without rewrapping it. While
+    # running the shim, fork children may forward its daemon calls, but their
+    # first exec consumes that permission. A client/plugin/helper's later exec
+    # is an ordinary new invocation, not part of the qualified operation.
+    redirecting: set[int] = set()
+    shim_tasks: set[int] = set()
     result = 125
     # Keep the supervisor alive during the existing group TERM/grace/KILL
     # protocol, so it reaps tracees. EXITKILL covers abrupt supervisor death.
@@ -172,7 +177,8 @@ def _run_container_command(client: str, argv: list[str]) -> int:
             pid, status = os.waitpid(-1, 0x40000000)  # __WALL, all traced threads
             if os.WIFEXITED(status) or os.WIFSIGNALED(status):
                 live.discard(pid)
-                routed.discard(pid)
+                redirecting.discard(pid)
+                shim_tasks.discard(pid)
                 if pid == leader:
                     result = os.waitstatus_to_exitcode(status)
                 continue
@@ -187,15 +193,35 @@ def _run_container_command(client: str, argv: list[str]) -> int:
                 child = ctypes.c_ulong()
                 _ptrace(0x4201, pid, 0, ctypes.addressof(child))
                 live.add(child.value)
-                if pid in routed:
-                    routed.add(child.value)
+                if pid in shim_tasks:
+                    shim_tasks.add(child.value)
                 sig = 0
             elif event == 4:
-                if pid not in routed:
+                former = ctypes.c_ulong()
+                _ptrace(0x4201, pid, 0, ctypes.addressof(former))
+                if former.value != pid:
+                    # A nonleader thread assumes the thread-group leader's TID
+                    # at exec. Linux reports the old TID only in GETEVENTMSG;
+                    # it will never deliver a separate exit for that old TID.
+                    live.discard(former.value)
+                    for tasks in (redirecting, shim_tasks):
+                        was_member = former.value in tasks
+                        tasks.discard(former.value)
+                        tasks.discard(pid)
+                        if was_member:
+                            tasks.add(pid)
+                if pid in redirecting:
+                    redirecting.remove(pid)
+                    shim_tasks.add(pid)
+                elif pid in shim_tasks:
+                    # A #!/usr/bin/env shim first execs its Python interpreter.
+                    # That is still the shim, not its one forwarded daemon call.
+                    if _client_arguments(pid, str(shim)) is None:
+                        shim_tasks.remove(pid)
+                else:
                     # Direct/PATH shim launches need the same pinned context as
                     # redirected client launches. Re-exec once with their
-                    # original arguments; routed suppresses further wrapping
-                    # and lets only shim-owned children reach the real client.
+                    # original arguments and pin the executor's private context.
                     args = (_client_arguments(pid, str(shim))
                             if shim.is_file() else None)
                     if args is None:
@@ -216,9 +242,7 @@ def _run_container_command(client: str, argv: list[str]) -> int:
                         if not os.WIFSTOPPED(exit_status):
                             raise OSError("container class exec exit stop unavailable")
                         _redirect(pid, [os.fsencode(shim), *args], environment)
-                        # Only shim-owned subprocesses may use the real client
-                        # without recursively re-entering mediation.
-                        routed.add(pid)
+                        redirecting.add(pid)
                 sig = 0
             _ptrace(7, pid, 0, sig)  # CONT; preserve ordinary signal delivery
     finally:
