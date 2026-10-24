@@ -80,3 +80,17 @@ def test_opportunistic_scope_never_accepts_missing_or_wrong_weight(tmp_path, ack
         response['cpu_weight'] = ack
     with pytest.raises(OSError, match='CPU weight'):
         scope._adopt_created_scope(response)
+
+
+def test_explicit_protection_is_available_at_cap_zero_and_fenced_from_old_workers(tmp_path):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    key = 'a' * 64
+    path = queue.publish(action_key=key, cas_root='/cas', checkout_root='/co',
+        worker_script='/w.py', resources={'cpu': 1}, cpu_qos='protected')
+    ready = json.loads(path.read_bytes())
+    assert contracts.CPU_PROTECT_TAG in ready['tags'] and contracts.CPU_QOS_TAG not in ready['tags']
+    assert queue.claim(capacity={'cpu': 1}) is None
+    claimed = queue.claim(capacity={'cpu': 1},
+        tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
+    assert claimed and claimed['cpu_qos'] == 'protected'
+    assert 'cpu-qos-v1' not in claimed['tags']

@@ -38,8 +38,8 @@ def scoped(tmp_path, monkeypatch, request):
                   checkout_root=checkout, worker_script='/worker.py',
                   resources=demand, max_attempts=2, retry_safe=True,
                   priority=-10 if opportunistic else 0,
-                  cpu_qos='opportunistic' if opportunistic else 'protected')
-    options = {'tags': [pool.contracts.CPU_PROTECT_TAG]}
+                  cpu_qos='opportunistic' if opportunistic else None)
+    options = {}
     if opportunistic:
         from prismabuild import adaptive_cpu
         options = dict(adaptive_cpu=True, tags=[pool.contracts.CPU_QOS_TAG],
