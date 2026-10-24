@@ -155,39 +155,3 @@ The [#1530 evidence record](results/pbtest_exit_completion_1530.md) shows pytest
 exit hook inside pool cleanup after the test progress reached `[100%]`.
 An exit timeout remains non-green, even when the selected tests have verified completion evidence.
 
-
-## Test quality
-
-Rob, 2026-10-24: "Flaky tests derail this entire platform."
-
-Make tests independent of host load, test order, xdist placement, directory
-listing order, and scheduler interleaving. Use an Event, Condition, pipe,
-socket handshake, pidfd, inotify, or PB bell to order events. A deliberate
-stall waits on a gate the test controls. Observe consumption of the exact
-close-write or rename event before taking the cursor for a later mutation.
-
-Inject clocks for deadline behavior and assert state or event order. Keep
-timeouts only as generous failure bounds of at least 60 seconds. Do not use
-sleeps for synchronization or assert wall-clock duration. Give inode and mtime
-fixtures explicit identities or timestamps. Seed random inputs. Use private
-temporary paths and stores, bound native threads, and preserve PB affinity.
-Outcome tests that execute admitted children must also isolate coordinator
-discovery and storage. Direction-refusal fixtures must state whether dirty
-source is allowed. Historical comparisons use verified retained source inputs,
-because transported checkouts may lack old Git objects.
-
-Prove every new or changed assertion can fail against the pre-fix behavior or
-a named mutant. Record the mutant and its RED action key. Do not create
-tautological tests: self-comparisons, constant assertions, a mock's configured
-return value, expectations recomputed by the subject, or assertions that only
-repeat a caller's arguments. Remove such tests found in touched files and
-report each removal and reason. Report findings outside those files. Synthetic
-passing and skipping subjects used to test outcome accounting remain valid
-fixtures when independent assertions check the resulting accounting.
-
-Run every changed test file at least five executed times per architecture
-through PB, including xdist. Vary supported reporting arguments such as
-`--durations` or `--tb` to avoid cache hits. Verify client exit status, terminal
-records, logs, and CAS receipts. Record skips and missing tools. Treat one
-failure as a failure and repair its cause. Do not use retries, quarantine,
-xfail, skip, deselection, rerun plugins, or increased timeouts to hide it.
