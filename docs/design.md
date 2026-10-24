@@ -757,14 +757,23 @@ publication and retirement slots, and gang members. A live gang also includes
 all READY and CLAIMED sources for its movement obligations. Unrelated ordinary
 claims do not invalidate a measurement-only result. Directory identities
 bracket listings. Publication requires equal generations before and after the
-complete locked read. Reuse takes the cached selections' sorted nonblocking M
-keys before H, verifies the generation and age under H, and restores fences for
-busy keys and retained holders. Missing, stale or unverifiable results fall
-back. Shared reuse never supplies a new retirement proof. The ordinary proof
-uses exactly the complete census's per-key retirement rule. These source reads,
-generation checks and optional cache serialization run inline, outside the
-abandonable owned-reader contract: cooperative deadlines are checked between
-files, so a stalled filesystem syscall can hold H. Measurement and gang candidates retain their
+complete locked read. Reuse takes the cached and pass-remembered selections'
+sorted nonblocking M keys before H, verifies the generation and age under H,
+and restores fences for busy keys and retained holders. A sibling's omission
+is not retirement authority: selections remembered by this pass but absent
+from the shared result remain remembered, with their live fences intact.
+Missing, stale or unverifiable results fall back. Shared reuse never supplies a
+new retirement proof. The ordinary proof uses exactly the complete census's
+per-key retirement rule. Optional source-generation preparation and verification
+run in a separately owned bounded child using the refresh budget. Its independent
+nonblocking guard never waits for the census reader fence. The persist-before-read
+handshake and inherited-descriptor isolation are the same as the census reader's:
+a timed-out child cannot retain M/H, and an unsettled child prevents another
+source helper across loop restarts without preventing a complete census. A busy,
+timed-out or unverifiable optional read disables cache publication or reuse,
+not an otherwise authoritative complete census. Ordinary sidecar proofs and local
+cache serialization still run inline; their cooperative deadlines do not bound a
+stalled filesystem syscall. Measurement and gang candidates retain their
 owned-reader path. A census refusal still ends reader attempts for the pass,
 but each later ordinary candidate can prove that it is outside every fence;
 the refusal is recorded only when that candidate still needs the census.
