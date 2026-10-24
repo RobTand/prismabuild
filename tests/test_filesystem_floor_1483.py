@@ -123,18 +123,20 @@ def test_identify_resolves_symlinks_and_absent_paths(tmp_path):
 
 
 @pytest.mark.parametrize("free_inodes", [0, 49, 50])
-def test_used_path_checks_inode_floor_with_free_bytes(tmp_path, monkeypatch, free_inodes):
+def test_used_path_checks_inode_floor_with_free_bytes(
+        tmp_path, monkeypatch, free_inodes, floor_2046_world):
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900,
                                 1000, free_inodes, free_inodes, 0, 255))
     monkeypatch.setattr(ff.os, "fstatvfs", lambda fd: sampled)
-    verdicts = ff.check_paths(tmp_path / "queue", [tmp_path])
-    assert len(verdicts) == 1
-    assert verdicts[0]["allowed"] is (free_inodes >= 50), verdicts
-    assert verdicts[0]["free_inodes"] == free_inodes
-    assert verdicts[0]["floor_inodes"] == 50
+    queue, _binding, _ledger = floor_2046_world
+    verdicts = ff.check_paths(queue.root, [tmp_path])
+    local, = [v for v in verdicts if v.get("sample") == "fresh-local"]
+    assert local["allowed"] is (free_inodes >= 50), verdicts
+    assert local["free_inodes"] == free_inodes
+    assert local["floor_inodes"] == 50
     if free_inodes < 50:
-        assert verdicts[0]["reason"] == "below_inode_floor"
-        assert "inodes" in ff.describe_verdict(verdicts[0])
+        assert local["reason"] == "below_inode_floor"
+        assert "inodes" in ff.describe_verdict(local)
 
 
 def test_zfs_sample_keeps_pool_capacity_when_dataset_device_changes(monkeypatch):
@@ -168,21 +170,27 @@ def test_zfs_sample_keeps_pool_capacity_when_dataset_device_changes(monkeypatch)
     assert space["inode_refusal"] is None
 
 
-def test_btrfs_zero_inode_totals_do_not_add_a_capacity_refusal(tmp_path, monkeypatch):
+def test_btrfs_zero_inode_totals_do_not_add_a_capacity_refusal(
+        tmp_path, monkeypatch, floor_2046_world):
     # btrfs reports no fixed inode limit; the fixture filesystem may differ.
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 0, 0, 0, 0, 255))
     monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
-    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    queue, _binding, _ledger = floor_2046_world
+    verdict, = [v for v in ff.check_paths(queue.root, [tmp_path])
+                if v.get("sample") == "fresh-local"]
     assert verdict["allowed"] is True
     assert verdict["size_inodes"] == 0
     assert verdict["floor_inodes"] == 0
     assert verdict["inode_refusal"] is None
 
 
-def test_available_inode_floor_does_not_spend_privileged_free_inodes(tmp_path, monkeypatch):
+def test_available_inode_floor_does_not_spend_privileged_free_inodes(
+        tmp_path, monkeypatch, floor_2046_world):
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 900, 49, 0, 255))
     monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
-    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    queue, _binding, _ledger = floor_2046_world
+    verdict, = [v for v in ff.check_paths(queue.root, [tmp_path])
+                if v.get("sample") == "fresh-local"]
     assert verdict["allowed"] is False
     assert verdict["reason"] == "below_inode_floor"
     assert verdict["free_inodes"] == 49
@@ -211,7 +219,12 @@ def test_mode_file_sets_the_fleet_mode_and_env_overrides_it(tmp_path, monkeypatc
     monkeypatch.setenv(ff.MODE_ENV, "off")
     assert ff.mode(queue.root) == "off"
     monkeypatch.setenv(ff.MODE_ENV, "enforec")
-    assert ff.mode(queue.root) == "observe"
+    # A typo must not downgrade an enforcement request to allowing observe.
+    try:
+        with pytest.raises((ff.FloorError, ff.FloorRefused)):
+            ff.enforce_paths(queue.root, [tmp_path], label="invalid-mode")
+    finally:
+        monkeypatch.delenv(ff.MODE_ENV, raising=False)
 
 
 # -- register, refresh, admit ---------------------------------------------------------
@@ -468,8 +481,8 @@ def test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published(tmp_pa
     found = _stable(tmp_path)
     queue = _queue(tmp_path)
     fresh = ff.check_paths(queue.root, [tmp_path, tmp_path / "x"])
-    assert len(fresh) == 1 and fresh[0]["sample"] == "fresh-unbound"
-    assert fresh[0]["allowed"] is True
+    assert fresh and all(not v["allowed"] for v in fresh), fresh
+    # Zero declared demand is not proof of a closed allowance population.
     _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))
     bound = ff.check_paths(queue.root, [tmp_path])
     assert [v["filesystem"] for v in bound] == [found["key"]] * 2
@@ -497,7 +510,7 @@ def test_server_addresses_leave_out_loopback_link_local_and_bridges():
     assert "172.17.0.1" not in ff._host_addresses()
 
 
-def test_nfs_is_attributed_by_server_address_and_charged_conservatively(tmp_path, enforce, ample_space):
+def test_nfs_server_address_alone_cannot_authenticate_capacity(tmp_path, enforce, ample_space):
     nfs = _nfs_path()
     if nfs is None:
         pytest.skip("no readable NFS mount on this worker")
@@ -507,18 +520,17 @@ def test_nfs_is_attributed_by_server_address_and_charged_conservatively(tmp_path
     assert unattributed[0]["reason"] == "unattributed_nfs"
     with pytest.raises(ff.FloorRefused):
         ff.enforce_paths(queue.root, [nfs], label="t")
-    # The server registers its filesystem; here this host stands in for it by
-    # registering its own disk with the server's address, which is exactly
-    # the record a server-side registration writes.
+    # An address match is not authenticated export-to-capacity mapping:
+    # an NFS client FSID must not be equated to a local pool by address.
     server = ff.identify(nfs)["server"]
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
     path = ff.fs_dir(queue.root, binding["key"]) / "binding.json"
     ff._floor_write(path, {**ff._floor_read(path), "server_addresses": [server]})
     assert queue.ledger(HOST).acquire("a" * 64, {"spool_gb": 2})
     verdicts = ff.check_paths(queue.root, [nfs])
-    client = [v for v in verdicts if v.get("sample") == "fresh-nfs-client"]
-    assert len(client) == 1 and client[0]["charge_bytes"] == 2 * GIB
-    assert client[0]["matched"] == [binding["key"]]
+    assert verdicts and any(not v["allowed"] for v in verdicts), verdicts
+    with pytest.raises(ff.FloorRefused):
+        ff.enforce_paths(queue.root, [nfs], label="address-is-not-mapping")
 
 
 # -- coordinator growth, release on exit, the reaper -------------------------------------
@@ -847,6 +859,286 @@ def test_observe_past_a_busy_lock_admits_without_touching_the_counter(
     finally:
         holder.kill()
         holder.wait()
+
+
+# -- #2046 identity and closed-accounting acceptance -------------------------
+
+@pytest.fixture
+def floor_2046_world(tmp_path, monkeypatch, enforce):
+    """Portable local backing identity; only the OS capacity sensors are fake."""
+    monkeypatch.setattr(ff, "_mount_row", lambda fd: ("ext4", "none", "rw"))
+    monkeypatch.setattr(ff, "_block_uuid", lambda dev: "floor-2046-device")
+    monkeypatch.setattr(ff, "_host_addresses", lambda: [])
+    vfs = os.statvfs_result((1, 1, 100 * GIB, 90 * GIB, 90 * GIB,
+                            1000, 900, 900, 0, 255))
+    monkeypatch.setattr(ff.os, "statvfs", lambda path: vfs)
+    monkeypatch.setattr(ff.os, "fstatvfs", lambda fd: vfs)
+    queue = _queue(tmp_path)
+    result = ff.register(queue.root, tmp_path, filesystem_gib=32,
+                         filesystem_ledger="floor2046")
+    binding = result["binding"]
+    ledger = pool.ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="floor2046")
+    return queue, binding, ledger
+
+
+def _floor_2046_begin(ledger, count=1):
+    """Both explicit refusal and the existing no-handle API are safe denial."""
+    try:
+        return ledger.begin_acquire("candidate", {ff.FILESYSTEM_KIND: count})
+    except ff.FloorError:
+        return None
+
+
+def test_2046_unbound_zero_demand_is_not_population_proof(tmp_path, floor_2046_world):
+    _queue, _binding, _ledger = floor_2046_world
+    other = tmp_path / "unregistered-queue"
+    verdicts = ff.check_paths(other, [tmp_path])
+    assert verdicts and any(not v["allowed"] for v in verdicts), verdicts
+    with pytest.raises(ff.FloorRefused):
+        ff.enforce_paths(other, [tmp_path], label="unregistered")
+
+
+def test_2046_exact_floor_aliases_and_aggregate(tmp_path, monkeypatch, floor_2046_world):
+    queue, binding, ledger = floor_2046_world
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    second = pool.ResourceLedger(queue.root / "tier-reservations", host="second")
+    second.ensure_capacity({"stage_gib": 8})
+    ff.register(queue.root, tmp_path,
+                members=[("tier-reservations", "second", "stage_gib")])
+    private = ledger.begin_acquire("incumbent", {ff.FILESYSTEM_KIND: 2})
+    assert private is not None
+    assert ledger.commit_acquire("action-a", private) == 2
+    assert second.acquire("action-b", {"stage_gib": 3})
+    # Even demonstrably resident data is not an owner/sample-bound credit.
+    # W1 has approved no exact credit producer; keep the complete allowances.
+    (tmp_path / "materialized-output").write_bytes(b"resident" * 1024)
+    charge = 5 * GIB
+    for size in (100 * GIB, 100 * GIB + 1, 100 * GIB + 19):
+        for delta in (0, -1):
+            free = (size + 19) // 20 + charge + GIB + delta
+            vfs = os.statvfs_result((1, 1, size, free, free, 1000, 900, 900, 0, 255))
+            monkeypatch.setattr(ff.os, "statvfs", lambda path: vfs)
+            monkeypatch.setattr(ff.os, "fstatvfs", lambda fd: vfs)
+            assert ff.refresh_binding(queue.root, binding)["allowed"]
+            verdicts = ff.check_paths(queue.root, [tmp_path, alias])
+            assert all(v["allowed"] for v in verdicts), verdicts
+            local, = [v for v in verdicts if v.get("sample") == "fresh-local"]
+            assert local["charge_bytes"] == charge
+            assert local["required_bytes"] == (size + 19) // 20 + charge
+            proposed = _floor_2046_begin(ledger)
+            assert (proposed is not None) is (delta == 0)
+            if proposed is not None:
+                assert ledger.abandon_acquire(proposed) == 1
+    # Equal/below arithmetic is meaningful only for a closed population.
+    # The same roomy physical alias without an accounting registry must refuse.
+    unregistered = ff.check_paths(tmp_path / "other-queue", [alias])
+    assert any(not v["allowed"] for v in unregistered), unregistered
+
+
+def test_2046_sample_rejects_descriptor_identity_mismatch(tmp_path, monkeypatch, floor_2046_world):
+    original_fstat = ff.os.fstat
+    monkeypatch.setattr(ff, "_block_uuid", lambda dev: f"device-{dev}")
+    found = ff.identify(tmp_path)
+
+    def substituted_fstat(fd):
+        fields = list(original_fstat(fd))
+        fields[2] = found["device"] + 1
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(ff.os, "fstat", substituted_fstat)
+    assert ff.identify(tmp_path)["key"] != found["key"]
+    with pytest.raises(ff.FloorError):
+        ff._sample(found)
+
+
+def test_2046_zfs_sample_rejects_changed_pool_at_path(tmp_path, monkeypatch, floor_2046_world):
+    source = ["pool-a/work"]
+    monkeypatch.setattr(ff, "_mount_row", lambda fd: ("zfs", source[0], "rw"))
+    monkeypatch.setattr(ff, "_command", lambda argv: {"pool-a": "101", "pool-b": "202"}[argv[-1]])
+    monkeypatch.setattr(ff, "_zfs_space", lambda name: (100 * GIB, 90 * GIB))
+    found = ff.identify(tmp_path)
+    assert found["key"] == "zfs:101"
+    source[0] = "pool-b/work"
+    assert ff.identify(tmp_path)["key"] == "zfs:202"
+    with pytest.raises(ff.FloorError):
+        ff._sample(found)
+
+
+def test_2046_same_server_exports_not_suppressed(tmp_path, monkeypatch, floor_2046_world):
+    queue, binding, _ledger = floor_2046_world
+    ff._floor_write(ff.fs_dir(queue.root, binding["key"]) / "binding.json",
+                    {**binding, "server_addresses": ["192.0.2.9"]})
+    original = ff.identify(tmp_path)
+    first, second = tmp_path / "export-a", tmp_path / "export-b"
+    calls = []
+
+    def identify_export(path):
+        calls.append(str(path))
+        index = 1 if Path(path) == first else 2
+        return {**original, "path": str(path), "fstype": "nfs4", "key": None,
+                "device": index, "source": f"192.0.2.9:/export-{index}",
+                "server": "192.0.2.9", "free_bytes": 90 * GIB if index == 1 else 0}
+
+    monkeypatch.setattr(ff, "identify", identify_export)
+    one = ff.check_paths(queue.root, [first])
+    both = ff.check_paths(queue.root, [first, second])
+    reverse = ff.check_paths(queue.root, [second, first])
+    assert all(any(not v["allowed"] for v in vs) for vs in (one, both, reverse)), (one, both, reverse)
+    assert str(first) in calls and str(second) in calls
+
+
+@pytest.mark.parametrize("damage", ["missing", "regressed"])
+def test_2046_counter_damage_refuses_acquisition(tmp_path, floor_2046_world, damage):
+    queue, binding, ledger = floor_2046_world
+    handle = ledger.begin_acquire("incumbent", {ff.FILESYSTEM_KIND: 2})
+    assert handle and ledger.commit_acquire("incumbent", handle) == 2
+    assert ff.refresh_binding(queue.root, binding)["allowed"]
+    directory = ff.fs_dir(queue.root, binding["key"])
+    if damage == "missing":
+        (directory / "granted.json").unlink()
+    else:
+        ff._floor_write(directory / "granted.json", {"granted_bytes": 0})
+    verdict = ff.published_verdict(queue.root, binding)
+    assert not verdict["allowed"], verdict
+    assert _floor_2046_begin(ledger) is None
+
+
+def test_2046_grant_write_failure_cannot_leave_success(tmp_path, monkeypatch, floor_2046_world):
+    queue, binding, ledger = floor_2046_world
+    write = ff._floor_write
+
+    def broken_grant_write(path, value):
+        if Path(path).name == "granted.json":
+            raise OSError("injected floor grant persistence failure")
+        return write(path, value)
+
+    monkeypatch.setattr(ff, "_floor_write", broken_grant_write)
+    assert _floor_2046_begin(ledger) is None, "tokens escaped without a durable floor charge"
+    assert (ledger.available()[ff.FILESYSTEM_KIND] == 32
+            or not ff.published_verdict(queue.root, binding)["allowed"])
+
+
+def test_2046_missing_member_population_is_not_empty(tmp_path, floor_2046_world):
+    queue, binding, ledger = floor_2046_world
+    handle = ledger.begin_acquire("incumbent", {ff.FILESYSTEM_KIND: 2})
+    assert handle and ledger.commit_acquire("incumbent", handle) == 2
+    ledger.held_dir.rename(ledger.held_dir.with_name("held-unreadable"))
+    try:
+        result = ff.refresh_binding(queue.root, binding)
+    except (ff.FloorError, OSError):
+        pass
+    else:
+        assert not result["allowed"], result
+    assert _floor_2046_begin(ledger) is None
+
+
+def test_2046_transfer_during_census_cannot_erase_charge(tmp_path, monkeypatch, floor_2046_world):
+    queue, binding, ledger = floor_2046_world
+    handle = ledger.begin_acquire("operation", {ff.FILESYSTEM_KIND: 1})
+    assert handle and ledger.commit_acquire("z", handle) == 1
+    (ledger.held_dir / "a").mkdir(exist_ok=True)
+    original_listdir = os.listdir
+    in_transfer = [False]
+
+    def moving_listdir(path):
+        path = Path(path)
+        if in_transfer[0]:
+            return original_listdir(path)
+        if path == ledger.held_dir:
+            return ["a", "z"]
+        if path.parent == ledger.held_dir and path.name in ("a", "z"):
+            try:
+                result = original_listdir(path)
+            except FileNotFoundError:
+                result = []
+            # Capture A before Z->A, then Z before A->Z. Neither pass can
+            # see this token, although the existing owner always holds it.
+            src, dst = ("z", "a") if path.name == "a" else ("a", "z")
+            in_transfer[0] = True
+            try:
+                ledger.transfer(src, dst)
+            finally:
+                in_transfer[0] = False
+            return result
+        return original_listdir(path)
+
+    monkeypatch.setattr(ff.os, "listdir", moving_listdir)
+    try:
+        result = ff.refresh_binding(queue.root, binding)
+    except ff.FloorError:
+        pass
+    else:
+        assert not result["allowed"] or result["charge_bytes"] >= GIB, result
+    verdict = ff.published_verdict(queue.root, binding)
+    assert not verdict["allowed"] or verdict["charge_bytes"] >= GIB, verdict
+
+
+def test_2046_refresh_probes_outside_floor_locks(tmp_path, monkeypatch, floor_2046_world):
+    from contextlib import contextmanager
+    queue, binding, _ledger = floor_2046_world
+    locked = [False]
+    original_lock = ff.floor_locked
+    original_sample = ff._sample
+
+    @contextmanager
+    def tracked_lock(*args, **kwargs):
+        with original_lock(*args, **kwargs) as acquired:
+            locked[0] = bool(acquired)
+            try:
+                yield acquired
+            finally:
+                locked[0] = False
+
+    def sample(found):
+        assert not locked[0], "blocking physical sample under admission floor lock"
+        return original_sample(found)
+
+    monkeypatch.setattr(ff, "floor_locked", tracked_lock)
+    monkeypatch.setattr(ff, "_sample", sample)
+    result = ff.refresh_binding(queue.root, binding)
+    assert result["allowed"], result
+
+
+def test_2046_refresh_cannot_restamp_stale_sensor_data(tmp_path, monkeypatch, floor_2046_world):
+    queue, binding, ledger = floor_2046_world
+    clock = [1000.0]
+    monkeypatch.setattr(ff.time, "time", lambda: clock[0])
+    assert ff.refresh_binding(queue.root, binding)["allowed"]
+    original_sample = ff._sample
+
+    def slow_sample(found):
+        result = original_sample(found)
+        clock[0] += ff.SAMPLE_MAX_AGE_S + ff.CLOCK_SKEW_S + 1
+        return result
+
+    monkeypatch.setattr(ff, "_sample", slow_sample)
+    try:
+        result = ff.refresh_binding(queue.root, binding)
+    except ff.FloorError:
+        pass
+    else:
+        assert not result["allowed"], result
+    assert _floor_2046_begin(ledger) is None
+
+
+@pytest.mark.parametrize("state", ["malformed", "unreadable"])
+def test_2046_enforcement_state_errors_never_allow(tmp_path, monkeypatch, floor_2046_world, state):
+    queue, _binding, ledger = floor_2046_world
+    monkeypatch.delenv(ff.MODE_ENV, raising=False)
+    path = ff.floor_root(queue.root) / "mode"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not-a-mode" if state == "malformed" else "enforce")
+    if state == "unreadable":
+        original = Path.read_text
+
+        def read_text(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("injected mode read failure")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+    assert _floor_2046_begin(ledger) is None
 
 
 def test_a_malformed_owner_record_does_not_stop_the_reaper(tmp_path, enforce, ample_space):
