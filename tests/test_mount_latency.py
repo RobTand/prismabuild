@@ -583,9 +583,21 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised(
         clock[0] += setup_s
         return 4242
 
+    cancellations = []
+
+    def cancel_probe(pid, signum):
+        cancellations.append((pid, signum))
+
+    def reap_probe(pid, flags=0):
+        # This runnable child exits only after cancellation. Without SIGKILL
+        # it remains alive, so reaping cannot clear the outstanding waiter.
+        if (pid, signal.SIGKILL) in cancellations:
+            return pid, signal.SIGKILL
+        return 0, 0
+
     monkeypatch.setattr(mount_latency.os, "fork", start_unanswered_probe)
-    monkeypatch.setattr(mount_latency.os, "kill", lambda pid, signum: None)
-    monkeypatch.setattr(mount_latency.os, "waitpid", lambda pid, flags=0: (pid, 0))
+    monkeypatch.setattr(mount_latency.os, "kill", cancel_probe)
+    monkeypatch.setattr(mount_latency.os, "waitpid", reap_probe)
 
     def unavailable(readers, writers, errors, timeout):
         wait_budgets.append(timeout)
@@ -603,7 +615,8 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised(
     assert record["probe"]["deadline_s"] == 0.2
     assert wait_budgets == pytest.approx(expected_waits)
     assert record["probe"]["elapsed_s"] == expected_elapsed
-    # The injected wait result proves reaping; it must not leave a waiter.
+    assert cancellations == [(4242, signal.SIGKILL)]
+    # A successfully cancelled and reaped child must not leave a waiter.
     assert sampler._outstanding_pid is None
 
 
