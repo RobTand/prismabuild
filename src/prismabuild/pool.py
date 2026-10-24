@@ -3491,6 +3491,7 @@ def tier_ledger_names_from(reader: Callable[[Path], frozenset[str]] | None):
 class CpuTokenSelection:
     tokens: tuple[Path, ...]
     unknown_holder: str | None = None
+    release_credit: int = 0
 
 
 class ResourceLedger:
@@ -3743,13 +3744,15 @@ class ResourceLedger:
                             releasing=()) -> CpuTokenSelection:
         """Select disjoint physical IDs, also for a hypothetical complete release."""
         tokens = list(immutable_files.match_optional(self.free_dir, "cpu-*"))
+        free = tuple(tokens)
         releasing = frozenset(releasing)
         census = self.holder_census()
-        assigned = set()
+        assigned, all_assigned = set(), set()
+        baseline_unknown = False
         for holder in census.non_mirror_holders:
-            if holder.name in releasing:
+            released = holder.name in releasing
+            if released:
                 tokens.extend(immutable_files.match_optional(self.held_dir / holder.name, 'cpu-*'))
-                continue
             reservation = census.cpu(holder.name)
             metadata = reservation.metadata
             allocation = metadata.get('allocation')
@@ -3757,26 +3760,35 @@ class ResourceLedger:
                 if tiers is None:
                     tiers = record_store.read_document(self.base / 'cpu-map.json')
                 if tiers is None:
-                    raise PoolContractError('CPU allocation selection needs a topology')
+                    return CpuTokenSelection((), holder.name)
                 try:
                     allocation = self.cpu_allocation(holder.name, tiers, metadata=metadata)
                 except PoolContractError:
-                    return CpuTokenSelection((), holder.name)
-                assigned.update(allocation['preferred'] + allocation['fallback'])
+                    if not released:
+                        return CpuTokenSelection((), holder.name)
+                    baseline_unknown = True
+                    continue
+                cpus = allocation['preferred'] + allocation['fallback']
+                all_assigned.update(cpus)
+                if not released:
+                    assigned.update(cpus)
             elif reservation.has_contents or not holder.name.startswith(ACQUIRING_PREFIX):
-                # A missing affinity record cannot prove a returned token is
-                # disjoint from a surviving borrower or funded dependent.
                 if tiers is not None or record_store.read_document(self.base / 'cpu-map.json'):
-                    return CpuTokenSelection((), holder.name)
+                    if not released:
+                        return CpuTokenSelection((), holder.name)
+                    baseline_unknown = True
         tokens.sort(key=lambda token: token.name)
-        if eligible_cpus is None and not assigned:
-            return CpuTokenSelection(tuple(tokens))
+        if eligible_cpus is None and not all_assigned and not baseline_unknown:
+            return CpuTokenSelection(tuple(tokens), release_credit=len(tokens) - len(free))
         if tiers is None:
             raise PoolContractError('eligible CPU selection needs a topology')
         allowed = (set(tiers['preferred'] + tiers['fallback']) if eligible_cpus is None
                    else set(eligible_cpus)) - assigned
-        return CpuTokenSelection(tuple(token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers))
-                                       if cpu in allowed))
+        selected = tuple(token for token, cpu in zip(tokens, self.cpu_ids(tokens, tiers))
+                         if cpu in allowed)
+        baseline = (0 if baseline_unknown else sum(
+            cpu in allowed and cpu not in all_assigned for cpu in self.cpu_ids(free, tiers)))
+        return CpuTokenSelection(selected, release_credit=max(0, len(selected) - baseline))
 
     def admission_available(self, tiers: Mapping | None = None, *, releasing=()) -> dict[str, int]:
         """Physical fit after releases, retaining every surviving borrower's IDs."""
@@ -11930,8 +11942,8 @@ class PoolQueue:
                     return progress
             if mode == "tokens" and "cpu" in progress.short:
                 releasing = [bound["action_key"] for bound in progress.draining]
-                released = ledger.admission_available(cpu_tiers, releasing=releasing)
-                progress.covered["cpu"] = max(0, released["cpu"] - available["cpu"])
+                progress.covered["cpu"] = ledger.cpu_token_selection(
+                    cpu_tiers, releasing=releasing).release_credit
             return drain_policy.finish_drain(progress)
         except BaseException as exc:
             return drain_policy.failed_drain(progress, exc)
