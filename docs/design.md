@@ -5605,7 +5605,11 @@ The signature binds the evidence kind, filing, exact plan bytes, and (for
 supersession) marker identity. Recovery, failed reads, unverified markers, and
 changed evidence reset confirmation; a denial named `plan_unreadable` alone is
 not proof. Existing public denial names are unchanged, including supersession
-that is discovered without an ended lead in the verdict.
+that is discovered without an ended lead in the verdict. A resident map does
+not override verified supersession: the member still defers admission and
+confirms teardown while READY, even if no other resource blocks its launch.
+A failed plan read anywhere in that scan resets confirmation even when another
+read succeeds later in the same scan; it cannot reuse the aged observation.
 After the same terminal evidence has been observed for 120 seconds, the next
 successful eligible claim scan must freshly confirm it and record teardown.
 Plan proof and commit hold the consumer's transition lock; the distinct

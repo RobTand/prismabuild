@@ -5,7 +5,55 @@ confirmation and teardown owners. The existing locked terminal-lead proof remain
 a separate helper. No public verdict, SDK signature, field inventory, or golden
 was changed. The acceptance overlay was not edited.
 
-## Acceptance and repository guards
+## Review repair: resident supersession and one-shot uncertainty
+
+The initial 162-case results below did not cover two reproduced gaps. Added
+`tests/test_gang_plan_confirmation.py`, using the existing private-pool fixtures
+without modifying the acceptance overlay. Before the repair, its three cases
+failed on x86: memory-blocked resident supersession kept fencing, unblocked
+resident supersession launched, and a one-shot verdict read failure reused the
+aged mark. The final regressions also exercise both the first and second plan
+lookup with OSError and temporary absence. They require a fresh confirmation
+window, normal withdrawal, LOW admission, and preservation of the executed mover
+and unrelated incumbent holdings.
+
+The claim pass now probes terminal plan evidence even when residency is ready,
+and defers a superseded member's admission during confirmation. The plan owner
+privately reports read uncertainty within a scoped context, so a later successful
+read in the same verdict cannot erase the reset. Ordinary absence of a filed
+plan still permits the existing independent terminal-lead proof. Public verdict
+and SDK shapes and locked lead-generation proof remain unchanged.
+
+Final command on both arms:
+
+```sh
+python -m pytest tests/test_gang_plan_confirmation.py tests/test_gang_plan_terminal_1543.py tests/test_gang_residency_members.py tests/test_gang_teardown_with_prelaunch_1543.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py tests/test_client_sdk_surface.py -q --basetemp="$TMPDIR/pytest"
+```
+
+Observed: **339 passed on x86/Python 3.14; 339 passed on ARM/Python 3.12**.
+Final diff and `git diff --check` inspected. No golden, field inventory or
+acceptance-file changes. Record compatibility was not rerun during this repair:
+the independently confirmed PB-owner namespace/runtime prerequisite below
+remains unresolved. These passes are not release qualification.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"eb356b97239e1841764f1ab851c2fdac08f87f2cc0fe2e0ae42d9c23eaf00078","size":2990}},"operation":"34408385784b760f59015b9b2879c4b55d27f8e95c8b5b2870a5ae47322686d7","receipt":"6e38864bd791118f86028e43e1a04c87d0f1a84015a341ce0821eb9f8a3ee80a"}]
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"d374cb48ef50f9d119ffbdf7e37d3086d74bd9c6cee2bc65683b4505a1bf17f5","size":2991}},"operation":"2d0d950b3c1e51f08de869259caa035823ed3b509cbb6e25dec8b865dbb63996","receipt":"2241587f6f52dbab56118429f0fddc1cbe369b17d687a71f4f9a0be1bb1e6790"}]
+
+Pre-repair reproduction command: `python -m pytest tests/test_gang_plan_confirmation.py -q --tb=short --basetemp="$TMPDIR/pytest"` (3 failed).
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"22aa6af555d9655a78e181acf19826439198538646f7ae9f942d2657cd81aac9","size":3845}},"operation":"5d3ab11f2352fe347c263a921cebe51f5ba3d2b151f47cf48b8aba7deb03d667","receipt":"4e9ad9e28797b8401b0d1a8919d71eda0d0baceee39c2dfb58d5c4d32b731fc8"}]
+
+Development checks also exposed and resolved a test-double staticmethod wiring
+error and an overbroad reset on ordinary absent plans (35 existing lead cases
+failed before absence was distinguished from actual read failure). The final
+combined results above supersede those intermediate failures.
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"befdfc7ad7bab088aa7719b4baa87d1dc5514f5439eaf1121c4857ca49b8331b","size":4597}},"operation":"daac97aa708ffd0de0f2f83b09275b67a436a5034d47e3aaece215147cc7872d","receipt":"eeadee66b2ba87c8448031903c21c5a54c82670970fe6133c27a301c42759482"}]
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"276cac445c075ca751bf0f0186d5c28b2c0f2c88a154b8d34afc865bb1b28868","size":50158}},"operation":"7a3541d94713a0d1bddd2e0a64d4d53fa25523ef9b1df4394885d448ed93114a","receipt":"18860863ff153a2d2839d912f78c06198503e46721ea0705dfbcb7c596027d6b"}]
+
+## Initial acceptance and repository guards (before review repair)
 
 On each arm:
 

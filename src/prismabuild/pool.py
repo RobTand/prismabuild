@@ -16950,8 +16950,14 @@ class PoolQueue:
         # ``tolerate_stale`` inside the by-key readers, whose loudness
         # is what turns a broken mount into a visible failure instead
         # of a confident wrong verdict.
+        from . import residency_plan
+
         try:
-            residency = self.residency_verdict(item)
+            # Best-effort plan readers may swallow an I/O error before a
+            # later read succeeds in this same verdict. Preserve that reset
+            # signal privately, without changing the public verdict shape.
+            with residency_plan._observe_read_uncertainty() as plan_uncertainty:
+                residency = self.residency_verdict(item)
         except (OSError, PoolContractError) as exc:
             residency_block = item.get("residency")
             leads = (residency_block.get("leads")
@@ -16974,6 +16980,18 @@ class PoolQueue:
                    if carried is not None else {})})
             return scan
         reason = candidate_policy.residency_denial(residency)
+        if reason is None and item.get("gang") is not None:
+            # A resident map does not make a retired filing usable. Inspect
+            # plan retirement independently of the host's residency verdict,
+            # including while resources keep this member READY. Keep the
+            # existing denial name and defer admission during confirmation.
+            try:
+                if self._terminal_plan_signature(key) is not None:
+                    reason = "residency_plan_unreadable"
+            except (OSError, ValueError, pb.PrismaBuildError):
+                self._gang_clear_terminal(item, key)
+                return candidate_policy.CandidateDenial(
+                    "residency_plan_unreadable", {'residency': residency}, scan)
         if reason is not None:
             # Before any token is taken, and without ``record_pass``:
             # the bytes are not there, so this box should go do other
@@ -17002,7 +17020,21 @@ class PoolQueue:
             # loop's next recomposition drops the prior-epoch
             # fragment (#640).
             if item.get("gang") is not None:
-                if self._gang_terminal_confirmed(item, key, residency):
+                interrupted = bool(plan_uncertainty)
+                if (interrupted and not any(plan_uncertainty)
+                        and reason == "residency_lead_terminal"):
+                    # An absent plan is ordinary for lead-only consumers.
+                    # Preserve their separate proof, but never bridge a
+                    # missing observation into a now-readable plan proof.
+                    try:
+                        interrupted = self._terminal_plan_signature(key) is not None
+                    except (OSError, ValueError, pb.PrismaBuildError):
+                        pass
+                if interrupted:
+                    # No successful reproof in this scan may bridge an
+                    # unavailable earlier plan/marker observation.
+                    self._gang_clear_terminal(item, key)
+                elif self._gang_terminal_confirmed(item, key, residency):
                     # This member can never start, so its gang cannot:
                     # its elected siblings would fence their hosts
                     # until someone withdrew the gang, because
