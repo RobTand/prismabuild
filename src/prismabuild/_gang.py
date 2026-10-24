@@ -98,9 +98,11 @@ def state_dir(queue, group: str) -> Path:
     return root(queue) / group
 
 
-def _gang_read(path: Path, *, optional: bool = True) -> dict | None:
+def _gang_read(path: Path, *, optional: bool = True, replaced: bool = False) -> dict | None:
     try:
-        raw = immutable_files.read_stable_file(
+        reader = (immutable_files.read_replaced_record if replaced
+                  else immutable_files.read_stable_file)
+        raw = reader(
             path,
             where="gang record",
             max_bytes=MAX_RECORD_BYTES,
@@ -242,6 +244,7 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
             continue
         claimed = _gang_read(
             queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]),
+            replaced=True,
         )
         if (claimed is not None and claimed.get("action_key") == other["action_key"]
                 and float(claimed.get("published_unix", math.nan)) == float(other["published_unix"])):
@@ -474,7 +477,8 @@ def backfill_holders(queue, election: Mapping[str, object]) -> dict[str, dict]:
     from . import pool
     found = {}
     for key in queue.ledger(str(election["host"])).held_keys():
-        holder = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, key))
+        holder = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, key),
+                            replaced=True)
         if (holder is not None and holder.get("claimed_host") == election["host"]
                 and backfill_matches(holder, election)):
             found[key] = holder
