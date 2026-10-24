@@ -165,6 +165,11 @@ The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
 private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
 and fence retained readers by their exact PID/starttime identity.
+Reader creation blocks SIGINT and SIGTERM from pipe allocation through fork
+until the parent enters its exact-child cleanup boundary (#2248). The child
+restores the caller's signal mask before reading. The parent restores it inside
+the cleanup boundary, so a signal pending at fork return cannot abandon the
+child or its pipe. Allocation failures also restore the caller's mask.
 `prismabuild.action_wait` owns the action-wait error types, bounded-read result
 translation, retained-reader polling, delivered-reader scope and timing defaults.
 The synchronous and detached frontends, campaign window and canary import that

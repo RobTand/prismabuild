@@ -128,3 +128,13 @@ Honorable: Law of Demeter · fail fast / illegal states unrepresentable · optim
 
 Treat as constraints. Violate slogans when judgment says so.
 
+
+## Test quality — Rob, 2026-10-24
+
+When adding, changing, or reviewing tests, follow the test-quality rules in
+`docs/contributing.md`. Every assertion needs a demonstrated RED against the
+pre-fix behavior or a named mutant. Do not create tautological tests. Remove
+tautological tests found in files you touch and list each removal in the report.
+Replace timing and ordering assumptions with explicit synchronization or an
+injected clock. A flake repair requires five executed runs per architecture,
+including xdist, with action keys and verified receipts.
