@@ -29,7 +29,15 @@ PyPI and the PyTorch CPU index, exact pins, hashes, no dependency resolution,
 and no cache. Installation output goes to stderr. The final JSON report uses
 the same installed-distribution comparison as `check`. Failed builds remain
 at their destination for inspection. Remove that scratch venv before retrying.
-The tool refuses existing destinations and the live pb-cpu directory.
+The tool refuses existing destinations and all live environment roots or
+descendants declared by `pb_cpu_live_roots` in the checkout's fleet roster
+(`tools/fleet/fleet_boxes.json`, or the supported `tools/fleet_boxes.json`
+layout). Configure absolute environment directory paths, not interpreter paths;
+keep the list in sync when any deployment moves or renames its environment.
+Both roots and destinations resolve symlinks before the containment check, so
+aliases cannot bypass it. Builds fail before directory creation or provisioning
+subprocesses if the roster is unreadable or invalid, or the list is absent or empty.
+`check` remains read-only and does not require this protection configuration.
 
 Run checks, wheel downloads, builds, and tests through the published PB
 clients. Put build scratch on disk, bound native threads, and declare memory,

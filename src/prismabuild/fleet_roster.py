@@ -167,6 +167,15 @@ class Roster:
             raise ValueError("gpu_interpreters must be an array of absolute paths")
         return tuple(value)
 
+    @property
+    def pb_cpu_live_roots(self) -> tuple[str, ...]:
+        value = self.document.get("pb_cpu_live_roots", [])
+        if (not isinstance(value, list)
+                or any(not isinstance(p, str) or "\0" in p or not Path(p).is_absolute()
+                       for p in value)):
+            raise ValueError("pb_cpu_live_roots must be an array of absolute paths")
+        return tuple(value)
+
     def disk_floor_percent(self, entry: Mapping | None = None) -> int | None:
         field = "local_disk_free_floor_percent"
         source = entry if entry is not None and field in entry else self.document
@@ -219,6 +228,7 @@ class Roster:
         """Reject newly published bytes before strict generation readers use them."""
         self.d38_enforce
         self.gpu_interpreters
+        self.pb_cpu_live_roots
         self.disk_floor_percent()
         if "boxes" in self.document:
             boxes = self.boxes
