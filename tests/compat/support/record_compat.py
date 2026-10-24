@@ -347,7 +347,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         environment_bytes = json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("ascii")
         expected = {**asdict(archival_runtime),
                     "environment_before_driver": {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
-                                                  "OPENBLAS_NUM_THREADS": "1", "TMPDIR": "/home/rob/pbt17",
+                                                  "OPENBLAS_NUM_THREADS": "1", "TMPDIR": environment.get("TMPDIR"),
                                                   "TZ": environment.get("TZ")},
                     "environment_digest": {"algorithm": "sha256", "domain": _ENVIRONMENT_DOMAIN,
                                            "encoding": "json-sort-keys-compact-ascii",

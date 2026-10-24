@@ -19927,13 +19927,13 @@ descriptor adds the full Python version, resolved path, executable size and ELF
 identity. The archival child verifies `/proc/self/exe`, its isolated flags,
 assigned affinity and inherited environment before running the unchanged
 retained driver. Complete inherited environment values are bound by a canonical
-digest. The parent captures one environment dictionary, hashes it and passes
-that same dictionary explicitly to the archival subprocess. Native library
-changes to the C environment cannot alter the selected launch environment.
-The environment observation logs only native thread variables, TMPDIR
-and TZ values. The driver then changes TMPDIR to its private store as its
-retained source requires.
-That private value is labelled source-derived unless observed.
+digest. The parent captures one environment dictionary: the expected pre-driver
+TMPDIR (including absence), digest and explicitly passed child environment all
+use that snapshot, not a deployment constant or later Python/native ambient
+mutation. Complete qualification equality remains required. The environment
+observation logs only native thread variables, TMPDIR and TZ values. Separately,
+after qualification the driver changes TMPDIR to its private store as its retained
+source requires; that private value is labelled source-derived unless observed.
 
 The current writer and both forward and reverse readers use the main declared
 gate interpreter. Historical replay still compares every byte with the immutable
