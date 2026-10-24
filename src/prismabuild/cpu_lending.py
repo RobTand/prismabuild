@@ -248,8 +248,12 @@ def require_cpu_acquisition(metadata, *, ledger, key, demand, tiers, begin=False
     eligible = metadata.get('_eligibility')
     if metadata.get('cpu_qos') == 'opportunistic' or metadata.get('cpu_weight', 100) != 100:
         selected = require_opportunistic(eligible)
-        if selected['action_key'] != key or metadata.get('cpu_weight') != 10:
+        if (selected['action_key'] != key or metadata.get('cpu_weight') != 10
+                or metadata.get('cpu_qos') != 'opportunistic'):
             raise ValueError('CPU eligibility differs from the reservation')
+        if (metadata.get('funded') or metadata.get('funded_by')
+                or metadata.get('dependent_allowance')):
+            raise ValueError('opportunistic eligibility excludes funded allocations')
     borrowing = (metadata.get('borrowing') or metadata.get('preferred_borrow')
                  or metadata.get('borrowable_cpus'))
     if not borrowing:

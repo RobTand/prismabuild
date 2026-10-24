@@ -2587,8 +2587,9 @@ class Controller:
             assigned = set(allocation['preferred'] + allocation['fallback'])
             for cpu_id in assigned:
                 assignments[cpu_id] = assignments.get(cpu_id, 0) + 1
-            outstanding += meta.get('borrowed_cpu', 0)
-            borrowers += int(bool(meta.get('borrowed_cpu')))
+            if meta.get('cpu_qos') == 'opportunistic':
+                outstanding += meta.get('borrowed_cpu', 0)
+                borrowers += int(bool(meta.get('borrowed_cpu')))
             donor_eligibility = cpu_lending.opportunistic_eligibility(
                 meta, _sealed_request(meta.get('opportunistic_policy', {})),
                 measurement=bool(meta.get('measurement')),

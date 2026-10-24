@@ -6806,7 +6806,9 @@ preferred raw-budget breach. Unknown or stale PSI also closes the gate. It
 reopens only after avg10 and avg60 both stay below 5% for 30 seconds. PSI
 averages are percent values; the interval remains a fraction. After reopening, each healthy
 10-second observation period can add at most one borrowed affinity ID to the
-future-admission budget. A breach halves that budget. The operator setting
+future-admission budget. Only outstanding opted loans and opted borrowers
+consume this additive budget and its two-borrower limit; legacy loans retain
+main accounting. A breach halves that budget. The operator setting
 `worker_loop --cpu-lending-ramp-cap` defaults to 0, disabling only the additive opted mechanism. Valid
 caps are 0 through 4 with more than ten preferred CPUs, and 0 through 2 otherwise.
 Invalid settings disable the additive mechanism. The initial rollout uses caps 2 then 4 on

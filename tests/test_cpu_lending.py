@@ -547,7 +547,7 @@ def test_legacy_loans_do_not_consume_the_additive_opportunistic_budget(loan_rig,
 
 
 @pytest.mark.parametrize('private', [False, True])
-@pytest.mark.parametrize('funding', ['funded', 'funded_by', 'dependent_allowance'])
+@pytest.mark.parametrize('funding', ['funded', 'funded_by', 'dependent_allowance', 'cpu_qos'])
 def test_nonloan_eligibility_cannot_be_mutated_into_producer_funding(tmp_path, monkeypatch, private, funding):
     monkeypatch.setattr(adaptive_cpu.time, 'time', lambda: 100.)
     monkeypatch.setattr(adaptive_cpu, '_sealed_request',
@@ -564,6 +564,7 @@ def test_nonloan_eligibility_cannot_be_mutated_into_producer_funding(tmp_path, m
         assert metadata and not metadata['borrowing'] and '_loan_grant' not in metadata
         metadata[funding] = ({'cpus': [4], 'mem_gb': 1} if funding == 'funded'
                              else 'b' * 64 if funding == 'funded_by'
+                             else 'protected' if funding == 'cpu_qos'
                              else {'cpu': 1, 'mem_gb': 1, 'slots': 1})
         acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
         with pytest.raises(ValueError, match='eligibility|funded'):
