@@ -54,6 +54,8 @@ def _cleanup_owner(queue, key, generation, attempt):
     record = claimed if claimed is not None else terminal if terminal is not None else lease
     if record is None:
         raise record_store.PoolContractError('cleanup recovery has no durable owner')
+    if record.get('action_key') != key or (lease is not None and lease.get('action_key') != key):
+        raise record_store.PoolContractError('cleanup owner action key contradicts its address')
     launches = record.get('attempts', 0)
     if type(launches) is not int or launches < 0:
         raise record_store.PoolContractError('cleanup owner has invalid attempt count')

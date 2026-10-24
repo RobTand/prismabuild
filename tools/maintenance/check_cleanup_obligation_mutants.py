@@ -11,6 +11,8 @@ MUTANTS = {
     'no-debt': 'test_refusal_records_debt_and_holds_capacity_until_verified',
     'missing-evidence': 'test_refusal_records_debt_and_holds_capacity_until_verified',
     'nonce': 'test_reconciliation_refuses_wrong_or_unproved_identity[nonce]',
+    'owner-key': 'test_legacy_claim_cannot_redirect_cleanup_to_another_action[claim]',
+    'lease-key': 'test_legacy_claim_cannot_redirect_cleanup_to_another_action[lease]',
     'attempt': 'test_reconciliation_refuses_wrong_or_unproved_identity[attempt]',
     'scope': 'test_reconciliation_refuses_wrong_or_unproved_identity[scope]',
     'stale': 'test_reconciliation_refuses_wrong_or_unproved_identity[stale]',

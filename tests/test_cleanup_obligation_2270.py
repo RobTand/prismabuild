@@ -298,10 +298,14 @@ def _named_cleanup_mutant(monkeypatch):
     else:
         import inspect
         import textwrap
-        function = debt._cleanup_owner if mutant == 'nonce' else debt._verify_cleanup_identity
+        function = debt._cleanup_owner if mutant in ('nonce', 'owner-key', 'lease-key') else debt._verify_cleanup_identity
         source = textwrap.dedent(inspect.getsource(function))
         if mutant == 'nonce':
             source = source.replace("if debt is not None and (", "if False and (")
+        elif mutant in ('owner-key', 'lease-key'):
+            source = source.replace(
+                "if record.get('action_key') != key or (lease is not None and lease.get('action_key') != key):",
+                'if False:')
         elif mutant == 'stale':
             source = source.replace("'challenge': challenge, 'empty': True", "'challenge': answer.get('challenge'), 'empty': True")
         else:
@@ -406,3 +410,25 @@ def test_crash_after_absence_fence_is_recovered_without_losing_capacity_proof(re
     failed = pool.record_store.read_document(queue.records.item_path(pool.FAILED, key))
     assert failed['resource_scope_cleanup']['complete'] is True
     assert queue.ledger().held() == {}
+
+
+@pytest.mark.parametrize('fault', ['claim', 'lease'])
+def test_legacy_claim_cannot_redirect_cleanup_to_another_action(refused, fault):
+    queue, item, connected = refused
+    key = item['action_key']
+    path = queue.records.item_path(pool.CLAIMED, key)
+    record = pool.record_store.read_document(path)
+    record.pop('cleanup_obligation')
+    other = ('0' if key[0] != '0' else '1') + key[1:]
+    if fault == 'claim':
+        record['action_key'] = other
+    else:
+        lease = pool.record_store.read_document(queue.records.lease_path(key))
+        queue.records.replace_record_at(queue.records.lease_path(key), {**lease, 'action_key': other})
+    queue.records.replace_record_at(path, record)
+    before = path.read_bytes()
+    with connected():
+        with pytest.raises(ValueError):
+            queue.reconcile_cleanup(key, queue.records.attempt_generation(record), 1)
+    assert path.read_bytes() == before
+    assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
