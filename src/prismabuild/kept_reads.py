@@ -800,6 +800,106 @@ class _PinMemo(dict):
         super().__setitem__(key, value)
 
 
+class _StageCoverage:
+    """Consumer attestation boundary, not inventory or deletion authority.
+
+    Positions are normalized in-process (epoch, consumed cursor, covered)
+    triples from the existing materialization, ownership/pin and receipt
+    owners. No retained listing, scan or filesystem observation supplies them.
+    All methods do bookkeeping only; reconstruction and replay belong outside
+    this object and outside transition/ownership locks.
+    """
+
+    _sources = ("materialization", "ownership", "receipts")
+
+    def __init__(self, root, captures):
+        self._root = root
+        self._captures = captures
+        self._lock = threading.Lock()
+        self._complete = False
+        self._token = None
+        self._heads = {}
+
+    @property
+    def complete(self):
+        with self._lock:
+            return self._complete
+
+    @classmethod
+    def _boundary(cls, vector):
+        """Copy and validate the required explicit positive attestations."""
+        try:
+            boundary = {source: tuple(vector[source]) for source in cls._sources}
+            for epoch, cursor, covered in boundary.values():
+                if (epoch is None or type(cursor) is not int or cursor < 0
+                        or covered is not True):
+                    return None
+            return boundary
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def begin_recovery(self, vector):
+        boundary = self._boundary(vector)
+        with self._lock:
+            self._complete = False
+            self._token = None
+            if boundary is None:
+                return None
+            # Only producer epoch transitions may replace a known epoch.
+            if any(source in self._heads and
+                   self._heads[source][0] != epoch
+                   for source, (epoch, _, _) in boundary.items()):
+                return None
+            for source, (epoch, cursor, _) in boundary.items():
+                old = self._heads.get(source)
+                self._heads[source] = (epoch, max(cursor, old[1]) if old else cursor)
+            self._token = object()
+            return self._token
+
+    def finish_recovery(self, token, vector):
+        boundary = self._boundary(vector)
+        with self._lock:
+            if token is None or token is not self._token or boundary is None:
+                return False
+            if any(epoch != self._heads[source][0] or
+                   cursor < self._heads[source][1]
+                   for source, (epoch, cursor, _) in boundary.items()):
+                return False
+            self._heads = {source: (epoch, cursor)
+                           for source, (epoch, cursor, _) in boundary.items()}
+            self._complete = True
+            self._token = None
+            return True
+
+    def invalidate(self, source, *, epoch, cursor, paths=None, gap=False):
+        """Revoke reuse on every input, including repeated same-path events.
+
+        Conservatively evict the root even with known paths: candidate-specific
+        dependency narrowing is not supplied here. DirectoryCaptures also
+        revokes in-flight acquisitions, without filesystem/discovery I/O.
+        """
+        with self._lock:
+            self._complete = False
+            self._captures.forget_tree(self._root)
+            if source not in self._sources:
+                self._token = None
+                raise ValueError("unknown stage coverage source")
+            old = self._heads.get(source)
+            if gap or old is None or old[0] != epoch:
+                self._token = None
+            if epoch is None or type(cursor) is not int or cursor < 0:
+                self._token = None
+                raise ValueError("invalid stage coverage position")
+            self._heads[source] = (
+                epoch, max(cursor, old[1]) if old and old[0] == epoch else cursor)
+
+    def _forget(self):
+        with self._lock:
+            self._complete = False
+            self._token = None
+            self._captures.forget_tree(self._root)
+
+
 class CensusIndex(CensusMemo):
     """A census memo the tier loop keeps from one cycle to the next (#992).
 
@@ -843,6 +943,8 @@ class CensusIndex(CensusMemo):
     def __init__(self, *, trust=None) -> None:
         super().__init__(trust=trust)
         self.stage_walk = DirectoryCaptures(self.trust)
+        self._stage_coverages = {}
+        self._stage_coverage_lock = threading.Lock()
         self.walk_listed = 0    # stage directories listed
         self.walk_kept = 0      # stage directories whose listing was reused
         self.walk_probed = 0    # stage files whose marks were read
@@ -870,8 +972,26 @@ class CensusIndex(CensusMemo):
         self.pins = _PinMemo()
         return self.pins
 
+    def stage_coverage(self, root):
+        """One unavailable-by-default consumer handoff per lexical stage root."""
+        name = os.path.abspath(os.fspath(root))
+        with self._stage_coverage_lock:
+            handoff = self._stage_coverages.get(name)
+            if handoff is None:
+                handoff = _StageCoverage(name, self.stage_walk)
+                self._stage_coverages[name] = handoff
+            return handoff
+
     def forget_stage(self, directory: str) -> None:
-        self.stage_walk.forget_tree(directory)
+        name = os.path.abspath(os.fspath(directory))
+        # Registry -> handoff -> captures; none of these locks performs I/O or
+        # acquires a transition/ownership lock. Overlapping scopes lose coverage.
+        with self._stage_coverage_lock:
+            for root, handoff in self._stage_coverages.items():
+                if os.path.commonpath((name, root)) in (name, root):
+                    handoff._forget()
+            self.stage_walk.forget_tree(directory)
+            self.stage_walk.forget_tree(name)
 
     def namespace(self, directory):
         capture = self.namespaces.acquire(directory)
