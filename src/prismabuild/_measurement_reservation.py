@@ -1266,6 +1266,8 @@ def recover_claim_election(queue: PoolQueue, key: str) -> bool:
             claim = _read(queue.records.item_path(pool.record_store.CLAIMED, key), optional=True)
             lease = _read(queue.records.lease_path(key), optional=True)
             if (chosen is None or claim is None or lease is None
+                    or lease.get("schema") != pool.POOL_LEASE_SCHEMA_V1
+                    or lease.get("action_key") != key
                     or claim.get("action_key") != key
                     or not claim.get("claimed_by")
                     or lease.get("owner") != claim["claimed_by"]
@@ -1279,12 +1281,14 @@ def recover_claim_election(queue: PoolQueue, key: str) -> bool:
         return False
 
 
-def protect_ready_destination(queue: PoolQueue, claim: dict) -> None:
-    """Publish fresh protection before a measurement claim becomes a mark.
+def protect_ready_destination(queue: PoolQueue, claim: dict) -> bool:
+    """Synchronize fresh protection before a measurement claim becomes a mark.
 
-    The claim's physical holdings still exclude lower work. Its canonical
-    destination owner installs the new election before releasing those holdings;
-    the old, consumed pre-claim selection is never resurrected.
+    Publish under action -> host admission, never the reverse. An admission
+    already using a host-locked census must finish its capacity decision while
+    this claim still holds its resources. On contention leave CLAIMED/lease and
+    holdings intact for canonical retry; do not entomb or release anything.
+    The old, consumed pre-claim selection is never resurrected.
     """
     from . import pool
 
@@ -1292,18 +1296,18 @@ def protect_ready_destination(queue: PoolQueue, claim: dict) -> None:
         # READY may have been renamed before claim metadata/lease commit. That
         # was not a successful claim: keep its pre-claim election untouched and
         # allow the existing unstarted recovery to restore READY unchanged.
-        return
+        return True
     action = pool._sealed_action_request(str(claim.get("cas_root")), claim["action_key"],
                                          max_bytes=MAX_RECORD_BYTES)
     task = action.get("task") if action is not None else None
     if not isinstance(task, Mapping) or task.get("task_class") != "measurement":
-        return
+        return True
     key = claim["action_key"]
     with queue.action_transition_lock(key):
         current_claim = _read(queue.records.item_path(pool.record_store.CLAIMED, key), optional=True)
         from . import claim_identity
         if current_claim is None or not claim_identity.same_claim(current_claim, claim):
-            return
+            return False
         path = queue.records.passes_path(key)
         current = _read(path, optional=True) or {"action_key": key}
         previous = selection(current)
@@ -1320,7 +1324,14 @@ def protect_ready_destination(queue: PoolQueue, claim: dict) -> None:
             "priority": int(claim.get("priority", 0)), "epoch_unix": epoch,
             "opportunity_unix": epoch,
         }
-        queue.records.replace_record_at(path, current)
+        try:
+            with adaptive_cpu.AdmissionGate(queue.ledger(claim["claimed_host"])).locked():
+                queue.records.replace_record_at(path, current)
+        except (adaptive_cpu.AdmissionBusy, adaptive_cpu.AdmissionUnavailable):
+            return False
+        # Do not hold H through lifecycle settlement: CPU reservation release
+        # may itself acquire H. The newly stored selection now fences that gap.
+        return True
 
 
 def retire_concluded_sidecar(queue: PoolQueue, key: str) -> bool:
@@ -1343,6 +1354,23 @@ def retire_concluded_sidecar(queue: PoolQueue, key: str) -> bool:
     except Exception:
         # This is optional reclamation, not permission to weaken admission.
         return False
+
+
+def _retirement_namespace(path: Path, *, optional: bool = False) -> list[Path]:
+    """Only an absent directory entry, not a dangling link, proves absence."""
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        if optional:
+            return []
+        raise
+    if not stat.S_ISDIR(before.st_mode):
+        raise CensusUnavailable(f"malformed physical namespace: {path}")
+    entries = immutable_files.scan_required(path)
+    after = path.lstat()
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise CensusUnavailable(f"physical namespace changed: {path}")
+    return entries
 
 
 def _retire_concluded_sidecar_locked(queue: PoolQueue, key: str,
@@ -1382,21 +1410,18 @@ def _retire_concluded_sidecar_locked(queue: PoolQueue, key: str,
     # deletion. Private acquisitions naming this key also retain the election.
     roots = (queue.root / pool.RESERVATIONS,
              queue.root / pool.record_store.TIER_RESERVATIONS)
+    holders_of_key = {key, storage_tiers.RAM_HOST_MEMORY_PREFIX + key}
     for root in roots:
-        try:
-            owners = immutable_files.scan_required(root)
-        except FileNotFoundError:
-            continue
-        for owner in owners:
-            try:
-                holders = immutable_files.scan_required(owner / "held")
-            except FileNotFoundError:
-                continue
-            for holder in holders:
+        for owner in _retirement_namespace(root, optional=True):
+            # Validate every parent before accepting a missing held directory.
+            # In particular, ENOENT through a dangling owner is not absence.
+            if not stat.S_ISDIR(owner.lstat().st_mode):
+                raise CensusUnavailable(f"malformed physical owner: {owner}")
+            for holder in _retirement_namespace(owner / "held", optional=True):
                 parts = holder.name.split(".")
-                relevant = holder.name == key or (
-                    len(parts) >= 3 and parts[0] == "claiming" and parts[2] == key)
-                if relevant and immutable_files.scan_required(holder):
+                relevant = holder.name in holders_of_key or (
+                    len(parts) >= 3 and parts[0] == "claiming" and parts[2] in holders_of_key)
+                if relevant and _retirement_namespace(holder):
                     return False
 
     # Only positive, validated, exact-generation terminal evidence counts.

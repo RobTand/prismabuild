@@ -773,7 +773,8 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
     _legal_destination(transition, target)
     if target == READY:
         from . import _measurement_reservation
-        _measurement_reservation.protect_ready_destination(queue, plan.original)
+        if not _measurement_reservation.protect_ready_destination(queue, plan.original):
+            return None  # contended handoff: retain all authority for canonical retry
     tombstone, mine = queue._entomb_claim(key, expect=plan.original)
     if not mine or tombstone is None:
         if cancelled:

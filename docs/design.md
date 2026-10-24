@@ -682,7 +682,9 @@ unlinks at most 256 `passes/` sidecars per call whose key has a done, failed
 or withdrawn record, is neither READY nor CLAIMED under its non-blocking
 transition lock. Election-bearing sidecars additionally require positive exact-
 generation terminal/withdrawal proof and no live publication, finish mark,
-lease or physical host/tier holding. Logical `retired()` is not unlink proof:
+lease or physical host/tier holding (including RAM-host memory mirrors and
+private acquisitions). A dangling/non-directory physical namespace is unknown,
+not proven empty. Logical `retired()` is not unlink proof:
 absence, newer generations, malformed/unreadable evidence and ambiguous
 ownership retain the sidecar. The election owner revalidates the current
 selection and complete sidecar before unlink; immutable outcomes, attempts,
@@ -756,8 +758,13 @@ On the selected host, a lower-priority capacity claim without a verified funded
 measurement dependency cannot refill. The selector survives record_pass but is
 consumed by successful claim. Canonical defer/retry installs fresh current
 protection before entombing the claim and releasing its physical holdings; it
-never inherits the consumed selection. This fences the CLAIMED -> tombstone ->
-READY gap and prevents lower refill after release. Claim consumption holds the
+never inherits the consumed selection. This publication takes action -> H so
+an admission already past its final host-locked census must finish its capacity
+decision while the old holdings still exist. A busy/unavailable H aborts the
+handoff without entombment or release, leaving the claim for canonical retry.
+H is released after protection publication, before settlement (which can itself
+need H). This fences the CLAIMED -> tombstone -> READY gap and prevents lower
+refill after release. Claim consumption holds the
 existing action transition lock and never acquires one from host-locked code;
 census keeps reader -> sorted action keys -> host order. Canonical finish,
 withdrawal and the existing bounded sweep share the election owner's concluded
