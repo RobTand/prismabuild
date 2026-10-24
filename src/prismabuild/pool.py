@@ -3704,28 +3704,17 @@ class ResourceLedger:
 
 
     def opportunistic_cpu_allocation(self, holder: str, tiers: Mapping, *,
-                       metadata: Mapping[str, object] | None = None) -> dict:
-        """The actual CPUs represented by this claimant's held tokens.
-
-        A caller that has already read the holder's metadata passes it, so the
-        admission loop does not open the same shared file twice per holder.
-        """
-        if metadata is None:
-            metadata = self.holder_census().cpu_record(holder).value
-        if metadata is not None and "allocation" in metadata:
-            allocation = metadata['allocation']
-            if (not isinstance(allocation, Mapping)
-                    or set(allocation) != {'preferred', 'fallback'}
-                    or any(not isinstance(allocation[tier], list)
-                           or any(type(cpu) is not int or cpu not in tiers[tier] for cpu in allocation[tier])
-                           for tier in ('preferred', 'fallback'))
-                    or len(allocation['preferred'] + allocation['fallback'])
-                       != len(set(allocation['preferred'] + allocation['fallback']))):
-                raise PoolContractError('invalid held CPU allocation')
-            return allocation
-        cpus = self.cpu_ids(immutable_files.match_optional(self.held_dir / holder, "cpu-*"), tiers)
-        return {kind: [c for c in tiers[kind] if c in cpus]
-                for kind in ("preferred", "fallback")}
+                                     metadata: Mapping[str, object] | None = None) -> dict:
+        allocation = self.cpu_allocation(holder, tiers, metadata=metadata)
+        if (not isinstance(allocation, Mapping)
+                or set(allocation) != {'preferred', 'fallback'}
+                or any(not isinstance(allocation[tier], list)
+                       or any(type(cpu) is not int or cpu not in tiers[tier] for cpu in allocation[tier])
+                       for tier in ('preferred', 'fallback'))
+                or len(allocation['preferred'] + allocation['fallback'])
+                   != len(set(allocation['preferred'] + allocation['fallback']))):
+            raise PoolContractError('invalid held CPU allocation')
+        return allocation
 
     def cpu_ids(self, tokens, tiers: Mapping) -> list[int]:
         """The CPUs a sequence of ``cpu-<ordinal>`` tokens represents.

@@ -167,9 +167,26 @@ def test_pending_borrower_blocks_another_guest_handoff(borrowed_guest, pending, 
     assert not fleet.stopped(key) and not fleet.stopped(other)
 
 
+def opted_guest_claims(fleet, monkeypatch, sample):
+    monkeypatch.setattr(pool.cpu_admission, '_sealed_request',
+                        lambda item: {'task': {'task_class': 'generation'}, 'params': {}})
+    def claim(host='sparky', **fields):
+        fleet.use(host)
+        return fleet.queue.claim(tags=[host, 'gb10', pool.contracts.CPU_QOS_TAG],
+            has_gpu=True, capacity=fleet.capacity, cpu_tiers=fleet.tiers,
+            cpu_lending_ramp_cap=2, **fields)
+    monkeypatch.setattr(fleet, 'claim', claim)
+    fleet.queue.announce(host='sparky', tags=['sparky', 'gb10', pool.contracts.CPU_QOS_TAG],
+        has_gpu=True, capacity=fleet.capacity, observed_capacity=fleet.capacity,
+        cpu_tiers=fleet.tiers, observed_detail={'observed_unix': time.time(), 'load1': 0.,
+            'gpu_power_fraction': .05, 'gpu_power_sampled_unix': time.time(),
+            'gpu_capacity_trusted': True, 'gpu_sampled_unix': time.time(),
+            'physical_gpus': 1, 'foreign_gpu_processes': 0})
+
+
 @pytest.fixture
 def real_loan_guest(guest_fleet, monkeypatch):
-    """A #1929 guest lends one CPU through the real legacy admission gate."""
+    """A #1929 guest lends one CPU through the additive opted admission gate."""
     fleet = guest_fleet
     clock = [time.time()]
     monkeypatch.setattr(pool, '_now', lambda: clock[0])
@@ -178,14 +195,15 @@ def real_loan_guest(guest_fleet, monkeypatch):
         return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
                 'busy_cpus': .4, 'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0.,
                 'per_cpu_busy': {str(cpu): .05 for cpu in range(8)}}
-    donor = fleet.publish('a', cpu=4, priority=20)
+    opted_guest_claims(fleet, monkeypatch, sample)
+    donor = fleet.publish('a', cpu=4, priority=-10, cpu_qos='opportunistic')
     guest = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
     assert guest['action_key'] == donor and guest['cpu_guest']
-    borrower = fleet.publish('c', cpu=5, priority=20, tags=['sparky'])
+    borrower = fleet.publish('c', cpu=5, priority=-10, tags=['sparky'], cpu_qos='opportunistic')
     ledger = fleet.queue.ledger()
     start = clock[0]
     claimed = None
-    for step in range(1, 4):
+    for step in range(1, 42):
         clock[0] = start + step
         pool.cpu_admission.write_json(
             pool.cpu_admission.Controller(ledger, fleet.tiers).base / 'telemetry' / (donor + '.json'),
@@ -196,9 +214,8 @@ def real_loan_guest(guest_fleet, monkeypatch):
             break
     assert claimed and claimed['action_key'] == borrower and not claimed.get('cpu_guest')
     assert claimed['cpu_admission']['borrowed_cpus'] == [0]
-    assert claimed['cpu_admission']['cap'] == 0
-    assert claimed['cpu_admission']['gate_reason'] == 'legacy_adaptive'
-    assert not (pool.cpu_admission.Controller(ledger, fleet.tiers).base / 'cpu-lending.json').exists()
+    assert claimed['cpu_admission']['cap'] == 2
+    assert claimed['cpu_admission']['gate_open'] is True
     return fleet, guest, claimed
 
 
@@ -236,7 +253,7 @@ def test_borrowed_ids_and_gate_survive_release_in_attempt_and_ending(real_loan_g
     assert ending['cpu_admission'] == evidence
     attempts = fleet.queue.attempt_outcomes(ending)
     assert len(attempts) == 1 and attempts[0]['cpu_admission'] == evidence
-    assert attempts[0]['cpu_weight'] == 100 and attempts[0]['cpu_qos_selected'] == 'legacy'
+    assert attempts[0]['cpu_weight'] == 10 and attempts[0]['cpu_qos_selected'] == 'opportunistic'
 
 
 def test_gpu_drain_reclaims_an_orphaned_metadata_only_real_borrow(guest_fleet, monkeypatch):
@@ -246,19 +263,21 @@ def test_gpu_drain_reclaims_an_orphaned_metadata_only_real_borrow(guest_fleet, m
     monkeypatch.setattr(pool.cpu_admission.time, 'time', lambda: clock[0])
     def sample():
         return {'sampled_unix': clock[0], 'cpu_count': 8, 'interval_s': 1.,
-                'busy_cpus': 0., 'psi_some': 0.,
+                'busy_cpus': 0., 'psi_some': 0., 'psi_avg10': 0., 'psi_avg60': 0.,
                 'per_cpu_busy': {str(cpu): 0. for cpu in range(8)}}
-    donor = fleet.publish('a', cpu=8, tags=['sparky'])
+    opted_guest_claims(fleet, monkeypatch, sample)
+    donor = fleet.publish('a', cpu=4, tags=['sparky'], priority=-10, cpu_qos='opportunistic')
     owner = fleet.claim(adaptive_cpu=True, cpu_sampler=sample)
     assert owner and owner['action_key'] == donor and not owner.get('cpu_guest')
+    assert fleet.queue.ledger().acquire('e' * 64, {'cpu': 4})
     borrower = 'c' * 64
     fleet.queue.publish(action_key=borrower, cas_root='/cas', checkout_root='/co',
-        worker_script='/w.py', resources={'cpu': 1}, priority=20,
+        worker_script='/w.py', resources={'cpu': 1}, priority=-10, cpu_qos='opportunistic',
         retry_safe=True, max_attempts=3)
     ledger = fleet.queue.ledger()
     controller = pool.cpu_admission.Controller(ledger, fleet.tiers)
     start, guest = clock[0], None
-    for step in range(1, 4):
+    for step in range(1, 42):
         clock[0] = start + step
         pool.cpu_admission.write_json(controller.base / 'telemetry' / (donor + '.json'), {
             'action_key': donor, 'complete': True, 'nonce': 'e' * 32,
@@ -269,6 +288,7 @@ def test_gpu_drain_reclaims_an_orphaned_metadata_only_real_borrow(guest_fleet, m
     assert guest and guest['action_key'] == borrower and guest['cpu_guest']
     assert guest['cpu_admission']['borrowed_cpus'] == [0]
     assert ledger.holder_tokens(borrower) == {}
+    ledger.release('e' * 64)
     fleet.finish(owner)
     assert ledger.available()['cpu'] == 8 and ledger.admission_available()['cpu'] == 7
     gpu = fleet.publish('b', gpu=True, cpu=8)

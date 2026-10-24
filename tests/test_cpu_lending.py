@@ -320,11 +320,18 @@ def test_missing_borrower_affinity_never_makes_returned_tokens_free(loan_rig, pr
         saved['allocation']['preferred'] = ['0'] if fault == 'wrong_type' else [4]
         adaptive_cpu.write_json(path, saved)
     acquire = ledger._begin_acquire_locked if private else ledger.begin_acquire
-    assert acquire('e' * 64, {'cpu': 1}, cpu_tiers=tiers) is None
+    incoming = {'action_key': 'e' * 64, 'cpu_qos': 'opportunistic',
+                'priority': -10, 'resources': {'cpu': 1}}
+    eligibility = cpu_lending.opportunistic_eligibility(
+        incoming, {'task': {'task_class': 'generation'}, 'params': {}},
+        measurement=False, owner=None, allowance=None)
+    own_tokens = {'cpu_qos': 'opportunistic', 'cpu_weight': 10,
+                  '_eligibility': eligibility, 'borrowing': False}
+    assert acquire(incoming['action_key'], incoming['resources'], adaptive=own_tokens, cpu_tiers=tiers) is None
     assert ledger.last_token_shortage['reason'] == 'unknown_holder_affinity'
     controller._host_sample = None
-    assert controller.decision({'action_key': 'f' * 64, 'cpu_qos': 'protected'},
-                               {'cpu': 1}, identity=('protected', False), owner=None) is None
+    assert controller.decision(incoming, incoming['resources'],
+                               identity=('incoming', False), owner=None) is None
     assert controller.last_decision['reason'] == 'unknown_holder_affinity'
 
 

@@ -159,7 +159,7 @@ def operation(request, store, load):
         registered = hasattr(cpu, 'cpu_lending')
         if registered:
             ledger, controller, item, metadata = registered_borrow(cpu, load('prismabuild.pool'), load('prismabuild.core'), store)
-            path = controller.base / 'last-borrow.json'
+            path = controller.base / 'last-opportunistic-borrow.json'
             if not writing and variant == 'admitted':
                 controller.admitted(metadata)
         if writing:

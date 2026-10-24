@@ -1817,6 +1817,12 @@ class Controller:
             return self._opportunistic_decision(
                 item, demand, identity=identity, owner=owner, allowance=allowance,
                 foreign_load_exempt=foreign_load_exempt, reservation_demand=reservation_demand)
+        if self.ledger.has_opportunistic_loans():
+            selection = self.ledger.cpu_token_selection(self.tiers)
+            if selection.unknown_holder is not None:
+                self.last_decision = {'reason': 'unknown_holder_affinity',
+                                      'holder': selection.unknown_holder}
+                return None
         metadata = self._legacy_decision(
             item, demand, identity=identity, owner=owner, allowance=allowance,
             foreign_load_exempt=foreign_load_exempt)

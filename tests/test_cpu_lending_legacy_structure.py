@@ -46,7 +46,7 @@ def test_legacy_statements_match_adopted_main(identity):
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == owner)
     actual = copy.deepcopy(next(node for node in cls.body if isinstance(node, ast.FunctionDef)
                                 and node.name == current_name))
-    expected = ast.parse(textwrap.dedent(METHODS[identity])).body[0]
+    expected = ast.parse('class Reference:\n' + METHODS[identity]).body[0].body[0]
     actual.name = expected.name
     if name == 'decision':
         actual = LegacyIdentityGuards().visit(actual)
