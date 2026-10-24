@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Inventory and explicitly adopt pre-contract holds while legacy writers stop.
 
-This never returns tokens. Normal lifecycle cleanup and egress remain the only
-release owners. Do not prepare a new inventory after enabling the contract.
+Apply establishes custody without returning tokens. Explicit terminal reclaim
+uses the ordinary certificate and ledger return. Keep writers stopped throughout.
 """
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ def main():
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--inventory", type=Path, help="write a new pre-deploy inventory, refusing overwrite")
     choice.add_argument("--apply", type=Path, help="apply the reviewed pre-deploy inventory")
+    choice.add_argument("--reclaim-terminal", metavar="KEY", help="explicitly return certified-absent terminal holds through the ordinary certifier")
     choice.add_argument("--observe-host", action="store_true", help="verify local stopped writers and scan the roots requested on stdin")
+    parser.add_argument("--local-host", action="store_true", help="inventory only this host's ledgers; foreign custody must be handled on its owner host")
+    parser.add_argument("--unpin", action="store_true", help="reclaim terminal tier occupancy only after its adopted absence proof")
     parser.add_argument("--roots", type=Path, help="reviewed complete historical e9 root coverage, including separate occupancy roots")
     parser.add_argument("--writers-stopped", action="store_true", help="operator confirms legacy writers and new admissions are stopped")
     parser.add_argument("--report", type=Path, help="write adoption outcomes, refusing overwrite")
@@ -37,8 +40,25 @@ def main():
         None if args.roots is None else json.loads(args.roots.read_bytes())))
     if not args.writers_stopped:
         parser.error("--writers-stopped is required; see the operating guide deploy step")
+    if args.reclaim_terminal:
+        from prismabuild.legacy_custody_host import legacy_stopped_host
+        legacy_stopped_host()
+        result = migration.queue.reclaim_terminal_reservation(args.reclaim_terminal, unpin=args.unpin)
+        print(f"Returned {result['released']} certified tokens for {args.reclaim_terminal}.")
+        return 0
     if args.inventory:
         value = migration.inventory()
+        if args.local_host:
+            import socket
+            from prismabuild import fleet_roster
+            roster = fleet_roster.Roster.at(Path(__file__).resolve().parents[2])
+            local = roster.canonical_box(socket.gethostname())
+            if local is None:
+                parser.error("local host is not in the fleet roster")
+            value["holds"] = [row for row in value["holds"] if (
+                (box := roster.canonical_box(row["ledger"] if row["kind"] == "host"
+                                            else row["ledger"].rsplit(":", 1)[-1])) is not None
+                and box.key == local.key)]
         with args.inventory.open("x") as f:
             json.dump(value, f, indent=2)
             f.write("\n")

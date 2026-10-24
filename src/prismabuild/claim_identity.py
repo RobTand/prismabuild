@@ -49,3 +49,9 @@ def check_lease_identity(
             f"contradictory claim and lease identity for {action_key}: "
             f"{', '.join(conflicts)}; claim and reservations retained"
         )
+
+
+def claim_nonce(record: Mapping[str, object]) -> str:
+    """Stable admission identity, independent of later scope or cleanup data."""
+    from .core import _canonical_bytes
+    return _canonical_bytes({field: record.get(field) for field in CLAIM_IDENTITY_FIELDS}).hex()

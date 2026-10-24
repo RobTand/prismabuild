@@ -310,7 +310,7 @@ def test_unbound_intent_with_an_existing_path_keeps_custody(tmp_path, broker, mo
             entry.pop(field, None)
     owner.pop("checkout_cleanup", None)
     queue.records.replace_record_at(path, owner)
-    result = materialize.certify_checkout_cleanup(queue.queue, owner, local_checkout_root=pool.LOCAL_CHECKOUT_ROOT)
+    result = queue.queue.certify_checkout_cleanup(owner["action_key"])
     assert result["complete"] is False
     assert Path(outcome["checkout_cleanup"]["path"]).is_dir()
     assert queue.ledger().held_keys() == [key]
@@ -411,7 +411,7 @@ def test_certificate_does_not_enter_persisted_cleanup_evidence(tmp_path, broker,
     monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
     item = claim(queue)
     outcome = _execute(queue, item)
-    queue.ledger().certify_release(action["action_key"], claim_snapshot=item)
+    queue.ledger().certify_release(action["action_key"], attempt=item.get("attempts"), claim_nonce=pool.claim_identity.claim_nonce(item))
     json.dumps(item)
     assert "certificate" not in item["checkout_cleanup"]
     _finish(queue, item, outcome)

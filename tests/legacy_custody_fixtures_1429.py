@@ -39,6 +39,10 @@ def stopped_legacy_hosts(tmp_path, monkeypatch):
         covered = self.roots["hosts"][host]
         covered.setdefault("occupancy_roots", {}).setdefault(kind + ":" + name + ":" + holder,
             [str(self.queue.root.parent / "empty-legacy-occupancy" / kind / name / holder)])
+        for spec in covered["roots"]:
+            Path(spec["path"]).mkdir(parents=True, exist_ok=True)
+        for path in covered["occupancy_roots"][kind + ":" + name + ":" + holder]:
+            Path(path).mkdir(parents=True, exist_ok=True)
         return original(self, kind, name, holder, key, owner)
     monkeypatch.setattr(LegacyCustodyMigration, "_legacy_scan_evidence", fixture_coverage)
     return {"real_stopped_host": real_stopped, "fixture_coverage": fixture_coverage,

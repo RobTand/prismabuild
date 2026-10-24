@@ -1758,8 +1758,7 @@ def _defer_launch(queue, item: Mapping[str, object]) -> Path | None:
     if queue.withdrawal_covers(record, action_key=key) is not None:
         return queue.finish(key, status=WITHDRAWN, claim_snapshot=record)
     if record.get("checkout_snapshot") is not None or "checkout_registrations" in record:
-        checkout = materialize.certify_checkout_cleanup(
-            queue, record, local_checkout_root=pool.LOCAL_CHECKOUT_ROOT)
+        checkout = queue.certify_checkout_cleanup(str(record["action_key"]), attempt=record.get("attempts"), claim_nonce=claim_identity.claim_nonce(record))
         record["checkout_cleanup"] = checkout
         if checkout.get("complete") is not True:
             queue._note_cleanup_attempt(record, read_claim, checkout)

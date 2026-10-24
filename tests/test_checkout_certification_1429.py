@@ -125,15 +125,15 @@ def test_every_checkout_release_path_requires_the_single_certifier(tmp_path, bro
     seen, released = [], []
     original_release = pool.ResourceLedger.release
 
-    def deny_checkout(queue_owner, record, **kwargs):
-        seen.append(record["action_key"])
+    def deny_checkout(authority, action_key, **kwargs):
+        seen.append(action_key)
         return {"complete": False, "used": True, "error": "certification denied by regression"}
 
     def observe_return(ledger, action_key, **kwargs):
         released.append(action_key)
         return original_release(ledger, action_key, **kwargs)
 
-    monkeypatch.setattr(materialize, "certify_checkout_cleanup", deny_checkout)
+    monkeypatch.setattr(materialize.CheckoutCertifier, "certify_checkout_cleanup", deny_checkout)
     monkeypatch.setattr(pool.ResourceLedger, "release", observe_return)
     if entry in ("finish", "late"):
         _finish(queue, item, outcome)
@@ -237,7 +237,7 @@ def test_scope_token_returns_have_one_conclusion_boundary():
                 walk(child, owners)
         walk(tree)
     assert not private_access, private_access
-    assert constructions == [("materialize", ("certify_checkout_cleanup",))]
+    assert constructions == [("materialize", ("CheckoutCertifier", "certify_checkout_cleanup"))]
 
 
 def test_widowed_checkout_debt_releases_only_after_exact_removal(tmp_path, broker, monkeypatch):

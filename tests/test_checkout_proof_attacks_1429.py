@@ -1,11 +1,8 @@
-"""r2 neighbour probes adapted to r3's lease-owned proof storage (Opus r3 review).
+"""Caller outcome dictionaries cannot replace descriptor-backed unlink journals.
 
-r2's foreign-attempt probe removed ``checkout_cleanup`` from the claim only;
-r3 keeps the execute's own proof inside each durable registration entry, so
-the genuine proof still certified. Here every durable copy is stripped and
-only the caller's (possibly forged) proof remains. r2's mid-removal restart
-expected custody; r3's reaper may finish the exact removal instead, so the
-invariant checked is: tokens return only with no tree and an exact unlink.
+A genuine journal settles the exact registration even if the caller's outcome
+proof is missing or edited. Interrupted removal still retains the original
+inode until recovery proves its unlink.
 """
 import os
 from pathlib import Path
@@ -30,7 +27,7 @@ def _strip_durable_proof(queue, key):
 @pytest.mark.parametrize("field", ["genuine", "action_key", "published_unix", "claimed_by",
                                    "claimed_unix", "claimed_host", "nonce", "scope_id",
                                    "execution_id", "inode"])
-def test_only_the_exact_execute_proof_certifies(tmp_path, broker, monkeypatch, field):
+def test_caller_outcome_cannot_replace_authoritative_unlink(tmp_path, broker, monkeypatch, field):
     queue, action, _ = fenced_snapshot_queue(tmp_path)
     key = action["action_key"]
     monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", tmp_path / "materialized")
@@ -47,12 +44,13 @@ def test_only_the_exact_execute_proof_certifies(tmp_path, broker, monkeypatch, f
         proof["claim"] = {**proof["claim"], field: "foreign"}
     outcome["checkout_cleanup"] = proof
     destination = _finish(queue, item, outcome)
-    if field == "genuine":
-        assert destination == queue.records.item_path(pool.DONE, key)
-        assert queue.ledger().held_keys() == []
-    else:
-        assert destination == queue.records.item_path(pool.CLAIMED, key)
-        assert queue.ledger().held_keys() == [key]
+    assert destination == queue.records.item_path(pool.DONE, key)
+    assert queue.ledger().held_keys() == []
+    # None of the caller's edited evidence was needed. The authority retained
+    # the original descriptor across unlink and journalled that exact inode.
+    receipt = record_store.read_document(queue.root / "checkout-unlinks" / (
+        item["checkout_registrations"][0]["execution_id"] + ".json"))
+    assert receipt["registration"]["inode"] == outcome["checkout_cleanup"]["registration"]["inode"]
 
 
 def test_restart_mid_removal_returns_tokens_only_after_exact_unlink(tmp_path, monkeypatch):

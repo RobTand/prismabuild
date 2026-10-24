@@ -56,8 +56,8 @@ class TierLedger:
             records.root / record_store.TIER_RESERVATIONS, host=self.tier_id,
             mutation_guard=self.mutation_lock, tier_census=True)
 
-    def certify_release(self, holder, **kwargs):
-        return self._ledger.certify_release(holder, **kwargs)
+    def certify_release(self, holder, *, attempt=None, claim_nonce=None, nonce=None):
+        return self._ledger.certify_release(holder, attempt=attempt, claim_nonce=claim_nonce, nonce=nonce)
 
     @property
     def paths(self) -> TierPaths:

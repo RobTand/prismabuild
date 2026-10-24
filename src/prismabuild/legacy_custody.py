@@ -37,6 +37,10 @@ class LegacyCustodyMigration:
         box = roster.canonical_box(str(owner["claimed_host"]))
         if box is None:
             raise record_store.PoolContractError("legacy owner host is not in the fleet roster")
+        local = roster.canonical_box(socket.gethostname())
+        ledger_host = roster.canonical_box(name if kind == "host" else name.rsplit(":", 1)[-1])
+        if local is None or ledger_host is None or not (local.key == box.key == ledger_host.key):
+            raise record_store.PoolContractError("legacy custody scan must run on the owner and ledger host")
         covered = self.roots.get("hosts", {}).get(box.key)
         if (not isinstance(covered, dict) or not covered.get("coverage_evidence")
                 or covered.get("all_historical_roots") is not True):
@@ -312,7 +316,7 @@ class LegacyCustodyMigration:
             checkout_owner = record_store.read_document(checkout_path)
             if checkout_owner is None:
                 checkout_owner = {k: owner[k] for k in ("action_key", "claimed_by", "claimed_host", "claimed_unix", "published_unix", "attempts")}
-                checkout_owner.update(checkout_registrations=registrations, checkout_snapshot=owner.get("checkout_snapshot"),
+                checkout_owner.update(resource_scope=owner.get("resource_scope"), resource_scope_intent=owner.get("resource_scope_intent"), checkout_registrations=registrations, checkout_snapshot=owner.get("checkout_snapshot"),
                                       inventory_id=inventory_id, legacy_proof=evidence)
                 self.queue.records.replace_record_at(checkout_path, checkout_owner)
             elif (checkout_owner.get("inventory_id") != inventory_id
@@ -322,7 +326,7 @@ class LegacyCustodyMigration:
             registrations = checkout_owner["checkout_registrations"]
             writes = [(p, before, dict(after, checkout_registrations=registrations)) for p, before, after in writes]
             journal = {k: owner[k] for k in ("action_key", "claimed_by", "claimed_host", "claimed_unix", "published_unix", "attempts")}
-            journal.update(checkout_registrations=registrations,
+            journal.update(resource_scope=owner.get("resource_scope"), resource_scope_intent=owner.get("resource_scope_intent"), checkout_registrations=registrations,
                            checkout_snapshot=owner.get("checkout_snapshot"),
                            inventory_id=inventory_id, manifest_nonce=uuid.uuid4().hex,
                            qualification=qualification, token_facts=row["tokens"], legacy_proof=evidence,

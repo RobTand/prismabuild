@@ -20941,7 +20941,7 @@ that creates a scope cannot invalidate an earlier execute's proven unlink.
 The proof must match its registration's durable completion identity; a caller
 cannot substitute another execute's proof or a foreign nonce.
 
-`materialize.certify_checkout_cleanup` is the sole release certificate mint.
+`materialize.CheckoutCertifier.certify_checkout_cleanup` is the sole release certificate mint.
 Host and tier return primitives require its process-local `ReleaseCertificate`,
 bound to the durable reservation nonce and exact claim's registration envelope.
 Issuance is tracked by a module-private weak registry with immutable bindings.
@@ -20972,7 +20972,8 @@ atomic directory creation and durable registration. Registered inodes retain the
 strong descriptor-held unlink guarantee. Kernel, root and filesystem defects
 remain outside the threat model.
 
-A heartbeat reads and writes under the claim transition exclusion. Its final
+A heartbeat reads and writes under the claim transition exclusion, acquired
+non-blocking. A busy key skips that beat; it never waits behind cleanup. Its final
 lease read and final claim read must still name its own admission identity;
 foreign registrations are never copied. Recovery tries after the heartbeat
 bound, or for a local PID whose recorded start ticks prove death or reuse.
@@ -20986,19 +20987,36 @@ its exact scope, then certifies the current claim's own checkout records.
 Reservation manifests independently bind that current claim. Unproved custody
 stays charged. Neither heartbeat recovery nor a deadline returns tokens.
 
+Public certificate entrypoints accept only the action key, attempt and claim
+nonce, plus an acquisition nonce for private rollback. Their authority is bound
+to the queue at construction; callers supply no queue object, path, snapshot
+or proof. AST guards pin those signatures. Lease and outcome cleanup dictionaries
+are audit data and never authorize release. Initial execution keeps an original
+registered directory descriptor through removal. Only fstat of that descriptor
+with the exact registered device/inode and nlink zero writes the durable
+`checkout-unlinks` journal. Recovery produces the same journal after its own
+held-descriptor removal. Certification reads this journal and verifies that the
+registered identity is absent through a held-parent lstat. Missing authority
+retains custody, including a crash after unlink but before the journal commits.
+Certificates bind the queue root as well as the ledger and registration.
 Callers cannot choose the cleanup owner's path. The certifier derives live
 leases, exact claims, matching finish tombstones, attempt journals and adopted
 custody from durable names and registration manifests. Private rollback also
 requires its own acquisition receipt, and can return only that receipt's new
 token names. A journal cannot replace a live lease's newer registration list.
 
-Pre-contract deployment requires the stopped-writer operator procedure in the
-operating guide. Inventory recognizes the fields e9e9d907 actually wrote:
+Pre-contract deployment follows stop → activate → adopt → start in the operating
+guide. Activation precedes per-hold scans so the installed-updater proofs are
+consumed within their 900 s lifetime. Activation runs no canary. The adopter
+uses an authorized unprivileged read-only broker maintenance query; it cannot
+clean kernel groups or mutate the gate. Root gate changes use the locally
+installed root-owned broker entrypoint, never NFS Python as root.
+Inventory recognizes the fields e9e9d907 actually wrote:
 executed/cache-hit terminals use `detail.returncode`, without a top-level
 return code or container-cleanup verdict. Those fields qualify an inventory
 candidate; they never prove checkout absence.
 
-Rob's r6 grandfathering permits a stopped-host namespace proof when e9 saved no
+The PB lead's r6 grandfathering permits a stopped-host namespace proof when e9 saved no
 path or inode. Every historical checkout root, its cleanup-failures directory,
 any quarantine or rename-for-delete root and any other checkout-bearing tier
 root must be named with recorded configuration provenance. e9's stock remover
@@ -21006,7 +21024,8 @@ works in place and has no quarantine; an operator customization must name its
 additional roots. Unknown historical roots retain custody. Each named root is
 opened component by component without following symlinks. A full readdir and
 parent-relative lstat examine every matching key-prefix or cleanup-failure
-name. An absent root requires ENOENT relative to its held parent. Matches,
+name. Every named root must exist; a missing root refuses. The scan host, terminal
+owner and ledger host must agree. Cross-host custody remains charged. Matches,
 prefix collisions, namespace changes, EACCES and unreadable evidence prevent
 absence certification. A unique surviving normal checkout can instead adopt
 its observed device/inode, with no release, and later clean through the normal
@@ -21028,14 +21047,17 @@ legacy owner binding. Tier pins and RAM mirrors require separate physical
 occupancy root evidence; checkout absence alone cannot qualify them.
 
 Apply journals custody before updating mirrors and reservation manifests. It
-returns no capacity. Certified absence still goes through the ordinary
-certificate mint; surviving inodes need its normal unlink proof. Reusing the
+returns no capacity. Explicit terminal reclaim discovers adoption through the
+reservation manifests, including the full resource-scope attempt identity, and
+returns certified-absent host, tier and mirror holds through the ordinary mint;
+no sweep or elapsed time makes that operator decision. Surviving inodes need
+the normal unlink proof. Reusing the
 same inventory resumes interrupted writes. `pbstatus` retains per-hold proof
 and named roots for certified absences as well as reasons for unresolved holds.
 The operation is one-way once new writers resume; restarting e9 on adopted
 custody is unsafe. No generation is deployed by this port.
 
-`materialize.certify_checkout_cleanup` is the sole checkout certification
+`materialize.CheckoutCertifier.certify_checkout_cleanup` is the sole checkout certification
 function. Cleanup, deferral, recovery and the reservation-return boundary use
 it. It checks every durable registration and accepts a result only for that
 execution UUID, registered path/device/inode and exact attempt. Caller details

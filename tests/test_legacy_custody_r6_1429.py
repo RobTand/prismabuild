@@ -28,12 +28,12 @@ def test_e9_terminal_certifies_absence_through_the_normal_mint(tmp_path, monkeyp
     queue, key, ledger = _e9_terminal(tmp_path)
     migration = LegacyCustodyMigration(queue)
     issued = []
-    mint = materialize.certify_checkout_cleanup
+    mint = materialize.CheckoutCertifier.certify_checkout_cleanup
     def observe(*args, **kwargs):
         result = mint(*args, **kwargs)
         issued.append(result.get("certificate"))
         return result
-    monkeypatch.setattr(materialize, "certify_checkout_cleanup", observe)
+    monkeypatch.setattr(materialize.CheckoutCertifier, "certify_checkout_cleanup", observe)
     rows = migration.apply(migration.inventory(), writers_stopped=True)
     assert rows[0]["status"] == "adopted" and rows[0]["certified_absent"]
     assert any(issued) and ledger.holder_tokens(key) == {"cpu": 1}
@@ -66,7 +66,7 @@ def test_existing_legacy_checkout_adopts_its_inode_without_releasing(tmp_path, m
         ledger.certify_release(key)
     journal = record_store.read_document(ledger.legacy_owner_path(key))
     assert journal["checkout_registrations"][0]["inode"] == tree.stat().st_ino
-    cleanup = materialize.certify_checkout_cleanup(queue, journal, local_checkout_root=root)
+    cleanup = queue.certify_checkout_cleanup(journal["action_key"])
     assert cleanup["complete"] and not tree.exists()
     assert ledger.release(key, certificate=ledger.certify_release(key)) == 1
 
@@ -182,7 +182,7 @@ def test_no_default_proof_for_unknown_historical_or_occupancy_roots(tmp_path, mo
     assert tier.holdings(key) == {"stage_gib": 1}
 
 
-def test_occupancy_scan_runs_on_the_ledger_host_not_the_checkout_host(tmp_path, monkeypatch, stopped_legacy_hosts):
+def test_cross_host_occupancy_retains_custody(tmp_path, monkeypatch, stopped_legacy_hosts):
     import socket
     from prismabuild import fleet_roster
     import prismabuild.legacy_custody as custody
@@ -218,6 +218,7 @@ def test_occupancy_scan_runs_on_the_ledger_host_not_the_checkout_host(tmp_path, 
     monkeypatch.setattr(custody.subprocess, "run", remote)
     rows = migration.apply(migration.inventory(), writers_stopped=True)
     row = next(row for row in rows if row["kind"] == "tier")
-    assert row["status"] == "adopted" and row["proof"]["occupancy"]["host"] == "remote-storage"
-    assert any(key + ":occupancy" in request for request in requests)
-    assert all(key not in request for request in requests)
+    assert row["status"] == "retained" and not row.get("certified_absent")
+    assert "owner and ledger host" in row["reason"]
+    assert not requests
+    assert tier.holdings(key)

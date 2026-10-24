@@ -79,7 +79,7 @@ def test_blocking_public_owner_path_cannot_substitute_durable_custody(tmp_path, 
     def forge():
         if route == "certify_release":
             return ledger.certify_release(key, owner_path=forged_path)
-        result = materialize.certify_checkout_cleanup(
+        result = queue.queue.certify_checkout_cleanup(
             queue.queue, forged, owner_path=forged_path, recover=False,
             local_checkout_root=pool.LOCAL_CHECKOUT_ROOT, release_ledger=ledger,
             release_holder=key, release_custody_key=key, select_owner=True)

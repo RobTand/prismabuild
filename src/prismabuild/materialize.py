@@ -490,6 +490,7 @@ _ISSUED_RELEASE_CERTIFICATES = weakref.WeakKeyDictionary()
 
 
 class _ReleaseBinding(NamedTuple):
+    root: Path
     base: Path
     holder: str
     manifest: bytes
@@ -546,7 +547,8 @@ class ReleaseCertificate:
         from . import lifetime_fence, record_store
         invalid = record_store.PoolContractError
         binding = ReleaseCertificate._issued(certificate)
-        if binding.base != ledger.base or binding.holder != holder:
+        if (binding.root != ledger.release_records.root or not binding.owner_path.is_relative_to(binding.root)
+                or binding.base != ledger.base or binding.holder != holder):
             raise invalid("release certificate required for this reservation")
         manifest = record_store.read_document(ledger.release_owner_path(holder))
         owner = record_store.read_document(binding.owner_path)
@@ -578,296 +580,367 @@ class ReleaseCertificate:
         return binding
 
 
-def certify_checkout_cleanup(
-    queue, record: Mapping[str, object], *, proof: Mapping[str, object] | None = None,
-    recover: bool = True,
-    local_checkout_root: Path, release_ledger=None, reservation_nonce=None, release_holder=None, release_custody_key=None, select_owner=False,
-) -> dict[str, object]:
-    """Certify every registered inode from its durable custody owner.
+# Original descriptors stay process-private until their unlink is journalled.
+_CHECKOUT_WITNESSES = {}
 
-    This is the single checkout certification boundary, including immediately
-    before any reservation return. A caller's result is only a candidate for
-    the exact registered execute; it cannot replace the registration list.
-    """
-    from . import claim_identity, lifetime_fence, record_store
 
-    try:
-        key = release_custody_key or str(record.get("action_key") or "")
-        with queue.action_transition_lock(key, blocking=release_ledger is None) as acquired:
-            if not acquired:
-                return {"complete": False, "used": True, "error": "checkout custody is busy"}
-            # Custody paths are derived here, never supplied by a caller.
-            # Recovery may certify an exact journal beside a successor; a
-            # private rollback may return only its own receipt's token names.
-            path = queue.records.lease_path(key)
-            owner = record_store.read_document(path)
-            claim_path = queue.records.item_path(record_store.CLAIMED, key)
-            live_claim = record_store.read_document(claim_path)
-            if owner is None:
-                path, owner = claim_path, live_claim
-            elif not claim_identity.same_claim(owner, record):
-                if live_claim is not None and claim_identity.same_claim(live_claim, record):
-                    path, owner = claim_path, live_claim
-            journal_path = queue.records.late_finish_path(record)
-            journal = record_store.read_document(journal_path)
-            if (journal is not None and lifetime_fence.attempt_identity(journal) == lifetime_fence.attempt_identity(record)
-                    and (owner is None or "heartbeat_recovery" in journal
-                         or lifetime_fence.attempt_identity(owner) != lifetime_fence.attempt_identity(record))):
-                path, owner = journal_path, journal
-            if owner is None:
+class CheckoutCertifier:
+    """Cleanup authority bound to its queue at construction, never per call."""
+
+    def __init__(self, queue_root, *, ledger=None, recover=True):
+        self._root = Path(queue_root)
+        self._ledger = ledger
+        self._recover = recover
+        if ledger is not None and self._root != ledger.release_records.root:
+            raise pb.PrismaBuildError("certificate authority and ledger queue differ")
+
+    def _hold_registered(self, action_key, *, attempt=None, claim_nonce=None):
+        from . import claim_identity, record_store
+        owner = record_store.read_document(record_store.RecordStore(self._root).lease_path(action_key))
+        if (owner is None or owner.get("attempts") != attempt
+                or claim_identity.claim_nonce(owner) != claim_nonce):
+            raise pb.PrismaBuildError("checkout witness owner changed")
+        for entry in owner["checkout_registrations"]:
+            registration = {k: v for k, v in entry.items() if k not in ("cleanup", "completion_claim")}
+            key = (self._root, registration["execution_id"])
+            if "inode" not in registration or key in _CHECKOUT_WITNESSES:
+                continue
+            receipt = record_store.read_document(self._root / "checkout-unlinks" / (key[1] + ".json"))
+            if receipt is not None and receipt.get("registration") == registration:
+                continue
+            try:
+                fd = os.open(registration["path"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except FileNotFoundError:
+                continue  # Missing older debt cannot supply an unlink witness.
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) != (registration["device"], registration["inode"]):
+                os.close(fd)
+                raise pb.PrismaBuildError("checkout witness registration differs")
+            _CHECKOUT_WITNESSES[key] = (fd, registration, attempt, claim_nonce)
+
+    def _journal_unlinked(self, action_key, *, attempt=None, claim_nonce=None):
+        from . import record_store
+        records = record_store.RecordStore(self._root)
+        for key, (fd, registration, registered_attempt, registered_nonce) in list(_CHECKOUT_WITNESSES.items()):
+            if (key[0] != self._root or registration["claim"]["action_key"] != action_key
+                    or (registered_attempt, registered_nonce) != (attempt, claim_nonce)):
+                continue
+            try:
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino, info.st_nlink) == (registration["device"], registration["inode"], 0):
+                    records.replace_record_at(self._root / "checkout-unlinks" / (key[1] + ".json"), {
+                        "registration": registration, "ended_unix": _now()})
+            finally:
+                del _CHECKOUT_WITNESSES[key]
+                os.close(fd)
+
+    def certify_checkout_cleanup(self, action_key, *, attempt=None, claim_nonce=None, nonce=None):
+        """Derive evidence from this authority's durable custody and filesystem."""
+        from . import claim_identity, lifetime_fence, record_store, pool, storage_tiers
+
+        try:
+            key = action_key.removeprefix(storage_tiers.RAM_HOST_MEMORY_PREFIX)
+            queue = pool.PoolQueue(self._root)
+            release_ledger = self._ledger
+            recover = self._recover
+            reservation_nonce = nonce
+            holder = action_key
+            local_checkout_root = pool.LOCAL_CHECKOUT_ROOT
+            def matches(candidate):
+                return (candidate is not None and candidate.get("action_key") in {action_key, key}
+                        and (attempt is None or candidate.get("attempts") == attempt)
+                        and (claim_nonce is None or claim_identity.claim_nonce(candidate) == claim_nonce))
+            record = None
+            with queue.action_transition_lock(key, blocking=release_ledger is None) as acquired:
+                if not acquired:
+                    return {"complete": False, "used": True, "error": "checkout custody is busy"}
+                # Custody paths are derived here, never supplied by a caller.
+                # Recovery may certify an exact journal beside a successor; a
+                # private rollback may return only its own receipt's token names.
+                path = queue.records.lease_path(key)
+                owner = record_store.read_document(path)
+                claim_path = queue.records.item_path(record_store.CLAIMED, key)
+                live_claim = record_store.read_document(claim_path)
+                if not matches(owner):
+                    path, owner = claim_path, live_claim if matches(live_claim) else None
+                # Late attempts are selected by identity, never by a supplied path.
                 try:
-                    names = queue.records.claimed_names().finishes
+                    names = queue.records.claimed_names()
+                    journals = tuple(name for name in names.names if name.endswith(".late-finish"))
                 except FileNotFoundError:
-                    names = ()
-                matches = []
-                for name in names:
+                    journals = ()
+                for name in journals:
                     if name.startswith(key + "."):
                         candidate_path = queue.records.dir(record_store.CLAIMED) / name
                         candidate = record_store.read_document(candidate_path)
-                        if candidate is not None and lifetime_fence.attempt_identity(candidate) == lifetime_fence.attempt_identity(record):
-                            matches.append((candidate_path, candidate))
-                if len(matches) > 1:
-                    return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
-                if matches:
-                    path, owner = matches[0]
-            if owner is None and release_ledger is None and record.get("inventory_id") is not None:
-                # An operator-adopted inode has no live lease. Discover its
-                # journal through the reservation manifests, never its caller.
-                from .legacy_custody import LegacyCustodyMigration, legacy_checkout_owner_path
-                for _, _, ledger in LegacyCustodyMigration(queue)._ledgers():
-                    candidate_path = ledger.legacy_owner_path(key)
-                    candidate = record_store.read_document(candidate_path)
-                    binding = record_store.read_document(ledger.release_owner_path(key))
-                    if (candidate is not None and binding is not None
-                            and binding.get("legacy_adoption") == candidate.get("inventory_id")
-                            and binding.get("legacy_owner_nonce") == candidate.get("manifest_nonce")
-                            and lifetime_fence.attempt_identity(candidate) == lifetime_fence.attempt_identity(record)):
-                        path = legacy_checkout_owner_path(queue.root, key)
-                        owner = record_store.read_document(path)
-                        if owner is None or owner.get("inventory_id") != candidate["inventory_id"]:
-                            return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
-                        break
-            holder = release_holder or key
-            manifest = None
-            token_names = None
-            if release_ledger is not None:
-                manifest_path = release_ledger.release_owner_path(holder)
-                manifest = record_store.read_document(manifest_path)
-                if manifest is None:
-                    return {"complete": False, "used": True, "error": "reservation owner missing"}
-                if reservation_nonce is not None:
-                    receipt = record_store.read_document(
-                        release_ledger.acquisition_receipt_path(holder, reservation_nonce))
-                    if (receipt is None or receipt.get("nonce") != reservation_nonce
-                            or receipt.get("action_key") != holder
-                            or receipt.get("reservation_nonce") != manifest.get("nonce")
-                            or not isinstance(receipt.get("token_names"), list)):
-                        return {"complete": False, "used": True, "error": "reservation nonce differs"}
-                    token_names = receipt["token_names"]
+                        if matches(candidate) and (owner is None or "heartbeat_recovery" in candidate):
+                            path, owner = candidate_path, candidate
                 if owner is None:
                     try:
                         names = queue.records.claimed_names().finishes
                     except FileNotFoundError:
-                        names = ()  # Standalone ledger, with no queue namespace.
-                    marks = [queue.records.dir(record_store.CLAIMED) / name
-                             for name in names if name.startswith(key + ".")]
-                    if len(marks) > 1:
-                        return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
-                    if marks:
-                        path, owner = marks[0], record_store.read_document(marks[0])
-                if owner is None and manifest.get("legacy_adoption") is not None:
-                    from .legacy_custody import legacy_checkout_owner_path
-                    legacy_path = release_ledger.legacy_owner_path(holder)
-                    legacy = record_store.read_document(legacy_path)
-                    if (legacy is None or legacy.get("inventory_id") != manifest["legacy_adoption"]
-                            or legacy.get("manifest_nonce") != manifest.get("legacy_owner_nonce", manifest.get("nonce"))):
-                        return {"complete": False, "used": True, "error": "legacy custody journal differs"}
-                    path = legacy_checkout_owner_path(queue.root, key)
-                    owner = record_store.read_document(path)
-                    if owner is None or owner.get("inventory_id") != legacy["inventory_id"]:
-                        return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
-                if owner is None:
-                    # The reservation's durable empty registration is authority
-                    # only before it was bound to an executable claim.
-                    if manifest.get("claim") is not None:
-                        for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
-                            candidate_path = queue.records.item_path(state, key)
+                        names = ()
+                    matches_finish = []
+                    for name in names:
+                        if name.startswith(key + "."):
+                            candidate_path = queue.records.dir(record_store.CLAIMED) / name
                             candidate = record_store.read_document(candidate_path)
-                            if candidate is not None and {k: v for k, v in lifetime_fence.attempt_identity(candidate).items() if k not in ("nonce", "scope_id")} == manifest["claim"]:
-                                path, owner = candidate_path, candidate
-                                break
-                    else:
+                            if matches(candidate):
+                                matches_finish.append((candidate_path, candidate))
+                    if len(matches_finish) > 1:
+                        return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
+                    if matches_finish:
+                        path, owner = matches_finish[0]
+                # Adopted custody is discovered from manifests on every route,
+                # including terminal reclaim. The caller supplies no inventory.
+                if owner is None:
+                    from .legacy_custody import LegacyCustodyMigration, legacy_checkout_owner_path
+                    for _, _, ledger in LegacyCustodyMigration(queue)._ledgers():
+                        candidate = record_store.read_document(ledger.legacy_owner_path(action_key))
+                        binding = record_store.read_document(ledger.release_owner_path(action_key))
+                        if (matches(candidate) and binding is not None
+                                and binding.get("legacy_adoption") == candidate.get("inventory_id")
+                                and binding.get("legacy_owner_nonce") == candidate.get("manifest_nonce")):
+                            path = legacy_checkout_owner_path(queue.root, key)
+                            owner = record_store.read_document(path)
+                            if not matches(owner) or owner.get("inventory_id") != candidate["inventory_id"]:
+                                return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
+                            break
+                manifest = None
+                token_names = None
+                if release_ledger is not None:
+                    manifest_path = release_ledger.release_owner_path(holder)
+                    manifest = record_store.read_document(manifest_path)
+                    if manifest is None:
+                        return {"complete": False, "used": True, "error": "reservation owner missing"}
+                    if reservation_nonce is not None:
+                        receipt = record_store.read_document(
+                            release_ledger.acquisition_receipt_path(holder, reservation_nonce))
+                        if (receipt is None or receipt.get("nonce") != reservation_nonce
+                                or receipt.get("action_key") != holder
+                                or receipt.get("reservation_nonce") != manifest.get("nonce")
+                                or not isinstance(receipt.get("token_names"), list)):
+                            return {"complete": False, "used": True, "error": "reservation nonce differs"}
+                        token_names = receipt["token_names"]
+                    if owner is None:
+                        try:
+                            names = queue.records.claimed_names().finishes
+                        except FileNotFoundError:
+                            names = ()  # Standalone ledger, with no queue namespace.
+                        marks = [queue.records.dir(record_store.CLAIMED) / name
+                                 for name in names if name.startswith(key + ".")]
+                        if len(marks) > 1:
+                            return {"complete": False, "used": True, "error": "ambiguous finishing checkout custody"}
+                        if marks:
+                            path, owner = marks[0], record_store.read_document(marks[0])
+                    if owner is None and manifest.get("legacy_adoption") is not None:
+                        from .legacy_custody import legacy_checkout_owner_path
+                        legacy_path = release_ledger.legacy_owner_path(holder)
+                        legacy = record_store.read_document(legacy_path)
+                        if (legacy is None or legacy.get("inventory_id") != manifest["legacy_adoption"]
+                                or legacy.get("manifest_nonce") != manifest.get("legacy_owner_nonce", manifest.get("nonce"))):
+                            return {"complete": False, "used": True, "error": "legacy custody journal differs"}
+                        path = legacy_checkout_owner_path(queue.root, key)
+                        owner = record_store.read_document(path)
+                        if owner is None or owner.get("inventory_id") != legacy["inventory_id"]:
+                            return {"complete": False, "used": True, "error": "legacy checkout authority missing"}
+                    if owner is None:
+                        # The reservation's durable empty registration is authority
+                        # only before it was bound to an executable claim.
+                        if manifest.get("claim") is not None:
+                            for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
+                                candidate_path = queue.records.item_path(state, key)
+                                candidate = record_store.read_document(candidate_path)
+                                if candidate is not None and {k: v for k, v in lifetime_fence.attempt_identity(candidate).items() if k not in ("nonce", "scope_id")} == manifest["claim"]:
+                                    path, owner = candidate_path, candidate
+                                    break
+                        else:
+                            path, owner = manifest_path, dict(manifest)
+                    if (reservation_nonce is not None and manifest.get("claim") is None
+                            and owner is not None and owner.get("claimed_by") is None
+                            and "checkout_registrations" not in owner):
+                        # This exact private take precedes the claim rewrite. Its
+                        # durable empty list requires no mutation of the moved row.
                         path, owner = manifest_path, dict(manifest)
-                if (reservation_nonce is not None and manifest.get("claim") is None
-                        and owner is not None and owner.get("claimed_by") is None
-                        and "checkout_registrations" not in owner):
-                    # This exact private take precedes the claim rewrite. Its
-                    # durable empty list requires no mutation of the moved row.
-                    path, owner = manifest_path, dict(manifest)
-                if select_owner and owner is not None:
-                    record = owner
-                if (manifest.get("claim") is not None and owner is not None
-                        and manifest.get("checkout_snapshot") != owner.get("checkout_snapshot")):
-                    return {"complete": False, "used": True, "error": "reservation checkout kind differs"}
-                if owner is not None and "checkout_registrations" not in owner:
-                    if owner.get("checkout_snapshot") is not None:
-                        # A private rollback can precede the claim rewrite.
-                        if reservation_nonce is None or manifest.get("claim") is not None:
-                            return {"complete": False, "used": True, "error": "checkout custody missing"}
-                        path, owner = manifest_path, dict(manifest)
-                    else:
-                        owner["checkout_registrations"] = []
-                        if recover:
-                            queue.records.replace_record_at(path, owner)
-                if manifest.get("claim") is not None and (owner is None or
-                        {k: v for k, v in lifetime_fence.attempt_identity(owner).items() if k not in ("nonce", "scope_id")} != manifest["claim"]):
-                    return {"complete": False, "used": True, "error": "reservation claim differs"}
-                if reservation_nonce is not None and manifest.get("claim") is None:
-                    record = owner or record
-            if (owner is None or not claim_identity.same_claim(owner, record)
-                    or lifetime_fence.attempt_identity(owner) != lifetime_fence.attempt_identity(record)):
-                return {"complete": False, "used": True, "error": "durable checkout owner unavailable"}
-            if "checkout_registrations" not in owner and owner.get("checkout_snapshot") is None:
-                owner["checkout_registrations"] = []
-                if recover:
-                    queue.records.replace_record_at(path, owner)
-            registrations = owner.get("checkout_registrations")
-            if not isinstance(registrations, list):
-                return {"complete": False, "used": True, "error": "durable checkout registrations missing"}
-            claim = lifetime_fence.attempt_identity(owner)
-            base_claim = {k: claim[k] for k in claim if k not in ("nonce", "scope_id")}
-            candidates = (owner.get("checkout_cleanup"), record.get("checkout_cleanup"), proof)
-            updated = []
-            failures = []
-            ended = []
-            seen = set()
-            last = {}
-            for entry in registrations:
-                if not isinstance(entry, dict):
-                    return {"complete": False, "used": True, "error": "invalid checkout registration"}
-                registration = {k: v for k, v in entry.items()
-                                if k not in ("cleanup", "completion_claim")}
-                execution_claim = entry.get("completion_claim", claim)
-                if (not isinstance(execution_claim, Mapping)
-                        or set(execution_claim) != set(claim)
-                        or {k: v for k, v in execution_claim.items()
-                            if k not in ("nonce", "scope_id")} != base_claim):
-                    return {"complete": False, "used": True,
-                            "error": "checkout completion incarnation differs"}
-                directory = Path(str(registration.get("path") or ""))
-                registered_root = local_checkout_root
-                if (owner.get("inventory_id") is not None and any(
-                        row.get("kind") == "checkout" and Path(row.get("path", "")) == directory.parent
-                        for row in (owner.get("legacy_proof") or {}).get("scan", {}).get("roots", []))):
-                    registered_root = directory.parent
-                execution = registration.get("execution_id")
-                if (not isinstance(execution, str) or not re.fullmatch(r"[0-9a-f]{32}", execution)
-                        or execution in seen or registration.get("claim") != base_claim
-                        or directory.parent != registered_root
-                        or not CHECKOUT_TREE.fullmatch(directory.name)
-                        or not directory.name.startswith(key[:12] + ".")):
-                    return {"complete": False, "used": True, "error": "checkout registration identity differs"}
-                seen.add(execution)
-                unbound = "device" not in registration and "inode" not in registration
-                if unbound:
-                    try:
+                    if (manifest.get("claim") is not None and owner is not None
+                            and manifest.get("checkout_snapshot") != owner.get("checkout_snapshot")):
+                        return {"complete": False, "used": True, "error": "reservation checkout kind differs"}
+                    if owner is not None and "checkout_registrations" not in owner:
+                        if owner.get("checkout_snapshot") is not None:
+                            # A private rollback can precede the claim rewrite.
+                            if reservation_nonce is None or manifest.get("claim") is not None:
+                                return {"complete": False, "used": True, "error": "checkout custody missing"}
+                            path, owner = manifest_path, dict(manifest)
+                        else:
+                            owner["checkout_registrations"] = []
+                            if recover:
+                                queue.records.replace_record_at(path, owner)
+                    if manifest.get("claim") is not None and (owner is None or
+                            {k: v for k, v in lifetime_fence.attempt_identity(owner).items() if k not in ("nonce", "scope_id")} != manifest["claim"]):
+                        return {"complete": False, "used": True, "error": "reservation claim differs"}
+                    if reservation_nonce is not None and manifest.get("claim") is None:
+                        record = owner
+                if not matches(owner):
+                    return {"complete": False, "used": True, "error": "durable checkout owner unavailable"}
+                record = owner
+                if "checkout_registrations" not in owner and owner.get("checkout_snapshot") is None:
+                    owner["checkout_registrations"] = []
+                    if recover:
+                        queue.records.replace_record_at(path, owner)
+                registrations = owner.get("checkout_registrations")
+                if not isinstance(registrations, list):
+                    return {"complete": False, "used": True, "error": "durable checkout registrations missing"}
+                claim = lifetime_fence.attempt_identity(owner)
+                base_claim = {k: claim[k] for k in claim if k not in ("nonce", "scope_id")}
+                updated = []
+                failures = []
+                ended = []
+                seen = set()
+                last = {}
+                for entry in registrations:
+                    if not isinstance(entry, dict):
+                        return {"complete": False, "used": True, "error": "invalid checkout registration"}
+                    registration = {k: v for k, v in entry.items()
+                                    if k not in ("cleanup", "completion_claim")}
+                    execution_claim = entry.get("completion_claim", claim)
+                    if (not isinstance(execution_claim, Mapping)
+                            or set(execution_claim) != set(claim)
+                            or {k: v for k, v in execution_claim.items()
+                                if k not in ("nonce", "scope_id")} != base_claim):
+                        return {"complete": False, "used": True,
+                                "error": "checkout completion incarnation differs"}
+                    directory = Path(str(registration.get("path") or ""))
+                    registered_root = local_checkout_root
+                    if (owner.get("inventory_id") is not None and any(
+                            row.get("kind") == "checkout" and Path(row.get("path", "")) == directory.parent
+                            for row in (owner.get("legacy_proof") or {}).get("scan", {}).get("roots", []))):
+                        registered_root = directory.parent
+                    execution = registration.get("execution_id")
+                    if (not isinstance(execution, str) or not re.fullmatch(r"[0-9a-f]{32}", execution)
+                            or execution in seen or registration.get("claim") != base_claim
+                            or directory.parent != registered_root
+                            or not CHECKOUT_TREE.fullmatch(directory.name)
+                            or not directory.name.startswith(key[:12] + ".")):
+                        return {"complete": False, "used": True, "error": "checkout registration identity differs"}
+                    seen.add(execution)
+                    unbound = "device" not in registration and "inode" not in registration
+                    if unbound:
+                        try:
+                            parent = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                            try:
+                                identity = os.fstat(parent)
+                                if (identity.st_dev, identity.st_ino) != (registration.get("parent_device"), registration.get("parent_inode")):
+                                    raise ValueError("checkout intent parent identity differs")
+                                try:
+                                    os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
+                                except FileNotFoundError:
+                                    saved = entry.get("cleanup") or {}
+                                    if (saved.get("complete") is True and saved.get("created") is False
+                                            and saved.get("registration") == registration
+                                            and saved.get("claim") == execution_claim):
+                                        valid = dict(saved)
+                                    elif recover:
+                                        valid = {**registration, "complete": True, "created": False,
+                                                 "ended_unix": _now(), "claim": dict(execution_claim),
+                                                 "registration": registration}
+                                    else:
+                                        return {"complete": False, "used": True, "error": "never-created proof not persisted"}
+                                else:
+                                    raise ValueError("unbound checkout path exists; custody retained")
+                            finally:
+                                os.close(parent)
+                        except (OSError, ValueError) as exc:
+                            return {"complete": False, "used": True, "error": str(exc)}
+                        updated.append({**registration, "completion_claim": dict(execution_claim), "cleanup": valid})
+                        ended.append(valid["ended_unix"])
+                        last = valid
+                        continue
+                    if type(registration.get("device")) is not int or type(registration.get("inode")) is not int:
+                        return {"complete": False, "used": True, "error": "checkout inode registration incomplete"}
+                    # Lease/outcome proof dictionaries are audit data, never authority.
+                    # Only an unlink journal written from our held original fd counts.
+                    receipt_path = self._root / "checkout-unlinks" / (execution + ".json")
+                    receipt = record_store.read_document(receipt_path)
+                    valid = None
+                    if receipt is not None and receipt.get("registration") == registration:
                         parent = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
                         try:
-                            identity = os.fstat(parent)
-                            if (identity.st_dev, identity.st_ino) != (registration.get("parent_device"), registration.get("parent_inode")):
-                                raise ValueError("checkout intent parent identity differs")
                             try:
-                                os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
+                                named = os.stat(directory.name, dir_fd=parent, follow_symlinks=False)
                             except FileNotFoundError:
-                                saved = entry.get("cleanup") or {}
-                                if (saved.get("complete") is True and saved.get("created") is False
-                                        and saved.get("registration") == registration
-                                        and saved.get("claim") == execution_claim):
-                                    valid = dict(saved)
-                                elif recover:
-                                    valid = {**registration, "complete": True, "created": False,
-                                             "ended_unix": _now(), "claim": dict(execution_claim),
-                                             "registration": registration}
-                                else:
-                                    return {"complete": False, "used": True, "error": "never-created proof not persisted"}
-                            else:
-                                raise ValueError("unbound checkout path exists; custody retained")
+                                named = None
+                            if named is not None and (named.st_dev, named.st_ino) == (registration["device"], registration["inode"]):
+                                raise ValueError("registered checkout still exists beside unlink journal")
                         finally:
                             os.close(parent)
-                    except (OSError, ValueError) as exc:
-                        return {"complete": False, "used": True, "error": str(exc)}
-                    updated.append({**registration, "completion_claim": dict(execution_claim), "cleanup": valid})
-                    ended.append(valid["ended_unix"])
-                    last = valid
-                    continue
-                if type(registration.get("device")) is not int or type(registration.get("inode")) is not int:
-                    return {"complete": False, "used": True, "error": "checkout inode registration incomplete"}
-                valid = None
-                for candidate in (entry.get("cleanup"), *candidates):
-                    if not isinstance(candidate, Mapping):
-                        continue
-                    timestamp = candidate.get("ended_unix")
-                    if (candidate.get("complete") is True and candidate.get("unlinked") is True
-                            and candidate.get("claim") == execution_claim
-                            and candidate.get("registration") == registration
-                            and all(candidate.get(k) == registration[k] for k in ("path", "device", "inode"))
-                            and type(timestamp) in (int, float) and math.isfinite(timestamp)):
-                        valid = dict(candidate)
-                        break
-                if valid is None and recover:
-                    try:
-                        directory.lstat()
-                    except OSError as exc:
-                        valid = {"complete": False, "error": f"registered checkout has no unlink proof: {exc}"}
+                        valid = {**registration, "complete": True, "unlinked": True,
+                                 "claim": dict(execution_claim), "registration": registration,
+                                 "ended_unix": receipt["ended_unix"]}
+                    if valid is None and recover:
+                        held = None
+                        try:
+                            held = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                            info = os.fstat(held)
+                            if (info.st_dev, info.st_ino) != (registration["device"], registration["inode"]):
+                                raise ValueError("registered checkout was replaced")
+                            verdict = _cleanup_execution_checkout(
+                                registered_root, directory, owner,
+                                expect=(registration["device"], registration["inode"]))
+                            if verdict.get("complete") is True:
+                                if os.fstat(held).st_nlink != 0:
+                                    raise ValueError("registered inode remains linked")
+                                queue.records.replace_record_at(receipt_path, {
+                                    "registration": registration, "ended_unix": verdict["ended_unix"]})
+                            valid = {**registration, **verdict, "claim": dict(execution_claim),
+                                     "registration": registration}
+                        except (OSError, ValueError) as exc:
+                            valid = {"complete": False, "error": f"registered checkout has no unlink proof: {exc}"}
+                        finally:
+                            if held is not None:
+                                os.close(held)
+                    if valid is None:
+                        valid = {"complete": False, "error": "registered checkout unlink proof missing"}
+                    if valid.get("complete") is not True:
+                        failures.append(str(valid.get("error") or "checkout cleanup unproved"))
                     else:
-                        verdict = _cleanup_execution_checkout(
-                            registered_root, directory, owner,
-                            expect=(registration["device"], registration["inode"]))
-                        valid = {**registration, **verdict, "claim": dict(execution_claim),
-                                 "registration": registration}
-                if valid is None:
-                    valid = {"complete": False, "error": "registered checkout unlink proof missing"}
-                if valid.get("complete") is not True:
-                    failures.append(str(valid.get("error") or "checkout cleanup unproved"))
-                else:
-                    ended.append(valid["ended_unix"])
-                updated.append({**registration, "completion_claim": dict(execution_claim),
-                                "cleanup": valid})
-                last = valid
-            result = {**last, "complete": not failures,
-                      "ended_unix": max(ended, default=_now()), "error": "; ".join(failures)}
-            owner["checkout_registrations"] = updated
-            if registrations:
-                owner["checkout_cleanup"] = result
-            # A final return is a read-only certification. Replacing its
-            # finishing tombstone would invalidate the finisher's identity.
-            if recover:
-                queue.records.replace_record_at(path, owner)
-            if isinstance(record, dict):
-                record["checkout_registrations"] = updated
+                        ended.append(valid["ended_unix"])
+                    updated.append({**registration, "completion_claim": dict(execution_claim),
+                                    "cleanup": valid})
+                    last = valid
+                result = {**last, "checkout_registrations": updated, "complete": not failures,
+                          "ended_unix": max(ended, default=_now()), "error": "; ".join(failures)}
+                owner["checkout_registrations"] = updated
                 if registrations:
-                    record["checkout_cleanup"] = result
-            # A live lease owns the list. Keep its claim mirror current without
-            # ever writing a successor or a separate late-finish journal.
-            if recover and path == queue.records.lease_path(key):
-                mirror = queue.records.item_path(record_store.CLAIMED, key)
-                live = record_store.read_document(mirror)
-                if live is not None and claim_identity.same_claim(live, owner):
-                    live["checkout_registrations"] = updated
+                    owner["checkout_cleanup"] = result
+                # A final return is a read-only certification. Replacing its
+                # finishing tombstone would invalidate the finisher's identity.
+                if recover:
+                    queue.records.replace_record_at(path, owner)
+                if isinstance(record, dict):
+                    record["checkout_registrations"] = updated
                     if registrations:
-                        live["checkout_cleanup"] = result
-                    queue.records.replace_record_at(mirror, live)
-            if release_ledger is not None and result["complete"]:
-                certificate = object.__new__(ReleaseCertificate)
-                observed = record_store.read_document(path)
-                _ISSUED_RELEASE_CERTIFICATES[certificate] = _ReleaseBinding(
-                    release_ledger.base, holder, pb._canonical_bytes(manifest), path,
-                    pb._canonical_bytes(lifetime_fence.attempt_identity(owner)),
-                    pb._canonical_bytes(observed.get("checkout_registrations")),
-                    None if token_names is None else frozenset(token_names), key,
-                    owner.get("attempts"))
-                return {**result, "certificate": certificate}
-            return result
-    except (OSError, ValueError, TypeError, KeyError, record_store.PoolContractError) as exc:
-        return {"complete": False, "used": True,
-                "error": f"checkout certification failed: {type(exc).__name__}: {exc}"}
+                        record["checkout_cleanup"] = result
+                # A live lease owns the list. Keep its claim mirror current without
+                # ever writing a successor or a separate late-finish journal.
+                if recover and path == queue.records.lease_path(key):
+                    mirror = queue.records.item_path(record_store.CLAIMED, key)
+                    live = record_store.read_document(mirror)
+                    if live is not None and claim_identity.same_claim(live, owner):
+                        live["checkout_registrations"] = updated
+                        if registrations:
+                            live["checkout_cleanup"] = result
+                        queue.records.replace_record_at(mirror, live)
+                if release_ledger is not None and result["complete"]:
+                    certificate = object.__new__(ReleaseCertificate)
+                    observed = record_store.read_document(path)
+                    _ISSUED_RELEASE_CERTIFICATES[certificate] = _ReleaseBinding(
+                        self._root, release_ledger.base, holder, pb._canonical_bytes(manifest), path,
+                        pb._canonical_bytes(lifetime_fence.attempt_identity(owner)),
+                        pb._canonical_bytes(observed.get("checkout_registrations")),
+                        None if token_names is None else frozenset(token_names), key,
+                        owner.get("attempts"))
+                    return {**result, "certificate": certificate}
+                return result
+        except (OSError, ValueError, TypeError, KeyError, record_store.PoolContractError) as exc:
+            return {"complete": False, "used": True,
+                    "error": f"checkout certification failed: {type(exc).__name__}: {exc}"}

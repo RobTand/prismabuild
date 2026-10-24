@@ -593,6 +593,10 @@ class Authority:
         if not isinstance(request,dict):raise ValueError('request must be an object')
         op=request.get('op')
         if not isinstance(op,str):raise ValueError('operation must be a string')
+        if op == 'maintenance_query':
+            if uid not in {0, self.uid}:raise PermissionError('caller UID is not authorized')
+            if set(request) != {'op'}:raise ValueError('unknown read-only maintenance field')
+            with self.lock:return self._maintenance_status(read_only=True)
         if op in {'maintenance_begin','maintenance_status','maintenance_end','maintenance_force_end','maintenance_takeover'}:
             return self.admin(uid,request)
         if uid!=self.uid:raise PermissionError('caller UID is not authorized')
@@ -1036,7 +1040,7 @@ class Authority:
         self.records[scope]=released
         return released
 
-    def _maintenance_status(self):
+    def _maintenance_status(self, *, read_only=False):
         errors=[];active=set();inventory={}
         if self.maintenance_error:errors.append(self.maintenance_error)
         try:
@@ -1059,7 +1063,7 @@ class Authority:
                 continue
             # A failed create has no launcher or Docker RPC. Retire only exact
             # owned empty setup remnants, without signalling any processes.
-            if (self.maintenance['draining'] and record.get('pending')
+            if (not read_only and self.maintenance['draining'] and record.get('pending')
                     and not record.get('launched_unix') and not record.get('container_tickets')
                     and not errors and (kernel is None or not kernel['populated'])):
                 try:
@@ -1073,6 +1077,9 @@ class Authority:
                     inventory.pop(scope,None)
                     continue
                 except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
+            if read_only:
+                active.add(scope)
+                continue
             if record.get('retired_unix') and kernel is not None and not kernel['populated'] and kernel['frozen']:
                 if not record.get('cgroup_identity') or record['cgroup_identity']==kernel.get('identity'):
                     # Only a tombstone whose kernel identity this broker can
@@ -1454,8 +1461,25 @@ def main():
                         help='explicitly initialize an unconfigured persistent maintenance authority open')
     parser.add_argument('--uid',type=int,default=1000,
                         help='local execution user allowed to create and control job scopes')
+    maintenance=parser.add_mutually_exclusive_group()
+    maintenance.add_argument('--maintenance-begin', metavar='OWNER', help='close the local broker gate as root')
+    maintenance.add_argument('--maintenance-end', metavar='OWNER', help="release only this owner's local broker gate as root")
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit('resource broker must run as root')
+    if args.maintenance_begin or args.maintenance_end:
+        _trusted_file(Path(__file__).resolve())
+        request={'op':'maintenance_begin' if args.maintenance_begin else 'maintenance_end',
+                 'owner':args.maintenance_begin or args.maintenance_end}
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(30)
+            client.connect(args.socket)
+            client.sendall(json.dumps(request).encode()+b'\n')
+            with client.makefile('rb') as reply:
+                response=json.loads(reply.readline(1 << 20))
+        if response.get('ok') is not True:raise SystemExit(response.get('error','maintenance RPC refused'))
+        print(json.dumps({key:response.get(key) for key in (
+            'draining','maintenance_owner','active_scopes','active_scopes_truncated','health')}))
+        return
     if args.initialize_maintenance_state:
         state=Path(args.maintenance_state)
         evidence=state.with_name(state.name+'.initialized')
