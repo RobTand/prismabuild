@@ -51,18 +51,6 @@ work. Reproduce behavioral bugs before fixing them and validate the integrated
 result. Delegate substantial independent work when the user authorizes it;
 match effort to difficulty and verify returned artifacts independently.
 
-## Test quality — Rob, 2026-10-24
-
-When adding or changing tests, follow the deterministic-test guidance in
-`docs/contributing.md`. Prove each changed assertion with a deterministic RED
-against the old behavior or a named product mutant, and retain its PB key.
-Do not create tautological tests. Remove tautological tests found in touched
-files and report each removal; report findings elsewhere without expanding scope.
-Before handoff, execute every changed test file at least five times on each
-supported architecture, including at least two runs with `--workers-per-shard 2
---cpus-per-shard 2 --threads-per-shard 1`. Vary `--durations=1` through
-`--durations=5` so PB cannot satisfy the runs from cache. A failure requires a root fix.
-
 Changes to `main` require a GitHub issue and pull request (Rob, 2026-09-06).
 Use an isolated branch/worktree, link the issue in the PR, validate and review
 before merging. Never push directly to `main`. See [contributing](docs/contributing.md).
