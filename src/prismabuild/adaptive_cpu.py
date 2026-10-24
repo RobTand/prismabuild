@@ -1631,6 +1631,11 @@ class Controller:
             digest_primitives._canonical_bytes(observation)
         except (ValueError, TypeError):
             return skipped('unknown_or_stale')
+        interval = sample.get('interval_s')
+        if type(interval) in (int, float) and math.isfinite(interval) and interval > 5:
+            # The other counter series may have kept this shared history fresh.
+            # This window cannot lend, and must not erase that newer coverage.
+            return skipped('long_sample_window')
         if has_last and at == last:
             if (previous.get('identity') != self._lending_identity
                     or previous.get('observation', observation) != observation):

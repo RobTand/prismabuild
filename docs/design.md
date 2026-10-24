@@ -6839,6 +6839,11 @@ Opportunistic decisions never replace the pass's legacy sample. They use
 `idle-baseline-opportunistic.json` for their counter windows, live profile
 updates and idle history. Main profiles may seed opted estimates read-only.
 Interleaving refused opted rows leaves legacy samples and history byte exact.
+A returning counter series with an interval over five seconds cannot lend and
+skips the shared lending-history update. It cannot reset coverage another
+series kept fresh. Real gaps in shared observations still reset continuity.
+Eight SHA-pinned main CPU test files also run unchanged at cap 0 beside the
+opted tests, using fixture bytes and no old Git history.
 After a complete resource return, an empty holder directory that cannot be
 removed is retired under `released-holders/`, outside the authoritative held
 namespace. Only empty directories or NFS metadata-unlink remnants can retire;

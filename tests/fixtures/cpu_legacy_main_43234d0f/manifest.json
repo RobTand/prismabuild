@@ -1,0 +1,59 @@
+{
+  "files": {
+    "test_adaptive_cpu.py": {
+      "git_blob": "f7e6d77b41d19d91a98645ba780be31d93d6a8bf",
+      "sha256": "1684f634f7b1aaddf6bb5f7e33e59d6eec989a2743b60cee52e30fe93a2728d3"
+    },
+    "test_borrow_return_ownership.py": {
+      "git_blob": "1984696a6dbe3bb97124ae354c7f7ec7f832a7af",
+      "sha256": "20cf68ee64bc6d42cf2429e5f5738c237dba18f22b2d3535c662595b84656d81"
+    },
+    "test_borrowed_cpu_guest_eviction.py": {
+      "git_blob": "e65f21a11e1c6f6f2711e6af212c0887ac6f124a",
+      "sha256": "5044ebcc7c22372e74c324fba5d1f4600295356306746075b4011b45641a64d3"
+    },
+    "test_core.py": {
+      "git_blob": "6caf70887136211b4e1bccc9aa0537f2d3e03284",
+      "sha256": "e2dc461a000b77c10e7551f0f448be4d29ef43b84abecd2b9d23c4a32a6c5679"
+    },
+    "test_gpu_evicts_cpu_guests.py": {
+      "git_blob": "26717389fe5c92a5de22b5553c97939d2cfb3294",
+      "sha256": "293f3e515164f7263245954077658de5e844fadd61e7184b756a2ddeb00e2f48"
+    },
+    "test_issue569_admission_review.py": {
+      "git_blob": "74409585b2e031e392852a05a648b43f5ef8bf3e",
+      "sha256": "3b9412ca325cebe0645ce1b41b7b42de571f79ffead6681c82ab8bd3ce4b00e8"
+    },
+    "test_pbtest_seals_its_shard_deadline.py": {
+      "git_blob": "eb006f3c0f83bdf2185632bbebd3afb445b6f563",
+      "sha256": "fd154a4bdabb60172f29e934fba3fe09bbf340d7112850aa9d36bb0524d5dce5"
+    },
+    "test_pool_cpu_work_yields_gpu_host.py": {
+      "git_blob": "ecfbae89e702a1ff5d59369e9103cb1e9df672f3",
+      "sha256": "3598a8f5a76229d4dfb1daddf4623ca83b9a78a8ddcbaa85bb24bd95b1b93fd5"
+    },
+    "test_pool_resource_scope.py": {
+      "git_blob": "11bfaed14d3f349947026c647c59a1a50402a760",
+      "sha256": "e3102a419b6b9ca379f6e6c9c38d5c5a108718d46c4788c4940ac5b5a4d9e15b"
+    },
+    "test_queue_bell_host_review_edges.py": {
+      "git_blob": "fc122e0215b928bb4414c0faa7946c74ec3d784d",
+      "sha256": "1d0e369f666fbd48bc46e0fe27594c5afd37d47b8c7c3911bbf4261b95bde912"
+    },
+    "test_resource_scope.py": {
+      "git_blob": "2e2a725dba5aa5861a030ff7ead38836bc000d9d",
+      "sha256": "67867580e324ec4b2a715a607244e2fc484e4cce45efc5cd62bff21dac047456"
+    }
+  },
+  "main_commit": "43234d0fbd42d6ed76da38658cb9f447ed19a606",
+  "selected": [
+    "test_adaptive_cpu.py",
+    "test_borrow_return_ownership.py",
+    "test_queue_bell_host_review_edges.py",
+    "test_issue569_admission_review.py",
+    "test_gpu_evicts_cpu_guests.py",
+    "test_borrowed_cpu_guest_eviction.py",
+    "test_pool_resource_scope.py",
+    "test_resource_scope.py"
+  ]
+}
