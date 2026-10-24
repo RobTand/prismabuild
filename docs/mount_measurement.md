@@ -304,6 +304,90 @@ the original full probe error and records the successful destination under
 the recording failure. Human one-line output also includes the error reason.
 No performance or mount-recovery claim follows from successful diagnostics.
 
+## Passive observation and O4 evidence
+
+The current source adds `MountSampler(..., passive=True)` and CLI `--passive`. This is a
+source capability, not proof that the published Netdata plugin supports it.
+Inspect the deployed generation before planning adoption; this documentation
+neither publishes it nor changes an existing collector's configuration.
+
+Passive sampling reads `/proc/self/mountstats` without running the syscall
+probe or inspecting admission locks. It reports `mode: "passive"`,
+`probe.status: "skipped"`, `locks: null` and `attribution: null`. It does not
+count retained NFS open states or establish whether a userspace descriptor
+corresponds to one. Select the intended mount with the existing `--mount`
+option; do not assume one client's mount path or identity describes another.
+
+Default sampling remains active and now records `mode: "active"`; do not combine
+its probe window with passive application-activity evidence. The requested path
+remains top-level `mount_point`; `mount.mount_point` is the selected containing
+mount, with device, filesystem type and the complete parsed options map.
+Procfs reads consume at most 4 MiB plus one overflow sentinel; an overflow or
+missing final newline rejects the snapshot rather than accepting a prefix.
+This is a diagnostic read bound, not an assumption about production mount size.
+
+After collection is separately authorized, a bounded passive window can use:
+
+```sh
+timeout 60s python3 tools/fleet/mount_latency.py --passive --json \
+  --mount "$OBSERVATION_PATH" --record-dir "$LOCAL_RECORD_DIR" --interval-s 5
+```
+
+Set those variables from the client's effective configuration and an approved
+box-local output directory (never the measured mount). `timeout` intentionally
+terminates the collector; retain JSONL and recording status. This command has
+not been run on production here. Use a separate output directory/window for any
+later authorized active probe, omitting `--passive`; never infer file-level
+CLOSE failures from mount-wide deltas.
+
+The first sample has no rate window (`rpc: null`, `window_s: 0`). Later samples
+can report same-population RPC deltas, including raw per-operation `ops`,
+`trans`, `timeouts` and `errors`, and `CLOSE` alongside `OPEN`. Mount identity,
+options, age, operation-set changes or counter regression invalidate the
+window rather than create a rate across populations. Unreadable, oversized,
+incomplete or unmatched mountstats yields unknown transport/no RPC evidence,
+not a healthy zero. A missing/empty NFS operation table or any malformed
+operation row also rejects the selected snapshot, including partially valid
+tables. The unavailable sample clears the rate window; the next usable sample
+only rebaselines, and a subsequent same-population sample resumes rates. Do
+not confuse this with valid unchanged counters, which can report zero activity.
+An unusable NFS table does not fall back to a parent mount or autofs trigger.
+A local filesystem has no NFS RPC leg. Per-operation RPC
+counts are not retained-state counts: RPC activity alone cannot prove which
+open owner or filehandle remains retained.
+
+**Passive does not make the CLI write-free.** `main()` still calls
+`append_record` in passive mode, including with `--once --json`. The existing
+`--record-dir` selects the destination; there is no explicit no-record CLI
+switch. Do not use an empty path or a permission error as a recording-disable
+mechanism. A separately authorized collector may use passive mode with an
+approved box-local record directory, but under a strict read-only evidence
+assignment, inspect already retained records instead of launching it. Active
+`--once` is not a read-only alternative: it exercises the mount and inspects
+holder identities.
+
+For O4, first obtain already authorized, timestamped per-client records and
+their effective collector configuration, plus the independently sourced
+retained-state counts and contemporaneous descriptor-visibility qualification.
+A denied default record directory does not prove logs are missing; an override
+may exist. Do not work around denial with SSH, another UID, permission changes,
+lock-table inspection or production completion-file probes. A current Netdata
+chart is diagnostic, not retained history. Start an evidence inventory with
+the reader's host/UID, source revision, published runtime identity and the
+attributed client identities; do not substitute loop counts for NFS state
+owners. Bounded read-only MCP `tools/list` can identify what the configured
+server advertises, but queue/runtime tools do not imply a retained-state or
+historical metrics interface. Record denied, unsupplied and unverified inputs
+separately from successful empty reads. Inspecting published collector source
+is not verification of each installed plugin or its effective command line.
+No matching authorized record endpoint means rates remain unavailable, not
+zero; request an already authorized timestamped export rather than guessing
+endpoints or launching a collector. See the
+[O4 report](measurements/2066-retained-open-states.md) for the exact observed
+access failure, unavailable interfaces and prerequisites for a matched
+comparison. No live O4 rates, state attribution or improvement are established
+by the source changes alone.
+
 ## Cost
 
 Historical measurements before holder records replaced lock-table reads,
