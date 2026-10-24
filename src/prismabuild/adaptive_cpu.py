@@ -1612,7 +1612,7 @@ class Controller:
             'sampled_unix', 'cpu_count', 'interval_s', 'per_cpu_busy',
             'psi_some', 'psi_avg10', 'psi_avg60')}
         try:
-            digest_primitives.canonical_bytes(observation)
+            digest_primitives._canonical_bytes(observation)
         except (ValueError, TypeError):
             return skipped('unknown_or_stale')
         if has_last and at == last:
