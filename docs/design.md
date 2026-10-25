@@ -10357,14 +10357,19 @@ per local state directory. Dirty source state survives the existing one-second
 start deadline and changes during a copy. The context manager owns and joins
 its observer thread; a host loop can instead use `reconcile()` and `descriptors`.
 Known older publishers are watched through verified PID/start ticks and pidfd.
-An already exited owner cannot be reused as a wake source. Closing the observer
+An already exited owner cannot be reused as a wake source. Kernel overflow
+replaces the local watch descriptor and installs fresh parent/source watches
+before reconciling the fixed source set. Closing the observer
 leaves an outstanding copy's independent flock intact until actual process exit.
 Existing workers retain their one-shot publication. The host hub owns session
 installation in slice 7.
 
 Copies retain source timestamps. Confirmed source removal removes its shared
 mirror; source-directory identity loss or unreadable evidence remains unknown.
-Byte-equivalent replacements acknowledge the local signature without another
+Shared deduplication uses the existing bounded no-follow regular-file reader,
+with the current canonical source size plus 128 bytes for snapshot metadata.
+A larger previous regular record is unequal and can be replaced, so a shrinking
+profile remains publishable. Byte-equivalent replacements acknowledge the local signature without another
 shared payload or completion write. Changed freshness and proof fields still
 copy. The shared completion marker follows payload changes, removals, initial
 publication, failure or recovery, and records `nonce`, `status`, `changed_files`
