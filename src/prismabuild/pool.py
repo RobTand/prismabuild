@@ -17776,6 +17776,7 @@ class PoolQueue:
                     cpu_decision=cpu_decision,
                     gpu_sample=_gpu_sample_for(gpu_controller, demand),
                     authority=copy_authority, tags=tagset, has_gpu=has_gpu)
+                scan_pass.census.observe_measurement_refusal(item, verdict, cpu_decision)
             prefix = candidate_policy.prepare_adaptive_refusal(
                 refusal_source, decision, verdict, order=scan,
                 dependent_owner=dependent_owner, room_taken=room_taken)

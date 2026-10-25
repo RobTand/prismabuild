@@ -1,0 +1,65 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "SC-01",
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2267-fix",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2267",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "cbee1e0e3f48696d08a071a7d8baf929fde005191b8f6f56f927d4dbbc5ff191",
+          "7c11870daede25bbfd822df8742be91957b9bb40b1f369dc862d059f9c63d2d6",
+          "7c8631722e90e94d334efad3f34cca1512c6113fccfdfd8b4abd2d2bc6360a8e",
+          "14aa227dadfa1864b337ed24c9fc5f8ed5bf6e0099dafa8b62d29561dbabc96f",
+          "ac554a69b23faeb24ac0f9bcbef251bb07f35bbe40ebc15e1e3ebd9a3abe7a4f",
+          "1a295e617ce064f6540add7d9502f7d36fe28cb01edfcc744c09a95b61d6527f",
+          "75328df329c2cc3c5ee8d3e65b1df9be9df0d118236e87609cd16f1091ff706a",
+          "3984f75db5bbcd3e4c53668a4283b742bc20d1a43c6f746bf81448c07d63346b",
+          "34d6b55126b91ac8ef0ebc06ce3d17a28709baf2ac329c6a3d7c036ed3bd908a",
+          "60a459349f9abdca79d0e283013d0b59cf45f0f52c376405bc9931b4a757111f"
+        ],
+        "outcome": "All ten actions executed with exit 0; logs, execution receipts, CAS payloads, architecture and source trees verified. Five runs per architecture, two xdist each. See validation.json for receipt digests.",
+        "scope": "PB-owned pass-local suspension of a futile measurement drain after fresh affirmative foreign CPU evidence."
+      },
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "cbee1e0e3f48696d08a071a7d8baf929fde005191b8f6f56f927d4dbbc5ff191",
+          "7c11870daede25bbfd822df8742be91957b9bb40b1f369dc862d059f9c63d2d6",
+          "7c8631722e90e94d334efad3f34cca1512c6113fccfdfd8b4abd2d2bc6360a8e",
+          "14aa227dadfa1864b337ed24c9fc5f8ed5bf6e0099dafa8b62d29561dbabc96f",
+          "ac554a69b23faeb24ac0f9bcbef251bb07f35bbe40ebc15e1e3ebd9a3abe7a4f",
+          "1a295e617ce064f6540add7d9502f7d36fe28cb01edfcc744c09a95b61d6527f",
+          "75328df329c2cc3c5ee8d3e65b1df9be9df0d118236e87609cd16f1091ff706a",
+          "3984f75db5bbcd3e4c53668a4283b742bc20d1a43c6f746bf81448c07d63346b",
+          "34d6b55126b91ac8ef0ebc06ce3d17a28709baf2ac329c6a3d7c036ed3bd908a",
+          "60a459349f9abdca79d0e283013d0b59cf45f0f52c376405bc9931b4a757111f"
+        ],
+        "outcome": "All ten actions executed with exit 0; logs, execution receipts, CAS payloads, architecture and source trees verified. Five runs per architecture, two xdist each. See validation.json for receipt digests.",
+        "scope": "PB-owned pass-local suspension of a futile measurement drain after fresh affirmative foreign CPU evidence."
+      }
+    ],
+    "remaining_gaps": [
+      "LIVE-01 remains a whole-policy target. This fixture repair establishes no fair-worker/finite-I/O, staged-only campaign, deployment or workload conformance.",
+      "Unknown or stale telemetry retains the election fence; this repair grants no liveness guarantee without fresh affirmative foreign-load evidence."
+    ],
+    "note": "Source-merge acceptance only, pending independent Principal review. Persistent election identity, the original opportunity, resource isolation and containment remain authoritative. Receipts prove recorded/re-readable results, not power-loss durability. No storage policy was changed."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
