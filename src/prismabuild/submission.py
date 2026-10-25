@@ -1097,30 +1097,25 @@ _SPOOL_WINDOW_ENV = "PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW"
 _SPOOL_MAX_ENV = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 
 
+_SPOOL_PACED_ENV = "PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT"
+
+
 def normalize_spool_declaration(variables: dict[str, str]) -> None:
-    """Seal a declared spool bound's effective window switch before sealing (#905).
+    """Seal accounting and pacing for a new spool declaration (#905).
 
-    A new submission that declares a spool bound
-    (``PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES``) is accounted by default:
-    unless the environment already says so, the effective switch
-    ``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`` is set to ``"1"`` **before**
-    the ownership and stamp fingerprints are taken, so the sealed action's
-    identity carries the accounting its claim charges.  ``HOST_WINDOW=0``
-    beside a declared bound is a contradictory declaration and is refused by
-    name: a declared spool that is not charged would silently evade the host
-    ledger.  No bound declares nothing, so an unchanged request without a
-    spool bound is byte-for-byte what it was.
+    Both switches are normalized before ownership and stamp fingerprints.
+    Explicit zero contradicts a declared bound. No bound leaves the
+    environment unchanged.
 
-    ``produced_spool.host_window_terms`` itself stays switch-gated: an
-    already-sealed request keeps its meaning, explicit ``0`` included.  This
-    normalization is only ever applied while a new submission is being
-    sealed.
+    Runtime helpers still read the sealed switches, so retained requests
+    preserve their original accounting and pacing.
     """
 
     if _SPOOL_MAX_ENV not in variables:
         return
     switches = (
         (_SPOOL_WINDOW_ENV, f"charge it to the host ledger's {_SPOOL_WINDOW_KIND}"),
+        (_SPOOL_PACED_ENV, "reserve tier fill and pace its exports"),
     )
     for name, accounting in switches:
         switch = variables.get(name, "")
@@ -1130,8 +1125,9 @@ def normalize_spool_declaration(variables: dict[str, str]) -> None:
                 f"{name}=0 would not {accounting}; a declared spool is accounted "
                 f"by default (#905). Drop the bound to declare no spool, or "
                 f"drop {name}=0.")
-        if switch in ("", "1"):
-            variables[name] = "1"
+        if switch not in ("", "1"):
+            raise SubmissionRefused(f"pbrun: {name} must be 0 or 1, not {switch!r}")
+    variables.update({name: "1" for name, _ in switches})
 
 
 def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:

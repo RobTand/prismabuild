@@ -141,7 +141,7 @@ def test_the_file_server_declares_the_tiers_role() -> None:
     # explicit 5 s minimum cycle interval #873 set for short campaign quanta.
     # Every capacity and price is still re-read each cycle.
     assert roles["tiers"] == ["--source-pool", "storage_pool",
-                              "--interval-s", "5"]
+                              "--interval-s", "5", "--output-windows"]
     # And the storage role it runs beside is untouched.
     assert "storage" in roles
 

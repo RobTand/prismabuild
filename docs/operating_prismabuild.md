@@ -5005,7 +5005,20 @@ the pairs the action writes. Do not list the produced spool's own pair:
 declare the spool's byte bound with `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`,
 which pbrun charges by default (#905), and the window and the scratch then add
 up in one reservation. `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW=1` is the same
-switch explicitly; `=0` beside a declared bound is refused at submission. The action is claimed only on a box
+switch explicitly; `=0` beside a declared bound is refused at submission.
+New submissions also seal `PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1`
+beside that bound. An explicit `=0` or malformed pacing switch is refused.
+Already-sealed requests retain their original pacing, and the per-group
+`submit_group(..., paced=)` override remains available for the A/B.
+Paced export submission refuses when no tier fill price can be resolved.
+
+The paced-sealing change and the roster's `--output-windows` declaration
+remain held by the
+[#905 real-producer A/B merge gate](https://github.com/RobTand/prismabuild/issues/905#issuecomment-5879376101).
+Source tests do not authorize publication or prove a deployed default.
+See the [scoped acceptance record](evidence/issue905_source_acceptance_2026-10-25.json).
+
+The action is claimed only on a box
 whose `--spool-gb` covers it; see "A box's local disk budget". When every
 matching box offers less, `pbrun` refuses the action at submission. When some box's offer does
 not name the kind, `pbrun` queues it, and every claim records

@@ -17761,12 +17761,18 @@ A pool write is therefore paid for in displaced mover reads. The ledger that
 already prices mover reads, `fill_mb_s_pool_side@<tier>`, is the one an
 export reserves from.
 
-**Off by default.** The price below is not measured, so the reservation and
-the pace are both opt-in. A producer turns them on by setting
-`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` in its sealed environment. When
-the variable is absent, empty, or `0`, every export is sealed exactly as it
-was before #747, so publishing a runtime that carries the pacer changes no
-live export. Any other value is refused when the spool is built.
+**New declarations seal pacing (#905 Phase 1).** At submission,
+`submission.normalize_spool_declaration` seals
+`PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1` beside a declared
+`PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES`, before ownership fingerprints.
+An explicit `0` beside a bound is refused. Malformed switches are refused
+by name. Absent and empty switches normalize to `1`, like the host window.
+Requests without a spool bound retain their environment unchanged.
+
+The runtime still reads the sealed environment. Retained requests with an
+absent, empty, or `0` switch remain unpaced. Any other value is refused when
+the spool is built. New declarations can now refuse at export submission
+when no fill price is available, as described below.
 `submit_group(..., paced=True|False)` overrides the producer's setting for
 one group, so an A/B can interleave paced and unpaced exports from one
 producer. A replay keeps whatever the first submission sealed.
@@ -17793,8 +17799,11 @@ explicit `paced=False` remain unchanged.
 **Replay.** A previously sealed export keeps its original demand and command,
 even if its price disappears or the caller changes the requested mode.
 Replay does not reprice or retroactively reject either paced or unpaced
-requests. This change does not flip either #905-gated default or establish
-Phase 0, deployment or complete #747 acceptance.
+requests. The source defaults remain subject to the
+[#905 Phase 0 real-producer A/B merge gate](https://github.com/RobTand/prismabuild/issues/905#issuecomment-5879376101).
+Component tests establish neither that measurement nor deployment or complete
+#747 acceptance. The scoped record is
+[`issue905_source_acceptance_2026-10-25.json`](evidence/issue905_source_acceptance_2026-10-25.json).
 
 **Publish attribution.** The #595 gate refuses tier demand that carries no
 residency block or produced-output template, because such demand names bytes
@@ -17897,8 +17906,12 @@ gate, the fence check and the relief only: the admission commitment charges
 the owed window whatever the switch says (#905). Any other value of the variable stops the
 loop at start. The supervisor restarts a role whose argv differs from its
 declaration, and a role inherits the supervisor's environment, so the switch
-is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`, published
-like any other change, not a hand relaunch. The window, not the template's `minimum_gib`, is the charge:
+is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`.
+The roster now declares `--output-windows` for dl380g10, the only tier-role
+host. The parser and environment defaults remain off. This source change
+is held by the same #905 Phase 0 merge gate as paced submission sealing;
+it records no live roster publication, role restart, soak or A/B acceptance.
+The window, not the template's `minimum_gib`, is the charge:
 `refill_window` treats a top-up as optional once holdings reach the minimum,
 so the window over-counts the room a producer strictly needs, and it errs
 toward the producer. An A/B that turns it on compares, against a run
