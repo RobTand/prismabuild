@@ -36,6 +36,19 @@ def test_completed_report_is_available_without_an_explicit_report_path(history, 
     assert list(checkout.iterdir()) == []
 
 
+def test_repository_history_does_not_launch_a_shard_client(history, tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+
+    def unexpected_process(*args, **kwargs):
+        pytest.fail("history discovery launched a process")
+
+    monkeypatch.setattr(subprocess, "Popen", unexpected_process)
+    history.remember_report(checkout, ["tests"], completed(12))
+
+    assert history.cached_report(checkout, ["tests"]) is not None
+
+
 def test_repository_history_survives_worktree_and_requested_population_changes(history, tmp_path):
     checkout = tmp_path / "checkout"
     other = tmp_path / "other"
@@ -45,14 +58,16 @@ def test_repository_history_survives_worktree_and_requested_population_changes(h
                     "-c", "user.email=test@example.invalid", "commit", "--quiet",
                     "--allow-empty", "-m", "initial"], check=True)
     worktree = tmp_path / "second-worktree"
+    # pb-history-ok: Creates a linked worktree from the generated temporary repository's current HEAD.
     subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--quiet",
-                    "--detach", str(worktree)], check=True)
+                    "--detach", str(worktree), "HEAD"], check=True)
     results = completed(12)
     history.remember_report(checkout, ["tests/test_one.py", "tests/test_old.py"], results)
 
     expected = history.cached_report(checkout, ["tests/test_one.py", "tests/test_old.py"])
     assert expected is not None
     assert history.cached_report(worktree, ["tests/test_one.py"]) == expected
+    assert history.cached_report(worktree / "tests", ["test_one.py"]) == expected
     assert history.cached_report(worktree, ["tests/test_one.py", "tests/test_old.py",
                                              "tests/test_new.py"]) == expected
     assert json.loads(expected.read_text()) == results
