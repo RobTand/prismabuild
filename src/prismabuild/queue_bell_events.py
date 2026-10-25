@@ -14,7 +14,8 @@ import time
 import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
-from .queue_bell_topics import OutcomeNamespaces, WorkerOffers, HostReservations, HostInputShapes, TOPICS
+from .queue_bell_topics import OutcomeNamespaces, WorkerOffers, HostReservations, TOPICS
+from .queue_bell_input_shapes import HostInputShapes
 
 IN_MODIFY = 0x00000002
 IN_ATTRIB = 0x00000004
