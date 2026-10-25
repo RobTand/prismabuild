@@ -89,7 +89,7 @@ def evaluate(pull: dict, files: list[dict]) -> Verdict:
         return Verdict(True, "Declared change is not classified as a fix by title, labels or Change type.")
     if len(files) != pull["changed_files"] or len(files) > 3000:
         return Verdict(False, "Incomplete PR file inventory; rerun after reducing the PR or repairing the API read.")
-    changed = []
+    parsed = []
     for file in files:
         if (not is_test_file(file["filename"]) or file["status"] not in {"added", "modified", "renamed"}
                 or file["additions"] == 0):
@@ -101,6 +101,9 @@ def evaluate(pull: dict, files: list[dict]) -> Verdict:
             after = _test_bodies(file["after"])
         except SyntaxError:
             return Verdict(False, f"Cannot parse Python tests: {file['filename']}.")
+        parsed.append((file, before, after))
+    changed = []
+    for file, before, after in parsed:
         previous_bodies = {body for body, _ in before.values()}
         for name, (body, proof) in after.items():
             if proof and body not in previous_bodies:
