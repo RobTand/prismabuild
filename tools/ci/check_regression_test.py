@@ -35,6 +35,15 @@ def is_fix(pull: dict) -> bool:
                 or re.search(r"(?im)^\s*change type:\s*(?:fix|bugfix)\s*$", pull["body"] or ""))
 
 
+def _has_assertion(node: ast.AST) -> bool:
+    return any(isinstance(child, ast.Assert) or (
+        isinstance(child, ast.Call) and (
+            isinstance(child.func, ast.Attribute) and (
+                child.func.attr.startswith("assert") or
+                ast.unparse(child.func) in {"pytest.raises", "pytest.fail", "pytest.warns"})
+        )) for child in ast.walk(node))
+
+
 def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
     tree = ast.parse(source)
     tests = {}
@@ -54,12 +63,7 @@ def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
                     and isinstance(node.body[0].value, ast.Constant)
                     and isinstance(node.body[0].value.value, str)):
                 node.body.pop(0)
-            proof = any(isinstance(child, ast.Assert) or (
-                isinstance(child, ast.Call) and (
-                    isinstance(child.func, ast.Attribute) and (
-                        child.func.attr.startswith("assert") or
-                        ast.unparse(child.func) in {"pytest.raises", "pytest.fail", "pytest.warns"})
-                )) for child in ast.walk(node))
+            proof = _has_assertion(node)
             tests[name] = (ast.dump(node, include_attributes=False), proof)
     return tests
 
