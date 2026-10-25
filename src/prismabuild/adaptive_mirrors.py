@@ -14,18 +14,21 @@ from pathlib import Path
 import select
 import socket
 import stat
-import struct
 import threading
 import time
 
 from . import adaptive_snapshot as snapshot
+from .queue_bell_events import (
+    EVENT_HEADER as _HEADER, IN_MODIFY as _MODIFY, IN_ATTRIB as _ATTRIB,
+    IN_CLOSE_WRITE as _CLOSE_WRITE, IN_MOVED_FROM as _MOVED_FROM,
+    IN_MOVED_TO as _MOVED_TO, IN_CREATE as _CREATE, IN_DELETE as _DELETE,
+    IN_DELETE_SELF as _DELETE_SELF, IN_MOVE_SELF as _MOVE_SELF,
+    IN_Q_OVERFLOW as _OVERFLOW, IN_IGNORED as _IGNORED,
+    IN_ONLYDIR, IN_DONT_FOLLOW,
+)
 
-_HEADER = struct.Struct('iIII')
-_MODIFY, _ATTRIB, _CLOSE_WRITE = 0x2, 0x4, 0x8
-_MOVED_FROM, _MOVED_TO, _CREATE, _DELETE = 0x40, 0x80, 0x100, 0x200
-_DELETE_SELF, _MOVE_SELF, _OVERFLOW, _IGNORED = 0x400, 0x800, 0x4000, 0x8000
 _MASK = (_MODIFY | _ATTRIB | _CLOSE_WRITE | _MOVED_FROM | _MOVED_TO
-         | _CREATE | _DELETE | _DELETE_SELF | _MOVE_SELF | 0x01000000 | 0x02000000)
+         | _CREATE | _DELETE | _DELETE_SELF | _MOVE_SELF | IN_ONLYDIR | IN_DONT_FOLLOW)
 
 
 class _LocalChanges:
