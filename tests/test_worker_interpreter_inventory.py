@@ -102,17 +102,28 @@ import pytest
 @pytest.mark.parametrize('population', [33, 65, 97])
 def test_stable_overflow_rotates_fairly_across_empty_and_smaller_siblings(tmp_path, monkeypatch, population):
     from prismabuild import interpreter_inventory as inventory
+
+    class Deadline:
+        def __init__(self, seconds):
+            self.seconds = seconds
+
+        def remaining(self):
+            return self.seconds
+
+    monkeypatch.setattr(inventory._bounded_reader, 'Deadline', Deadline)
+    monkeypatch.setattr(inventory._bounded_reader, 'bounded', lambda *args, **kwargs:
+        {'status': 'ok', 'value': eligibility.Presence.ABSENT.value})
     paths = [str(tmp_path / f'python-{index:03d}') for index in range(population)]
     saved = tmp_path / 'inventory.json'
     seen = set()
     for _ in range((population + 31) // 32):
         observed = inventory.prepare_interpreters([{'interpreter': path} for path in paths],
-                                                  inventory_path=saved)
+                                                  inventory_path=saved, now=100.)
         observed.commit()
         seen.update(observed.answers.absent)
         assert len(observed.answers.absent) <= 32
         for requested in ([], [{'interpreter': paths[0]}]):
-            sibling = inventory.prepare_interpreters(requested, inventory_path=saved)
+            sibling = inventory.prepare_interpreters(requested, inventory_path=saved, now=100.)
             sibling.commit()
     assert seen == set(paths)
 
@@ -142,7 +153,8 @@ def test_inventory_read_and_commit_failures_do_not_suppress_current_answers(tmp_
 
 
 @pytest.mark.parametrize('serialized', ['[]', 'null', '"invalid"', '17', 'true',
-    '{"requested": {"/old-python": ' + str(10 ** 400) + '}}'])
+    '{"requested": {"/old-python": ' + str(10 ** 400) + '}}'],
+    ids=['array', 'null', 'string', 'integer', 'boolean', 'unrepresentable-timestamp'])
 @pytest.mark.parametrize('stage', ['prepare', 'commit'])
 def test_malformed_inventory_shape_or_timestamp_keeps_current_observation(
         tmp_path, serialized, stage):
@@ -215,6 +227,7 @@ def test_refresh_budget_advances_past_unresolved_names(tmp_path, monkeypatch):
 
 
 def test_retained_probe_fences_the_same_path_across_siblings(tmp_path, monkeypatch):
+    import multiprocessing
     import os
     import signal
     import time
@@ -224,10 +237,12 @@ def test_retained_probe_fences_the_same_path_across_siblings(tmp_path, monkeypat
     fifo = tmp_path / 'blocked-reader'
     os.mkfifo(fifo)
     entered = tmp_path / 'entered'
+    child_entered = multiprocessing.get_context('fork').Event()
     original = eligibility.LiveInterpreters.answer
 
     def answer(self, name):
         entered.write_text(entered.read_text() + 'called\n' if entered.exists() else 'called\n')
+        child_entered.set()
         descriptor = os.open(fifo, os.O_RDONLY)
         os.close(descriptor)
         return original(self, name)
@@ -236,9 +251,35 @@ def test_retained_probe_fences_the_same_path_across_siblings(tmp_path, monkeypat
         abandoned.append({'pid': pid, 'starttime_ticks': inventory._bounded_reader._starttime_ticks(pid),
                           'section': section, 'since_unix': time.time()})
 
+    class Deadline:
+        bounded = True
+
+        def __init__(self, seconds):
+            self.seconds = seconds
+
+        def remaining(self):
+            return self.seconds
+
+    bounded = inventory._bounded_reader.bounded
+    native_select = inventory._bounded_reader.select.select
+    timeout_injected = False
+
+    def without_real_deadline(*args, **kwargs):
+        return bounded(*args, **{**kwargs, 'cap_s': None})
+
+    def timeout_after_child_entry(read, write, error, timeout):
+        nonlocal timeout_injected
+        if not timeout_injected:
+            child_entered.wait()
+            timeout_injected = True
+            return [], [], []
+        return native_select(read, write, error, None)
+
     monkeypatch.setattr(eligibility.LiveInterpreters, 'answer', answer)
+    monkeypatch.setattr(inventory._bounded_reader, 'Deadline', Deadline)
+    monkeypatch.setattr(inventory._bounded_reader, 'bounded', without_real_deadline)
+    monkeypatch.setattr(inventory._bounded_reader.select, 'select', timeout_after_child_entry)
     monkeypatch.setattr(inventory._bounded_reader, '_stop_reader', retain)
-    monkeypatch.setattr(inventory, 'PROBE_TIMEOUT_S', .1)
     abandoned = []
     try:
         first = inventory.prepare_interpreters([{'interpreter': path}], inventory_path=saved,
