@@ -10,7 +10,7 @@ From a task checkout, run `python3 tools/verify.py fast`.
 
 ## Driving it with the CLI
 
-Run the skill's doctor and fast command. Inspect `verdict.json` for `PASS`, `fast_under_600_s: true`, and `cas_verified: true`. Read the test counts and output in `pbtest.json`. Use `--plan` to inspect the exact file population without submitting.
+Run the skill's doctor and fast command. Inspect `verdict.json` for `PASS`, `fast_under_600_s: true`, and `cas_verified: true`. Read the test counts and output in `fast.pbtest.json`. Use `--plan` to inspect the exact file population without submitting.
 
 ## Gotchas
 

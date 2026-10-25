@@ -10,7 +10,7 @@ From a task checkout, run `python3 tools/verify.py gpu`.
 
 ## Driving it with the CLI
 
-Run the skill's GPU command. Require `PASS`, `cas_verified: true`, and no skips. Retain the `prismabuild-gpu-qualification` line from `pbtest.json`, the device identity, and equal actual and expected checksums.
+Run the skill's GPU command. Require `PASS`, `cas_verified: true`, and no skips. Retain the `prismabuild-gpu-qualification` line from `gpu.pbtest.json`, the device identity, and equal actual and expected checksums.
 
 ## Gotchas
 

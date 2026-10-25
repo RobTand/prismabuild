@@ -43,13 +43,13 @@ For an ordinary sample change, run `fast`, then select the affected feature from
 
 Use `python3 tools/verify.py TIER --plan` to inspect the selection and command without submitting. Plan mode reads source paths and starts no tests, pytest collection, network request, or Git mutation.
 
-PB chooses shard membership and placement. The tier command reserves one CPU and four GiB per CPU shard, or one CPU, eight GiB host RAM and two GiB GPU memory per GPU shard. Native threads stay at one. The command supplies no fleet shard count or CPU host tag.
+PB chooses shard membership and placement. The tier command reserves one CPU and four GiB per CPU shard, two CPUs for the integration two-CPU lane, or one CPU, eight GiB host RAM and two GiB GPU memory per GPU shard. The integration root lane is one x86 container action declared by `tests/proof_execution.json`. Native threads stay at one. The command supplies no fleet shard count or CPU host tag.
 
 ## Evidence
 
-Read `verdict.json` and `pbtest.json` in the printed directory. A pass requires a zero client exit, complete selected-file coverage, reconciled pytest outcomes, and content-verified CAS receipts and payloads. Record the counts, skips, wall time, action keys, receipt hashes, runtime generation, and the reviewed source commit. The command writes `INCONCLUSIVE` if no PB report exists. Missing or failed CAS verification fails the verdict.
+Read `verdict.json` and each lane's `LANE.pbtest.json` in the printed directory. A pass requires a zero client exit, complete selected-file coverage, reconciled pytest outcomes, and content-verified CAS receipts and payloads. Record the counts, skips, wall time, action keys, receipt hashes, runtime generation, and the reviewed source commit. The command writes `INCONCLUSIVE` if no PB report exists. Missing or failed CAS verification fails the verdict.
 
-`pbtest.json` retains each shard's output. Read failing tracebacks and the actual resulting state; a terminal `done` status alone does not prove the asserted behavior. For GPU qualification, retain the `prismabuild-gpu-qualification` record with the device, CUDA version, iteration count, and equal actual and expected checksums. The GPU path allocates CUDA tensors and checks GPU matrix products against CPU results.
+`LANE.pbtest.json` retains each shard's output; `failed_shards` in `verdict.json` names the lane, action key and files of every failure. Read failing tracebacks and the actual resulting state; a terminal `done` status alone does not prove the asserted behavior. For GPU qualification, retain the `prismabuild-gpu-qualification` record with the device, CUDA version, iteration count, and equal actual and expected checksums. The GPU path allocates CUDA tensors and checks GPU matrix products against CPU results.
 
 For a fix, demonstrate that its regression fails on the prior source and passes on the proposed source through PB. The optional `regression-test` CI check establishes structural test changes; the Principal Engineer judges whether those tests cover the fix.
 
@@ -57,6 +57,6 @@ For a fix, demonstrate that its regression fails on the prior source and passes 
 
 These commands start no local daemon. Wait for each submitted run to settle; PB owns its execution checkout and passing test scratch cleanup. Do not remove a shared queue record, CAS object, or another run's files. If interruption leaves work active, inspect the printed action keys and use the published withdrawal procedure for those exact keys.
 
-Keep `$PB_EVIDENCE` and confirm that its `verdict.json` and `pbtest.json` still exist after the run. Evidence survives cleanup. Use a fresh directory for each rerun so prior output cannot become the new verdict.
+Keep `$PB_EVIDENCE` and confirm that its `verdict.json` and lane reports still exist after the run. Evidence survives cleanup. Use a fresh directory for each rerun so prior output cannot become the new verdict.
 
 For map maintenance, use `maintain-verification-skill` when it is available.
