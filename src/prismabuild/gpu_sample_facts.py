@@ -287,11 +287,15 @@ def unified_memory_evidence(sample: object, *, now: float,
     for job in inventory.jobs:
         if not isinstance(job, Mapping) or job.get('complete') is not True:
             continue
-        resident_bytes += nonnegative_int(job.get('host_bytes')) or 0
+        budget = nonnegative_int(job.get('budget_bytes'))
+        if budget is None:
+            continue
+        scope_resident = nonnegative_int(job.get('host_bytes')) or 0
         if job.get('memory_domain') == 'shared_system':
-            # Per-process GPU reports may overlap. The broker's lower bound
-            # is disjoint from the scope host charge on GB10 (4b6cc60496).
-            resident_bytes += nonnegative_int(job.get('gpu_lower_bound_bytes')) or 0
+            # Host and CUDA charges are near-disjoint: #450 measured a 4.4%
+            # sum overestimate, absorbed by the operating margin in that run.
+            scope_resident += nonnegative_int(job.get('gpu_lower_bound_bytes')) or 0
+        resident_bytes += min(scope_resident, budget)
     return UnifiedMemoryEvidence(
         sample_id=sample_id, sampled_unix=float(header.sample['sampled_unix']),
         host_total_bytes=float(header.sample['host_total_bytes']),

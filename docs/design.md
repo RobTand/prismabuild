@@ -7409,9 +7409,14 @@ bound subtracts external usage and the existing operating margin from physical
 host memory. External usage is `host_total - host_available - PB_resident`,
 clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
 scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
-therefore combine verified scope host charges and shared-system GPU lower
-bounds from complete attributed jobs. Missing or invalid components earn no
-credit. Per-process GPU sums may overlap and supply no residency credit.
+are credited per complete attributed scope as
+`min(valid host bytes + valid shared-system GPU lower bound, budget_bytes)`.
+A missing or invalid scope budget earns no credit; invalid residency components
+contribute zero. Residency above the reservation stays in external usage, so
+held tokens plus external usage charge `max(reservation, residency)` per scope.
+Host and CUDA charges are near-disjoint: #450 measured their sum 4.4% above
+the host-usage increase, absorbed by the existing margin in that workload.
+Per-process GPU sums may overlap and supply no residency credit.
 Foreign GPU bytes are already inside host usage and are never added again.
 Observation applies the physical bound after held-token add-back, and the
 observer applies it again after memory smoothing. The two bounds take their
