@@ -1,0 +1,404 @@
+[
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "1"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "1"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "2"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "2"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "3"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 3,
+      "mem_gb": 4
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "3"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "-n",
+      "2",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 6,
+      "mem_gb": 8
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "4"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "-n",
+      "2",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 6,
+      "mem_gb": 8
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "4"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "-n",
+      "2",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 6,
+      "mem_gb": 8
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "5"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "-n",
+      "2",
+      "tests/test_sample_profile.py",
+      "tests/test_profile_primary_checkpoint.py",
+      "tests/test_sample_docker_coverage.py",
+      "tests/test_contained_deadline_profile.py",
+      "tests/test_profile_window_deadline.py"
+    ],
+    "demand": {
+      "cpu": 6,
+      "mem_gb": 8
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "5"
+    },
+    "timeout_s": 600
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "docs/evidence/pb2246/run_under_load.py",
+      "/home/rob/venvs/pb-cpu/bin/python3.14",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py::test_the_sampling_backend_profiles_the_pipeline_member",
+      "tests/test_sample_docker_coverage.py::test_the_native_sampler_records_workload_frames"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "tags": [
+      "x86"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "oversubscribed"
+    },
+    "timeout_s": 240
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-19-revision",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "docs/evidence/pb2246/run_under_load.py",
+      "/home/rob/venvs/pb-cpu/bin/python3.12",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "-rP",
+      "tests/test_sample_profile.py::test_the_sampling_backend_profiles_the_pipeline_member",
+      "tests/test_sample_docker_coverage.py::test_the_native_sampler_records_workload_frames"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "tags": [
+      "gb10"
+    ],
+    "priority": -10,
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/home/rob/tmp",
+      "PYTHONPATH": "src",
+      "PRI19_REPEAT": "oversubscribed"
+    },
+    "timeout_s": 240
+  }
+]
