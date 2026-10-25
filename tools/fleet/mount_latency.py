@@ -456,8 +456,7 @@ def timed_probe(probe_dir: Path, repeats: int = PROBE_REPEATS,
     target = probe_dir / f"claim-{os.getpid()}.done"
 
     def claim_cycle() -> None:
-        with source.open("w", encoding="utf-8") as handle:
-            handle.write("probe\n")
+        source.write_text("probe\n", encoding="utf-8")
         os.rename(source, target)
         os.unlink(target)
 
