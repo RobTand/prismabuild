@@ -867,21 +867,19 @@ def _collect(
     for node in census.get("nodes", []):
         host = _host(node.get("node"))
         state = node.get("state")
-        if host is None or state not in {"live", "draining", "stale", "retired"}:
+        if host is None or state not in {"live", "draining", "held", "stale", "retired"}:
             success = False
             continue
         valid_hosts.add(host)
-        # A draining offer is fresh evidence with a named state, not a scrape
-        # failure (#1204).  ``worker_up`` keeps its existing meaning -- a
-        # syntactically valid, fresh offer -- so a drain still reads up and is
-        # not confused with a stopped loop, whose offer is stale and reads 0.
-        # The state itself is exposed by pbstatus' node table; the offer's
-        # configured capacity and its zero observed capacity are exported
-        # exactly as written.
-        fresh = state in {"live", "draining"}
+        # Admission state is independent of freshness: a held offer can also
+        # be stale or retired. Use census health and age, not the state label,
+        # so a fresh held/draining worker stays up with zero observed capacity
+        # while an old held offer cannot advertise usable capacity.
+        fresh = node.get("healthy") is True
         worker_up.add(1 if fresh else 0, host=host)
-        worker_retired.add(1 if state == "retired" else 0, host=host)
         age = fleet_census.nonnegative_number(node.get("age_s"))
+        worker_retired.add(1 if age is not None and age > fleet_census.OFFER_RETIRED_AFTER_S
+                           else 0, host=host)
         if age is not None:
             offer_age.add(age, host=host)
         else:

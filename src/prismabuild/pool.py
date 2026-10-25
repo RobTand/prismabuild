@@ -21356,8 +21356,16 @@ class PoolQueue:
             if host is None and isinstance(lease.get("host"), str):
                 host = str(lease["host"])
 
-        if (existing is not None and record is not None
-                and self.withdrawal_covers(record, action_key=key) is None):
+        supersede_existing = (existing is not None and record is not None
+                              and self.withdrawal_covers(record, action_key=key) is None)
+        # Admission can reach withdrawal through a refusal without reaching the
+        # final claim check. Recheck after ownership reads, before retiring an
+        # old marker or filing new cancellation authority. A committed handoff
+        # and explicit operator withdrawals must still be able to complete.
+        if (preempted_by is not None and (existing is None or supersede_existing)
+                and self.claim_hold() is not None):
+            raise PoolContractError("operator hold prevents admission preemption")
+        if supersede_existing:
             self._supersede_withdrawal(key)
             existing = None
 

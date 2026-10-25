@@ -4687,7 +4687,14 @@ again under the per-key transition lock, unwinding reservations if a hold
 arrived during the pass. Ordinary CPU, GPU and restartable CPU guest claims
 all cross that boundary. The last read and rename are not atomic with an
 operator write; a claim already past that boundary may finish normally.
-Running actions continue with their reservations and cleanup unchanged.
+Admission-driven preemption also checks the hold in `withdraw`, after resolving
+ownership and before retiring a withdrawal marker or filing new cancellation
+authority. This covers refusal-driven CPU guest, ordinary background and gang
+backfill handoffs, which may never reach the final claim check. Explicit
+operator withdrawals and already-committed handoff publication/cleanup continue.
+The hold read and cancellation are not atomic with an operator write; a handoff
+already past its final hold check may complete.
+Running actions otherwise continue with their reservations and cleanup unchanged.
 
 The operator hold is independent of the upgrade maintenance drain. Either
 control parks the worker loop's new claims. The maintenance gate is checked
