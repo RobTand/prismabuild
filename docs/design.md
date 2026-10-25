@@ -2562,6 +2562,10 @@ history, files rotate round-robin. File predictions take the maximum per-report
 sample; disjoint fragments of one file are summed within their report first.
 Optional `node_durations` records summed setup/call/teardown seconds by
 checkout-relative node ID.
+Each report row carries `history_source` with mode `automatic` or `explicit`
+and a `reports` list containing each source path and its raw-byte `sha256`.
+File and node predictions consume the same captured bytes. An empty source
+list records that no report was available; unusable samples still warn.
 
 Planning represents each shard's files, optional node groups and prediction
 before publishing any shard. Within each capability cohort, a file predicted

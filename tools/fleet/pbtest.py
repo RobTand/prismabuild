@@ -29,8 +29,9 @@ Four constraints shape this:
   own gives each worker its share of those cores: each xdist worker would
   otherwise inherit the whole row's thread count (#1192).
 
-Shards automatically use the latest completed report for the same checkout and
-requested paths; --history overrides it. Without history they rotate by file.
+Shards automatically use the latest green report for the same Git repository,
+including linked worktrees and changed path lists; --history overrides it.
+Without history they rotate by file.
 Files predicted above the per-shard target split into deterministic node groups;
 pytest's current collection determines their nodes and coverage is checked across
 all groups before the run can be green. The report records predicted and actual durations so a bad
@@ -1747,7 +1748,8 @@ def main() -> int:
     ap.add_argument("--history", action="append", default=[],
                     help="override automatic history with prior --json reports "
                          "(repeatable, one path per flag). Default: latest completed "
-                         "report for this checkout and requested paths, retained "
+                         "green report for this Git repository across worktrees "
+                         "and path lists, retained "
                          "under XDG_STATE_HOME or ~/.local/state. Measured files use "
                          "maximum durations, unmeasured files the median; files "
                          "above the per-shard target split into node groups. "

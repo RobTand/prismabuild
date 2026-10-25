@@ -2223,6 +2223,9 @@ non-Git directories use their resolved root. It retains the latest report under
 that history intact. Cache read/write failures warn and do not change the test
 verdict. `--history REPORT` overrides automatic lookup and remains repeatable.
 A first run without usable history rotates files round-robin.
+Each report row's `history_source` records `automatic` or `explicit` mode,
+plus the paths and SHA-256 digests of the exact reports read for both file and
+node predictions. An empty report list means no history report was available.
 
 A file predicted above its capability cohort's per-shard target splits into
 node groups across shards. The group count, index and duration model are sealed
