@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 
 from prismabuild.digest_primitives import raw_sha256
@@ -12,11 +11,19 @@ from prismabuild.digest_primitives import raw_sha256
 
 def _repository_identity(checkout: Path) -> str:
     root = checkout.resolve()
-    common = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True, text=True,
-    )
-    return common.stdout.strip() if common.returncode == 0 else str(root)
+    for directory in (root, *root.parents):
+        gitdir = directory / ".git"
+        if gitdir.is_file():
+            pointer = gitdir.read_text().strip()
+            if not pointer.startswith("gitdir: ") or not pointer[8:]:
+                raise ValueError(f"invalid Git directory pointer: {gitdir}")
+            gitdir = directory / pointer[8:]
+        if gitdir.is_dir():
+            common = gitdir / "commondir"
+            if common.is_file():
+                gitdir = gitdir / common.read_text().strip()
+            return str(gitdir.resolve())
+    return str(root)
 
 
 def _report_path(checkout: Path) -> Path:
