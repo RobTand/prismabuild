@@ -101,6 +101,15 @@ batch before accepting another batch and refuses a mode change while it is activ
 
 ## Configuration
 
+The queue needs authenticated `gh` commands and authenticated Git pushes.
+`Mirror.push_candidate` runs `git push` from the queue's bare mirror, so
+`gh auth login` alone does not configure its HTTPS Git credentials.
+For an operator-managed GitHub CLI identity, run `gh auth setup-git --hostname
+github.com` as the user who runs the queue. Confirm that the user service can
+access the same credential helper and identity before starting the shadow.
+Managed agent launchers must provide both Git and `gh` capabilities. Keep
+credentials out of queue configuration, unit files, PR bodies, and task comments.
+
 The configured `pbtest` entrypoint is resolved once when configuration is
 constructed, before discovery, module loading or submission. Its retained,
 immutable generation path supplies discovery, outcome parsing, execution and
