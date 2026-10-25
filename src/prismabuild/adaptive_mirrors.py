@@ -198,7 +198,7 @@ class LocalMirrorPublisher:
             if source_changed:
                 self._counts['invalidations'] += 1
                 self._counts['coalesced'] += int(self._dirty)
-            if source_changed:
+            if source_changed or outcome == 'completed':
                 self._copy_recovery = .25
             self._dirty |= bool(changed) or outcome is not None or bool(owner_ended)
             if source_changed or owner_ended or outcome == 'completed':
@@ -224,7 +224,7 @@ class LocalMirrorPublisher:
             deadline = snapshot.next_publication(self.local, now=now)
             if deadline is None:
                 self._dirty, self._retry_at = False, None
-                self._recovery, self._lock_delay = .25, .05
+                self._recovery, self._copy_recovery, self._lock_delay = .25, .25, .05
                 self._clear_owner()
                 return None
             if deadline > now:

@@ -10375,10 +10375,14 @@ copy. The shared completion marker follows payload changes, removals, initial
 publication, failure or recovery, and records `nonce`, `status`, `changed_files`
 and `finished_unix`. A marker failure cannot report local success. Counters
 report invalidations, coalescing, starts, completions, failures and source failures.
-A healthy clean observer has no timer. Dirty work arms the previous start plus
-one second. Copy or unavailable local-source recovery uses 0.25 seconds doubling
+A healthy clean observer has no timer. An empty local source is clean only
+when there is no prior result or the last publication successfully copied that
+empty source. A failed removal or completion-marker write retains its retry
+even with an empty or absent recorded signature. Dirty work arms the previous
+start plus one second. Copy or unavailable local-source recovery uses 0.25 seconds doubling
 to five seconds, no earlier than that start deadline, cancelled by source change,
-recovery or close. An unknown legacy lock owner uses nonblocking attempts after
+recovery or close. A successful copy resets the next copy-recovery delay to
+0.25 seconds. An unknown legacy lock owner uses nonblocking attempts after
 50 milliseconds doubling to one second until owner/result notification, clean
 state or close. This introduces no new blocking-operation or policy deadline.
 
