@@ -5,6 +5,7 @@ import sys
 import json
 import signal
 import time
+from types import SimpleNamespace
 from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,8 +150,8 @@ def launcher_target(tmp_path, monkeypatch):
     monkeypatch.setattr(qualification, "os", Namespace(
         pidfd_open=target.open_pidfd, close=target.close, kill=target.forbid_numeric_signal))
     monkeypatch.setattr(signal, "pidfd_send_signal", target.send_signal, raising=False)
-    monkeypatch.setattr(time, "sleep", target.delay)
-    monkeypatch.setattr(time, "monotonic", lambda: 0)
+    monkeypatch.setattr(qualification, "time", SimpleNamespace(
+        **{**vars(time), "sleep": target.delay, "monotonic": lambda: 0}))
     yield target
     assert sorted(target.closed) == target.acquired
     assert not target.handles

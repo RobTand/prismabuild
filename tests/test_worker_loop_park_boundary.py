@@ -29,6 +29,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from threading import Event
 
 import pytest
@@ -145,7 +146,9 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
         if len(polls) >= 2:
             stop.set()
 
-    monkeypatch.setattr(loop.time, "sleep", sleeping)
+    monkeypatch.setattr(loop, "time", SimpleNamespace(**{
+        **vars(loop.time), "sleep": sleeping,
+    }))
     monkeypatch.setattr(sys, "argv", ["worker_loop.py", "--all-cores",
                                      "--cpu-slots", "1", "--poll-s", "0"])
     assert loop._run_loop(stop) == 0

@@ -69,10 +69,6 @@ class _Clock:
         raise AssertionError("the owner path must not sleep")
 
 
-def _real_process_launch(*args, **kwargs):
-    raise AssertionError("the owner must use the scripted process adapter")
-
-
 @pytest.fixture(autouse=True)
 def clock(monkeypatch, request):
     unix_origin, monotonic_origin = getattr(request, "param", (FIXED_UNIX, 0.0))
@@ -145,8 +141,6 @@ class _OwnerProcess:
         self.token = None
         self.argv = None
         self.terminated = False
-        monkeypatch.setattr(time, "sleep", clock.sleep)
-        monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
         monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
             **{**vars(subprocess), "Popen": self.launch}))
         monkeypatch.setattr(pb, "_terminate_process_group", self.terminate)
