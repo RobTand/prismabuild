@@ -94,7 +94,7 @@ def test_foreign_charge_rounds_up_without_changing_the_operating_margin():
 
 
 def test_pb_host_and_cuda_residency_leave_foreign_bytes_counted_once():
-    job = {"complete": True, "host_bytes": 4 * GIB,
+    job = {"complete": True, "host_bytes": 4 * GIB, "budget_bytes": 80 * GIB,
            "memory_domain": "shared_system", "gpu_lower_bound_bytes": 60 * GIB,
            "gpu_reported_bytes": 120 * GIB}
     value = unified_sample(foreign=[foreign(32 * GIB)], jobs=[job], available=32)
@@ -117,7 +117,7 @@ def test_pb_host_and_cuda_residency_leave_foreign_bytes_counted_once():
     ({"memory_domain": "unknown"}, 28),
 ])
 def test_unproven_pb_residency_does_not_earn_memory_credit(update, expected):
-    job = {"complete": True, "host_bytes": 4 * GIB,
+    job = {"complete": True, "host_bytes": 4 * GIB, "budget_bytes": 80 * GIB,
            "memory_domain": "shared_system", "gpu_lower_bound_bytes": 60 * GIB}
     job.update(update)
     seen = bc.observe(CAPACITY, {"mem_gb": 80},
@@ -156,3 +156,20 @@ def test_unknown_ceiling_bypasses_history_and_clear_sample_recovers():
                                mem_gb=120, load1=0, now=NOW)
     assert recovered["mem_gb"] == 104
     assert not observer.last.unified_memory.unknown
+
+
+@pytest.mark.parametrize("budget", [
+    {}, {"budget_bytes": None}, {"budget_bytes": -1}, {"budget_bytes": True},
+    {"budget_bytes": float(80 * GIB)}, {"budget_bytes": str(80 * GIB)},
+    {"budget_bytes": 0},
+])
+def test_unreserved_scope_residency_earns_no_credit(budget):
+    job = {"complete": True, "host_bytes": 4 * GIB,
+           "memory_domain": "shared_system", "gpu_lower_bound_bytes": 60 * GIB,
+           **budget}
+    seen = bc.observe(CAPACITY, {"mem_gb": 80},
+                      gpu_sample=unified_sample(jobs=[job], available=32),
+                      mem_gb=32, load1=0, now=NOW)
+
+    assert seen.capacity["mem_gb"] == 24
+    assert seen.unified_memory.resident_bytes == 0
