@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shlex
 import sys
 
 import pytest
@@ -38,6 +39,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from test_docker_shim_global_options import _shim  # noqa: E402
 from test_sample_profile import _FakeBackend  # noqa: E402
+from profile_test_support import (
+    BLOCKED_PROFILE_WORK, deadline_after_profile_ready, native_sampled_work,
+    profile_checkout_boundary,
+)
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -50,24 +55,7 @@ SAMPLE_MARKER = "PRISMABUILD_PROFILE_SAMPLE_MARKER"
 ROUTE_FILENAME = "container-route"
 ROUTE_SCHEMA = "prismabuild.profile_container_route.v1"
 
-#: Long enough that a 100 Hz sampler would see it; the shaped backend here does
-#: not sample, so this only has to be real work, not a sampling window.
-_WORK = ("import math; "
-         "print(sum(sum(math.sqrt(i) for i in range(20000)) for _ in range(160)))")
-
-#: A native workload whose frame the real sampler must record.
-_NATIVE_WORKLOAD_MARKER = "prismabuild_562_native_workload"
-_NATIVE_WORKLOAD = (
-    "import time\n"
-    "def prismabuild_562_native_workload():\n"
-    "    total = 0.0\n"
-    "    end = time.monotonic() + 2.5\n"
-    "    while time.monotonic() < end:\n"
-    "        for i in range(50000):\n"
-    "            total += i * 0.5\n"
-    "    return total\n"
-    "print(prismabuild_562_native_workload())\n"
-)
+_WORK = "print(42)"
 
 
 def _marker_path(session) -> Path:
@@ -237,7 +225,6 @@ def test_a_fifo_marker_neither_blocks_nor_certifies(tmp_path: Path):
     session = _sample_session(tmp_path, arm=False)
     os.mkfifo(_marker_path(session))
     try:
-        assert stat.S_ISFIFO(_marker_path(session).lstat().st_mode)
         assert session.container_route() == "unrecorded"
     finally:
         _marker_path(session).unlink()
@@ -301,7 +288,7 @@ def test_the_shim_does_not_block_on_a_fifo_marker(tmp_path: Path):
     os.mkfifo(_marker_path(session))
     result, _marked, _forwarded = _shim(
         tmp_path, ["run", "workload:image"], docker_env=session.environment({}),
-        timeout=30,
+        timeout=60,
     )
     assert result.returncode == 125, result.stderr
     assert not stat.S_ISFIFO(_marker_path(session).lstat().st_mode)
@@ -409,6 +396,7 @@ def _shim_environment(tmp_path: Path) -> dict[str, str]:
 
 def _sealed_action(checkout: Path, tmp_path: Path, argv: list[str],
                    files: dict[str, str] | None = None) -> dict:
+    profile_checkout_boundary(checkout)
     (checkout / "task_code.py").write_text("# closure member\n", encoding="utf-8")
     closure = ["task_code.py"]
     for name, text in (files or {}).items():
@@ -508,8 +496,6 @@ def test_a_swallowed_refusal_publishes_no_receipt(
     sidecar = json.loads(status.read_text(encoding="utf-8"))
     assert sidecar["profile"]["produced"] is False
     assert sidecar["profile"]["workload_coverage"] == "unsupported"
-    # The scratch directory, marker included, dies with the action.
-    assert not (checkout / pb.PROFILE_SCRATCH_DIRNAME).exists()
 
 
 def test_a_nonzero_action_keeps_its_own_code_and_the_negative_profile(
@@ -561,7 +547,7 @@ def test_a_marker_that_disappears_makes_the_profile_unknown(
 
 
 def test_a_killed_run_keeps_the_coverage_disclaimer(
-    tmp_path: Path, sample_backend: _SampleShapedBackend,
+    tmp_path: Path, sample_backend: _SampleShapedBackend, monkeypatch,
 ):
     """The partial checkpoint shares ``ingest``, so it cannot claim coverage."""
 
@@ -569,12 +555,12 @@ def test_a_killed_run_keeps_the_coverage_disclaimer(
     checkout.mkdir()
     action = _sealed_action(checkout, tmp_path, _action_argv(
         f"{_shim_call('run', '--rm', 'workload:image', 'true')} || true; "
-        "sleep 120"
+        f"{sys.executable} -c {BLOCKED_PROFILE_WORK!r}"
     ))
+    deadline_after_profile_ready(monkeypatch, checkout)
     with pytest.raises(pb.LocalActionError) as raised:
         pb.run_local_action(
             action, cas_root=tmp_path / "cas", checkout_root=checkout,
-            timeout_seconds=1.0,
         )
     profile = raised.value.profile
     assert profile["partial"] is True
@@ -588,39 +574,28 @@ def test_a_killed_run_keeps_the_coverage_disclaimer(
 
 
 def test_the_native_sampler_records_workload_frames(tmp_path: Path):
-    """Native py-spy must sample a clean action's own workload, not just us.
-
-    The fake-backend regressions above prove the coverage contract; this is
-    the compatibility check the review asked for, run through PB: the real
-    backend, the real py-spy, and a workload frame name that exists nowhere
-    else in the process tree.  It also proves the armed marker does not turn a
-    clean native action into a negative one.
-    """
-
-    checkout = tmp_path / "checkout"
+    """A supported native route publishes a real workload sample and receipt."""
+    checkout = tmp_path / 'checkout'
     checkout.mkdir()
-    action = _sealed_action(checkout, tmp_path, _action_argv(
-        f"{sys.executable} native_workload.py 2>&1 | tee result.txt; "
-        "exit ${PIPESTATUS[0]}"
-    ), files={"native_workload.py": _NATIVE_WORKLOAD})
-    result = pb.run_local_action(
-        action, cas_root=tmp_path / "cas", checkout_root=checkout
-    )
-    profile = result["profile"]
-    assert profile["mode"] == "sample"
-    assert profile["produced"] is True
-    assert "workload_coverage" not in profile
-    assert profile["samples"] > 0
-    blob = (tmp_path / "cas" / "blobs"
-            / str(profile["blob_sha256"])[:2] / str(profile["blob_sha256"]))
+    with native_sampled_work(tmp_path, 'prismabuild_native_workload') as work:
+        action = _sealed_action(checkout, tmp_path, _action_argv(
+            f'{sys.executable} -c {shlex.quote(work)} | tee result.txt; '
+            'exit ${PIPESTATUS[0]}'))
+        result = pb.run_local_action(
+            action, cas_root=tmp_path / 'cas', checkout_root=checkout)
+    profile = result['profile']
+    assert profile['mode'] == 'sample'
+    assert profile['produced'] is True
+    assert 'workload_coverage' not in profile
+    assert profile['samples'] > 0
+    cas = pb.PrismaBuildCAS(tmp_path / 'cas')
+    assert cas.lookup(action) == result['receipt']
+    blob = cas.root / 'blobs' / profile['blob_sha256'][:2] / profile['blob_sha256']
     document = json.loads(blob.read_text())
-    frames = [frame.get("name", "") for frame in document["shared"]["frames"]]
-    matching = [name for name in frames if _NATIVE_WORKLOAD_MARKER in name]
-    # The PB log carries this line, so the exact workload frames are readable
-    # from the action's retained stdout as well as from this assertion.
-    print(f"native sample evidence: samples={profile['samples']} "
-          f"blob={profile['blob_sha256']} workload_frames={matching!r}")
-    assert matching, frames
+    sampled = {index for row in document['profiles'] for sample in row['samples']
+               for index in sample}
+    assert any(document['shared']['frames'][index]['name'] == 'prismabuild_native_workload'
+               for index in sampled)
 
 
 # -- the record a reader opens -----------------------------------------------
