@@ -4379,10 +4379,10 @@ class ResourceLedger:
                 if not allowed:
                     self.last_token_shortage = gate.shortage()
                     return None
-                handle = self._begin_acquire_locked(action_key, demand, **kwargs)
-                if handle is not None:
-                    gate.granted()
-                return handle
+                if not gate.reserve():
+                    self.last_token_shortage = gate.shortage()
+                    return None
+                return self._begin_acquire_locked(action_key, demand, **kwargs)
 
     @_guarded_mutation(blocking=False)
     def _begin_acquire_locked(
