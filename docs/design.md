@@ -7570,6 +7570,14 @@ to be declared.
 
 ## Whole-directory local resident sets (#1545)
 
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
+
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
 `placeable_hosts` preserves the existing matching-offer and resource rules and eligible set,
@@ -16861,6 +16869,16 @@ digest alongside usable layouts and unresolved coverage. When unresolved
 references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
+
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
 
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
