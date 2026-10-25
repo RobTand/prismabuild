@@ -261,3 +261,25 @@ def test_unknown_guest_rechecks_gpu_reservations_after_sealed_proof(tmp_path, mo
     result = prepare_interpreter_claim(queue, item, candidate, placement)
     assert isinstance(result, candidate_policy.CandidateDenial)
     assert result.reason == "deferred_for_unresolved_cpu_host"
+
+
+def test_repeated_probe_timeouts_remain_unresolved_at_spark_claim(tmp_path, monkeypatch):
+    from prismabuild import interpreter_inventory
+
+    queue, item, candidate, placement, _ = interpreter_case(
+        tmp_path, monkeypatch, "unknown", reserved=True)
+    peer = next(offer for offer in placement.offers() if offer["host"] == "cpu-peer")
+    path = item["interpreter"]
+    for poll in range(1, 6):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(interpreter_inventory._bounded_reader, "bounded",
+                           lambda *a, **k: {"status": "timed_out"})
+            observed = interpreter_inventory.prepare_interpreters(
+                [item], inventory_path=tmp_path / "inventory" / "paths.json", now=NOW + poll)
+        observed.commit()
+        assert observed.answers.answer(path) is eligibility.Presence.UNKNOWN
+        assert observed.diagnostics[path] == "interpreter_probe_timeout"
+        peer.update(observed.answers.offer_fields())
+        result = prepare_interpreter_claim(queue, item, candidate, placement)
+        assert isinstance(result, candidate_policy.CandidateDenial)
+        assert result.reason == "deferred_for_unresolved_cpu_host"

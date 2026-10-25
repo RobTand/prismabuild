@@ -17654,7 +17654,8 @@ class PoolQueue:
         restartable = (self._guest_restartable(item)
                        if idle_here or guest_retry else False)
         # Recheck the original sample after the blocking restartability proof.
-        idle_here = idle_here and self._idle_gpu_offer(local_offer)
+        idle_here = (idle_here and self._idle_gpu_offer(local_offer)
+                     and not self.ledger().held().get("gpu"))
         exhausted = guest_retry and not restartable
         cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
