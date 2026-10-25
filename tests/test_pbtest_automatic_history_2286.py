@@ -1,9 +1,10 @@
-"""Automatic duration history belongs to one checkout and requested population."""
+"""Automatic duration history follows the repository across worktrees and populations."""
 from __future__ import annotations
 
 import importlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -35,18 +36,27 @@ def test_completed_report_is_available_without_an_explicit_report_path(history, 
     assert list(checkout.iterdir()) == []
 
 
-def test_scope_uses_resolved_checkout_and_canonical_requested_roots(history, tmp_path):
+def test_repository_history_survives_worktree_and_requested_population_changes(history, tmp_path):
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    alias = tmp_path / "alias"
-    alias.symlink_to(checkout, target_is_directory=True)
-    history.remember_report(checkout, ["tests/unit", "tests/integration"], completed(12))
+    other = tmp_path / "other"
+    for repository in (checkout, other):
+        subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.invalid", "commit", "--quiet",
+                    "--allow-empty", "-m", "initial"], check=True)
+    worktree = tmp_path / "second-worktree"
+    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "--quiet",
+                    "--detach", str(worktree)], check=True)
+    results = completed(12)
+    history.remember_report(checkout, ["tests/test_one.py", "tests/test_old.py"], results)
 
-    expected = history.cached_report(checkout, ["tests/integration", "tests/unit"])
+    expected = history.cached_report(checkout, ["tests/test_one.py", "tests/test_old.py"])
     assert expected is not None
-    assert history.cached_report(alias, ["tests/./unit", "tests/integration", "tests/unit"]) == expected
-    assert history.cached_report(checkout, ["tests"]) is None
-    assert history.cached_report(tmp_path / "other", ["tests/unit", "tests/integration"]) is None
+    assert history.cached_report(worktree, ["tests/test_one.py"]) == expected
+    assert history.cached_report(worktree, ["tests/test_one.py", "tests/test_old.py",
+                                             "tests/test_new.py"]) == expected
+    assert json.loads(expected.read_text()) == results
+    assert history.cached_report(other, ["tests/test_one.py"]) is None
 
 
 def test_new_completed_report_replaces_previous_report(history, tmp_path):
