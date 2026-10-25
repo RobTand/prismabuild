@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter, defaultdict
+import fcntl
 import json
+import os
 from pathlib import Path
 import re
 import statistics
@@ -209,6 +211,13 @@ def render_test_inventory(report: dict) -> str:
     lines += ["", "## PB actions", ""]
     lines.extend(f"- Repeat {r['repeat']}: `{r['action_key']}`, receipt `{r['receipt_sha256'] or r['receipt_path']}`, exit {r['returncode']}."
                  for r in report["evidence"])
+    abandoned = report.get("abandoned_attempts", [])
+    if abandoned:
+        lines += ["", "## Abandoned attempts", ""]
+        lines.extend(f"- Repeat {a['repeat']}, attempt `{a['attempt_id']}`: {a['reason']}; "
+                     f"log `{a['log']}`, SHA-256 `{a['log_sha256']}`; "
+                     f"actions {', '.join('`' + k + '`' for k in a['action_keys']) or 'none published'}."
+                     for a in abandoned)
     return "\n".join(lines) + "\n"
 
 
@@ -223,11 +232,13 @@ def collection_manifest(args, source: str) -> dict:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         if (manifest["source_digest"] != source or manifest["paths"] != args.paths
-                or manifest["python"] != args.python or manifest["repeats"] != args.repeats):
+                or manifest["python"] != args.python or manifest["repeats"] != args.repeats
+                or manifest.get("priority", 0) != getattr(args, "priority", 0)):
             raise ValueError("existing collection has different source, selection or options")
     else:
         manifest = {"source_digest": source, "paths": args.paths, "python": args.python,
-                    "repeats": args.repeats, "collection_id": uuid.uuid4().hex, "runs": []}
+                    "repeats": args.repeats, "priority": getattr(args, "priority", 0),
+                    "collection_id": uuid.uuid4().hex, "runs": []}
         with manifest_path.open("x") as stream:
             stream.write(json.dumps(manifest, indent=2) + "\n")
     return manifest
@@ -239,49 +250,165 @@ def save_collection(output: Path, manifest: dict) -> None:
     temporary.replace(output / "runs.json")
 
 
+def process_identity(pid: int) -> dict | None:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+    except FileNotFoundError:
+        return None
+    if fields[0] == "Z":
+        return None
+    return {"pid": pid, "start_ticks": fields[19],
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip()}
+
+
+def require_dead_producer(output: Path, attempt: dict) -> dict:
+    progress_path = output / (attempt["report"] + ".progress.json")
+    progress = json.loads(progress_path.read_text()) if progress_path.exists() else {}
+    producer = attempt.get("producer") or {"pid": progress.get("producer_pid")}
+    if not producer.get("pid"):
+        raise ValueError("producer identity unavailable; cannot abandon attempt")
+    current = process_identity(producer["pid"])
+    if current and ("start_ticks" not in producer or current == producer):
+        raise ValueError(f"producer {producer['pid']} is still alive; no replacement submitted")
+    return progress
+
+
+def reconcile_attempt(output: Path, manifest: dict, attempt: dict) -> None:
+    report = output / attempt["report"]
+    if attempt["status"] == "launching":
+        log = output / attempt["log"]
+        attempt.update(status="abandoned", reason="controller_died_before_producer_release",
+                       action_keys=[], log_sha256=raw_sha256(log.read_bytes()) if log.exists() else None)
+        save_collection(output, manifest)
+        return
+    progress = require_dead_producer(output, attempt)
+    if report.exists():
+        if not isinstance(json.loads(report.read_text()), list):
+            raise ValueError("retained report must be a pbtest result list")
+        attempt.update(status="completed", report_sha256=raw_sha256(report.read_bytes()),
+                       recovered_after_controller_exit=True)
+        manifest["runs"].append(dict(attempt))
+    else:
+        log = output / attempt["log"]
+        content = log.read_bytes() if log.exists() else b""
+        keys = {shard["action_key"] for shard in progress.get("shards", []) if shard.get("action_key")}
+        keys.update(k.decode() for k in re.findall(rb"(?:action |queued )([0-9a-f]{64})\b", content))
+        attempt.update(status="abandoned", reason="producer_dead_without_report",
+                       log_sha256=raw_sha256(content) if log.exists() else None,
+                       action_keys=sorted(keys))
+        progress_path = output / (attempt["report"] + ".progress.json")
+        if progress_path.exists():
+            attempt["progress_sha256"] = raw_sha256(progress_path.read_bytes())
+    save_collection(output, manifest)
+
+
 def collect_test_repeats(args) -> None:
-    source = inventory_checkout_revision(args.checkout)
-    manifest = collection_manifest(args, source)
-    for repeat in range(1, args.repeats + 1):
-        target = args.output / f"repeat-{repeat}.json"
-        previous = next((r for r in manifest["runs"] if r["repeat"] == repeat), None)
-        if previous:
-            if raw_sha256(target.read_bytes()) != previous["report_sha256"]:
-                raise ValueError("retained report digest changed")
-            continue
-        log = args.output / f"repeat-{repeat}.log"
-        if log.exists():
-            raise ValueError("unfinished repeat; inspect its PB actions before collecting again")
-        command = [sys.executable, str(PUBLISHED / "pbtest.py"), "--checkout", str(args.checkout),
-                   "--python", args.python, "--workers-per-shard", "1", "--threads-per-shard", "1",
-                   "--mem-gb", "2", "--max-clients", "8", "--timeout-s", "3600", "--wait-s", "7200",
-                   "--env", f"PRISMABUILD_INVENTORY_REPEAT={manifest['collection_id']}:{repeat}",
-                   "--pytest-args", json.dumps(["--durations", "0", "--durations-min", "0", "--tb", "short"]),
-                   "--json", str(target), *args.paths]
-        if inventory_checkout_revision(args.checkout) != source:
-            raise ValueError("source changed during collection")
-        for moment in ("before", "after"):
-            with (args.output / f"repeat-{repeat}-fleet-{moment}.json").open("w") as status:
-                subprocess.run([sys.executable, str(PUBLISHED / "pbstatus.py"), "--json", "--recent", "0"],
-                               stdout=status, stderr=subprocess.STDOUT, check=False)
-            if moment == "before":
-                with log.open("x") as output:
-                    result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, check=False)
-        if inventory_checkout_revision(args.checkout) != source:
-            raise ValueError("source changed during collection")
-        if not target.exists():
-            raise ValueError(f"repeat {repeat} produced no report; inspect {log}")
-        manifest["runs"].append({"repeat": repeat, "command": command, "returncode": result.returncode,
-                                 "report_sha256": raw_sha256(target.read_bytes())})
+    with (args.output / "collector.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("a collector already owns this output directory") from None
+        source = inventory_checkout_revision(args.checkout)
+        manifest = collection_manifest(args, source)
+        manifest["controller"] = {"unit": getattr(args, "unit", None),
+                                  "process": process_identity(os.getpid()), "status": "running"}
+        attempts = manifest.setdefault("attempts", [])
         save_collection(args.output, manifest)
-        print(f"committed repeat {repeat}: controller exit {result.returncode}", flush=True)
+        for repeat in range(1, args.repeats + 1):
+            previous = next((r for r in manifest["runs"] if r["repeat"] == repeat), None)
+            if previous:
+                target = args.output / previous.get("report", f"repeat-{repeat}.json")
+                if raw_sha256(target.read_bytes()) != previous["report_sha256"]:
+                    raise ValueError("retained report digest changed")
+                continue
+            legacy_log = args.output / f"repeat-{repeat}.log"
+            if legacy_log.exists() and not any(a["repeat"] == repeat for a in attempts):
+                attempts.append({"repeat": repeat, "attempt_id": f"legacy-{repeat}",
+                                 "report": f"repeat-{repeat}.json", "log": legacy_log.name,
+                                 "status": "running"})
+                save_collection(args.output, manifest)
+            for attempt in attempts:
+                if attempt["repeat"] == repeat and attempt["status"] in {"launching", "running"}:
+                    reconcile_attempt(args.output, manifest, attempt)
+            if any(r["repeat"] == repeat for r in manifest["runs"]):
+                continue
+            attempt_id = uuid.uuid4().hex
+            stem = f"repeat-{repeat}-{attempt_id}"
+            target = args.output / (stem + ".json")
+            command = [sys.executable, str(PUBLISHED / "pbtest.py"), "--checkout", str(args.checkout),
+                       "--python", args.python, "--workers-per-shard", "1", "--threads-per-shard", "1",
+                       "--mem-gb", "2", "--max-clients", "8", "--timeout-s", "3600", "--wait-s", "7200",
+                       "--priority", str(getattr(args, "priority", 0)),
+                       "--env", f"PRISMABUILD_INVENTORY_REPEAT={manifest['collection_id']}:{repeat}:{attempt_id}",
+                       "--pytest-args", json.dumps(["--durations", "0", "--durations-min", "0", "--tb", "short"]),
+                       "--json", str(target), *args.paths]
+            attempt = {"repeat": repeat, "attempt_id": attempt_id, "report": target.name,
+                       "log": stem + ".log", "command": command, "status": "launching"}
+            attempts.append(attempt)
+            save_collection(args.output, manifest)
+            if inventory_checkout_revision(args.checkout) != source:
+                raise ValueError("source changed during collection")
+            for moment in ("before", "after"):
+                with (args.output / f"{stem}-fleet-{moment}.json").open("w") as status:
+                    subprocess.run([sys.executable, str(PUBLISHED / "pbstatus.py"), "--json", "--recent", "0"],
+                                   stdout=status, stderr=subprocess.STDOUT, check=False)
+                if moment == "before":
+                    with (args.output / attempt["log"]).open("x") as output:
+                        read_fd, write_fd = os.pipe()
+                        try:
+                            gate = ("import os,sys; fd=int(sys.argv[1]); token=os.read(fd,1); os.close(fd); "
+                                    "sys.exit(1) if token != b'1' else os.execvp(sys.argv[2],sys.argv[2:])")
+                            producer = subprocess.Popen([sys.executable, "-c", gate, str(read_fd), *command],
+                                                        pass_fds=(read_fd,), stdin=subprocess.DEVNULL,
+                                                        stdout=output, stderr=subprocess.STDOUT)
+                            attempt.update(producer=process_identity(producer.pid) or {"pid": producer.pid},
+                                           status="running")
+                            save_collection(args.output, manifest)
+                            os.write(write_fd, b"1")
+                        finally:
+                            os.close(read_fd)
+                            os.close(write_fd)
+                        returncode = producer.wait()
+            if inventory_checkout_revision(args.checkout) != source:
+                raise ValueError("source changed during collection")
+            if not target.exists():
+                raise ValueError(f"repeat {repeat} produced no report; inspect {attempt['log']}")
+            attempt.update(status="completed", returncode=returncode,
+                           report_sha256=raw_sha256(target.read_bytes()))
+            manifest["runs"].append(dict(attempt))
+            save_collection(args.output, manifest)
+            print(f"committed repeat {repeat}: controller exit {returncode}", flush=True)
+        summarize_test_repeats(args)
+        manifest["controller"]["status"] = "completed"
+        save_collection(args.output, manifest)
+
+
+def launch_collector(args) -> None:
+    inventory_checkout_revision(args.checkout)
+    unit = "pb-test-inventory-" + raw_sha256(str(args.output).encode())[:20] + ".service"
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    environment = dict(os.environ, XDG_RUNTIME_DIR=str(runtime),
+                       DBUS_SESSION_BUS_ADDRESS=os.environ.get("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus"))
+    command = [sys.executable, str(Path(__file__).resolve()), "_collect",
+               "--checkout", str(args.checkout), "--output", str(args.output),
+               "--python", args.python, "--repeats", str(args.repeats),
+               "--priority", str(args.priority), "--unit", unit, *args.paths]
+    result = subprocess.run(["systemd-run", "--user", "--collect", "--unit", unit,
+                             "--property", "Type=exec", "--property", f"WorkingDirectory={args.checkout}",
+                             "--property", f"StandardOutput=append:{args.output / 'controller.log'}",
+                             "--property", f"StandardError=append:{args.output / 'controller.log'}",
+                             "--", *command], env=environment, check=False)
+    if result.returncode:
+        raise ValueError("could not start collector user service; inspect systemd-run diagnostic")
+    print(json.dumps({"unit": unit, "manifest": str(args.output / "runs.json"),
+                      "log": str(args.output / "controller.log")}))
 
 
 def summarize_test_repeats(args) -> None:
     manifest = json.loads((args.output / "runs.json").read_text())
     runs = []
     for entry in manifest["runs"]:
-        path = args.output / f"repeat-{entry['repeat']}.json"
+        path = args.output / entry.get("report", f"repeat-{entry['repeat']}.json")
         if raw_sha256(path.read_bytes()) != entry["report_sha256"]:
             raise ValueError("retained report digest changed")
         runs.append({"repeat": entry["repeat"], "source_digest": manifest["source_digest"],
@@ -289,6 +416,7 @@ def summarize_test_repeats(args) -> None:
     if inventory_checkout_revision(args.checkout) != manifest["source_digest"]:
         raise ValueError("grouping checkout differs from the measured source")
     report = rank_test_runs(args.checkout, runs)
+    report["abandoned_attempts"] = [a for a in manifest.get("attempts", []) if a["status"] == "abandoned"]
     (args.output / "inventory.json").write_text(json.dumps(report, indent=2) + "\n")
     (args.output / "inventory.md").write_text(render_test_inventory(report))
     print(json.dumps(report["coverage"]))
@@ -296,24 +424,29 @@ def summarize_test_repeats(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("collect", "summarize"), help="submit repeats or rebuild retained rankings")
+    parser.add_argument("command", choices=("collect", "summarize", "_collect"), help="submit repeats or rebuild retained rankings")
     parser.add_argument("--checkout", type=Path, default=ROOT, help="clean source checkout")
     parser.add_argument("--output", type=Path, required=True, help="evidence directory outside the checkout")
     parser.add_argument("--python", help="absolute Python interpreter on eligible workers, required to collect")
     parser.add_argument("--repeats", type=int, default=3, help="fresh suite invocations, at least two")
+    parser.add_argument("--priority", type=int, default=0, help="PB priority; use -10 for collector qualification")
+    parser.add_argument("--unit", help=argparse.SUPPRESS)
     parser.add_argument("paths", nargs="*", default=["tests"], help="test selection relative to checkout")
     args = parser.parse_args()
     args.checkout = args.checkout.resolve()
     args.output = args.output.resolve()
     if args.output.is_relative_to(args.checkout):
         parser.error("output must be outside the checkout")
-    if args.command == "collect" and (not args.python or args.repeats < 2):
+    if args.command in {"collect", "_collect"} and (not args.python or args.repeats < 2):
         parser.error("collect requires --python and at least two repeats")
     args.output.mkdir(parents=True, exist_ok=True)
     try:
         if args.command == "collect":
+            launch_collector(args)
+        elif args.command == "_collect":
             collect_test_repeats(args)
-        summarize_test_repeats(args)
+        else:
+            summarize_test_repeats(args)
     except (OSError, ValueError) as exc:
         parser.exit(1, f"inventory: {exc}\n")
 

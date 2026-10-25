@@ -144,3 +144,43 @@ def test_dead_producer_is_archived_and_repeat_uses_a_fresh_identity(tmp_path, mo
     assert Path(commands[0][commands[0].index("--json") + 1]).name != "repeat-1.json"
     inventory.collect_test_repeats(args)
     assert len(commands) == 2
+
+
+def test_live_producer_prevents_replacement_even_with_a_stale_progress_state(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import os
+
+    (tmp_path / "repeat-1.log").write_text("submitted")
+    (tmp_path / "repeat-1.json.progress.json").write_text(json.dumps({
+        "producer_pid": os.getpid(), "state": "failed"}))
+    manifest = {"source_digest": "source", "paths": ["tests"], "python": "/python",
+                "repeats": 2, "collection_id": "same", "runs": []}
+    (tmp_path / "runs.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(inventory, "inventory_checkout_revision", lambda root: "source")
+    args = SimpleNamespace(checkout=tmp_path, output=tmp_path, paths=["tests"], python="/python", repeats=2)
+    with pytest.raises(ValueError, match="still alive"):
+        inventory.collect_test_repeats(args)
+    assert json.loads((tmp_path / "runs.json").read_text())["attempts"][0]["status"] == "running"
+
+
+def test_report_written_before_controller_exit_is_adopted_without_resubmission(tmp_path):
+    (tmp_path / "attempt.log").write_text("finished")
+    (tmp_path / "attempt.json").write_text("[]")
+    attempt = {"repeat": 1, "attempt_id": "old", "report": "attempt.json", "log": "attempt.log",
+               "producer": {"pid": 2147483647}, "status": "running"}
+    manifest = {"attempts": [attempt], "runs": []}
+    inventory.reconcile_attempt(tmp_path, manifest, attempt)
+    assert manifest["runs"][0]["report_sha256"] == inventory.raw_sha256(b"[]")
+    assert manifest["runs"][0]["recovered_after_controller_exit"] is True
+    assert attempt["status"] == "completed"
+
+
+def test_unreleased_producer_attempt_is_abandoned_without_guessing_a_pid(tmp_path):
+    (tmp_path / "attempt.log").write_text("")
+    attempt = {"repeat": 1, "attempt_id": "old", "report": "attempt.json", "log": "attempt.log",
+               "status": "launching"}
+    manifest = {"attempts": [attempt], "runs": []}
+    inventory.reconcile_attempt(tmp_path, manifest, attempt)
+    assert attempt["status"] == "abandoned"
+    assert attempt["action_keys"] == []
+    assert attempt["reason"] == "controller_died_before_producer_release"
