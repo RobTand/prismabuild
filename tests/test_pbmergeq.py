@@ -337,7 +337,7 @@ def test_green_batch_opens_a_vehicle_and_posts_required_success_only_on_candidat
     assert batch["shared"] == ["tests/test_a.py::old"] and batch["new"] == []
     assert statuses(github) == [(batch["candidate"], "success")]
     vehicle = batch["vehicle"]
-    assert vehicle["branch"] == f"release-mq/{batch['id']}"
+    assert vehicle["branch"] == f"release-mq/{batch['id']}-{batch['candidate'][:12]}"
     assert github.pr(vehicle["number"])["headRefOid"] == batch["candidate"]
     body = github.pr(vehicle["number"])["body"]
     assert all(text in body for text in ("#1", one, "Refs #101", "#2", two, "Refs #102"))

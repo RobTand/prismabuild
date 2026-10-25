@@ -18892,7 +18892,7 @@ unpinned entries and comments when a head moved after approval. One-shot shadow
 status runs can capture current heads, but one-shot merge runs refuse.
 
 The existing batch state owns a green decision, immutable candidate reference,
-vehicle branch `release-mq/<batch>`, and member SHA manifest before remote
+vehicle branch `release-mq/<batch>-<candidate12>`, and member SHA manifest before remote
 publication. Git owns branch publication; the GitHub adapter finds a vehicle
 across all PR states before creating one. The fsynced ledger records the vehicle,
 its statuses and confirmed member merges. Recovery after a green decision

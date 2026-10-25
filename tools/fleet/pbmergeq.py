@@ -1465,7 +1465,10 @@ class Queue:
         batch["green"] = shared
         batch["wait_until"] = time.time() + self.cfg.green_wait_s
         self.mirror.git("update-ref", f"refs/mq/candidates/{batch['id']}", batch["candidate"])
-        batch["vehicle"] = {"branch": f"release-mq/{batch['id']}", "sha": batch["candidate"]}
+        # Batch IDs restart with a fresh state directory; the candidate does not,
+        # so another queue's closed vehicle can never be found under this name.
+        branch = f"release-mq/{batch['id']}-{batch['candidate'][:12]}"
+        batch["vehicle"] = {"branch": branch, "sha": batch["candidate"]}
         self.phase(batch, "posting")
         return self.publish_green(batch)
 
