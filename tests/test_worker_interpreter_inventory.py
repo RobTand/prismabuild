@@ -49,6 +49,7 @@ def test_drain_poll_freshly_observes_retained_interpreter_names(tmp_path, monkey
 
 
 def test_worker_timeouts_stay_unknown_and_do_not_stop_publication_or_admission(tmp_path, monkeypatch):
+    import multiprocessing
     import os
     from prismabuild import interpreter_inventory as inventory
     slow = _executable(tmp_path, 'z-slow-python')
@@ -56,15 +57,41 @@ def test_worker_timeouts_stay_unknown_and_do_not_stop_publication_or_admission(t
     fifo = tmp_path / 'blocked-probe'
     os.mkfifo(fifo)
     original = eligibility.LiveInterpreters.answer
+    child_entered = multiprocessing.get_context('fork').Event()
+    probing_slow = False
+    blocked = True
+    bounded = inventory._bounded_reader.bounded
+    native_select = inventory._bounded_reader.select.select
 
     def answer(self, path):
         if path == slow:
+            child_entered.set()
             descriptor = os.open(fifo, os.O_RDONLY)
             os.close(descriptor)
         return original(self, path)
 
+    def probe_after_entry(section, read, **kwargs):
+        nonlocal probing_slow
+        if section != 'interpreter-probe':
+            return bounded(section, read, **kwargs)
+        probing_slow = blocked and read.__defaults__[0] == slow
+        if probing_slow:
+            child_entered.clear()
+        try:
+            return bounded(section, read, **{**kwargs, 'cap_s': None})
+        finally:
+            probing_slow = False
+
+    def controlled_timeout(read, write, error, timeout):
+        if probing_slow:
+            child_entered.wait()
+            return [], [], []
+        return native_select(read, write, error, None)
+
     monkeypatch.setattr(eligibility.LiveInterpreters, 'answer', answer)
-    monkeypatch.setattr(inventory, 'PROBE_TIMEOUT_S', .1)
+    monkeypatch.setattr(inventory._bounded_reader.Deadline, 'remaining', lambda self: self.timeout_s)
+    monkeypatch.setattr(inventory._bounded_reader, 'bounded', probe_after_entry)
+    monkeypatch.setattr(inventory._bounded_reader.select, 'select', controlled_timeout)
     rows = [{'interpreter': slow}, {'interpreter': fast}]
     for draining, requested in [(False, rows), (False, []), (False, []), (True, [])]:
         offer = _poll(tmp_path, monkeypatch, requested, draining=draining)
@@ -73,6 +100,7 @@ def test_worker_timeouts_stay_unknown_and_do_not_stop_publication_or_admission(t
         assert observed.answer(fast) is eligibility.Presence.PRESENT
         assert offer['observed_detail']['interpreter_probes'][slow] == 'interpreter_probe_timeout'
     monkeypatch.setattr(eligibility.LiveInterpreters, 'answer', original)
+    blocked = False
     recovered = _poll(tmp_path, monkeypatch, [])
     assert eligibility.InterpreterAnswers.from_offer(recovered).answer(slow) is eligibility.Presence.PRESENT
 
