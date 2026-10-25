@@ -1025,25 +1025,20 @@ def allocate_shards(weights: dict, count: int) -> dict:
     return total
 
 
-def load_history(paths: list[str] | None, *, field: str = "file_durations") -> tuple[dict[str, list[float]], list[str]]:
-    """Per-file wall-time samples out of prior ``--json`` run reports (#1246).
+class HistoryReport(NamedTuple):
+    path: str
+    sha256: str
+    rows: list
 
-    Each report holds every shard's files beside its full stdout, and the
-    stdout holds the shard's outcome record with its ``file_durations`` --
-    so a prior report is the receipts' content in one file, and loading it
-    reads no live state.  Returns ``(history, problems)``: unreadable
-    files, non-list shapes, and non-numeric samples are ignored with a
-    stated reason per path, never silently and never fatally -- a history
-    flag must neither fail a submission because one old report rotted nor
-    pretend a foreign report packed the shards (#1303 review).  The caller
-    prints the problems; tests assert on them.
-    """
 
-    history: dict[str, list[float]] = {}
-    problems: list[str] = []
+def read_history(paths: list[str] | None) -> tuple[list[HistoryReport], list[str]]:
+    """Capture and validate each report once before extracting its samples."""
+    reports = []
+    problems = []
     for raw in paths or ():
         try:
-            runs = json.loads(Path(raw).read_text())
+            content = Path(raw).read_bytes()
+            runs = json.loads(content.decode("utf-8"))
         except OSError as exc:
             problems.append(f"{raw}: unreadable, skipped ({exc})")
             continue
@@ -1054,9 +1049,19 @@ def load_history(paths: list[str] | None, *, field: str = "file_durations") -> t
             problems.append(f"{raw}: top shape is "
                             f"{type(runs).__name__}, not a run list; skipped")
             continue
+        reports.append(HistoryReport(raw, core.raw_sha256(content), runs))
+    return reports, problems
+
+
+def history_samples(reports: list[HistoryReport], *, field: str = "file_durations"
+                    ) -> tuple[dict[str, list[float]], list[str]]:
+    """Extract duration samples from captured reports without reopening them."""
+    history: dict[str, list[float]] = {}
+    problems: list[str] = []
+    for report in reports:
         skipped = 0
         samples: dict[str, float] = {}
-        for result in runs:
+        for result in report.rows:
             if not isinstance(result, dict):
                 skipped += 1
                 continue
@@ -1079,10 +1084,19 @@ def load_history(paths: list[str] | None, *, field: str = "file_durations") -> t
         for name, seconds in samples.items():
             history.setdefault(name, []).append(seconds)
         if skipped:
-            problems.append(f"{raw}: {skipped} entr" +
+            problems.append(f"{report.path}: {skipped} entr" +
                             ("y" if skipped == 1 else "ies") +
                             " without usable file_durations, skipped")
     return history, problems
+
+
+
+def load_history(paths: list[str] | None, *, field: str = "file_durations"
+                 ) -> tuple[dict[str, list[float]], list[str]]:
+    """Read prior reports, returning usable samples and a diagnostic per problem."""
+    reports, problems = read_history(paths)
+    history, sample_problems = history_samples(reports, field=field)
+    return history, problems + sample_problems
 
 
 def predict_durations(history: dict[str, list[float]]) -> dict[str, float]:
@@ -1906,8 +1920,10 @@ def main() -> int:
             history_paths = [str(cached)] if cached is not None else []
         except (OSError, ValueError) as exc:
             sys.stderr.write(f"pbtest: automatic history unavailable: {exc}\n")
-    history, history_problems = load_history(history_paths)
-    node_history, _ = load_history(history_paths, field="node_durations")
+    history_reports, history_problems = read_history(history_paths)
+    history, sample_problems = history_samples(history_reports)
+    history_problems.extend(sample_problems)
+    node_history, _ = history_samples(history_reports, field="node_durations")
     node_predictions = predict_durations(node_history)
     for problem in history_problems:
         sys.stderr.write(f"pbtest: --history {problem}\n")
