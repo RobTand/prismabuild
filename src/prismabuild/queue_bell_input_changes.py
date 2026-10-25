@@ -109,15 +109,16 @@ def denial_transition_meaning(document):
     latest = {}
     for record in transitions:
         identity = record["host"], record["published_unix"]
+        stamp = record.get("last_unix", record["unix"])
         previous = latest.get(identity)
-        if previous is None or record.get("last_unix", record["unix"]) > previous.get("last_unix", previous["unix"]):
-            latest[identity] = record
+        if previous is None or stamp > previous[0]:
+            latest[identity] = stamp, record
     return {"action_key": document.get("action_key"),
             "transitions": [{name: value for name, value in record.items()
                              if name not in ("last_unix", "count")}
                             for record in transitions],
             "latest": sorted((host, publication, record["reason"], record.get("decision_reason"))
-                             for (host, publication), record in latest.items())}
+                             for (host, publication), (_, record) in latest.items())}
 
 
 def peer_evidence_deadlines(*, now, announced_unix=None, cpu_sampled_unix=None,
