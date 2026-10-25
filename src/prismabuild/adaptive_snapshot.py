@@ -65,6 +65,20 @@ def _source_signature(local: Path):
     return signature
 
 
+def next_publication(local: Path, *, now: float) -> float | None:
+    """Return a dirty copy's earliest start using only host-local records."""
+    signature = _source_signature(local)
+    result = _read(local / 'publisher-result.json')
+    if not signature or (result.get('status') == 'published'
+                         and result.get('source_signature') == signature):
+        return None
+    owner = _read(local / 'publisher-owner.json')
+    elapsed = now - owner.get('started_monotonic', -MIN_PUBLISH_INTERVAL_S)
+    if 0 <= elapsed < MIN_PUBLISH_INTERVAL_S:
+        return now + MIN_PUBLISH_INTERVAL_S - elapsed
+    return now
+
+
 def publish(local: Path, shared: Path):
     """Try to start a copy; return immediately if another publisher owns it.
 
@@ -84,15 +98,9 @@ def publish(local: Path, shared: Path):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return None
-        signature = _source_signature(local)
-        result = _read(local / 'publisher-result.json')
-        if not signature or (result.get('status') == 'published'
-                             and result.get('source_signature') == signature):
-            return None
         now = time.monotonic()
-        owner = _read(local / 'publisher-owner.json')
-        elapsed = now - owner.get('started_monotonic', -MIN_PUBLISH_INTERVAL_S)
-        if 0 <= elapsed < MIN_PUBLISH_INTERVAL_S:
+        deadline = next_publication(local, now=now)
+        if deadline is None or deadline > now:
             return None
         nonce = uuid.uuid4().hex
         child = subprocess.Popen(
