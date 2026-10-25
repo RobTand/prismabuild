@@ -266,7 +266,11 @@ review remains a reviewer responsibility, not an executable-test claim.
 No privileged broker was deployed or restarted, and no live GPU qualification
 was run. Synthetic fixture results cannot authenticate the reported production
 17,000 reads/s or 153 MB/s, or establish any live reduction. W1's original
-limitations and historical identities above remain applicable. This is not a
-standalone shipping authorization: reconciliation/resubmission with upstream
-prismabuild-558f83d0567e-wp1's issues and publication remain with TrustLadder,
-as Rob instructed on 2026-10-23. No #2040 UMA accounting redesign is included.
+limitations and historical identities above remain applicable.
+
+W1 is already on main: `1ba19531393b` supplies the baseline tests, and
+`2082d829e3ec` supplies the reproducer and historical measurement note.
+PR #2234 reuses those artifacts for W2 and integrates current main into the
+existing branch. Review and publication now follow Paperclip's Principal
+Engineer review and batched merge path. No #2040 UMA accounting redesign is
+included.
