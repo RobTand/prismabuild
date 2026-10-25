@@ -169,3 +169,10 @@ def test_helper_without_proof_or_a_second_hop_does_not_qualify():
 def test_existing_helper_does_not_make_an_unchanged_test_new():
     source = "def _assert_refused(value):\n    assert value == 'refused'\n\ndef test_refusal():\n    _assert_refused(claim())\n"
     assert not gate.evaluate(pull(), [test_change(source, source)]).allowed
+
+
+def test_moving_a_test_between_files_does_not_qualify():
+    source = "def test_claim():\n    assert claim() == 'owned'\n"
+    moved = [test_change(source, "", status="removed", additions=0),
+             test_change(after=source, filename="tests/test_other.py")]
+    assert not gate.evaluate(pull(count=2), moved).allowed
