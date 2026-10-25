@@ -39,6 +39,7 @@ import secrets
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 
 #: The version of the record's shape.  A reader refuses any other.
@@ -679,6 +680,13 @@ def _judge_row(row, index):
             if verdict["failing_nodes"] and complete.get("collection_errors") and message in (
                     "collection errors leave the population incomplete", "collection is incomplete or inconsistent"):
                 continue
+            if (message == "selected tests have no completed teardown" and record is not None
+                    and set(complete["missing_teardown"]).issubset(
+                        r[0] for r in record.get("reports", [])
+                        if r[1:3] == ["???", "failed"])):
+                # xdist's synthetic crash report is a real terminal failure,
+                # even though the dead worker cannot finish its teardown.
+                continue
             problem("completion", message)
         if record is not None and "collected" in complete:
             if sorted(complete["collected"]) != sorted(verdict["collected"]):
@@ -879,7 +887,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
         collection_complete = collected is not None
         if state.expected_workers:
             collection_complete = (
-                len(state.worker_collections) == state.expected_workers
+                len(state.worker_collections) >= state.expected_workers
                 and all(ids == collected
                         for ids in state.worker_collections.values()))
         record = {
@@ -944,12 +952,18 @@ def main(argv: list[str] | None = None, *, preflight=None,
     # The public dispatch monitor, installed before conftests load, owns phase
     # authority. Advancing a registered hook's generator is not evidence that
     # pytest dispatched (let alone completed) collection or the test loop.
-    hook_calls = []
+    # xdist's receiver dispatches hooks concurrently with the controller.
+    hook_stacks = threading.local()
+
+    def thread_calls():
+        return hook_stacks.__dict__.setdefault("calls", [])
+
     monitored_manager = None
     command_call = None
 
     def before_hook(name, implementations, kwargs):
         nonlocal command_call
+        hook_calls = thread_calls()
         parent = hook_calls[-1] if hook_calls else None
         call = {"name": name, "kwargs": dict(kwargs), "phase": False, "consumed": False}
         hook_calls.append(call)
@@ -984,10 +998,16 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 emit_completion(session_finished=True)
 
     def after_hook(result, name, implementations, kwargs):
-        call = hook_calls.pop()
+        hook_calls = thread_calls()
+        call = None
+        for index in range(len(hook_calls) - 1, -1, -1):
+            if hook_calls[index]["name"] == name:
+                call = hook_calls[index]
+                del hook_calls[index:]
+                break
         if name == "pytest_runtest_logreport":
-            record_test_report(call["kwargs"]["report"])
-        if not call["phase"]:
+            record_test_report(kwargs["report"])
+        if call is None or not call["phase"]:
             return
         if name == "pytest_sessionstart":
             state.sessionstart_finished = result.excinfo is None
@@ -1006,6 +1026,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             state.written = True
 
     def accept_hook(name, **arguments):
+        hook_calls = thread_calls()
         if not hook_calls:
             return False
         call = hook_calls[-1]
@@ -1054,6 +1075,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(specname="pytest_collection", tryfirst=True)
         def pytest_collection_ignore_named(self, session):
+            hook_calls = thread_calls()
             if (not hook_calls or not hook_calls[-1]["phase"]
                     or not accept_hook("pytest_collection", session=session)
                     or collection_spec is not None):
