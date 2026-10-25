@@ -19,6 +19,8 @@ def replay(corpus: dict, declared_fixes: list[int]) -> dict:
     rows = []
     for entry in corpus['pulls']:
         pull = dict(entry['pull'])
+        labels_unavailable = pull.get('labels') is None
+        pull['labels'] = pull.get('labels') or []
         files = [dict(file) for file in entry['files']]
         probe = pull['number'] in declared_fixes
         if probe:
@@ -35,12 +37,14 @@ def replay(corpus: dict, declared_fixes: list[int]) -> dict:
                      'url': pull['html_url'], 'head': pull['head']['sha'],
                      'linked_issues': entry['linked_issues'],
                      'declaration_probe': probe, 'change_type': declaration,
+                     'labels_unavailable': labels_unavailable,
                      'fix_signal': is_fix(pull),
                      'classified_fix': declaration is not None and is_fix(pull),
                      **asdict(evaluate(pull, files))})
     return {'pulls': len(rows), 'classified_fixes': sum(r['classified_fix'] for r in rows),
             'fix_signals': sum(r['fix_signal'] for r in rows),
             'missing_declarations': sum(r['change_type'] is None for r in rows),
+            'labels_unavailable': sum(r['labels_unavailable'] for r in rows),
             'rejected': sum(not r['allowed'] for r in rows),
             'declaration_probes': declared_fixes, 'live_rollout_observations': 0, 'rows': rows}
 
