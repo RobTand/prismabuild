@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from test_pbmergeq import FakeGitHub, entries, git, make_queue, mq
+from test_pbmergeq import FakeGitHub, config, entries, git, make_queue, mq
 
 
 @pytest.fixture
@@ -26,6 +26,7 @@ def issue_api(monkeypatch):
         return original(command, **kwargs)
 
     monkeypatch.setattr(mq, "call_tool", request)
+    monkeypatch.setattr(FakeGitHub, "issue", mq.GitHub.issue)
     return answers
 
 
@@ -164,7 +165,7 @@ def test_once_wait_allowance_survives_repeated_cli_recovery(
 
 class ShadowGitHub(FakeGitHub):
     def create_vehicle(self, branch, title, body, draft=False):
-        vehicle = super().create_vehicle(branch, title, body)
+        vehicle = super().create_vehicle(branch, title, body, draft=draft)
         self.origin.vehicles[branch]["isDraft"] = draft
         return {**vehicle, "isDraft": draft}
 
@@ -223,3 +224,112 @@ def test_unpinned_once_member_movement_does_not_claim_review_approval(
     assert batch["verdict"] != "merged"
     assert github.pr(batch["vehicle"]["number"])["state"] == "CLOSED"
     assert not any("after approval" in body for _, body in github.comments)
+
+
+@pytest.mark.parametrize("allowance", [0, -1, float("inf"), float("nan")])
+def test_green_wait_allowance_must_be_positive_and_finite(tmp_path, allowance):
+    with pytest.raises(ValueError, match="green_wait_s"):
+        config(tmp_path, green_wait_s=allowance)
+
+
+def test_terminal_retry_is_saved_before_close_and_recovers_branch_deletion(
+        tmp_path, monkeypatch, issue_api):
+    clock = [1000.0]
+    monkeypatch.setattr(mq.time, "time", lambda: clock[0])
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    origin.pr(1, {"one.txt": "1\n"})
+    github.issue_link_state = "failure"
+    close = github.close_vehicle
+
+    def close_then_crash(*args):
+        close(*args)
+        raise SystemExit("crash after remote close")
+
+    monkeypatch.setattr(github, "close_vehicle", close_then_crash)
+    with pytest.raises(SystemExit, match="crash after remote close"):
+        queue.run_batch(entries(github, 1))
+
+    store = mq.Store(queue.cfg.state_dir)
+    assert store.state["batch"] is None
+    assert [p["attempts"] for p in store.state["queue"]] == [1]
+    assert len(store.state["vehicle_cleanup"]) == 1
+    completed = list(runner.runs)
+    clock[0] += queue.cfg.stuck_backoff_s
+    github = FakeGitHub(queue.cfg, store, origin)
+    resumed = mq.Queue(queue.cfg, store, github, queue.mirror, runner, "merge")
+    resumed.cleanup_vehicles()
+
+    assert store.state["vehicle_cleanup"] == {}
+    assert [p["attempts"] for p in store.state["queue"]] == [1]
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads/release-mq/", cwd=origin.work) == ""
+    assert runner.runs == completed
+
+
+def test_exhausted_cleanup_does_not_block_another_batch(tmp_path, monkeypatch, issue_api):
+    clock = [1000.0]
+    monkeypatch.setattr(mq.time, "time", lambda: clock[0])
+    queue, origin, github, _ = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    monkeypatch.setattr(queue.mirror, "delete_candidate", lambda *args: False)
+    first = queue.run_batch(entries(github, 1))
+    for _ in range(queue.cfg.max_attempts + 1):
+        clock[0] += queue.cfg.stuck_backoff_s
+        queue.cleanup_vehicles()
+
+    pending = queue.store.state["vehicle_cleanup"][first["id"]]
+    assert pending["attempts"] == queue.cfg.max_attempts
+    assert "branch deletion refused" in queue.store.status_text()
+    origin.pr(2, {"two.txt": "2\n"})
+    queue.store.add(2, github.pr(2)["headRefOid"], front=False)
+
+    second = queue.tick()
+
+    assert second["verdict"] == "green" and second["id"] != first["id"]
+    assert queue.store.state["batch"] is None
+    assert pending["attempts"] == queue.cfg.max_attempts
+
+
+def test_resume_cannot_elevate_a_status_batch_to_merge_mode(tmp_path, monkeypatch, issue_api):
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    monkeypatch.setattr(github, "post_status", lambda *args, **kwargs: False)
+    batch = queue.run_batch(entries(github, 1))
+    resumed = mq.Queue(queue.cfg, queue.store, github, queue.mirror, runner, "merge")
+
+    with pytest.raises(SystemExit, match="resume it in its original mode"):
+        resumed.resume()
+
+    assert github.pr(batch["vehicle"]["number"])["isDraft"]
+    assert github.merged == []
+
+
+def test_restart_converts_an_existing_status_vehicle_to_draft_before_success(
+        tmp_path, monkeypatch, issue_api):
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    create = github.create_vehicle
+
+    def old_ready_vehicle(*args, **kwargs):
+        created = create(*args, **kwargs)
+        origin.vehicles[created["headRefName"]]["isDraft"] = False
+        raise SystemExit("old status vehicle needs recovery")
+
+    monkeypatch.setattr(github, "create_vehicle", old_ready_vehicle)
+    with pytest.raises(SystemExit, match="old status vehicle"):
+        queue.run_batch(entries(github, 1))
+    completed = list(runner.runs)
+    write = github._write
+
+    def require_draft_before_success(what, command, stdin=None):
+        if command[:2] == ["gh", "api"]:
+            assert next(iter(origin.vehicles.values()))["isDraft"]
+        return write(what, command, stdin)
+
+    monkeypatch.setattr(github, "_write", require_draft_before_success)
+    queue.resume()
+    ended = queue.tick()
+
+    assert ended["verdict"] == "green"
+    assert next(iter(origin.vehicles.values()))["state"] == "CLOSED"
+    assert runner.runs == completed
+    assert len(origin.vehicle_creations) == 1

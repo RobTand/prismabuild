@@ -204,14 +204,17 @@ class FakeGitHub(mq.GitHub):
         found = self.origin.vehicles.get(branch)
         return dict(found) if found is not None else None
 
-    def create_vehicle(self, branch, title, body):
+    def issue(self, number):
+        return {"number": number}
+
+    def create_vehicle(self, branch, title, body, *, draft=False):
         self.calls.append(["vehicle", "create", branch])
         self.origin.vehicle_creations.append(branch)
         number = 10000 + len(self.origin.vehicle_creations)
         vehicle = {"number": number, "state": "OPEN", "headRefOid": git(
             "rev-parse", branch, cwd=self.origin.work), "headRefName": branch,
             "url": f"https://github.com/{self.cfg.repo}/pull/{number}",
-            "title": title, "body": body}
+            "title": title, "body": body, "isDraft": draft}
         self.origin.vehicles[branch] = vehicle
         return dict(vehicle)
 
@@ -233,6 +236,10 @@ class FakeGitHub(mq.GitHub):
         self.calls.append(command)
         if command[:3] == ["gh", "pr", "comment"]:
             self.comments.append((int(command[3]), stdin))
+        if command[:3] == ["gh", "pr", "ready"]:
+            vehicle = next(v for v in self.origin.vehicles.values()
+                           if v["number"] == int(command[3]))
+            vehicle["isDraft"] = "--undo" in command
         if command[:3] == ["gh", "pr", "merge"]:
             number = int(command[3])
             pr = self.pr(number)
@@ -464,8 +471,8 @@ def test_restart_after_vehicle_creation_recovers_it_without_opening_another(
     origin.pr(1, {"one.txt": "1\n"})
     create = github.create_vehicle
 
-    def crash_after_create(*args):
-        create(*args)
+    def crash_after_create(*args, **kwargs):
+        create(*args, **kwargs)
         raise SystemExit("restart before vehicle receipt")
 
     monkeypatch.setattr(github, "create_vehicle", crash_after_create)
@@ -481,7 +488,7 @@ def test_restart_after_vehicle_creation_recovers_it_without_opening_another(
     assert len(origin.vehicle_creations) == 1
     assert runner.runs == completed
     assert len(origin.vehicles) == 1
-    assert next(iter(origin.vehicles.values()))["state"] == "OPEN"
+    assert next(iter(origin.vehicles.values()))["state"] == "CLOSED"
     assert store.state["batch"] is None
 
 
@@ -1073,8 +1080,8 @@ def test_once_cli_restart_reconciles_the_retained_vehicle_before_a_new_batch(
     queue.once = True
     create = github.create_vehicle
 
-    def crash_after_create(*args):
-        create(*args)
+    def crash_after_create(*args, **kwargs):
+        create(*args, **kwargs)
         raise SystemExit("restart before vehicle receipt")
 
     monkeypatch.setattr(github, "create_vehicle", crash_after_create)

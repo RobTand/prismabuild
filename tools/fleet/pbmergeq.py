@@ -92,6 +92,7 @@ class Config:
     poll_s: float = 30.0
     inconclusive_retries: int = 2
     stuck_backoff_s: float = 600.0
+    green_wait_s: float = 3600.0
     max_attempts: int = 3        # charged re-queues before an entry is dropped
     where: str = ""              # human pointer to a batch dir, {batch} expands
     flake_labels: tuple[str, ...] = ("P2",)
@@ -101,6 +102,8 @@ class Config:
     env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.green_wait_s) or self.green_wait_s <= 0:
+            raise ValueError("green_wait_s must be finite and positive")
         # Freeze the operator's published link once, before any discovery/import
         # or submission. A new queue/config may bind a newer generation.
         object.__setattr__(self, "pbtest", self.pbtest.resolve())
@@ -407,6 +410,9 @@ class Store:
             lines.append(f"known-failure-blocked {bid}: {blocked['reason']}")
             lines.append("  enqueue a corrected full head for fresh qualification; "
                          "no passing result was reused")
+        for bid, cleanup in state.get("vehicle_cleanup", {}).items():
+            lines.append(f"vehicle-cleanup {bid}: attempts {cleanup['attempts']}; "
+                         f"{cleanup.get('last_error', 'pending')}")
         batch = state.get("batch")
         if batch:
             prs = ", ".join(f"#{p['pr']}@{p['sha'][:8]}" for p in batch.get("included", []))
@@ -461,6 +467,10 @@ class GitHub:
         out = call_tool(["gh", "pr", "view", str(number), "-R", self.cfg.repo, "--json", fields])
         return json.loads(out.stdout)
 
+    def issue(self, number: int) -> dict:
+        out = call_tool(["gh", "api", f"repos/{self.cfg.repo}/issues/{number}"])
+        return json.loads(out.stdout)
+
     def _write(self, what: str, command: list[str], stdin: str | None = None) -> bool:
         if self.dry:
             self.would.append(what)
@@ -501,9 +511,11 @@ class GitHub:
             self.store.record(mark)
         return ok
 
-    def head_moved(self, number: int, sha: str) -> bool:
-        return self.comment(f"approval-{sha}", number, "head-moved",
-                            "head moved after approval; re-review and enqueue the new SHA")
+    def head_moved(self, number: int, sha: str, approved: bool = True) -> bool:
+        stage = "approval" if approved else "testing"
+        message = ("head moved after approval; re-review and enqueue the new SHA" if approved
+                   else "head moved after testing; rerun this status batch")
+        return self.comment(f"{stage}-{sha}", number, "head-moved", message)
 
     def merge(self, batch: str, number: int, sha: str) -> bool:
         if self.dry:
@@ -530,10 +542,10 @@ class GitHub:
             raise RuntimeError(f"multiple vehicle PRs for {branch}")
         return rows[0] if rows else None
 
-    def create_vehicle(self, branch: str, title: str, body: str) -> dict:
+    def create_vehicle(self, branch: str, title: str, body: str, *, draft: bool = False) -> dict:
         call_tool(["gh", "pr", "create", "-R", self.cfg.repo,
                    "--head", branch, "--base", self.cfg.base_branch,
-                   "--title", title, "--body-file", "-"], stdin=body)
+                   "--title", title, "--body-file", "-", *(["--draft"] if draft else [])], stdin=body)
         vehicle = self.find_vehicle(branch)
         if vehicle is None:
             raise RuntimeError(f"created vehicle not yet observable for {branch}")
@@ -544,10 +556,15 @@ class GitHub:
         if self.store.recorded(**key):
             return True
         ok = self._write(f"close stale vehicle #{number}",
-                         ["gh", "pr", "close", str(number), "-R", self.cfg.repo])
+                         ["gh", "pr", "close", str(number), "-R", self.cfg.repo,
+                          "--delete-branch"])
         if ok and not self.dry:
             self.store.record(key)
         return ok
+
+    def draft_vehicle(self, number: int) -> bool:
+        return self._write(f"mark vehicle #{number} draft",
+                           ["gh", "pr", "ready", str(number), "-R", self.cfg.repo, "--undo"])
 
     def issue_link(self, number: int, sha: str) -> str:
         result = call_tool(["gh", "api", "--paginate",
@@ -630,6 +647,12 @@ class Mirror:
 
     def push_candidate(self, branch: str, sha: str) -> None:
         self.git("push", self.cfg.fetch_url, f"{sha}:refs/heads/{branch}")
+
+    def delete_candidate(self, branch: str) -> bool:
+        ref = f"refs/heads/{branch}"
+        if not self.git("ls-remote", self.cfg.fetch_url, ref).stdout.strip():
+            return True
+        return self.git("push", self.cfg.fetch_url, f":{ref}", check=False).returncode == 0
 
     def remote_base(self) -> str:
         out = self.git("ls-remote", self.cfg.fetch_url, f"refs/heads/{self.cfg.base_branch}")
@@ -1125,6 +1148,17 @@ class Queue:
             if why is None and entry.get("sha") and entry["sha"] != pr["headRefOid"]:
                 why = f"head {pr['headRefOid'][:8]} is not the enqueued {entry['sha'][:8]}"
                 self.github.head_moved(entry["pr"], entry["sha"])
+            issues = []
+            if why is None:
+                for number in issue_numbers(pr, self.cfg.repo):
+                    try:
+                        issue = self.github.issue(number)
+                    except (subprocess.CalledProcessError, ValueError):
+                        continue
+                    if issue.get("number") == number and "pull_request" not in issue:
+                        issues.append(number)
+                if not issues:
+                    why = "no linked real issue in this repository"
             if why:
                 skipped.append({**entry, "why": why})
             else:
@@ -1132,7 +1166,7 @@ class Queue:
                 # a later push is refused rather than silently adopted.
                 chosen.append({"pr": entry["pr"], "sha": pr["headRefOid"],
                                "pin": entry.get("sha"), "title": pr.get("title", ""),
-                               "issues": issue_numbers(pr, self.cfg.repo),
+                               "issues": issues,
                                "attempts": entry.get("attempts", 0)})
         return chosen, skipped
 
@@ -1213,24 +1247,32 @@ class Queue:
         verdict = dict(verdict)
         retry = verdict.pop("requeue", [])
         charge = verdict.pop("charge", False)
-        self.requeue(retry, front=True, charge=charge)
+        cleanup = verdict.pop("cleanup", False)
+        if not batch.get("once", False):
+            self.requeue(retry, front=True, charge=charge, save=False)
         batch.update(verdict)
         batch["wall_s"] = round(time.time() - batch["timeline"][0][1], 1)
         write_atomic(outdir / "batch.json", json.dumps(batch, indent=1))
         if batch["verdict"] == "waiting":
+            batch.setdefault("wait_until", time.time() + self.cfg.green_wait_s)
             state["batch"] = batch
         else:
+            if cleanup:
+                state.setdefault("vehicle_cleanup", {}).setdefault(batch["id"], {
+                    "vehicle": dict(batch["vehicle"]), "attempts": 0, "not_before": 0.0})
             state["history"] = [*state["history"], {
                 "id": batch["id"], "verdict": batch["verdict"], "wall_s": batch["wall_s"],
                 "summary": batch.get("summary", "")}][-50:]
-            self.phase(batch, "done", f"{batch['verdict']} in {batch['wall_s']:.0f}s: "
-                                      f"{batch.get('summary', '')}")
+            batch["phase"], batch["phase_at"] = "done", now()
+            self.store.event(batch["id"], f"phase done: {batch['verdict']} "
+                             f"in {batch['wall_s']:.0f}s: {batch.get('summary', '')}")
             state["batch"] = None
         self.store.save()
+        self.cleanup_vehicles()
         self.store.write_status()
         return batch
 
-    def requeue(self, prs: list[dict], *, front: bool, charge: bool) -> None:
+    def requeue(self, prs: list[dict], *, front: bool, charge: bool, save: bool = True) -> None:
         """Put entries back. ``charge`` counts it against them: a PR that keeps
         coming back for its own reason (a code error or conflict) is dropped after
         ``max_attempts`` instead of holding the queue head forever; one bumped by another PR's verdict is not."""
@@ -1240,7 +1282,47 @@ class Queue:
         for p in reversed(prs) if front else prs:
             self.store.add(p["pr"], p.get("pin", p.get("sha")), front=front,
                            attempts=p.get("attempts", 0) + (1 if charge else 0))
-        self.store.save()
+        if save:
+            self.store.save()
+
+    def cleanup_vehicles(self) -> None:
+        pending = self.store.state.get("vehicle_cleanup", {})
+        for bid, cleanup in list(pending.items()):
+            if (cleanup["attempts"] >= self.cfg.max_attempts
+                    or cleanup["not_before"] > time.time()):
+                continue
+            cleanup["attempts"] += 1
+            cleanup["not_before"] = time.time() + self.cfg.stuck_backoff_s
+            self.store.save()
+            try:
+                vehicle = cleanup["vehicle"]
+                found = (self.github.pr(vehicle["number"]) if "number" in vehicle
+                         else self.github.find_vehicle(vehicle["branch"]))
+                if found is not None and found["state"] != "MERGED":
+                    if not self.github.close_vehicle(bid, found["number"]):
+                        raise RuntimeError("vehicle close refused")
+                if not self.mirror.delete_candidate(vehicle["branch"]):
+                    raise RuntimeError("vehicle branch deletion refused")
+            except Exception as exc:
+                cleanup["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+                self.store.event(bid, f"vehicle cleanup retained: {cleanup['last_error']}")
+            else:
+                del pending[bid]
+                self.store.event(bid, "vehicle cleanup complete")
+            self.store.save()
+
+    def expired_green(self, batch: dict) -> dict:
+        vehicle = batch["vehicle"]
+        integrated = batch.get("integrated", False) or (
+            "number" in vehicle and self.store.recorded(
+                kind="merge", pr=vehicle["number"], sha=batch["candidate"]))
+        uncertain = batch.get("merge_pending", False)
+        return {"verdict": "merge-unconfirmed" if integrated or uncertain else "green-timeout",
+                "summary": "green publication allowance expired; " + (
+                    "merge/member acknowledgement requires reconciliation"
+                    if integrated or uncertain else batch.get("summary", "publication unfinished")),
+                "requeue": [] if integrated or uncertain else batch["included"],
+                "charge": not batch.get("stale_base", False), "cleanup": True}
 
     def _run(self, batch: dict, outdir: Path) -> dict:
         chosen, skipped = self.select(batch["entries"])
@@ -1381,6 +1463,7 @@ class Queue:
         # Persist the tested decision before any remote side effect. Recovery
         # resumes this candidate and branch instead of minting another batch.
         batch["green"] = shared
+        batch["wait_until"] = time.time() + self.cfg.green_wait_s
         self.mirror.git("update-ref", f"refs/mq/candidates/{batch['id']}", batch["candidate"])
         batch["vehicle"] = {"branch": f"release-mq/{batch['id']}", "sha": batch["candidate"]}
         self.phase(batch, "posting")
@@ -1388,6 +1471,8 @@ class Queue:
 
     def publish_green(self, batch: dict) -> dict:
         vehicle = batch["vehicle"]
+        if time.time() >= batch.get("wait_until", math.inf):
+            return self.expired_green(batch)
         if self.mode == "dry-run":
             self.store.event(batch["id"], f"DRY-RUN would publish {vehicle['branch']} "
                              f"at {batch['candidate']}")
@@ -1398,15 +1483,14 @@ class Queue:
             if found is None:
                 lines = []
                 for p in batch["included"]:
-                    if not p["issues"]:
-                        raise ValueError(f"#{p['pr']} has no linked issue for the vehicle")
                     refs = ", ".join(f"Refs #{n}" for n in p["issues"])
                     lines.append(f"- #{p['pr']} at `{p['sha']}`. {refs}")
                 body = (f"Tested merge-queue batch {batch['id']}.\n\n"
                         f"Base: `{batch['base']}`\nCandidate: `{batch['candidate']}`\n\n"
                         + "\n".join(lines) + f"\n\nEvidence: `{self.where(batch['id'])}`\n")
                 found = self.github.create_vehicle(vehicle["branch"],
-                    f"pbmergeq {batch['id']}: " + ", ".join(f"#{p['pr']}" for p in batch["included"]), body)
+                    f"pbmergeq {batch['id']}: " + ", ".join(f"#{p['pr']}" for p in batch["included"]),
+                    body, draft=self.mode != "merge")
             if found["headRefOid"] != batch["candidate"]:
                 raise ValueError("vehicle head differs from tested candidate")
             vehicle.update(number=found["number"], url=found["url"])
@@ -1420,18 +1504,22 @@ class Queue:
             return self.confirm_members(batch)
         if remote["state"] == "CLOSED":
             return {"verdict": "vehicle-closed", "summary": "vehicle closed; members requeued",
-                    "requeue": batch["included"]}
+                    "requeue": batch["included"], "cleanup": True}
+        if self.mode != "merge" and not remote["isDraft"]:
+            if not self.github.draft_vehicle(vehicle["number"]):
+                return {"verdict": "waiting", "summary": "vehicle draft conversion refused"}
         moved = []
         for p in batch["included"]:
             if self.github.pr(p["pr"])["headRefOid"] != p["sha"]:
-                if not self.github.head_moved(p["pr"], p["sha"]):
+                if not self.github.head_moved(p["pr"], p["sha"], bool(p.get("pin"))):
                     return {"verdict": "waiting", "summary": "head-moved comment refused"}
                 moved.append(p["pr"])
         if moved:
             if not self.github.close_vehicle(batch["id"], vehicle["number"]):
                 return {"verdict": "waiting", "summary": "waiting to close vehicle with moved member"}
-            return {"verdict": "approval-stale", "summary": f"heads moved after approval: {moved}",
-                    "requeue": [p for p in batch["included"] if p["pr"] not in moved]}
+            return {"verdict": "approval-stale", "summary": f"member heads moved: {moved}",
+                    "requeue": [p for p in batch["included"] if p["pr"] not in moved],
+                    "cleanup": True}
         description = describe(batch["id"], batch["base"], [], len(batch["green"]),
                                self.where(batch["id"]))
         batch["description"] = description
@@ -1445,16 +1533,17 @@ class Queue:
         summary = f"green vehicle #{vehicle['number']}: " + ", ".join(
             f"#{p['pr']}" for p in batch["included"])
         if self.mode != "merge":
-            return {"verdict": "green", "summary": summary}
+            return {"verdict": "green", "summary": summary, "cleanup": True}
         if any(not p.get("pin") for p in batch["included"]):
             raise ValueError("merge requires an approved SHA for every member")
         return self.merge(batch, summary)
 
     def stale_vehicle(self, batch: dict, summary: str) -> dict:
+        batch["stale_base"] = True
         if not self.github.close_vehicle(batch["id"], batch["vehicle"]["number"]):
             return {"verdict": "waiting", "summary": "waiting to close stale vehicle"}
         return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing",
-                "requeue": batch["included"]}
+                "requeue": batch["included"], "cleanup": True}
 
     def merge(self, batch: dict, summary: str) -> dict:
         self.phase(batch, "merging")
@@ -1462,13 +1551,21 @@ class Queue:
             return self.stale_vehicle(batch, summary)
         vehicle = batch["vehicle"]
         check = self.github.issue_link(vehicle["number"], batch["candidate"])
+        if check == "failure":
+            return {"verdict": "issue-link-failed", "summary":
+                    f"issue-link failure on vehicle #{vehicle['number']}",
+                    "requeue": batch["included"], "charge": True, "cleanup": True}
         if check != "success":
             return {"verdict": "waiting", "summary": f"issue-link {check} on vehicle #{vehicle['number']}"}
+        batch["merge_pending"] = True
+        self.store.save()
         if not self.github.merge(batch["id"], vehicle["number"], batch["candidate"]):
             # Strict protection is the final base CAS, including the race after
             # remote_base above. Reconcile a successful-but-unacknowledged merge.
             if self.github.pr(vehicle["number"])["state"] == "MERGED":
                 return self.confirm_members(batch)
+            batch["merge_pending"] = False
+            self.store.save()
             if self.mirror.remote_base() != batch["base"]:
                 return self.stale_vehicle(batch, summary)
             return {"verdict": "waiting", "summary": "vehicle merge refused; awaiting GitHub"}
@@ -1481,11 +1578,14 @@ class Queue:
         key = {"kind": "merge", "pr": vehicle["number"], "sha": batch["candidate"]}
         if not self.store.recorded(**key):
             self.store.record({**key, "batch": batch["id"], "note": "reconciled vehicle"})
+        batch["integrated"] = True
+        batch["merge_pending"] = False
+        self.store.save()
         moved, waiting = [], []
         for p in batch["included"]:
             member = self.github.pr(p["pr"])
             if member["headRefOid"] != p["sha"]:
-                if not self.github.head_moved(p["pr"], p["sha"]):
+                if not self.github.head_moved(p["pr"], p["sha"], bool(p.get("pin"))):
                     return {"verdict": "waiting", "summary": "head-moved comment refused"}
                 key = {"kind": "member-head-moved", "pr": p["pr"], "sha": p["sha"],
                        "batch": batch["id"]}
@@ -1559,6 +1659,11 @@ class Queue:
 
         batch = self.store.state.get("batch")
         if batch and "green" in batch:
+            if batch["mode"] != self.mode:
+                raise SystemExit(f"unfinished {batch['mode']} batch {batch['id']}; "
+                                 "resume it in its original mode")
+            batch.setdefault("wait_until", time.time() + self.cfg.green_wait_s)
+            self.store.save()
             self.store.event(batch["id"], "restart retained tested vehicle for reconciliation")
             return
         if batch:
@@ -1648,6 +1753,7 @@ class Queue:
         return failed_heads
 
     def tick(self) -> dict | None:
+        self.cleanup_vehicles()
         if self.store.ingest():
             self.store.event(None, f"queue: {[e['pr'] for e in self.store.state['queue']]}")
         batch = self.store.state.get("batch")
