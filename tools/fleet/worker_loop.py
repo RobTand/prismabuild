@@ -686,9 +686,6 @@ def build_parser() -> argparse.ArgumentParser:
     """The worker loop's arguments, without reading them."""
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--local-checkout-root", type=Path, default=None,
-                    help="absolute worker-local checkout parent; overrides "
-                         "PRISMABUILD_LOCAL_CHECKOUT_ROOT")
     ap.add_argument("--once", action="store_true",
                     help="serve at most one action and exit, whether or not "
                          "the queue had anything (debug)")
@@ -773,13 +770,6 @@ def image_observation(inventory, policy, *, max_age_s=None):
 
 def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse argument values no box can declare."""
-
-    if args.local_checkout_root is not None and (
-            not args.local_checkout_root.is_absolute()
-            or args.local_checkout_root == Path("/")
-            or ".." in args.local_checkout_root.parts
-            or "\0" in str(args.local_checkout_root)):
-        ap.error("--local-checkout-root must be an absolute directory other than /")
 
     code_tags = {row.tag for row in contracts.CONTRACTS}
     reserved = sorted({tag.strip() for tag in args.tag
@@ -1012,8 +1002,6 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     ap = build_parser()
     args = ap.parse_args(argv)
     validate_args(ap, args)
-    if args.local_checkout_root is not None:
-        pool.LOCAL_CHECKOUT_ROOT = args.local_checkout_root
     pinned = None if args.all_cores else cpu_topology.pin_to_preferred()
     # Cores are a resource, and until now they were the only one the ledger
     # could not see.  A ``pytest -n 24`` action declaring ``mem_gb=4`` was

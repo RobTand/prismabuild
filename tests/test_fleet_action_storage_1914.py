@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import runpy
-from threading import Event
 
 import pytest
 
@@ -102,27 +101,3 @@ def test_pbrun_keeps_its_loaded_roster_after_the_live_symlink_moves(tmp_path):
 @pytest.mark.parametrize("tmpdir", ["/home/rob/tmp", "/home/rob/pbt17"])
 def test_scratch_recorder_accepts_both_reviewed_fleet_defaults(tmpdir):
     local_scratch.profile_environment({"TMPDIR": tmpdir})
-
-
-def test_declared_worker_root_reaches_real_materialization(tmp_path, monkeypatch):
-    from prismabuild import pool
-    from test_live_store_guard import _materialization_item
-    from test_worker_loop_offers_its_affinity import _worker_loop
-
-    loop = _worker_loop()
-    root = tmp_path / "nvme-checkouts"
-    item = _materialization_item(tmp_path)
-    monkeypatch.setattr(pool, "LOCAL_CHECKOUT_ROOT", pool.LOCAL_CHECKOUT_ROOT)
-    monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
-
-    class Materialized(Exception):
-        pass
-
-    def first_queue(_root):
-        with pool._execution_checkout(item) as checkout:
-            assert root in checkout.parents
-        raise Materialized
-
-    monkeypatch.setattr(pool, "PoolQueue", first_queue)
-    with pytest.raises(Materialized):
-        loop._run_loop(Event(), argv=["--all-cores", "--local-checkout-root", str(root)])

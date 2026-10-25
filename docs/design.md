@@ -1798,12 +1798,12 @@ legacy defaults retain their existing fallback behavior. Restricted scratch
 recorders accept both reviewed fleet paths so retained legacy requests still
 validate independently of the current roster.
 
-Worker `--local-checkout-root` overrides the existing environment/default root
-before queue, profile and cleanup initialization. dl380g10 declares its existing
-`prismabuild-stage/checkouts` mount at `/home/rob/tmp/prismabuild-checkouts` in
-the roster. This does not change the separate `/tmp/pbscratch` spool offer or
-the SLURM environment/default and epilog agreement. Roster publication installs
-no dataset or mount. Host storage readback and release evidence are recorded in
+Checkouts retain the existing `PRISMABUILD_LOCAL_CHECKOUT_ROOT` environment
+override and default `/home/rob/tmp/prismabuild-checkouts`. On dl380g10 that
+default path already mounts `prismabuild-stage/checkouts` on enterprise NVMe.
+The separate `/tmp/pbscratch` spool offer is unchanged. Roster publication
+installs no dataset or mount. Host storage readback and release evidence are
+recorded in
 [the fleet storage record](fleet_storage.md#action-scratch-and-checkouts).
 
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login

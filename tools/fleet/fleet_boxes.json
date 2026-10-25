@@ -70,8 +70,6 @@
    "local_disk": "/tmp/pbscratch",
    "_spool_gb": "The supervisor measures the root-NVMe Btrfs scratch filesystem above the existing free-space floor and caps its offer at 8 GiB (#1689). The cap is not a measured offer or an action D1 qualification.",
    "args": [
-    "--local-checkout-root",
-    "/home/rob/tmp/prismabuild-checkouts",
     "--class",
     "x86",
     "--mem-gb",

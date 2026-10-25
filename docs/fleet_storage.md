@@ -269,9 +269,11 @@ These are existing host choices. `sync=disabled` means fsync and CAS receipts
 do not establish power-loss durability. This record authorizes no storage
 policy change, mount transition, old-tree deletion or prewarm eviction.
 
-`fleet_boxes.json` now declares the common action path through `action_tmpdir`
-and DL380's existing checkout mount through `--local-checkout-root`. This
-source change is not deployed. The live default remains `/home/rob/tmp` until
+`fleet_boxes.json` declares the common action path through `action_tmpdir`.
+Checkouts keep the existing environment override and default path. DL380's
+checkout mount above is host provisioning, recorded here rather than a
+second worker configuration. This source change is not deployed. The live
+scratch default remains `/home/rob/tmp` until
 the Principal releases the reviewed source. On DL380 that directory remains
 HDD dataset `storage_pool/rob/tmp`; an admitted reproduction confirmed it.
 
