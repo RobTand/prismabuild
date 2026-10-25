@@ -232,8 +232,8 @@ Run one command from a task checkout:
     python3 tools/verify.py integration
     python3 tools/verify.py gpu
 
-See [test tiers and evidence](docs/testing.md) and the repository's
-[verification skill](.agents/skills/verify-prismabuild/SKILL.md).
+See [test tiers and evidence](docs/testing.md). In a source checkout, the
+verification skill is `.agents/skills/verify-prismabuild/SKILL.md`.
 Agents must follow [the execution policy](docs/agent_execution_policy.md).
 The commands submit through the published fleet runtime with declared resources.
 
