@@ -1,6 +1,6 @@
 # Progress supervision, #1707
 
-[PR #2069](https://github.com/RobTand/prismabuild/pull/2069) contains the source repair. It remains draft because final fleet qualification is blocked. No runtime was published or service restarted.
+[PR #2069](https://github.com/RobTand/prismabuild/pull/2069) contains the source repair. It remains draft pending fresh final fleet qualification. No runtime was published or service restarted.
 
 An ordinary payload now has no implicit total-duration deadline. Output growth or aggregate containment CPU renews a quiet allowance. Its default is 7200 seconds, the former worker ceiling, clamped by the executing worker. This preserves the former allowance for quiet daemon image loading. `--stall-s` seals an override and requires a worker offering `activity-stall-v1`. GPU activity, I/O counters and arbitrary progress-file changes do not renew this watch.
 
@@ -28,19 +28,15 @@ Capture `6903cfc9b9e83576ff855587c2e6aff96cd2b7dbe88a50781d67f2d46ce4e242` and s
 
 Core is 306962 bytes with SHA-256 `e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e`. The admitted capture uses `record_compat.py --generate PATH --expect-machine x86_64 --kind core-receipt --kind core-attestation --kind core-runtime`; adoption uses `refresh_compat_runtime.py --profile runtime` inside an admitted action. Only Core source identity and its dependent digests change in the six current records.
 
-## Source delivery after continuation
+## Recovery and current source
 
-The integrated source is now on the existing PR branch at `a79f780f72cdf8183097cfd934dddb5758504c22`, with current main `aee1a4542078e92839a1de5c2d6d049c9dbb0499` as an ancestor. Its complete Git tree equals rebased local checkpoint `74c54dc892d2b9e4a5f3eccade3ebfd55d0c08a5`. All three compatibility conflicts are resolved. [source-delivery.json](source-delivery.json) records that comparison and the unchanged Core identity.
+The existing PR includes main `2ca082a0025ce1f0032eb13ed6f16f52b30efaf1` at source commit `93a10d8f4b3d99edc4789a336d3c20e51c57b2a1`. Its current Core bytes still match the verified capture. The original task worktree and its untracked helpers remain preserved; qualification uses `/home/rob/paperclip-worktrees/prismabuild/PRI-43-qualification`.
 
-Delivery used the available GitHub connector because the CLI lacks a managed push capability. The original local series remains preserved. This resolves source delivery only. The PR remains draft; final qualification, independent Principal Opus review and merge remain owed. No additional tests or duplicate actions were submitted during this continuation because SSH/NFS still refuse connections.
+The fleet recovered. Core action `8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf` completed 73 cases after recovery on attempt 2. Attempt 1 lost its lease and was requeued under the immutable request. Both attempts' logs, the final terminal record, source bundle, native completion, CAS receipt and scope cleanup were audited. [qualification-correction.json](qualification-correction.json) records those checks and source comparisons. This is Core compatibility evidence on its retained snapshot, not final integration qualification.
 
-## Blocker and resumption
+All eight crash-era final-suite actions are excluded from merge and qualification evidence. They ran on dl380g10 within two minutes before its 2026-10-25 21:52Z panic. Their seven passes require replacement; the failure is a likely crash artifact. The correction supersedes evidence derived from those keys in the 22:00Z commit. [qualification-correction.json](qualification-correction.json) lists every excluded key, and [pending-actions.json](pending-actions.json) separates them from the recovered Core result.
 
-At 2026-10-25T21:58:39Z, dl380g10 / `192.168.1.107` refused TCP 22 and 2049. SSH and the Hindsight tunnel refused. Coordinator processes waited in `rpc_wait_bit_killable`, and the final PB clients repeatedly reported bounded outcome-read timeouts. No successful outcome is inferred for the pending runs.
-
-[pending-actions.json](pending-actions.json) retains the exact action keys. The full Core unit was resubmitted with its qualified `/home/rob/pbt17` environment and a 1200-second budget, based on the retained prior 582-second runtime. The final rebased suite covers the supervision tests, registry fence, semantic progress, budget, ordinary sealing and wire guard. Its final outcome remains unobserved.
-
-After host recovery, read the existing terminal records, logs and CAS receipts before any further submission. Reconcile interruption/retry lineage through the published clients. Do not modify sealed requests, resubmit uncertain work, release held resources, or bypass admission. Finish the local handoff generator only after the final results and audits exist. Rebase before requesting review and verify any changed integration path.
+The replacement must use the same eight files in [prelaunch.json](prelaunch.json) on a new snapshot. It retains supervision, capability publication, semantic progress, budgets, ordinary sealing and the wire guard. Use the published `pbtest.py` in a transient user unit with an explicit deadline and the default eight clients. Do not reuse excluded cached receipts. Audit new terminal records, source bundles, both logs, native completion, retry lineage, cleanup and CAS receipts before updating the proposed merge acceptance.
 
 ## Requirement scope and gates
 

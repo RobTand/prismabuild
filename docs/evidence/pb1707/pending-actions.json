@@ -1,8 +1,10 @@
 {
-  "core-qualified": [
+  "core-qualified": [],
+  "rebased": [],
+  "core-audited": [
     "8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf"
   ],
-  "rebased": [
+  "excluded-pre-crash": [
     "12eb76c09e3db4f3845ce3527e39f1dbc6c7c13ea03698ca3486772c128f3545",
     "4ac4fad37d3c29b6cb777de502ccd3d2c77324380f7f849e79b4338ae5b821c5",
     "a8cee0343370d1a39d6c16222e07a9c83b31c8601c7bc7e3813f428551abb9f0",
@@ -11,5 +13,6 @@
     "8bc169a1d81e7adfd379a5fdef5ef7353b059668be1183dcbbd87e6f6af56eb2",
     "8b9714a9994c718e3363103b74b4985cada894a1430fefbea8f85274761768f3",
     "7205fbf034865c80b10e2dea14c682d5cb459e054c4531d4b7b1333b9a52c28c"
-  ]
+  ],
+  "replacement": "Follow prelaunch.json and the live task monitor."
 }

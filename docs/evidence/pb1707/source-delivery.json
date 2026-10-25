@@ -3,19 +3,17 @@
   "issue": 1707,
   "pull_request": "https://github.com/RobTand/prismabuild/pull/2069",
   "branch": "prismabuild-1707-v2",
-  "source_commit": "a79f780f72cdf8183097cfd934dddb5758504c22",
-  "source_tree": "aaf865a7595dbfc01508123dd2753666ae0bfe23",
-  "rebased_local_commit": "74c54dc892d2b9e4a5f3eccade3ebfd55d0c08a5",
-  "base_commit": "aee1a4542078e92839a1de5c2d6d049c9dbb0499",
-  "trees_equal": true,
+  "source_commit": "93a10d8f4b3d99edc4789a336d3c20e51c57b2a1",
+  "source_tree": "7929f5c151fa965179f09191740281c243c9e565",
+  "base_commit": "2ca082a0025ce1f0032eb13ed6f16f52b30efaf1",
   "base_is_ancestor": true,
   "compatibility_conflicts_resolved": 3,
   "core": {
     "bytes": 306962,
     "sha256": "e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e"
   },
-  "delivery": "GitHub connector; no CLI credential bypass or force push",
-  "qualification": "pending: existing Core-qualified and rebased action outcomes unobserved while dl380g10 refuses SSH/NFS",
+  "delivery": "GitHub connector base-branch update; no force push",
+  "qualification": "Core recovered and audited; eight excluded final actions require fresh qualification",
   "runtime_publication": false,
   "service_restart": false
 }

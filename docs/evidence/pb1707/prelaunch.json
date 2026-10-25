@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "prelaunch",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "ledger_commit": "93a10d8f4b3d99edc4789a336d3c20e51c57b2a1",
   "scope": [
     "ID-08",
     "SM-01",
@@ -13,12 +13,39 @@
   "prelaunch": {
     "submission": {
       "declares": [
-        "CPU-only fixture inputs; no campaign bulk-input ranges",
-        "explicit test/capture deadlines",
-        "source snapshot 1a8d5ba2082a41e472efca5be1717cac824cc60c",
-        "published worker runtime; checkout source tested inside admitted payloads"
+        "CPU-only component fixtures; no campaign bulk-input ranges",
+        "Explicit 1200s shard execution deadlines; default eight clients; one native thread per worker",
+        "Existing PR integrated through main 2ca082a0025ce1f0032eb13ed6f16f52b30efaf1",
+        "Published worker runtime; checkout source tested inside admitted payloads",
+        "Do not use any excluded crash-era cached result"
       ],
-      "sealed_key": "recorded in run reports as each action is published"
+      "source_commit": "93a10d8f4b3d99edc4789a336d3c20e51c57b2a1",
+      "files": [
+        "tests/test_1707_default_stall_repro.py",
+        "tests/test_1707_progress_supervision_by_stall.py",
+        "tests/test_1707_activity_signal_boundary.py",
+        "tests/test_contract_registry_publication.py",
+        "tests/test_progress_keeps_a_working_action_alive.py",
+        "tests/test_execution_budget_is_stated_not_silent.py",
+        "tests/test_the_ordinary_pbrun_action_is_sealed_unchanged.py",
+        "tests/test_wire_inventory.py"
+      ],
+      "resources": {
+        "cpus_per_shard": 2,
+        "mem_gb_per_shard": 4,
+        "native_threads_per_worker": 1,
+        "workers_per_shard": 1,
+        "max_clients": 8,
+        "aggregate_max_cpus": 16,
+        "aggregate_max_mem_gb": 32,
+        "gpus": 0
+      },
+      "runtime": {
+        "commit": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+        "generation": "9dce28460e76-1792959923-b5904f02524e",
+        "observation": "pbmcp pb_runtime complete=true, no timed_out or unavailable sections; three live workers; rollout idle"
+      },
+      "sealed_key": "Assigned by published pbtest; written to report.progress.json"
     },
     "readiness_gate": "PB owns admission and any declared residency gate. CPU component fixtures do not declare a campaign read set.",
     "tier_policy": "strict",
