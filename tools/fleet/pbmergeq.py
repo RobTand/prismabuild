@@ -439,7 +439,7 @@ class GitHub:
 
     def pr(self, number: int) -> dict:
         fields = ("number,state,isDraft,author,headRefOid,headRefName,"
-                  "isCrossRepository,headRepositoryOwner,baseRefName,title")
+                  "isCrossRepository,headRepositoryOwner,baseRefName,title,body,closingIssuesReferences")
         out = call_tool(["gh", "pr", "view", str(number), "-R", self.cfg.repo, "--json", fields])
         return json.loads(out.stdout)
 
@@ -454,17 +454,19 @@ class GitHub:
             return False
         return True
 
-    def post_status(self, batch: str, sha: str, state: str, description: str) -> bool:
+    def post_status(self, batch: str, sha: str, state: str, description: str,
+                    *, context: str | None = None) -> bool:
         if len(description) > DESCRIPTION_LIMIT:
             raise ValueError("status description over GitHub's limit")
-        key = {"kind": "status", "sha": sha, "context": self.cfg.context,
+        context = context or self.cfg.context
+        key = {"kind": "status", "sha": sha, "context": context,
                "state": state, "batch": batch}
         if not self.dry and self.store.recorded(**key):
             return True
-        ok = self._write(f"post {self.cfg.context}={state} on {sha}: {description}",
+        ok = self._write(f"post {context}={state} on {sha}: {description}",
                          ["gh", "api", "-X", "POST",
                           f"repos/{self.cfg.repo}/statuses/{sha}",
-                          "-f", f"state={state}", "-f", f"context={self.cfg.context}",
+                          "-f", f"state={state}", "-f", f"context={context}",
                           "-f", f"description={description}"])
         if ok and not self.dry:
             self.store.record({**key, "description": description})
@@ -496,6 +498,47 @@ class GitHub:
         if ok:
             self.store.record({"kind": "merge", "pr": number, "sha": sha, "batch": batch})
         return ok
+
+    def find_vehicle(self, branch: str) -> dict | None:
+        result = call_tool(["gh", "pr", "list", "-R", self.cfg.repo,
+                            "--head", branch, "--base", self.cfg.base_branch,
+                            "--state", "all", "--json", "number,state,headRefOid,url"])
+        rows = json.loads(result.stdout)
+        if len(rows) > 1:
+            raise RuntimeError(f"multiple vehicle PRs for {branch}")
+        return rows[0] if rows else None
+
+    def create_vehicle(self, branch: str, title: str, body: str) -> dict:
+        call_tool(["gh", "pr", "create", "-R", self.cfg.repo,
+                   "--head", branch, "--base", self.cfg.base_branch,
+                   "--title", title, "--body-file", "-"], stdin=body)
+        vehicle = self.find_vehicle(branch)
+        if vehicle is None:
+            raise RuntimeError(f"created vehicle not yet observable for {branch}")
+        return vehicle
+
+    def close_vehicle(self, batch: str, number: int) -> bool:
+        key = {"kind": "vehicle-closed", "batch": batch, "pr": number}
+        if self.store.recorded(**key):
+            return True
+        ok = self._write(f"close stale vehicle #{number}",
+                         ["gh", "pr", "close", str(number), "-R", self.cfg.repo])
+        if ok and not self.dry:
+            self.store.record(key)
+        return ok
+
+    def issue_link(self, number: int, sha: str) -> str:
+        result = call_tool(["gh", "api", "--paginate",
+                           f"repos/{self.cfg.repo}/commits/{sha}/check-runs"])
+        checks = json.loads(result.stdout)["check_runs"]
+        matches = [check for check in checks if check["name"] == "issue-link"
+                   and check.get("app", {}).get("slug") == "github-actions"]
+        if not matches:
+            return "pending"
+        latest = max(matches, key=lambda check: check["id"])
+        if latest["status"] != "completed":
+            return "pending"
+        return "success" if latest["conclusion"] == "success" else "failure"
 
     def file_flake(self, batch: str, nodeid: str, candidate: str) -> str | None:
         title = f"[P2] Flaky test: {nodeid}"
@@ -561,6 +604,9 @@ class Mirror:
             if self.git("cat-file", "-t", fetched).stdout.strip() != "commit":
                 raise ValueError(f"selected head for #{number} is not a commit")
         return self.rev("refs/mq/base")
+
+    def push_candidate(self, branch: str, sha: str) -> None:
+        self.git("push", self.cfg.fetch_url, f"{sha}:refs/heads/{branch}")
 
     def remote_base(self) -> str:
         out = self.git("ls-remote", self.cfg.fetch_url, f"refs/heads/{self.cfg.base_branch}")
@@ -1128,15 +1174,23 @@ class Queue:
             for path in list(self.mirror.worktrees.glob(f"{batch['id']}-*")):
                 if path != keep:
                     self.mirror.drop(path)
+        return self.finish_batch(batch, verdict)
+
+    def finish_batch(self, batch: dict, verdict: dict) -> dict:
+        state = self.store.state
+        outdir = self.store.batches / batch["id"]
         batch.update(verdict)
         batch["wall_s"] = round(time.time() - batch["timeline"][0][1], 1)
         write_atomic(outdir / "batch.json", json.dumps(batch, indent=1))
-        state["history"] = [*state["history"], {
-            "id": batch["id"], "verdict": batch["verdict"], "wall_s": batch["wall_s"],
-            "summary": batch.get("summary", "")}][-50:]
-        self.phase(batch, "done", f"{batch['verdict']} in {batch['wall_s']:.0f}s: "
-                                  f"{batch.get('summary', '')}")
-        state["batch"] = None
+        if batch["verdict"] == "waiting":
+            state["batch"] = batch
+        else:
+            state["history"] = [*state["history"], {
+                "id": batch["id"], "verdict": batch["verdict"], "wall_s": batch["wall_s"],
+                "summary": batch.get("summary", "")}][-50:]
+            self.phase(batch, "done", f"{batch['verdict']} in {batch['wall_s']:.0f}s: "
+                                      f"{batch.get('summary', '')}")
+            state["batch"] = None
         self.store.save()
         self.store.write_status()
         return batch
