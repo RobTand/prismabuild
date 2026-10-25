@@ -41,6 +41,8 @@ PHASE_ALLOWANCE = 0.4
 FIXED_UNIX = 1000.0
 CLOCK_ORIGINS = [(FIXED_UNIX, 0.0), (10_000.0, 7000.0),
                  (1_700_000_000.0, 1_234_567.0)]
+NATIVE_SLEEP = time.sleep
+NATIVE_POPEN = subprocess.Popen
 
 
 class _Clock:
@@ -340,6 +342,14 @@ def _stalled_export_outcome(
     assert outcome["stall"]["credited_s"]["export_wait"] == pytest.approx(
         observed["export_wait_exempt_s"])
     return outcome
+
+
+def test_owner_adapter_keeps_standard_library_process_and_sleep(tmp_path, monkeypatch, clock):
+    queue, item = _owner(tmp_path)
+    _OwnerProcess(queue, item, "a" * 64, tmp_path / "export", clock, monkeypatch,
+                  steps=[])
+    assert time.sleep is NATIVE_SLEEP
+    assert subprocess.Popen is NATIVE_POPEN
 
 
 def test_an_owner_waiting_on_its_live_export_is_not_killed_no_progress(

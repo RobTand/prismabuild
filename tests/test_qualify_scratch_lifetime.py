@@ -14,6 +14,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import qualify_scratch_lifetime as qualification
 
+NATIVE_SLEEP = time.sleep
+NATIVE_MONOTONIC = time.monotonic
+
 
 def test_unknown_scenario_exits_without_effect():
     with pytest.raises(SystemExit) as caught:
@@ -170,6 +173,11 @@ def test_launcher_killer_signals_verified_handle(launcher_target):
     assert json.loads((target.directory / "kill-done.json").read_text()) == {
         "victim": target.args.victim_key, "killed": [launcher.pid], "killer": "b" * 64,
     }
+
+
+def test_launcher_fixture_keeps_the_standard_library_clock(launcher_target):
+    assert time.sleep is NATIVE_SLEEP
+    assert time.monotonic is NATIVE_MONOTONIC
 
 
 def test_launcher_killer_pins_all_targets_before_any_signal(launcher_target):
