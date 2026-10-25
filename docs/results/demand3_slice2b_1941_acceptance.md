@@ -1,0 +1,17 @@
+# Demand 3 slice 2b source acceptance
+
+Issue #1941 and existing children #2102/#2103. This is source acceptance for independent review. The new owned publisher session and semantic input comparison are available to the later host hub. Existing worker loops retain one-shot publication. Nothing was deployed.
+
+The original regressions failed through PB: adaptive input coverage was absent in `13e4ff51cc181ba8e8cb45390d25f106520afed9e17d5efa7cd79e4ec9e258a9`; removed source evidence left a stale shared mirror in `6f717b8190d5a83366c3b66b2570517c4f3b81e9e9c11e7d10ad870f605e7e79`. Internal spec review then exposed overflow watch loss and unbounded shared comparison reads. Four deterministic regressions failed in `52cc55de45d9eade78752f9cd905bb50613d1c5161862e7e913ba3601e6e46d0`; the repaired publisher passed 86 cases in `4301d8b746e01bb2f2cded052d3ff799a2de2efaf969a4c0eb5bc866ffe37894`. Both internal review findings were read back as resolved.
+
+Final integrated PB run: 645 collected, 645 ran, 645 passed, zero skips, two existing warnings, 20/20 shards green. Tests ran on dl380g10, Sparky and Sparklina without placement tags. Each action declared one CPU, two GiB and no GPU, with native thread ceilings of one. The declared sum across all units was 20 CPUs and 40 GiB; PB chose placement and concurrency. One outcome reader temporarily timed out; the existing client recovered inside the original 600-second wait budget. No row was retagged, resized or resubmitted.
+
+The acceptance JSON lists every final action, source snapshot, terminal, immutable log digest, canonical receipt and result digest. These were read back independently. A passing process alone was not used as proof. The JSON also states target versus implemented/deployed for scoped ID-08, ID-09 and VER-01. Global staged-read and demand-3 completion claims remain outside this repair.
+
+Reproduction command:
+
+```sh
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py --checkout CHECKOUT --python /home/rob/venvs/pb-cpu/bin/python --tmpdir /tmp --threads-per-shard 1 --cpus-per-shard 1 --mem-gb 2 --timeout-s 180 --wait-s 600 --json REPORT tests/test_queue_bell_adaptive_inputs.py tests/test_denial_record_encoding.py tests/test_bell_input_changes.py tests/test_scratch_declaration_record.py tests/test_queue_bell.py tests/test_pbmcp_read_only.py tests/test_queue_bell_v2.py tests/test_live_store_guard.py tests/test_queue_bell_v1_compat.py tests/test_main_push_guard.py tests/test_queue_bell_host_inputs.py tests/test_worker_guards_read_their_own_records_by_name.py tests/test_queue_bell_host_read_set.py tests/test_queue_bell_host_regressions.py tests/test_queue_bell_host_review_edges.py tests/test_queue_bell_watch_lifecycle.py tests/test_queue_bell_startup_coverage.py tests/test_queue_bell_lazy_coverage.py tests/test_queue_bell_installed_coverage.py tests/test_pool_cpu_work_yields_gpu_host.py tests/test_peer_placement_histories.py tests/test_record_store_mutation_controls.py tests/test_adaptive_mirror_publication.py tests/test_adaptive_cpu_local_state.py tests/test_admission_evidence_is_host_local.py tests/test_claim_denials.py
+```
+
+The internal standards review has no outstanding findings. The spec review's two findings were repaired before handoff. Code Reviewer 01 provides the independent Opus review and merge gate. The next authorized slice is 3a #1942 after this PR merges. Slice 6a #1948 and its dependent 8b #1951 and 15 #1958 remain excluded. Live session installation, topic publication and fleet release remain with the Principal Engineer.
