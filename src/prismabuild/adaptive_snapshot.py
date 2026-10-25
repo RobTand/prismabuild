@@ -142,9 +142,20 @@ def publish(local: Path, shared: Path):
             os.close(descriptor)
 
 
-def _previous_snapshot(path: Path):
+def _previous_snapshot(path: Path, value: dict, *, stamped: bool):
+    from prismabuild import immutable_files
+    # The writer adds only source and a finite copied_unix timestamp. Its
+    # canonical stamp fits 128 bytes; source profiles retain their own size.
+    limit = len(json.dumps(value, sort_keys=True, separators=(',', ':'),
+                           ensure_ascii=False, allow_nan=False).encode('utf-8'))
+    if stamped:
+        limit += 128
     try:
-        return json.loads(path.read_text())
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode) and info.st_size > limit:
+            return None  # A larger old profile is unequal, without reading it.
+        return json.loads(immutable_files.read_replaced_record(
+            path, where='previous adaptive mirror', max_bytes=limit))
     except (FileNotFoundError, ValueError):
         return None
 
@@ -171,7 +182,7 @@ def copy_snapshot(local: Path, shared: Path, *, changed: list[str] | None = None
             continue
         if not isinstance(value, dict):
             raise ValueError(f'invalid local CPU state: {name}')
-        previous = _previous_snapshot(shared / name)
+        previous = _previous_snapshot(shared / name, value, stamped=name in STAMPED)
         if isinstance(previous, dict) and name in STAMPED:
             previous.pop('_snapshot', None)
         if previous != value:

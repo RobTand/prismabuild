@@ -52,6 +52,13 @@ class _LocalChanges:
             raise OSError(ctypes.get_errno(), str(path))
         return descriptor
 
+    def rebuild(self):
+        replacement = type(self)(self.local)
+        self.close()
+        self.fd, self.parent, self.source = replacement.fd, replacement.parent, replacement.source
+        replacement.fd = None
+
+
     def consume(self):
         try:
             raw = os.read(self.fd, 65536)
@@ -65,7 +72,11 @@ class _LocalChanges:
             name = os.fsdecode(raw[offset:offset + length].split(b'\0', 1)[0])
             offset += length
             if mask & _OVERFLOW:
-                changed.update(snapshot.FILES)  # Reconstruct the fixed six-file read set.
+                # Lost events may include directory replacement or watch loss.
+                # Install parent/source watches before the caller rereads files;
+                # concurrent mutations remain queued on the replacement fd.
+                self.rebuild()
+                return set(snapshot.FILES)
             elif watch == self.parent:
                 if name == self.local.name:
                     changed.update(snapshot.FILES)
