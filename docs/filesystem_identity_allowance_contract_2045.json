@@ -31,11 +31,11 @@
     }
   },
   "custody": {
-    "integration_owner": "Qualified merge queue expediter",
-    "guard_implementer": "Qualified merge queue expediter.Operative used-filesystem guard repair",
-    "security_reviewer": "Retain the already designated independent security reviewer under #1483; this bounded context supplies no more specific identity or approval. No new assignment or replacement reviewer is invented.",
-    "diagnostic_assessor": "Retain Qualified merge queue expediter.Used-filesystem diagnostic route assessment as independent diagnostic owner; diagnostic assessment is not a second validator or guard implementation.",
-    "parent_review": "Packet addressed to #1483 through Qualified merge queue expediter and its sole Operative used-filesystem guard repair owner. Request explicit attributed parent acceptance of conservative whole-reservation bounds, distinct from general historical authority to extend existing owners. No such acceptance supplied. TrustLadder owns comment publication and workflow transitions."
+    "integration_owner": "Principal Engineer (Paperclip PRI-36), replacing the retired OMP Qualified merge queue expediter; merges reviewed #1483 PRs and owns release batches.",
+    "guard_implementer": "PRI-36 assignee (PrismaBuild Engineer 10), replacing the retired Qualified merge queue expediter.Operative used-filesystem guard repair; sole implementer of the existing-owner guard repair under #1483.",
+    "security_reviewer": "The #1483 implementation PR receives the Principal Engineer's independent code review (D52: Sol-authored work gets an Opus review), which must explicitly cover the causal credit, alias, aggregate, transfer and partial-failure rules under accounting. This packet's parent acceptance is itself reviewed by a Sol engineer who did not write it. Neither review is a second validator.",
+    "diagnostic_assessor": "The used-filesystem diagnostic route assessment stays an independent activation-time review of the live diagnostic route; it is not a second validator or guard implementation and does not gate source implementation.",
+    "parent_review": "Retired TL-lead parent gates route to the Principal Engineer (PRI-36 rules). The attributed parent decision is recorded under accounting.parent_acceptance."
   },
   "population_contract": {
     "existing_owner": "Existing host ResourceLedger, TierLedger and claim owners through the sole guard implementer; descriptor/tier owner supplies physical and member authority; supervisor/worker-offer owner supplies host/offer evidence. floor_status discovery is diagnostic, not closure authority.",
@@ -48,7 +48,7 @@
     "unknown_mapping_policy": "hold"
   },
   "domain_rules": {
-    "application": "Every domain below inherits population_contract and accounting. Entries are obligations for the parent repair, not deployed certifications. Shared paths may alias or split across filesystems; resolve using actual configured destinations and authoritative descriptors, not these category names.",
+    "application": "Every domain below inherits population_contract and accounting. Entries are obligations for the parent repair, not deployed certifications. Shared paths may alias or split across filesystems; resolve using actual configured destinations and authoritative descriptors, not these category names. A blocked evidence_status means the deployment evidence for that domain is missing: it gates activation of enforcement, not source implementation. The implementation must make every such unknown HOLD in enforce mode.",
     "freshness": "Require effective mapping/population/allowance versions, sample capture identity and time, bounded age and coherent acquisition ordering. Timestamp or PID alone is insufficient. Revalidate after mount, boot, process, configuration, tier, lease or ownership changes. Keep all unobserved grants conservatively charged; unknown freshness HOLD.",
     "aliasing": "Deduplicate physical capacity samples by authenticated backing key, but sum distinct simultaneous obligations on that key. Different categories or different paths are not inherently different disks. Do not deduplicate source/destination bytes merely because their filesystem aliases. A single reservation may be counted once only with uniquely proven ownership and coverage; otherwise HOLD rather than guess.",
     "bounds": "Every bound must be finite, owner-approved and cover maximum simultaneous live, private, committed, retry and failure-residue growth including metadata, control records, allocation expansion and logs. Retention policy is not an active-write ceiling; cleanup intent or token return does not prove freed bytes. No complete deployment bounds were supplied."
@@ -255,46 +255,49 @@
       "Source on FS A exported to FS B: A credit cannot reduce B charge. Charge full B temporary/copy demand while A source window remains; only owner-authorized release and residue reconciliation retire A obligation. Retry cannot replay the first copy's credit."
     ],
     "parent_acceptance": {
-      "status": "pending",
-      "existing_supplier": "Qualified merge queue expediter through its sole Qualified merge queue expediter.Operative used-filesystem guard repair owner to the existing #1483 parent reviewer",
-      "unblock_condition": "Reviewer-readable attributed parent decision explicitly accepts conservative complete whole-reservation upper bounds and their scope, including zero unknown materialization credit and custody/lifetime rules. Historical authority to extend existing owners is not this acceptance; no approval supplied."
+      "status": "accepted",
+      "attributed_reference": "Principal Engineer (Paperclip agent fe368511-ea08-460c-b868-efcff5132a30), PRI-65 document parent-decision, 2026-10-25, in place of the retired TL-lead parent reviewer per PRI-36; posted on #1483. Effective when this packet change merges after independent Sol review.",
+      "accepted_scope": "Accepted for #1483 source implementation: conservative whole-reservation upper bounds exactly as aggregate_rule states, on every actually used physical capacity domain, summing every existing host/tier/claim obligation that shares a physical key (including local_gib alongside spool_gb, stage_gib and filesystem_gib) and honouring subordinate dataset constraints. Private, committed and transferred holders are all charged; a transfer moves one charge under one fenced lineage and never yields two. Materialization credit is zero: no subtraction is implemented unless an existing allowance owner proves it under same_owner_same_filesystem_evidence, credit_identity_and_cap and sample_and_credit_ordering, and #1483's already-materialized subtraction control is satisfied by proving that unproven materialization receives no credit. Unknown, stale, partial or unreadable mapping, population or bound HOLDs in enforce mode. This is a safe upper bound, not verified exact materialization accounting. It authorizes no activation, deployment, live capture, maintenance, privilege or policy waiver."
     }
   },
   "unresolved_dependencies": [
     {
       "id": "physical-mapping",
       "tracking_issue": 1483,
-      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining physical descriptor/export/member evidence from existing descriptor/tier owner",
+      "gates": "activation",
+      "existing_supplier": "Principal Engineer release train (Paperclip PRI-33) at activation, read from the merged #1483 descriptor owner (filesystem_floor identity and registration). Authenticating the NFS export-to-backing mapping on the dl380g10 server needs Rob's decision: either a privileged read of the server's export state or his attestation of a versioned mapping.",
       "missing_evidence": "Authenticated current export-to-backing mapping, all actual destination variants and aliases, physical shared-capacity and dataset constraints, validity/invalidation rules.",
       "unblock_condition": "Attach reviewer-readable versioned mapping snapshot with authority, exact descriptors/exports/members, epoch/digest and remount/failover recovery semantics for every used destination. Unknown/partial mappings HOLD."
     },
     {
       "id": "host-offers",
       "tracking_issue": 1483,
-      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining host/offer evidence from existing supervisor/worker-offer owner",
+      "gates": "activation",
+      "existing_supplier": "Principal Engineer release train (Paperclip PRI-33) at activation, read from the existing supervisor/worker-offer records (tools/fleet/supervise.py) of the published runtime.",
       "missing_evidence": "Actual scratch/spool/checkout/log/temp routes, measured-offer scope, freshness and producer population; timestamp/PID and declarations are insufficient.",
       "unblock_condition": "Attach versioned actual host destination/declaration/offer snapshot bound to boot/process/config and mapped physical keys, with freshness/invalidation rules and all writer coverage."
     },
     {
       "id": "closed-allowances-and-bounds",
       "tracking_issue": 1483,
-      "existing_supplier": "Qualified merge queue expediter and its sole Operative used-filesystem guard repair owner, coordinating existing descriptor/tier and host/tier/claim reservation owners",
+      "gates": "activation",
+      "existing_supplier": "Principal Engineer release train (Paperclip PRI-33) at activation, read through the merged #1483 strict census over the existing host/tier/claim reservation owners.",
       "missing_evidence": "Closed authoritative allowance population, full simultaneous growth ceilings and lifetime/recovery rules; binding members, advisory tiers, tolerant held scans and floor_status diagnostics do not establish them.",
-      "unblock_condition": "Attach reviewer-readable versioned allowance snapshot including private/committed/transferred/inaccessible/orphan records and all writers, complete per-domain concurrent bounds, lock/sample ordering, fenced recovery and operation/action handoff. Parent and designated independent review must resolve missing evidence; dependent repair waits."
-    },
-    {
-      "id": "parent-whole-bound-acceptance",
-      "tracking_issue": 1483,
-      "existing_supplier": "Qualified merge queue expediter via sole Operative used-filesystem guard repair owner to existing #1483 parent reviewer",
-      "missing_evidence": "Explicit attributed parent acceptance of conservative whole-reservation accounting; no such acceptance supplied by bounded context.",
-      "unblock_condition": "Record attributed parent acceptance of exact conservative scope and zero-credit default, plus independent security review of causal credit/alias/aggregate/partial-failure contract. Do not relabel conservative accounting as verified exact."
+      "unblock_condition": "Attach reviewer-readable versioned allowance snapshot including private/committed/transferred/inaccessible/orphan records and all writers, complete per-domain concurrent bounds, lock/sample ordering, fenced recovery and operation/action handoff. The source mechanisms that consume this evidence (strict census including private acquisitions, aggregate per physical key, fenced transfer and recovery) are #1483 implementation scope and must HOLD while it is absent."
     }
   ],
   "scope_exclusions": "Documentation only. Preserve production behavior, default-off enforcement, SDK interfaces, existing reservation owners and already-landed guard/write-window/tier lifecycle. #1483 repair remains with its owner. #2092 finite write-escalation/reservation-authority contract, #2093 CAS/result staging, #2094 attempt-log custody, #2095 SLURM diagnostic destinations are interfaces, not implemented outcomes. #2091 reconciliation, #2096 qualification, retention/reclaim/quota, event-wait, #2038 expiry and newer scratch-backend issues remain separate. Rob's #1635 reproduction/test-only exception authorizes nothing here. No live deployment, activation, capacity advertisement, privilege or physical Rob action inferred.",
   "readiness": {
-    "parent_packet": "Addressed to #1483: accept this as #2045's blocked prerequisite contract and supplier disposition, not closure of parent repair or operational qualification. All domains have source capability references but lack current authoritative deployment proof. Request the four dependency snapshots/decisions above through existing custody. TrustLadder publishes packet/comments and transitions; this artifact performs neither.",
-    "implementation_unblock_condition": "Dependent #1483 implementation waits for authenticated versioned mappings, closed allowance population, complete simultaneous bounds and lifetime/recovery rules plus explicit parent acceptance and designated security/diagnostic review. Source tests cannot supply or authenticate these facts. No new validator or ledger substitutes for owner evidence.",
-    "dependent_implementation_must_wait": true,
+    "parent_packet": "Addressed to #1483: #2045's prerequisite contract and supplier disposition, not closure of the parent repair or operational qualification. Every domain has source capability references but lacks current authoritative deployment proof.",
+    "gate_separation": "The deployment evidence (mappings, host offers, closed population and bounds) can only be read from the fleet through the mechanisms #1483 builds, so making the implementation wait for it was circular. Parent decision: that evidence gates activation of enforce mode; the source implementation proceeds under the accepted accounting and must HOLD on every unknown the evidence would resolve. Enforcement stays default-off.",
+    "implementation_unblock_condition": "Satisfied by accounting.parent_acceptance. The #1483 implementation PR keeps enforcement default-off and invents no fleet mapping values. Deterministic tests prove admission refuses a floor breach once outstanding allowances are counted, that unproven materialization gets no credit, and that unknown mappings and populations HOLD. The PR then passes the Principal Engineer's independent review, which covers the accounting security rules. No new validator or ledger.",
+    "dependent_implementation_must_wait": false,
+    "activation_unblock_condition": "Enforce mode may be activated on the fleet only after every activation-gated unresolved_dependency carries reviewer-readable versioned evidence, every domain's evidence_status is established, the diagnostic route assessment has been done, and Rob has made his reserved decisions in rob_reserved_decisions. This packet authorizes no activation.",
+    "activation_must_wait": true,
+    "rob_reserved_decisions": [
+      "Authority for the authenticated NFS export-to-backing mapping on the dl380g10 server: a privileged read of the server's export state, or Rob's attestation of a versioned mapping. Until he decides, NFS-backed destinations HOLD in enforce mode.",
+      "The live native diagnostic under the corrected historical packet c70af70c0f707331311e9a9db8124649fabf2374f848d606f0933422b8c75b25, including maintenance_begin, worker/prewarm/tier parking and capture. That packet is conditional evidence, not authority."
+    ],
     "deployment_authorized": false,
     "physical_rob_action_established": false
   }
