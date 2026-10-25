@@ -447,6 +447,16 @@ def validate_common_spec(value: object) -> dict[str, Any]:
         gpu_memory_gb = _finite_positive(
             gpu_memory_gb, where="common spec gpu_memory_gb"
         )
+    policies = _validate_common_policies(common)
+    from ._gpu_submission_policy import _require_gb10_memory_subset
+    try:
+        _require_gb10_memory_subset(
+            demand=demand, gpu_memory_gb=gpu_memory_gb,
+            tags=common.get("tags") or (), host_class=common.get("host_class"),
+            gpu=bool(common.get("gpu")), exclusive=bool(common.get("exclusive")),
+        )
+    except ValueError as exc:
+        raise ActionContractError(str(exc)) from None
     data_manifest = common["data_manifest"]
     if data_manifest is not None:
         data_manifest = pb._text(data_manifest, where="common spec data_manifest")
@@ -457,7 +467,7 @@ def validate_common_spec(value: object) -> dict[str, Any]:
         "env": dict(env),
         "gpu_memory_gb": gpu_memory_gb,
         "data_manifest": data_manifest,
-        **_validate_common_policies(common),
+        **policies,
     }
 
 

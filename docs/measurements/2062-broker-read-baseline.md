@@ -1,0 +1,180 @@
+# #2062 / W1: bounded source-level broker read baseline
+
+## Reproduce and interpret
+
+From the checkout, in the supplied admitted test environment:
+
+```sh
+python -m pytest tests/test_broker_read_baseline.py -q -s --basetemp="$TMPDIR/pytest"
+```
+
+The first test prints the JSON report. Its checkout-only callable is
+`tools/maintenance/broker_read_baseline.py:run_synthetic(root, populations=(0, 8, 64), cycles=2)`;
+`root` must not exist. Direct Python imports outside pytest need `PYTHONPATH=src`.
+The second test compares count projections across fresh roots. No CLI or public
+application API is added. Full verification (both acceptance tests and four guards):
+
+```sh
+python -m pytest tests/test_broker_read_baseline.py tests/test_resource_broker.py tests/test_gpu_memory.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q -s --basetemp="$TMPDIR/pytest"
+```
+
+Measurement kind is **synthetic_python_file_reads**: attempts at
+`Path.read_text/read_bytes`, successful returns, and length of returned bytes
+(text encoded as UTF-8; all fixtures are ASCII). Attempts are recorded before
+the read, successes/bytes only after return. These are not read syscalls: buffering,
+multiple syscalls, EOF, descriptor operations, stat and directory enumeration are
+not counted. Syscall-returned bytes are themselves not physical disk throughput
+(proc/cgroup pseudo-files, page cache and device I/O differ). No conversion to
+reads/s or MB/s is justified. The reported approximately 17,000 reads/s and
+153 MB/s remain unattributed claims; neither original findings nor a live trace
+was inspected. This baseline neither verifies nor refutes those deployed rates.
+
+## Fixture and source identity
+
+Recovered the reproducer and this note from implementation commit
+`fa3fbf5e47ccefe123aba38f0794f3886db7954d`, rather than recreating them.
+The three measured production files have no diff against current main
+`7bf539a90402fbab88f58bd834e2abf7ee5e1e34` or that implementation commit.
+Fresh verification uses checkout base `1ba19531393bbfab527e8f0ad93c075578caf4e5`
+with this measurement-only overlay; the restored acceptance file is unchanged.
+Historical test claims are not adopted as evidence. Fresh runs recompute these
+source SHA-256 identities outside fixture collection totals:
+
+| Source | SHA-256 |
+| --- | --- |
+| `tools/fleet/resource_broker.py` | `0f8dfa4bca6633aa8d86aecf81c2d6fe06bba756cf376acb91f7fdeaff54be1c` |
+| `src/prismabuild/gpu_memory.py` | `42c2f07bc7520a8d0c7a42e3f4c6e96728e05f13563292a781a1f36a5a06442a` |
+| `src/prismabuild/gpu_capacity.py` | `6c61d4543e60e5e42c0a0879cbff6566442ea07969e764afbf563374860c7f28` |
+
+Each scenario has 0, 8 or 64 unrelated PIDs (1000 onward). `empty` has
+zero active scopes and no GPU; only its population-zero tree has no PIDs.
+`no_gpu`, `gpu_error` and `gpu_present` each have one active scope with PID 42.
+There are two direct collector calls, two real `ResourceMonitor.poll_once` calls,
+and two real `Authority.admin(maintenance_status)` requests per tree; these are
+separate workloads, not summed to model one production cycle. Setup runs once.
+Monitor scope identity uses the actual fixture inode. Scope memory is 1 MiB,
+budget 1 GiB, host memory 8 GiB with 7 GiB available; PSI and OOM counters are zero.
+GPU-present stdout identifies a fixture A100 and one 1 MiB process allocation.
+
+Per-file sizes: unrelated stat 57 B, membership 14 B; PID 42 stat 55 B,
+membership 76 B; meminfo 46 B; each PSI file 94 B; memory.current 8 B;
+each memory.events variant 17 B. Installed fixtures are tiny ASCII files:
+broker 29 B, gpu_memory 33 B, gpu_capacity 35 B. They are not deployed binaries.
+Their initial hash reads are explicitly **setup**, not collector reads.
+The request workload clears active records to isolate installed health rereads;
+it uses a healthy empty backend inventory and bypasses only privileged ownership
+validation for the exact user-owned installed fixture allowlist. It does not
+qualify installation trust, authority reconciliation or production health.
+
+Collectors, parsers, monitor and admin dispatch are real implementations, not
+copied loops. Adapters supply synthetic proc/cgroup roots through existing seams.
+Vendor subprocess stdout/outcomes and time are injected. No real commands run;
+ROCm discovery fallback is disabled. Backend operations are fixture adapters,
+not systemd operations. Path/subprocess/time patches are scoped and restored even
+on failure. Run in an isolated test process, not concurrently with other threads:
+the temporary Python monkeypatches are process-global.
+
+## Observed counts and scaling
+
+All observed attempts succeeded; the full report contains relative paths and
+per-file attempts/successes/bytes. Below, `reads / returned bytes` includes two
+iterations except setup. These formulas summarize observed class totals, with
+`N` the unrelated-PID population, not a performance requirement:
+
+| File class | Collector (and monitor) empty | Collector (and monitor) no_gpu/error | Collector (and monitor) GPU-present |
+| --- | ---: | ---: | ---: |
+| proc_identity | 2N / 114N | (2N+2) / (114N+110) | (2N+4) / (114N+220) |
+| proc_membership | 2N / 28N | (2N+2) / (28N+152) | (2N+4) / (28N+304) |
+| host_memory | 2 / 92 | 2 / 92 | 2 / 92 |
+| memory_pressure | 2 / 188 | 2 / 188 | 2 / 188 |
+| scope_memory | 0 / 0 | 2 / 16 | 2 / 16 |
+
+Monitor additionally reads cpu_pressure **2 / 188** in every case, and each
+of oom_hierarchical and oom_local **2 / 34** when a scope is active.
+Setup installed_privileged is **3 / 97** in every tree; request installed_privileged
+is **6 / 194**, independent of N, with no child commands. There were no fixture
+state-file reads in these clean-state cases. Imports/source hashing are harness
+overhead, outside fixture rows; fixture creation is writes, not measured reads.
+
+| Scenario | Collector totals at N=0, 8, 64 (reads / bytes) | Monitor totals at N=0, 8, 64 (reads / bytes) |
+| --- | --- | --- |
+| empty | 4/280; 36/1416; 260/9368 | 6/468; 38/1604; 262/9556 |
+| no_gpu or gpu_error | 10/558; 42/1694; 266/9646 | 16/814; 48/1950; 272/9902 |
+| gpu_present | 14/820; 46/1956; 270/9908 | 20/1076; 52/2212; 276/10164 |
+
+Observed slope per unrelated PID is **4 reads and 142 B over two calls**
+(2 reads and 71 B per call), for collector and monitor alike. Whole-proc
+identity/membership census occurs even with empty GPU output or query failure;
+GPU-present adds a second identity/membership check for PID 42 per call.
+Monitor's extra OOM/CPU-PSI reads are population-independent here. These are
+candidate mechanisms demonstrated at source level, not attribution of deployed
+traffic, an optimization target, or a requirement to preserve amplification.
+
+### Stubbed subprocesses, separately accounted
+
+Collector makes two compute-app query calls per tree. Monitor makes two of those
+and two device queries. For empty/no_gpu, all exit 0 with 0 stdout bytes;
+for gpu_error, all exit 1 with 0 bytes. GPU-present returns 38 total bytes for
+the two compute-app calls and 182 for the two device queries. Setup/request have
+none. The JSON retains argv, call counts, outcomes and stdout byte totals.
+Those bytes are **not included** in file-read totals. GPU utility internals,
+process startup, driver I/O and utility file reads are unmeasured, not zero.
+
+## Bounded live disposition (not performed)
+
+Inspected existing configured routes only: `event_wait_baseline.py`'s `trace`
+subcommand and the operating guide's event-wait diagnostics, plus
+`tools/fleet/admission_shared_io.py`. The first is `strace -c` attachment to a
+bare supplied PID with a requested attachment window capped at 10 seconds
+(plus teardown grace periods). It has no filename trace and no `-f`;
+it does not bind PID/start identity, installed broker identity, or prove full
+thread/child coverage. The admission tool is a filename-tracing precedent for
+its own synthetic child/private queue, not an authorized live broker route.
+Ordinary admitted execution does not establish ptrace authorization to the
+root-run broker. No current demonstrably authorized and usable live broker
+file-tracing route was established. Tool availability/attachment capability
+was not probed; it must not be inferred from source documentation.
+
+Thus no live attachment, syscall summary, file-set trace, deployed PID/start
+before/after identity, installed broker identity, duration/workload window or
+thread/child coverage evidence was collected. The missing prerequisite is an
+existing authorized, usable target-bound file-tracing route; this is not a
+request for Rob to perform a physical action. No install, privilege/ptrace change,
+service restart, assumed root attachment, publication or workflow transition
+was attempted. The live disposition and this note require human review:
+deterministic offline tests cannot authenticate deployed observations or access.
+
+Other unmeasured candidates include many-scope scaling, disappearing PIDs,
+nonzero OOM/enforcement paths, foreign GPU processes/ROCm/unified memory,
+active-scope request reconciliation, real installed-file sizes and request rate,
+state persistence, locks, directory/stat traffic and subprocess internals.
+No cadence, cache, attribution, fencing or authority behavior changes here.
+W2/#2063 owns collector repair; W3/#2064 owns event-capable broker observations;
+#1946, #1895/#2039 and #1967 retain notification, GPU-fencing and authority-lock
+outcomes. #2067 owns shared-mount attribution. The shared interface here is the
+existing root/runner seams and this report, not shared production edits or
+new duplicated issues. #1635's exception does not authorize publication here.
+
+## Retained verification evidence
+
+Fresh combined acceptance, broker/collector and four mandatory guards, using
+exactly the full `-q -s` command above: **239 passed** on x86 Python 3.14
+(122.09 s) and **239 passed** on ARM Python 3.12 (32.85 s), both exit 0.
+This includes fresh-root repeatability and independent Path observers/real
+collector-call checks; it does not constitute a live broker observation.
+Both retained stdout files contain fresh full numeric JSON reports. Inspected
+report excerpts through `read_test_artifact`, including fixture rows, subprocess
+accounting, source hashes and the ARM terminal result. Counts and byte sizes
+agree with the recovered baseline tables above. An additional x86 direct
+`run_synthetic` invocation with `PYTHONPATH=src` printed all 48 phase totals
+(attempts, successes, bytes) and independently confirmed every table total.
+Amplification is observational, not pinned as required behavior. O2/O3 still
+require reviewer inspection: tests cannot establish the truth of a narrative or
+authenticate live access evidence.
+
+Compact projection evidence (additional x86 run):
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"7c4f1f8e7dda7b7694bc0d1111d631cd48397125cd7179684e4a1255e5a63335","size":1673}},"operation":"a722d43f843f7d4d53663aa7d230b9508da25ccc637666efe46d0b9952fa8821","receipt":"d375047f744e36c6012a765724dde7d6b9d56fd8cc37acd86c3d468693f30a73"}]
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"560e78c94797b94fb16af54b2d537d64c77b327c141d9e27b9785b24b356c64c","size":178373}},"operation":"fbb83d8e08f74075ff13be7c8d7b8c164b79b2e58deec28c60cc2a0d3790256e","receipt":"a895239bce359e4d1cb9eaa0e3a77e213a6b7722deb043de55fcd349212acf00"}]
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"6be7145a5480852b3cf42d34693ff0b93a5322a153f38803e284c2e43c5727f3","size":178379}},"operation":"86e2120f4762272de8974bb03a742146976c61674c20b42c4bc15f2da00edd7b","receipt":"ae47d868345065bdc21f59cf6fdbdf6bae51f82889975723a3524f0da51e1a92"}]
