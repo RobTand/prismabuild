@@ -583,9 +583,17 @@ def published_verdict(queue_root, binding: Mapping, *, demand_bytes: int = 0,
     if not -CLOCK_SKEW_S <= age <= SAMPLE_MAX_AGE_S:
         return floor_refusal(key, "sample_stale", detail=f"age {age:.0f}s")
     since = _granted(directory) - int(sample["granted_at"])
+    return _sample_verdict(key, sample, demand_bytes=demand_bytes,
+                           since=max(0, since), age=age)
+
+
+def _sample_verdict(key: str, sample: Mapping, *, demand_bytes: int,
+                    since: int, age: float) -> dict[str, object]:
+    """Calculate the verdict independently of the shared record reads."""
+
     return floor_verdict(key, size_bytes=int(sample["size_bytes"]),
                    free_bytes=int(sample["free_bytes"]),
-                   charge_bytes=int(sample["census_bytes"]) + max(0, since),
+                   charge_bytes=int(sample["census_bytes"]) + since,
                    demand_bytes=demand_bytes, sample_age_s=round(age, 1),
                    **{name: sample[name] for name in
                       ("size_inodes", "free_inodes", "floor_inodes", "inode_refusal")})
