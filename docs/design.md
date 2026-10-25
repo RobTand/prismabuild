@@ -7404,23 +7404,32 @@ bytes, or unknown foreign residency. The classified value retains the
 sample ID and timestamp. Discrete-device residency supplies no host-memory
 credit or unified-memory fence.
 
-The ordinary `MemAvailable` plus held-token bound remains in force. A second
-bound is physical host memory minus the existing operating margin and known
-foreign GPU bytes, rounded up to GiB. Observation applies that bound after
-held-token add-back, and the observer applies it again after memory smoothing.
-The two bounds take their minimum. Subtracting GPU bytes from `MemAvailable`
-as well would double-charge allocations already visible in both counters.
-No external baseline credit is inferred from an older offer.
+The ordinary `MemAvailable` plus held-token bound remains in force. The second
+bound subtracts external usage and the existing operating margin from physical
+host memory. External usage is `host_total - host_available - PB_resident`,
+clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
+scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
+therefore combine verified scope host charges and shared-system GPU lower
+bounds from complete attributed jobs. Missing or invalid components earn no
+credit. Per-process GPU sums may overlap and supply no residency credit.
+Foreign GPU bytes are already inside host usage and are never added again.
+Observation applies the physical bound after held-token add-back, and the
+observer applies it again after memory smoothing. The two bounds take their
+minimum. No external baseline credit is inferred from an older offer.
 
 Unknown foreign residency defers new CPU and GPU memory commitments with
 `unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
 election. READY rows, held reservations, and existing gang elections remain
-in place. A fresh clear sample removes this fence. Claim-time checks also
+in place. A fresh clear sample removes this fence. When a claim pass has
+identified shared-system memory, a later partial, stale, missing or untrusted
+sample retains unknown context with no resident credit until trusted evidence
+recovers. It cannot reuse the earlier clear classification. Claim-time checks also
 bound aggregate held memory plus the candidate's incremental memory demand
 by the current physical ceiling. Producer export allowances count once;
 funded dependents consume their existing funding before the incremental fit
 check. Denial evidence retains sample identity, foreign bytes, committed
-memory, candidate demand, and the physical ceiling. A later successful claim
+memory, candidate demand, host usage, PB residency, and the physical ceiling.
+A later successful claim
 retires its earlier unknown-residency status projection.
 
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through

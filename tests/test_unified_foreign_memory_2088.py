@@ -10,13 +10,13 @@ NOW = 100.0
 def sample(foreign_bytes):
     value = gpu_sample(foreign=[{"pid": 7, "gpu_uuid": "GPU-0", "used_bytes": foreign_bytes}])
     value.update(sampled_unix=NOW, host_total_bytes=128 * GIB,
-                 host_available_bytes=120 * GIB)
+                 host_available_bytes=128 * GIB - max(8 * GIB, foreign_bytes or 0))
     return value
 
 
 def test_foreign_memory_bounds_unresident_held_addback():
     seen = box_capacity.observe(CAPACITY, {"mem_gb": 80},
-                                gpu_sample=sample(32 * GIB), mem_gb=120, load1=0, now=NOW)
+                                gpu_sample=sample(32 * GIB), mem_gb=96, load1=0, now=NOW)
     assert seen.capacity["mem_gb"] <= 88
 
 
@@ -24,7 +24,7 @@ def test_fresh_foreign_growth_bounds_an_older_larger_offer():
     observer = box_capacity.CapacityObserver(samples=3)
     observer.offer(CAPACITY, {}, gpu_sample=sample(0), mem_gb=120, load1=0, now=NOW)
     offered = observer.offer(CAPACITY, {"mem_gb": 80},
-                             gpu_sample=sample(32 * GIB), mem_gb=120, load1=0, now=NOW)
+                             gpu_sample=sample(32 * GIB), mem_gb=96, load1=0, now=NOW)
     assert offered["mem_gb"] <= 88
 
 

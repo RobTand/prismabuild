@@ -4806,15 +4806,16 @@ GPU utilization percentage and an activity response alone do not prove useful
 throughput; use profiling, power, CPU activity, residency and useful work per
 joule when assessing a performance result.
 
-On unified-memory hosts, fresh known foreign GPU residency also limits the
-host-memory offer after held-token add-back and memory smoothing. The pool
-charges each action's `mem_gb` once, including its GPU subset and producer
-export allowance. Known foreign bytes and ordinary available memory impose
-independent limits, so overlapping host and GPU readings are not added twice.
+On unified-memory hosts, fresh host usage minus verified PB host and CUDA
+residency limits the memory offer after held-token add-back and smoothing.
+CUDA residency already lowers host available memory. The calculation counts
+foreign CPU and GPU usage once. The pool charges each action's `mem_gb` once,
+including its GPU subset and producer export allowance.
 
 `unified_gpu_memory_unknown` means a fresh broker inventory contains a foreign
-process without a usable shared-memory byte count. New CPU and GPU memory
-commitments wait for a clear sample. Existing reservations, READY rows, and
+process without a usable shared-memory byte count. A claim pass also defers
+when it loses trusted evidence for a previously identified shared-memory host.
+New CPU and GPU memory commitments wait for a clear sample. Existing reservations, READY rows, and
 gang elections stay in place. This is a transient admission denial, with its
 sample ID and timestamp in the evidence. It is not `never_fits_capacity`.
 

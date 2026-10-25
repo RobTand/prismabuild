@@ -22,8 +22,8 @@ pre-action memory samples and caps the first new reading at the ledger total.
 GPU evidence does not use that window: broker attribution and freshness are
 current safety facts, so GPU capacity changes immediately.
 
-Shared-system GPU allocations consume host DRAM but need not appear in
-``MemAvailable``. Fresh foreign residency therefore bounds the host offer
+Shared-system GPU residency is already reflected in host ``MemAvailable``.
+Fresh host usage minus verified PB host and CUDA residency bounds the offer
 after held-token add-back and after smoothing. Discrete VRAM remains separate
 from the host ``mem_gb`` reservation.
 
@@ -438,6 +438,8 @@ def observe(
                 unified_memory_sampled_unix=unified.sampled_unix,
                 external_unified_gpu_bytes=unified.foreign_bytes,
                 external_unified_gpu_unknown=unified.unknown,
+                external_unified_bytes=unified.external_bytes,
+                resident_unified_bytes=unified.resident_bytes,
                 unified_memory_ceiling_gib=ceiling)
 
     if wanted.get("cpu", 0) > 0:

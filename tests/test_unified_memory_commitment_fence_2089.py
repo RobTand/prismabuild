@@ -132,6 +132,7 @@ def test_known_foreign_bytes_bound_new_cpu_commitments(fleet, mem_gb, admitted):
     sample["cpu_pressure_full"] = 0.0
     sample["foreign_processes"] = [
         {"pid": 9101, "gpu_uuid": "GPU-1", "used_bytes": 30 << 30}]
+    sample["host_available_bytes"] = 98 << 30
     key = publish("known-foreign-budget", gpu=0, mem_gb=mem_gb, tags=["gb10"])
 
     claimed = direct_claim(fleet)
@@ -166,6 +167,7 @@ def test_a_producer_reserves_its_export_allowance_once_against_the_ceiling(
     sample["cpu_pressure_full"] = 0.0
     sample["foreign_processes"] = [
         {"pid": 9101, "gpu_uuid": "GPU-1", "used_bytes": 30 << 30}]
+    sample["host_available_bytes"] = 98 << 30
     template = producer_fixture._template(str(tmp_path / "canonical"))
     cas_root = tmp_path / "cas"
     original = producer_fixture._producer_request(tmp_path, cas_root, template)
@@ -193,6 +195,7 @@ def test_a_producer_reserves_its_export_allowance_once_against_the_ceiling(
     assert refused["reason"] == "unified_gpu_memory_budget"
     assert refused["evidence"]["decision"]["candidate_charge_gib"] == 91
     sample["foreign_processes"][0]["used_bytes"] = 29 << 30
+    sample["host_available_bytes"] = 99 << 30
 
     claimed = direct_claim(fleet, adaptive=True)
 
@@ -213,6 +216,7 @@ def test_preemption_requires_release_to_close_the_physical_memory_gap(
     assert claimed is not None and claimed["action_key"] == holder
     sample["foreign_processes"] = [
         {"pid": 9101, "gpu_uuid": "GPU-1", "used_bytes": foreign_gib << 30}]
+    sample["host_available_bytes"] = (128 - foreign_gib) << 30
     candidate = publish("foreground-candidate", gpu=0, mem_gb=candidate_mem,
                         tags=["sparklina"], priority=0)
 

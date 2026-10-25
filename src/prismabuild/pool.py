@@ -5541,9 +5541,9 @@ class _ClaimMemory:
             sample, now=now, max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
         if current is not None:
             self.evidence = current
-        elif (self.evidence is not None
-              and not 0 <= now - self.evidence.sampled_unix <= box_capacity.GPU_SAMPLE_MAX_AGE_S):
-            self.evidence = None
+        elif self.evidence is not None:
+            self.evidence = replace(self.evidence, foreign_residency=ForeignProcesses.UNKNOWN,
+                                    resident_bytes=0)
         return self.evidence
 
     def denial(self, demand, order, *, ledger=None, unknown_only=False):

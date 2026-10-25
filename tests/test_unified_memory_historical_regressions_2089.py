@@ -27,6 +27,7 @@ def claim(fleet, *, capacity=CAPACITY, adaptive=True):
 def foreign(sample, gib):
     sample["foreign_processes"] = [
         {"pid": 9001, "gpu_uuid": "GPU-1", "used_bytes": gib << 30}]
+    sample["host_available_bytes"] = sample["host_total_bytes"] - (max(8, gib) << 30)
 
 
 def test_second_large_gpu_action_waits_until_the_first_releases(fleet):
@@ -130,7 +131,7 @@ def test_observed_offer_and_claim_charge_foreign_memory_once(fleet):
     foreign(sample, 30)
     observer = box_capacity.CapacityObserver(samples=3)
     observed = observer.offer(CAPACITY, queue.ledger().held, gpu_sample=sample,
-                              mem_gb=120, load1=0, now=clock.now)
+                              mem_gb=98, load1=0, now=clock.now)
     assert observed["mem_gb"] == 90
     candidate = publish("fills-foreign-adjusted-offer", gpu=0, mem_gb=30, tags=["sparklina"])
     result = queue.claim(
@@ -191,7 +192,7 @@ def test_gpu_producer_keeps_its_cap_inside_allowance_inclusive_commitment(fleet,
     from prismabuild import adaptive_cpu, core, output_contract, produced_output, produced_spool
 
     queue, _clock, _readings, sample, publish, *_rest, denial = fleet
-    sample.update(host_total_bytes=112 << 30, host_available_bytes=104 << 30)
+    sample.update(host_total_bytes=120 << 30, host_available_bytes=112 << 30)
     holder = publish("cpu-beside-gpu-producer", gpu=0, mem_gb=4, tags=["sparklina"])
     assert claim(fleet)["action_key"] == holder
     template = producer_fixture._template(str(tmp_path / "canonical"))
@@ -235,7 +236,7 @@ def test_gpu_producer_keeps_its_cap_inside_allowance_inclusive_commitment(fleet,
 @pytest.mark.parametrize("foreign_gpu", [False, True], ids=["release_fits", "gpu_congestion"])
 def test_gpu_memory_preemption_preserves_independent_foreign_congestion(fleet, foreign_gpu):
     queue, _clock, _readings, sample, publish, *_rest, denial = fleet
-    sample.update(host_total_bytes=112 << 30, host_available_bytes=104 << 30)
+    sample.update(host_total_bytes=120 << 30, host_available_bytes=112 << 30)
     capacity = {**CAPACITY, "mem_gb": 120}
     holder = publish("cpu-background-before-gpu", gpu=0, mem_gb=100,
                      tags=["sparklina"], retry_safe=True)

@@ -1,61 +1,67 @@
-# PRI-28 external-memory union decision
+# PRI-28 external-memory accounting correction
 
-The proposed #2088 repair still cannot guarantee physical fit beside foreign
-CPU and GPU allocations. The PR remains a draft while this admission contract
-is unresolved. No runtime was published or restarted.
+The earlier request for a new overlap contract was withdrawn. Its premise
+confused the memory cgroup with the host `MemAvailable` counter. No human
+answer or contract waiver was recorded.
 
-## Two physical states have the same published evidence
+## Original measurement
 
-The broker publishes host total and available memory, PB scopes' host charges,
-and foreign GPU byte counts. Foreign process rows contain no host charge or
-evidence about overlap with the host counter. See `gpu_memory.collect` and
-`gpu_capacity.collect`.
+Rob's commit [`4b6cc60496`](https://github.com/RobTand/prismabuild/commit/4b6cc60496e8603030ee245a2eaa30c4cc4acc9d)
+records sparky action `1244c3e5db31`. An 8 GiB CUDA allocation left
+`memory.current` at 381 MB while `MemAvailable` fell by 8725 MiB.
+The full trace is in `docs/memory_enforcement_2026-09-04.md` at that commit.
+CUDA bypasses the cgroup charge but consumes the same physical memory that
+`MemAvailable` measures. Hindsight was unavailable during this revision; the
+original committed measurement supplies the evidence.
 
-| Quantity | Both published samples |
-|---|---:|
-| Physical host memory | 128 GiB |
-| Host available memory | 96 GiB |
-| Foreign GPU bytes | 32 GiB |
-| Resident PB scopes | none |
-| Starting, unresident PB reservation | 40 GiB |
-| Candidate PB memory | 40 GiB |
+With total memory of 128 GiB and available memory of 96 GiB, a foreign
+32 GiB GPU allocation already accounts for the host's entire 32 GiB usage.
+An additional disjoint foreign 32 GiB CPU allocation would leave 64 GiB
+available. The old regression's hypothetical invisible GPU allocation was
+unsupported. Action `4d448778fb1c9f1241a07cf47c5e695defba1833b7a2d555cb5e8f2179f8bb8b`
+failed the assertion in that invalid model. It does not prove over-admission.
 
-If the GPU allocation is already visible in host usage, external residency is
-32 GiB. With the unchanged 8 GiB margin, PB's physical ceiling is 88 GiB.
-If 32 GiB of foreign CPU memory is visible while a separate 32 GiB GPU
-allocation is invisible to the host counter, external residency is 64 GiB.
-PB's ceiling is then 56 GiB. The current proposal admits 80 GiB of PB
-commitments in both states. `max(host_external, gpu_foreign)` also cannot
-distinguish these states. Adding the two counters treats overlapping pages
-as disjoint and conflicts with #2088's current wording.
+## Reproduced defect and correction
 
-The deterministic reproduction is
-`tests/test_unified_memory_external_overlap_1661.py`. It uses fake capacity
-and GPU evidence, without allocating GPU memory. Its assertion must remain
-red until the evidence or admission contract changes.
+The Principal's [review](https://github.com/RobTand/prismabuild/pull/2289#issuecomment-6403454973)
+reproduced a different over-admission on dl380g10 with action
+`309eb752ebcc152e5db127287f78b50f528c08c91e4c1871bd5523d1b968a3b1`.
+A 128 GiB host with 68 GiB available, 60 GiB of external CPU usage and an
+unresident 40 GiB PB hold offered 100 GiB. The safe PB ceiling is 60 GiB
+after the unchanged 8 GiB operating margin. This remains unverified against
+the revised head until the fleet recovers.
 
-PrismaBuild reproduced the unsafe commitment on dl380g10 with action
-`4d448778fb1c9f1241a07cf47c5e695defba1833b7a2d555cb5e8f2179f8bb8b`.
-The run ended with exit 1 and `1 failed in 0.42s`; the failing assertion
-reported 80 GiB held. Its terminal record and retained stdout are in the
-fleet queue. Failed runs publish no success receipt.
+The shared evidence owner now derives one external usage value:
 
-## Decision required from Rob
+```text
+PB_resident = valid scope host bytes + valid shared-system GPU lower bounds
+external = max(0, host_total - host_available - PB_resident)
+ceiling_gib = max(0, floor((host_total - external) / GiB) - margin_gib)
+```
 
-The existing acceptance requires both physical safety and counting overlapping
-external allocations once. The published fields cannot establish both.
-Two concrete alternatives preserve physical safety:
+Only complete jobs in a fresh attributed broker inventory earn residency
+credit. A missing or malformed component earns zero. GPU reported sums can
+overlap, so the calculation uses the broker's GPU lower bound for jobs
+whose memory domain is `shared_system`. Mixed or discrete GPU bytes earn
+no shared-memory credit. Existing held commitments still count once.
 
-1. Defer new commitments when the external union cannot be established.
-   This extends the unknown-residency fence to unknown overlap, even when
-   foreign GPU bytes are known. Admission can resume when a trusted union
-   measurement or proof of the relevant overlap is available.
-2. Authorize a conservative upper-bound charge for the uncertain external
-   union. This can refuse work that would physically fit when counters
-   overlap. It changes the exact-once external-usage requirement and must
-   label the value as an upper bound.
+The rewritten regression covers both measured-consistent foreign usage
+states. Additional cases cover external CPU memory beside an unresident hold,
+PB host and CUDA residency, invalid residency credit, and a claim whose
+trusted evidence becomes partial, absent, stale or unattributed. The latter
+keeps unknown context during that claim pass instead of reusing CLEAR.
 
-The recommendation is option 1. Neither alternative changes an action's
-single `mem_gb` charge or its GPU subset cap. Neither grants authority to
-publish a runtime or perform live foreign-load stress. The Principal's
-independent review and the separate #1661 live acceptance remain required.
+## Target and delivery status
+
+| Requirement | Target | Source status | Validation and deployment |
+|---|---|---|---|
+| #2040, #2088 | Bound total PB commitments by physical memory less external usage, counting overlap once | Revised in the shared evidence owner | New red and green runs pending PRI-123. Not deployed |
+| #2089 | Defer unknown residency before commitments, elections and preemption | Existing fences retained; loss of trusted evidence closes a seeded claim pass | Final x86 and GB10 checks pending PRI-123. Not deployed |
+| #1661 | Qualify GB10 unified-memory admission on the fleet and close resolved tickets with merged proof | Draft PR #2289 remains open | Principal review, merge and live qualification remain pending |
+
+The human-only interaction `ef4b12e2-85b8-43d7-9977-e8bb107356a3` was
+withdrawn with the original measurement as its reason. Neither of its
+proposed options is needed. No runtime generation was published, no service
+was restarted, and no live foreign-load stress was performed. The staged-read
+policy and its separate merge, launch, deployment and completion acceptance
+records remain required. This record claims no acceptance or completion.

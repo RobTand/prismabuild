@@ -227,6 +227,8 @@ class UnifiedMemoryEvidence:
     sample_id: str
     sampled_unix: float
     host_total_bytes: float
+    host_available_bytes: float
+    resident_bytes: int
     foreign_bytes: int
     foreign_residency: ForeignProcesses
 
@@ -234,11 +236,15 @@ class UnifiedMemoryEvidence:
     def unknown(self) -> bool:
         return self.foreign_residency is ForeignProcesses.UNKNOWN
 
+    @property
+    def external_bytes(self) -> float:
+        return max(0, self.host_total_bytes - self.host_available_bytes - self.resident_bytes)
+
     def ceiling_gib(self, *, margin_gb: int) -> int:
         if self.unknown:
             return 0
-        return max(0, math.floor(self.host_total_bytes / 1024**3) - margin_gb
-                   - math.ceil(self.foreign_bytes / 1024**3))
+        return max(0, math.floor((self.host_total_bytes - self.external_bytes) / 1024**3)
+                   - margin_gb)
 
 
 def unified_memory_evidence(sample: object, *, now: float,
@@ -277,9 +283,21 @@ def unified_memory_evidence(sample: object, *, now: float,
         foreign_bytes += used
         if residency is ForeignProcesses.CLEAR:
             residency = ForeignProcesses.PRESENT
+    resident_bytes = 0
+    for job in inventory.jobs:
+        if not isinstance(job, Mapping) or job.get('complete') is not True:
+            continue
+        resident_bytes += nonnegative_int(job.get('host_bytes')) or 0
+        if job.get('memory_domain') == 'shared_system':
+            # Per-process GPU reports may overlap. The broker's lower bound
+            # is disjoint from the scope host charge on GB10 (4b6cc60496).
+            resident_bytes += nonnegative_int(job.get('gpu_lower_bound_bytes')) or 0
     return UnifiedMemoryEvidence(
-        sample_id, float(header.sample['sampled_unix']),
-        float(header.sample['host_total_bytes']), foreign_bytes, residency)
+        sample_id=sample_id, sampled_unix=float(header.sample['sampled_unix']),
+        host_total_bytes=float(header.sample['host_total_bytes']),
+        host_available_bytes=float(header.sample['host_available_bytes']),
+        resident_bytes=resident_bytes, foreign_bytes=foreign_bytes,
+        foreign_residency=residency)
 
 
 @dataclass(frozen=True)
