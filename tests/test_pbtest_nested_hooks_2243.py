@@ -163,11 +163,7 @@ def pytest_runtest_logreport(report):
     if report.when == "call":
         before = config._pb2243_before
         cells = dict(zip(before.__code__.co_freevars, before.__closure__))
-        if "hook_calls" in cells:
-            stack = cells["hook_calls"].cell_contents
-        else:
-            stack = cells["thread_calls"].cell_contents()
-        stack.clear()
+        cells["thread_calls"].cell_contents().clear()
 '''
     run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n", conftest=plugin)
     assert run.returncode == 0, run.stdout + run.stderr

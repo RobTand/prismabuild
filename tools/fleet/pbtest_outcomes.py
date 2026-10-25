@@ -39,6 +39,7 @@ import secrets
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 
 #: The version of the record's shape.  A reader refuses any other.
@@ -951,12 +952,18 @@ def main(argv: list[str] | None = None, *, preflight=None,
     # The public dispatch monitor, installed before conftests load, owns phase
     # authority. Advancing a registered hook's generator is not evidence that
     # pytest dispatched (let alone completed) collection or the test loop.
-    hook_calls = []
+    # xdist's receiver dispatches hooks concurrently with the controller.
+    hook_stacks = threading.local()
+
+    def thread_calls():
+        return hook_stacks.__dict__.setdefault("calls", [])
+
     monitored_manager = None
     command_call = None
 
     def before_hook(name, implementations, kwargs):
         nonlocal command_call
+        hook_calls = thread_calls()
         parent = hook_calls[-1] if hook_calls else None
         call = {"name": name, "kwargs": dict(kwargs), "phase": False, "consumed": False}
         hook_calls.append(call)
@@ -991,6 +998,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 emit_completion(session_finished=True)
 
     def after_hook(result, name, implementations, kwargs):
+        hook_calls = thread_calls()
         call = None
         for index in range(len(hook_calls) - 1, -1, -1):
             if hook_calls[index]["name"] == name:
@@ -1018,6 +1026,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             state.written = True
 
     def accept_hook(name, **arguments):
+        hook_calls = thread_calls()
         if not hook_calls:
             return False
         call = hook_calls[-1]
@@ -1066,6 +1075,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
 
         @pytest.hookimpl(specname="pytest_collection", tryfirst=True)
         def pytest_collection_ignore_named(self, session):
+            hook_calls = thread_calls()
             if (not hook_calls or not hook_calls[-1]["phase"]
                     or not accept_hook("pytest_collection", session=session)
                     or collection_spec is not None):

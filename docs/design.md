@@ -2250,10 +2250,14 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
 The report monitor reads the report from its own return callback arguments.
-It matches hook names from the end of the entry stack, discards intervening
-unmatched entries, and leaves the stack unchanged when no entry matches.
-Only a matched entry can advance a lifecycle phase (#2243).
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
 An xdist synthetic failed report with phase `???` retains that phase and
 failure in the outcome rows. Missing teardown for exactly those failed tests
 does not make file coverage unknown. Completion evidence still reports their
