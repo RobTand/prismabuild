@@ -1,29 +1,35 @@
-"""The latest completed pbtest report for each checkout and requested path set."""
+"""The latest completed pbtest report for each repository."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
 from prismabuild.digest_primitives import raw_sha256
 
 
-def _report_path(checkout: Path, paths: list[str]) -> Path:
+def _repository_identity(checkout: Path) -> str:
     root = checkout.resolve()
-    requested = sorted({(root / path).resolve().relative_to(root).as_posix()
-                        for path in paths or ["tests"]})
-    scope = json.dumps([str(root), requested], separators=(",", ":")).encode()
-    key = raw_sha256(scope)
+    common = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True,
+    )
+    return common.stdout.strip() if common.returncode == 0 else str(root)
+
+
+def _report_path(checkout: Path) -> Path:
+    key = raw_sha256(_repository_identity(checkout).encode())
     state = os.environ.get("XDG_STATE_HOME")
     state_root = Path(state) if state and Path(state).is_absolute() else (
         Path.home() / ".local" / "state")
-    return state_root / "prismabuild" / "pbtest-history-v1" / f"{key}.json"
+    return state_root / "prismabuild" / "pbtest-history-v2" / f"{key}.json"
 
 
 def cached_report(checkout: Path, paths: list[str]) -> Path | None:
-    """Return the scoped report if present; let the caller report I/O errors."""
-    report = _report_path(checkout, paths)
+    """Return repository history if present; let the caller report I/O errors."""
+    report = _report_path(checkout)
     return report if report.is_file() else None
 
 
@@ -40,7 +46,7 @@ def remember_report(checkout: Path, paths: list[str], results: list[dict]) -> No
             or row["verdict"].get("green") is not True for row in results):
         return
     data = json.dumps(results).encode()
-    report = _report_path(checkout, paths)
+    report = _report_path(checkout)
     report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = None
     try:
