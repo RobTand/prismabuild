@@ -764,7 +764,10 @@ def profile_environment(variables, *, derived=False):
         allowed |= {PROFILE_OWNER_ENV, PROFILE_MARKER_ENV}
     if set(variables) - allowed:
         raise LocalScratchError("scratch recorder environment contains unsupported startup/loader/custom fields")
-    if any(k in variables and variables[k] != v for k, v in defaults.items()):
+    if (variables.get("TMPDIR", defaults["TMPDIR"]) not in
+            {"/home/rob/tmp", "/home/rob/pbt17"}
+            or any(k in variables and variables[k] != v for k, v in defaults.items()
+                   if k != "TMPDIR")):
         raise LocalScratchError("scratch recorder requires exact default environment values")
     paths = {PROFILE_PATH} if derived else {PROFILE_PATH, "/usr/local/bin:/usr/bin:/bin"}
     if (("PATH" in variables and variables["PATH"] not in paths)

@@ -198,7 +198,7 @@ def test_sealed_basetemp_keeps_the_compiler_tmpdir_environment(
     program = command[command.index("-c") + 1]
     assert root in program
     environment = shard_environment(command)
-    assert environment["TMPDIR"] == "/home/rob/tmp"
+    assert environment["TMPDIR"] == "/home/rob/pbt17"
     assert not any(name.startswith("PYTEST_DEBUG_TEMPROOT")
                    for name in environment)
     # The root travels inside the sealed program as worker-derived data;

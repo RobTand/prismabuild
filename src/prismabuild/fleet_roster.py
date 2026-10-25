@@ -245,15 +245,6 @@ class Roster:
                 box.roles
 
 
-def default_action_tmpdir(roster_path: str | Path) -> str:
-    """Old standalone clients without a roster keep their original default."""
-    try:
-        roster = Roster.read(roster_path)
-    except FileNotFoundError:
-        return LEGACY_ACTION_TMPDIR
-    return roster.action_tmpdir
-
-
 @dataclass(frozen=True)
 class Box:
     """A canonical declaration and the exact capture supplying its defaults."""

@@ -160,8 +160,8 @@ def start_shard(index: int, command: list[str], *, result: dict,
         inherited = environment.get('PYTHONPATH')
         environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
             os.pathsep + inherited if inherited else '')
-    return client_channel.ClientProcess.launch(command, queue_root=store_for(__file__).root / 'pb-queue',
-        cas_root=store_for(__file__).root / 'cas', env=environment, expected_identity=expected_identity,
+    return client_channel.ClientProcess.launch(command, queue_root=store_for(_PB_ENTRYPOINT).root / 'pb-queue',
+        cas_root=store_for(_PB_ENTRYPOINT).root / 'cas', env=environment, expected_identity=expected_identity,
         on_identity=submitted)
 
 
@@ -587,7 +587,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    return pool.PoolQueue(store_for(_PB_ENTRYPOINT).root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -673,7 +673,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(store_for(__file__).root / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(store_for(_PB_ENTRYPOINT).root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:
@@ -1557,7 +1557,8 @@ def main() -> int:
                     help="absolute python* executable on eligible TARGET workers; required except with --plan-only")
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
-                         "default /home/rob/tmp (not checked on the coordinator)")
+                         "default from fleet action_tmpdir, else /home/rob/tmp "
+                         "(not checked on the coordinator)")
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                     help="literal addition to every shard's sealed environment "
                          "(repeatable); duplicate and pbtest-owned keys are refused")
@@ -1734,7 +1735,7 @@ def main() -> int:
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
             raise ValueError("--tmpdir must be an absolute worker-visible path")
         shard_tmpdir = (args.tmpdir if args.tmpdir is not None else
-                        fleet_roster.default_action_tmpdir(store_for(__file__).roster_path))
+                        fleet_roster.Roster.read(store_for(_PB_ENTRYPOINT).roster_path).action_tmpdir)
         if args.basetemp is not None:
             validate_basetemp(args.basetemp)
         if args.mem_gb < 1:
@@ -1863,7 +1864,9 @@ def main() -> int:
     # an older receipt can silently omit the check. Unpinned projects retain
     # their existing commands and identities.
     try:
-        python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
+        checked_tmpdir = (shard_tmpdir if args.tmpdir is not None or
+                         shard_tmpdir != fleet_roster.LEGACY_ACTION_TMPDIR else None)
+        python_entry = shard_entry(args.python, checkout, tmpdir=checked_tmpdir,
                                    basetemp=args.basetemp,
                                    trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
                                    collection=True,
@@ -2107,7 +2110,7 @@ def main() -> int:
             progress.observe(index, kwargs["result"], completed=True)
     # Pool shards are published from here, each plan's checkout frozen once
     # (``_Templates``); the SLURM lane keeps one ``pbrun`` client per shard.
-    templates = _Templates(store_for(__file__)) if args.transport == "pool" else None
+    templates = _Templates(store_for(_PB_ENTRYPOINT)) if args.transport == "pool" else None
     owners: dict[int, SubmissionRequest] = {}
     # A shard that writes its own --surface-json outside the checkout names a
     # path only it has; its placement answer is its own, so it seals alone.

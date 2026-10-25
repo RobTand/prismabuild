@@ -242,3 +242,44 @@ L2ARC / no-SLOG server record above stands unchanged.
 - Keep the [prewarm pacing and ARC budget](data_manifest_prewarm.md) and
   [worker admission policy](agent_execution_policy.md#adding-workers).
   Host tuning does not expand any CPU, RAM or GPU reservation.
+
+
+## Action scratch and checkouts
+
+Read-only verification on 2026-10-25 for [#1914](https://github.com/RobTand/prismabuild/issues/1914):
+
+| Worker | Default action scratch target | Backing storage | Checkout parent |
+|---|---|---|---|
+| dl380g10 | `/home/rob/pbt17` | `prismabuild-stage/pbt17`, quota 24 GiB | `/home/rob/tmp/prismabuild-checkouts`, `prismabuild-stage/checkouts`, quota 40 GiB |
+| sparky | `/home/rob/pbt17` | local NVMe ext4, `/dev/nvme0n1p2` | existing worker default |
+| sparklina | `/home/rob/pbt17` | local NVMe ext4, `/dev/nvme0n1p2` | existing worker default |
+
+The DL380 datasets are already mounted. The October 21 operations log records
+scratch cutover at 20:10:46 UTC and checkout cutover at 21:04 UTC. Current
+`zpool status -P prismabuild-stage` names enterprise LT0800KEXVA device
+`CVMD54710026800BGN-part1`, with no known data errors. Both datasets report
+`primarycache=metadata`, `compression=lz4`, `recordsize=128K`, `sync=disabled`
+and no reservation. Quotas bound their growth; they do not reserve free space.
+The October 25 pool readback had 262 GiB physical free and 208 GiB dataset
+availability. No prewarm data was evicted for this change.
+
+The enterprise device avoids placing this churn on the consumer boot/L2ARC
+NVMe. Metadata-only ARC caching keeps temporary file contents out of the ARC.
+These are existing host choices. `sync=disabled` means fsync and CAS receipts
+do not establish power-loss durability. This record authorizes no storage
+policy change, mount transition, old-tree deletion or prewarm eviction.
+
+`fleet_boxes.json` now declares the common action path through `action_tmpdir`
+and DL380's existing checkout mount through `--local-checkout-root`. This
+source change is not deployed. The live default remains `/home/rob/tmp` until
+the Principal releases the reviewed source. On DL380 that directory remains
+HDD dataset `storage_pool/rob/tmp`; an admitted reproduction confirmed it.
+
+Before release, read `findmnt -T` and `df` for each eligible worker's scratch
+and checkout paths. On DL380 also retain `zfs get quota,primarycache,sync`
+for both datasets and `zpool status -P prismabuild-stage`. Existing attempt
+scratch registration, containment and retention remain unchanged. Spark
+scratch has no dataset quota; retain the existing attempt-root reaper and
+verify that live roots stay protected when qualifying the common default.
+Recheck free-space floors and fresh worker offers after the reviewed release.
+No release or service restart is performed by the engineer preparing this PR.

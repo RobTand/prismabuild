@@ -5057,7 +5057,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
 
     if not args.no_default_env and "TMPDIR" not in caller_variables:
         try:
-            variables["TMPDIR"] = fleet_roster.default_action_tmpdir(store.roster_path)
+            variables["TMPDIR"] = fleet_roster.Roster.read(store.roster_path).action_tmpdir
         except (OSError, ValueError) as exc:
             raise SubmissionRefused(f"pbrun: cannot read fleet action_tmpdir: {exc}") from exc
 

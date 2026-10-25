@@ -2042,7 +2042,8 @@ does not set that key for this run. Use pbtest's scratch, thread, deadline and
 pytest options to configure those settings.
 
 `--tmpdir /absolute/worker/scratch` selects the shards' temporary parent instead
-of the unchanged `/home/rob/tmp` default. Supply an existing writable directory
+of the fleet roster's `action_tmpdir`, currently `/home/rob/pbt17`. A roster
+without that field retains `/home/rob/tmp`. Supply an existing writable directory
 on every eligible target worker; the coordinator validates only that the path
 is absolute, since a remote directory need not exist on the submitting box.
 The path is sealed as one literal `TMPDIR` environment argument. Each pytest
@@ -2051,7 +2052,8 @@ scratch placement, not proof of direct-I/O support or of an earlier disk-write
 failure's cause. With an explicit option, the child checks free inodes against
 the five percent filesystem floor before creating and closing an anonymous
 temporary file. It refuses low inode headroom or an unavailable or unusable
-parent by name. The default keeps its existing fallback behavior. This startup
+parent by name. The configured fleet default receives the same check; the
+legacy default keeps its existing fallback behavior. This startup
 check does not guarantee later byte or inode availability.
 
 A passing test's `tmp_path` directory is removed as soon as the test ends

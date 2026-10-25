@@ -1786,6 +1786,26 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The fleet roster's optional `action_tmpdir` names one canonical absolute scratch
+directory present on every eligible worker. `pbrun` and `pbtest` capture it from
+the same runtime's roster and seal its literal value as `TMPDIR`. The current
+declaration is `/home/rob/pbt17`, backed by enterprise NVMe on dl380g10 and local
+NVMe on both Sparks. Old rosters without the field retain `/home/rob/tmp`.
+An explicit `pbrun --env TMPDIR=...` or `pbtest --tmpdir` takes precedence;
+`--no-default-env` supplies no default. Workers never reinterpret that sealed
+path. New configured pbtest defaults use the existing directory/inode preflight;
+legacy defaults retain their existing fallback behavior. Restricted scratch
+recorders accept both reviewed fleet paths so retained legacy requests still
+validate independently of the current roster.
+
+Worker `--local-checkout-root` overrides the existing environment/default root
+before queue, profile and cleanup initialization. dl380g10 declares its existing
+`prismabuild-stage/checkouts` mount at `/home/rob/tmp/prismabuild-checkouts` in
+the roster. This does not change the separate `/tmp/pbscratch` spool offer or
+the SLURM environment/default and epilog agreement. Roster publication installs
+no dataset or mount. Host storage readback and release evidence are recorded in
+[the fleet storage record](fleet_storage.md#action-scratch-and-checkouts).
+
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
 profiles cannot rewrite the sealed PATH or select a different executable.
 CUDA tooling outside the default PATH must be named explicitly or supplied
