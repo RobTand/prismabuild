@@ -8,7 +8,7 @@ Verified generation closures now share one lifetime per pytest configuration. Ex
 
 Validation uses the existing namespace-x86 lane: `/home/rob/venvs/pb-cpu/bin/python3.14`, the pinned archival executable digest `52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41`, `TMPDIR=/home/rob/pbt17`, native thread limits of one, one CPU per pytest worker and four GiB per action. Full controller execution is x86-only under its existing `archival-replay` capability. The portable setup tests also run on ARM with Python 3.12.
 
-`TMPDIR=/tmp` reproduces the separate #2178 archival qualification defect. The existing documented lane passes its controls. This PR does not change that qualification code. Release gate selectors that enumerate only the old controller filename must select `tests/test_record_compatibility_controller*.py` before release.
+`TMPDIR=/tmp` reproduces the separate #2178 archival qualification defect. The existing documented lane passes its controls. This PR does not change archival runtime qualification. Bootstrap qualification's required corpus and source pins now include all nineteen controller files.
 
 ## Evidence
 
@@ -23,6 +23,15 @@ All five split runs passed 237 cases with zero failures or skips. Their 95 disti
 | 3 | 1 | 237 | 200.05 | 45.6% |
 | 4 | 2 | 237 | 112.60 | 51.2% |
 | 5 | 2 | 237 | 140.73 | 56.4% |
+
+Summed per-file pytest durations are **1,870.62, 1,830.50, 1,814.28,
+1,019.70 and 1,091.12 seconds** for runs 1 through 5. Run 1 costs 143.41
+more pytest seconds than the 1,727.21-second unsplit baseline, an **8.3%
+increase**. These sums exclude PB checkout, admission and cleanup overhead.
+They are neither elapsed suite wall time nor aggregate CPU time; runs 4 and
+5 also overlap work within each shard through xdist. The evidence establishes
+shorter individual shards under observed fleet load. It does not establish
+less total computation or an isolated causal speedup.
 
 
 - Recovered source: PR #2269, HEAD `0dfaf0a38ed1568fe38611904f6b4762d74b0151`, based on main `9dce28460e76d4115c925bac8efc4f397160f9cf`.
@@ -99,6 +108,32 @@ The baseline command uses main, the single original controller file, `--timeout-
 The attached review bundle contains compact native records, all action keys and receipt digests, load observations, negative-control failure excerpts, and the claim map. Full action stdout remains in CAS. All controller receipts and scope cleanup records were checked; representative payloads were also hashed through `pb_verify_claim`. That tool's claim/payload checks do not independently attest an entire action manifest.
 
 ## Review and release
+
+Principal review 1 found that `installed_bootstrap.CORPUS_FILES` still required
+only the original controller file. The exact-set index check could therefore
+omit the eighteen new files or reject a complete index. The list now includes
+all nineteen controller files; `QUALIFICATION_SOURCES` derives their required
+source pins from that list. Index and execution validation remain strict.
+
+The regression checks that every `controller_partition` has exactly one
+`family_group` declaration and that the full controller file population is
+required and pinned. Its original PB action
+`26ab4f59d3571ab4f29c616e87206bc5be420602f55c7e915cbcefd11c32c9eb`
+failed at the missing-files assertion: **1 failed in 0.75s**. After the fix,
+the full `tests/test_bootstrap_qualification.py` module passed **15 tests in
+0.86s**, with no skips, on PB action
+`cbd07d24883ceb376515c0ecf93b0a360ebd793f003c14bc3b2055426e896b77`.
+Both actions ran on dl380g10 with one CPU, two GiB RAM, no GPU, a 120-second
+execution deadline, `TMPDIR=/tmp`, and one thread per native library. The
+passing run used source parent `61a3cf8963`, rebased on main `6a96867b3c`.
+
+Both terminal records and stdout/stderr hashes are verified, and their scopes
+are empty, settled and released. The passing action has verified CAS receipt
+`dddb377c92eaef5c0ac07d3e5b9f189fb6c449bd13a22afb83634df18367ef27`.
+The failing action correctly has no success receipt. These unit tests exercise
+the corpus/index guards with CAS reads replaced at their boundary. They grant
+no live bootstrap or deployment qualification. The earlier 95 controller
+execution actions remain the evidence for the split population and timings.
 
 The branch is rebased on main. The Principal Engineer owns independent standards/spec review, merge and release. The existing `Fixes #2253` link closes the issue only when the reviewed PR merges. Source changes do not publish the fleet runtime.
 

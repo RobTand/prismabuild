@@ -20764,7 +20764,9 @@ The explicit assessment now requires a separately sealed qualification index,
 assessment and immutable plan. Its `target_commit` names the final source;
 `populations.root` and `.corpus` declare exact required whole-file lists and
 complete node-ID lists from qualified final-source collection. The required
-files are the two bootstrap root files and all eight record-compatibility files.
+files are the two bootstrap root files and every record-compatibility file in
+`installed_bootstrap.CORPUS_FILES`, including all nineteen controller files
+after the family split.
 Every native root lane and every corpus lane must cover its complete declared
 population; valid successful subset receipts refuse. The expected nodes are
 never derived from execution logs. `source_sha256` pins required tests, root
