@@ -142,6 +142,13 @@ def publish(local: Path, shared: Path):
             os.close(descriptor)
 
 
+def _previous_snapshot(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def copy_snapshot(local: Path, shared: Path, *, changed: list[str] | None = None):
     """Publish each local record independently; source timestamps stay intact."""
     directory = _source_directory(local)
@@ -164,10 +171,7 @@ def copy_snapshot(local: Path, shared: Path, *, changed: list[str] | None = None
             continue
         if not isinstance(value, dict):
             raise ValueError(f'invalid local CPU state: {name}')
-        try:
-            previous = json.loads((shared / name).read_text())
-        except (FileNotFoundError, ValueError):
-            previous = None
+        previous = _previous_snapshot(shared / name)
         if isinstance(previous, dict) and name in STAMPED:
             previous.pop('_snapshot', None)
         if previous != value:
