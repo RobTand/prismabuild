@@ -8,6 +8,7 @@ pipe to an action's captured output, or shared working directory.
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -48,18 +49,32 @@ def _start_ticks(pid):
         return None
 
 
+def _source_directory(local: Path):
+    info = local.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or not info.st_mode & 0o444
+            or not info.st_mode & 0o111):
+        raise OSError(errno.EINVAL, 'unsafe adaptive source directory')
+    return info.st_dev, info.st_ino
+
+
 def _source_signature(local: Path):
     """Identify local atomic replacements, without reading the shared copy.
 
     This is a diagnostic retry hint, never admission authority. Capture it
     before copying: a write during the copy must still request a later pass.
     """
+    directory = _source_directory(local)
     signature = {}
     for name in FILES:
         try:
-            info = (local / name).stat()
+            info = (local / name).lstat()
         except FileNotFoundError:
+            if _source_directory(local) != directory:
+                raise OSError(errno.ESTALE, 'adaptive source directory replaced')
             continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or not info.st_mode & 0o444):
+            raise OSError(errno.EINVAL, f'unsafe adaptive source: {name}')
         signature[name] = [info.st_dev, info.st_ino, info.st_size,
                            info.st_mtime_ns, info.st_ctime_ns]
     return signature
@@ -69,7 +84,7 @@ def next_publication(local: Path, *, now: float) -> float | None:
     """Return a dirty copy's earliest start using only host-local records."""
     signature = _source_signature(local)
     result = _read(local / 'publisher-result.json')
-    if not signature or (result.get('status') == 'published'
+    if (not signature and not result.get('source_signature')) or (result.get('status') == 'published'
                          and result.get('source_signature') == signature):
         return None
     owner = _read(local / 'publisher-owner.json')
@@ -127,20 +142,40 @@ def publish(local: Path, shared: Path):
             os.close(descriptor)
 
 
-def copy_snapshot(local: Path, shared: Path):
+def copy_snapshot(local: Path, shared: Path, *, changed: list[str] | None = None):
     """Publish each local record independently; source timestamps stay intact."""
+    directory = _source_directory(local)
     copied = []
     for name in FILES:
         path = local / name
         try:
-            value = json.loads(path.read_text())
+            from prismabuild import immutable_files
+            value = json.loads(immutable_files.read_replaced_record(path, where='adaptive mirror source'))
         except FileNotFoundError:
+            if _source_directory(local) != directory:
+                raise OSError(errno.ESTALE, 'adaptive source directory replaced')
+            try:
+                (shared / name).unlink()
+            except FileNotFoundError:
+                pass
+            else:
+                if changed is not None:
+                    changed.append(name)
             continue
         if not isinstance(value, dict):
             raise ValueError(f'invalid local CPU state: {name}')
-        if name in STAMPED:
-            value['_snapshot'] = {'source': 'host-local', 'copied_unix': time.time()}
-        _write(shared / name, value)
+        try:
+            previous = json.loads((shared / name).read_text())
+        except (FileNotFoundError, ValueError):
+            previous = None
+        if isinstance(previous, dict) and name in STAMPED:
+            previous.pop('_snapshot', None)
+        if previous != value:
+            if name in STAMPED:
+                value['_snapshot'] = {'source': 'host-local', 'copied_unix': time.time()}
+            _write(shared / name, value)
+            if changed is not None:
+                changed.append(name)
         copied.append(name)
     return copied
 
@@ -149,15 +184,25 @@ def main(argv):
     local, shared = Path(argv[0]), Path(argv[1])
     descriptor, nonce = int(argv[2]), argv[3]
     result = {'nonce': nonce, 'pid': os.getpid(), 'start_ticks': _start_ticks(os.getpid())}
+    changed = []
+    previous = _read(local / 'publisher-result.json')
     try:
         result['source_signature'] = _source_signature(local)
-        result.update(status='published', files=copy_snapshot(local, shared))
+        result.update(status='published', files=copy_snapshot(local, shared, changed=changed))
         returncode = 0
     except Exception as exc:
         result.update(status='failed', error=f'{type(exc).__name__}: {exc}')
         returncode = 1
     try:
         result['finished_unix'] = time.time()
+        result['changed_files'] = changed
+        if changed or returncode or previous.get('status') != 'published':
+            try:
+                _write(shared / 'publisher-result.json', {
+                    key: result[key] for key in ('nonce', 'status', 'changed_files', 'finished_unix')})
+            except Exception as exc:
+                result.update(status='failed', error=f'{type(exc).__name__}: {exc}')
+                returncode = 1
         _write(local / 'publisher-result.json', result)
     finally:
         os.close(descriptor)
