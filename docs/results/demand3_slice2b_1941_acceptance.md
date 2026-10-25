@@ -15,3 +15,17 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py --checkout CHECKOUT -
 ```
 
 The internal standards review has no outstanding findings. The spec review's two findings were repaired before handoff. Code Reviewer 01 provides the independent Opus review and merge gate. The next authorized slice is 3a #1942 after this PR merges. Slice 6a #1948 and its dependent 8b #1951 and 15 #1958 remain excluded. Live session installation, topic publication and fleet release remain with the Principal Engineer.
+
+## External review round 1 revision
+
+Review at `7b02612692` identified an empty-source retry bug and retained copy backoff after recovery. PB action `60466f2b847456d7cc749972b43b532cd7822cf19b4bf00ba5a114791f1c8f0a` reproduced all three new fake-clock cases: two cleanup paths returned no deadline, and the later copy failure retained five seconds instead of the fresh one-second rate fence. A second submission reproduced the same failures on Sparklina. Partial-denial regressions failed twice in `5f52c461c4a909fea2f0e130e24f5c3a3a60866cf8ae29085f62eeb3cade6353`.
+
+The fix keeps failed publication dirty even when the source is empty, resets copy backoff after success and clean state, tolerates partial denial records, and imports shared inotify constants. State decisions were separated before behavior changed. Focused validation passed 20 publisher tests on Sparky in `f1658c6b503e6b777f32863008387736ea222295b382d13d4d933ed29da61e96`; the partial-record repair passed 83 nearby tests on dl380g10 in `2db34434c56d9060c6c587621ad33dcdce87ecb31b74d3ade7f059e7e2347a6d`.
+
+Rebased source `cc0e1f6bb67cc13780f60a312ee51fc80370b9aa` then passed the original 26-file population: 650 collected, 650 ran, 650 passed, zero skips, two existing warnings, 20/20 shards green across dl380g10, Sparky and Sparklina. The additional recovery file, omitted from the earlier selection, passed all four cases in `4224e27944ca8139d42b7dc6bac816fc004fe11f4190dae2b6db7a4f8fa1c3cc`. Final scope is 654 tests across 27 files and 21 successful actions. The JSON's top-level actions and counts describe this revised source; the original 645-test evidence remains linked by immutable commit.
+
+The suite ran in transient unit `pb-pri64-r1-cc0e1f6bb6.service`, report `/mnt/shared/paperclip-runs/PRI-64/review-1/integrated.json`, with default eight clients, priority -10, 180-second action deadlines and a 600-second wait budget. The supplemental action used the same CPU, memory and thread limits. Across the final 21 units the declared sum was 21 CPUs, 42 GiB and no GPUs. PB selected placement and concurrency. Each terminal, both immutable logs, canonical CAS receipt, snapshot input binding and result payload were read and verified. The rerunnable read-only audit is `/mnt/shared/paperclip-runs/PRI-64/review-1/verify_actions.py`.
+
+Independent Opus re-review and merge remain pending. This revision supplies source acceptance only and deploys nothing.
+
+The published source commit is `80835b7089a2f7300adfe0ac2e821c266824aaca`. Its whole Git tree, `7bda37a35898b9b025941b3ed4eccf99e470924b`, equals the tested local source `cc0e1f6bb6`. Shell Git push had no credentials, so the installed GitHub connector first integrated current main and then replayed the test, refactor and fix commits in their original order. The final evidence commit changes acceptance documents only.
