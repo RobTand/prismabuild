@@ -198,6 +198,7 @@ class LocalMirrorPublisher:
             if source_changed:
                 self._counts['invalidations'] += 1
                 self._counts['coalesced'] += int(self._dirty)
+            if source_changed:
                 self._copy_recovery = .25
             self._dirty |= bool(changed) or outcome is not None or bool(owner_ended)
             if source_changed or owner_ended or outcome == 'completed':

@@ -84,8 +84,10 @@ def next_publication(local: Path, *, now: float) -> float | None:
     """Return a dirty copy's earliest start using only host-local records."""
     signature = _source_signature(local)
     result = _read(local / 'publisher-result.json')
-    if (not signature and not result.get('source_signature')) or (result.get('status') == 'published'
-                         and result.get('source_signature') == signature):
+    empty_signatures = not signature and not result.get('source_signature')
+    published_current = (result.get('status') == 'published'
+                         and result.get('source_signature') == signature)
+    if empty_signatures or published_current:
         return None
     owner = _read(local / 'publisher-owner.json')
     elapsed = now - owner.get('started_monotonic', -MIN_PUBLISH_INTERVAL_S)
