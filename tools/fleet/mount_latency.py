@@ -456,7 +456,8 @@ def timed_probe(probe_dir: Path, repeats: int = PROBE_REPEATS,
     target = probe_dir / f"claim-{os.getpid()}.done"
 
     def claim_cycle() -> None:
-        source.write_text("probe\n", encoding="utf-8")
+        # Dirty data before rename/unlink retains NFS open states (#1917).
+        source.write_text("", encoding="utf-8")
         os.rename(source, target)
         os.unlink(target)
 
