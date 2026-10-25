@@ -98,3 +98,49 @@ def test_a_test_file_absent_from_every_shard_is_a_coverage_gap(checkout):
     report = inventory.rank_test_runs(checkout, [run(1), run(2)])
     assert report["coverage"]["complete"] is False
     assert any("not assigned" in problem for problem in report["coverage"]["problems"])
+
+
+def test_dead_producer_is_archived_and_repeat_uses_a_fresh_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    output = tmp_path / "evidence"
+    output.mkdir()
+    manifest = {"source_digest": "same-source", "paths": ["tests"], "python": "/python",
+                "repeats": 2, "collection_id": "original", "runs": []}
+    (output / "runs.json").write_text(json.dumps(manifest))
+    key = "a" * 64
+    original_log = f"shard 0 action {key} (queued): tests/test_example.py\n"
+    (output / "repeat-1.log").write_text(original_log)
+    (output / "repeat-1.json.progress.json").write_text(json.dumps({
+        "producer_pid": 2147483647, "shards": [{"action_key": key}]}))
+    monkeypatch.setattr(inventory, "inventory_checkout_revision", lambda root: "same-source")
+    monkeypatch.setattr(inventory.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0))
+    commands = []
+
+    class Producer:
+        pid = 2147483646
+
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            self.report = Path(command[command.index("--json") + 1])
+
+        def wait(self):
+            self.report.write_text("[]")
+            return 0
+
+    monkeypatch.setattr(inventory.subprocess, "Popen", Producer)
+    args = SimpleNamespace(checkout=tmp_path, output=output, paths=["tests"], python="/python", repeats=2)
+    inventory.collect_test_repeats(args)
+    saved = json.loads((output / "runs.json").read_text())
+    abandoned = [a for a in saved["attempts"] if a["status"] == "abandoned"]
+    assert len(abandoned) == 1
+    assert abandoned[0]["action_keys"] == [key]
+    assert abandoned[0]["log_sha256"] == inventory.raw_sha256(original_log.encode())
+    assert (output / "repeat-1.log").read_text() == original_log
+    assert len(saved["runs"]) == 2
+    identities = [c[c.index("--env") + 1] for c in commands]
+    assert len(set(identities)) == 2
+    assert "PRISMABUILD_INVENTORY_REPEAT=original:1" not in identities
+    assert Path(commands[0][commands[0].index("--json") + 1]).name != "repeat-1.json"
+    inventory.collect_test_repeats(args)
+    assert len(commands) == 2
