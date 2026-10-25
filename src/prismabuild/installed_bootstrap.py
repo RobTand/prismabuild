@@ -245,7 +245,7 @@ def collect_responses(plan):
 
 
 def enrolled_roster(source, target):
-    from .fleet_roster import Roster, is_absent
+    from .fleet_roster import ACTIVE, Roster, box_status
     from .generation_receipt import GenerationReceipt
     captures = []
     for root in (source, target):
@@ -253,7 +253,7 @@ def enrolled_roster(source, target):
         roster = Roster.qualified(root, receipt.files)
         groups = {}
         for host, aliases, box in roster.barrier_declarations():
-            if not is_absent(host, box):
+            if box_status(host, box)[0] == ACTIVE:
                 groups[host] = sorted(aliases)
         captures.append(groups)
     if captures[0] != captures[1]:

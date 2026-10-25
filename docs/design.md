@@ -6373,7 +6373,7 @@ source change does not install or activate celestia.
 
 Roster `status: enrolling` requires the same reason, author and timestamp as
 other non-active declarations. Its supervisor runs, but publication preflight,
-barrier quorums and class-wide participant proofs exclude it. Workers advertise
+barrier quorums, installed-bootstrap predeploy checks and class-wide participant proofs exclude it. Workers advertise
 `enrolling-only:<canonical-name>` and, if declared, the alias marker. The shared
 placement matcher accepts such an offer only when the action explicitly requires
 one of those host names. General CPU or architecture tags grant no enrollment
