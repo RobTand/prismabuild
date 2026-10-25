@@ -5,7 +5,8 @@ from pathlib import Path
 import stat
 
 from .holder_census import CPU_METADATA, GPU_METADATA
-from .queue_bell_topics import HostReservations, WorkerOffers, HOST_RESERVATION_TOPICS
+from .queue_bell_topics import (HostReservations, WorkerOffers, HOST_RESERVATION_TOPICS,
+                                AdaptiveInputs)
 
 
 class HostInputShapes:
@@ -18,6 +19,12 @@ class HostInputShapes:
     @staticmethod
     def kind(relative: Path) -> str | None:
         parts = relative.parts
+        if parts and parts[0] in AdaptiveInputs.action_directories:
+            if len(parts) == 1:
+                return "directory"
+            if len(parts) == 2 and relative.suffix == ".json":
+                return "file" if AdaptiveInputs.hint(relative) else "unknown"
+            return None
         if not parts or parts[0] not in ("workers", "reservations"):
             return None
         if len(parts) == 1:
@@ -30,6 +37,10 @@ class HostInputShapes:
             return "unknown"
         if len(parts) == 2 or (len(parts) == 3 and parts[2] in HostReservations.token_directories):
             return "directory"
+        if len(parts) == 3 and parts[2] == "adaptive":
+            return "directory"
+        if len(parts) == 4 and parts[2] == "adaptive":
+            return "file" if parts[3] in AdaptiveInputs.mirror_files else None
         if len(parts) == 3 and parts[2] in ("cpu-map.json", "capacity.json"):
             return "file"
         if len(parts) == 4 and parts[2] == "held":

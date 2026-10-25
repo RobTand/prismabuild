@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 
 from .holder_census import HolderCensus
+from .adaptive_snapshot import FILES as MIRROR_FILES
+from .record_store import PASSES, DENIAL_TRANSITIONS
 
 MAX_TOPIC_FILTERS = 32
 MAX_ID_FILTERS = 128
@@ -36,8 +38,12 @@ OUTCOME_TOPICS = tuple(Topic(name, name, r"[0-9a-f]{64}", required, True)
 HOST_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 WORKER_TOPICS = (Topic("workers", "workers", HOST_ID_PATTERN),)
 HOST_RESERVATION_TOPICS = (Topic("reservations", "reservations", HOST_ID_PATTERN),)
+ADAPTIVE_TOPICS = (Topic("adaptive", "reservations", HOST_ID_PATTERN),
+                   Topic("claim-denials", "reservations", HOST_ID_PATTERN),
+                   Topic(PASSES, PASSES, r"[0-9a-f]{64}"),
+                   Topic(DENIAL_TRANSITIONS, DENIAL_TRANSITIONS, r"[0-9a-f]{64}"))
 TOPICS = {topic.name: topic for topic in
-          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS)}
+          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS, *ADAPTIVE_TOPICS)}
 
 
 class OutcomeNamespaces:
@@ -143,6 +149,61 @@ class HostReservations:
                 or (len(parts) == 4 and parts[2] in HostReservations.token_directories)
                 or (len(parts) == 5 and parts[2] == "held")):
             return "reservations", parts[1]
+        return None
+
+
+class AdaptiveInputs:
+    """Fixed mirror filenames and flat per-action sidecars, without body reads."""
+
+    topics = tuple(topic for topic in ADAPTIVE_TOPICS if topic.name != "claim-denials")
+    mirror_files = frozenset((*MIRROR_FILES, "publisher-result.json"))
+    action_directories = frozenset((PASSES, DENIAL_TRANSITIONS))
+
+    @staticmethod
+    def allows(relative: Path) -> bool:
+        parts = relative.parts
+        if not parts:
+            return False
+        if parts[0] in AdaptiveInputs.action_directories:
+            return len(parts) == 1
+        return (parts[0] == "reservations" and (len(parts) == 1
+                or (TOPICS["adaptive"].accepts_id(parts[1])
+                    and (len(parts) == 2 or (len(parts) == 3 and parts[2] == "adaptive")))))
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if not parts:
+            return None
+        if parts[0] in AdaptiveInputs.action_directories and len(parts) == 2:
+            key, suffix = relative.stem, relative.suffix
+            if suffix == ".json" and TOPICS[parts[0]].accepts_id(key):
+                return parts[0], key
+        if (parts[0] == "reservations" and len(parts) >= 2
+                and TOPICS["adaptive"].accepts_id(parts[1])):
+            if len(parts) == 2 or (len(parts) == 3 and parts[2] == "adaptive"):
+                return "adaptive", parts[1]
+            if (len(parts) == 4 and parts[2] == "adaptive"
+                    and parts[3] in AdaptiveInputs.mirror_files and parts[3] != "claim-denials.json"):
+                return "adaptive", parts[1]
+        return None
+
+
+class ClaimDenials:
+    topics = (TOPICS["claim-denials"],)
+
+    @staticmethod
+    def allows(relative: Path) -> bool:
+        return False  # AdaptiveInputs installs the shared parent watches.
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if (len(parts) in (2, 3, 4) and parts[0] == "reservations"
+                and TOPICS["claim-denials"].accepts_id(parts[1])
+                and (len(parts) == 2 or (parts[2] == "adaptive"
+                     and (len(parts) == 3 or parts[3] == "claim-denials.json")))):
+            return "claim-denials", parts[1]
         return None
 
 
