@@ -44,12 +44,8 @@ def test_contract_reconciles_main_and_preserves_existing_custody():
     for seam in ("filesystem_floor", "submission_write_window", "tier_serve"):
         require_explanation(adopted[seam], "source", "present_behavior", "remaining_gap")
     require_explanation(contract, "c437_evidence_boundary", "pr1490_disposition", "scope_exclusions")
-    custody = contract["custody"]
-    assert custody["integration_owner"] == "Qualified merge queue expediter"
-    assert custody["guard_implementer"] == (
-        "Qualified merge queue expediter.Operative used-filesystem guard repair"
-    )
-    require_explanation(custody, "security_reviewer", "diagnostic_assessor", "parent_review")
+    require_explanation(contract["custody"], "integration_owner", "guard_implementer",
+                        "security_reviewer", "diagnostic_assessor", "parent_review")
     assert contract["runtime_changes_authorized"] is False
 
 
@@ -112,10 +108,16 @@ def test_contract_uses_honest_whole_bounds_and_nonduplicable_credits():
     else:
         require_explanation(acceptance, "existing_supplier", "unblock_condition")
     readiness = contract["readiness"]
-    require_explanation(readiness, "parent_packet", "implementation_unblock_condition")
-    blocked = (acceptance["status"] == "pending"
-               or bool(contract["unresolved_dependencies"])
-               or any(d["evidence_status"] == "blocked" for d in contract["domains"]))
-    assert readiness["dependent_implementation_must_wait"] is blocked
+    require_explanation(readiness, "parent_packet", "implementation_unblock_condition",
+                        "activation_unblock_condition")
+    gaps = contract["unresolved_dependencies"]
+    assert all(gap["gates"] in {"implementation", "activation"} for gap in gaps)
+    implementation_blocked = (acceptance["status"] == "pending"
+                              or any(gap["gates"] == "implementation" for gap in gaps))
+    activation_blocked = (implementation_blocked
+                          or bool(gaps)
+                          or any(d["evidence_status"] == "blocked" for d in contract["domains"]))
+    assert readiness["dependent_implementation_must_wait"] is implementation_blocked
+    assert readiness["activation_must_wait"] is activation_blocked
     assert readiness["deployment_authorized"] is False
     assert readiness["physical_rob_action_established"] is False

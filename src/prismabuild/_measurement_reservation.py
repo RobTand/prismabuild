@@ -683,6 +683,7 @@ class PassCensus:
         self._selections: dict | None = None
         self._gang_elections: dict | None = None
         self._busy: set[str] = set()
+        self._foreign_refusals: dict[str, tuple[dict, int | float]] = {}
 
     @property
     def census(self) -> dict | None:
@@ -695,12 +696,35 @@ class PassCensus:
         self._selections = None
         self._gang_elections = None
         self._busy = set()
+        self._foreign_refusals.clear()
 
     def store(self, census: dict) -> None:
         """Keep one successful locked census for the rest of the pass."""
         self._census = census
         self._selections = dict(census.get("selections") or {})
         self._gang_elections = dict(census.get("gang_elections") or {})
+
+    def observe_measurement_refusal(
+        self, item: dict, verdict: dict, cpu_decision: Mapping | None,
+    ) -> None:
+        from . import pool
+        key = item["action_key"]
+        self._foreign_refusals.pop(key, None)
+        if (not isinstance(cpu_decision, Mapping)
+                or cpu_decision.get("reason") != "measurement_foreign_ambient"
+                or cpu_decision.get("fresh") is not True
+                or verdict.get("why") != "foreign_load"
+                or verdict.get("withhold") is not False):
+            return
+        chosen = verdict.get("selection")
+        if (chosen is None or chosen["action_key"] != key
+                or chosen["host"] != self._ledger.base.name
+                or chosen["generation"] != self._queue.records.attempt_generation(item)):
+            return
+        sampled = cpu_decision["sample"]["sampled_unix"]
+        if not 0 <= pool._now() - sampled <= adaptive_cpu.MAX_SAMPLE_AGE_S:
+            return
+        self._foreign_refusals[key] = (dict(chosen), sampled)
 
     def _refresh_dynamic_elections(self, census_reader: CensusReader) -> None:
         """Refresh live elections through a bounded owned child (#1571).
@@ -733,6 +757,9 @@ class PassCensus:
         """
         assert self._census is not None
         refreshed = census_reader.refresh_elections()
+        self._foreign_refusals = {
+            key: observed for key, observed in self._foreign_refusals.items()
+            if refreshed["selections"].get(key) == observed[0]}
         selections = dict(self._selections or {})
         elections = dict((self._census.get("elections") or {}))
         for key, chosen in refreshed["selections"].items():
@@ -792,6 +819,7 @@ class PassCensus:
         """
         current = dict(self._census or {})
         elections = dict(current.get("elections") or {})
+        blocked = set(self._busy)
         for key in self._busy:
             prior = (self._selections or {}).get(key)
             kept = current.get("selections", {}).get(key, prior)
@@ -799,11 +827,18 @@ class PassCensus:
                 elections[key] = kept
         for holder in self._ledger.holder_census().non_private_holders:
             key = holder.name
+            blocked.add(key)
             chosen = current.get("selections", {}).get(key)
             if (isinstance(chosen, dict)
                     and chosen.get("host") == self._ledger.base.name):
                 elections[key] = chosen
         current["elections"] = elections
+        from . import pool
+        now = pool._now()
+        current["suspended_measurements"] = {
+            key: chosen for key, (chosen, sampled) in self._foreign_refusals.items()
+            if key not in blocked and elections.get(key) == chosen
+            and 0 <= now - sampled <= adaptive_cpu.MAX_SAMPLE_AGE_S}
         self._census = current
         return current
 
@@ -910,7 +945,8 @@ def blocking_selection(census: dict, item: dict, *, host: str, funded_by: str | 
     """UNKNOWN-first: no current timed candidate proves a safe finish."""
     for key, chosen in sorted(census["elections"].items()):
         if (chosen["host"] == host and key != item["action_key"]
-                and int(item.get("priority", 0)) < chosen["priority"] and funded_by != key):
+                and int(item.get("priority", 0)) < chosen["priority"] and funded_by != key
+                and census.get("suspended_measurements", {}).get(key) != chosen):
             return chosen
     return None
 

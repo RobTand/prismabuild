@@ -754,6 +754,18 @@ on its host still keep protection. Other hosts and legitimate equal/higher
 priority work keep existing admission, placement and resource gates. No token,
 probe, borrow, CPU/GPU/foreign/PSI isolation or physical cleanup is waived.
 
+A current `measurement_foreign_ambient` CPU refusal suspends an elected
+measurement's fence for the rest of that claim pass (#2267). `PassCensus`
+keeps the exact selection and sample timestamp as pass-local evidence. Reuse
+requires the same selection in the refreshed sidecar, a fresh sample, an
+available measurement transition key, and no tokens held by the measurement.
+Each elected measurement must supply its own evidence. Lower-priority rows
+then face ordinary admission, while the measurement remains READY with its
+visible `adaptive_cpu_refused_starved` denial. The durable selection and
+original opportunity stay unchanged. A new pass, restart, stale evidence,
+or changed selection requires a new affirmative refusal before suspension.
+This component repair establishes no runtime deployment or campaign completion.
+
 Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
 reuses Controller's permanent inode/nonblocking flock; Controller delegates and
 retains its advisory diagnostic publication outside the gate. Capacity-backed
@@ -7591,6 +7603,14 @@ producer whose reads are not visible in the declaration can still require them
 to be declared.
 
 ## Whole-directory local resident sets (#1545)
+
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
