@@ -83,7 +83,7 @@ def verdict(rows: list[dict], selected: list[str], elapsed: float, tier: str) ->
     passed = green and complete and (tier != 'gpu' or not skips) and budget is not False
     counts: dict[str, int] = {}
     for row in rows:
-        for outcome, count in row['verdict'].get('reconciliation', {}).get('record_counts', {}).items():
+        for outcome, count in (row['verdict'].get('reconciliation') or {}).get('record_counts', {}).items():
             counts[outcome] = counts.get(outcome, 0) + count
     return {'verdict': 'PASS' if passed else 'FAIL', 'tier': tier, 'counts': counts,
             'wall_s': round(elapsed, 3), 'fast_under_600_s': budget,

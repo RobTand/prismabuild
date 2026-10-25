@@ -14,6 +14,7 @@ _FIX_TITLE = re.compile(
     r"(?:\([^)]*\))?(?:\s|:|$)", re.IGNORECASE,
 )
 _FIX_LABELS = {"bug", "fix", "bugfix", "regression", "type:bug", "type:fix"}
+_CHANGE_TYPES = {"fix", "bugfix", "feature", "docs", "refactor", "test", "chore", "perf", "build", "ci", "revert"}
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,13 @@ def is_fix(pull: dict) -> bool:
                 or re.search(r"(?im)^\s*change type:\s*(?:fix|bugfix)\s*$", pull["body"] or ""))
 
 
+def change_type(pull: dict) -> str | None:
+    declarations = re.findall(r"(?im)^[ \t]*change type:[ \t]*([^\r\n]*)", pull["body"] or "")
+    if len(declarations) == 1 and declarations[0].strip().lower() in _CHANGE_TYPES:
+        return declarations[0].strip().lower()
+    return None
+
+
 def _has_assertion(node: ast.AST) -> bool:
     return any(isinstance(child, ast.Assert) or (
         isinstance(child, ast.Call) and (
@@ -46,6 +54,9 @@ def _has_assertion(node: ast.AST) -> bool:
 
 def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
     tree = ast.parse(source)
+    asserted_helpers = {node.name for node in tree.body
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and _has_assertion(node)}
     tests = {}
     for scope in [tree, *(node for node in tree.body if isinstance(node, ast.ClassDef)
                           and (node.name.startswith("Test") or any(
@@ -63,14 +74,19 @@ def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
                     and isinstance(node.body[0].value, ast.Constant)
                     and isinstance(node.body[0].value.value, str)):
                 node.body.pop(0)
-            proof = _has_assertion(node)
+            proof = _has_assertion(node) or any(
+                isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                and child.func.id in asserted_helpers for child in ast.walk(node))
             tests[name] = (ast.dump(node, include_attributes=False), proof)
     return tests
 
 
 def evaluate(pull: dict, files: list[dict]) -> Verdict:
+    if change_type(pull) is None:
+        return Verdict(False, "Declare exactly one Change type: line in the PR body: "
+                       + ", ".join(sorted(_CHANGE_TYPES)) + ".")
     if not is_fix(pull):
-        return Verdict(True, "Not classified as a fix by title, labels or Change type.")
+        return Verdict(True, "Declared change is not classified as a fix by title, labels or Change type.")
     if len(files) != pull["changed_files"] or len(files) > 3000:
         return Verdict(False, "Incomplete PR file inventory; rerun after reducing the PR or repairing the API read.")
     changed = []

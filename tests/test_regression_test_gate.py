@@ -17,7 +17,7 @@ sys.modules[SPEC.name] = gate
 SPEC.loader.exec_module(gate)
 
 
-def pull(title="fix: repair claim ownership", *, labels=(), count=1, body=""):
+def pull(title="fix: repair claim ownership", *, labels=(), count=1, body="Change type: feature"):
     return {"title": title, "labels": [{"name": name} for name in labels],
             "body": body, "changed_files": count}
 
@@ -46,7 +46,7 @@ def test_bug_label_cannot_be_overridden_by_feature_title(label):
 
 def test_explicit_fix_type_is_classified_but_issue_closing_keyword_is_not():
     assert not gate.evaluate(pull("Guard owner", body="Change type: fix", count=0), []).allowed
-    assert gate.evaluate(pull("feat: new control", body="Fixes #4", count=0), []).allowed
+    assert gate.evaluate(pull("feat: new control", body="Change type: feature\nFixes #4", count=0), []).allowed
     assert gate.evaluate(pull("Add regression-test gate", count=0), []).allowed
 
 
@@ -154,3 +154,18 @@ def test_missing_invalid_or_ambiguous_change_type_is_rejected(body):
 def test_same_file_assertion_helper_qualifies():
     source = "def _assert_refused(value):\n    assert value == 'refused'\n\ndef test_refusal():\n    _assert_refused(claim())\n"
     assert gate.evaluate(pull(), [test_change(after=source)]).allowed
+
+
+@pytest.mark.parametrize("kind", ["feature", "docs", "refactor", "test", "chore", "perf", "build", "ci", "revert"])
+def test_declared_nonfix_does_not_require_a_test(kind):
+    assert gate.evaluate(pull("Add a control", count=0, body=f"Change type: {kind}"), []).allowed
+
+
+def test_helper_without_proof_or_a_second_hop_does_not_qualify():
+    source = "def _assert_refused(value):\n    assert value == 'refused'\n\ndef wrapper(value):\n    _assert_refused(value)\n\ndef test_refusal():\n    wrapper(claim())\n"
+    assert not gate.evaluate(pull(), [test_change(after=source)]).allowed
+
+
+def test_existing_helper_does_not_make_an_unchanged_test_new():
+    source = "def _assert_refused(value):\n    assert value == 'refused'\n\ndef test_refusal():\n    _assert_refused(claim())\n"
+    assert not gate.evaluate(pull(), [test_change(source, source)]).allowed

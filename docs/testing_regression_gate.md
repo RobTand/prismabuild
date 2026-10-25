@@ -5,22 +5,31 @@ behavior. It runs after this workflow reaches the default branch. Its own
 introducing PR is bootstrap evidence, not one of the five rollout observations.
 The check does not change branch protection.
 
-A fix has a title starting with `fix`, `fix(scope):`, `repair`, `bugfix` or
+Every PR must have exactly one `Change type:` line in its body. Supported values
+are `fix`, `bugfix`, `feature`, `docs`, `refactor`, `test`, `chore`, `perf`,
+`build`, `ci` and `revert`. Missing, invalid or repeated declarations reject the
+PR, including PRs whose titles do not look like fixes. This avoids relying on
+rarely used labels or title conventions. Use `Change type: fix` for a bug repair.
+
+A fix also has a title starting with `fix`, `fix(scope):`, `repair`, `bugfix` or
 `regression`, after optional `[priority]` prefixes. The labels `bug`, `fix`,
 `bugfix`, `regression`, `type:bug` and `type:fix` also classify it. An explicit
-`Change type: fix` or `Change type: bugfix` line does too. Closing an issue with
+`Change type: fix` or `Change type: bugfix` line does too. These signals override
+a non-fix declaration. Closing an issue with
 `Fixes #123` alone does not classify a feature PR as a fix.
 
 A qualifying change adds or changes a `test_*` function in a Python test file
 under `tests/`. Test classes start with `Test` or inherit a `TestCase` base.
 The function must contain `assert`, a unittest assertion, `pytest.raises`,
-`pytest.warns` or `pytest.fail`. AST comparison ignores comments, whitespace and
+`pytest.warns` or `pytest.fail`, or directly call a same-file module function
+containing one of those checks. Helper lookup follows one call only.
+AST comparison ignores comments, whitespace and
 docstrings. Changes only to fixtures, helpers, deleted tests or unchanged
 renamed files do not qualify. Parametrization changes on a qualifying test do.
 
 This is a presence check. The Principal Engineer still checks that the test
 reproduces the issue and passes with the fix, using linked PrismaBuild evidence.
-Assertion-free helper-driven tests and tests in other languages need a small
+Imported helpers, longer helper chains and tests in other languages need a small
 supported detector before they can satisfy this check. Do not add a meaningless
 assertion or bypass label. Record any false rejection during the optional rollout.
 
@@ -42,7 +51,10 @@ exit 2 rejects invalid input. The JSON verdict names qualifying tests.
 
 Keep an observation table on PRI-8 with PR URL, head SHA, workflow run URL,
 classification, result, reviewer verdict and false-rejection status. After at
-least five real PRs run without a false rejection, the authorized owner can add
+least five real PRs classified as fixes run without a false rejection, the authorized owner can add
 `regression-test` to branch protection while preserving `issue-link` and other
 existing requirements. Record the actual protection response and time on PRI-8.
 A dry run, synthetic fixture or planned protection change does not count.
+
+A test moved between different files can still count as new because comparison
+is per file. Reviewers must reject a move-only change as regression evidence.
