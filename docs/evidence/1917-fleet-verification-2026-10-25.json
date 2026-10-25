@@ -1,0 +1,391 @@
+{
+  "server_observations": {
+    "host": "dl380g10",
+    "kernel": "7.0.0-38-generic",
+    "boot_id": "eb8beaf6-5140-498f-ba73-86eae3025a96",
+    "raw_sha256": "0366a357512b63215c2148c9ba06ccd93b24385873e0793f6038dd139b7ed763",
+    "windows": [
+      {
+        "unix": 1792959898.805706,
+        "monotonic": 168296.332157485,
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 281\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "states_sha256": "92d9602dcb8070afc254d442227228d324ceca51807597c34dccd1cd83be2ad2",
+            "states_bytes": 1154,
+            "opens": 5,
+            "claim_done": 0
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "states_sha256": "113ce08e1400fe2424853b8144fbaf96e4c25408e213bcf4ca641b99cf0e5fa0",
+            "states_bytes": 1991921,
+            "opens": 8522,
+            "claim_done": 7756
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "states_sha256": "dee523e1cec17be3541e9e86123665c9bbc193cf61117de198e7e593e6ce07d2",
+            "states_bytes": 2234281,
+            "opens": 9908,
+            "claim_done": 9002
+          }
+        }
+      },
+      {
+        "unix": 1792959928.9130173,
+        "monotonic": 168326.439469046,
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 311\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "states_sha256": "14f6f83412ccc98499b5e202c544b4faed323a9a77fe64163820e5aa4dc7d856",
+            "states_bytes": 1353,
+            "opens": 5,
+            "claim_done": 0
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "states_sha256": "0e9c5ef1059d3083a023506fb72653d9e9ca25144e174f702776ecbbdedccc91",
+            "states_bytes": 1992383,
+            "opens": 8524,
+            "claim_done": 7758
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "states_sha256": "a0bf8220320b2e310cb6cda1198ece6b171ab35739431bc506424b64daeb93cb",
+            "states_bytes": 2236204,
+            "opens": 9915,
+            "claim_done": 9005
+          }
+        }
+      }
+    ]
+  },
+  "reproductions": {
+    "fork": {
+      "action_key": "f4d0a035aad9025a2117b16d33dd095bb1308a67ff4ad1c1d09ae027a5efcbc3",
+      "state": "done",
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792960095.8144982,
+        "finished_unix": 1792960101.46246
+      },
+      "sealed": {
+        "cas_root": "/mnt/shared/prismabuild-fleet/cas",
+        "checkout_root": null,
+        "checkout_snapshot": {
+          "commit": "0cc7db7aa0cba831597ac5f609cd8ba1ccfc5e44",
+          "input": {
+            "bytes": 44785552,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "4b2ec59dbb5bee422fea28a962c1d784773640294be6b74c490c9424c98a6fa6"
+          },
+          "parent": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "container_owner": "f58163bb3db163ff02421d5cdc17c0eaac9d2b17f17b0eb6eac7b0391e7f66df",
+        "max_attempts": 1,
+        "needs_gpu": false,
+        "preempted_by": null,
+        "priority": 0,
+        "published_by": "celestia",
+        "published_unix": 1792960094.7455664,
+        "resources": {
+          "cpu": 1,
+          "mem_gb": 1
+        },
+        "retry_safe": false,
+        "supersedes_withdrawal": null,
+        "tags": [
+          "interpreter-path-v1",
+          "sparky"
+        ],
+        "worker_script": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py"
+      },
+      "receipt": {
+        "action_key": "f4d0a035aad9025a2117b16d33dd095bb1308a67ff4ad1c1d09ae027a5efcbc3",
+        "action_manifest_sha256": "65a4a702c265761eca24a9fb6e46b17f9af40e9425b247278612fc141bb4eaaf",
+        "producer": {
+          "action_key": "f4d0a035aad9025a2117b16d33dd095bb1308a67ff4ad1c1d09ae027a5efcbc3",
+          "attestation_sha256": "acd69ce1d272f4fd09cc074918c7530d2596aeb89b0a32c0dbbda491f358997a",
+          "evidence": {
+            "accelerators": [
+              {
+                "compute_capability": "12.1",
+                "driver_version": "595.99.02",
+                "kind": "nvidia"
+              }
+            ],
+            "hostname": "sparky",
+            "libc": "glibc-2.39",
+            "machine": "aarch64",
+            "slurm": null,
+            "source": "local",
+            "system": "linux"
+          },
+          "executable": {
+            "bytes": 1543048,
+            "path": "/bin/bash",
+            "resolved_path": "/usr/bin/bash",
+            "sha256": "af955ef55333c8fc9c5aa50df91ad1a629d9a79a9afa125cd5e9629585f78015"
+          },
+          "host_class": null,
+          "inputs": [
+            {
+              "bytes": 44785552,
+              "id": "pbrun.checkout-snapshot",
+              "sha256": "4b2ec59dbb5bee422fea28a962c1d784773640294be6b74c490c9424c98a6fa6"
+            }
+          ],
+          "platform_key": "linux-aarch64-sm121",
+          "runtime": {
+            "core": {
+              "bytes": 305687,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py",
+              "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461"
+            },
+            "digest_primitives": {
+              "bytes": 5078,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/digest_primitives.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/digest_primitives.py",
+              "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf"
+            },
+            "launch_kind": "script",
+            "launcher": {
+              "bytes": 2285,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py",
+              "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418"
+            },
+            "runtime_sha256": "71f7e2ba9ab838bc401762f27ec910e7ae3b28f7419ab1abeba4f608b33336f8",
+            "schema": "prismaquant.prismabuild.worker_runtime.v1"
+          },
+          "schema": "prismaquant.prismabuild.worker_attestation.v2",
+          "toolchain": {
+            "declared": {},
+            "verified": {}
+          },
+          "worker_id": "sparky"
+        },
+        "receipt_sha256": "3b31abda1d13010da3f91fab5f6f345402a2da7cb738eec4bb0116713eb4d3b0",
+        "result": {
+          "bytes": 322,
+          "sha256": "e82b6b9c73035bd23028930daf5a8dc090b2bdb5559c2e90945ce39bd9e0384c"
+        },
+        "schema": "prismaquant.prismabuild.cas_receipt.v3"
+      },
+      "claim_checks": {
+        "claim_addressed_correctly": true,
+        "claim_digest_matches_body": true,
+        "claim_present": true,
+        "payload_bytes_match": true,
+        "payload_present": true,
+        "payload_sha256_match": true,
+        "receipt_binds_the_claims_manifest": true,
+        "receipt_present": true,
+        "receipt_self_consistent": true
+      },
+      "claim_checks_passed": true,
+      "claim_sha256": "3897795d49b60a1a74a97074081a91072d47796c9e32035dabc9d72e614950c1",
+      "payload_verified_bytes": 322,
+      "payload_verified_sha256": "e82b6b9c73035bd23028930daf5a8dc090b2bdb5559c2e90945ce39bd9e0384c",
+      "server_after": {
+        "unix": 1792960172.6197782,
+        "rows": {
+          "4": [],
+          "3": [
+            "- 0x0000000161d4db6a9637eda64f2be705: { type: open, access: -w, deny: --, superblock: \"00:46:46411910\", filename: \"PRI-46-fork-repro-sparky/claim-3463786.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6562ce705: { type: open, access: -w, deny: --, superblock: \"00:46:46411068\", filename: \"PRI-46-fork-repro-sparky/claim-3463803.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6d02de705: { type: open, access: -w, deny: --, superblock: \"00:46:46411414\", filename: \"PRI-46-fork-repro-sparky/claim-3463855.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda61c2ee705: { type: open, access: -w, deny: --, superblock: \"00:46:46411801\", filename: \"PRI-46-fork-repro-sparky/claim-3463861.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda65a2ee705: { type: open, access: -w, deny: --, superblock: \"00:46:46411807\", filename: \"PRI-46-fork-repro-sparky/claim-3463865.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6882ee705: { type: open, access: -w, deny: --, superblock: \"00:46:46411930\", filename: \"PRI-46-fork-repro-sparky/claim-3463873.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6fc2ee705: { type: open, access: -w, deny: --, superblock: \"00:46:46410695\", filename: \"PRI-46-fork-repro-sparky/claim-3463883.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda65031e705: { type: open, access: -w, deny: --, superblock: \"00:46:46406997\", filename: \"PRI-46-fork-repro-sparky/claim-3463927.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda66731e705: { type: open, access: -w, deny: --, superblock: \"00:46:46412162\", filename: \"PRI-46-fork-repro-sparky/claim-3463928.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6f832e705: { type: open, access: -w, deny: --, superblock: \"00:46:46411580\", filename: \"PRI-46-fork-repro-sparky/claim-3463948.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda67436e705: { type: open, access: -w, deny: --, superblock: \"00:46:46410848\", filename: \"PRI-46-fork-repro-sparky/claim-3463998.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6e036e705: { type: open, access: -w, deny: --, superblock: \"00:46:46407001\", filename: \"PRI-46-fork-repro-sparky/claim-3464003.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda66437e705: { type: open, access: -w, deny: --, superblock: \"00:46:46411240\", filename: \"PRI-46-fork-repro-sparky/claim-3464015.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda63138e705: { type: open, access: -w, deny: --, superblock: \"00:46:46385886\", filename: \"PRI-46-fork-repro-sparky/claim-3464025.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6a039e705: { type: open, access: -w, deny: --, superblock: \"00:46:46411490\", filename: \"PRI-46-fork-repro-sparky/claim-3464041.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6ca3ce705: { type: open, access: -w, deny: --, superblock: \"00:46:46410794\", filename: \"PRI-46-fork-repro-sparky/claim-3464086.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+          ],
+          "2": []
+        }
+      }
+    },
+    "direct": {
+      "action_key": "f0f1caabb36215933f420209361bfed14340503c1f497c9146340809ba1a86bd",
+      "state": "done",
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792960169.5486186,
+        "finished_unix": 1792960174.2966805
+      },
+      "sealed": {
+        "cas_root": "/mnt/shared/prismabuild-fleet/cas",
+        "checkout_root": null,
+        "checkout_snapshot": {
+          "commit": "30bf5eaea6cacfb35b7249862d7e7da8c16f1385",
+          "input": {
+            "bytes": 44785550,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "bed5226e01a6c03a703f32d981e0e3bf8ace9b9ee4c3db6e0fede9d5bd8afd0f"
+          },
+          "parent": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "container_owner": "483d7479c2cd16a6bc6fc394b3ed40da24595c298b3c4349aad4ede620d01989",
+        "max_attempts": 1,
+        "needs_gpu": false,
+        "preempted_by": null,
+        "priority": 0,
+        "published_by": "celestia",
+        "published_unix": 1792960168.4295669,
+        "resources": {
+          "cpu": 1,
+          "mem_gb": 1
+        },
+        "retry_safe": false,
+        "supersedes_withdrawal": null,
+        "tags": [
+          "interpreter-path-v1",
+          "sparky"
+        ],
+        "worker_script": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py"
+      },
+      "receipt": {
+        "action_key": "f0f1caabb36215933f420209361bfed14340503c1f497c9146340809ba1a86bd",
+        "action_manifest_sha256": "29c2710901f6019a83122eb276ce7c8122c9072b20477b5110852daff62b1341",
+        "producer": {
+          "action_key": "f0f1caabb36215933f420209361bfed14340503c1f497c9146340809ba1a86bd",
+          "attestation_sha256": "186c43288a535ae3ef3eb1ac8a61c0af391b9130ff4f730f8e283da0118b4870",
+          "evidence": {
+            "accelerators": [
+              {
+                "compute_capability": "12.1",
+                "driver_version": "595.99.02",
+                "kind": "nvidia"
+              }
+            ],
+            "hostname": "sparky",
+            "libc": "glibc-2.39",
+            "machine": "aarch64",
+            "slurm": null,
+            "source": "local",
+            "system": "linux"
+          },
+          "executable": {
+            "bytes": 1543048,
+            "path": "/bin/bash",
+            "resolved_path": "/usr/bin/bash",
+            "sha256": "af955ef55333c8fc9c5aa50df91ad1a629d9a79a9afa125cd5e9629585f78015"
+          },
+          "host_class": null,
+          "inputs": [
+            {
+              "bytes": 44785550,
+              "id": "pbrun.checkout-snapshot",
+              "sha256": "bed5226e01a6c03a703f32d981e0e3bf8ace9b9ee4c3db6e0fede9d5bd8afd0f"
+            }
+          ],
+          "platform_key": "linux-aarch64-sm121",
+          "runtime": {
+            "core": {
+              "bytes": 305687,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/core.py",
+              "sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461"
+            },
+            "digest_primitives": {
+              "bytes": 5078,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/digest_primitives.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/src/prismabuild/digest_primitives.py",
+              "sha256": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf"
+            },
+            "launch_kind": "script",
+            "launcher": {
+              "bytes": 2285,
+              "path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py",
+              "resolved_path": "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/prismabuild_worker.py",
+              "sha256": "9d6851f927ddf09e75d7eb187b49be9dbfba05274536d765077d93e26ec79418"
+            },
+            "runtime_sha256": "71f7e2ba9ab838bc401762f27ec910e7ae3b28f7419ab1abeba4f608b33336f8",
+            "schema": "prismaquant.prismabuild.worker_runtime.v1"
+          },
+          "schema": "prismaquant.prismabuild.worker_attestation.v2",
+          "toolchain": {
+            "declared": {},
+            "verified": {}
+          },
+          "worker_id": "sparky"
+        },
+        "receipt_sha256": "77d3aaf49a0b7e2177186903a7e4929be5715a9b60bb9ed3d44ecb8367f748ca",
+        "result": {
+          "bytes": 325,
+          "sha256": "39b13fc20e577ca1526acd589e8a09f548aae578aeeeb3490beeb939bdbefce4"
+        },
+        "schema": "prismaquant.prismabuild.cas_receipt.v3"
+      },
+      "claim_checks": {
+        "claim_addressed_correctly": true,
+        "claim_digest_matches_body": true,
+        "claim_present": true,
+        "payload_bytes_match": true,
+        "payload_present": true,
+        "payload_sha256_match": true,
+        "receipt_binds_the_claims_manifest": true,
+        "receipt_present": true,
+        "receipt_self_consistent": true
+      },
+      "claim_checks_passed": true,
+      "claim_sha256": "0f55b994d353f3271c5d938fcabc7ec2792807aca45f273b2963caee785a6d7a",
+      "payload_verified_bytes": 325,
+      "payload_verified_sha256": "39b13fc20e577ca1526acd589e8a09f548aae578aeeeb3490beeb939bdbefce4",
+      "server_after": {
+        "unix": 1792960188.2574666,
+        "rows": {
+          "4": [],
+          "3": [
+            "- 0x0000000161d4db6a9637eda656d5e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414227\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda658d5e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414228\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6f9d5e705: { type: open, access: -w, deny: --, superblock: \"00:46:46412748\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda65fd6e705: { type: open, access: -w, deny: --, superblock: \"00:46:46412901\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6afd7e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414366\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda633dae705: { type: open, access: -w, deny: --, superblock: \"00:46:46414736\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda64bdae705: { type: open, access: -w, deny: --, superblock: \"00:46:46414848\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda69fdae705: { type: open, access: -w, deny: --, superblock: \"00:46:46412781\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6d7dae705: { type: open, access: -w, deny: --, superblock: \"00:46:46408475\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6d9dae705: { type: open, access: -w, deny: --, superblock: \"00:46:46414628\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6ccdbe705: { type: open, access: -w, deny: --, superblock: \"00:46:46414284\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6e4dbe705: { type: open, access: -w, deny: --, superblock: \"00:46:46414004\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6e8dbe705: { type: open, access: -w, deny: --, superblock: \"00:46:46414492\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda672dce705: { type: open, access: -w, deny: --, superblock: \"00:46:46413855\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6e8dce705: { type: open, access: -w, deny: --, superblock: \"00:46:46414154\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda653dde705: { type: open, access: -w, deny: --, superblock: \"00:46:46414292\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6f4dee705: { type: open, access: -w, deny: --, superblock: \"00:46:46414648\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda612e0e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414765\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda6f6e1e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414073\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda640e2e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414077\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda654e2e705: { type: open, access: -w, deny: --, superblock: \"00:46:46415360\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda65ae2e705: { type: open, access: -w, deny: --, superblock: \"00:46:46415367\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda676e2e705: { type: open, access: -w, deny: --, superblock: \"00:46:46415372\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda610e3e705: { type: open, access: -w, deny: --, superblock: \"00:46:46414171\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+            "- 0x0000000161d4db6a9637eda623e4e705: { type: open, access: -w, deny: --, superblock: \"00:46:46415275\", filename: \"PRI-46-direct-repro-sparky/claim-3471156.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+          ],
+          "2": []
+        }
+      }
+    }
+  }
+}
