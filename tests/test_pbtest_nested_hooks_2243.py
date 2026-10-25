@@ -1,4 +1,3 @@
-Paperclip: GitHub capability_missing; continuing without managed credentials.
 """Nested dispatch and dead xdist workers retain individual test outcomes."""
 import pytest
 
