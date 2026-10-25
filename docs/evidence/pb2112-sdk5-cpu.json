@@ -1,0 +1,392 @@
+{
+  "schema": "prismabuild.pb2112.sdk5_cpu_inventory.v1",
+  "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+  "accepted_child": "855032b1f3f2edcef0b6cc49c16078942ea1644e",
+  "research_base": "b1168d0703f74e9bb8496a263f3f0f270d483959",
+  "terminal_disposition": "Exact unresolved supplier inventory, NOT a passing CPU tuple, artifact certification, runtime publication or end-to-end completion.",
+  "compatibility_packet": {
+    "status": "unresolved",
+    "scope": "Retain accepted packet identity without replacing or reconstructing original bytes",
+    "unresolved": [
+      {
+        "reference": "local://pb1485-sdk5-publication-compatibility-predecision.json#3441",
+        "operation": "Inventory exact local URI and expected digest from issue; assess interfaces supplied to this run (file/CAS readers do not resolve local:// attachments)",
+        "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+        "result": "Original 16732-byte packet not resolved to readable original bytes; no local:// attachment resolver or original readable file reference supplied. Accepted identity retained as attributed baseline, not authenticated contents.",
+        "prerequisite": "Existing authorized original packet bytes/reference resolving #3441; verify raw SHA256 50e87c70ea4c5c64161c7f7e5e77a424685ac42b26a53fdb6c26f276b445f46b before treating content as independently verified."
+      }
+    ],
+    "evidence": [],
+    "reference": "local://pb1485-sdk5-publication-compatibility-predecision.json#3441",
+    "sha256": "50e87c70ea4c5c64161c7f7e5e77a424685ac42b26a53fdb6c26f276b445f46b",
+    "expected_bytes": 16732
+  },
+  "consumer_dependency_deltas": [
+    {
+      "before": "Accepted packet identity retained unresolved; historical SDK4 mismatch is not assumed to describe current PQ. No earlier source state authenticated in this run.",
+      "after": "At served PQ dfc220bda04b8b355f45540f7f626852ec20653a, staged_lease pins exact027 and SDK version 5; shared connected-fixture JSON pins the same generation and 20 file digests. This is inspected source/configuration, not a deployment or executed qualification delta. No Tessera/interpreter dependency delivery is inferred.",
+      "evidence": [
+        {
+          "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+          "copy": "docs/evidence/pb2112/pq-current-source.txt",
+          "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+          "bytes": 21532
+        }
+      ]
+    },
+    {
+      "before": "Inherited October 4 missing-gate diagnosis is historical, not a current safe-route conclusion.",
+      "after": "Current PB documents implemented filesystem floors, reservation locking and submission/worker integration with explicit limitations. Live current route qualification remains independently owned and unresolved; no filesystem repair or dependency version change is claimed.",
+      "evidence": [
+        {
+          "reference": "prismabuild checkout HEAD 4aed1b637ef310b8a2c55b1cb5b50b0e4b6dc90f (not frozen027; research base b1168d0703f74e9bb8496a263f3f0f270d483959): selected source excerpts",
+          "copy": "docs/evidence/pb2112/pb-current-controls.txt",
+          "sha256": "77882bfa8069c00182ff82fc36f21002d4986f53bc881b24b33ff85da90a8853",
+          "bytes": 8666
+        }
+      ]
+    }
+  ],
+  "prior_documentary_references": {
+    "source_helper_archive_sha256": "94727274fd0515c5f1ee7c031c90c1106793ef22b38b286caf44f1755675677d",
+    "source_helper_action": "1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5",
+    "x86_git_install_guard_action": "20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6",
+    "accepted_child_qualification_action": "1a775d749efb0460cc76045d064284accaf03c4973f685ca2c0e3d0c010a27c1",
+    "accepted_child_qualification": "Inherited accepted-source observation: 65 native cases passed/26 deselected, 64 owner tests passed, five production modules compiled; retained without replay, not independently reauthenticated here.",
+    "evidence": [
+      {
+        "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+        "copy": "docs/evidence/pb2112/pq-current-source.txt",
+        "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+        "bytes": 21532
+      },
+      {
+        "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+        "copy": "docs/evidence/pb2112/retained-linkage.json",
+        "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+        "bytes": 7823
+      }
+    ],
+    "interpretation": "Original receipt and result bytes now read through authorized direct file interfaces. Result size/raw hash and queue stdout publication-receipt equality checked; these observations authenticate retained logs, not their reported archive or installation. Receipt identity fields are not raw file digests."
+  },
+  "prior_qualification_replayed": false,
+  "artifacts": {
+    "wheel": {
+      "status": "unresolved",
+      "scope": "Ordinary stdlib setuptools wheel; distinct from Git installation and full source/helper archive",
+      "unresolved": [
+        {
+          "reference": "prismabuild-0.1.0-py3-none-any.whl; supplier lead /mnt/shared/prismabuild-fleet/qualification/pb1485-sdk5-027103d9-20261004 (no exact retained wheel object supplied)",
+          "operation": "Inventory existing supplier/action references before any build; no replacement packaging or installation",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "No readable original wheel artifact reference identified by supplied retained records. Frozen packaging facts are inherited research: setuptools>=68, setuptools.build_meta, src discovery, prismabuild 0.1.0, Python>=3.12, no mandatory dependencies. They predict ordinary filename/tag, not authenticated wheel metadata or members.",
+          "prerequisite": "Authorized original wheel and producing action/request/receipt/content linkage, or independently qualified current safe route plus separate admitted supplier production. Authenticate METADATA, WHEEL purelib/tag and client/Core package members; do not fabricate direct_url."
+        }
+      ],
+      "evidence": [],
+      "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+      "filename": "prismabuild-0.1.0-py3-none-any.whl",
+      "build_backend": "setuptools.build_meta",
+      "build_requires": [
+        "setuptools>=68"
+      ],
+      "requires_python": ">=3.12",
+      "mandatory_dependencies": [],
+      "metadata_and_members_verified": false
+    },
+    "git_install": {
+      "status": "unresolved",
+      "scope": "Genuine exact027 noneditable Git provenance plus RECORD-byte and import ownership verification",
+      "unresolved": [
+        {
+          "reference": "action 20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6; /home/rob/venvs/pq-task-suite-layer-sdk5-20261009; original prismabuild-0.1.0.dist-info/direct_url.json and RECORD (exact metadata path not supplied)",
+          "operation": "Read original guard request, queue done, receipt and result blob; inspect observations without installing or importing from the historical interpreter",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "Result bytes authenticate to d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11 (18600 bytes). They report x86 Python 3.14, exact Git027, 48 verified files and task-suite passes. Original direct_url.json/RECORD and owning installed files are not supplied as readable retained objects; log alone cannot authenticate them. Current interpreter is not a substitute.",
+          "prerequisite": "Authorized retained original direct_url.json and RECORD, strict no-drift guard evidence linked to those installed bytes and import origin; source applicability independently checked. Wheel-only install is insufficient."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+          "copy": "docs/evidence/pb2112/retained-linkage.json",
+          "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+          "bytes": 7823
+        },
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/20/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+          "copy": "docs/evidence/pb2112/guard-receipt.json",
+          "sha256": "dce44503433834f37204ff9d1bfd0fc62199a41c194192e9181c632a0d0e7129",
+          "bytes": 2460
+        },
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/d1/d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+          "copy": "docs/evidence/pb2112/guard-result.txt",
+          "sha256": "d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+          "bytes": 18600
+        }
+      ],
+      "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+      "identity_drift_tolerated": false,
+      "original_metadata_authenticated": false
+    },
+    "source_helper_archive": {
+      "status": "unresolved",
+      "scope": "Immutable exact027 archive and full source/helper tree, not a wheel or deployed runtime",
+      "unresolved": [
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088",
+          "operation": "Reuse inherited access result; read original publication request/receipt/result through platform-readable CAS file paths; do not retry denied directory listing or PrismaBuildCAS.lookup",
+          "reader_context": "Inherited research reader context not further specified in supplied brief; current PB2112 file reader separately observed readable CAS records (see retained-linkage.json)",
+          "result": "Research listing of /mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009 returned permission_denied. Research PrismaBuildCAS.lookup of publication request failed through immutable_files.open_directory_nofollow: CASUnavailableError: cannot open CAS receipt parent filesystem root: [Errno 13] Permission denied: '/'. In this run direct file reads of original CAS records succeeded, including result raw SHA256/size; archive/tree bytes remain unauthenticated. No loss inferred.",
+          "prerequisite": "Existing authorized reviewer-readable original archive and helper-tree inventory, exact027 source binding, marker and 20 pinned-file byte verification. New authorized basis needed before any repeated denied operation."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+          "copy": "docs/evidence/pb2112/retained-linkage.json",
+          "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+          "bytes": 7823
+        },
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1a/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+          "copy": "docs/evidence/pb2112/publication-receipt.json",
+          "sha256": "c5590e51ddb08e77af2cec194d402d245f12cc332198aa1a262906f4c83c432d",
+          "bytes": 2458
+        },
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/01/0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+          "copy": "docs/evidence/pb2112/publication-result.txt",
+          "sha256": "0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+          "bytes": 427
+        }
+      ],
+      "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+      "archive_sha256": "94727274fd0515c5f1ee7c031c90c1106793ef22b38b286caf44f1755675677d",
+      "archive_bytes_authenticated": false,
+      "reported_tree_files": 1195,
+      "reported_pinned_files": 20
+    }
+  },
+  "layout": {
+    "status": "unresolved",
+    "scope": "Exact027 source/helper layout and observed behavior, separate from current route custody",
+    "unresolved": [
+      {
+        "reference": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088",
+        "operation": "Reuse inherited access result; read original publication request/receipt/result through platform-readable CAS file paths; do not retry denied directory listing or PrismaBuildCAS.lookup",
+        "reader_context": "Inherited research reader context not further specified in supplied brief; current PB2112 file reader separately observed readable CAS records (see retained-linkage.json)",
+        "result": "Research listing of /mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009 returned permission_denied. Research PrismaBuildCAS.lookup of publication request failed through immutable_files.open_directory_nofollow: CASUnavailableError: cannot open CAS receipt parent filesystem root: [Errno 13] Permission denied: '/'. In this run direct file reads of original CAS records succeeded, including result raw SHA256/size; archive/tree bytes remain unauthenticated. No loss inferred.",
+        "prerequisite": "Existing authorized reviewer-readable original archive and helper-tree inventory, exact027 source binding, marker and 20 pinned-file byte verification. New authorized basis needed before any repeated denied operation."
+      }
+    ],
+    "evidence": [
+      {
+        "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+        "copy": "docs/evidence/pb2112/pq-current-source.txt",
+        "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+        "bytes": 21532
+      },
+      {
+        "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+        "copy": "docs/evidence/pb2112/retained-linkage.json",
+        "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+        "bytes": 7823
+      }
+    ],
+    "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+    "required_helpers": [
+      "injected_context",
+      "acquire_for",
+      "open_pinned",
+      "release",
+      "covers_for_keys",
+      "READER_LEASE_TAG"
+    ],
+    "reused_retained_evidence": true,
+    "reuse_scope": "Reused original publication/guard logs and inspected consumer source only; no claim of reused passing layout qualification.",
+    "supplier_operation": {
+      "performed": false,
+      "reason": "No new causal layout work; missing current safe-route qualification and artifact bytes."
+    },
+    "import_origins": {
+      "status": "unresolved",
+      "scope": "Client and all loaded prismabuild modules must originate in one helper-root/src/prismabuild package",
+      "unresolved": [
+        {
+          "reference": "prismaquant staged_lease.py:507\u2013593; authenticated exact027 helper root",
+          "operation": "Inspect resolver and import-leak test source; do not redirect imports or substitute local installed SDK",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "Current resolver checks client origin and loaded-package coherence and refuses foreign modules. These are inspected requirements, not observed exact027 import origins in this run.",
+          "prerequisite": "Authenticated exact027 tree plus applicable retained original origin observations, or a separately admitted supplier operation after current route qualification."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+          "copy": "docs/evidence/pb2112/pq-current-source.txt",
+          "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+          "bytes": 21532
+        }
+      ]
+    },
+    "core_package_coherence": {
+      "status": "unresolved",
+      "scope": "Connected fixtures require Core and tools/fleet/stage_move.py from authenticated tree; source-bound objects must not outlive their scope",
+      "unresolved": [
+        {
+          "reference": "prismaquant tests/fullstack_pb_generation.py:26\u2013100 and tests/test_prismabuild_import_leak_1281.py:387\u2013458",
+          "operation": "Inspect selected digest authentication and source-bound restoration assertions",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "Inspected source authenticates declared bytes before detaching imports; scopes Core/tool/SDK together and restores afterward. No exact027 Core/tool execution or fixture pass observed here.",
+          "prerequisite": "Read and verify pinned file bytes and original coherent Core/tool/SDK origin and scope-lifetime evidence, or obtain them in separately admitted qualified-route supplier operation."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+          "copy": "docs/evidence/pb2112/pq-current-source.txt",
+          "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+          "bytes": 21532
+        }
+      ]
+    },
+    "native_producer_context": {
+      "status": "unresolved",
+      "scope": "Preserve selected native producer-context semantics separately from filesystem route evidence",
+      "unresolved": [
+        {
+          "reference": "prismaquant tests/test_pb_sdk5_pin_2152.py:78\u201384; accepted child qualification action 1a775d749efb0460cc76045d064284accaf03c4973f685ca2c0e3d0c010a27c1",
+          "operation": "Inspect require_native_producer_context signature assertion, capture binder and tag assertions; retain prior qualification without replay",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "Source asserts require_native_producer_context, bind_standard_capture_command and reader-lease-v1. A signature assertion or historical aggregate pass count does not independently authenticate selected native producer-context behavior or applicable exact-source execution.",
+          "prerequisite": "Authenticated retained selected native producer-context behavioral observations and original action/source/receipt linkage; if missing, separately admitted supplier operation on current qualified route. No API or semantics change authorized."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+          "copy": "docs/evidence/pb2112/pq-current-source.txt",
+          "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+          "bytes": 21532
+        }
+      ]
+    },
+    "shape": {
+      "status": "unresolved",
+      "scope": "Required scope only: helper-root/src/prismabuild plus Core and tools/fleet/stage_move.py; selected 20-file pin and generation-root basename",
+      "unresolved": [
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088",
+          "operation": "Reuse inherited access result; read original publication request/receipt/result through platform-readable CAS file paths; do not retry denied directory listing or PrismaBuildCAS.lookup",
+          "reader_context": "Inherited research reader context not further specified in supplied brief; current PB2112 file reader separately observed readable CAS records (see retained-linkage.json)",
+          "result": "Research listing of /mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009 returned permission_denied. Research PrismaBuildCAS.lookup of publication request failed through immutable_files.open_directory_nofollow: CASUnavailableError: cannot open CAS receipt parent filesystem root: [Errno 13] Permission denied: '/'. In this run direct file reads of original CAS records succeeded, including result raw SHA256/size; archive/tree bytes remain unauthenticated. No loss inferred.",
+          "prerequisite": "Existing authorized reviewer-readable original archive and helper-tree inventory, exact027 source binding, marker and 20 pinned-file byte verification. New authorized basis needed before any repeated denied operation."
+        },
+        {
+          "reference": "prismaquant tests/pb_runtime_generation_pin.json and tests/fullstack_pb_generation.py",
+          "operation": "Read current pin manifest/resolver and prior publication log",
+          "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+          "result": "Current manifest has 20 digest-bearing files; log reports 1195 tree files. Full tree and archive bytes not read. .pinned-source.json marker is documented; RUNTIME_VERSION.json is optional for this fixture. No broader layout matrix invented.",
+          "prerequisite": "Authenticate original archive/tree and same-source shape inventory against exact027 and selected pins; logs alone do not establish full tree membership."
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+          "copy": "docs/evidence/pb2112/pq-current-source.txt",
+          "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+          "bytes": 21532
+        },
+        {
+          "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/01/0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+          "copy": "docs/evidence/pb2112/publication-result.txt",
+          "sha256": "0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+          "bytes": 427
+        }
+      ]
+    }
+  },
+  "safe_route": {
+    "status": "unresolved",
+    "scope": "Independent current safe-route qualification, separate from source/layout correctness",
+    "unresolved": [
+      {
+        "reference": "prismabuild#2045, #2046, #2047, #2048, #2049, #2050; docs/filesystem_floor.md and docs/host_local_reservations.md",
+        "operation": "Inspect current documented filesystem/admission support; inventory independently owned current safe-route evidence supplied for this task",
+        "reader_context": "PB2112 implementer in TrustLadder worktree; authorized platform-readable file mounts and current served checkouts; no alternate account or privilege changes",
+        "result": "Source documents show implemented floors, host-local reservations and admission checks, with coverage limitations. No independently owned current safe-route action/request/receipt/profile qualification is identified in supplied evidence. No denial, route failure or October 4 gate defect is inferred; no route operation attempted.",
+        "prerequisite": "Obtain current exact-route qualification from #2045\u2013#2050, including action/request/receipt, route/profile applicability and admission/write-custody evidence, before a separately recorded missing-artifact supplier operation."
+      }
+    ],
+    "evidence": [
+      {
+        "reference": "prismabuild checkout HEAD 4aed1b637ef310b8a2c55b1cb5b50b0e4b6dc90f (not frozen027; research base b1168d0703f74e9bb8496a263f3f0f270d483959): selected source excerpts",
+        "copy": "docs/evidence/pb2112/pb-current-controls.txt",
+        "sha256": "77882bfa8069c00182ff82fc36f21002d4986f53bc881b24b33ff85da90a8853",
+        "bytes": 8666
+      }
+    ],
+    "dependency_issues": [
+      2045,
+      2046,
+      2047,
+      2048,
+      2049,
+      2050
+    ]
+  },
+  "cpu_tuple_qualified": false,
+  "consumer_pin_changes": false,
+  "runtime_publication": false,
+  "supplier_operation": {
+    "performed": false,
+    "reason": "Reuse/authentication attempted first. Missing original artifact and current safe-route prerequisites not established; no build, install, submit, repair or replacement operation performed."
+  },
+  "retained_evidence": [
+    {
+      "reference": "prismaquant dfc220bda04b8b355f45540f7f626852ec20653a: selected source excerpts",
+      "copy": "docs/evidence/pb2112/pq-current-source.txt",
+      "sha256": "c3ed077ba0ced9139397470e1c5fdfc85f11f7574f82f6f6abee657d69235f85",
+      "bytes": 21532
+    },
+    {
+      "reference": "prismabuild checkout HEAD 4aed1b637ef310b8a2c55b1cb5b50b0e4b6dc90f (not frozen027; research base b1168d0703f74e9bb8496a263f3f0f270d483959): selected source excerpts",
+      "copy": "docs/evidence/pb2112/pb-current-controls.txt",
+      "sha256": "77882bfa8069c00182ff82fc36f21002d4986f53bc881b24b33ff85da90a8853",
+      "bytes": 8666
+    },
+    {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1a/1a525af7c723625c16b9279b726c66120f07b5c5945008ceeea186b9964b42b5.json",
+      "copy": "docs/evidence/pb2112/publication-receipt.json",
+      "sha256": "c5590e51ddb08e77af2cec194d402d245f12cc332198aa1a262906f4c83c432d",
+      "bytes": 2458
+    },
+    {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/01/0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+      "copy": "docs/evidence/pb2112/publication-result.txt",
+      "sha256": "0182c4c4638bb2a701b38ecd6dbf38e2a42bbf1356882cdaebb35b3ddc0a6c3c",
+      "bytes": 427
+    },
+    {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/actions/v3/20/20cb79a0504632a78f6412465012eb868f56f5a432b4717cba6ff3c619560bb6.json",
+      "copy": "docs/evidence/pb2112/guard-receipt.json",
+      "sha256": "dce44503433834f37204ff9d1bfd0fc62199a41c194192e9181c632a0d0e7129",
+      "bytes": 2460
+    },
+    {
+      "reference": "/mnt/shared/prismabuild-fleet/cas/blobs/d1/d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+      "copy": "docs/evidence/pb2112/guard-result.txt",
+      "sha256": "d14677b077361eb8579773894bccd8bf5e7efa99f6a17414560d76814907fd11",
+      "bytes": 18600
+    },
+    {
+      "reference": "Read-only projections from original CAS requests and queue done records; raw receipts/results copied separately",
+      "copy": "docs/evidence/pb2112/retained-linkage.json",
+      "sha256": "2f8ca56ca4ab9be723704dc413bfa77d72396c4822a235911986de78cd93f645",
+      "bytes": 7823
+    }
+  ],
+  "boundaries_and_ownership": "Parent #1485 retains compatibility preparation; #2045\u2013#2050 filesystem prerequisites; #2113 interpreter pack; #2114 GB10 evidence; #2115 campaign dossier. Unavailable evidence is not artifact loss, an infrastructure repair mandate or a demonstrated need for human privilege."
+}

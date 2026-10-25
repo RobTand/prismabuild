@@ -1,0 +1,301 @@
+{
+  "issue": 2045,
+  "parent_issue": 1483,
+  "artifact_kind": "Parent review packet only: not a runtime registry, accounting ledger, second validator or operational qualification",
+  "runtime_changes_authorized": false,
+  "provenance": {
+    "original_base": "be8c2e28a1d53984bad992d8a8928a25a66fbb28",
+    "issue_inspected_main": "a85f3886c3c12ce55f05ae3be66ba2c3fef3fe36",
+    "reconciled_main": "Supplied integration base 7bf539a90402fbab88f58bd834e2abf7ee5e1e34; implementation inspection HEAD 966ecae6d4a17d2c26acebcaa444a57ac9884ca2 adds only the research acceptance test. git merge-base --is-ancestor confirms both original_base and issue_inspected_main are ancestors. git diff from issue_inspected_main through HEAD shows no changes to filesystem_floor.py, submission.py or tier_cycle.py. This is bounded repository inspection, not a deployment inventory.",
+    "isolated_worktree": "Supplied isolated worktree/branch tl/prismabuild-c03cfb5c2fe8-wp1 retained; no branch creation, source changes, commits or integration actions performed here.",
+    "later_main_changes": "tools/fleet/supervise.py adds pbtest_scratch_roots/owned_tree imports, _sweep_pbtest_scratch and periodic supervisor expiry integration after inspected main. Preserve that existing separate outcome; it does not prove storage allowances, physical mapping or scratch producer-byte enforcement. No recreation of existing floor, write_window or tier serve primitives."
+  },
+  "evidence_method": "Paths and named functions below cite inspected source capabilities. Every domain remains blocked for deployment evidence. Configuration supplies actual paths, identities, capacities and versions; no hostname, Netdata measurement or historical population is substituted for authority. Acceptance tests check packet structure only, not accounting semantics, authenticated mapping, population closure or approval.",
+  "c437_evidence_boundary": "Published c437 observations are accepted historical intake, not evidence of the current deployed population, runtime, mappings, bounds or operational qualification.",
+  "pr1490_disposition": "Historical draft PR1490's filesystem_capacity.reserve_operation architecture is not adopted. Reconcile the already-landed filesystem_floor shared guard and its existing host/tier/claim owners. No new ledger, dispatcher or parallel validator.",
+  "existing_work": {
+    "filesystem_floor": {
+      "source": "src/prismabuild/filesystem_floor.py: identify, register, refresh_binding, ledger_gate, check_paths, operation, floor_status; src/prismabuild/pool.py: ResourceLedger",
+      "present_behavior": "Existing shared owner of physical identity, binding members, samples, admission and coordinator growth reservations. Local block UUID/fallback and ZFS pool identities are not host labels. Descriptor-based identify samples an opened directory, but closes it; this is a snapshot, not a retained pin for subsequent pathname writes. Mode defaults off. Whole held spool_gb/stage_gib/filesystem_gib reservations are counted; byte and existing inode protections remain.",
+      "remaining_gap": "Listed members and tolerant census do not prove all writers included. NFS server-address routing does not authenticate export backing identity. No supplied deployment closure, complete bounds, retained-path identity continuity or verified materialization accounting. Unknowns must HOLD in the dependent contract, without changing current default-off behavior here."
+    },
+    "submission_write_window": {
+      "source": "src/prismabuild/submission.py: write_window, preparation, submit, submit_action, dispatch_resident, adopt_resident; tools/fleet/pbcampaign.py",
+      "present_behavior": "write_window checks cwd, CAS, queue and tempfile storage; for pool transport reserves filesystem_growth_gib against the CAS filesystem. preparation already wraps package preparation and child sealing in this window. submit exits the window before invoking its returned waiter. Campaign preparation is not wholly unguarded.",
+      "remaining_gap": "Checking multiple paths does not allocate a bound on each destination. Package preparation is not all subsequent publication, result ingestion or normal action custody. Actual per-filesystem simultaneous bounds and an operation-to-action custody seam remain dependencies; no bootstrap exemption."
+    },
+    "tier_serve": {
+      "source": "src/prismabuild/tier_cycle.py: _serve, _serve_cycles; src/prismabuild/storage_tiers.py: TierLedger; src/prismabuild/staged_path.py",
+      "present_behavior": "Existing maintenance parking precedes startup mutations. Cooperative signals stop at completed-cycle boundaries; floor loop maintenance already runs in the tier lifecycle. Tier discovery, reservations and stage mutation lifecycles already exist.",
+      "remaining_gap": "Do not recreate these primitives. Tier records, stage deletion authority and returned tokens are not proof of physical mapping, closed populations or removal of partial/retry copies. Stage residence may outlive the mover."
+    }
+  },
+  "custody": {
+    "integration_owner": "Qualified merge queue expediter",
+    "guard_implementer": "Qualified merge queue expediter.Operative used-filesystem guard repair",
+    "security_reviewer": "Retain the already designated independent security reviewer under #1483; this bounded context supplies no more specific identity or approval. No new assignment or replacement reviewer is invented.",
+    "diagnostic_assessor": "Retain Qualified merge queue expediter.Used-filesystem diagnostic route assessment as independent diagnostic owner; diagnostic assessment is not a second validator or guard implementation.",
+    "parent_review": "Packet addressed to #1483 through Qualified merge queue expediter and its sole Operative used-filesystem guard repair owner. Request explicit attributed parent acceptance of conservative whole-reservation bounds, distinct from general historical authority to extend existing owners. No such acceptance supplied. TrustLadder owns comment publication and workflow transitions."
+  },
+  "population_contract": {
+    "existing_owner": "Existing host ResourceLedger, TierLedger and claim owners through the sole guard implementer; descriptor/tier owner supplies physical and member authority; supervisor/worker-offer owner supplies host/offer evidence. floor_status discovery is diagnostic, not closure authority.",
+    "membership_and_version": "Require a reviewer-readable versioned authoritative snapshot enumerating every writer, allowance kind, ledger root, private namespace, host/tier/claim owner, destination variant and physical backing key. Bind snapshot digest/epoch and effective interval to mapping and allowance snapshots; include enrollment/removal authority and fencing of obsolete writers. A binding members array and census are only declarations. Closing a version requires proof no other writers or acquisitions can enter outside that version; unknown population HOLD.",
+    "private_and_committed": "Include private begin_acquire handles before claim commit, committed action holders, coordinator operation holders, transfers, staged residence, retained source windows and inaccessible/orphaned records. held_keys omits private acquisitions; held/held_keys tolerate missing/unreadable observations and cannot certify completeness or liveness. Do not use an empty scan to assign zero allowance.",
+    "locking_and_recovery": "Specify existing-owner lock order and atomic acquisition/census/publication boundary with grants-since-sample, private-to-committed moves and fenced transfer epochs. Include failed commit/rollback, stale lease, crash, reboot, lost writer, partial release and orphan recovery. Existing host/tier/claim owners must retain conservative charges until reconciled; operation lease reaping alone is not evidence payload/residue disappeared. Mapping or population version changes require revalidation and a fresh coherent sample before admission.",
+    "partial_or_unreadable": "Missing/unreadable ledger, stale member, uncertain token visibility, conflicting owner, inaccessible record or partial snapshot means HOLD, not silently zero. Require explicit bounded reconciliation and owner-attributed recovery evidence before reopening. floor_status unbound-ledger scans can skip unreadable directories and cannot prove a closed world.",
+    "authenticated_nfs_mapping": "Descriptor/tier owner must supply authenticated, versioned client mount/export/namespace to server backing filesystem or dataset and shared physical capacity key mapping, with server authority, export aliases, validity and remount/failover/re-export invalidation. Bind observed client descriptor/mount generation to that authority and server capacity sample. NFS addr= matching against server_addresses is conservative routing only, not authenticated export mapping. Neither hostname nor server IP proves backing FSID; uncertain mapping HOLD. ZFS datasets sharing pool capacity require both dataset constraints and shared backing aggregation, never independent spend of the same free pool.",
+    "unknown_allowance_policy": "hold",
+    "unknown_mapping_policy": "hold"
+  },
+  "domain_rules": {
+    "application": "Every domain below inherits population_contract and accounting. Entries are obligations for the parent repair, not deployed certifications. Shared paths may alias or split across filesystems; resolve using actual configured destinations and authoritative descriptors, not these category names.",
+    "freshness": "Require effective mapping/population/allowance versions, sample capture identity and time, bounded age and coherent acquisition ordering. Timestamp or PID alone is insufficient. Revalidate after mount, boot, process, configuration, tier, lease or ownership changes. Keep all unobserved grants conservatively charged; unknown freshness HOLD.",
+    "aliasing": "Deduplicate physical capacity samples by authenticated backing key, but sum distinct simultaneous obligations on that key. Different categories or different paths are not inherently different disks. Do not deduplicate source/destination bytes merely because their filesystem aliases. A single reservation may be counted once only with uniquely proven ownership and coverage; otherwise HOLD rather than guess.",
+    "bounds": "Every bound must be finite, owner-approved and cover maximum simultaneous live, private, committed, retry and failure-residue growth including metadata, control records, allocation expansion and logs. Retention policy is not an active-write ceiling; cleanup intent or token return does not prove freed bytes. No complete deployment bounds were supplied."
+  },
+  "domains": [
+    {
+      "id": "coordinator",
+      "write_paths": "SubmissionRequest.cwd/source Git/common-dir state, configured FleetStore CAS and queue, tempfile.gettempdir; package preparation, child sealing and later publication are distinct windows.",
+      "descriptor_fsid_authority": "filesystem_floor.identify/check_paths on actual cwd/CAS/queue/temp; descriptor/tier owner supplies authenticated remote backing mapping. Open descriptor is snapshot only.",
+      "allowance_owner": "filesystem_floor.operation and existing coordinator growth ResourceLedger; sole guard implementer owns integration, not a new coordinator ledger.",
+      "reservation_lifecycle": "Operation holder acquired for write_window, released on exit, ownership lease recovered by existing reaper. preparation already uses window; later publication/action lifetime requires its own existing-owner custody.",
+      "freshness_rule": "Fresh coherent sample and mapping/population versions at each write window; no inference from prior preparation success.",
+      "complete_growth_bound": "Simultaneous source snapshot/Git expansion, packaging buffers on disk, child requests, CAS ingestion temporaries, queue publication/control files, diagnostics and abandoned preparation residue; CAS-only growth reservation is not coverage of distinct cwd/temp/queue growth.",
+      "population_closure": "Close all coordinator processes, APIs and publications including private operation acquisitions via population_contract; unknown caller or ledger HOLD.",
+      "alias_deduplication": "Resolve cwd, source-bank, CAS, queue and temp individually; aggregate all charges sharing physical key, not just CAS.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/submission.py", "src/prismabuild/filesystem_floor.py", "tools/fleet/pbcampaign.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing descriptor/tier and coordinator claim owners",
+      "unblock_condition": "#1483 receives versioned actual destination mappings, closed coordinator allowance snapshot and complete preparation/publication bounds with explicit lifetime handoff."
+    },
+    {
+      "id": "worker",
+      "write_paths": "worker_loop queue and SH/cas, pool.LOCAL_CHECKOUT_ROOT, configured local scratch/spool, generated outputs and control files. Worker admission currently lists queue, CAS and checkout, not supervisor LOG_DIR.",
+      "descriptor_fsid_authority": "filesystem_floor.host_admission/identify plus existing descriptor/tier owner for each actual destination; supervisor offers measure one path, not every destination.",
+      "allowance_owner": "Existing host ResourceLedger and normal action claim owner; supervisor/worker-offer owner declares host spool supply.",
+      "reservation_lifecycle": "Private acquire before ready-to-claimed winner, commit to action holder, retain through action/attempt recovery and owner release; ended action is not proof all bytes removed.",
+      "freshness_rule": "Versioned supervisor declarations and measured offers tied to boot/process/config plus fresh physical samples; read_spool_offer timestamp/PID does not alone prove freshness.",
+      "complete_growth_bound": "All concurrent claims plus generated outputs, checkouts, scratch, transient copies, source expansion, queue metadata and worker diagnostics, including failed attempts and cleanup residue.",
+      "population_closure": "Authoritative all-loop/all-claim population includes private handles, orphan records and writers outside offer inventory; tolerant held scans are insufficient.",
+      "alias_deduplication": "Join actual scratch/spool/checkout/log destinations to descriptor keys independently; spool_gb is host aggregate, not filesystem routing.",
+      "evidence_status": "blocked",
+      "source_refs": ["tools/fleet/worker_loop.py", "tools/fleet/supervise.py", "src/prismabuild/pool.py", "src/prismabuild/local_scratch.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining existing supervisor/worker-offer owner evidence and descriptor/tier owner mappings",
+      "unblock_condition": "#1483 receives actual host destination/offer versions, freshness semantics, closed claim population and complete per-filesystem concurrent worker bounds."
+    },
+    {
+      "id": "cas",
+      "write_paths": "FleetStore.cas_root for submission snapshots/requests; worker CAS result/log/receipt ingestion; immutable payload destination and adjacent ingestion temporaries may differ from local preparation temp.",
+      "descriptor_fsid_authority": "Actual CAS parent descriptor via filesystem_floor; authenticated export/backing authority from descriptor/tier owner, not shared-root spelling.",
+      "allowance_owner": "Coordinator operation owner for preparation, normal worker claim/result owner for execution publication; #2093 owns CAS/result write staging interface separately.",
+      "reservation_lifecycle": "Reserve before ingestion, retain through temporary/final publication and failure reconciliation; package-window exit is not authority to release future result growth.",
+      "freshness_rule": "Revalidate mapping and coherent capacity/allowance sample at each ingestion/publication boundary, including remote routes and retries.",
+      "complete_growth_bound": "Compressed inputs plus Git/extraction expansion where written, concurrent CAS blobs, temporary and final coexistence, requests/results/log blobs, index/control metadata and interrupted ingestion residue; input size alone is not demand.",
+      "population_closure": "Include coordinator, worker, export and recovery writers and private/committed reservations; no inference of closure from CAS immutability.",
+      "alias_deduplication": "CAS may share queue/source-bank/stage backing; aggregate distinct payload and metadata charges once per capacity key; content-address equality alone does not prove no transient duplicate.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/core.py", "src/prismabuild/submission.py", "src/prismabuild/pool.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair with descriptor/tier and existing claim owners; #2093 supplies its staging interface",
+      "unblock_condition": "#1483 receives authoritative CAS destination and allowance snapshot covering preparation and later result writers, full peak ingestion bounds and custody/recovery rules; do not implement #2093 here."
+    },
+    {
+      "id": "queue",
+      "write_paths": "Configured queue root: rows, reservations, offers, claim/lease records, tier/floor bindings and samples, events, prewarm state, produced-spool journals and atomic-write temporaries.",
+      "descriptor_fsid_authority": "Queue parent descriptor/FSID and authenticated export authority via existing descriptor/tier owner.",
+      "allowance_owner": "Existing coordinator/host/tier/claim owners for their respective control mutations, not a second metadata ledger.",
+      "reservation_lifecycle": "Private and committed reservations coexist with persistent rows/events; control records and recovery evidence can survive action release.",
+      "freshness_rule": "Coherent population/allowance versions and capacity sample; queue visibility/cache lag cannot be treated as zero charges.",
+      "complete_growth_bound": "Concurrent publication/claim records, atomic temporary replacements, journals/events, reservation metadata, failure receipts and recovery history; payload windows do not automatically bound control growth.",
+      "population_closure": "Enumerate every control writer and retention lifetime, including prewarm/tier/supervisor/retirement writes and inaccessible ledger records.",
+      "alias_deduplication": "Queue namespaces are not physical domains; map all aliases and aggregate with CAS/stage/log backing if shared.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/queue_publication.py", "src/prismabuild/pool.py", "src/prismabuild/filesystem_floor.py", "src/prismabuild/produced_spool.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing claim/control and descriptor/tier owners",
+      "unblock_condition": "#1483 receives closed control-writer inventory, versioned queue mapping and finite concurrent metadata/journal/recovery bounds with existing-owner lifetimes."
+    },
+    {
+      "id": "checkout",
+      "write_paths": "PRISMABUILD_LOCAL_CHECKOUT_ROOT or caller root, private temporary checkout trees, supplied live checkout when no snapshot, source-bank/Git common directory and cleanup-failures records.",
+      "descriptor_fsid_authority": "Actual source-bank, checkout and temp descriptors through existing descriptor/tier owner; materialize names trees but does not authenticate physical mappings.",
+      "allowance_owner": "materialize/pool existing checkout creation and cleanup owners with host/action reservations; snapshot input ceiling is not a complete growth allowance.",
+      "reservation_lifecycle": "Creation through execution, generated files and cleanup; best-effort cleanup records failures and opportunistic dead-tree reap. Live checkout does not inherit private cleanup. Retain residue obligations through recovery.",
+      "freshness_rule": "Validate configured root and mapping each creation/reuse; cleanup evidence must bind exact owner/tree identity, not just age.",
+      "complete_growth_bound": "Source-bank Git objects, packed/unpacked extraction and worktree, simultaneous input/archive/temp, generated outputs, active sibling attempts, failed/dead trees and cleanup metadata; compressed snapshot byte limit is not total demand.",
+      "population_closure": "Enumerate all active/private/live/shared checkouts, source-bank users and unreaped failures under existing owners, not just current claims.",
+      "alias_deduplication": "Source bank, checkout, temp, CAS and output may alias or split; charge each simultaneous copy on actual backing even on same filesystem.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/materialize.py", "src/prismabuild/pool.py", "src/prismabuild/submission.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining existing materialize/claim and descriptor/tier owner evidence",
+      "unblock_condition": "#1483 receives versioned source/checkouts map and complete Git/extraction/generated-output/residue ceilings with recovery custody. New scratch-backend/source-sharing issues remain separate."
+    },
+    {
+      "id": "logs",
+      "write_paths": "Supervisor worker stdout/stderr under supervise.LOG_DIR (pb-worker leaves); distinct from queue attempt evidence and role logs. LOG_DIR is not explicitly in worker floor path list.",
+      "descriptor_fsid_authority": "Actual supervisor-opened log parent descriptor and mapping supplied through supervisor/worker-offer owner and descriptor/tier owner, not worker checkout identity.",
+      "allowance_owner": "Existing supervisor worker-log lifecycle owner; host declaration alone supplies no active-log reservation bound.",
+      "reservation_lifecycle": "Append while worker is active; worker_log_retention removes only safely owned inactive candidates. Unknown open-descriptor evidence retains files.",
+      "freshness_rule": "Bind actual active descriptor/inode, supervisor incarnation and configuration to fresh sample; old pathname evidence is insufficient after replacement.",
+      "complete_growth_bound": "All active worker streams, retained inactive files, concurrent append and error bursts, retention failures and diagnostic metadata; age/candidate-count cleanup is not an active byte ceiling.",
+      "population_closure": "Include every supervisor and open log writer, not only current action owners.",
+      "alias_deduplication": "Resolve LOG_DIR separately; aggregate with checkout/scratch only if authoritative key proves alias.",
+      "evidence_status": "blocked",
+      "source_refs": ["tools/fleet/supervise.py", "tools/fleet/worker_loop.py", "src/prismabuild/worker_log_retention.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair through existing supervisor/worker-offer and descriptor/tier owners",
+      "unblock_condition": "#1483 receives actual log destination mappings, closed open-writer population and finite active plus retained log bounds and recovery rules."
+    },
+    {
+      "id": "role-logs",
+      "write_paths": "Supervisor LOG_DIR pb-role leaves for tiers/prewarm and other roles; optional prewarm --log appends another configured JSONL destination.",
+      "descriptor_fsid_authority": "Supervisor/role actual opened destinations plus descriptor/tier mapping authority; optional --log may reside elsewhere.",
+      "allowance_owner": "Existing supervisor role-log and individual role writer owners, coordinated through sole guard implementer.",
+      "reservation_lifecycle": "Role logs append and are best-effort in-place trimmed under identity checks; optional prewarm log has separate writer lifetime and no demonstrated bound.",
+      "freshness_rule": "Bind supervisor/role incarnation, actual descriptors, configuration and sample epoch; trimming success is not future capacity evidence.",
+      "complete_growth_bound": "Concurrent growth during trimming, all active role streams, retained diagnostic state, optional duplicate JSONL and failure/retry logs; trim threshold is not a hard maximum.",
+      "population_closure": "Enumerate all roles and direct log options, not merely worker count.",
+      "alias_deduplication": "Resolve role and optional JSONL paths separately; same emitted event written twice consumes both allocations.",
+      "evidence_status": "blocked",
+      "source_refs": ["tools/fleet/supervise.py", "src/prismabuild/prewarm_loop.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing supervisor/worker-offer and descriptor/tier owners",
+      "unblock_condition": "#1483 receives closed role/log destination snapshot and finite active/retained/duplicate-log bounds."
+    },
+    {
+      "id": "attempt-logs",
+      "write_paths": "Pool attempt stdout/stderr payloads and immutable evidence under actual configured queue/CAS paths; SLURM diagnostic output destinations are a distinct transport variant.",
+      "descriptor_fsid_authority": "Actual attempt capture, filing and SLURM destination descriptors mapped by descriptor/tier owner, not supervisor LOG_DIR.",
+      "allowance_owner": "Existing action/attempt claim owner; #2094 owns reserved attempt-log write-tier custody, #2095 owns SLURM diagnostic destinations.",
+      "reservation_lifecycle": "Capture through filing/receipt and durable evidence retention, including failed attempts; attempt end does not prove capture/final copies removed.",
+      "freshness_rule": "Bind exact action/generation/attempt and destination mapping to fresh pre-write sample and publication evidence.",
+      "complete_growth_bound": "Active stdout/stderr, local capture and remote filing coexistence, CAS payload plus queue references, retries, diagnostic drains and partial filing residue.",
+      "population_closure": "Include pool and configured SLURM writers and all still-retained attempts, not supervisor retention census.",
+      "alias_deduplication": "Map capture, CAS, queue and scheduler destinations individually; charge simultaneous copies even if aliases.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/pool.py", "src/prismabuild/slurm_lane.py", "src/prismabuild/core.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing claim/descriptor owners and #2094/#2095 interface suppliers",
+      "unblock_condition": "#1483 receives versioned attempt/transport destinations and finite capture/filing/retention bounds with reservation lifetime. Do not implement #2094 or #2095 here."
+    },
+    {
+      "id": "stage",
+      "write_paths": "Discovered storage_tiers stage dataset mountpoints, local tier policy roots and RAM/tmpfs variants; staged_path input ranges and produced-output namespaces, .partial and retry/adoption copies; source remains elsewhere during transfer.",
+      "descriptor_fsid_authority": "Existing storage_tiers descriptor/tier owner supplies actual mount/dataset and physical backing authority. Advisory tier records and staged_path registered root deletion authority alone do not prove physical mapping.",
+      "allowance_owner": "Existing TierLedger, staged_path residence/pin and mover claim owners; tier_cycle manages mutations.",
+      "reservation_lifecycle": "Reservation before copy, residence/pins after mover, owner-aware eviction/reconciliation; tokens can return while killed mover .partial or renamed bytes remain. Active/ready writers and uncertain adoption delay reclamation.",
+      "freshness_rule": "Fresh discovery, mapping/population and capacity epoch; rediscover/remap on dataset/mount/policy/reboot changes. RAM and ARC budgets are not interchangeable with persistent disk.",
+      "complete_growth_bound": "Concurrent source and destination, partial ranges, produced-output copies, retries/adoption, resident pins, metadata and failed-mover residue over full residence lifetime; mover execution bound alone is incomplete.",
+      "population_closure": "All TierLedger holders, private acquisitions, resident objects, fragments/co-owners, pins, partials and orphans must be closed by existing tier/claim owners.",
+      "alias_deduplication": "Map datasets to shared pool key while retaining dataset availability constraints; stage/root aliases and produced-output namespaces do not create new free capacity.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/storage_tiers.py", "src/prismabuild/staged_path.py", "src/prismabuild/tier_cycle.py", "src/prismabuild/movement_actions.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining existing descriptor/tier and stage/claim owner evidence",
+      "unblock_condition": "#1483 receives authenticated stage/backing and member snapshot plus full residence/partial/retry/recovery bounds, not merely advisory tier offers."
+    },
+    {
+      "id": "prewarm",
+      "write_paths": "prewarm_loop mount-map SHARED=LOCAL read paths; persistent writes are actual queue/event/control records, stdout role log and optional --log, not the warmed payload read itself.",
+      "descriptor_fsid_authority": "Descriptor/tier owner authenticates mount-map backing and separately maps queue/event/log destinations; mapping spelling alone is not authority.",
+      "allowance_owner": "Existing prewarm control/claim owners for writes. Admission, HoldLedger and DiskPacer govern speculative reads, memory and pacing, not persistent-storage byte allowances.",
+      "reservation_lifecycle": "Read warming admission ends separately from queue/event/log retention. Do not invent a persistent payload copy for the inspected read-only reader.",
+      "freshness_rule": "Current route/mount and control-writer versions, fresh destination sample; read pacing receipt is not physical-write allowance evidence.",
+      "complete_growth_bound": "Queue events, prewarm control records and atomic temporaries, duplicate stdout/optional log writes and failed-cycle diagnostics; any actual stage copy belongs to stage lifecycle, not this reader budget.",
+      "population_closure": "Enumerate all prewarm instances and actual control/log writers plus stage owner interfaces; read HoldLedger closure does not close storage allowances.",
+      "alias_deduplication": "Map persistent destinations independently of read source; cross-reference role-logs/queue so each uniquely covered reservation is counted once, not omitted.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/prewarm_loop.py", "src/prismabuild/tier_cycle.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing prewarm/tier and supervisor/descriptor owners",
+      "unblock_condition": "#1483 receives actual prewarm control/log destination snapshot and finite persistent-write bounds distinct from read admission/memory/pacing budgets."
+    },
+    {
+      "id": "scratch",
+      "write_paths": "Sealed PRISMABUILD_LOCAL_SCRATCH_PAIRS ROOT_ENV:MAX_ENV declarations, actual roots and per-attempt ephemeral subtrees; persistent selections, legacy naming-only scratch and temporary storage may differ.",
+      "descriptor_fsid_authority": "Existing descriptor/tier owner maps each actual ROOT and temporary destination; supervisor local-disk sample and offer do not prove all ROOTs share it.",
+      "allowance_owner": "local_scratch.scratch_terms sums separately rounded positive ROOT/MAX reservations into existing host spool_gb; scratch_lifetime owns optional exact-attempt cleanup evidence, not producer-byte enforcement.",
+      "reservation_lifecycle": "Preserve positive declared bounds. Host reservation covers declared window; optional lifetime registration precedes creation and requires exact claim/attempt and stopped descendants for cleanup. Persistent/naming-only scratch is not auto-reclaimed; unknown containment retains bytes.",
+      "freshness_rule": "Bind sealed declarations, host offer, attempt generation and actual ROOT mapping; read_spool_offer timestamp/PID alone is not freshness authority.",
+      "complete_growth_bound": "All concurrent ROOT/MAX windows, temp copies, metadata, undeclared/generated expansion and retained failed/persistent scratch require complete finite coverage; declarations are neither quotas nor per-filesystem routing and cleanup does not enforce bytes.",
+      "population_closure": "Close all ROOT writers, private/committed host holders and retained attempts; offered spool_gb and cleanup registry alone cannot certify all producers.",
+      "alias_deduplication": "Different ROOTs may share backing; sum separately rounded positive declarations conservatively on actual keys. Do not collapse independent maxima because roots alias.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/local_scratch.py", "src/prismabuild/scratch_lifetime.py", "tools/fleet/supervise.py", "src/prismabuild/pool.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining existing supervisor/worker-offer, descriptor/tier and host/claim owner evidence",
+      "unblock_condition": "#1483 receives versioned all-ROOT mapping, offer freshness and closed reservations with complete concurrent/residue bounds. #2038 and #2117-#2122 backend/expiry outcomes remain separate."
+    },
+    {
+      "id": "spool",
+      "write_paths": "PRISMABUILD_PRODUCED_SPOOL_ROOT/MAX_BYTES local PRECOMMIT namespace/group payload, group metadata, queue retirement JSONL/tick records; canonical export destination and adjacent .tmp are separate destinations.",
+      "descriptor_fsid_authority": "Existing descriptor/tier owner maps local spool and canonical export backing individually, with supervisor measured offer evidence for host window only.",
+      "allowance_owner": "produced_spool existing host windows, group TierLedger/prewrite reservations and normal export claim owners; preserve export receipt/ACK/origin-commit/release/retirement authority.",
+      "reservation_lifecycle": "Reserve group before writes, export under claim, require durable ACK for live release, commit canonical origin independently, identity-check source before unlink. Copy done without ACK is not release. Ended-attempt retirement retains unknown/malformed/live-export state. Canonical retention is distinct from local release.",
+      "freshness_rule": "Exact attempt/namespace/group, source identities, reservation epoch and durable bound export receipt; refresh backing/sample before export and reconcile failure evidence before release.",
+      "complete_growth_bound": "Concurrent local windows plus group/control metadata, scratch, canonical temporary/final copy, source/destination coexistence, export retries, failed/partial copies and retained groups/retirement logs. Windows do not automatically cover metadata or transient copies; released groups can retain bookkeeping.",
+      "population_closure": "Include every active/ended namespace, host window, group reservation, export claim, ACK and unreleased/orphan source; no closure from copy-completion count.",
+      "alias_deduplication": "Join local and canonical keys; same filesystem still holds simultaneous source and copy. #2091 must reconcile windows/group charges without unproven double-charge subtraction.",
+      "evidence_status": "blocked",
+      "source_refs": ["src/prismabuild/produced_spool.py", "src/prismabuild/local_scratch.py", "tools/fleet/worker_loop.py", "src/prismabuild/tier_cycle.py"],
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair via existing host/offer, descriptor/tier and produced-spool claim owners",
+      "unblock_condition": "#1483 receives versioned local/export mapping, closed windows/group/export population and complete coexistence/metadata/recovery bounds. #2091 and #2096 retain their reconciliation/qualification outcomes."
+    }
+  ],
+  "accounting": {
+    "approach": "whole-reservation-upper-bound",
+    "floor_divisor": 20,
+    "unknown_materialization_credit_bytes": 0,
+    "verified_exact_materialization_accounting": false,
+    "aggregate_rule": "For every actually used physical capacity domain require fresh free_bytes >= ceil(size_bytes/20) + aggregate charges, with existing inode protections retained. Compute ceil by integer arithmetic; convert each existing reservation unit conservatively to bytes and charge its complete upper bound, plus unobserved grants/proposed demand, once under a uniquely proven reservation identity. Aggregate all existing host/tier/claim obligations sharing backing capacity; also respect subordinate dataset constraints. Conservative double pressure for already resident bytes is intentional absent qualified credits, not verified exact materialization accounting.",
+    "same_owner_same_filesystem_evidence": "Default is no subtraction. Any future credit requires existing allowance owner to attest bounded materialization belonging to that exact reservation and same physical backing filesystem, with authenticated mapping/version and causal sample inclusion. File size, copy-done receipt, path existence, timestamp, host label or another owner's reservation is insufficient; sparse/compressed/shared allocations must not be assumed physically materialized.",
+    "credit_identity_and_cap": "Bind credit to unique reservation lineage, owner, acquisition/transfer epoch, physical key, materialization extent/incarnation and capacity sample identity/version. Cap total consumed credit by both proven allocation reflected in that sample and remaining reservation charge; charge cannot be negative. Existing owner must enforce a single-use credit disposition across all readers and aliases, not a parallel credit ledger here.",
+    "sample_and_credit_ordering": "Materialization must be causally reflected in the sample used for the subtraction: owner records completed physical allocation before a sample causally observing it, then binds credit to that sample and the coherent reservation snapshot. Earlier sample free space still includes those bytes and receives ZERO credit, even if later file evidence exists. Later samples require revalidation of allocation identity, persistence, reservation and version; never carry a free-floating credit forward. Sample expiry, remount or uncertain observation means zero credit or HOLD if allowances/mapping are unknown.",
+    "transfer_rule": "Private-to-committed claim commit renames custody, not a new reservation or fresh credit. Transfer must atomically fence old owner/epoch and move charge with any already-consumed credit disposition under existing-owner locks. If destination is a different filesystem, source charge/residence persists until its release authority, while full destination/copy charge is acquired before writing. Credit cannot appear on both sides or be replayed after retry. On incomplete transfer retain conservative coverage and HOLD new dependent admission until reconciled.",
+    "release_rule": "Only existing owner release/recovery authority retires a reservation. Retire credit at the same lineage/epoch transition; do not subtract it again from another holder or interpret returned tokens as proof bytes vanished. Persisting stage/spool/log residue must be represented by an existing owner's complete bound before releasing its covering obligation. ACK, copy completion, origin commit and unlink authority are distinct; preserve produced_spool protocol.",
+    "partial_failure_rule": "Crashes between acquire, write, sample, commit, transfer or release must recover exactly one fenced custody lineage. Uncertain materialization receives zero credit; lost/unreadable or conflicting allowance state HOLD. Retry creates a new attempt but cannot reuse old credit identity; old partial/resident bytes remain covered until owner-proven reconciliation. No sample may omit private acquisitions or grants made after its allowance census.",
+    "complete_bound_inclusions": "Finite bounds must include payloads plus source-bank/Git/extraction/generated expansion, allocation/metadata/control records, queue events, active and retained logs, temp copies, stage partial/retry residue, local spool/source and destination coexistence, concurrent scratch, failed attempts and recovery residue. Existing positive ROOT/MAX reservations remain separately rounded; no arbitrary reduction to make admission pass.",
+    "operation_vs_action_custody": "operationP denotes committed coordinator prepublication custody conceptually, not a new API: existing filesystem_floor.operation has operation-* holders and lease ownership. It must cover package preparation and publication before normal actionK exists, without a bootstrap exemption. Normal actionK custody is existing pool private begin_acquire then commit_acquire(action_key) ownership and action/attempt lifecycle. Neither automatically covers the other: acquire/commit destination custody before source operation releases, prove nonduplicated transfer coverage and retain old charge/residue if handoff fails. write_window's CAS growth allocation and exit before waiter are source facts, not proof of complete per-filesystem handoff.",
+    "credit_safety_examples": [
+      "A later 4-byte materialization receipt cannot reduce a 10-byte reservation against an earlier sample: charge remains 10. Against a causally later qualified sample at most 4 can be credited, leaving at least 6; unknown proof leaves 10.",
+      "Private holder P commits to action K: same reservation lineage and credit disposition move once. Summing P and K credit or issuing K a second credit for the same extent is forbidden. An ambiguous half-transfer holds admission, not two spendable credits.",
+      "Source on FS A exported to FS B: A credit cannot reduce B charge. Charge full B temporary/copy demand while A source window remains; only owner-authorized release and residue reconciliation retire A obligation. Retry cannot replay the first copy's credit."
+    ],
+    "parent_acceptance": {
+      "status": "pending",
+      "existing_supplier": "Qualified merge queue expediter through its sole Qualified merge queue expediter.Operative used-filesystem guard repair owner to the existing #1483 parent reviewer",
+      "unblock_condition": "Reviewer-readable attributed parent decision explicitly accepts conservative complete whole-reservation upper bounds and their scope, including zero unknown materialization credit and custody/lifetime rules. Historical authority to extend existing owners is not this acceptance; no approval supplied."
+    }
+  },
+  "unresolved_dependencies": [
+    {
+      "id": "physical-mapping",
+      "tracking_issue": 1483,
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining physical descriptor/export/member evidence from existing descriptor/tier owner",
+      "missing_evidence": "Authenticated current export-to-backing mapping, all actual destination variants and aliases, physical shared-capacity and dataset constraints, validity/invalidation rules.",
+      "unblock_condition": "Attach reviewer-readable versioned mapping snapshot with authority, exact descriptors/exports/members, epoch/digest and remount/failover recovery semantics for every used destination. Unknown/partial mappings HOLD."
+    },
+    {
+      "id": "host-offers",
+      "tracking_issue": 1483,
+      "existing_supplier": "Qualified merge queue expediter.Operative used-filesystem guard repair obtaining host/offer evidence from existing supervisor/worker-offer owner",
+      "missing_evidence": "Actual scratch/spool/checkout/log/temp routes, measured-offer scope, freshness and producer population; timestamp/PID and declarations are insufficient.",
+      "unblock_condition": "Attach versioned actual host destination/declaration/offer snapshot bound to boot/process/config and mapped physical keys, with freshness/invalidation rules and all writer coverage."
+    },
+    {
+      "id": "closed-allowances-and-bounds",
+      "tracking_issue": 1483,
+      "existing_supplier": "Qualified merge queue expediter and its sole Operative used-filesystem guard repair owner, coordinating existing descriptor/tier and host/tier/claim reservation owners",
+      "missing_evidence": "Closed authoritative allowance population, full simultaneous growth ceilings and lifetime/recovery rules; binding members, advisory tiers, tolerant held scans and floor_status diagnostics do not establish them.",
+      "unblock_condition": "Attach reviewer-readable versioned allowance snapshot including private/committed/transferred/inaccessible/orphan records and all writers, complete per-domain concurrent bounds, lock/sample ordering, fenced recovery and operation/action handoff. Parent and designated independent review must resolve missing evidence; dependent repair waits."
+    },
+    {
+      "id": "parent-whole-bound-acceptance",
+      "tracking_issue": 1483,
+      "existing_supplier": "Qualified merge queue expediter via sole Operative used-filesystem guard repair owner to existing #1483 parent reviewer",
+      "missing_evidence": "Explicit attributed parent acceptance of conservative whole-reservation accounting; no such acceptance supplied by bounded context.",
+      "unblock_condition": "Record attributed parent acceptance of exact conservative scope and zero-credit default, plus independent security review of causal credit/alias/aggregate/partial-failure contract. Do not relabel conservative accounting as verified exact."
+    }
+  ],
+  "scope_exclusions": "Documentation only. Preserve production behavior, default-off enforcement, SDK interfaces, existing reservation owners and already-landed guard/write-window/tier lifecycle. #1483 repair remains with its owner. #2092 finite write-escalation/reservation-authority contract, #2093 CAS/result staging, #2094 attempt-log custody, #2095 SLURM diagnostic destinations are interfaces, not implemented outcomes. #2091 reconciliation, #2096 qualification, retention/reclaim/quota, event-wait, #2038 expiry and newer scratch-backend issues remain separate. Rob's #1635 reproduction/test-only exception authorizes nothing here. No live deployment, activation, capacity advertisement, privilege or physical Rob action inferred.",
+  "readiness": {
+    "parent_packet": "Addressed to #1483: accept this as #2045's blocked prerequisite contract and supplier disposition, not closure of parent repair or operational qualification. All domains have source capability references but lack current authoritative deployment proof. Request the four dependency snapshots/decisions above through existing custody. TrustLadder publishes packet/comments and transitions; this artifact performs neither.",
+    "implementation_unblock_condition": "Dependent #1483 implementation waits for authenticated versioned mappings, closed allowance population, complete simultaneous bounds and lifetime/recovery rules plus explicit parent acceptance and designated security/diagnostic review. Source tests cannot supply or authenticate these facts. No new validator or ledger substitutes for owner evidence.",
+    "dependent_implementation_must_wait": true,
+    "deployment_authorized": false,
+    "physical_rob_action_established": false
+  }
+}

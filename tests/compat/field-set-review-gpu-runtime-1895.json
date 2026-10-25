@@ -54,5 +54,27 @@
     },
     "count": 1,
     "reason": "The exact sealed readiness recipe permits only the bounded allowed_env set in addition to its fixed native-thread and token variables. Retain the symbolic subset-check witness used to reject caller environment overrides at the GPU fence exception."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "observe_inventory_process",
+      "unresolved": "Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Inherited from current main PR #2284. This fields binding is the positional /proc/<pid>/stat row used to identify the collector process, not a closed serialized record. Record the scanner witness without changing the process-identity contract."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "reconcile_attempt",
+      "unresolved": "{shard['action_key'] for shard in progress.get('shards', []) if shard.get('action_key')}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Inherited from current main PR #2284. This keys binding is the set of action identities observed in a PB progress report, not a closed field whitelist. Record the scanner witness without changing PB publication or recovery policy."
   }
 ]

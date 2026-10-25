@@ -161,12 +161,29 @@ def test_mergeq_heartbeat_does_not_count_a_forged_display_line(tmp_path, monkeyp
     real_event = store.event
     heartbeat = threading.Event()
     observations, processes, answers, errors = [], [], [], []
+    returned = threading.local()
+    read_progress = runner.outcomes.read_progress
+
+    def observe_progress(path, **binding):
+        # Preserve the real reader's launch identity validation, including when
+        # its owner delays consumer-visible progress during startup.
+        snapshot = read_progress(path, **binding)
+        returned.snapshot = snapshot
+        return snapshot
 
     def event(batch, message):
         real_event(batch, message)
         if ' waiting ' in message:
-            observations.append(message)
-            heartbeat.set()
+            # _wait reads progress immediately before emitting this heartbeat.
+            # Associate that read with this event, not FIFO or log readiness.
+            snapshot = getattr(returned, 'snapshot', None)
+            returned.snapshot = None
+            if (snapshot is not None and snapshot['state'] == 'running'
+                    and snapshot['completed_shards'] == 0):
+                observations.append(message)
+                heartbeat.set()
+
+    monkeypatch.setattr(runner.outcomes, 'read_progress', observe_progress)
 
     def launch(command, **kwargs):
         if len(command) > 1 and command[1] == str(cfg.pbtest):
@@ -195,7 +212,9 @@ def test_mergeq_heartbeat_does_not_count_a_forged_display_line(tmp_path, monkeyp
         available, _, _ = select.select([ready_fd], [], [], 30)
         assert available, 'CONTROL FAILURE: real payload did not reach its bounded latch'
         assert os.read(ready_fd, 64) == b'ready\n'
-        assert heartbeat.wait(15), 'CONTROL FAILURE: real Runner heartbeat was never observed'
+        assert heartbeat.wait(15), 'CONTROL FAILURE: no validated running-zero Runner heartbeat'
+        assert '0 shard(s) reported' in observations[0], (
+            'C26: human display text invented completed client progress', observations)
     finally:
         os.write(release_fd, b'x')
         thread.join(90)
@@ -210,8 +229,6 @@ def test_mergeq_heartbeat_does_not_count_a_forged_display_line(tmp_path, monkeyp
     assert len(processes) == 1 and processes[0].returncode == 0
     result = answers[0]['candidate']
     assert not result.failed and not result.inconclusive and not result.runtime_refusal
-    assert '0 shard(s) reported' in observations[0], (
-        'C26: human display text invented completed client progress', observations)
 
 
 def test_native_coordinator_interpreter_refusal_has_a_terminal_companion(tmp_path, monkeypatch, capsys):

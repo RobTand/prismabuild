@@ -1,0 +1,32 @@
+{
+  "schema": "prismabuild.pb725.binding_preflight.v1",
+  "issue": 725,
+  "selection": {
+    "pq": {"commit": "a3f8d01a4fdb26cfa81c5f6879ae5b17af367c89"},
+    "pb_tools": {"commit": "059953bc3793f539600d333cd3311773e592b0e6"},
+    "harness_baseline": "be674a35f30da209075e237a9d380afb857c05c2",
+    "pb_installed_commit": "059953bc3793f539600d333cd3311773e592b0e6",
+    "pb_sdk_version": 1,
+    "tessera_commit": "b40c93cb73745097e57a1ba4cf5b9eee166c759a",
+    "dependency_generation": {"pb_commit": "059953bc3793f539600d333cd3311773e592b0e6", "sdk_version": 1, "identity": null},
+    "apis": {
+      "producer": {"file": "producer", "symbol": null, "defaults": null},
+      "source": {"file": "source", "symbol": null, "defaults": null},
+      "render": {"file": "render", "symbol": null, "defaults": null},
+      "wire": {"file": "wire", "symbol": null, "defaults": null},
+      "activation": {"file": "activation", "symbol": null, "defaults": null}
+    },
+    "operands": {},
+    "files": {},
+    "prerequisites": {},
+    "continuation": {
+      "issues": [859, 864],
+      "source_commit": "26ae2f4c66163d5317c2c072b3052de1c1c59d85",
+      "source_paths": ["tests/fleet_acceptance_pins.py", "tests/fleet_acceptance_runner.py", "tests/fleet_acceptance_matrix.json", "tools/fleet_qualification_driver.py"],
+      "artifact_references": ["pqfleet-r7red-20260920.json", "pqfleet-r8green-final-20260920.json"],
+      "complete": false,
+      "verification": "source-attributed-only"
+    }
+  },
+  "review": null
+}
