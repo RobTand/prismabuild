@@ -46,7 +46,7 @@
       }
     ],
     "remaining_gaps": [
-      "Paired before/after measurement adf33585a2888e5a40b4cc79ed6caff21406bb880beaccbbc730549ec9ab0f7b remains READY. No performance result or PR acceptance claim.",
+      "Paired before/after measurement adf33585a2888e5a40b4cc79ed6caff21406bb880beaccbbc730549ec9ab0f7b was withdrawn by the Chief of Staff after foreign-load admission refusals caused #2267 fleet starvation. It never launched and has no receipt. No performance result or merge acceptance claim.",
       "Runtime publication and live default proof are pending Principal release; this engineer is prohibited from publishing or restarting services.",
       "Archival harness pin removal belongs to existing PRs2191/2213; source not duplicated.",
       "Issue2192 broader record-compat duration acceptance remains open."
@@ -82,7 +82,7 @@
     {
       "id": "ID-09",
       "target": "Acknowledgement, terminal exit, CAS publication and application validity are distinct.",
-      "implemented": "Passing source tests have terminal/log/CAS verification; pending measurement has only a queued acknowledgement.",
+      "implemented": "Passing source tests have terminal, log and CAS verification. The measurement was withdrawn without execution or receipt.",
       "deployed": "No application or campaign claim."
     },
     {
@@ -848,17 +848,221 @@
     "preserved_failure": {
       "action_key": "b641a1491ea7a804a6556dca93046851fd0ea21ad8588988849245847a87a198",
       "summary": "1 failed,16passed; test assertion addressed a nonexistent ready directory rather than queue.ready_items; corrected and replaced by regression action above."
-    }
+    },
+    "revision_note": "Historical pre-review validation. Its 17-test regression included the removed checkout-root override test. Current revision evidence is recorded separately below."
   },
   "measurement": {
     "action_key": "adf33585a2888e5a40b4cc79ed6caff21406bb880beaccbbc730549ec9ab0f7b",
-    "state": "READY",
+    "state": "withdrawn",
     "cpu": 1,
     "mem_gb": 2,
     "gpu": 0,
     "measurement": true,
     "submitted_from": "dl380g10",
     "experiment": "3 interleaved HDD/NVMe pairs;256 files x4096bytes; create/fsync/read/unlink; start/end load recorded",
-    "result": "pending; no speedup claimed"
+    "result": "not run; paired measurement remains owed; no speedup claimed",
+    "attempts": 0,
+    "receipt_present": false,
+    "reason": "Chief of Staff, PRI-1/PRI-123 recovery 2026-10-25T23:15Z: priority-0 measurement refused for foreign ambient load on dl380g10 for 2h+, while its election fenced all priority -10 work on the host (prismabuild#2267). Withdrawn to restore admission; owner resubmits after #2267 lands or in an idle window.",
+    "recovery_constraint": "Do not resubmit a dl380g10 measurement before #2267 is published without Chief of Staff approval."
+  },
+  "review_revision_validation": {
+    "review_round": 1,
+    "review_changes": [
+      "Removed the pool-only --local-checkout-root flag, roster argument and test. Checkouts retain their existing environment/default contract.",
+      "Used fleet_roster.LEGACY_ACTION_TMPDIR in the scratch environment validator without changing isolated recorder startup.",
+      "Rebased source onto origin/main 6a96867b3c. No integration changes to the affected production or regression files."
+    ],
+    "validated_source_head": "479b2ac14081c935e2e3bfed0f2f4e684042105c",
+    "suite_source_head": "9f6fbec19e8b3ead250d5361c5e21a2b4223c8cf",
+    "suite_report": "/mnt/shared/paperclip-runs/PRI-24/review1.json",
+    "passed": 240,
+    "skipped": 0,
+    "verification": "All ten terminal records, log hashes and lengths, summaries, claim bindings, payload hashes and full CAS lookups passed. All shards ran on sparky or sparklina; none uses the dl380g10 crash-window results.",
+    "shards": [
+      {
+        "files": [
+          "tests/test_fleet_action_storage_1914.py"
+        ],
+        "action_key": "179497cedb8a9d7287172a14e4759c402e41163bee2182790f8b2920980512d1",
+        "claimed_host": "sparky",
+        "summary": "16 passed in 0.96s",
+        "receipt_digest": "0a3f1e08f8e5cf13790fde98afa4a10c9d96c5faf0009a734fe71c28ac450364",
+        "payload_digest": "27ab4748303f3c04ae8e41e8b5fdfcfdbb0ff3ac746d2e4adc950ea781a2d50a",
+        "claim_digest": "c170acf99465e02f72ff385f22acd28c2f934d37bcc85f6fceb7b6acfd2bb600",
+        "stdout_digest": "d22d3667efbd07214cb3f193dedcbf24d7f3875dabd1627347a1401128b4cc87",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_core_recipes.py"
+        ],
+        "action_key": "4c4f03ad17f7c783d2fb454c740e7a7cee8e704a3ab3cdd1958d1eb58a7ce8c6",
+        "claimed_host": "sparky",
+        "summary": "45 passed in 3.12s",
+        "receipt_digest": "08695ad930389b2db84626b30c9864d61e35d71184fa69a0cf869fb41355cf73",
+        "payload_digest": "d4a4e873dbb44e838a50ac52815604a82c8ac226fa4f450134eec3881a08560d",
+        "claim_digest": "1422bb7f76876df2ef03c13aa281a5a21b809b50d28084cb53b4cdef1183f6bf",
+        "stdout_digest": "555c45be936f5a4bdcc48dc42b7bf01d8eb9393051248e43c34f81a49f03a193",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_measured_placement.py"
+        ],
+        "action_key": "f121d242f330d217011b5c290318c5a278857e008b98839354cb3e991b2a51e1",
+        "claimed_host": "sparklina",
+        "summary": "86 passed in 17.70s",
+        "receipt_digest": "077b4eec8637b6d340091ea5b99254e61a38a9f9533ed02c9f0e5f60a315571c",
+        "payload_digest": "4bf7f44b0f93df551a42c4b026ff6e32f3ea8061a97c8ffce5c4ccb25bcb0cbc",
+        "claim_digest": "c588c48eac86c3ab1f7afaa1795a27f277e907c907109d614d0a104a164c554a",
+        "stdout_digest": "42a55d3914ec14dba3ad36e02598ad667686b7ab81812a6b9869244667cf2ffd",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_retained_review_boundaries.py"
+        ],
+        "action_key": "dd7fc1212b092f852c7513c6a11f1e5ae1a80eca141505f7e7a87fda48b38417",
+        "claimed_host": "sparky",
+        "summary": "9 passed in 2.87s",
+        "receipt_digest": "142a534f836e4fedaf842f5431b1047b0fc5f823b98fb69729a2a00151878f25",
+        "payload_digest": "b775d33a374dccc33ddbe489b2b27815b9da3a74487ed47eefb68927cd261604",
+        "claim_digest": "4358a6b4afa984c19f98a400a96c533b630258858bf993abcd8ccc65b9f23ce4",
+        "stdout_digest": "030974285d22452263b97ee2b83d6e44938f7a415c24e2df9d7d4df4ce2ce225",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_scratch_record_review_boundaries.py"
+        ],
+        "action_key": "9272baec7a85534850f3fa03adc1bec54714ca89ff2f40c640abb9ba35387826",
+        "claimed_host": "sparklina",
+        "summary": "8 passed in 2.06s",
+        "receipt_digest": "82dad5e49fc4e933af8aa84262c1dc7c7e1abdefb9a2d7439a05d1f046ae87aa",
+        "payload_digest": "d6c57c4dd71e4beaaefc4269d5d83e3adf3b368894c9455e26a507281f768c44",
+        "claim_digest": "41c3b088297d0cd5976494bd3582a4fc6f871019e3c4351aeb1f9de98535e050",
+        "stdout_digest": "7f8c3eb42f73d29cbb0e6fbda83016be93fa4bc42d01594544861be7a318a5d7",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_worker_loop_offers_its_affinity.py"
+        ],
+        "action_key": "5d62dce19e168eda00bb5189aa02753843f53a3f55c5db48f87aad03273cd281",
+        "claimed_host": "sparklina",
+        "summary": "6 passed in 1.17s",
+        "receipt_digest": "78a981623815a312a1b6d2bad69d8d41e9f0dd57bb7ca634f7a46f2082092525",
+        "payload_digest": "c37da4d4922430bf383b9c3f304d08a8e26df156c0eb75a8f799e36d32a97981",
+        "claim_digest": "a8d705c7dabbcee43c8df31f78036a49d9caf3234669e0ba765dbf9c48fefd40",
+        "stdout_digest": "b708cf8ea39d16d85a359c1714fcb923ddb9ec161aae78e0c44e06dd4e99d6e9",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_roster_publication_boundary.py"
+        ],
+        "action_key": "ffb075166a7ebd1c5612403dbd9f6229d25215a6c9e18aefbfb4436d42d3b5aa",
+        "claimed_host": "sparky",
+        "summary": "14 passed in 0.19s",
+        "receipt_digest": "fb5adb86fa0e11f03959c1d3e9c39949dae50880d8c1cd38bc1ce1a4a2466022",
+        "payload_digest": "35519e8ed8852291a71f88cdae837af69be2374e6cdc483bbef2c870913ec624",
+        "claim_digest": "7bed46525ce9a03f4ee687cd9d05c1ab8ae14f0ca529b36b06927b59fc6a3f47",
+        "stdout_digest": "0fd9b08244bfe520c5143a207a21d27c2cf557b50fcb717e860117cf494304cb",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_captured_fleet_roster_consumers.py"
+        ],
+        "action_key": "6003046b20f45bb95da76c73cc9b342d4a89af025ea2f819a9fb7eb85e6ed5f0",
+        "claimed_host": "sparklina",
+        "summary": "28 passed in 0.93s",
+        "receipt_digest": "e96fcd55b48997bbcd478c37acd471c038d380ff585221427bff4a3933944602",
+        "payload_digest": "cdea74d50e920a5ff27a6216ceeeb29492f70d858c3945b300a957f74885a98b",
+        "claim_digest": "9b2212fcb8b57de1ce40e0f74088de59f19bc7ece90ecbe2d5ac110a0fa6e747",
+        "stdout_digest": "7586edb8453e1f147e54b221e2f36961a7ca1f785aa14cab89278ed4c897cf4c",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_pbtest.py"
+        ],
+        "action_key": "2bbde4fc1f3d0a18a75717a766f85c3063de9fad672629ea2fabe62954f78142",
+        "claimed_host": "sparky",
+        "summary": "15 passed in 1.30s",
+        "receipt_digest": "dfa3136e62fed8c32b7790b1bf4e0ce5f13bda1214f9ed35af1a277cf8e100d8",
+        "payload_digest": "4d32619e92e90aea2a37c0322bae8e89a0b795fd1a77a05beed4279dff002749",
+        "claim_digest": "0f8b477786610004c4905473a62c330687b8bc34f185cf45b1a052d7edecb0c6",
+        "stdout_digest": "c4b971d4a2e3e3a8f78ae5aa39d05b6c43607003866399eb3b0ecb4ce8ba9df8",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_pbtest_sealed_basetemp_1469.py"
+        ],
+        "action_key": "47993367ef60e09e2f02ea6606f864d206611ca2934c32a2b17a514b0a5ecd5d",
+        "claimed_host": "sparklina",
+        "summary": "13 passed in 1.76s",
+        "receipt_digest": "a02d64deb7aa205777d02b8539f59bb78f01be9577ebda5d931cb2ac771459f3",
+        "payload_digest": "08af199a6ce92d224561d148792c7a78cb8c929dad7d62a686101cce8961d3a2",
+        "claim_digest": "568c5d8250a1b55c718130fddae22d77970f5817d081af4d42d41b1ad90554cb",
+        "stdout_digest": "6806c4055290a09686262aee1d9d9ab76ce1718ae796734e3f70480f2fd886ed",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      }
+    ],
+    "rebased_check": {
+      "source_head": "479b2ac140",
+      "action_key": "1ceb182860a75a9a4f1b181cfd52a37f8526b2bdb3d5847d1a8bba37bee4e406",
+      "host": "sparklina",
+      "summary": "61 passed in 3.37s",
+      "receipt_sha256": "42798af58afde7e193087a7b56b768efe836936c68423c9d253bf4aaab5821a1",
+      "payload_sha256": "871fcba65bae05d7d86ed6711cf4728d91106a4944b600009e6a79f81a1df94f",
+      "stdout_sha256": "e2f1531624aaf6f0ae5be8293524df98acc5d611515e9e473d02298f6f4f240c",
+      "claim_sha256": "6968968e29761842e1bf496475ed385c22fdb6eba988a4dfaab31cddcffe7ef1",
+      "checks": {
+        "terminal": true,
+        "complete": true,
+        "log_hash": true,
+        "log_length": true,
+        "claim": true,
+        "claim_action": true,
+        "full_cas_lookup": true,
+        "payload": true
+      },
+      "all_verified": true,
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "snapshot": {
+        "commit": "6c01e47dff89691046043998a19235b05d6d038e",
+        "input": {
+          "bytes": 44962705,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "d10fa306756e09de9779c5cdaac927040970be4d47b3e8e54b02f6cecc326cc8"
+        },
+        "parent": "479b2ac14081c935e2e3bfed0f2f4e684042105c",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "request_sha256": "0d847d1a2d9fad53e5c6abe46337fec50804e4e5b1ee974a0cf201d11474a940"
+    },
+    "counting_note": "The rebased 61-test check overlaps the 240-test suite. Counts describe each execution, not 301 distinct tests.",
+    "measurement_withdrawal_evidence": {
+      "source": "/PRI/issues/PRI-123#comment-5c8210b5-fbe5-4d69-b063-e8675106961f",
+      "terminal_status": "withdrawn",
+      "attempts": 0,
+      "receipt_present": false
+    },
+    "merge_readiness": "HOLD pending authorized paired measurement; no deployment performed."
   }
 }

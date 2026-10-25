@@ -2554,13 +2554,15 @@ pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
-sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+sealed child `TMPDIR` assignment. The default comes from the loaded roster's
+`action_tmpdir`, or `/home/rob/tmp` for a legacy roster. The path
 is passed as one argv element, with no shell evaluation or coordinator-side
 existence check. The caller supplies a directory usable on every eligible worker;
 this flag adds no direct-I/O qualification or placement capability. An explicitly
 selected parent is preflighted on the worker by creating and closing an anonymous
 temporary file before pytest; an absent or unusable directory refuses instead of
-silently falling back. The default retains its legacy behavior. This startup
+silently falling back. A configured default receives the same preflight; only
+the legacy default retains its fallback behavior. This startup
 check does not reserve capacity or guarantee availability throughout the test.
 Changing the selected parent changes the child command and its action identity.
 
