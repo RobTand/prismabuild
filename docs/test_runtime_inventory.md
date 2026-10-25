@@ -60,7 +60,9 @@ python3 tools/maintenance/test_runtime_inventory.py summarize \
 
 `inventory.json` retains every node and sample. `inventory.md` ranks source
 groups and the slowest nodes, lists changed outcomes, and records coverage
-gaps. Setup, call and teardown all count toward test cost. Pytest prints these
+gaps. Missing requested repeats keep coverage incomplete. Abandoned attempts
+remain visible in both reports and do not count as measured repeats.
+Setup, call and teardown all count toward test cost. Pytest prints these
 durations rounded to 0.01 seconds; sub-resolution samples are not evidence
 that a test costs nothing. Session time includes collection and process
 overhead and is reported separately from summed phase time.

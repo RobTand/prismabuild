@@ -184,3 +184,22 @@ def test_unreleased_producer_attempt_is_abandoned_without_guessing_a_pid(tmp_pat
     assert attempt["status"] == "abandoned"
     assert attempt["action_keys"] == []
     assert attempt["reason"] == "controller_died_before_producer_release"
+
+
+def test_two_finished_repeats_do_not_complete_a_requested_three_repeat_collection(checkout, monkeypatch):
+    from types import SimpleNamespace
+
+    output = checkout / "evidence"
+    output.mkdir()
+    entries = []
+    for repeat in (1, 2):
+        path = output / f"repeat-{repeat}.json"
+        path.write_text(json.dumps(run(repeat)["results"]))
+        entries.append({"repeat": repeat, "report_sha256": inventory.raw_sha256(path.read_bytes())})
+    (output / "runs.json").write_text(json.dumps({
+        "source_digest": "same-source", "paths": ["tests"], "repeats": 3, "runs": entries}))
+    monkeypatch.setattr(inventory, "inventory_checkout_revision", lambda root: "same-source")
+    inventory.summarize_test_repeats(SimpleNamespace(checkout=checkout, output=output))
+    coverage = json.loads((output / "inventory.json").read_text())["coverage"]
+    assert coverage["complete"] is False
+    assert "requested 3 repeats; only 2 reports committed" in coverage["problems"]

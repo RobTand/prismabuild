@@ -239,8 +239,7 @@ def collection_manifest(args, source: str) -> dict:
         manifest = {"source_digest": source, "paths": args.paths, "python": args.python,
                     "repeats": args.repeats, "priority": getattr(args, "priority", 0),
                     "collection_id": uuid.uuid4().hex, "runs": []}
-        with manifest_path.open("x") as stream:
-            stream.write(json.dumps(manifest, indent=2) + "\n")
+        save_collection(args.output, manifest)
     return manifest
 
 
@@ -250,7 +249,7 @@ def save_collection(output: Path, manifest: dict) -> None:
     temporary.replace(output / "runs.json")
 
 
-def process_identity(pid: int) -> dict | None:
+def observe_inventory_process(pid: int) -> dict | None:
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
     except FileNotFoundError:
@@ -267,9 +266,11 @@ def require_dead_producer(output: Path, attempt: dict) -> dict:
     producer = attempt.get("producer") or {"pid": progress.get("producer_pid")}
     if not producer.get("pid"):
         raise ValueError("producer identity unavailable; cannot abandon attempt")
-    current = process_identity(producer["pid"])
+    current = observe_inventory_process(producer["pid"])
     if current and ("start_ticks" not in producer or current == producer):
         raise ValueError(f"producer {producer['pid']} is still alive; no replacement submitted")
+    attempt["producer"] = producer
+    attempt["producer_observation"] = current
     return progress
 
 
@@ -311,7 +312,7 @@ def collect_test_repeats(args) -> None:
         source = inventory_checkout_revision(args.checkout)
         manifest = collection_manifest(args, source)
         manifest["controller"] = {"unit": getattr(args, "unit", None),
-                                  "process": process_identity(os.getpid()), "status": "running"}
+                                  "process": observe_inventory_process(os.getpid()), "status": "running"}
         attempts = manifest.setdefault("attempts", [])
         save_collection(args.output, manifest)
         for repeat in range(1, args.repeats + 1):
@@ -361,7 +362,7 @@ def collect_test_repeats(args) -> None:
                             producer = subprocess.Popen([sys.executable, "-c", gate, str(read_fd), *command],
                                                         pass_fds=(read_fd,), stdin=subprocess.DEVNULL,
                                                         stdout=output, stderr=subprocess.STDOUT)
-                            attempt.update(producer=process_identity(producer.pid) or {"pid": producer.pid},
+                            attempt.update(producer=observe_inventory_process(producer.pid) or {"pid": producer.pid},
                                            status="running")
                             save_collection(args.output, manifest)
                             os.write(write_fd, b"1")
@@ -416,6 +417,10 @@ def summarize_test_repeats(args) -> None:
     if inventory_checkout_revision(args.checkout) != manifest["source_digest"]:
         raise ValueError("grouping checkout differs from the measured source")
     report = rank_test_runs(args.checkout, runs)
+    if len(runs) != manifest["repeats"]:
+        report["coverage"]["complete"] = False
+        report["coverage"]["problems"].append(
+            f"requested {manifest['repeats']} repeats; only {len(runs)} reports committed")
     report["abandoned_attempts"] = [a for a in manifest.get("attempts", []) if a["status"] == "abandoned"]
     (args.output / "inventory.json").write_text(json.dumps(report, indent=2) + "\n")
     (args.output / "inventory.md").write_text(render_test_inventory(report))
