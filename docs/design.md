@@ -18905,7 +18905,19 @@ on that candidate and merges only the vehicle with a matching head constraint.
 Strict branch protection is the final base compare-and-swap. A moved base closes
 the vehicle and requeues members uncharged. Member states must each reach MERGED
 before batch completion. Waiting for checks, GitHub acknowledgement or member
-state propagation preserves the batch. A member push during the final vehicle
+state propagation preserves the batch until its persisted green-publication
+deadline.
+`green_wait_s` defaults to 3,600 seconds from the green decision and is not
+renewed by restart, a crash during publication or a changed waiting cause. Selection verifies existing issue references and rejects
+pull request numbers before testing or publication. A failed `issue-link` check
+is terminal and requeues members charged. Other expired green waits release the
+queue without retrying already-integrated members.
+
+Terminal disposition, requeue, and `vehicle_cleanup` intent are saved before
+remote cleanup. Cleanup retries outside the active batch are bounded by
+`max_attempts`, separated by `stuck_backoff_s`. Exhausted obligations remain
+visible for operator repair. Status-mode vehicles are drafts and close with
+branch deletion after the verdict. A member push during the final vehicle
 merge race receives the re-review notice and a distinct `member-head-moved`
 ledger fact. After confirming unchanged members, `merged-head-moved` releases
 the queue without claiming MERGED for the changed PR. Unobserved fleet shards requeue uncharged

@@ -72,7 +72,7 @@ the existing backoff.
 | Mode | Statuses and comments | Merges |
 |---|---|---|
 | `dry-run` | logged as "would", never posted | never |
-| `status` | posted; opens green vehicle PRs | never |
+| `status` | posted; creates draft vehicles, then closes them and deletes their branches | never |
 | `merge` | posted | yes; refuses to start unless `merge_enabled_file` exists |
 
 ## State
@@ -95,9 +95,26 @@ pins and attempt counts. After green, it resumes the same persisted candidate
 and branch without another suite run. Vehicle lookup includes open, closed
 and merged PRs, covering a crash after remote creation but before local receipt.
 The ledger records the vehicle, candidate statuses and confirmed member merges.
+Selection verifies that each member references an existing issue in this
+repository, excluding pull request numbers. A missing issue reference refuses
+the member before tests or publication.
+
 Pending checks, transient GitHub refusals and delayed member state updates retain
-the batch for the next daemon tick. A repeated `once` reconciles that retained
-batch before accepting another batch and refuses a mode change while it is active. A status refusal never permits a merge.
+the batch for the next daemon tick, up to `green_wait_s`, which defaults to
+3,600 seconds from the persisted green decision. Restarts, crashes during
+publication and changes in wait cause do not renew the deadline. A failed `issue-link` check ends the batch and
+requeues its members with an attempt charge. Expired waits also release the
+active batch. A confirmed vehicle merge never requeues integrated members.
+
+Terminal disposition and any requeue are saved before remote cleanup. Cleanup
+obligations live in `state.json` under `vehicle_cleanup`, outside the active
+batch. They retry up to `max_attempts` with `stuck_backoff_s` between attempts.
+Exhausted obligations stay visible for operator repair and do not hold later
+batches. Status vehicles are drafts and close with branch deletion after the
+verdict. A refused cleanup retains its obligation across restart.
+A repeated `once` reconciles a retained batch before accepting another batch
+and refuses a mode change while it is active. A status refusal never permits
+a merge.
 
 ## Configuration
 
@@ -272,13 +289,18 @@ After installing the reviewed unit and its environment file, start only
 `pbmergeq-prismabuild.service`. Do not touch the disabled PrismaQuant unit or
 its state directory. Reviewers can continue manual merges during the shadow
 period. `once --mode status PR PR` captures current heads for a shadow batch
-and opens its green vehicle without merging it. `once --mode merge` refuses
+and creates a draft vehicle without merging it. After recording the verdict,
+the queue closes that vehicle and deletes its `release-mq/*` branch.
+`once --mode merge` refuses
 because that command carries no reviewed SHAs. Approved entries instead use
 `enqueue PR SHA` and the daemon.
 
 Retain a day's batch records and compare each verdict to manual merge outcomes
 on the recorded base and member SHAs. Link candidate action keys, verified
 receipts, vehicle URLs and any stale-base refusals. Source unit tests alone
-establish neither live shadow operation nor the day of comparison. The Chief
-of Staff owns the reviewer switch and asks Rob to require `pb-tests` after
-that evidence exists. Merge mode remains disabled until separately authorized.
+establish neither live shadow operation nor the day of comparison.
+After the shadow day passes, the Chief of Staff owns the reviewer switch
+to `enqueue N SHA` and adds `pb-tests` to the required checks on `main`, as
+authorized by Rob on 2026-10-25. Strict mode and `enforce_admins` stay enabled.
+The Chief of Staff posts before/after protection evidence on PRI-1.
+Merge mode remains disabled until separately authorized.
