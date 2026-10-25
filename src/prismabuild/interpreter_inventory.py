@@ -42,13 +42,23 @@ def _read_inventory(path: Path | None) -> tuple[dict[str, float], str]:
             if not stat.S_ISREG(info.st_mode) or info.st_size > 32768:
                 raise ValueError('invalid interpreter inventory file')
             record = json.loads(handle.read(32769))
+        if not isinstance(record, dict):
+            raise ValueError('invalid interpreter inventory metadata')
         paths = record.get('requested', {})
         cursor = record.get('cursor', '')
         if not isinstance(paths, dict) or not isinstance(cursor, str):
             raise ValueError('invalid interpreter inventory metadata')
-        requested = {name: float(stamp) for name, stamp in paths.items()
-                     if isinstance(name, str) and isinstance(stamp, (int, float))
-                     and math.isfinite(stamp)}
+        requested = {}
+        for name, stamp in paths.items():
+            if not isinstance(name, str) or type(stamp) not in (int, float):
+                raise ValueError('invalid interpreter inventory timestamp')
+            try:
+                stamp = float(stamp)
+            except OverflowError as exc:
+                raise ValueError('invalid interpreter inventory timestamp') from exc
+            if not math.isfinite(stamp):
+                raise ValueError('invalid interpreter inventory timestamp')
+            requested[name] = stamp
         if len(requested) > INVENTORY_LIMIT:
             raise ValueError('interpreter inventory exceeds its bound')
         return requested, cursor
