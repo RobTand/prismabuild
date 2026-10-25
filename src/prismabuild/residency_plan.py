@@ -5008,6 +5008,32 @@ class ConsumerWindow:
 
 
     @cached_property
+    def remaining_movement_minimum_gib(self) -> int:
+        """Largest required remaining current-plus-next movement minimum.
+
+        Unlike ``read_footprint``, this is not bounded by publication capacity
+        or the current refill horizon.  Each future frontier needs its leg
+        beside its successor.  Use the same movement units as ``advance``:
+        chunks, not whole chunked phases; absent roles contribute nothing;
+        declared prefixes remain with their existing peak owner.
+
+        Exceeding authoritative capacity proves a newcomer cannot progress
+        this cycle.  Fitting proves nothing about joint admission.  Published
+        legs still occupy capacity, so they are not subtracted here.
+        """
+        role = self.leg.mover_role
+        if role not in _MOVEMENT_ROLES:
+            raise ResidencyPlanError(f"unknown mover role: {role!r}")
+        ahead = {str(phase["name"]) for phase in remaining(
+            self.plan, self.accepted_phase)}
+        declared = frozenset(prelaunch_phase_names(self.plan))
+        legs = [leg for leg in _legs(self.plan, mover_role=role)
+                if leg["phase"] in ahead and leg["phase"] not in declared]
+        return max((int(leg["stage_gib"]) + (
+            int(legs[index + 1]["stage_gib"]) if index + 1 < len(legs) else 0)
+            for index, leg in enumerate(legs)), default=0)
+
+    @cached_property
     def advance(self) -> dict[str, object]:
         """The minimum simultaneous current-plus-next needs of one window leg.
 
