@@ -735,6 +735,8 @@ def _node_group_assignment(rows, shards, filename, indices):
         if filename not in groups:
             return "grouped file also has an ungrouped owner"
         group = groups[filename]
+        if group["count"] != len(indices):
+            return "node group indices are incomplete or repeated"
         if not isinstance(row.get("output"), str):
             return "node group outcome evidence is missing"
         record = parse(row["output"], record_binding=row.get("record_binding"))

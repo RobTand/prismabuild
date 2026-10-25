@@ -99,6 +99,19 @@ def test_group_verdict_requires_complete_disjoint_ownership():
     assert "node_group_assignment" in {problem["code"] for problem in missing["problems"]}
 
 
+def test_unowned_group_count_cannot_allocate_partitions(monkeypatch):
+    outcomes = fleet_module("pbtest_outcomes")
+    rows = [_row(0, NODES, group=_group(0, count=10**9))]
+
+    def refuse_unowned_allocation(nodeids, count, durations):
+        raise MemoryError("partition count has no matching shard ownership")
+
+    monkeypatch.setattr(outcomes, "partition_nodes", refuse_unowned_allocation)
+    verdict = outcomes.judge_shards(rows, requested_files=[FILE])
+    assert not verdict["green"]
+    assert "node_group_assignment" in {problem["code"] for problem in verdict["problems"]}
+
+
 def test_ungrouped_file_cannot_be_assigned_twice():
     outcomes = fleet_module("pbtest_outcomes")
     rows = [_row(0, NODES[::2]), _row(1, NODES[1::2])]
