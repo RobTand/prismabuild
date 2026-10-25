@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import multiprocessing
@@ -19,12 +18,15 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild.digest_primitives import raw_sha256
+
 
 def _load(stop, ready):
     ready.set()
     value = b"test-time-isolation"
     while not stop.is_set():
-        value = hashlib.sha256(value).digest()
+        value = raw_sha256(value).encode()
 
 
 def main():
@@ -105,7 +107,7 @@ def main():
                               "load_before": load_before, "load_after": os.getloadavg(),
                               "sibling_alive": sibling.is_alive(), "summary": summary,
                               "tests": len(cases), **counts, "qualified": qualified,
-                              "stdout_sha256": hashlib.sha256(log.read_bytes()).hexdigest()}
+                              "stdout_sha256": raw_sha256(log.read_bytes())}
                     with (evidence / "outcomes.jsonl").open("a") as outcomes:
                         outcomes.write(json.dumps(record) + "\n")
                         outcomes.flush()
