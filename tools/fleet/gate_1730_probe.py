@@ -10,9 +10,13 @@ Three legs:
   speed: 1/4/16-stream first and repeated reads of a fixed byte total
     (16 files x 512 MiB prefix = 8 GiB) from the stage tier
     (/stage/prewarm, NFS ro), the HDD pool (/mnt/shared), and a matching
-    host-local NVMe file set. Every arm reads the same bytes with one
-    file per thread at 16 streams, so no thread idles.
+    synthetic host-local NVMe file set. Every source uses equal byte totals,
+    not proven identical A8S content. No thread idles at 16 streams.
   bind:  Docker nested bind over a subdirectory of -v /mnt/shared:/mnt/shared.
+
+--preflight-only runs capacity/path observations and the tiny bind fixture.
+It reads no model payloads and writes no speed corpus. It requires an explicit
+installed image ID; no image pull or default image entrypoint is run.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ import argparse
 import concurrent.futures as futures
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -303,8 +308,9 @@ def write_test_file(path: str, size: int) -> None:
 def measure_local_nvme(target_total: int) -> dict:
     """Same fixed arm shape on host-local disk: 16 files, 1/4/16 streams.
 
-    File bytes match the NFS arm total, so rates compare directly. Each
-    file is checked non-sparse (du backing vs size) before the arms run.
+    Synthetic file sizes match the NFS arm total; this does not establish
+    same-content or loader performance. Each file is checked non-sparse
+    (du backing vs size) before the arms run.
     """
     out: dict = host_local_root()
     if out["path"] is None:
@@ -361,29 +367,35 @@ def run_docker(args: list[str], timeout: int = 180) -> dict:
     }
 
 
-def measure_bind() -> dict:
+def measure_bind(*, image: str | None = None) -> dict:
     """Nested bind over a subdirectory of -v /mnt/shared:/mnt/shared:ro."""
     out: dict = {"docker": run_docker(["docker", "version", "--format", "{{.Server.Version}}"])}
-    images = run_docker(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"])
-    out["images"] = images
-    image = None
-    if images.get("returncode") == 0:
-        for line in images["stdout"].splitlines():
-            name = line.split()[0] if line.split() else ""
-            if name and "<none>" not in name:
-                image = name
-                break
+    if image is None:
+        images = run_docker(["docker", "images", "--format", "{{.Repository}}:{{.Tag}} {{.Size}}"])
+        out["images"] = images
+        if images.get("returncode") == 0:
+            for line in images["stdout"].splitlines():
+                name = line.split()[0] if line.split() else ""
+                if name and "<none>" not in name:
+                    image = name
+                    break
     if image is None:
         out["skipped"] = "no local image; will not pull on a full disk"
         return out
+    inspected = run_docker(["docker", "image", "inspect", image,
+                            "--format", "{{.Id}}"])
+    out["image_inspect"] = inspected
+    if inspected.get("returncode") != 0:
+        out["skipped"] = "requested local image unavailable; no pull attempted"
+        return out
+    image = inspected["stdout"].strip()
     out["image"] = image
-    host = socket.gethostname()
     local = host_local_root()
     if local["path"] is None:
         out["skipped"] = "no host-local dir for the bind source"
         return out
     src = tempfile.mkdtemp(prefix="gate-1730-src-", dir=local["path"])
-    shadow = "/mnt/shared/gate-1730-%s" % host
+    shadow = tempfile.mkdtemp(prefix="gate-1730-shadow-", dir="/mnt/shared")
     calls: list[dict] = []
     try:
         with open(os.path.join(src, "marker.txt"), "w") as stream:
@@ -398,17 +410,25 @@ def measure_bind() -> dict:
         except OSError as exc:
             made_shadow = False
             calls.append({"step": "make shadow dir", "error": str(exc)})
-        base = ["docker", "run", "--rm", "-v", "/mnt/shared:/mnt/shared:ro"]
-        calls.append({"step": "baseline ls", **run_docker([*base, image, "ls", shadow])})
+        base = ["docker", "run", "--rm", "--pull=never", "--network=none",
+                "--user", str(os.getuid()), "--entrypoint", "/bin/sh",
+                "-v", "/mnt/shared:/mnt/shared:ro"]
+        calls.append({"step": "baseline ls", **run_docker([*base, image, "-c", 'ls "$1"', "sh", shadow])})
         if made_shadow:
             nested = [*base, "--mount",
                       "type=bind,src=%s,dst=%s,readonly" % (src, shadow),
-                      image, "sh", "-c", "ls %s; cat %s/marker.txt" % (shadow, shadow)]
+                      image, "-c", 'ls "$1" && cat "$1/marker.txt"', "sh", shadow]
             calls.append({"step": "nested bind ls+cat", **run_docker(nested)})
+            readonly = [*base, "--mount",
+                        "type=bind,src=%s,dst=%s,readonly" % (src, shadow),
+                        image, "-c", 'printf changed > "$1/marker.txt"', "sh", shadow]
+            calls.append({"step": "write through readonly bind", **run_docker(readonly)})
             missing = [*base, "--mount",
                        "type=bind,src=%s/missing,dst=%s,readonly" % (src, shadow),
-                       image, "true"]
+                       image, "-c", "true"]
             calls.append({"step": "mount with missing src", **run_docker(missing)})
+            with open(os.path.join(src, "marker.txt")) as stream:
+                out["local_marker_after_write"] = stream.read()
     finally:
         for name in ("marker.txt", "second.txt"):
             try:
@@ -430,32 +450,46 @@ def measure_bind() -> dict:
     out["nested_shows_local_only"] = ("marker.txt" in stdout and "second.txt" in stdout
                                       and "canonical.txt" not in stdout
                                       and nested.get("returncode") == 0)
+    write = next((c for c in calls if c.get("step") == "write through readonly bind"), {})
+    missing = next((c for c in calls if c.get("step") == "mount with missing src"), {})
+    out["readonly_write_refused"] = (write.get("returncode") not in (None, 0)
+        and "Read-only file system" in write.get("stderr", "")
+        and out.get("local_marker_after_write") == "local-wins\n")
+    out["missing_source_refused"] = (missing.get("returncode") == 125
+        and "bind source path does not exist" in missing.get("stderr", ""))
     return out
 
 
-def mountinfo_line(mountpoint: str) -> str | None:
-    """The /proc/self/mountinfo row for mountpoint, if any."""
+def mountinfo_line(mountpoint: str, *, covering: bool = False) -> str | None:
+    """The exact mount, or its closest ancestor for a path observation."""
+    selected = None
+    selected_length = -1
     try:
         with open("/proc/self/mountinfo") as stream:
             for line in stream:
                 parts = line.split()
-                if len(parts) > 4 and parts[4] == mountpoint:
-                    return line.strip()[-400:]
+                if len(parts) <= 4:
+                    continue
+                target = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), parts[4])
+                matches = target == mountpoint or (covering and
+                    (target == "/" or mountpoint.startswith(target.rstrip("/") + "/")))
+                if matches and len(target) >= selected_length:
+                    selected = line.strip()
+                    selected_length = len(target)
     except OSError:
         return None
-    return None
+    return selected
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Gate probe for prismabuild#1730.")
-    ap.add_argument("--out", default="", help="Write the JSON report here too.")
-    args = ap.parse_args(argv)
+def environment_report() -> dict:
+    """Collect mount and capacity metadata without reading model payloads."""
     report: dict = {
         "schema": "prismabuild.gate_1730_probe.v2",
         "host": socket.gethostname(),
         "started_unix": time.time(),
     }
     report["mounts"] = {
+        "/": mountinfo_line("/"),
         "/mnt/shared": mountinfo_line("/mnt/shared"),
         "/stage/prewarm": mountinfo_line("/stage/prewarm"),
     }
@@ -469,12 +503,70 @@ def main(argv: list[str] | None = None) -> int:
     report["docker_root"] = docker_root.get("stdout", "").strip()
     if report["docker_root"]:
         report["docker_root_vfs"] = statvfs_gib(report["docker_root"])
-    report["stage_source"] = measure_source("stage", STAGE_DIR)
-    report["hdd_source"] = measure_source("hdd-pool", CANONICAL_DIR)
-    nfs_totals = [report[k].get("arm_total_gib", 0) for k in ("stage_source", "hdd_source")]
-    target = int(max(nfs_totals) * GIB) if any(nfs_totals) else ARM_FILES * PREFIX_BYTES
-    report["local_nvme"] = measure_local_nvme(target)
-    report["bind"] = measure_bind()
+    return report
+
+
+def observe_path(path: str) -> dict:
+    """Observe a directory and its backing mount without opening payload files."""
+    result: dict = {"path": path}
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        result["present"] = False
+    except OSError as exc:
+        result.update(present=None, error=str(exc))
+    else:
+        result.update(present=True, device=info.st_dev)
+    # stat triggers autofs before the mount table is read.
+    result["mountinfo"] = mountinfo_line(os.path.abspath(path), covering=True)
+    return result
+
+
+def preflight_report(destination: str, image: str) -> dict:
+    report = environment_report()
+    report["schema"] = "prismabuild.gate_1730_preflight.v1"
+    report["canonical_path"] = observe_path(CANONICAL_DIR)
+    report["stage_path"] = observe_path(STAGE_DIR)
+    report["local_path"] = observe_path(destination)
+    report["space"] = {"destination": destination}
+    try:
+        st = os.statvfs(destination)
+    except OSError as exc:
+        report["space"]["error"] = str(exc)
+    else:
+        available = st.f_bavail * st.f_frsize
+        total = st.f_blocks * st.f_frsize
+        report["space"].update(available_bytes=available, total_bytes=total,
+            set_bytes=A8S_BYTES, d1=d1_verdict(available, total, A8S_BYTES))
+    report["speed"] = {"status": "not_run",
+        "reason": "prerequisites only; no model payload reads or synthetic speed files"}
+    report["bind"] = measure_bind(image=image)
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Gate probe for prismabuild#1730.")
+    ap.add_argument("--out", default="", help="Write the JSON report here too.")
+    ap.add_argument("--preflight-only", action="store_true",
+                    help="Observe space and paths and test a tiny bind; no speed workload.")
+    ap.add_argument("--destination", default="/home/rob/models-local",
+                    help="Existing candidate local-copy parent for preflight capacity.")
+    ap.add_argument("--bind-image", help="Installed sha256 image ID for the bind fixture.")
+    args = ap.parse_args(argv)
+    if args.preflight_only:
+        if not args.bind_image or not re.fullmatch(r"sha256:[0-9a-f]{64}", args.bind_image):
+            ap.error("--preflight-only requires --bind-image sha256:<64 lowercase hex digits>")
+        report = preflight_report(args.destination, args.bind_image)
+    else:
+        if args.bind_image:
+            ap.error("--bind-image requires --preflight-only")
+        report = environment_report()
+        report["stage_source"] = measure_source("stage", STAGE_DIR)
+        report["hdd_source"] = measure_source("hdd-pool", CANONICAL_DIR)
+        nfs_totals = [report[k].get("arm_total_gib", 0) for k in ("stage_source", "hdd_source")]
+        target = int(max(nfs_totals) * GIB) if any(nfs_totals) else ARM_FILES * PREFIX_BYTES
+        report["local_nvme"] = measure_local_nvme(target)
+        report["bind"] = measure_bind()
     report["finished_unix"] = time.time()
     text = json.dumps(report, indent=1)
     if args.out:
