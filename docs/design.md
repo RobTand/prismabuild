@@ -20201,9 +20201,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old
