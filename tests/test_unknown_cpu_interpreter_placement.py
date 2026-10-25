@@ -15,7 +15,7 @@ CPU_CAPACITY = {**CAPACITY, "gpu": 0}
 NOW = 1000.
 
 
-def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields):
+def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, max_attempts=3, **fields):
     monkeypatch.setattr(pool, "_now", lambda: NOW)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "spark")
     queue = pool.PoolQueue(tmp_path / "queue")
@@ -24,14 +24,14 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
     body = _body(tmp_path, argv=[interpreter, "-m", "pytest", "tests/"])
     body["params"]["interpreter"] = interpreter
     body["params"]["retry_policy"] = {
-        "retry_safe": True, "retry_scope": "interruption", "max_attempts": 3}
+        "retry_safe": True, "retry_scope": "interruption", "max_attempts": max_attempts}
     action = core.seal_action(body)
     cas = core.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
         checkout_root=tmp_path, worker_script=tmp_path / "worker.py",
         interpreter=interpreter, resources={"cpu": 2, "mem_gb": 2},
-        retry_safe=True, retry_scope="interruption", max_attempts=3, **fields)
+        retry_safe=True, retry_scope="interruption", max_attempts=max_attempts, **fields)
     item = queue.ready_items()[0]
     for host, gpu in (("cpu-peer", False), ("spark", True)):
         capacity = CAPACITY if gpu else CPU_CAPACITY
@@ -88,15 +88,14 @@ def test_interpreter_evidence_never_bypasses_guest_or_deferral(
 @pytest.mark.parametrize("fault", ["unreadable-cas", "contradictory-prefix", "unsafe", "exhausted"])
 def test_unknown_peer_cannot_turn_unproven_restartability_into_a_guest(
         tmp_path, monkeypatch, fault):
-    queue, item, candidate, placement, _ = interpreter_case(tmp_path, monkeypatch, "unknown")
+    queue, item, candidate, placement, _ = interpreter_case(
+        tmp_path, monkeypatch, "unknown", max_attempts=1 if fault == "exhausted" else 3)
     if fault == "unreadable-cas":
         item["cas_root"] = str(tmp_path / "missing")
     elif fault == "contradictory-prefix":
         item["attempt_history_missing_before"] = 1
     elif fault == "unsafe":
         item["retry_safe"] = False
-    else:
-        item["max_attempts"] = 1
     assert not queue._guest_restartable(item)
     result = prepare_interpreter_claim(queue, item, candidate, placement)
     assert isinstance(result, candidate_policy.CandidateDenial)
