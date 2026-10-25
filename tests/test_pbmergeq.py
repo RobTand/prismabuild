@@ -485,6 +485,119 @@ def test_restart_after_vehicle_creation_recovers_it_without_opening_another(
     assert store.state["batch"] is None
 
 
+def test_pending_issue_link_resumes_the_same_vehicle_without_retesting(tmp_path):
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    origin.pr(1, {"one.txt": "1\n"})
+    github.issue_link_state = "pending"
+    pending = queue.run_batch(entries(github, 1))
+    assert pending["verdict"] == "waiting", pending
+    assert not [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
+    vehicle = dict(pending["vehicle"])
+    completed = list(runner.runs)
+
+    github.issue_link_state = "success"
+    merged = queue.tick()
+    assert merged["verdict"] == "merged", merged
+    assert merged["id"] == pending["id"] and merged["vehicle"] == vehicle
+    assert len(origin.vehicle_creations) == 1
+    assert runner.runs == completed
+    assert [github.pr(n)["state"] for n in (1, vehicle["number"])] == ["MERGED", "MERGED"]
+
+
+def test_restart_reconciles_a_vehicle_merged_before_its_local_receipt(tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    one = origin.pr(1, {"one.txt": "1\n"})
+    write = github._write
+
+    def crash_after_merge(what, command, stdin=None):
+        accepted = write(what, command, stdin)
+        if command[:3] == ["gh", "pr", "merge"] and accepted:
+            raise SystemExit("restart before merge receipt")
+        return accepted
+
+    monkeypatch.setattr(github, "_write", crash_after_merge)
+    with pytest.raises(SystemExit, match="restart before merge receipt"):
+        queue.run_batch(entries(github, 1))
+    vehicle = dict(next(iter(origin.vehicles.values())))
+    assert vehicle["state"] == "MERGED"
+    assert not any(row.get("kind") == "merge" for row in queue.store.ledger())
+    completed = list(runner.runs)
+
+    store = mq.Store(queue.cfg.state_dir)
+    github = FakeGitHub(queue.cfg, store, origin)
+    resumed = mq.Queue(queue.cfg, store, github, queue.mirror, runner, "merge")
+    resumed.resume()
+    merged = resumed.tick()
+    assert merged["verdict"] == "merged", merged
+    assert merged["vehicle"]["number"] == vehicle["number"]
+    assert len(origin.vehicle_creations) == 1 and runner.runs == completed
+    assert not [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
+    for number, sha in ((1, one), (vehicle["number"], vehicle["headRefOid"])):
+        assert any(row.get("kind") == "merge" and row.get("pr") == number
+                   and row.get("sha") == sha for row in store.ledger())
+
+
+def test_refused_candidate_status_blocks_merge_and_retries_the_same_candidate(
+        tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    origin.pr(1, {"one.txt": "1\n"})
+    write = github._write
+    refused = []
+
+    def refuse_first_required_status(what, command, stdin=None):
+        if (command[:2] == ["gh", "api"] and "context=pb-tests" in command
+                and not refused):
+            refused.append(command)
+            return False
+        return write(what, command, stdin)
+
+    monkeypatch.setattr(github, "_write", refuse_first_required_status)
+    pending = queue.run_batch(entries(github, 1))
+    assert pending["verdict"] == "waiting", pending
+    candidate, vehicle = pending["candidate"], dict(pending["vehicle"])
+    assert not [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
+    assert not any(row.get("kind") == "status" and row.get("context") == "pb-tests"
+                   and row.get("sha") == candidate for row in queue.store.ledger())
+    completed = list(runner.runs)
+
+    merged = queue.tick()
+    assert merged["verdict"] == "merged", merged
+    assert merged["candidate"] == candidate and merged["vehicle"] == vehicle
+    assert len(origin.vehicle_creations) == 1 and runner.runs == completed
+    assert statuses(github) == [(candidate, "success")]
+
+
+def test_a_head_moved_during_testing_closes_the_vehicle_and_requires_new_review(
+        tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    original = origin.pr(1, {"one.txt": "1\n"})
+    run_many = runner.run_many
+
+    def push_during_test(batch, outdir, jobs):
+        results = run_many(batch, outdir, jobs)
+        # pb-history-ok: Updates the temporary fake-origin branch and pull ref during its own test run.
+        git("checkout", "-q", "pr1", cwd=origin.work)
+        (origin.work / "one.txt").write_text("unreviewed\n")
+        git("commit", "-q", "-am", "push after approval", cwd=origin.work)
+        moved = git("rev-parse", "HEAD", cwd=origin.work)
+        # pb-history-ok: Updates the temporary fake-origin branch and pull ref during its own test run.
+        git("update-ref", "refs/pull/1/head", moved, cwd=origin.work)
+        # pb-history-ok: Returns the temporary fake-origin fixture to its main branch.
+        git("checkout", "-q", "main", cwd=origin.work)
+        return results
+
+    monkeypatch.setattr(runner, "run_many", push_during_test)
+    batch = queue.run_batch(entries(github, 1))
+    assert batch["verdict"] != "merged", batch
+    assert batch["included"][0]["sha"] == original
+    assert github.pr(1)["headRefOid"] != original
+    assert github.pr(batch["vehicle"]["number"])["state"] == "CLOSED"
+    assert not [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
+    assert github.comments == [(1, "head moved after approval; re-review and enqueue the new SHA")]
+    assert queue.store.state["queue"] == []
+    assert statuses(github) == []
+
+
 def test_selected_head_is_fetched_when_github_pull_ref_lags(tmp_path, monkeypatch):
     queue, origin, github, runner = make_queue(tmp_path)
     stale = origin.pr(1, {"one.txt": "old\n"})
