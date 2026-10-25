@@ -762,6 +762,14 @@ class _Copier:
                     self.errors.append(
                         f"{os.path.basename(path)}: {prefix}{exc}")
 
+        def refuse_entry(path, exc):
+            with dispatch:
+                self.publication_refused.set()
+                if exc.refusal is not None and self.refusal is None:
+                    self.refusal = exc.refusal
+                    self.conflict = exc.conflict
+            record_error(path, exc, wait_verdict=exc.wait_verdict)
+
         def take() -> dict[str, object] | None:
             """The next entry, or ``None`` once dispatch has ended."""
 
@@ -805,12 +813,7 @@ class _Copier:
                     # committed stays committed.  This is not the caller's
                     # stop: cancellation and withdrawal keep their own
                     # decision and terminal.
-                    with dispatch:
-                        self.publication_refused.set()
-                        if exc.refusal is not None and self.refusal is None:
-                            self.refusal = exc.refusal
-                            self.conflict = exc.conflict
-                    record_error(path, exc, wait_verdict=exc.wait_verdict)
+                    refuse_entry(path, exc)
                     return
                 except (OSError, ValueError) as exc:
                     # An ordinary source read, digest or filesystem failure:
