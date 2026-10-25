@@ -152,15 +152,9 @@ class LiveInterpreters:
 
 
 def observe_interpreters(items: Sequence[object]) -> InterpreterAnswers:
-    paths = sorted({
-        str(item.get("interpreter"))
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("interpreter"), str)})
-    host = LiveInterpreters()
-    present, absent = set(), set()
-    for path in paths:
-        (present if host.answer(path) is Presence.PRESENT else absent).add(path)
-    return InterpreterAnswers(frozenset(present), frozenset(absent))
+    from .interpreter_inventory import prepare_interpreters
+
+    return prepare_interpreters(items).answers
 
 
 @dataclass(frozen=True)
