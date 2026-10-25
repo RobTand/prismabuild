@@ -1,4 +1,5 @@
 """Mirror publication is independent of another admission pass."""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -274,3 +275,24 @@ def test_failed_copy_uses_capped_recovery_without_same_result_feedback(mirrors):
         clock[0] = deadline
     assert intervals == [1., 1., 1., 2., 4., 5.]
     assert observer.diagnostics['starts'] == observer.diagnostics['failed'] == 6
+
+
+def test_exited_legacy_owner_cannot_make_an_unknown_lock_busy_wait(mirrors):
+    observer, local, _, clock = mirrors
+    write_source(local, 10.)
+    descriptor = os.open(local / 'publish.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    pidfd = os.pidfd_open(child.pid)
+    try:
+        assert select.select([pidfd], [], [], 10)[0]
+        ticks = adaptive_snapshot._start_ticks(child.pid)
+        assert ticks is not None
+        (local / 'publisher-owner.json').write_text(json.dumps({
+            'pid': child.pid, 'start_ticks': ticks, 'started_monotonic': clock[0] - 2.}))
+        assert observer.reconcile() == clock[0] + .05
+        assert observer._owner_fd is None
+    finally:
+        os.close(pidfd)
+        os.close(descriptor)
+        child.wait(timeout=10)

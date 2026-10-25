@@ -151,7 +151,7 @@ class LocalMirrorPublisher:
             descriptor = os.pidfd_open(pid)
         except OSError:
             return False
-        if snapshot._start_ticks(pid) != ticks:
+        if snapshot._start_ticks(pid) != ticks or select.select([descriptor], [], [], 0)[0]:
             os.close(descriptor)
             return False
         self._owner_fd = descriptor
