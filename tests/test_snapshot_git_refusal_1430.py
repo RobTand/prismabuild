@@ -65,6 +65,10 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
 
     def format_read(root, *args, **kwargs):
         assert root == tmp_path
+        if args == ("--version",):
+            return subprocess.CompletedProcess(args, 0, stdout="git version fixture\n", stderr="")
+        if args == (*argv[1:argv.index("pack-objects")], "config", "--null", "--list"):
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         assert args == (f"--git-dir={git_dir}", "rev-parse", "--show-object-format")
         return subprocess.CompletedProcess(args, 0, stdout=object_format + "\n", stderr="")
 
