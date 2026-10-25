@@ -1,0 +1,66 @@
+name: Regression test
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: regression-test-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  regression-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # This target workflow and evaluator come from the trusted base branch.
+      # PR blobs are parsed as data. No PR checkout, imports, tests or shell text.
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const api = {...context.repo, pull_number: context.payload.pull_request.number};
+            const {data: pull} = await github.rest.pulls.get(api);
+            if (pull.changed_files > 3000) {
+              core.setFailed('PR exceeds the 3000-file API limit; split it before evaluating regression coverage.');
+              return;
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {...api, per_page: 100});
+            if (files.length !== pull.changed_files) {
+              core.setFailed('Incomplete PR file inventory; rerun the check.');
+              return;
+            }
+            async function source(ref, filename) {
+              const {data} = await github.rest.repos.getContent({...context.repo, ref, path: filename});
+              if (Array.isArray(data) || data.type !== 'file' || data.encoding !== 'base64'
+                  || data.size > 1024 * 1024) {
+                throw new Error(`Complete text unavailable or larger than 1 MiB: ${filename}`);
+              }
+              return Buffer.from(data.content, 'base64').toString('utf8');
+            }
+            const helper = await source(pull.base.sha, 'tools/ci/check_regression_test.py');
+            const {data: comparison} = await github.rest.repos.compareCommitsWithBasehead({
+              ...context.repo, basehead: `${pull.base.sha}...${pull.head.sha}`,
+            });
+            for (const file of files) {
+              if (!/(^|\/)tests\/(?:.*\/)?(?:test_[^/]+|[^/]+_test)\.py$/.test(file.filename)
+                  || !['added', 'modified', 'renamed'].includes(file.status)) continue;
+              file.before = file.status === 'added' ? '' : await source(
+                comparison.merge_base_commit.sha, file.previous_filename || file.filename);
+              file.after = await source(pull.head.sha, file.filename);
+            }
+            const {data: current} = await github.rest.pulls.get(api);
+            if (current.head.sha !== pull.head.sha || current.base.sha !== pull.base.sha
+                || current.title !== pull.title || current.body !== pull.body
+                || JSON.stringify(current.labels) !== JSON.stringify(pull.labels)) {
+              core.setFailed('PR changed while gathering evidence; rerun the check.');
+              return;
+            }
+            const helperPath = path.join(process.env.RUNNER_TEMP, 'check_regression_test.py');
+            const inputPath = path.join(process.env.RUNNER_TEMP, 'regression-test-input.json');
+            fs.writeFileSync(helperPath, helper);
+            fs.writeFileSync(inputPath, JSON.stringify({pull, files}));
+            const result = await exec.getExecOutput('python3', [helperPath, inputPath], {ignoreReturnCode: true});
+            core.info(result.stdout);
+            if (result.exitCode !== 0) core.setFailed('Regression-test gate rejected this PR; see the verdict above.');
