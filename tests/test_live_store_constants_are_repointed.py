@@ -93,6 +93,10 @@ ENV_BACKED: dict[tuple[str, str], str] = {
 }
 
 HOST_LOCAL: dict[tuple[str, str], str] = {
+    ("prismabuild.sealed_bundle_cache", "CACHE_ROOT"): (
+        "host-local sealed bundles; repointed so tests never populate or "
+        "evict the submitter's persistent cache"
+    ),
     ("supervise", "SYSTEMD_UNIT"): (
         "user service file under the home directory; repointed so tests do not "
         "depend on or modify the installed supervisor service"

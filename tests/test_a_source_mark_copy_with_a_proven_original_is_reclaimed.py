@@ -29,6 +29,7 @@ from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
   # noqa: E402
+from prismabuild import batch_ledger
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -425,6 +426,101 @@ def test_an_unreadable_reference_record_refuses_the_pass(fleet) -> None:
     assert got["skipped"] == "attribution_unreadable"
     for name in NAMES:
         assert _staged(stage, mount, name).exists()
+
+
+@pytest.mark.parametrize("custom_root", [False, True])
+def test_schema_less_commitments_protect_every_nested_stage_reference(
+        fleet, custom_root) -> None:
+    queue, stage, mount, _quarantine, good = fleet
+    names = ["admission", "current", "history", "retired", "restaged", "extension"]
+    paths = {}
+    for name in names:
+        (mount / name).write_bytes(good)
+        paths[name] = str(_stage_copy(stage, mount, name, good))
+    residency = stage.parent / "custom-residency" if custom_root else (
+        queue.root / pool.record_store.RESIDENCY)
+    ledger = batch_ledger.BatchLedger.at_scope(
+        residency / "produced-output-scopes" / ("a" * 64)
+        / ("template.with.dots." + "b" * 32))
+    ledger.file({
+        "admission": {"nested": [{"path": paths["admission"]}]},
+        "batches": {"batch": {
+            "staged_paths": [paths["current"]],
+            "history": [{"path": paths["history"]}],
+            "retired": {"path": paths["retired"]},
+            "materializations": [{"nested": [[paths["restaged"]]]}],
+        }},
+    })
+    document = json.loads(ledger.path.read_text())
+    assert "schema" not in document
+    # Capture ignores unknown fields, but reclaim must retain their references.
+    document["extension"] = {"path": paths["extension"]}
+    ledger.path.write_text(json.dumps(document))
+
+    got = _reclaim(fleet, residency_root=residency)
+
+    assert got["complete"] is True
+    assert got["entries_paired"] == len(NAMES)
+    assert got["refused_reasons"] == {"attributed": len(names)}
+    assert all(Path(path).exists() for path in paths.values())
+
+
+@pytest.mark.parametrize("document", [
+    {"batches": {}},
+    {"batches": {}, "admission": None},
+])
+def test_schema_less_empty_commitments_are_readable(fleet, document) -> None:
+    queue, _stage, _mount, _quarantine, _good = fleet
+    path = (batch_ledger.scopes_root(queue.root) / ("a" * 64)
+            / ("template." + "b" * 32) / "commitments.json")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(document))
+
+    got = _reclaim(fleet)
+
+    assert got["complete"] is True
+    assert got["entries_paired"] == len(NAMES)
+
+
+@pytest.mark.parametrize("document", [
+    {}, {"batches": []}, {"batches": None},
+    {"batches": {}, "admission": []},
+    {"batches": {}, "admission": "invalid"},
+    {"schema": "unexpected", "batches": [], "admission": {}},
+    [],
+])
+def test_malformed_commitments_refuse_the_entire_pass(fleet, document) -> None:
+    queue, _stage, _mount, _quarantine, _good = fleet
+    path = (batch_ledger.scopes_root(queue.root) / ("a" * 64)
+            / ("template." + "b" * 32) / "commitments.json")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(document))
+
+    got = _reclaim(fleet)
+
+    assert got["complete"] is False
+    assert got["skipped"] == "reference_census_unreadable"
+    assert got["entries_paired"] == 0
+
+
+@pytest.mark.parametrize("relative", [
+    "unrelated.json", "commitments.json", "other/commitments.json",
+    "produced-output-scopes/owner/template.nonce/commitments.json",
+    "produced-output-scopes/" + "a" * 64 + "/template.nonce/commitments.json",
+    "produced-output-scopes/" + "a" * 64 + "/template." + "b" * 32
+    + "/nested/commitments.json",
+])
+def test_unrelated_schema_less_commitments_shape_is_refused(fleet, relative) -> None:
+    queue, _stage, _mount, _quarantine, _good = fleet
+    path = queue.root / pool.record_store.RESIDENCY / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"batches": {}, "admission": {}}))
+
+    got = _reclaim(fleet)
+
+    assert got["complete"] is False
+    assert got["skipped"] in ("reference_census_unreadable", "attribution_unreadable")
+    assert got["entries_paired"] == 0
 
 
 def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
