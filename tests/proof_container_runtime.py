@@ -27,7 +27,7 @@ CAPTURE_PUBLISHED_SOURCES = tuple('src/prismabuild/' + name + '.py' for name in 
     'action_edges', 'adaptive_cpu', 'adaptive_gpu', 'adaptive_snapshot',
     'box_capacity', 'box_window', 'container_images', 'control_cpu', 'core',
     'cpu_topology', 'decomposition', 'dependency_digest', 'digest_primitives',
-    'filesystem_capacity', 'filesystem_floor', 'gpu_capacity', 'local_dependencies',
+    'filesystem_capacity', 'filesystem_floor', 'gpu_capacity', 'immutable_files', 'local_dependencies',
     'local_resident', 'local_scratch', 'local_tier', 'materialize', 'movement_actions',
     'pool', 'posix_lock', 'produced_output', 'produced_spool', 'progress',
     'publication_canary', 'reader_lease', 'residency_map', 'residency_plan',
