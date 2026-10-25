@@ -865,7 +865,7 @@ def default_duration(known: dict[str, float]) -> float | None:
 def shard(files: list[str], count: int, *, durations: dict[str, float] | None = None,
           ceiling: float | None = None,
           model_default: float | None = None) -> list[list[str]]:
-    """Round-robin without measurements; measured packing with them (#1246).
+    """Pack whole files when no node groups are needed (#1246).
 
     ``durations`` maps each measured file to its predicted seconds, and
     ``ceiling`` is the sealed shard deadline the predictions are judged
@@ -933,6 +933,13 @@ def plan_shards(files: list[str], count: int, *, durations: dict[str, float],
                 ceiling: float | None = None,
                 model_default: float | None = None,
                 node_durations: dict[str, float] | None = None) -> list[TestShard]:
+    """Split above-target files and pack groups onto distinct shards.
+
+    Without groups, ``shard`` retains half-deadline singleton isolation.
+    With groups, the entire cohort uses longest-first packing instead:
+    reserving singleton buckets could leave fewer buckets than a file's
+    sealed group count. The execution deadline still applies to each shard.
+    """
     default = model_default if model_default is not None else default_duration(durations)
     estimates = {name: durations.get(name, default) for name in files} if durations else {}
     target = sum(estimates.values()) / count if estimates and count > 1 else None

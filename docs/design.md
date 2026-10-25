@@ -2551,9 +2551,11 @@ there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
 
-`pbtest` automatically retains the latest observed green report for the resolved
-checkout root and canonical requested path set (#2286). The submitter stores one
-atomic report per scope under `$XDG_STATE_HOME/prismabuild/pbtest-history-v1`
+`pbtest` automatically retains the latest observed green report per Git
+repository, identified by its resolved common directory (#2286). Linked
+worktrees and changed requested path lists share estimates. Non-Git source
+directories use their resolved root as identity. The submitter stores one
+atomic report per repository under `$XDG_STATE_HOME/prismabuild/pbtest-history-v2`
 (or `~/.local/state`). Failed, interrupted or incomplete runs preserve the prior
 report. `--history` remains a repeatable explicit override. Without usable
 history, files rotate round-robin. File predictions take the maximum per-report
@@ -2572,6 +2574,10 @@ current selected node IDs after those hooks, with deterministic LPT when measure
 nodes exist and sorted round-robin otherwise. Unmeasured nodes use the measured
 node median. Each group records the same complete pre-partition node roster.
 New tests therefore remain in the population. An individual test is indivisible.
+Whole-file cohorts retain half-deadline singleton isolation. A cohort with node
+groups uses longest-first packing for all its units; singleton reservations could
+leave fewer available shards than a split file's sealed group count. Every shard
+retains its execution deadline.
 
 Repeated file assignment is valid only for a complete group-index cover with
 identical sealed group models and current rosters, and each group's collected
