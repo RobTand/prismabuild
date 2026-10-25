@@ -92,3 +92,9 @@ def test_cas_verification_rejects_missing_or_wrong_receipts(monkeypatch):
                         SimpleNamespace(returncode=0, stdout='{"action_key":"wrong"}'))
     with pytest.raises(ValueError, match='different action'):
         verify.verify_cas([row(['a'])])
+
+
+def test_failed_submission_without_reconciliation_still_returns_a_verdict():
+    failed = row(['a'], green=False)
+    failed['verdict']['reconciliation'] = None
+    assert verify.verdict([failed], ['a'], 1, 'integration')['verdict'] == 'FAIL'

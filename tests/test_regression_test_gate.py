@@ -144,3 +144,13 @@ def test_cli_returns_json_and_rejects_invalid_input(tmp_path):
     invalid = subprocess.run(command, capture_output=True, text=True, timeout=10)
     assert invalid.returncode == 2
     assert "invalid" in json.loads(invalid.stdout)["reason"]
+
+
+@pytest.mark.parametrize("body", ["", "Change type: typo", "Change type: fix\nChange type: docs"])
+def test_missing_invalid_or_ambiguous_change_type_is_rejected(body):
+    assert not gate.evaluate(pull("DL380 checkout sealing times out", body=body), [test_change()]).allowed
+
+
+def test_same_file_assertion_helper_qualifies():
+    source = "def _assert_refused(value):\n    assert value == 'refused'\n\ndef test_refusal():\n    _assert_refused(claim())\n"
+    assert gate.evaluate(pull(), [test_change(after=source)]).allowed
