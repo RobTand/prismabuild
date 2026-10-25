@@ -1,0 +1,127 @@
+{
+ "exported_custody": {
+  "files": {
+   "dl380-qualification.json": {
+    "bytes": 6060,
+    "sha256": "2a36764acaee32e91a15d9dd34926e9beaaea072d6d3ef7a7de5877407d8c7b6"
+   },
+   "install-METADATA": {
+    "bytes": 15928,
+    "sha256": "f2e109c7ddc56dcd82fed6735b65341535faf2138f1b8b31622e60f21a61c5c4"
+   },
+   "install-RECORD": {
+    "bytes": 6446,
+    "sha256": "f40e8320892775d1b9c89fed00dfb2b78b436f3f024945c6c036ac1412bd1a63"
+   },
+   "install-WHEEL": {
+    "bytes": 91,
+    "sha256": "61532836a2b3111b7ec23519c09df7c41180c27165fb872a6d8913b566b88ad1"
+   },
+   "install-direct_url.json": {
+    "bytes": 235,
+    "sha256": "ff1110a93dc421d7625a213c6110a94f6ddb797b5db1c152ba7ea4c0ef8b8fc3"
+   },
+   "install-pyvenv.cfg": {
+    "bytes": 275,
+    "sha256": "34eca46bcfa1c1838f1ae1359f7302c59fe8d9f39ac56ba32c3457bbb59a15af"
+   },
+   "prismabuild-0.1.0-py3-none-any.whl": {
+    "bytes": 1104571,
+    "sha256": "9619e58d2be40ccd74a01d79847d73d5d643ffe770dc3a5f88c1029582832c55"
+   },
+   "source-pyproject.toml": {
+    "bytes": 787,
+    "sha256": "b21931b2902dbdc998f655a060629a786c4cd493a54ecc5dfad4349f794e9125"
+   },
+   "source-src__prismabuild__action_result.py": {
+    "bytes": 36186,
+    "sha256": "32526ec1c622c734421395b14cbb9bfa7a4822fe402b7d303e77ce3b5c0c0dae"
+   },
+   "source-src__prismabuild__client.py": {
+    "bytes": 17850,
+    "sha256": "40b4f5cc88b18ea127eeb9325e7f03d954adcd0e4b6cdceda25ceda8a9f352c9"
+   },
+   "source-src__prismabuild__core.py": {
+    "bytes": 377104,
+    "sha256": "aff66d949b76b9b9a4b44f01588fe3bdf74a5e43b58aad88e3c600ee7a7e11a4"
+   },
+   "source-src__prismabuild__pool.py": {
+    "bytes": 1418506,
+    "sha256": "8956e06af22df44225ca4e5857937960222302e62311677341f70eb45f71e6be"
+   },
+   "source-src__prismabuild__reader_lease.py": {
+    "bytes": 160904,
+    "sha256": "645a58bf26f88f1afc5ce20baf20d9bc4244b619eaf1c17b3bea76c23dc11f9b"
+   },
+   "source-src__prismabuild__resource_scope.py": {
+    "bytes": 43587,
+    "sha256": "1392c1b4fbadd9d2b131a667596f11c0428f050882258760ddadffd3e2b3c547"
+   },
+   "source-tests__test_pbtest_dependency_pins.py": {
+    "bytes": 7501,
+    "sha256": "61ffd3ce22636714743056eb2dc977eb76a945135a6c83fbad9aa5002b6bb553"
+   }
+  },
+  "root": "/mnt/shared/prismabuild-fleet/qualification/pb1485-sdk5-027103d9-20261004"
+ },
+ "generated_at": "2026-10-04T18:01:31.206114+00:00",
+ "install_metadata": {
+  "direct_url": {
+   "url": "file:///home/rob/tmp/prismabuild-checkouts/2617cf36f98c.20s8bplo/checkout",
+   "vcs_info": {
+    "commit_id": "027103d9a8417e06c7f13356e58779a313cd7088",
+    "requested_revision": "027103d9a8417e06c7f13356e58779a313cd7088",
+    "vcs": "git"
+   }
+  },
+  "record_rows": 48,
+  "venv_python_lib": "python3.14"
+ },
+ "prior_checkout": {
+  "path": "/home/rob/tmp/prismabuild-checkouts/ffb419360358.6ui4srms/checkout/_pb1485-out",
+  "state": "missing; rerunning identical rev5 qualification"
+ },
+ "rerun_result": "PB1485_INSTALLED_LAYOUT_QUALIFIED",
+ "result": "PB1485_DURABLE_CUSTODY_EXPORTED",
+ "schema": "prismabuild.pb1485_durable_export.v1",
+ "source_artifacts": {
+  "pyproject.toml": {
+   "bytes": 787,
+   "sha256": "b21931b2902dbdc998f655a060629a786c4cd493a54ecc5dfad4349f794e9125"
+  },
+  "src/prismabuild/action_result.py": {
+   "bytes": 36186,
+   "sha256": "32526ec1c622c734421395b14cbb9bfa7a4822fe402b7d303e77ce3b5c0c0dae"
+  },
+  "src/prismabuild/client.py": {
+   "bytes": 17850,
+   "sha256": "40b4f5cc88b18ea127eeb9325e7f03d954adcd0e4b6cdceda25ceda8a9f352c9"
+  },
+  "src/prismabuild/core.py": {
+   "bytes": 377104,
+   "sha256": "aff66d949b76b9b9a4b44f01588fe3bdf74a5e43b58aad88e3c600ee7a7e11a4"
+  },
+  "src/prismabuild/pool.py": {
+   "bytes": 1418506,
+   "sha256": "8956e06af22df44225ca4e5857937960222302e62311677341f70eb45f71e6be"
+  },
+  "src/prismabuild/reader_lease.py": {
+   "bytes": 160904,
+   "sha256": "645a58bf26f88f1afc5ce20baf20d9bc4244b619eaf1c17b3bea76c23dc11f9b"
+  },
+  "src/prismabuild/resource_scope.py": {
+   "bytes": 43587,
+   "sha256": "1392c1b4fbadd9d2b131a667596f11c0428f050882258760ddadffd3e2b3c547"
+  },
+  "tests/test_pbtest_dependency_pins.py": {
+   "bytes": 7501,
+   "sha256": "61ffd3ce22636714743056eb2dc977eb76a945135a6c83fbad9aa5002b6bb553"
+  }
+ },
+ "wheel": {
+  "bytes": 1104571,
+  "name": "prismabuild-0.1.0-py3-none-any.whl",
+  "original_attested": false,
+  "sha256": "9619e58d2be40ccd74a01d79847d73d5d643ffe770dc3a5f88c1029582832c55"
+ }
+}
