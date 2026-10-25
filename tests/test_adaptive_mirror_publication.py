@@ -296,3 +296,65 @@ def test_exited_legacy_owner_cannot_make_an_unknown_lock_busy_wait(mirrors):
         os.close(pidfd)
         os.close(descriptor)
         child.wait(timeout=10)
+
+
+@pytest.mark.parametrize('failure', ['removal', 'completion-marker'])
+def test_failed_empty_source_publication_retries_until_shared_cleanup(mirrors, monkeypatch, failure):
+    observer, local, shared, clock = mirrors
+    shared.mkdir()
+    mirror = shared / 'gpu-state.json'
+    mirror.write_text(json.dumps({'sampled_unix': 10.}))
+    adaptive_snapshot._write(local / 'publisher-owner.json', {'started_monotonic': clock[0]})
+    unlink, write = Path.unlink, adaptive_snapshot._write
+
+    def refuse_removal(path, *args, **kwargs):
+        if path == mirror:
+            raise PermissionError('injected shared removal failure')
+        return unlink(path, *args, **kwargs)
+
+    def refuse_marker(path, value):
+        if path == shared / 'publisher-result.json':
+            raise PermissionError('injected shared completion failure')
+        return write(path, value)
+
+    with monkeypatch.context() as injection:
+        if failure == 'removal':
+            injection.setattr(Path, 'unlink', refuse_removal)
+        else:
+            injection.setattr(adaptive_snapshot, '_write', refuse_marker)
+        descriptor = os.open(local / 'publish.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        assert adaptive_snapshot.main([str(local), str(shared), str(descriptor), 'failed-empty']) == 1
+    assert adaptive_snapshot._read(local / 'publisher-result.json')['status'] == 'failed'
+    assert observer.reconcile() == 101., 'failed empty-source cleanup lost its retry deadline'
+    clock[0] = 101.
+    observer.reconcile()
+    finish_copy(observer)
+    assert not mirror.exists()
+    assert adaptive_snapshot._read(shared / 'publisher-result.json')['status'] == 'published'
+    assert observer.reconcile() is None
+
+
+def test_successful_copy_resets_backoff_before_a_later_completion_failure(mirrors):
+    observer, local, shared, clock = mirrors
+    write_source(local, 10.)
+    shared.mkdir()
+    destination = shared / 'gpu-state.json'
+    destination.mkdir()  # Remote write failure without a local-source mutation.
+    for _ in range(6):
+        observer.reconcile()
+        assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+        clock[0] = observer.reconcile()
+    destination.rmdir()
+    observer.reconcile()
+    finish_copy(observer)
+    assert observer.reconcile() is None
+
+    destination.unlink()
+    destination.mkdir()
+    # An older publisher may report failure without changing the source files.
+    descriptor = os.open(local / 'publish.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    assert adaptive_snapshot.main([str(local), str(shared), str(descriptor), 'legacy-failure']) == 1
+    clock[0] += 1.
+    observer.reconcile()
+    assert adaptive_snapshot._children[-1].wait(timeout=10) == 1
+    assert observer.reconcile() == clock[0] + 1., 'recovery retained an earlier copy failure backoff'
