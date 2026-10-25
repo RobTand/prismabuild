@@ -56,5 +56,6 @@ least five real PRs classified as fixes run without a false rejection, the autho
 existing requirements. Record the actual protection response and time on PRI-8.
 A dry run, synthetic fixture or planned protection change does not count.
 
-A test moved between different files can still count as new because comparison
-is per file. Reviewers must reject a move-only change as regression evidence.
+Before/after comparison includes removed test files and compares test bodies
+across the changed files. Moving an unchanged test between those files does not
+qualify as regression evidence.

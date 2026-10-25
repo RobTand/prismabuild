@@ -45,10 +45,10 @@ jobs:
             });
             for (const file of files) {
               if (!/(^|\/)tests\/(?:.*\/)?(?:test_[^/]+|[^/]+_test)\.py$/.test(file.filename)
-                  || !['added', 'modified', 'renamed'].includes(file.status)) continue;
+                  || !['added', 'modified', 'renamed', 'removed'].includes(file.status)) continue;
               file.before = file.status === 'added' ? '' : await source(
                 comparison.merge_base_commit.sha, file.previous_filename || file.filename);
-              file.after = await source(pull.head.sha, file.filename);
+              file.after = file.status === 'removed' ? '' : await source(pull.head.sha, file.filename);
             }
             const {data: current} = await github.rest.pulls.get(api);
             if (current.head.sha !== pull.head.sha || current.base.sha !== pull.base.sha

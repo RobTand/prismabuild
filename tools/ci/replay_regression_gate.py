@@ -27,11 +27,11 @@ def replay(corpus: dict, declared_fixes: list[int]) -> dict:
             pull['body'] = (pull['body'] or '') + '\nChange type: fix\n'
             base = git('merge-base', pull['base']['sha'], pull['head']['sha']).strip()
             for file in files:
-                if not is_test_file(file['filename']) or file['status'] not in {'added', 'modified', 'renamed'}:
+                if not is_test_file(file['filename']) or file['status'] not in {'added', 'modified', 'renamed', 'removed'}:
                     continue
                 file['before'] = '' if file['status'] == 'added' else git(
                     'show', base + ':' + file.get('previous_filename', file['filename']))
-                file['after'] = git('show', pull['head']['sha'] + ':' + file['filename'])
+                file['after'] = '' if file['status'] == 'removed' else git('show', pull['head']['sha'] + ':' + file['filename'])
         declaration = change_type(pull)
         rows.append({'number': pull['number'], 'title': pull['title'],
                      'url': pull['html_url'], 'head': pull['head']['sha'],

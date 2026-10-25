@@ -20,4 +20,4 @@ A fast pass needs complete coverage and a wall time below 600 seconds, including
 
 GPU qualification requires an actual NVIDIA CUDA PyTorch environment. Missing tooling, missing device access, and skipped GPU checks fail qualification. This fixed-work correctness gate does not establish performance or campaign acceptance.
 
-Use the repository [verification skill](../.agents/skills/verify-prismabuild/SKILL.md) for doctor, evidence, and cleanup. The [regression-test rollout](testing_regression_gate.md) describes the optional PR check and its five-PR promotion gate.
+Use the repository [verification skill](../.agents/skills/verify-prismabuild/SKILL.md) for doctor, evidence, and cleanup. The [regression-test rollout](testing_regression_gate.md) describes the optional PR check and promotion after five real fix PRs.

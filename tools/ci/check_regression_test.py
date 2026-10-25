@@ -91,8 +91,7 @@ def evaluate(pull: dict, files: list[dict]) -> Verdict:
         return Verdict(False, "Incomplete PR file inventory; rerun after reducing the PR or repairing the API read.")
     parsed = []
     for file in files:
-        if (not is_test_file(file["filename"]) or file["status"] not in {"added", "modified", "renamed"}
-                or file["additions"] == 0):
+        if not is_test_file(file["filename"]) or file["status"] not in {"added", "modified", "renamed", "removed"}:
             continue
         if not isinstance(file.get("before"), str) or not isinstance(file.get("after"), str):
             return Verdict(False, f"Complete test source unavailable: {file['filename']}.")
@@ -103,8 +102,10 @@ def evaluate(pull: dict, files: list[dict]) -> Verdict:
             return Verdict(False, f"Cannot parse Python tests: {file['filename']}.")
         parsed.append((file, before, after))
     changed = []
+    previous_bodies = {body for _, before, _ in parsed for body, _ in before.values()}
     for file, before, after in parsed:
-        previous_bodies = {body for body, _ in before.values()}
+        if file["status"] == "removed" or file["additions"] == 0:
+            continue
         for name, (body, proof) in after.items():
             if proof and body not in previous_bodies:
                 changed.append(f"{file['filename']}::{name}")
