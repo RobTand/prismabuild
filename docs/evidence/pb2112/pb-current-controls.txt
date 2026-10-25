@@ -1,0 +1,151 @@
+Read-only source excerpts; NOT execution or artifact authentication.
+Repository/revision: prismabuild checkout HEAD 4aed1b637ef310b8a2c55b1cb5b50b0e4b6dc90f (not frozen027; research base b1168d0703f74e9bb8496a263f3f0f270d483959)
+
+tools/fleet/pbtest_pins.py
+Full-file raw SHA256: 517f2f694a74aeb59305d3edcc7f35cd261f097a08f1fa614741cc87b26e37a7
+Lines 20-45 (1-based):
+20: 
+21: 
+22: def verify_record_bytes(module: str) -> dict:
+23:     """Require the imported module's installed bytes to match their RECORD.
+24: 
+25:     This is the integrity phase of :func:`verify_install`, exposed on its
+26:     own: one distribution owning ``module``, a present RECORD, every hashed
+27:     RECORD entry present on disk and matching the bytes there, the module
+28:     Python actually imports owned by that RECORD, and no unrecorded file
+29:     inside the package. RECORD is read as UTF-8 bytes from the owning
+30:     PathDistribution's metadata path, then parsed by the standard library's
+31:     CSV reader without newline conversion. Quoted filename characters stay
+32:     intact; Distribution.read_text normalizes carriage returns, and
+33:     Distribution.files also hides missing entries and splits quoted lines.
+34:     Malformed grammar refuses: a hash-bearing row with no filename, extra
+35:     columns, a nonnumeric size, or a blank row (the size column is parsed,
+36:     never compared). A missing hashed entry refuses here
+37:     exactly like a byte mismatch, under the strict policy and after
+38:     tolerated identity drift alike; identity policies decide recorded
+39:     identity, never byte integrity. Unhashed entries keep their previous
+40:     treatment. It never compares against the expected pin (it reads
+41:     ``direct_url.json`` only to label its messages and report
+42:     ``installed_commit``). In particular the ownership refusal ("imported
+43:     module is not owned by its RECORD") belongs to this phase, so an
+44:     editable or shadowed import is refused here even when a caller has
+45:     decided to tolerate recorded identity drift.
+Lines 113-159 (1-based):
+113:                    identity_policy=None) -> dict:
+114:     """Require unambiguous Git provenance and intact installed package bytes.
+115: 
+116:     ``identity_policy`` decides nothing about bytes. The default ``None``
+117:     keeps the historical behavior: any identity failure (editable install,
+118:     non-Git origin, or an installed commit other than ``expected``) raises
+119:     the same ValueError as before and the integrity phase never runs. A
+120:     callable receives the identity-failure message and the observed facts;
+121:     returning normally (any return value is ignored) records the drift as
+122:     tolerated -- stamped in the returned evidence as
+123:     ``identity_drift_tolerated`` -- and the full integrity phase still runs
+124:     and can still refuse. A policy that raises propagates unchanged.
+125:     """
+126:     owners = metadata.packages_distributions().get(module, [])
+127:     if len(owners) != 1:
+128:         raise ValueError(f"installed commit=<unknown>; expected one distribution "
+129:                          f"owning {module}, found {owners}")
+130:     dist = metadata.distribution(owners[0])
+131:     direct = json.loads(dist.read_text("direct_url.json") or "{}")
+132:     vcs = direct.get("vcs_info", {})
+133:     observed = vcs.get("commit_id", "<unknown>")
+134:     identity = f"distribution={owners[0]} installed commit={observed}"
+135:     tolerated = None
+136:     if (direct.get("dir_info", {}).get("editable") or
+137:             vcs.get("vcs") != "git" or observed != expected):
+138:         message = (f"{identity}; require a non-editable Git install at "
+139:                    "the reviewed commit (local-directory installs do "
+140:                    "not record a Git commit)")
+141:         if identity_policy is None:
+142:             raise ValueError(message)
+143:         identity_policy(message, {
+144:             "module": module, "expected_commit": expected,
+145:             "distribution": owners[0], "installed_commit": observed,
+146:             "editable": bool(direct.get("dir_info", {}).get("editable")),
+147:             "vcs": vcs.get("vcs"),
+148:         })
+149:         tolerated = message
+150:     evidence = verify_record_bytes(module)
+151:     evidence["expected_commit"] = expected
+152:     if tolerated is not None:
+153:         evidence["identity_drift_tolerated"] = tolerated
+154:     return evidence
+155: 
+156: 
+157: def check_pins() -> None:
+158:     root = Path.cwd().resolve()
+159:     for resolver in sorted(Path("tools").glob("resolve_*_dev_pin.py")):
+
+docs/filesystem_floor.md
+Full-file raw SHA256: fb2a5fa4a427cf694adbece8bc93eeee3fe7d4bfeaa4005080e0a1912529637e
+Lines 1-29 (1-based):
+1: # The used-filesystem floor (#1483), v2
+2: 
+3: Status: source contract, **enforcement default-off**.  The fleet runs under
+4: CEO decision D1 (an interim Netdata disk check) until the end-to-end proof
+5: below passes and the integrator turns `enforce` on.  This replaces PR #1490;
+6: its review (`pull/1490#issuecomment-5982325705`) is the specification this
+7: answers, finding by finding, at the end.
+8: 
+9: ## The rule
+10: 
+11: For every physical filesystem PrismaBuild writes:
+12: 
+13:     free_bytes >= ceil(size_bytes / 20) + charge_bytes (+ demand_bytes)
+14:     free_inodes >= ceil(size_inodes / 20)
+15: 
+16: `charge_bytes` is every byte allowance PrismaBuild has granted on that
+17: filesystem and not yet taken back: the held tokens of the byte kinds
+18: `spool_gb`, `stage_gib` and `filesystem_gib` (all GiB) in every ledger bound
+19: to the filesystem.  A held token is charged whole even after its bytes are
+20: written (no materialization credit), so the charge is an upper bound on the
+21: bytes still to come.  The module is `src/prismabuild/filesystem_floor.py`.
+22: 
+23: Inodes are sampled from `statvfs` `f_files` and `f_favail` (#1535), including
+24: on ZFS where byte capacity still comes from the pool dataset. A zero total
+25: reports no fixed inode limit. The shared disk-room helper in
+26: `filesystem_capacity.py` owns the five percent inode predicate; published
+27: samples carry its counters and refusal. A byte-only sample is
+28: `inode_sample_missing` until the next owner refresh, never evidence of
+29: inode headroom. No inode demand estimate or reservation is implied: this
+
+docs/host_local_reservations.md
+Full-file raw SHA256: 9814356cc0bd9643781199882cfedd181536304c2c046e0bed6d38c209b2bd54
+Lines 1-34 (1-based):
+1: # Host-local admission evidence: telemetry and GPU probe state (#266, second half)
+2: 
+3: Status: implemented on branch `triage/266-host-local-reservations`; measured on
+4: dl380g10 through PrismaBuild. Refs #266, #351.
+5: 
+6: ## Summary
+7: 
+8: PR #355 moved the adaptive CPU sample, learned profiles and borrowing state
+9: from `reservations/<host>/adaptive/` on the shared mount to host-local authority
+10: under `PRISMABUILD_BOX_STATE_ROOT`, published back to the shared path by an
+11: independent child after admission is released. Two records with the same
+12: meaning were still touched on the mount inside the admission critical section:
+13: 
+14: - **Holder telemetry.** `adaptive_cpu.Controller.decision` and
+15:   `adaptive_gpu.Controller.decision` read `telemetry/<action-key>.json` for
+16:   every reservation under `held/`. The record is written by this box's own
+17:   sampler for this box's own action; no other box ever reads it for a decision.
+18: - **GPU probe state.** `adaptive_gpu.Controller` read `adaptive/gpu-state.json`
+19:   and rewrote it by rename inside the lock on every GPU decision and on every
+20:   `reserve_probe`. The only remote reader is `pbstatus`.
+21: 
+22: Both now live under the host-local state directory and reach the old shared
+23: paths only as diagnostic copies. Remote readers (`pbstatus`, `pbmetrics`) keep
+24: their paths and schema, so no reader migration is needed.
+25: 
+26: This change also corrects the premise of the issue as filed. The token ledger
+27: (`minted/`, `free/`, `held/`) and the per-holder metadata inside `held/<key>/`
+28: are **not** host-private in meaning and do not move; the next section says why.
+29: 
+30: ## What moves
+31: 
+32: | Record | Before | After | Shared copy |
+33: |---|---|---|---|
+34: | `telemetry/<key>.json` (live sample of a running scope) | written by the sampler on the mount; read per holder inside admission | authority at `<box-state>/<digest>.adaptive-cpu-v1/telemetry/<key>.json` (`adaptive_cpu.local_telemetry_path`); admission reads only this | still written by the sampler, after the local record, at the old path for `pbmetrics` |

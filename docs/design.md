@@ -2250,6 +2250,20 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
+The report monitor reads the report from its own return callback arguments.
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
+An xdist synthetic failed report with phase `???` retains that phase and
+failure in the outcome rows. Missing teardown for exactly those failed tests
+does not make file coverage unknown. Completion evidence still reports their
+missing teardown; other unfinished tests keep coverage unknown.
+Replacement workers may add collections beyond the initial worker count;
+every observed worker collection must still match the selected population.
 Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
 final-teardown completion still survives blocked exit hooks, including xdist
 workers that prevent the controller's test loop from returning.
@@ -3643,6 +3657,65 @@ without the member or the ordinary package import boundary.
   (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
+  Submission sealing caches those exact bundle bytes on the submitting host
+  (#2171). The default root is `prismabuild-sealed-bundles` under the client's
+  `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
+  under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
+  digest-record bytes, including active fill reservations. Before staging a
+  fill, `statvfs` available bytes minus the bundle and digest-record size must
+  leave at least the greater of 2 GiB and 10% of the filesystem's total bytes.
+  `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  another absolute root; `off` disables the cache. The opened directory must
+  be private to its owner and on a positively identified local disk filesystem
+  accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
+  The cache key binds the object format, ordered ref names and tip IDs, exact
+  header and tip stream, pack configuration and options, Git version, and the
+  effective Git configuration including inherited settings not explicitly pinned.
+  Sorted `GIT_*` variables also participate, except the private index and object
+  storage paths whose contents are already bound. External graft and shallow
+  history overrides bypass caching rather than trusting mutable path contents.
+  It also binds the private index and contents of Git's global, system and
+  repository attribute files. A configured attribute path alone is insufficient:
+  changing its `delta` rules can change pack bytes without changing any object.
+  Cache reuse requires the canonical bare repository and private index used by
+  snapshot sealing. Other attribute contexts, unsupported Git attribute-path
+  discovery and unreadable or changing inputs fall back to the original sealer.
+  A cold seal rechecks these mutable inputs' contents and
+  `(dev, ino, size, mtime_ns, ctime_ns)` before publication; a changed input
+  leaves the fresh bundle usable but prevents filling under the earlier key.
+  The snapshot tip transitively binds the injected stamp or closure, tree,
+  parent and reachable objects. Storage layout and temporary paths do not
+  participate. A Git-version or configuration probe failure bypasses the cache.
+  A per-address flock coalesces identical misses without holding up unrelated
+  addresses. A shared pin keeps its lock inode stable for owners and waiters;
+  the last user removes idle lock files. Dead owners are reaped using only
+  cache-owned nonblocking locks. Warm hits need no per-address lock.
+  Deadline callers bypass a contended miss lock.
+  Hits open metadata and payload descriptors under a nonblocking shared
+  inventory flock, then release it before copying and verification. Open
+  descriptors survive eviction. Four warm deadline readers can all hit.
+  Exclusive inventory locking covers only bookkeeping, space reservations,
+  trimming and publication; contention falls back to fresh sealing.
+  Each hit copies to a private destination-side file, computing one SHA-256
+  over the chunks read from the pinned cache descriptor. It compares the copied
+  length and digest with the record before atomically installing that same file.
+  A miss runs the original sealer. A fallback preserves an already valid cache
+  entry. Fills reserve space and mark their staging owner under inventory
+  protection, copy outside it, then rename the complete entry under it. Entries
+  are disposable and digest-verified, so cache writes require no fsync. Failed staging is removed
+  under the inventory lock; abandoned staging is reaped on a subsequent miss
+  or fill, with live reservations counted against the caps. Cache I/O errors,
+  partial records and digest mismatches fall back
+  to sealing; oversized bundles bypass storage. A hit is byte-identical to
+  a fresh seal and changes neither snapshot records nor action keys.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated checkout
+  snapshots with caching disabled and enabled, including private-index and
+  closure preparation as for multiple shards of one checkout. Run it through
+  PB. It interleaves uncached snapshots and warm bundle hits, measures process
+  and child CPU, records observed load, counts pack executions, and checks
+  every snapshot record and bundle digest against the warmup and fresh seals.
+  An ordinary portable action suffices for this CPU accounting comparison;
+  it reports no wall-time speedup or idle-host qualification.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
@@ -7483,6 +7556,14 @@ producer whose reads are not visible in the declaration can still require them
 to be declared.
 
 ## Whole-directory local resident sets (#1545)
+
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
@@ -16791,6 +16872,16 @@ references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
 
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
+
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
 entire bounded root remains protected while independently proven copies outside
@@ -20202,9 +20293,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old

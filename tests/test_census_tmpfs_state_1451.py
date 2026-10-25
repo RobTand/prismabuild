@@ -103,11 +103,11 @@ def test_the_two_purpose_policies_are_closed(filesystem, monkeypatch):
     # The disk scratch profile keeps exactly its qualified local set: this is
     # the policy that must NOT change.
     if filesystem in local_scratch.LOCAL_FILESYSTEM_TYPES:
-        assert local_scratch._descriptor_identity(0) == identity
+        assert local_scratch.descriptor_identity(0) == identity
     else:
         with pytest.raises(local_scratch.LocalScratchError,
                            match="scratch filesystem type"):
-            local_scratch._descriptor_identity(0)
+            local_scratch.descriptor_identity(0)
     # The host-local state rendezvous adds tmpfs and nothing else.
     if filesystem in local_scratch.LOCAL_STATE_FILESYSTEM_TYPES:
         assert local_scratch._descriptor_state_identity(0) == identity
