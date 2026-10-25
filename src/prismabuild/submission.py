@@ -5215,6 +5215,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     tags = pool.normalize_placement_tags([
         *tags, *contracts.declared_contract_tags(contracts.Publication(
             progress=progress_policy,
+            activity_stall=args.stall_s is not None and args.transport == "pool",
             awaited_batch=getattr(args, "awaited_batch", None) is not None
                 and progress_policy is not None,
             gang=gang is not None, container_images=bool(images),

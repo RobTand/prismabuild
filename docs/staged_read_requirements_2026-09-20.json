@@ -118,7 +118,7 @@
    }
   },
   {
-   "acceptance_assertion": "PB720 repro 0f54fe\u2026 attempt record carries distinct nonce/scope with immutable request.",
+   "acceptance_assertion": "PB720 repro 0f54fe… attempt record carries distinct nonce/scope with immutable request.",
    "deployment": {
     "detail": "unknown",
     "state": "unknown"
@@ -365,7 +365,7 @@
   {
    "acceptance_assertion": "Manual review: behavior deltas cite (runtime_commit, generation_id), never source merge alone.",
    "deployment": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97. PB #1707 candidate is not deployed; this task prohibits runtime publication.",
     "state": "partial"
    },
    "id": "ID-08",
@@ -377,7 +377,7 @@
    "owner": "PB:fleet-runtime",
    "text": "Behavior attributed per (runtime_commit, generation_id).",
    "validation": {
-    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+    "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json. 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
     "state": "partial"
    },
    "workload_proof": {
@@ -559,7 +559,7 @@
    ],
    "acceptance_assertion": "Lifecycle/race suite: atomic claim rename, withdrawal only by policy with containment plus attempt terminal first (planned ACC-02).",
    "deployment": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732. PB #1707 candidate is not deployed; this task prohibits runtime publication.",
     "state": "yes"
    },
    "finish_authority_component_2026_10_17": {
@@ -578,7 +578,7 @@
    "target_enforcement": "new gated transitions (lease-gated running, publication-success terminal, policy withdrawal)",
    "text": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
    "validation": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run. 2026-09-27 (#964, branch maintenance/964-20260927): the claim-side release fence now confirms a released key's index under the key's transition lock, so a ready row whose scan listed the index before the entry is refused by name (origin_consumer_released) instead of claimed; entry-without-record still reads as no release and unreadable evidence still denies as unknown. Component validation only: focused 7/7 shards green (45 passed), final-source race 3 passed and supervisor/spool 41 passed, adjacent sweep 15/16 shards green (5370 tests). No deployment and no lifecycle-wide conformance run; older running generations keep the window until adoption. Scoped record: docs/evidence/issue964_release_claim_fence_acceptance_2026-09-27.json.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run. 2026-09-27 (#964, branch maintenance/964-20260927): the claim-side release fence now confirms a released key's index under the key's transition lock, so a ready row whose scan listed the index before the entry is refused by name (origin_consumer_released) instead of claimed; entry-without-record still reads as no release and unreadable evidence still denies as unknown. Component validation only: focused 7/7 shards green (45 passed), final-source race 3 passed and supervisor/spool 41 passed, adjacent sweep 15/16 shards green (5370 tests). No deployment and no lifecycle-wide conformance run; older running generations keep the window until adoption. Scoped record: docs/evidence/issue964_release_claim_fence_acceptance_2026-09-27.json. 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1082,7 +1082,7 @@
    ],
    "acceptance_assertion": "Counters cumulative; replay idempotent; published units never retracted (planned ACC-04).",
    "deployment": {
-    "detail": "unknown",
+    "detail": "unknown PB #1707 candidate is not deployed; this task prohibits runtime publication.",
     "state": "unknown"
    },
    "id": "INV-09",
@@ -1095,7 +1095,7 @@
    "target_enforcement": "PQ journal execution proof",
    "text": "Durable units monotonic and once; replays idempotent.",
    "validation": {
-    "detail": "unknown",
+    "detail": "unknown 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
     "state": "unknown"
    },
    "workload_proof": {
@@ -1422,7 +1422,7 @@
    ],
    "acceptance_assertion": "Typed waits observed: fit-lack waits with owner, oversize refuses, mid-phase stall terminates with reason.",
    "deployment": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): #948, #969 and #970 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732. PB#966 has no fix, so its refusal loop is not addressed by any deployed code.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): #948, #969 and #970 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732. PB#966 has no fix, so its refusal loop is not addressed by any deployed code. PB #1707 candidate is not deployed; this task prohibits runtime publication.",
     "state": "yes"
    },
    "id": "PRG-03",
@@ -1435,7 +1435,7 @@
    "target_enforcement": "mid-phase grace and stall-terminal semantics observed",
    "text": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
    "validation": {
-    "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green c31dff7965fb (36 passed: the new file's 28 and test_a_stage_proof_runs_outside_the_ownership_lock.py); broad stage_move, pool and tier_loop set 47cdadc0b7fa, c0c14a671b8a, 00adfc3479f8, 1217417e52ce, 71faebe99958, cb6ba37e21df, 74bafed1912d, c7aed681fd68 (2,402 passed); mutants 6644443e38dd (15 of 15 killed). Component tests only; not deployed. 2026-09-23 PB#989: red f88e948e9747 and a55597ef3e0e (7 failed on main's code); green 4aa8a78896b3, 9331534a60b1, aac8fd179f51, 0da3a5a8be6d, 5061f3d9e456, 677d426943c3 (1,498 passed: the tier_loop, residency_plan, window_credit and progress set). Component tests only; not deployed. 2026-09-23 PB#1010: red 4f6515ea6c21 (17 failed on main's code; the stalled mover ended execution_deadline at 20.6 s); green 3b2e152f2579 (17 passed); whole suite at 395f0eac201a 2562bd1ed0c3, 0d19e51d088a, 26defde2f1ba, 5f708040ebfc, 5c8b6a4407fa, 7f1c87245cea, e52b483209b4, c181ec9636e7 (7,843 passed, 4 skipped, 1 failed: test_progress_reporting_is_reachable_from_any_action's helper test read its progress record as CASTamperError under load, and the file passed 41 of 41 alone on the branch a40aa1315f9e and on main 2c245ee4693e).. Review round (contention credit): red on the previous head 38e3c3b6d889 1fb6613060ae (4 of 4 selected failed: the pacer hold, the tenth-rate copy over the caps and the start-gate wait each ended no_progress at one 4 s grace; the under-cap kill had no stall record); green on 2d9b0c759689, rebased on 18751b6f6026: 9f8c586128fd (26 passed) with eight related files (141 passed); whole suite 126696b940dc, 7021963d68f5, 14b20712e370, 8b8e44272360, d950d09a12b8, 1ad05e20476c, abb3d96301db, c57c6645256e (7,871 passed, 4 skipped, 0 failed). Second review (the pacer's hysteresis): red on f769c2daec8b aa3d58642fe3 (2 of 2 selected failed: the probe read 0.7 of the cap as under after an over interval, and the mover held there was killed at one grace); green on 29e8ec77e26b d604074eb4f2 (28 passed) with ten related files (174 passed in all); whole suite 84e0b4efd25f, 57226d032223, d192c083523d, da9cef645272, c651f434a630, 5e6821e62914, 4ed0ff8efaa2, 215bf6bb612a (7,873 passed, 4 skipped, 0 failed). Component tests only; not deployed.",
+    "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green c31dff7965fb (36 passed: the new file's 28 and test_a_stage_proof_runs_outside_the_ownership_lock.py); broad stage_move, pool and tier_loop set 47cdadc0b7fa, c0c14a671b8a, 00adfc3479f8, 1217417e52ce, 71faebe99958, cb6ba37e21df, 74bafed1912d, c7aed681fd68 (2,402 passed); mutants 6644443e38dd (15 of 15 killed). Component tests only; not deployed. 2026-09-23 PB#989: red f88e948e9747 and a55597ef3e0e (7 failed on main's code); green 4aa8a78896b3, 9331534a60b1, aac8fd179f51, 0da3a5a8be6d, 5061f3d9e456, 677d426943c3 (1,498 passed: the tier_loop, residency_plan, window_credit and progress set). Component tests only; not deployed. 2026-09-23 PB#1010: red 4f6515ea6c21 (17 failed on main's code; the stalled mover ended execution_deadline at 20.6 s); green 3b2e152f2579 (17 passed); whole suite at 395f0eac201a 2562bd1ed0c3, 0d19e51d088a, 26defde2f1ba, 5f708040ebfc, 5c8b6a4407fa, 7f1c87245cea, e52b483209b4, c181ec9636e7 (7,843 passed, 4 skipped, 1 failed: test_progress_reporting_is_reachable_from_any_action's helper test read its progress record as CASTamperError under load, and the file passed 41 of 41 alone on the branch a40aa1315f9e and on main 2c245ee4693e).. Review round (contention credit): red on the previous head 38e3c3b6d889 1fb6613060ae (4 of 4 selected failed: the pacer hold, the tenth-rate copy over the caps and the start-gate wait each ended no_progress at one 4 s grace; the under-cap kill had no stall record); green on 2d9b0c759689, rebased on 18751b6f6026: 9f8c586128fd (26 passed) with eight related files (141 passed); whole suite 126696b940dc, 7021963d68f5, 14b20712e370, 8b8e44272360, d950d09a12b8, 1ad05e20476c, abb3d96301db, c57c6645256e (7,871 passed, 4 skipped, 0 failed). Second review (the pacer's hysteresis): red on f769c2daec8b aa3d58642fe3 (2 of 2 selected failed: the probe read 0.7 of the cap as under after an over interval, and the mover held there was killed at one grace); green on 29e8ec77e26b d604074eb4f2 (28 passed) with ten related files (174 passed in all); whole suite 84e0b4efd25f, 57226d032223, d192c083523d, da9cef645272, c651f434a630, 5e6821e62914, 4ed0ff8efaa2, 215bf6bb612a (7,873 passed, 4 skipped, 0 failed). Component tests only; not deployed. 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
     "state": "partial"
    },
    "workload_proof": {
@@ -1532,21 +1532,21 @@
    ],
    "acceptance_assertion": "Advancement or named bounded failure under stated premises; NFS limitation honored (planned ACC-05/ACC-06).",
    "deployment": {
-    "detail": "unknown",
+    "detail": "unknown PB #1707 candidate is not deployed; this task prohibits runtime publication.",
     "state": "unknown"
    },
    "id": "LIVE-01",
    "implementation": {
-    "commit": null,
-    "path": null,
-    "state": "no"
+    "state": "partial",
+    "commit": "PB:944a8d8ae0cbb5049a2f0f51596d96bb0749dd57 (PR #2069, source candidate)",
+    "path": "src/prismabuild/pool.py ActivityWatch and execution loop; src/prismabuild/contracts.py; src/prismabuild/record_store.py"
    },
    "owner": "PB:tiers",
    "target_enforcement": "fairness/finite-IO premises plus ACC-05/ACC-06 live proof",
    "text": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
    "validation": {
-    "detail": "unknown",
-    "state": "unknown"
+    "detail": "unknown 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
+    "state": "partial"
    },
    "workload_proof": {
     "detail": "2026-09-23 update (snapshot 13:50Z): No. Three R13 launch attempts on 81d95cba8d91-1790160372-5d100532e024 stalled: PB#944, PB#965 and PB#966. PQ#1080 ended a fourth attempt with a refusal, not a stall.",
@@ -2478,14 +2478,14 @@
   },
   {
    "acceptance": [
-    "manual-review:\u00a711 applied per step with stated bounds"
+    "manual-review:§11 applied per step with stated bounds"
    ],
    "acceptance_assertion": "Manual review per step: index, filters, window, truncation stated; authoritative indexes queried; counts/timings never sole verification.",
    "deployment": {
     "detail": "contains no proof of current deployment 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
     "state": "yes"
    },
-   "historical_context": "PB720 final shards 263957bf71ea\u2026/a62a13a366ca\u2026/0b5d2fa45ed8\u2026 done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
+   "historical_context": "PB720 final shards 263957bf71ea…/a62a13a366ca…/0b5d2fa45ed8… done dl380g10 rc 0, recovered via pbmcp pb_actions snapshot_parent=31abdf251b38f259892acbabf222f74cdd26c935; content equality vs fd939cc6a5 root-verified; done/-index timings matched pbtest stdout",
    "id": "VER-01",
    "implementation": {
     "commit": "PB:d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID; d1e217607942 (#957) records each skip's node ID and reason. These cover test receipts only.",
@@ -2493,7 +2493,7 @@
     "state": "partial"
    },
    "owner": "PB:docs-process",
-   "target_enforcement": "contract \u00a710 checklist step plus acceptance-record template",
+   "target_enforcement": "contract §10 checklist step plus acceptance-record template",
    "text": "Bounded search completeness: state index, filters, window, truncation before declaring missing; authoritative indexes first; counts/timings alone are not verification.",
    "validation": {
     "detail": "manual-reviewed correction precedent in this lane, scoped example only - not runtime property proof PBMCP's withdrawn-row view omitted attempt history (attempts_detail=[]) for the withdrawn produced mover 6fbc96301c6c; the retained pre-withdrawal readback (produced-mover-snapshot-root-diagnosis.json; issue 790) proves one actual failed attempt, so 'never claimed' must not be concluded from current ready/withdrawn state. Counts alone are not verification, and neither is an empty view whose read scope is not stated. 2026-09-23 update (snapshot 13:50Z): #967 b31c34b551fd and 9 more shards (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards; #957 c749c91fcae9, cfb88c896310.",

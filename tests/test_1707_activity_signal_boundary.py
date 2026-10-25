@@ -7,16 +7,6 @@ import pytest
 from test_progress_keeps_a_working_action_alive import _virtual_execution
 from test_docker_shim_global_options import _shim
 from test_docker_shim_memory import _environment
-from test_1707_progress_supervision_by_stall import (
-    test_an_explicit_budget_ends_default_activity_at_its_fake_clock_limit,
-    test_d30_ends_default_activity_on_the_fake_clock,
-    test_stall_allowance_changes_action_identity_and_refuses_semantic_policy,
-    test_stall_and_progress_phases_cannot_combine,
-    test_awaited_batch_cli_parses_the_sealed_declaration,
-    test_pbstatus_shows_age_phase_counters_and_silence,
-    test_an_unusable_stall_allowance_is_refused_at_seal,
-    test_the_submitter_sets_the_allowance_and_the_ceiling_clamps_it,
-)
 from prismabuild import pool, resource_scope, core as pb
 
 
@@ -186,11 +176,11 @@ def test_periodic_output_saves_daemon_image_load(tmp_path, monkeypatch):
 def test_sealed_stall_override_allows_shorter_or_longer_quiet_work(
         tmp_path, monkeypatch, stall_s, ceiling, ticks):
     import test_progress_keeps_a_working_action_alive as helpers
-    from test_1707_progress_supervision_by_stall import _claimed, SILENT
+    from test_1707_progress_supervision_by_stall import _claimed
     scope, _, _, stopped = _fake_scope(tmp_path)
 
     def claimed(path, **kwargs):
-        return _claimed(path, source=SILENT, seconds=30, stall_s=stall_s)
+        return _claimed(path, stall_s=stall_s)
 
     monkeypatch.setattr(helpers, "_claimed", claimed)
 

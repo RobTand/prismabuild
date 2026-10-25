@@ -1,0 +1,37 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "prelaunch",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "ID-08",
+    "SM-01",
+    "INV-09",
+    "PRG-03",
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "submission": {
+      "declares": [
+        "CPU-only fixture inputs; no campaign bulk-input ranges",
+        "explicit test/capture deadlines",
+        "source snapshot 1a8d5ba2082a41e472efca5be1717cac824cc60c",
+        "published worker runtime; checkout source tested inside admitted payloads"
+      ],
+      "sealed_key": "recorded in run reports as each action is published"
+    },
+    "readiness_gate": "PB owns admission and any declared residency gate. CPU component fixtures do not declare a campaign read set.",
+    "tier_policy": "strict",
+    "window_fit": "proven"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

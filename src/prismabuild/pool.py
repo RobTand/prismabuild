@@ -6922,6 +6922,8 @@ class PoolQueue:
                        if sealed_request is not None else None)
             declared_contracts = contracts.declared_contract_tags(contracts.Publication(
                 progress=progress,
+                activity_stall=sealed_request is not None
+                    and pb.action_stall_allowance(sealed_request) is not None,
                 pool_contention=progress is not None and contention is not None,
                 awaited_batch=progress is not None and awaited is not None,
                 egress=progress is not None and movement_role is not None
@@ -12095,6 +12097,18 @@ class PoolQueue:
             if field in claim:
                 lease[field] = claim[field]
         self.records.replace_record_at(self.records.lease_path(action_key), lease)
+        if progress_observation is not None:
+            try:
+                self.records.append_supervision_event(claim, {
+                    "event": "payload-supervision", "action_key": action_key,
+                    **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+                    "unix": lease["heartbeat_unix"],
+                    "age_s": max(0.0, lease["heartbeat_unix"] - claim["claimed_unix"]),
+                    "progress_observation": dict(progress_observation),
+                }, limit=MAX_CONSUMER_EVENT_LINES)
+            except OSError as exc:
+                print(f"PrismaBuild: supervision event unwritten: {exc!r}",
+                      file=sys.stderr, flush=True)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         """Host tokens share the reservation owner's reentrant mutation lock.

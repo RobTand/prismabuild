@@ -13,6 +13,7 @@ from dataclasses import dataclass
 PROGRESS_TAG = "progress-v1"
 PROGRESS_HELPER_TAG = "progress-helper-v1"
 PROGRESS_CYCLE_TAG = "progress-cycle-v1"
+ACTIVITY_STALL_TAG = "activity-stall-v1"
 POOL_CONTENTION_TAG = "progress-pool-contention-v1"
 EGRESS_PROGRESS_TAG = "progress-egress-v1"
 QUEUED_CHILD_TAG = "progress-queued-child-v1"
@@ -31,6 +32,7 @@ class Publication:
     """Validated declaration facts, independent of their publisher's storage."""
 
     progress: Mapping[str, object] | None = None
+    activity_stall: bool = False
     pool_contention: bool = False
     egress: bool = False
     awaited_batch: bool = False
@@ -72,6 +74,7 @@ class Contract:
 CONTRACTS = (
     Contract(PROGRESS_TAG, lambda p: p.progress is not None),
     Contract(PROGRESS_HELPER_TAG, lambda p: p.progress is not None),
+    Contract(ACTIVITY_STALL_TAG, lambda p: p.activity_stall),
     Contract(PROGRESS_CYCLE_TAG,
              lambda p: p.progress is not None and bool(p.progress.get("cycle"))),
     Contract(POOL_CONTENTION_TAG, lambda p: p.pool_contention),

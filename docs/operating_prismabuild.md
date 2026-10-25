@@ -1656,6 +1656,8 @@ Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
 `--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
 budget, SLURM receives no `--time` and the pool supervises progress stalls.
+An explicit `--stall-s` requires a worker offering `activity-stall-v1`.
+The client refuses an unsupported fleet instead of letting it ignore the allowance.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the

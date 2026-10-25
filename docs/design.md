@@ -4489,6 +4489,9 @@ ceiling clamps it, including the default. The outcome reports requested,
 effective and ceiling values and whether the allowance was clamped. A default
 action may run indefinitely while active. Missing CPU evidence grants no renewal.
 This is an activity fallback, not proof of committed work.
+An explicit allowance requires the `activity-stall-v1` worker capability.
+Submission and alternate queue publishers derive that fence from the sealed
+allowance. A client ahead of the published runtime cannot silently lose it.
 
 A semantic policy keeps `ProgressWatch` as the owner of accepted counters,
 phase grants, final stall checks and verified dependency-wait credits. Output
@@ -4499,7 +4502,10 @@ Both watchers use the execution clock and refund only measured checkpoint I/O.
 An expired allowance ends `timeout` with `termination_reason: no_progress`;
 an explicit budget ends `timeout` with `termination_reason: execution_deadline`.
 Leases and endings carry activity totals or semantic phase/counter observations;
-`pbstatus` displays these with age and quiet time. A sealed action without a
+`pbstatus` displays these with age and quiet time. Each heartbeat also records
+age and the observation in the action's `residency-events` log, before payload
+completion. A separate file per exact claim retains the newest 256 records
+after it exceeds 512. These records never count as payload activity. A sealed action without a
 total budget is unbounded for advisory incumbent classification. Legacy holders
 without a request retain their advisory age classification. None of these
 payload policies proves an admission-to-resource-release bound (#1429).

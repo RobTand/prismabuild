@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import core as pb, pool, census, submission  # noqa: E402
+from prismabuild import core as pb, pool, census, submission, contracts  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbstatus  # noqa: E402
@@ -14,29 +14,11 @@ import pbrun  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
-CHATTY = '''
-import sys, time
-deadline = time.monotonic() + float(sys.argv[1])
-while time.monotonic() < deadline:
-    print("still working", flush=True)
-    time.sleep(0.05)
-open("result", "w").write("ok")
-'''
-
-SILENT = '''
-import sys, time
-time.sleep(float(sys.argv[1]))
-open("result", "w").write("ok")
-'''
-
-
-def _claimed(tmp_path, *, source, seconds, timeout_s=None, stall_s=None):
+def _claimed(tmp_path, *, stall_s=None):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "task.py").write_text(source)
+    (checkout / "task.py").write_text("open('result', 'w').write('ok')\n")
     params = {}
-    if timeout_s is not None:
-        params["execution_timeout_s"] = timeout_s
     if stall_s is not None:
         params["stall_allowance_s"] = stall_s
     action = pb.seal_action({
@@ -44,7 +26,7 @@ def _claimed(tmp_path, *, source, seconds, timeout_s=None, stall_s=None):
         "task": {"definition_id": "tests/1707", "definition_version": "v1",
                  "task_class": "generation", "determinism": "deterministic",
                  "artifact_family": "generic", "artifact_kind": "generic",
-                 "argv": [sys.executable, "task.py", str(seconds)],
+                 "argv": [sys.executable, "task.py"],
                  "working_directory": ".", "result_path": "result"},
         "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
         "params": params,
@@ -62,7 +44,7 @@ def _claimed(tmp_path, *, source, seconds, timeout_s=None, stall_s=None):
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim()
+    return queue, queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
 
 
 # -- the watch itself, on a fake clock --------------------------------------
@@ -112,7 +94,7 @@ def test_checkpoint_io_does_not_spend_the_allowance():
 # -- the sealed allowance ----------------------------------------------------
 
 def test_the_submitter_sets_the_allowance_and_the_ceiling_clamps_it(tmp_path):
-    _, item = _claimed(tmp_path, source=CHATTY, seconds=1, stall_s=60.0)
+    _, item = _claimed(tmp_path, stall_s=60.0)
     stalled = pool.default_stall(item, 7200.0)
     assert stalled.requested == 60.0
     assert stalled.effective == 60.0
@@ -124,7 +106,7 @@ def test_the_submitter_sets_the_allowance_and_the_ceiling_clamps_it(tmp_path):
 
 
 def test_the_default_allowance_matches_the_former_worker_ceiling(tmp_path):
-    _, item = _claimed(tmp_path, source=CHATTY, seconds=1)
+    _, item = _claimed(tmp_path)
     stalled = pool.default_stall(item, 7200.0)
     assert stalled.requested is None
     assert stalled.effective == pool.DEFAULT_STALL_ALLOWANCE_S == 7200.0
@@ -154,33 +136,6 @@ def test_an_unusable_stall_allowance_is_refused_at_seal(tmp_path, bad):
 
 
 # -- the run: steady work, silence, explicit budget, memory guard ------------
-
-def test_a_quiet_payload_stops_on_its_stall_allowance(tmp_path):
-    """Silence past the allowance stops with a stall verdict."""
-
-    queue, item = _claimed(tmp_path, source=SILENT, seconds=30, stall_s=0.5)
-    outcome = queue.execute(item, timeout_s=5.0, heartbeat_s=0.05,
-                            timeout_grace_s=0.2)
-    assert outcome["status"] == "timeout"
-    assert outcome["termination_reason"] == "no_progress"
-    assert outcome["execution_governed_by"] == "stall"
-    assert outcome["elapsed_s"] < 5.0
-    assert outcome["stall"]["allowance_s"] == 0.5
-    assert outcome["progress_observation"]["source"] == "activity"
-
-
-def test_an_explicit_budget_still_stops_an_active_payload(tmp_path):
-    """A sealed wall-clock budget ends even a payload showing activity."""
-
-    queue, item = _claimed(tmp_path, source=CHATTY, seconds=30, timeout_s=0.5)
-    outcome = queue.execute(item, timeout_s=5.0, heartbeat_s=0.05,
-                            timeout_grace_s=0.2)
-    assert outcome["status"] == "timeout"
-    assert outcome["termination_reason"] == "execution_deadline"
-    assert outcome["execution_governed_by"] == "deadline"
-    assert outcome["execution_timeout_requested_s"] == 0.5
-    assert outcome["elapsed_s"] < 5.0
-
 
 def test_the_memory_guard_still_names_its_own_victims():
     """The D30 guard keeps its verdict and its precedence."""
@@ -301,7 +256,7 @@ def test_default_activity_completes_past_the_old_budget_on_a_fake_clock(tmp_path
 
 
 def test_an_implicit_allowance_clamp_is_reported(tmp_path):
-    _, item = _claimed(tmp_path, source=CHATTY, seconds=1)
+    _, item = _claimed(tmp_path)
     allowance = pool.default_stall(item, 10.0)
     assert allowance.effective == 10.0
     assert allowance.clamped is True

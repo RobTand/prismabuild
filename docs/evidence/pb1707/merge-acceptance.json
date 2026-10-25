@@ -1,0 +1,59 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "d0e88f77f131cbb7a98fd8dec4b94aa536d72a2d",
+  "scope": [
+    "ID-08",
+    "SM-01",
+    "INV-09",
+    "PRG-03",
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1707-v2",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1707",
+    "validated_repairs": [
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "0a164d7384c7d7396f2b59d12dee0b7834f4ce1aa4a2583b2e900dc502123912",
+          "9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d",
+          "3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f",
+          "0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1",
+          "aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd"
+        ],
+        "outcome": "executed; terminal, source bundle, both logs and CAS receipts verified. Source/component behavior only: active work survives the former budget, silence stops, explicit deadlines and D30 retain precedence, explicit allowances require supporting workers, and running observations reach bounded per-claim logs."
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "6903cfc9b9e83576ff855587c2e6aff96cd2b7dbe88a50781d67f2d46ce4e242",
+          "4620a052170bb6b620cfe72c0b93d462fc98902cebab74b16b518c47cd57ae89"
+        ],
+        "outcome": "executed with verified receipts. Six current Core records adopted after independent reproduction and bidirectional compatibility checks against 12 historical records; 133 previous historical/control files preserved."
+      }
+    ],
+    "remaining_gaps": [
+      "BLOCKED: final Core-qualified action 8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf and final rebased suite remain unobserved after dl380g10 refuses SSH/NFS. Re-read terminal records, logs and CAS receipts after recovery; do not infer success from client output.",
+      "Initial Core suite had 41 archival-environment refusals because TMPDIR was /home/rob/tmp instead of its qualified /home/rob/pbt17. The same full Core unit was resubmitted with the correct qualified environment and a 1200-second budget; its result is pending.",
+      "Principal Opus review and merge are pending. This is the proposed merge acceptance record, not an assertion that merging occurred.",
+      "LIVE-01 remains partial: no real GPU, Docker daemon load, NFS failure, production soak or campaign workload proof.",
+      "ID-08: the candidate has not been deployed. No new generation or service restart is authorized here.",
+      "SM-01 and PRG-03: existing containment, cleanup, typed-wait and retry owners remain; component regressions do not establish the whole staged-read contract.",
+      "INV-09: fallback activity counters do not certify durable work; semantic ProgressWatch remains unchanged. Whole-requirement validation and workload proof stay owed.",
+      "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. The candidate has the same failure; no fixture or assertion is weakened."
+    ],
+    "note": "PROPOSED RECORD ONLY. Not merge eligible until the pending fleet outcomes and final integration checks are verified and Principal Opus review approves. No staged bulk-input campaign was run. Strict tier policy is retained. Prior terminal/CAS evidence establishes recorded bytes and re-readability, not power-loss durability."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
