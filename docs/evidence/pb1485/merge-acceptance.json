@@ -1,0 +1,34 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "SC-03",
+    "ID-05",
+    "ID-08"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1485",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1485",
+    "validated_repairs": [],
+    "remaining_gaps": [
+      "SC-03: evidence documentation only; no contract enforcement added.",
+      "ID-05: source/integrity/location observations do not establish certification or application acceptance.",
+      "ID-08: candidate source and action worker generation remain distinct; no activation or role convergence verified.",
+      "INV-03/INV-04/ACC-07: no strict staged-read or produced-output qualification performed.",
+      "#2113 ARM pack, #2114 guarded GPU evidence and #1485 end-to-end helper adoption remain unqualified."
+    ],
+    "note": "Scoped prerequisite handoff and retained-artifact authentication only. CPU audit ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe executed on sparklina, rc 0, cleanup complete, matching CAS result. Principal reviews before merge; no full-policy or campaign-completion claim."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
