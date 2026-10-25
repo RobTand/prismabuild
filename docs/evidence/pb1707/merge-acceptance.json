@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "d0e88f77f131cbb7a98fd8dec4b94aa536d72a2d",
+  "ledger_commit": "a79f780f72cdf8183097cfd934dddb5758504c22",
   "scope": [
     "ID-08",
     "SM-01",
@@ -38,7 +38,7 @@
       }
     ],
     "remaining_gaps": [
-      "BLOCKED: final Core-qualified action 8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf and final rebased suite remain unobserved after dl380g10 refuses SSH/NFS. Re-read terminal records, logs and CAS receipts after recovery; do not infer success from client output.",
+      "BLOCKED: final Core-qualified action 8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf and final rebased suite remain unobserved while dl380g10 refuses SSH/NFS. Source delivery and compatibility conflicts are resolved; re-read terminal records, logs and CAS receipts after recovery before further submission.",
       "Initial Core suite had 41 archival-environment refusals because TMPDIR was /home/rob/tmp instead of its qualified /home/rob/pbt17. The same full Core unit was resubmitted with the correct qualified environment and a 1200-second budget; its result is pending.",
       "Principal Opus review and merge are pending. This is the proposed merge acceptance record, not an assertion that merging occurred.",
       "LIVE-01 remains partial: no real GPU, Docker daemon load, NFS failure, production soak or campaign workload proof.",
@@ -47,7 +47,28 @@
       "INV-09: fallback activity counters do not certify durable work; semantic ProgressWatch remains unchanged. Whole-requirement validation and workload proof stay owed.",
       "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. The candidate has the same failure; no fixture or assertion is weakened."
     ],
-    "note": "PROPOSED RECORD ONLY. Not merge eligible until the pending fleet outcomes and final integration checks are verified and Principal Opus review approves. No staged bulk-input campaign was run. Strict tier policy is retained. Prior terminal/CAS evidence establishes recorded bytes and re-readability, not power-loss durability."
+    "note": "PROPOSED RECORD ONLY. Not merge eligible until the pending fleet outcomes and final integration checks are verified and Principal Opus review approves. No staged bulk-input campaign was run. Strict tier policy is retained. Prior terminal/CAS evidence establishes recorded bytes and re-readability, not power-loss durability.",
+    "source_delivery": {
+      "schema": "pb.source_delivery.v1",
+      "issue": 1707,
+      "pull_request": "https://github.com/RobTand/prismabuild/pull/2069",
+      "branch": "prismabuild-1707-v2",
+      "source_commit": "a79f780f72cdf8183097cfd934dddb5758504c22",
+      "source_tree": "aaf865a7595dbfc01508123dd2753666ae0bfe23",
+      "rebased_local_commit": "74c54dc892d2b9e4a5f3eccade3ebfd55d0c08a5",
+      "base_commit": "aee1a4542078e92839a1de5c2d6d049c9dbb0499",
+      "trees_equal": true,
+      "base_is_ancestor": true,
+      "compatibility_conflicts_resolved": 3,
+      "core": {
+        "bytes": 306962,
+        "sha256": "e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e"
+      },
+      "delivery": "GitHub connector; no CLI credential bypass or force push",
+      "qualification": "pending: existing Core-qualified and rebased action outcomes unobserved while dl380g10 refuses SSH/NFS",
+      "runtime_publication": false,
+      "service_restart": false
+    }
   },
   "deploy": {
     "status": "not-this-step"

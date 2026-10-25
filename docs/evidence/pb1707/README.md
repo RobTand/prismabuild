@@ -28,6 +28,12 @@ Capture `6903cfc9b9e83576ff855587c2e6aff96cd2b7dbe88a50781d67f2d46ce4e242` and s
 
 Core is 306962 bytes with SHA-256 `e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e`. The admitted capture uses `record_compat.py --generate PATH --expect-machine x86_64 --kind core-receipt --kind core-attestation --kind core-runtime`; adoption uses `refresh_compat_runtime.py --profile runtime` inside an admitted action. Only Core source identity and its dependent digests change in the six current records.
 
+## Source delivery after continuation
+
+The integrated source is now on the existing PR branch at `a79f780f72cdf8183097cfd934dddb5758504c22`, with current main `aee1a4542078e92839a1de5c2d6d049c9dbb0499` as an ancestor. Its complete Git tree equals rebased local checkpoint `74c54dc892d2b9e4a5f3eccade3ebfd55d0c08a5`. All three compatibility conflicts are resolved. [source-delivery.json](source-delivery.json) records that comparison and the unchanged Core identity.
+
+Delivery used the available GitHub connector because the CLI lacks a managed push capability. The original local series remains preserved. This resolves source delivery only. The PR remains draft; final qualification, independent Principal Opus review and merge remain owed. No additional tests or duplicate actions were submitted during this continuation because SSH/NFS still refuse connections.
+
 ## Blocker and resumption
 
 At 2026-10-25T21:58:39Z, dl380g10 / `192.168.1.107` refused TCP 22 and 2049. SSH and the Hindsight tunnel refused. Coordinator processes waited in `rpc_wait_bit_killable`, and the final PB clients repeatedly reported bounded outcome-read timeouts. No successful outcome is inferred for the pending runs.
