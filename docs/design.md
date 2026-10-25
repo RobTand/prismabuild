@@ -2250,6 +2250,20 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
+The report monitor reads the report from its own return callback arguments.
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
+An xdist synthetic failed report with phase `???` retains that phase and
+failure in the outcome rows. Missing teardown for exactly those failed tests
+does not make file coverage unknown. Completion evidence still reports their
+missing teardown; other unfinished tests keep coverage unknown.
+Replacement workers may add collections beyond the initial worker count;
+every observed worker collection must still match the selected population.
 Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
 final-teardown completion still survives blocked exit hooks, including xdist
 workers that prevent the controller's test loop from returning.
@@ -20246,9 +20260,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old

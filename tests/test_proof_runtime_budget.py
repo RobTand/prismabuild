@@ -1,6 +1,10 @@
 """Capture inventory bounds before reading or enqueueing over-budget members."""
 from contextlib import contextmanager
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import textwrap
 import time
 
 import pytest
@@ -119,3 +123,43 @@ def test_capture_refuses_preloaded_product_outside_the_published_generation(tmp_
     monkeypatch.setitem(capacity.sys.modules, alien.__name__, alien)
     with pytest.raises(ValueError, match='capture imported an unsealed product module'):
         capacity.load_published_capture_floor(tmp_path / 'published-generation', {})
+
+
+def test_capture_accepts_sealed_dependencies_and_refuses_an_unsealed_module(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    published = tmp_path / 'published'
+    shutil.copytree(root / 'src/prismabuild', published / 'src/prismabuild',
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    (published / 'tools').mkdir()
+    shutil.copyfile(root / 'tools/prismabuild_worker.py',
+                    published / 'tools/prismabuild_worker.py')
+    program = textwrap.dedent('''
+        import importlib.machinery
+        from pathlib import Path
+        import sys
+        import types
+        sys.path.insert(0, sys.argv[1])
+        import proof_capture_capacity as capacity
+        published = Path(sys.argv[2]).resolve()
+        sources = capacity.published_capture_sources(published)
+        floor = capacity.load_published_capture_floor(published, sources)
+        assert Path(floor.__file__) == published / 'src/prismabuild/filesystem_floor.py'
+        assert 'prismabuild.immutable_files' in sys.modules
+        capacity.check_published_capture_modules(published, sources)
+        name = 'prismabuild.unsealed_capture_fixture'
+        module = types.ModuleType(name)
+        module.__file__ = str(published / 'src/prismabuild/unsealed_capture_fixture.py')
+        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None,
+                                                       origin=module.__file__)
+        sys.modules[name] = module
+        try:
+            capacity.check_published_capture_modules(published, sources)
+        except ValueError as error:
+            assert str(error) == 'capture imported an unsealed product module: ' + name
+        else:
+            raise AssertionError('an unsealed module was accepted')
+    ''')
+    result = subprocess.run([sys.executable, '-B', '-c', program,
+                             str(root / 'tests'), str(published)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
