@@ -1,4 +1,5 @@
 """Replay #2014's claim decision with a sealed, interpreter-naming CPU shard."""
+from pathlib import Path
 from types import SimpleNamespace
 import sys
 
@@ -18,8 +19,10 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
     monkeypatch.setattr(pool, "_now", lambda: NOW)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "spark")
     queue = pool.PoolQueue(tmp_path / "queue")
-    body = _body(tmp_path, argv=[sys.executable, "-m", "pytest", "tests/"])
-    body["params"]["interpreter"] = sys.executable
+    interpreter = str(tmp_path / "python")
+    Path(interpreter).symlink_to(sys.executable)
+    body = _body(tmp_path, argv=[interpreter, "-m", "pytest", "tests/"])
+    body["params"]["interpreter"] = interpreter
     body["params"]["retry_policy"] = {
         "retry_safe": True, "retry_scope": "interruption", "max_attempts": 3}
     action = core.seal_action(body)
@@ -27,7 +30,7 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
     cas.publish_action_request(action)
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
         checkout_root=tmp_path, worker_script=tmp_path / "worker.py",
-        interpreter=sys.executable, resources={"cpu": 2, "mem_gb": 2},
+        interpreter=interpreter, resources={"cpu": 2, "mem_gb": 2},
         retry_safe=True, retry_scope="interruption", max_attempts=3, **fields)
     item = queue.ready_items()[0]
     for host, gpu in (("cpu-peer", False), ("spark", True)):
@@ -37,8 +40,8 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, **fields)
         queue.announce(host=host, has_gpu=gpu, tags=[host, contracts.INTERPRETER_TAG],
             capacity=capacity, observed_capacity=capacity,
             capabilities=eligibility.OfferCapabilities(interpreters=eligibility.InterpreterAnswers(
-                frozenset([sys.executable] if present else []),
-                frozenset([sys.executable] if not gpu and answer == "absent" else []))),
+                frozenset([interpreter] if present else []),
+                frozenset([interpreter] if not gpu and answer == "absent" else []))),
             observed_detail={"observed_unix": NOW, "gpu_capacity_trusted": True,
                 "foreign_gpu_processes": 0, "gpu_sampled_unix": NOW})
     if reserved:
@@ -82,14 +85,18 @@ def test_interpreter_evidence_never_bypasses_guest_or_deferral(
         assert result.cpu_guest is (answer != "absent")
 
 
-@pytest.mark.parametrize("fault", ["unreadable-cas", "contradictory-prefix"])
+@pytest.mark.parametrize("fault", ["unreadable-cas", "contradictory-prefix", "unsafe", "exhausted"])
 def test_unknown_peer_cannot_turn_unproven_restartability_into_a_guest(
         tmp_path, monkeypatch, fault):
     queue, item, candidate, placement, _ = interpreter_case(tmp_path, monkeypatch, "unknown")
     if fault == "unreadable-cas":
         item["cas_root"] = str(tmp_path / "missing")
-    else:
+    elif fault == "contradictory-prefix":
         item["attempt_history_missing_before"] = 1
+    elif fault == "unsafe":
+        item["retry_safe"] = False
+    else:
+        item["max_attempts"] = 1
     assert not queue._guest_restartable(item)
     result = prepare_interpreter_claim(queue, item, candidate, placement)
     assert isinstance(result, candidate_policy.CandidateDenial)
@@ -171,7 +178,7 @@ def test_unknown_peer_does_not_change_explicitly_tagged_placement(tmp_path, monk
     assert not result.cpu_guest
 
 
-@pytest.mark.parametrize("priority", [-20, 20])
+@pytest.mark.parametrize("priority", [-20, 0, 20])
 def test_gpu_evicts_an_unknown_peer_guest_across_priority_bands(tmp_path, monkeypatch, priority):
     queue, item, _, _, _ = interpreter_case(tmp_path, monkeypatch, "unknown", priority=priority)
     tiers = {"preferred": list(range(8)), "fallback": []}
@@ -186,9 +193,19 @@ def test_gpu_evicts_an_unknown_peer_guest_across_priority_bands(tmp_path, monkey
     assert claim() is None
     decisions = [row for _, row in queue.records.withdrawal_decisions(item["action_key"])]
     assert len(decisions) == 1 and decisions[0]["preempted_by"] == gpu_key
+    retry = pool.record_store.value_or_raise(queue.records.item(pool.READY, item["action_key"]))
+    assert retry["attempts"] == 1 and retry["max_attempts"] == 3
+    assert retry["cpu_guest_retry"] is True and retry["retry_scope"] == "interruption"
+    assert retry["supersedes_withdrawal"]["published_unix"] == guest["published_unix"]
+    assert claim() is None
     queue.finish(item["action_key"], status="withdrawn", detail={"returncode": -15},
         claim_snapshot=guest)
-    assert claim()["action_key"] == gpu_key
+    gpu_claim = claim()
+    assert gpu_claim["action_key"] == gpu_key
+    queue.finish(gpu_key, status="executed", detail={"returncode": 0}, claim_snapshot=gpu_claim)
+    retried = claim()
+    assert retried["action_key"] == item["action_key"]
+    assert retried["cpu_guest"] is True and retried["attempts"] == 2
 
 
 def test_generated_pbtest_shard_is_guest_with_unknown_cpu_interpreter(tmp_path, monkeypatch):
@@ -196,13 +213,36 @@ def test_generated_pbtest_shard_is_guest_with_unknown_cpu_interpreter(tmp_path, 
 
     submission = tmp_path / "submission"
     submission.mkdir()
-    _, row, _ = _sealed(submission, monkeypatch)
     queue, item, candidate, placement, _ = interpreter_case(tmp_path, monkeypatch, "unknown")
+    _, row, _ = _sealed(submission, monkeypatch, python=item["interpreter"])
     candidate.item = row
     demand = row["resources"]
     candidate.demand = pool._CandidateDemand(demand, demand, demand, demand, {})
-    assert row["interpreter"] == sys.executable
+    assert row["interpreter"] == item["interpreter"]
     assert row["retry_scope"] == "interruption" and row["max_attempts"] == 3
     result = prepare_interpreter_claim(queue, row, candidate, placement)
     assert isinstance(result, pool._HostClaimRequest)
     assert result.cpu_guest
+
+
+def test_draining_unknown_peer_is_excluded_from_advisory_placement(tmp_path, monkeypatch):
+    queue, item, candidate, placement, _ = interpreter_case(
+        tmp_path, monkeypatch, "unknown", reserved=True)
+    offer = next(offer for offer in placement.offers() if offer["host"] == "cpu-peer")
+    offer["state"] = "draining"
+    result = prepare_interpreter_claim(queue, item, candidate, placement)
+    assert isinstance(result, pool._HostClaimRequest) and not result.cpu_guest
+
+
+def test_unknown_guest_rechecks_idle_evidence_after_sealed_proof(tmp_path, monkeypatch):
+    queue, item, candidate, placement, _ = interpreter_case(tmp_path, monkeypatch, "unknown")
+    original = queue._guest_restartable
+
+    def proof(record):
+        result = original(record)
+        monkeypatch.setattr(pool, "_now", lambda: NOW + 100)
+        return result
+
+    monkeypatch.setattr(queue, "_guest_restartable", proof)
+    result = prepare_interpreter_claim(queue, item, candidate, placement)
+    assert result.reason == "deferred_for_unresolved_cpu_host"
