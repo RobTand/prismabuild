@@ -1,4 +1,4 @@
-Change type: feature
+Change type: <!-- choose one value below -->
 
 <!-- Choose exactly one: fix, bugfix, feature, docs, refactor, test, chore, perf, build, ci, revert. -->
 
