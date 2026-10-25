@@ -119,3 +119,26 @@ def test_repeated_denial_stamps_coalesce_but_a_flap_to_an_old_reason_changes():
     assert not changes.observe("denial-transitions", KEY, observe())
     document["transitions"][0].update(last_unix=103., count=2)
     assert changes.observe("denial-transitions", KEY, observe())
+
+
+def test_claim_denial_meaning_tolerates_partial_diagnostic_entries():
+    assert claim_denial_meaning({"records": None}) == {}
+    assert claim_denial_meaning({"records": {
+        "unknown": None, "partial": {"reason": "transition_busy", "denied_unix": 100.},
+    }}) == {"partial": {"reason": "transition_busy"}}
+
+
+def test_denial_transition_meaning_retains_partial_history_without_indexing_it():
+    document = {"action_key": KEY, "transitions": [
+        {}, None,
+        {"host": "peer", "published_unix": 100., "last_unix": 100.,
+         "reason": "transition_busy"},
+        {"host": "peer", "published_unix": 100., "last_unix": 101.,
+         "reason": "reservation_unavailable"},
+    ]}
+    meaning = denial_transition_meaning(document)
+    assert meaning["transitions"] == [
+        {}, {"host": "peer", "published_unix": 100., "reason": "transition_busy"},
+        {"host": "peer", "published_unix": 100., "reason": "reservation_unavailable"},
+    ]
+    assert meaning["latest"] == [("peer", 100., "reservation_unavailable", None)]
