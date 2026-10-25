@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from check_regression_test import change_type, evaluate, is_fix, is_test_file
+from check_regression_test import change_type, check_pull_request, is_fix, is_test_file
 
 
 def git(*args: str) -> str:
@@ -40,7 +40,7 @@ def replay(corpus: dict, declared_fixes: list[int]) -> dict:
                      'labels_unavailable': labels_unavailable,
                      'fix_signal': is_fix(pull),
                      'classified_fix': declaration is not None and is_fix(pull),
-                     **asdict(evaluate(pull, files))})
+                     **asdict(check_pull_request(pull, files))})
     return {'pulls': len(rows), 'classified_fixes': sum(r['classified_fix'] for r in rows),
             'fix_signals': sum(r['fix_signal'] for r in rows),
             'missing_declarations': sum(r['change_type'] is None for r in rows),

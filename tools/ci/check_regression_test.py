@@ -14,6 +14,7 @@ _FIX_TITLE = re.compile(
     r"(?:\([^)]*\))?(?:\s|:|$)", re.IGNORECASE,
 )
 _FIX_LABELS = {"bug", "fix", "bugfix", "regression", "type:bug", "type:fix"}
+_RELEASE_BRANCH = "tl/release-"
 _CHANGE_TYPES = {"fix", "bugfix", "feature", "docs", "refactor", "test", "chore", "perf", "build", "ci", "revert"}
 
 
@@ -81,7 +82,11 @@ def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
     return tests
 
 
-def evaluate(pull: dict, files: list[dict]) -> Verdict:
+def check_pull_request(pull: dict, files: list[dict]) -> Verdict:
+    # The release train opens tl/release-* PRs that only merge PRs this check
+    # already judged; issue-link exempts the same branches from its name rule.
+    if (pull.get("head") or {}).get("ref", "").startswith(_RELEASE_BRANCH):
+        return Verdict(True, "Release-train PR; its member PRs were checked individually.")
     if change_type(pull) is None:
         return Verdict(False, "Declare exactly one Change type: line in the PR body: "
                        + ", ".join(sorted(_CHANGE_TYPES)) + ".")
@@ -128,7 +133,7 @@ def main() -> int:
                     and isinstance(f["status"], str) and type(f["additions"]) is int
                     and f["additions"] >= 0 for f in files)):
             raise ValueError("invalid PR metadata")
-        verdict = evaluate(pull, files)
+        verdict = check_pull_request(pull, files)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps(asdict(Verdict(False, f"Gate input unavailable or invalid: {exc}"))))
         return 2

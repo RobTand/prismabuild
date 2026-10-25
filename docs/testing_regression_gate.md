@@ -10,6 +10,9 @@ are `fix`, `bugfix`, `feature`, `docs`, `refactor`, `test`, `chore`, `perf`,
 `build`, `ci` and `revert`. Missing, invalid or repeated declarations reject the
 PR, including PRs whose titles do not look like fixes. This avoids relying on
 rarely used labels or title conventions. Use `Change type: fix` for a bug repair.
+Release-train PRs from `tl/release-*` branches pass without a declaration. They
+only merge member PRs that this check already judged. `issue-link` exempts the
+same branches from its branch-name rule.
 
 A fix also has a title starting with `fix`, `fix(scope):`, `repair`, `bugfix` or
 `regression`, after optional `[priority]` prefixes. The labels `bug`, `fix`,
