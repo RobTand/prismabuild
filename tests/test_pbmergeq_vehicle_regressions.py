@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from test_pbmergeq import FakeGitHub, config, entries, git, make_queue, mq
+from test_pbmergeq import FakeGitHub, FakeRunner, config, entries, git, make_queue, mq
 
 
 @pytest.fixture
@@ -360,3 +360,31 @@ def test_expired_green_allowance_takes_precedence_over_exception_backoff(
     assert ended is not None and ended["verdict"] == "green-timeout"
     assert queue.store.state["batch"] is None
     assert runner.runs == completed
+
+
+def test_fresh_state_never_adopts_another_queues_closed_vehicle(tmp_path, issue_api):
+    # A smoke run in a scratch state directory leaves a closed vehicle behind.
+    # The shadow's fresh state restarts its batch sequence on the same repo.
+    smoke, origin, _, _ = make_queue(tmp_path)
+    github = ShadowGitHub(smoke.cfg, smoke.store, origin)
+    smoke.github = github
+    origin.pr(1, {"one.txt": "1\n"})
+    first = smoke.run_batch(entries(github, 1))
+    assert first["verdict"] == "green", first
+    assert github.pr(first["vehicle"]["number"])["state"] == "CLOSED"
+
+    (tmp_path / "shadow").mkdir()
+    cfg = config(tmp_path / "shadow", remote=str(origin.work))
+    store = mq.Store(cfg.state_dir)
+    mirror = mq.Mirror(cfg, cfg.state_dir)
+    mirror.ensure()
+    shadow_github = ShadowGitHub(cfg, store, origin)
+    shadow = mq.Queue(cfg, store, shadow_github, mirror, FakeRunner(), "status")
+    origin.pr(2, {"two.txt": "2\n"})
+
+    second = shadow.run_batch(entries(shadow_github, 2))
+
+    assert second["id"] == first["id"]
+    assert second["verdict"] == "green", second
+    assert second["vehicle"]["branch"] != first["vehicle"]["branch"]
+    assert len(origin.vehicle_creations) == 2
