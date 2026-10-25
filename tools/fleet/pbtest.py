@@ -56,6 +56,7 @@ import traceback
 import uuid
 import zlib
 from pathlib import Path, PurePath
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 _PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
@@ -917,6 +918,23 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
         totals[index] += predicted[name]
     buckets.extend(packed)
     return [bucket for bucket in buckets if bucket]
+
+
+class TestShard(NamedTuple):
+    files: list[str]
+    node_groups: dict
+    predicted_s: float | None
+
+
+def plan_shards(files: list[str], count: int, *, durations: dict[str, float],
+                ceiling: float | None = None,
+                model_default: float | None = None) -> list[TestShard]:
+    buckets = shard(files, count, durations=durations, ceiling=ceiling,
+                    model_default=model_default)
+    default = model_default if model_default is not None else default_duration(durations)
+    return [TestShard(bucket, {}, round(sum(durations.get(name, default)
+                                          for name in bucket), 1)
+                      if durations else None) for bucket in buckets]
 
 
 def _round_robin(files: list[str], count: int) -> list[list[str]]:
@@ -2065,6 +2083,7 @@ def main() -> int:
                     print(f"pbtest:   pins {entry['path']} at "
                           f"{entry['sha256']}", flush=True)
     buckets: list[list[str]] = []
+    shard_plans: list[TestShard] = []
     plan_of: list[dict] = []
     if predicted:
         # The ceiling is sealed now, so the model can judge against it: the
@@ -2077,21 +2096,16 @@ def main() -> int:
               f"default to the median {default:.1f}s, predictions are "
               "per-file maxima", flush=True)
     for plan in plans:
-        if predicted:
-            plan_buckets = shard(plan["members"], plan["shards"],
-                                 durations=predicted,
-                                 ceiling=plan["sealed_s"],
-                                 model_default=model_default)
-        else:
-            plan_buckets = shard(plan["members"], plan["shards"])
-        buckets.extend(plan_buckets)
-        plan_of.extend([plan] * len(plan_buckets))
+        packed = plan_shards(plan["members"], plan["shards"],
+                             durations=predicted, ceiling=plan["sealed_s"],
+                             model_default=model_default)
+        shard_plans.extend(packed)
+        buckets.extend(part.files for part in packed)
+        plan_of.extend([plan] * len(packed))
     if predicted:
-        totals = [sum(predicted.get(name, default) for name in bucket)
-                  for bucket in buckets]
         print("pbtest: predicted shard totals: " +
-              ", ".join(f"shard {index} {total:.0f}s"
-                           for index, total in enumerate(totals)), flush=True)
+              ", ".join(f"shard {index} {part.predicted_s:.0f}s"
+                        for index, part in enumerate(shard_plans)), flush=True)
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
@@ -2294,9 +2308,7 @@ def main() -> int:
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
         action_key = observation["action_key"]
-        predicted_s = (round(sum(predicted.get(name, model_default)
-                                 for name in bucket), 1)
-                       if predicted else None)
+        predicted_s = shard_plans[index].predicted_s
         actual_s = summary_seconds(summary) if ran else None
         results.append({"schema": "prismabuild.pbtest_report.v1",
                         "shard": index, "files": bucket,
