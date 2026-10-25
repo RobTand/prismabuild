@@ -12,7 +12,7 @@ from pathlib import Path
 import stat
 import time
 
-from prismabuild import digest_primitives, manifest_layout, reader_lease, staged_path
+from prismabuild import data_manifest, digest_primitives, manifest_layout, reader_lease, staged_path
 
 
 class _Budget(ValueError):
@@ -92,11 +92,9 @@ class _IO:
         document = self.read_document(path, max_bytes=128 << 20)
         if pb.new_sha256(self.raw[str(path)]).hexdigest() != digest:
             raise ValueError(f'{path}: manifest digest mismatch')
+        document = data_manifest.validate_data_manifest(document)
         entries = manifest_layout.read_entries(document)
-        prefix = document.get('mount_prefix')
-        if not isinstance(entries, list) or not isinstance(prefix, str) or not prefix.startswith('/'):
-            raise ValueError(f'{path}: invalid manifest layout')
-        return prefix, [dict(entry) for entry in entries]
+        return document['mount_prefix'], [dict(entry) for entry in entries]
 
     def validated_request(self, cas, key):
         from prismabuild import core as pb
