@@ -1027,3 +1027,39 @@ def test_an_unowned_retained_view_is_preserved_when_its_hold_releases(
     assert foreign.is_dir() and sentinel.read_text() == "must survive\n"
     assert view.exists(), "unowned data is retained for explicit recovery"
     assert runner.runs == completed
+
+
+@pytest.mark.parametrize(('latest', 'expected'), [
+    ({'status': 'queued', 'conclusion': None}, 'pending'),
+    ({'status': 'completed', 'conclusion': 'failure'}, 'failure'),
+    ({'status': 'completed', 'conclusion': 'success'}, 'success'),
+])
+def test_issue_link_waits_for_latest_github_actions_check(tmp_path, monkeypatch, latest, expected):
+    cfg = config(tmp_path)
+    github = mq.GitHub(cfg, mq.Store(cfg.state_dir), dry=False)
+    checks = [
+        {'id': 1, 'name': 'issue-link', 'app': {'slug': 'github-actions'},
+         'status': 'completed', 'conclusion': 'success'},
+        {'id': 2, 'name': 'issue-link', 'app': {'slug': 'github-actions'}, **latest},
+        {'id': 3, 'name': 'issue-link', 'app': {'slug': 'other-app'},
+         'status': 'completed', 'conclusion': 'success'},
+    ]
+
+    def check_runs(command):
+        assert command == ['gh', 'api', '--paginate',
+                           f'repos/{cfg.repo}/commits/{SHA}/check-runs',
+                           '--jq', '.check_runs[] | @json']
+        return subprocess.CompletedProcess(command, 0, '\n'.join(map(json.dumps, checks)))
+
+    monkeypatch.setattr(mq, 'call_tool', check_runs)
+    assert github.issue_link(1, SHA) == expected
+
+
+def test_vehicle_issue_refs_keep_same_repository_body_and_sidebar_links():
+    pr = {'body': 'Refs #101; Fixes RobTand/prismabuild#102; '
+                  'References https://github.com/RobTand/prismabuild/issues/103; '
+                  'Refs https://github.com/Other/repo/issues/999',
+          'closingIssuesReferences': [
+              {'number': 104, 'url': 'https://github.com/RobTand/prismabuild/issues/104'},
+              {'number': 999, 'url': 'https://github.com/Other/repo/issues/999'}]}
+    assert mq.issue_numbers(pr, 'RobTand/prismabuild') == [101, 102, 103, 104]
