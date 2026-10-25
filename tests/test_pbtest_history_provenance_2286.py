@@ -1,6 +1,7 @@
 """Shard reports identify the exact input used for duration predictions."""
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -25,9 +26,21 @@ def test_report_identifies_history_source_and_consumed_bytes(tmp_path, monkeypat
         prior = pbtest.pbtest_history.cached_report(checkout, ["tests"])
     expected = {"mode": mode, "reports": [
         {"path": str(prior), "sha256": hashlib.sha256(prior.read_bytes()).hexdigest()}]}
+    read_bytes = Path.read_bytes
+    reads = []
+
+    def replace_after_read(path):
+        content = read_bytes(path)
+        if path == prior:
+            reads.append(path)
+            path.write_text("[]")
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", replace_after_read)
 
     code, results = _dispatch(checkout, monkeypatch, arguments)
 
     assert code == 0
+    assert reads == [prior]
     assert results[0]["predicted_s"] == 180.0
     assert results[0]["history_source"] == expected

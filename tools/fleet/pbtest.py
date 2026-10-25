@@ -1924,6 +1924,11 @@ def main() -> int:
     history, sample_problems = history_samples(history_reports)
     history_problems.extend(sample_problems)
     node_history, _ = history_samples(history_reports, field="node_durations")
+    history_source = {
+        "mode": "explicit" if args.history else "automatic",
+        "reports": [{"path": report.path, "sha256": report.sha256}
+                    for report in history_reports],
+    }
     node_predictions = predict_durations(node_history)
     for problem in history_problems:
         sys.stderr.write(f"pbtest: --history {problem}\n")
@@ -2400,6 +2405,7 @@ def main() -> int:
                         # own session seconds beside it, so the report can say
                         # whether the packing bought what it promised (#1246).
                         "predicted_s": predicted_s,
+                        "history_source": history_source,
                         "pytest_s": actual_s,
                         "test_completion": test_completion,
                         "timed_out": timed_out,
