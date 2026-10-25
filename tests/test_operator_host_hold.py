@@ -63,6 +63,79 @@ def test_a_hold_leaves_a_running_claim_and_its_reservation_untouched(guest_fleet
     assert not path.exists()
 
 
+@pytest.mark.parametrize("route", ["guest-tokens", "background-tokens", "guest-pressure"])
+@pytest.mark.parametrize("arrival", ["host-refusal", "withdrawal", "withdrawal-proof"])
+def test_a_late_hold_prevents_admission_withdrawal(guest_fleet, monkeypatch, route, arrival):
+    fleet = guest_fleet
+    pressure = route == "guest-pressure"
+    background = route == "background-tokens"
+    cpu = 2 if pressure else 8
+    key = fleet.publish("a", cpu=cpu,
+                        **({"priority": -10, "tags": ["sparky"]} if background else {}))
+    running = fleet.claim()
+    assert bool(running.get("cpu_guest")) is (not background)
+    path = fleet.queue.records.item_path(pool.CLAIMED, key)
+    before = path.read_bytes()
+    lease = fleet.queue.records.lease_path(key)
+    lease_before = lease.read_bytes()
+    held = fleet.queue.ledger("sparky").held()
+    challenger = fleet.publish("b", gpu=True, cpu=cpu)
+    arrived = []
+
+    def install_hold():
+        arrived.append(put_hold(fleet.queue.root, "sparky"))
+
+    with monkeypatch.context() as patch:
+        if pressure:
+            # Keep real drain classification and withdrawal, changing only the
+            # observation so free tokens fit but a guest occupies pressured CPUs.
+            def pressured(controller, item, demand, **kwargs):
+                controller.last_decision = {"reason": "host_pressure",
+                    "held_cpus": running["cpu_allocation"]["preferred"], "foreign_cpus": []}
+                return None
+            patch.setattr(pool.cpu_admission.Controller, "decision", pressured)
+        boundary = "_account_host_refusal" if arrival == "host-refusal" else "withdraw"
+        original = getattr(fleet.queue, boundary)
+        resolve = fleet.queue.resolve_claim_holder
+
+        def hold_after_proof(*args, **kwargs):
+            host = resolve(*args, **kwargs)
+            install_hold()
+            return host
+
+        def hold_during_admission(*args, **kwargs):
+            if arrival == "withdrawal-proof":
+                # A check before calling withdraw is too early: ownership reads
+                # can stall before the immutable cancellation is written.
+                with monkeypatch.context() as proof_patch:
+                    proof_patch.setattr(fleet.queue, "resolve_claim_holder", hold_after_proof)
+                    return original(*args, **kwargs)
+            install_hold()
+            return original(*args, **kwargs)
+
+        patch.setattr(fleet.queue, boundary, hold_during_admission)
+        options = {"adaptive_cpu": True, "gpu_sampler": lambda: {}} if pressure else {}
+        assert fleet.claim(**options) is None
+    assert arrived and fleet.queue.claim_hold() is not None
+    assert path.read_bytes() == before
+    assert lease.read_bytes() == lease_before
+    assert fleet.queue.ledger("sparky").held() == held
+    assert not fleet.stopped(key)
+    assert not fleet.queue.records.item_path(pool.READY, key).exists()
+    assert fleet.queue.records.item_path(pool.READY, challenger).exists()
+    assert not fleet.queue.records.item_path(pool.CLAIMED, challenger).exists()
+    # Reopening admission restores the ordinary handoff, without having spent
+    # an interruption or a new generation during the hold.
+    host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", release=True)
+    with monkeypatch.context() as patch:
+        if pressure:
+            patch.setattr(pool.cpu_admission.Controller, "decision", pressured)
+        assert fleet.claim(**options) is None
+    assert fleet.stopped(key)[0]["preempted_by"] == challenger
+    fleet.finish(running, "withdrawn")
+    assert fleet.claim()["action_key"] == challenger
+
+
 @pytest.mark.parametrize("arrival", ["before-pass", "before-rename"])
 def test_adaptive_claims_also_cross_the_hold_check(tmp_path, monkeypatch, arrival):
     queue = pool.PoolQueue(tmp_path / "queue")
@@ -90,9 +163,49 @@ def test_adaptive_claims_also_cross_the_hold_check(tmp_path, monkeypatch, arriva
     assert queue.claim(**options)["action_key"] == "a" * 64
 
 
+def test_a_hold_does_not_stop_a_committed_preemption_handoff(guest_fleet, monkeypatch):
+    fleet = guest_fleet
+    key = fleet.publish("a", cpu=8)
+    running = fleet.claim()
+    challenger = fleet.publish("b", gpu=True, cpu=8)
+    withdraw = fleet.queue.withdraw
+
+    def hold_after_cancellation(*args, **kwargs):
+        result = withdraw(*args, **kwargs)
+        assert result["status"] == "withdrawn"
+        put_hold(fleet.queue.root, "sparky")
+        return result
+
+    monkeypatch.setattr(fleet.queue, "withdraw", hold_after_cancellation)
+    assert fleet.claim() is None
+    assert fleet.queue.claim_hold() is not None
+    assert fleet.stopped(key)[0]["preempted_by"] == challenger
+    retry = pool.record_store.value_or_raise(fleet.queue.records.item(pool.READY, key))
+    assert retry["attempts"] == 1
+    assert retry["supersedes_withdrawal"]["published_unix"] == running["published_unix"]
+    # Cleanup and retry publication complete even though new claims stay closed.
+    fleet.finish(running, "withdrawn")
+    assert fleet.queue.ledger("sparky").held() == {}
+    assert fleet.claim() is None
+
+
+def test_operator_withdrawal_remains_available_while_held(guest_fleet):
+    fleet = guest_fleet
+    key = fleet.publish("a")
+    running = fleet.claim()
+    put_hold(fleet.queue.root, "sparky")
+    result = fleet.queue.withdraw(key, by="operator", reason="cancel this work", signal_child=False)
+    assert result["status"] == "withdrawn"
+    assert "preempted_by" not in fleet.stopped(key)[0]
+    fleet.finish(running, "withdrawn")
+    assert fleet.queue.ledger("sparky").held() == {}
+    assert fleet.queue.claim_hold() is not None
+
+
 def test_expiry_resumes_claiming_and_is_logged_once(guest_fleet, monkeypatch, capsys):
     fleet = guest_fleet
     clock = time.time()
+    monkeypatch.setattr(host_hold.time, "time", lambda: clock)
     host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", reason="load",
                               now=clock, expires_unix=clock + 1)
     key = fleet.publish("a")
