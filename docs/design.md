@@ -16849,6 +16849,16 @@ references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
 
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
+
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
 entire bounded root remains protected while independently proven copies outside
