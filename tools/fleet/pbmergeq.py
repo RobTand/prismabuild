@@ -1758,7 +1758,8 @@ class Queue:
             self.store.event(None, f"queue: {[e['pr'] for e in self.store.state['queue']]}")
         batch = self.store.state.get("batch")
         if batch and "green" in batch:
-            if self.store.state["not_before"] > time.time():
+            if (self.store.state["not_before"] > time.time()
+                    and time.time() < batch.get("wait_until", math.inf)):
                 return None
             try:
                 verdict = self.publish_green(batch)
