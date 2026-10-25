@@ -7,9 +7,12 @@ CPU box.
 from __future__ import annotations
 
 import os
+import io
+import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +28,48 @@ def test_reproduces_design_space_claim():
     verdict = probe.d1_verdict(125 * gib, int(125 / 0.07 * gib), probe.A8S_BYTES)
     assert verdict["fits"] is False
     assert verdict["reason"] == "1.5N+20GiB rule fails"
+
+
+def test_preflight_never_reads_a8s_or_creates_speed_files(tmp_path, monkeypatch, capsys):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("preflight must not read model payloads or write a speed corpus")
+
+    monkeypatch.setattr(probe, "measure_source", forbidden)
+    monkeypatch.setattr(probe, "measure_local_nvme", forbidden)
+    monkeypatch.setattr(probe, "CANONICAL_DIR", str(tmp_path / "canonical"))
+    monkeypatch.setattr(probe, "STAGE_DIR", str(tmp_path / "missing-stage"))
+    monkeypatch.setattr(probe, "environment_report", lambda: {})
+    monkeypatch.setattr(probe, "os", SimpleNamespace(stat=os.stat, path=os.path,
+        statvfs=lambda _path: SimpleNamespace(f_blocks=100, f_bavail=27,
+            f_bfree=30, f_bsize=4096, f_frsize=4096)))
+    monkeypatch.setattr(probe, "measure_bind", lambda **_kwargs: {"probe": "fixture"})
+    out = tmp_path / "preflight.json"
+    assert probe.main(["--preflight-only", "--destination", str(tmp_path),
+                       "--bind-image", "sha256:" + "a" * 64, "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert json.loads(capsys.readouterr().out) == report
+    assert report["stage_path"]["present"] is False
+    assert report["speed"]["status"] == "not_run"
+    assert report["space"]["total_bytes"] == 409600
+    assert report["space"]["available_bytes"] == 110592
+    assert report["bind"] == {"probe": "fixture"}
+
+
+def test_path_observation_resolves_mount_after_autofs_activation(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    autofs = f"1 0 0:1 / {root} rw - autofs systemd-1 rw\n"
+    nfs = f"2 1 0:2 / {root} rw - nfs4 server:/shared rw\n"
+    rows = [autofs]
+
+    def stat(_path):
+        rows.append(nfs)
+        return SimpleNamespace(st_dev=2)
+
+    monkeypatch.setattr(probe, "os", SimpleNamespace(stat=stat, path=os.path))
+    monkeypatch.setattr(probe, "open", lambda *_a, **_kw: io.StringIO("".join(rows)), raising=False)
+    observed = probe.observe_path(root + "/model")
+    assert observed["present"] is True
+    assert observed["mountinfo"] == nfs.strip()
 
 
 def test_sparklina_floor_blocks_the_copy():

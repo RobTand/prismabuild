@@ -1,0 +1,52 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "b658e0912c34cf5899c5c65255ce793bcf8b06bc",
+  "ledger_commit": "b658e0912c34cf5899c5c65255ce793bcf8b06bc",
+  "scope": [
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "SAFE-03",
+    "DUR-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1545-review",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1545",
+    "validated_repairs": [
+      {
+        "id": "SC-03",
+        "actions": [
+          "63dcbf8eac84e0c89b7e2c6cc71159bcd1f046d02409a5b8b5a6400213cb551d",
+          "2d5c8533c0a30b47038fe474e8dfbc8445c99ffcbe0a6f4dda0074476d13ef8c"
+        ],
+        "outcome": "Scoped design and prerequisite evidence; exact CAS checks in adjacent evidence JSON. No global ledger status upgrade."
+      },
+      {
+        "id": "SAFE-03",
+        "actions": [
+          "803531dda9a69de043b6eb74fc922762a0898ff48d986548e9ba2f9140633bd1"
+        ],
+        "outcome": "17 collected, 17 ran, 17 passed with no skips; terminal executed, scope cleanup complete; probe/test payload only, not campaign validity. CAS verification in adjacent evidence JSON."
+      }
+    ],
+    "remaining_gaps": [
+      "#1730: same-A8S 1/4/16-stream cold/warm rates, consumer concurrency, copy/verification cost and payback remain unmeasured.",
+      "ID-07/INV-04: mount-route observation is not actual reader-open attribution.",
+      "INV-03/INV-06/TIER-04/SAFE-02: strict fallback remains a design requirement; no HDD exception granted or exercised.",
+      "SM-03/INV-07/SAFE-01: Docker pin lifetime and containment cleanup integration remain proposed.",
+      "ID-08/ACC-05/ACC-06: no activation or campaign workload proof."
+    ],
+    "note": "Prepared for Principal Engineer review, not an approval or a claim of merge. Scope is design documentation, metadata-only probe mode, deterministic probe tests and synthetic Docker bind evidence. No production lifecycle/default/policy is changed."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

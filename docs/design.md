@@ -7484,6 +7484,14 @@ to be declared.
 
 ## Whole-directory local resident sets (#1545)
 
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
+
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
 `placeable_hosts` preserves the existing matching-offer and resource rules and eligible set,
