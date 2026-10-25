@@ -218,8 +218,7 @@ def inventory_checkout_revision(root: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 
 
-def collect_test_repeats(args) -> None:
-    source = inventory_checkout_revision(args.checkout)
+def collection_manifest(args, source: str) -> dict:
     manifest_path = args.output / "runs.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
@@ -231,6 +230,18 @@ def collect_test_repeats(args) -> None:
                     "repeats": args.repeats, "collection_id": uuid.uuid4().hex, "runs": []}
         with manifest_path.open("x") as stream:
             stream.write(json.dumps(manifest, indent=2) + "\n")
+    return manifest
+
+
+def save_collection(output: Path, manifest: dict) -> None:
+    temporary = output / "runs.tmp"
+    temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+    temporary.replace(output / "runs.json")
+
+
+def collect_test_repeats(args) -> None:
+    source = inventory_checkout_revision(args.checkout)
+    manifest = collection_manifest(args, source)
     for repeat in range(1, args.repeats + 1):
         target = args.output / f"repeat-{repeat}.json"
         previous = next((r for r in manifest["runs"] if r["repeat"] == repeat), None)
@@ -262,10 +273,25 @@ def collect_test_repeats(args) -> None:
             raise ValueError(f"repeat {repeat} produced no report; inspect {log}")
         manifest["runs"].append({"repeat": repeat, "command": command, "returncode": result.returncode,
                                  "report_sha256": raw_sha256(target.read_bytes())})
-        temporary = manifest_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(manifest, indent=2) + "\n")
-        temporary.replace(manifest_path)
+        save_collection(args.output, manifest)
         print(f"committed repeat {repeat}: controller exit {result.returncode}", flush=True)
+
+
+def summarize_test_repeats(args) -> None:
+    manifest = json.loads((args.output / "runs.json").read_text())
+    runs = []
+    for entry in manifest["runs"]:
+        path = args.output / f"repeat-{entry['repeat']}.json"
+        if raw_sha256(path.read_bytes()) != entry["report_sha256"]:
+            raise ValueError("retained report digest changed")
+        runs.append({"repeat": entry["repeat"], "source_digest": manifest["source_digest"],
+                     "paths": manifest["paths"], "results": json.loads(path.read_text())})
+    if inventory_checkout_revision(args.checkout) != manifest["source_digest"]:
+        raise ValueError("grouping checkout differs from the measured source")
+    report = rank_test_runs(args.checkout, runs)
+    (args.output / "inventory.json").write_text(json.dumps(report, indent=2) + "\n")
+    (args.output / "inventory.md").write_text(render_test_inventory(report))
+    print(json.dumps(report["coverage"]))
 
 
 def main() -> None:
@@ -287,20 +313,7 @@ def main() -> None:
     try:
         if args.command == "collect":
             collect_test_repeats(args)
-        manifest = json.loads((args.output / "runs.json").read_text())
-        runs = []
-        for entry in manifest["runs"]:
-            path = args.output / f"repeat-{entry['repeat']}.json"
-            if raw_sha256(path.read_bytes()) != entry["report_sha256"]:
-                raise ValueError("retained report digest changed")
-            runs.append({"repeat": entry["repeat"], "source_digest": manifest["source_digest"],
-                         "paths": manifest["paths"], "results": json.loads(path.read_text())})
-        if inventory_checkout_revision(args.checkout) != manifest["source_digest"]:
-            raise ValueError("grouping checkout differs from the measured source")
-        report = rank_test_runs(args.checkout, runs)
-        (args.output / "inventory.json").write_text(json.dumps(report, indent=2) + "\n")
-        (args.output / "inventory.md").write_text(render_test_inventory(report))
-        print(json.dumps(report["coverage"]))
+        summarize_test_repeats(args)
     except (OSError, ValueError) as exc:
         parser.exit(1, f"inventory: {exc}\n")
 
