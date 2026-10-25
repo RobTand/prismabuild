@@ -1,0 +1,161 @@
+{
+  "verification": "CAS.read_execution_result verifies request, receipt and result; outcome records equal report records. No terminal argv or broker tokens retained.",
+  "runs": [
+    {
+      "run": "red",
+      "action_key": "793b9f0402d58738d7227b8e2b4ba9f9053a5474fe6f1701d3ddea86a8457b96",
+      "summary": "6 failed in 0.23s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/failed/793b9f0402d58738d7227b8e2b4ba9f9053a5474fe6f1701d3ddea86a8457b96.json",
+      "terminal_status": "failed",
+      "returncode": 1,
+      "terminal_sha256": "252af2ff17724f806e24917b8ee44c63f55cf51a1f17543bc64240dd9dbef1c1",
+      "receipt_sha256": null,
+      "receipt_note": "Nonzero worker exit published no execution receipt; terminal and diagnostic logs retained."
+    },
+    {
+      "run": "shapes-red",
+      "action_key": "abce12c782d8261ffd65d7da47407c8280d5b829c3ec9e17253e00ad6e1efebe",
+      "summary": "5 failed, 3 passed in 0.29s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/failed/abce12c782d8261ffd65d7da47407c8280d5b829c3ec9e17253e00ad6e1efebe.json",
+      "terminal_status": "failed",
+      "returncode": 1,
+      "terminal_sha256": "e5e60f8e4f916b01cb701f379b2144449ce0c05d5983cf828e5683728387d6e6",
+      "receipt_sha256": null,
+      "receipt_note": "Nonzero worker exit published no execution receipt; terminal and diagnostic logs retained."
+    },
+    {
+      "run": "shapes-green",
+      "action_key": "1cc61fab4be08392c18e44f6382c8985141f582b083e438d7058bf66d02b3c55",
+      "summary": "8 passed in 0.24s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/1cc61fab4be08392c18e44f6382c8985141f582b083e438d7058bf66d02b3c55.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "terminal_sha256": "fd6b29130a7d9bc0cf199d396b16032182d9ffa8cedb443c43800b1d45685039",
+      "receipt_sha256": "d2e83bd208a915037c9747b2f69dd5b4e903672c7fea3bc198b812d5b03c5cdf",
+      "result": {
+        "sha256": "e28c1ce394d4a8d1258f3812b7c6a5181a9e999a9ecd335e4b47b5efac6528a5",
+        "bytes": 9432
+      },
+      "verified": true
+    },
+    {
+      "run": "smoke-final/repeat-1",
+      "action_key": "2291fc617d21151b36d2e7a99c00ea7f858d8ac53f93b92a6cde1ef5d9c484a4",
+      "summary": "8 passed in 0.34s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/2291fc617d21151b36d2e7a99c00ea7f858d8ac53f93b92a6cde1ef5d9c484a4.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "terminal_sha256": "7eafce1fb4802cddd974c43335e668211ebe0594fba9f182c16051d2d4f43949",
+      "receipt_sha256": "8de91ae36165184e417fcd029bf41a655520716edddfb89efd58ff1b7d797159",
+      "result": {
+        "sha256": "39716d546e9bd6c04bdc1ed43cb63312ed0b7f8b2a9b64e9d8817c0fe33ec610",
+        "bytes": 9432
+      },
+      "verified": true
+    },
+    {
+      "run": "smoke-final/repeat-2",
+      "action_key": "40dfe4d7d135673678b5d9a0fb91e417f680ef93a37e0efdc9139782761a3d0b",
+      "summary": "8 passed in 0.24s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/40dfe4d7d135673678b5d9a0fb91e417f680ef93a37e0efdc9139782761a3d0b.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "terminal_sha256": "83b508d47436168571483067b9e0ec795814e44272c673f91670f9bcfbc20d41",
+      "receipt_sha256": "cd08673ba5682f8a5e2a572aaf2406662603acf694d987d0339b8ab9a1bba48b",
+      "result": {
+        "sha256": "92edbb3440d32a52086ec0b5034d1515fe9538dc9fe167c1c3e6b30be189eb5d",
+        "bytes": 9432
+      },
+      "verified": true
+    },
+    {
+      "run": "final-checks",
+      "files": [
+        "tests/test_test_runtime_inventory.py"
+      ],
+      "action_key": "6f204bde0b29c1a79bf077efe1374b7c5f32f238ff4e50d3d735aeb83e70fc13",
+      "summary": "8 passed in 0.33s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/6f204bde0b29c1a79bf077efe1374b7c5f32f238ff4e50d3d735aeb83e70fc13.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "edbe36ff91326844b46b7ea5a1807139ef74a7ec0336aec89cc327eb9f191406",
+      "result": {
+        "sha256": "f1fdb366eb87bc8443ca6a0acc6fe9bdc5d5da22e3defef1d2f23d70ba218141",
+        "bytes": 6538
+      },
+      "verified": true
+    },
+    {
+      "run": "final-checks",
+      "files": [
+        "tests/test_wire_inventory.py"
+      ],
+      "action_key": "a8c2a7e3d7969a7538e8f33ff18a76b2fdcbd2fc8208d31b6a0ff36a52ecefd5",
+      "summary": "8 passed in 57.13s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/a8c2a7e3d7969a7538e8f33ff18a76b2fdcbd2fc8208d31b6a0ff36a52ecefd5.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "c5276bdcd8339e81dd068e11fc7aeffa58820e439ba3c859348421ccc75e7a25",
+      "result": {
+        "sha256": "4ea267bb5274e4966d51b5a7e27d5c4f9308dbcd70d7bf0f34eedeacabfbb0b5",
+        "bytes": 6107
+      },
+      "verified": true
+    },
+    {
+      "run": "final-checks",
+      "files": [
+        "tests/test_fleet_tool_flags_have_help.py"
+      ],
+      "action_key": "3f07b932b79e22237b9153782a9e53defbc13c1952d2a63ba0c9cb93b578c2c3",
+      "summary": "92 passed in 2.56s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/3f07b932b79e22237b9153782a9e53defbc13c1952d2a63ba0c9cb93b578c2c3.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "4994adcefe73c91ae0f21ac66d1e78a0ae6b854ee2695c5ce2ce1cd9341989c4",
+      "result": {
+        "sha256": "fcc1de995dca56cfe684b91e0b1babac738fa5d159aef3dd2cca1de93c17a062",
+        "bytes": 54753
+      },
+      "verified": true
+    },
+    {
+      "run": "final-checks",
+      "files": [
+        "tests/test_duplication_baseline.py"
+      ],
+      "action_key": "c1db95b903c242e33464d3d125ce7918f17a4cadece728393c5807eecd44c6b5",
+      "summary": "8 passed in 30.32s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/c1db95b903c242e33464d3d125ce7918f17a4cadece728393c5807eecd44c6b5.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "ac7be052973b3344a5b0669649d97da096fd842585d828d8c8d239a2ef01c7ca",
+      "result": {
+        "sha256": "70d7388b0ce281ddfbae0475a69147cb38315460cbc4c443f876003134280a49",
+        "bytes": 5947
+      },
+      "verified": true
+    },
+    {
+      "run": "final-checks",
+      "files": [
+        "tests/test_design_doc_line_references.py"
+      ],
+      "action_key": "a1516590193cd1c577fb9bfcb72e7dcfbff6b3a9ae704f5d7bfa526c6e97f486",
+      "summary": "1 passed in 0.34s",
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/a1516590193cd1c577fb9bfcb72e7dcfbff6b3a9ae704f5d7bfa526c6e97f486.json",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "6be910f9c02f92ef206bf8b7954520d8413f0f9e07a14e2145e6974f39233f01",
+      "result": {
+        "sha256": "916711cac7327a9a78c2262728995542411f0c003ae64898e78eb89c70c0fb77",
+        "bytes": 2708
+      },
+      "verified": true
+    }
+  ],
+  "scope": "Inventory collector only. Full-suite pruning, guards, runtime delta, merge and deployment remain pending.",
+  "baseline_revision": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+  "tested_tree": "5a310a335ff29d35f4bd8870c2fb0b9a4699f1ac",
+  "removed_or_rewritten_tests": []
+}
