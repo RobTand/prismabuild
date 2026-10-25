@@ -1,0 +1,2462 @@
+{
+  "schema": "pb.nfs_probe_lifecycle_followup.v1",
+  "scope": "Private-prefix fault reproduction; no timing comparison, deployment, reclamation or complete per-process RPC attribution.",
+  "cycles_per_action": 1000,
+  "rows": [
+    {
+      "action_key": "96e70f3b5d41a9038d23831a4c60dc3ea52794815c92cc6515d83ed06b5583c9",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "77dd5459b121817b50166c8900d37552c190a7b2",
+        "input": {
+          "bytes": 44823690,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "e971bf9ba066f3b6397472b842774912637017ea7967b576c9c3284b68b62722"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparklina",
+        "claimed_unix": 1792963368.6311224,
+        "finished_host": "sparklina",
+        "finished_unix": 1792963374.183441
+      },
+      "result": {
+        "arm": "current",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparklina",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 546918,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6318952148,
+              "bytes_sent": 8279738480,
+              "errors": 151292,
+              "exec_ms": 8388146,
+              "ops": 35634002,
+              "queue_ms": 1892633,
+              "rtt_ms": 6041731,
+              "timeouts": 1,
+              "trans": 35634017
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 546915,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6318768808,
+              "bytes_sent": 8279487120,
+              "errors": 151237,
+              "exec_ms": 8387532,
+              "ops": 35632933,
+              "queue_ms": 1892625,
+              "rtt_ms": 6041141,
+              "timeouts": 1,
+              "trans": 35632948
+            }
+          }
+        },
+        "pid": 1869503,
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-0-current",
+        "sample_statuses": {},
+        "unix": 1792963373.6554928
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 8\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 1\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8849
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10383
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-0-current",
+        "unix": 1792963347.6394954
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 17\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8849
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9737eda69908ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46312935\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6b908ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46448613\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6fd08ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315877\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda64f09ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317356\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda68509ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315222\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda62a0aad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316157\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6fe0aad05: { type: open, access: -w, deny: --, superblock: \"00:46:46312943\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6220bad05: { type: open, access: -w, deny: --, superblock: \"00:46:46313579\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6340bad05: { type: open, access: -w, deny: --, superblock: \"00:46:46313582\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6900bad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317713\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6b80bad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317720\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6ce0bad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317828\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6630cad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317581\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6460dad05: { type: open, access: -w, deny: --, superblock: \"00:46:46307862\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6a80dad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317374\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6e80ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46316543\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6040fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317955\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda61e0fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317961\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6280fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317965\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda64a0fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317730\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6800fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316897\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6aa11ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46318210\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda66612ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46314451\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda67412ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315892\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6de12ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316218\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda60613ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317380\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6ba13ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316994\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda63814ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317473\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6b814ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317086\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda67215ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317088\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6f915ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317110\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda69316ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46318257\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6ab16ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46318261\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6fe16ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317609\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6b317ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46314902\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda61b19ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315260\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda64119ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317122\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6d919ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316609\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6e119ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317987\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6d11aad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315501\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6db1aad05: { type: open, access: -w, deny: --, superblock: \"00:46:46315503\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6841cad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316773\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6d41cad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317872\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6201dad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317395\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda66c1dad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317494\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6101ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46317159\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6441ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46316918\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6a41ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46317003\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6ac1ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46317006\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6d71ead05: { type: open, access: -w, deny: --, superblock: \"00:46:46316776\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6191fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46317634\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda6e41fad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316787\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda63220ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46318602\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda68220ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46316621\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }",
+              "- 0x0000000161d4db6a9737eda64022ad05: { type: open, access: -w, deny: --, superblock: \"00:46:46318354\", filename: \"PRI-46-lifecycle-fixed-sparklina-0-current/claim-1869503.done\", owner: \"open id:\\x00\\x00\\x00M\\x00\\x00\\x00\\x00\\x006\\x03\\xe5\\x00\\x01\\x12F\\x9b\\xb3\\xa18\" }"
+            ],
+            "open_count": 10445
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-0-current",
+        "unix": 1792963376.8550377
+      },
+      "states_before": 0,
+      "states_after": 55,
+      "close_errors_added": 55,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "355cbe8bcbd98f9cf0f2084acb0154bc66feffba3213a19e22023e9a13029fdf",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23906,
+          "present": true,
+          "sha256": "420b175cb39236ff8fade68e84723134c8ed778bb2e2e28b5c2ca36bcf4afebc"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "11ed1ef0f5d170ddb8c2191fc8f23ff058e8ac6ff038afaa74f5c590942c1eeb",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "e9fefd1682a1d4d9759acd85e0baef07e8e651f7",
+        "input": {
+          "bytes": 44823692,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "29f092b2638679d9a1103442066dd192b216512ad8c45f559fa89cb7210fe81e"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparklina",
+        "claimed_unix": 1792963398.9123287,
+        "finished_host": "sparklina",
+        "finished_unix": 1792963406.0035334
+      },
+      "result": {
+        "arm": "probe-direct",
+        "cycles": 1000,
+        "files_after": [
+          "anchor"
+        ],
+        "host": "sparklina",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 546950,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6319569048,
+              "bytes_sent": 8280559696,
+              "errors": 151298,
+              "exec_ms": 8390003,
+              "ops": 35637508,
+              "queue_ms": 1892684,
+              "rtt_ms": 6043487,
+              "timeouts": 1,
+              "trans": 35637523
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 546945,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6319203196,
+              "bytes_sent": 8280069852,
+              "errors": 151297,
+              "exec_ms": 8388954,
+              "ops": 35635429,
+              "queue_ms": 1892668,
+              "rtt_ms": 6042473,
+              "timeouts": 1,
+              "trans": 35635444
+            }
+          }
+        },
+        "pid": 1871768,
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-1-probe-direct",
+        "sample_statuses": {
+          "ok": 200
+        },
+        "unix": 1792963405.394718
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 18\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8851
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10444
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-1-probe-direct",
+        "unix": 1792963378.2273567
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 3\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8848
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10453
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-1-probe-direct",
+        "unix": 1792963409.1708157
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 1,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "fb4486277d0faa551fcf4925f0ec08c481d8b89be643fb40cc03549271669ff2",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23932,
+          "present": true,
+          "sha256": "dfb991669b678e115a06025c72743bb23b9b313e5fe66ac65bcdd1738a8c5f08"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "17c4ee3451e1e49e30c2ff23731a7eddb5a20e26e1a840bdaf03614f052e2572",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "a2854eb5b46a9a89669ee377815030f6578cc668",
+        "input": {
+          "bytes": 44823691,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "664de350ebee7a79074f64f68efee37e62fced183491f5b79019695a6ab28d65"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparklina",
+        "claimed_unix": 1792963430.7465281,
+        "finished_host": "sparklina",
+        "finished_unix": 1792963440.3471272
+      },
+      "result": {
+        "arm": "probe-fork",
+        "cycles": 1000,
+        "files_after": [
+          "anchor"
+        ],
+        "host": "sparklina",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 546984,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6320252528,
+              "bytes_sent": 8281469320,
+              "errors": 151309,
+              "exec_ms": 8392598,
+              "ops": 35641392,
+              "queue_ms": 1892736,
+              "rtt_ms": 6045974,
+              "timeouts": 1,
+              "trans": 35641407
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 546977,
+          "device": "10.100.99.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "10.100.99.2",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 6319875084,
+              "bytes_sent": 8280964500,
+              "errors": 151308,
+              "exec_ms": 8391259,
+              "ops": 35639247,
+              "queue_ms": 1892718,
+              "rtt_ms": 6044677,
+              "timeouts": 1,
+              "trans": 35639262
+            }
+          }
+        },
+        "pid": 1874950,
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-2-probe-fork",
+        "sample_statuses": {
+          "ok": 200
+        },
+        "unix": 1792963439.8146768
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 5\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8848
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10454
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-2-probe-fork",
+        "unix": 1792963410.5641816
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 22\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8853
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10463
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparklina-2-probe-fork",
+        "unix": 1792963446.5985923
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 1,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "bd39cf71f3eadaabd3fd22812dde3b9c572959068e3919e9c224c4701dc1ed79",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23929,
+          "present": true,
+          "sha256": "de4d17d540a732a2e1d272375bbd6b12c746b5bcf36b3a3c0daa582f22b116a3"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "ff4a308e33508052c5354866419af9639ec1fe8e1d26eccab6019bcfc8bb7095",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "d0318d745755ff92242a38d67222147ac36700c1",
+        "input": {
+          "bytes": 44823690,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "56bfaf27f52edb13b19d152feb8526a8e69c7c4e3d5c28f0116c7ac2e8127baf"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963341.4787319,
+        "finished_host": "sparky",
+        "finished_unix": 1792963347.7246475
+      },
+      "result": {
+        "arm": "probe-direct",
+        "cycles": 1000,
+        "files_after": [
+          "anchor"
+        ],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244983,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1776944060,
+              "bytes_sent": 2255071136,
+              "errors": 84786,
+              "exec_ms": 3397482,
+              "ops": 10101817,
+              "queue_ms": 1054481,
+              "rtt_ms": 2186732,
+              "timeouts": 2,
+              "trans": 10101822
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244980,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1776578684,
+              "bytes_sent": 2254590104,
+              "errors": 84786,
+              "exec_ms": 3396809,
+              "ops": 10099741,
+              "queue_ms": 1054463,
+              "rtt_ms": 2186097,
+              "timeouts": 2,
+              "trans": 10099746
+            }
+          }
+        },
+        "pid": 3808513,
+        "prefix": "PRI-46-lifecycle-fixed-sparky-0-probe-direct",
+        "sample_statuses": {
+          "ok": 200
+        },
+        "unix": 1792963347.2745419
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 847\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8850
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10377
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparky-0-probe-direct",
+        "unix": 1792963323.8204613
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 13\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8849
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10384
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparky-0-probe-direct",
+        "unix": 1792963352.7630022
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 0,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "b2fc5f6af91f1763c24263d4554aececace4827fa6b0ae32433c272cf03c878e",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23243,
+          "present": true,
+          "sha256": "42452cbf2d36f567e74021aa212758f1897f739cd9205f7b3b6efbd87b5075d1"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "be7d9550770b3dfd47774da156558853d6832f86012ab6a04b48e0ac4bf0c6a2",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "d6933a39c9dca3257341dc9691110622c4278c9b",
+        "input": {
+          "bytes": 44823690,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "c9c6fa58521da7d8da480bf64e0bbda5f8b46e47fe55799be2a3c08830e844a5"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963371.381638,
+        "finished_host": "sparky",
+        "finished_unix": 1792963378.5242176
+      },
+      "result": {
+        "arm": "probe-fork",
+        "cycles": 1000,
+        "files_after": [
+          "anchor"
+        ],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 245014,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1777497244,
+              "bytes_sent": 2255793880,
+              "errors": 84786,
+              "exec_ms": 3398629,
+              "ops": 10104959,
+              "queue_ms": 1054512,
+              "rtt_ms": 2187815,
+              "timeouts": 2,
+              "trans": 10104964
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 245009,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1777107932,
+              "bytes_sent": 2255281496,
+              "errors": 84786,
+              "exec_ms": 3397852,
+              "ops": 10102747,
+              "queue_ms": 1054494,
+              "rtt_ms": 2187077,
+              "timeouts": 2,
+              "trans": 10102752
+            }
+          }
+        },
+        "pid": 3816286,
+        "prefix": "PRI-46-lifecycle-fixed-sparky-1-probe-fork",
+        "sample_statuses": {
+          "ok": 200
+        },
+        "unix": 1792963378.0964904
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 14\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8849
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10384
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparky-1-probe-fork",
+        "unix": 1792963354.0903497
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 4\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8849
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10445
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-fixed-sparky-1-probe-fork",
+        "unix": 1792963384.602768
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 0,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "514bb054d66c0f6021b16fdc74243d588ee298d7e71a9266d1d996f8a57cf82b",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23239,
+          "present": true,
+          "sha256": "730dabf53bfc94a7fb582fef5efcd1c1a48e7dfff58dd0a2887d5f48d7f6098a"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "61981106d7ab43534e071a84494199591d5c5c4f88d04437fd56bb588028ebf1",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "ed81340b2b451694ebd2c92ee5b002261e4b71bf",
+        "input": {
+          "bytes": 44820507,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3cfc9ccf7c8bf21a32daffd288dcc9eb86fa2883a9885b15eb978c7aa154b7d0"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792962981.5271297,
+        "finished_host": "sparky",
+        "finished_unix": 1792962984.952037
+      },
+      "result": {
+        "arm": "current",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244620,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1772918280,
+              "bytes_sent": 2249833144,
+              "errors": 84613,
+              "exec_ms": 3389218,
+              "ops": 10078919,
+              "queue_ms": 1054208,
+              "rtt_ms": 2179046,
+              "timeouts": 2,
+              "trans": 10078924
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244619,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1772738408,
+              "bytes_sent": 2249595776,
+              "errors": 84609,
+              "exec_ms": 3389026,
+              "ops": 10077895,
+              "queue_ms": 1054200,
+              "rtt_ms": 2178875,
+              "timeouts": 2,
+              "trans": 10077900
+            }
+          }
+        },
+        "pid": 3663956,
+        "prefix": "PRI-46-lifecycle-r1-0-current",
+        "unix": 1792962984.5634298
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 489\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8784
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10291
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1-0-current",
+        "unix": 1792962965.7895157
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 511\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9637eda6778e0806: { type: open, access: -w, deny: --, superblock: \"00:46:46463455\", filename: \"PRI-46-lifecycle-r1-0-current/claim-3663956.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6f18f0806: { type: open, access: -w, deny: --, superblock: \"00:46:46463467\", filename: \"PRI-46-lifecycle-r1-0-current/claim-3663956.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda689920806: { type: open, access: -w, deny: --, superblock: \"00:46:46464716\", filename: \"PRI-46-lifecycle-r1-0-current/claim-3663956.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6a6960806: { type: open, access: -w, deny: --, superblock: \"00:46:46302893\", filename: \"PRI-46-lifecycle-r1-0-current/claim-3663956.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+            ],
+            "open_count": 8788
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10295
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1-0-current",
+        "unix": 1792962988.37406
+      },
+      "states_before": 0,
+      "states_after": 4,
+      "close_errors_added": 4,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "65c3fb8415a85466a007e0accf5938e4e4c7fe102bc13bdbde2cee12cbbd90ea",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23183,
+          "present": true,
+          "sha256": "7e011b2a4085cc1db72767bdb8367a11a677192195d5e5a72a38df93372548ca"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "97f9511c1397f51446148a4bfc360afe0c120d9756fd1f42f61b2dc1dac9cf39",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "b3fcd20a3e27947bbf3fa63948b7c2a5566bc23f",
+        "input": {
+          "bytes": 44820506,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "7fdb974a5e384d5161951bfe73910777e20f2166df89a18c9857b25927eecc90"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963029.9111402,
+        "finished_host": "sparky",
+        "finished_unix": 1792963033.291282
+      },
+      "result": {
+        "arm": "unique",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244669,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1773385376,
+              "bytes_sent": 2250439644,
+              "errors": 84624,
+              "exec_ms": 3389743,
+              "ops": 10081576,
+              "queue_ms": 1054243,
+              "rtt_ms": 2179494,
+              "timeouts": 2,
+              "trans": 10081581
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244668,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1773205856,
+              "bytes_sent": 2250202276,
+              "errors": 84616,
+              "exec_ms": 3389567,
+              "ops": 10080552,
+              "queue_ms": 1054236,
+              "rtt_ms": 2179338,
+              "timeouts": 2,
+              "trans": 10080557
+            }
+          }
+        },
+        "pid": 3665619,
+        "prefix": "PRI-46-lifecycle-r1b-0-unique",
+        "unix": 1792963032.9377875
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 534\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 1\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8790
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10301
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-0-unique",
+        "unix": 1792963011.3749185
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 558\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9637eda6686e0906: { type: open, access: -w, deny: --, superblock: \"00:46:46464488\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-0.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda63e6f0906: { type: open, access: -w, deny: --, superblock: \"00:46:46302835\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-107.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda67a6f0906: { type: open, access: -w, deny: --, superblock: \"00:46:46302298\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-137.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6a2700906: { type: open, access: -w, deny: --, superblock: \"00:46:46304164\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-285.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6c2700906: { type: open, access: -w, deny: --, superblock: \"00:46:46304017\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-301.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda622710906: { type: open, access: -w, deny: --, superblock: \"00:46:46304311\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-349.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda698710906: { type: open, access: -w, deny: --, superblock: \"00:46:46303437\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-403.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6a0710906: { type: open, access: -w, deny: --, superblock: \"00:46:46304421\", filename: \"PRI-46-lifecycle-r1b-0-unique/claim-3665619-407.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+            ],
+            "open_count": 8799
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10304
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-0-unique",
+        "unix": 1792963034.8470519
+      },
+      "states_before": 0,
+      "states_after": 8,
+      "close_errors_added": 8,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "5a63dc745ab23b62e63c6e84f07b5993bb2459ef780d90ab68312ebd80e4a6ff",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23182,
+          "present": true,
+          "sha256": "732cc296c343629dfe32ba151ea9bc90932e6b7a9f10e6b48bf7c06e6f4ca26e"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "435376f12c28aba8fcd28300f5361ea3ce49d8da0d4bb0d1ff041f8575a1e846",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "816530b6430c835ad531ade313fdf0da3fcbc733",
+        "input": {
+          "bytes": 44820506,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "2a0700b26a18a8001ec1c28771a09d66ec7f35fffc7b20bb0a8618b9aa466f32"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963056.087679,
+        "finished_host": "sparky",
+        "finished_unix": 1792963060.0294127
+      },
+      "result": {
+        "arm": "no-rename",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244695,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1774045348,
+              "bytes_sent": 2251305404,
+              "errors": 84638,
+              "exec_ms": 3390478,
+              "ops": 10085331,
+              "queue_ms": 1054277,
+              "rtt_ms": 2180155,
+              "timeouts": 2,
+              "trans": 10085336
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244694,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1773850340,
+              "bytes_sent": 2251047156,
+              "errors": 84626,
+              "exec_ms": 3390228,
+              "ops": 10084217,
+              "queue_ms": 1054269,
+              "rtt_ms": 2179924,
+              "timeouts": 2,
+              "trans": 10084222
+            }
+          }
+        },
+        "pid": 3668106,
+        "prefix": "PRI-46-lifecycle-r1b-1-no-rename",
+        "unix": 1792963059.6326723
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 559\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8800
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10305
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-1-no-rename",
+        "unix": 1792963036.3496668
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 588\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9637eda6a8fc0906: { type: open, access: -w, deny: --, superblock: \"00:46:46304712\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/claim-3668106.tmp\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6a0fd0906: { type: open, access: -w, deny: --, superblock: \"00:46:46305675\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c2918b0000081c\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda66bfe0906: { type: open, access: -w, deny: --, superblock: \"00:46:46304723\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/claim-3668106.tmp\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6a7000a06: { type: open, access: -w, deny: --, superblock: \"00:46:46305342\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c2903e00000867\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda651010a06: { type: open, access: -w, deny: --, superblock: \"00:46:46305359\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c2904f0000087a\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda629020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304736\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c28de00000089a\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda635020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304740\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c28de40000089d\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda645020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304745\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c28de9000008a0\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda671020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46305214\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c28fbe000008ad\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6df020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46462612\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c4f694000008bc\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6e7020a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304088\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c28b58000008be\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda645050a06: { type: open, access: -w, deny: --, superblock: \"00:46:46305381\", filename: \"PRI-46-lifecycle-r1b-1-no-rename/.nfs0000000002c29065000008ed\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+            ],
+            "open_count": 8820
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10315
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-1-no-rename",
+        "unix": 1792963065.5339525
+      },
+      "states_before": 0,
+      "states_after": 12,
+      "close_errors_added": 12,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "1229b5acd5f30fb6dae7e313c701f4fca950e784a5513c5318af41badd36d18b",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23188,
+          "present": true,
+          "sha256": "a181e5cb5df5b568ca0df717f68592ba8d61164b03096095f7674642acbdf759"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "2ac9bce3dfe827ff7bdc0feb21b6920f9ddd28165569cf039bd6bc18208135a1",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "49f49718225ddb49893502fb9fa5eca24a0d8198",
+        "input": {
+          "bytes": 44820507,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "494c7b3dc5b3fe6360390add89cdf1961438b1885c00c38548a0e9a57a74a024"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963082.716808,
+        "finished_host": "sparky",
+        "finished_unix": 1792963086.038592
+      },
+      "result": {
+        "arm": "overwrite",
+        "cycles": 1000,
+        "files_after": [
+          "claim-3671891.tmp"
+        ],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244721,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1774368116,
+              "bytes_sent": 2251727456,
+              "errors": 84735,
+              "exec_ms": 3390848,
+              "ops": 10087174,
+              "queue_ms": 1054297,
+              "rtt_ms": 2180480,
+              "timeouts": 2,
+              "trans": 10087179
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244721,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1774189940,
+              "bytes_sent": 2251490784,
+              "errors": 84640,
+              "exec_ms": 3390666,
+              "ops": 10086153,
+              "queue_ms": 1054290,
+              "rtt_ms": 2180316,
+              "timeouts": 2,
+              "trans": 10086158
+            }
+          }
+        },
+        "pid": 3671891,
+        "prefix": "PRI-46-lifecycle-r1b-2-overwrite",
+        "unix": 1792963085.5334587
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 590\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8819
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10315
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-2-overwrite",
+        "unix": 1792963066.7383556
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 612\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8820
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10323
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-2-overwrite",
+        "unix": 1792963089.4469225
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 95,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "b2dad7b0bfa193691a96b1c72c97c21f3edb264a75da2a7b1a38ee5b28b80725",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23207,
+          "present": true,
+          "sha256": "70f3665eb9a5f9c5653de082febfa0d7f11a412eb58cb16c7e3d756d3178a660"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "70b8ac2cd97343e7335c1c34e2371295b69ed8a71a18ecee7a92270237c9c0ca",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "fb8f54863bc45142a7d8ce10a8bc709c9556aefb",
+        "input": {
+          "bytes": 44820505,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "69a99508cc50fc7cbb1f67e2920705be17aad6030877a677b3e14f642eafd7ac"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963106.4169333,
+        "finished_host": "sparky",
+        "finished_unix": 1792963109.850295
+      },
+      "result": {
+        "arm": "replace",
+        "cycles": 1000,
+        "files_after": [
+          "claim-3675081.done"
+        ],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244745,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1774697996,
+              "bytes_sent": 2252158120,
+              "errors": 84748,
+              "exec_ms": 3391277,
+              "ops": 10089051,
+              "queue_ms": 1054316,
+              "rtt_ms": 2180868,
+              "timeouts": 2,
+              "trans": 10089056
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244744,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1774519180,
+              "bytes_sent": 2251922144,
+              "errors": 84744,
+              "exec_ms": 3391083,
+              "ops": 10088033,
+              "queue_ms": 1054309,
+              "rtt_ms": 2180691,
+              "timeouts": 2,
+              "trans": 10088038
+            }
+          }
+        },
+        "pid": 3675081,
+        "prefix": "PRI-46-lifecycle-r1b-3-replace",
+        "unix": 1792963109.449197
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 614\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 1\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8820
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10322
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-3-replace",
+        "unix": 1792963090.564794
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 636\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9637eda6a2f10a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304943\", filename: \"PRI-46-lifecycle-r1b-3-replace/claim-3675081.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda60cf20a06: { type: open, access: -w, deny: --, superblock: \"00:46:46307497\", filename: \"PRI-46-lifecycle-r1b-3-replace/claim-3675081.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6c8f40a06: { type: open, access: -w, deny: --, superblock: \"00:46:46308401\", filename: \"PRI-46-lifecycle-r1b-3-replace/claim-3675081.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda68ff50a06: { type: open, access: -w, deny: --, superblock: \"00:46:46304981\", filename: \"PRI-46-lifecycle-r1b-3-replace/claim-3675081.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+            ],
+            "open_count": 8827
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10329
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1b-3-replace",
+        "unix": 1792963113.2044964
+      },
+      "states_before": 0,
+      "states_after": 4,
+      "close_errors_added": 4,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "554f1da587a13017ffa0ea4b70f5096cec7191164510d53643f9acfbbd9305f7",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23203,
+          "present": true,
+          "sha256": "8af28424708dbd19a1bde8d3f6f542298e5279108eecdce8cf1aff5f293a3f7c"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "23d109d9f7f358b261dbd6ffc6322bb9b1b4e1ed2b2988bece6860ffede9c9a6",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "9385b38dd9459c5abcb1479afed11af17213640e",
+        "input": {
+          "bytes": 44821584,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "e2aa823f0d37561d2df0f26497cd2024c3fc32d4738fd824a63f620152a4e3f8"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963163.1481485,
+        "finished_host": "sparky",
+        "finished_unix": 1792963168.2549884
+      },
+      "result": {
+        "arm": "empty",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244804,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1775271288,
+              "bytes_sent": 2252901820,
+              "errors": 84757,
+              "exec_ms": 3392658,
+              "ops": 10092308,
+              "queue_ms": 1054360,
+              "rtt_ms": 2182159,
+              "timeouts": 2,
+              "trans": 10092313
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244801,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1775062728,
+              "bytes_sent": 2252627300,
+              "errors": 84757,
+              "exec_ms": 3392142,
+              "ops": 10091123,
+              "queue_ms": 1054349,
+              "rtt_ms": 2181665,
+              "timeouts": 2,
+              "trans": 10091128
+            }
+          }
+        },
+        "pid": 3690587,
+        "prefix": "PRI-46-lifecycle-r1c-0-empty",
+        "unix": 1792963167.6578999
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 669\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 3
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8827
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10336
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1c-0-empty",
+        "unix": 1792963145.9816408
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 698\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8827
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10345
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1c-0-empty",
+        "unix": 1792963174.7130802
+      },
+      "states_before": 0,
+      "states_after": 0,
+      "close_errors_added": 0,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "3a67375b7a2fe75defbbf6e430c0943af1a6f74ea0b8cb8661889e791483ab7a",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23180,
+          "present": true,
+          "sha256": "ba23632eaf5f232475712eb77dd697836fa0eeec0463809c5c887d694836156a"
+        },
+        "attestation_verified": null
+      }
+    },
+    {
+      "action_key": "f2253d3ec13b7103b54e88a2151bba7d2fd5cadd6366691de94a9e895d477de3",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "d469ecb24566ebc6f5efa008b0b3a15cf9e9df40",
+        "input": {
+          "bytes": 44821585,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "93a6323552901ad9919ff478e562b02ddbe1e88b1fef6c8cc4e2a1f15fa129c3"
+        },
+        "parent": "7e3e9e595369be3f1199f636b61c4ec9e8b8f532",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 1
+      },
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963194.9017165,
+        "finished_host": "sparky",
+        "finished_unix": 1792963199.883785
+      },
+      "result": {
+        "arm": "current",
+        "cycles": 1000,
+        "files_after": [],
+        "host": "sparky",
+        "kernel": "7.0.0-1019-nvidia",
+        "mountstats_after": {
+          "age_s": 244835,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1775642068,
+              "bytes_sent": 2253385404,
+              "errors": 84771,
+              "exec_ms": 3393677,
+              "ops": 10094420,
+              "queue_ms": 1054383,
+              "rtt_ms": 2183129,
+              "timeouts": 2,
+              "trans": 10094425
+            }
+          }
+        },
+        "mountstats_before": {
+          "age_s": 244833,
+          "device": "10.100.98.3:/storage_pool/shared",
+          "fstype": "nfs4",
+          "mount_point": "/mnt/shared",
+          "options": {
+            "acdirmax": "60",
+            "acdirmin": "30",
+            "acregmax": "60",
+            "acregmin": "3",
+            "clientaddr": "0.0.0.0",
+            "fatal_neterrors": "none",
+            "hard": "yes",
+            "local_lock": "none",
+            "namlen": "255",
+            "nconnect": "16",
+            "port": "20049",
+            "proto": "rdma",
+            "retrans": "2",
+            "rsize": "1048576",
+            "rw": "yes",
+            "sec": "sys",
+            "timeo": "600",
+            "vers": "4.2",
+            "wsize": "1048576"
+          },
+          "transport": "rdma",
+          "ops": {
+            "CLOSE": {
+              "bytes_recv": 1775451276,
+              "bytes_sent": 2253133124,
+              "errors": 84758,
+              "exec_ms": 3393194,
+              "ops": 10093330,
+              "queue_ms": 1054374,
+              "rtt_ms": 2182667,
+              "timeouts": 2,
+              "trans": 10093335
+            }
+          }
+        },
+        "pid": 3717787,
+        "prefix": "PRI-46-lifecycle-r1c-1-current",
+        "unix": 1792963199.4253638
+      },
+      "server_before": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 699\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [],
+            "open_count": 8827
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10345
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1c-1-current",
+        "unix": 1792963176.1375473
+      },
+      "server_after": {
+        "clients": {
+          "2": {
+            "info": "clientid: 0xa6ed37956adbd461\naddress: \"192.168.1.68:802\"\nstatus: confirmed\nseconds from last renew: 724\nname: \"Linux NFSv4.2 celestia\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"192.168.1.68:0\"\nadmin-revoked states: 0\nsession slots: 135\nsession target slots: 135\n",
+            "matching_states": [],
+            "open_count": 4
+          },
+          "3": {
+            "info": "clientid: 0xa6ed37966adbd461\naddress: \"10.100.98.1:0\"\nstatus: confirmed\nseconds from last renew: 1\nname: \"Linux NFSv4.2 sparky\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.98.1:0\"\nadmin-revoked states: 0\nsession slots: 845\nsession target slots: 845\n",
+            "matching_states": [
+              "- 0x0000000161d4db6a9637eda6c3350c06: { type: open, access: -w, deny: --, superblock: \"00:46:46310819\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda616360c06: { type: open, access: -w, deny: --, superblock: \"00:46:46309595\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda691370c06: { type: open, access: -w, deny: --, superblock: \"00:46:46309337\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6373a0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46312078\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6d13b0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46459042\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6f33b0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46459044\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6173c0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46309245\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda62e3c0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46312705\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda61f3d0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46309970\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda6393d0c06: { type: open, access: -w, deny: --, superblock: \"00:46:46305454\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda611400c06: { type: open, access: -w, deny: --, superblock: \"00:46:46312102\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda663420c06: { type: open, access: -w, deny: --, superblock: \"00:46:46310861\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }",
+              "- 0x0000000161d4db6a9637eda637440c06: { type: open, access: -w, deny: --, superblock: \"00:46:46311484\", filename: \"PRI-46-lifecycle-r1c-1-current/claim-3717787.done\", owner: \"open id:\\x00\\x00\\x00B\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x03\\xa5$\\x09\\xc0\" }"
+            ],
+            "open_count": 8838
+          },
+          "4": {
+            "info": "clientid: 0xa6ed37976adbd461\naddress: \"10.100.99.2:0\"\nstatus: confirmed\nseconds from last renew: 0\nname: \"Linux NFSv4.2 sparklina\"\nminor version: 2\nImplementation domain: \"kernel.org\"\nImplementation name: \"Linux 7.0.0-1019-nvidia #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2 aarch64\"\nImplementation time: [0, 0]\ncallback state: UP\ncallback address: \"10.100.99.2:0\"\nadmin-revoked states: 0\nsession slots: 64\nsession target slots: 64\n",
+            "matching_states": [],
+            "open_count": 10354
+          }
+        },
+        "host": "dl380g10",
+        "kernel": "7.0.0-38-generic",
+        "prefix": "PRI-46-lifecycle-r1c-1-current",
+        "unix": 1792963200.8005302
+      },
+      "states_before": 0,
+      "states_after": 13,
+      "close_errors_added": 13,
+      "verification": {
+        "complete": true,
+        "timed_out": [],
+        "unavailable": [],
+        "log_bytes_match": true,
+        "claim_sha256": "649ea51c8be8cd66ee4ec798d0dcbc097b872c28ea8af86240073c848b7b56fd",
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "payload": {
+          "bytes": 23184,
+          "present": true,
+          "sha256": "30462ccab9a60214364397964f66ae0834f852363e8773a2b754a2cc77ed192b"
+        },
+        "attestation_verified": null
+      }
+    }
+  ]
+}
