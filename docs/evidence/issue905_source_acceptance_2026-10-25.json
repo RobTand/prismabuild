@@ -1,0 +1,71 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "b658e0912c34cf5899c5c65255ce793bcf8b06bc",
+  "ledger_commit": "b658e0912c34cf5899c5c65255ce793bcf8b06bc",
+  "scope": [
+    "INV-01",
+    "ID-08"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "status": "held-for-phase0-and-principal-review",
+    "branch": "prismabuild-905",
+    "issue": "https://github.com/RobTand/prismabuild/issues/905",
+    "source_commit": "95a0e25f8d6e604559ec27adb72ded4464a4746f",
+    "validated_repairs": [
+      {
+        "id": "INV-01",
+        "actions": [
+          "dfca3a69739b1c6bd4f532851af508e02091102aa6cf9f59784c548899ceabf0",
+          "92593d87cf6232fec8e7339d439f695a25b511665761d58c0f568e8d17492ad4",
+          "732074322924d03ff5607fe820780b66eb94370be38bb894147e37b057bb05dc",
+          "867d0b0731df531c9247392cba0f5b03e4b6649133057068092f9358dac366ad",
+          "ccb497ab0c06b41ad0df62ce6d1f66162983dd0e7ee8fdc69372282b328f1fc0",
+          "46cafcac3b9ab3a626bfe31e7a3d760fd032a705933a6c9db7903acaf1a5551e",
+          "c2878c6f8b203efcd1cb6fb2abee4598b949a87e81e4be5f21059a983240f57e",
+          "3e77e8f403b2d7ab1e6b43a5eb4a5c5f3911b131a737ef1293362f218bd42a22",
+          "43ae58d2f82d57d76ab4034ed8b2193e1cd8131b1549d99740f1efd6555d1a4e",
+          "4ca3b11e97dab0beb84721bb29425b4da7158986a996725ac1b96f737e0fada0",
+          "eb482ec93b29ba80eb837e63ad6354ea4b47311f21c2a80b4af4dde98c6b38dd",
+          "6ae9836f673dde55349a7ca7591b3ac000c9f9d98250c914f5c9f4031dcda349"
+        ],
+        "outcome": "215 passed, zero skips across 12 completed fleet shards; terminal/log/receipt/payload and exact tested source bytes verified.",
+        "evidence": "docs/evidence/issue905_component_runs_2026-10-25.json"
+      }
+    ],
+    "remaining_gaps": [
+      "#905 Phase 0: real application producer interleaves paced/unpaced exports with overlapping mover reads. Results must be posted to #905 and pass its criterion before merge.",
+      "Principal Engineer standards/spec and independent Opus review are still required. Agent pre-review is not D52 approval.",
+      "#1324 changes only the declared roster; no live once-census comparison, roster publication, role restart or soak was performed.",
+      "INV-01 whole-lifetime conformance remains partial; BUD-01, PO-01/PO-06 and staged-only campaign acceptance retain their existing gaps.",
+      "ID-08: the tests ran candidate source under a published executor. The candidate defaults were not deployed."
+    ],
+    "note": "This is a draft source-qualification record, not permission to merge. No runtime generation or service was published or restarted. No issue is closed. CAS publication/readback does not prove power-loss durability."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirements": {
+    "INV-01": {
+      "target": "Produced-output obligations and export bandwidth share the ordinary host/tier admission budgets.",
+      "implemented": "Branch source normalizes declared spool bounds to host accounting and paced exports; roster enables joint-fit/fence/relief output windows. Owed output commitment accounting was already implemented on the base.",
+      "validated": "Scoped component checks only; both positive and refusal paths covered in named PB runs.",
+      "deployed": "No candidate deployment in this unit.",
+      "workload_proven": "No Phase 0 real-producer A/B; no campaign claim."
+    },
+    "ID-08": {
+      "target": "Attribute behavior to the actual runtime generation and executing source.",
+      "implemented": "Existing snapshot and runtime records retained; no runtime identity contract change.",
+      "validated": "Evidence names generation 9dce28460e76-1792959923-b5904f02524e, candidate snapshot, receipt hashes and source-byte equality.",
+      "deployed": "Published executor is the observed generation; candidate source defaults are not deployed.",
+      "workload_proven": "Component execution only."
+    }
+  }
+}

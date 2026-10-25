@@ -401,6 +401,12 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_source_defaults_905": {
+    "acceptance_record": "docs/evidence/issue905_source_acceptance_2026-10-25.json",
+    "source_commit": "95a0e25f8d6e604559ec27adb72ded4464a4746f",
+    "status": "branch-component-validated-merge-held",
+    "note": "Scoped defaults only. Existing whole-requirement axes unchanged. Phase 0 A/B and Principal review still required; no candidate deployment or workload proof."
    }
   },
   {
@@ -853,6 +859,12 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_source_defaults_905": {
+    "acceptance_record": "docs/evidence/issue905_source_acceptance_2026-10-25.json",
+    "source_commit": "95a0e25f8d6e604559ec27adb72ded4464a4746f",
+    "status": "branch-component-validated-merge-held",
+    "note": "Scoped defaults only. Existing whole-requirement axes unchanged. Phase 0 A/B and Principal review still required; no candidate deployment or workload proof."
    }
   },
   {
