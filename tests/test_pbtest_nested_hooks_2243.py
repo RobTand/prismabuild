@@ -1,3 +1,4 @@
+Paperclip: GitHub capability_missing; continuing without managed credentials.
 """Nested dispatch and dead xdist workers retain individual test outcomes."""
 import pytest
 
@@ -5,72 +6,62 @@ from test_pbtest_record_phases_1842 import run_suite
 from test_pbtest_reconciles_outcomes import outcomes
 
 
-# Inject an unmatched entry through the recorder's monitor callback.
-# Ordinary nesting is balanced; this models the reported stack drift
-# without relying on a race or a particular third-party plugin.
-DRIFT_MONITOR = '''
+# Hold a real receiver-thread dispatch open while the controller dispatches.
+THREAD_HOLDER = '''
+import threading
 import pytest
 
-def pytest_configure(config):
-    if hasattr(config, "workerinput"):
-        return
-    manager = config.pluginmanager
-    monitor = manager._inner_hookexec
-    before = next(cell.cell_contents for cell in monitor.__closure__
-                  if callable(cell.cell_contents)
-                  and getattr(cell.cell_contents, "__name__", "") == "before_hook")
-    config._pb2243_before = before
-    config._pb2243_after = next(cell.cell_contents for cell in monitor.__closure__
-                  if callable(cell.cell_contents)
-                  and getattr(cell.cell_contents, "__name__", "") == "after_hook")
+_entered = threading.Event()
+_release = threading.Event()
+_thread = None
+_errors = []
 
-@pytest.hookimpl(trylast=True)
-def pytest_runtest_logreport(report):
-    if TRIGGER:
-        config._pb2243_before("pytest_plugin_registered", [], {})
+@pytest.hookimpl(tryfirst=True)
+def pytest_report_from_serializable(config, data):
+    if data == "pb2243":
+        _entered.set()
+        assert _release.wait(10), "controller did not release receiver hook"
+        return object()
 
-def pytest_sessionstart(session):
-    global config
-    config = session.config
+def hold(config):
+    global _thread
+    def dispatch():
+        try:
+            config.hook.pytest_report_from_serializable(config=config, data="pb2243")
+        except BaseException as error:
+            _errors.append(error)
+    _thread = threading.Thread(target=dispatch)
+    _thread.start()
+    assert _entered.wait(10), "receiver hook did not enter"
+
+def release():
+    _release.set()
+    if _thread is not None:
+        _thread.join(10)
+        assert not _thread.is_alive(), "receiver hook did not return"
+    assert not _errors, _errors
+
+def pytest_unconfigure(config):
+    release()
 '''
 
 
-@pytest.mark.parametrize("drift", [False, True], ids=["balanced", "misaligned"])
-def test_nested_logreport_inside_tracked_hook(tmp_path, drift):
-    # Pytest itself dispatches setup/call/teardown reports beneath the real
-    # runtestloop and runtest_protocol hooks. Observe that nesting without
-    # manufacturing reports or calling a pytest hook dispatcher from conftest.
-    plugin = DRIFT_MONITOR.replace(
-        "TRIGGER", 'report.when == "setup"' if drift else "False")
-    run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n", conftest=plugin + '''
-parents = []
-seen = []
+def test_report_returns_while_other_thread_is_inside_a_hook(tmp_path):
+    run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n",
+                                conftest=THREAD_HOLDER + '''
+def pytest_configure(config):
+    pytest_runtest_logreport.config = config
 
-@pytest.hookimpl(specname="pytest_runtest_logreport", tryfirst=True)
-def pytest_observe_report_stack(report):
-    before = config._pb2243_before
-    cells = dict(zip(before.__code__.co_freevars, before.__closure__))
-    stack = cells["hook_calls"].cell_contents
-    assert stack[-1]["name"] == "pytest_runtest_logreport"
-    assert stack[-1]["kwargs"]["report"] is report
-    assert any(call["name"] == "pytest_runtestloop" and call["phase"]
-               for call in stack[:-1])
-    if seen:
-        # The prior report and any injected stale entry must have gone away,
-        # while the genuine ancestors must still be the same entries.
-        assert len(stack) == len(parents) + 1
-        assert all(call is parent for call, parent in zip(stack[:-1], parents))
-    else:
-        parents.extend(stack[:-1])
-    seen.append(report.when)
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logreport(report):
+    if report.when == "setup":
+        hold(pytest_runtest_logreport.config)
 
-def pytest_sessionfinish(session, exitstatus):
-    assert seen == ["setup", "call", "teardown"]
-    print("native nested report stack preserved", flush=True)
+def pytest_runtest_logfinish(nodeid, location):
+    release()
 ''')
-    assert run.returncode == 0, run.stdout + run.stderr
-    assert "native nested report stack preserved" in run.stdout, run.stdout
     assert "INTERNALERROR" not in run.stdout, run.stdout
+    assert run.returncode == 0, run.stdout + run.stderr
     assert verdict["green"], verdict
     assert verdict["shards"][0]["completion"]["status"] == "complete", verdict
     record = outcomes.parse(run.stdout, record_binding=1)
@@ -78,8 +69,34 @@ def pytest_sessionfinish(session, exitstatus):
         ["test_one.py::test_pass", "call", "passed"]]
 
 
-@pytest.mark.parametrize("drift", [False, True], ids=["balanced", "misaligned"])
-def test_killed_xdist_worker_records_synthetic_failure(tmp_path, drift):
+def test_adapter_dispatch_while_other_thread_is_inside_a_hook(tmp_path):
+    run, _, verdict = run_suite(tmp_path, '''
+def test_keep():
+    pass
+
+def test_drop():
+    pass
+''', conftest=THREAD_HOLDER + '''
+def pytest_collection_modifyitems(config, items):
+    drop = [item for item in items if item.name == "test_drop"]
+    items[:] = [item for item in items if item.name != "test_drop"]
+    config.hook.pytest_deselected(items=drop)
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_deselected(items):
+    hold(items[0].config)
+
+def pytest_collection_finish(session):
+    release()
+''')
+    assert "INTERNALERROR" not in run.stdout, run.stdout
+    assert run.returncode == 0, run.stdout + run.stderr
+    record = outcomes.parse(run.stdout, record_binding=1)
+    assert record["deselected"] == ["test_one.py::test_drop"], record
+    assert verdict["green"], verdict
+
+
+def test_killed_xdist_worker_records_synthetic_failure(tmp_path):
     pytest.importorskip("xdist")
     run, _, verdict = run_suite(tmp_path, '''
 import os
@@ -93,8 +110,7 @@ def test_crash():
 
 def test_after():
     pass
-''', conftest=(DRIFT_MONITOR.replace("TRIGGER", 'report.when == "???"')
-              if drift else None), extra=("-n", "1", "--max-worker-restart=1"))
+''', extra=("-n", "1", "--max-worker-restart=1"))
     assert run.returncode == 1, run.stdout + run.stderr
     assert "INTERNALERROR" not in run.stdout, run.stdout
     assert "1 failed, 2 passed" in run.stdout, run.stdout
@@ -121,7 +137,20 @@ def test_after():
 
 @pytest.mark.parametrize("damage", ["unmatched_return", "empty_stack"])
 def test_unmatched_monitor_return_cannot_consume_another_phase(tmp_path, damage):
-    plugin = DRIFT_MONITOR.replace("TRIGGER", "False")
+    plugin = '''
+import pytest
+
+def pytest_configure(config):
+    monitor = config.pluginmanager._inner_hookexec
+    callbacks = {cell.cell_contents.__name__: cell.cell_contents
+                 for cell in monitor.__closure__ if callable(cell.cell_contents)}
+    config._pb2243_before = callbacks["before_hook"]
+    config._pb2243_after = callbacks["after_hook"]
+
+def pytest_sessionstart(session):
+    global config
+    config = session.config
+'''
     if damage == "unmatched_return":
         plugin += '''
 from pluggy import Result
@@ -135,7 +164,11 @@ def pytest_runtest_logreport(report):
     if report.when == "call":
         before = config._pb2243_before
         cells = dict(zip(before.__code__.co_freevars, before.__closure__))
-        cells["hook_calls"].cell_contents.clear()
+        if "hook_calls" in cells:
+            stack = cells["hook_calls"].cell_contents
+        else:
+            stack = cells["thread_calls"].cell_contents()
+        stack.clear()
 '''
     run, _, verdict = run_suite(tmp_path, "def test_pass():\n    pass\n", conftest=plugin)
     assert run.returncode == 0, run.stdout + run.stderr
