@@ -617,7 +617,9 @@ _SLURM_ENV = {
 
 def _no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pb, "SCONTROL_RETRY_DELAYS_S", (0.0, 0.0, 0.0))
-    monkeypatch.setattr(pb.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(pb, "time", SimpleNamespace(**{
+        **vars(pb.time), "sleep": lambda _s: None,
+    }))
     monkeypatch.setattr(
         pb, "_slurm_job_from_cgroup", lambda: ("77", "/slurm/job_77/step_batch")
     )

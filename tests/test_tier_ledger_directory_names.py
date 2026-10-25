@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -192,8 +193,11 @@ def test_warmup_keeps_the_reader_and_mutations_on_the_same_clock(ledger, monkeyp
 
     monkeypatch.setattr(os, "stat", partial(observe, os.stat))
     monkeypatch.setattr(os, "lstat", partial(observe, os.lstat))
-    monkeypatch.setattr(time, "clock_gettime_ns", clock)
-    monkeypatch.setattr(time, "sleep", next_tick)
+    observed_time = SimpleNamespace(**{
+        **vars(time), "clock_gettime_ns": clock, "sleep": next_tick,
+    })
+    monkeypatch.setattr(sys.modules[__name__], "time", observed_time)
+    monkeypatch.setattr(kept_reads, "time", observed_time)
     _settle(held)
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
@@ -233,7 +237,9 @@ def test_a_same_tick_listing_does_not_hide_a_token_transition(
         return tick if clock_id == kept_reads._COARSE_REALTIME else real_clock(clock_id)
 
     monkeypatch.setattr(os, "lstat", lstat)
-    monkeypatch.setattr(time, "clock_gettime_ns", clock)
+    observed_time = SimpleNamespace(**{**vars(time), "clock_gettime_ns": clock})
+    monkeypatch.setattr(sys.modules[__name__], "time", observed_time)
+    monkeypatch.setattr(kept_reads, "time", observed_time)
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
         if change == "add":
