@@ -17799,11 +17799,7 @@ explicit `paced=False` remain unchanged.
 **Replay.** A previously sealed export keeps its original demand and command,
 even if its price disappears or the caller changes the requested mode.
 Replay does not reprice or retroactively reject either paced or unpaced
-requests. The source defaults remain subject to the
-[#905 Phase 0 real-producer A/B merge gate](https://github.com/RobTand/prismabuild/issues/905#issuecomment-5879376101).
-Component tests establish neither that measurement nor deployment or complete
-#747 acceptance. The scoped record is
-[`issue905_source_acceptance_2026-10-25.json`](evidence/issue905_source_acceptance_2026-10-25.json).
+requests.
 
 **Publish attribution.** The #595 gate refuses tier demand that carries no
 residency block or produced-output template, because such demand names bytes
@@ -17907,10 +17903,8 @@ the owed window whatever the switch says (#905). Any other value of the variable
 loop at start. The supervisor restarts a role whose argv differs from its
 declaration, and a role inherits the supervisor's environment, so the switch
 is the `tiers` role's arguments in `tools/fleet/fleet_boxes.json`.
-The roster now declares `--output-windows` for dl380g10, the only tier-role
-host. The parser and environment defaults remain off. This source change
-is held by the same #905 Phase 0 merge gate as paced submission sealing;
-it records no live roster publication, role restart, soak or A/B acceptance.
+The roster declares `--output-windows` for dl380g10, the only tier-role
+host. The parser and environment defaults remain off.
 The window, not the template's `minimum_gib`, is the charge:
 `refill_window` treats a top-up as optional once holdings reach the minimum,
 so the window over-counts the room a producer strictly needs, and it errs
