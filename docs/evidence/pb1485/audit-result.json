@@ -1,0 +1,40 @@
+{
+  "custody_files_verified": 15,
+  "direct_url": {
+    "url": "file:///home/rob/tmp/prismabuild-checkouts/2617cf36f98c.20s8bplo/checkout",
+    "vcs_info": {
+      "commit_id": "027103d9a8417e06c7f13356e58779a313cd7088",
+      "requested_revision": "027103d9a8417e06c7f13356e58779a313cd7088",
+      "vcs": "git"
+    }
+  },
+  "export_action": "2617cf36f98ca20c608cd6003d8960077099a723a7c8f37809caaf0facc5c438",
+  "export_receipt_identity": "af9f98e66fa89ca3f82439ec9d306506930d6bb86c2015169e7a8804bc38a8cf",
+  "export_receipt_raw": {
+    "bytes": 2073,
+    "sha256": "1f6325714243aeca47038af0b19df6d460b57388b8a0d1d862eb87be100876cf"
+  },
+  "export_result": {
+    "bytes": 4372,
+    "sha256": "15398fef669ff483a88dfbb2ea859853b10c9fff46a2938718fb6cfb3f44e9b0"
+  },
+  "export_returncode": 0,
+  "export_terminal_status": "executed",
+  "exported_install_record_rows": 88,
+  "exported_install_record_rows_verified_against_source_or_metadata": 40,
+  "helper_root": "/mnt/shared/prismabuild-fleet/qualification/pq-pb-sdk5-20261009/027103d9a8417e06c7f13356e58779a313cd7088",
+  "helper_tracked_files_verified": 1194,
+  "schema": "prismabuild.pb1485.retained_audit.v1",
+  "scope": "Static authentication of retained bytes and CAS linkage only. No install, import, producer replay, ARM portability, live helper adoption or GPU qualification.",
+  "source_archive_recomputed": {
+    "bytes": 23685120,
+    "sha256": "94727274fd0515c5f1ee7c031c90c1106793ef22b38b286caf44f1755675677d"
+  },
+  "source_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+  "supplier_root": "/mnt/shared/prismabuild-fleet/qualification/pb1485-sdk5-027103d9-20261004",
+  "wheel": {
+    "bytes": 1104571,
+    "sha256": "9619e58d2be40ccd74a01d79847d73d5d643ffe770dc3a5f88c1029582832c55"
+  },
+  "wheel_package_files_verified": 39
+}
