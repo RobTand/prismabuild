@@ -1,5 +1,13 @@
 # Checkout-recovery snapshot attribution (#2043 / #2044)
 
+## Follow-up on 2026-10-25
+
+The [current-fleet report](measurements/1711-current-fleet-2026-10-25.md) recovers
+and authenticates the original `full.json` and all seven tracebacks. It supersedes
+the missing-report and missing-traceback statements below. Original pytest output
+still truncates the changed queue leaves, so historical writer attribution remains
+unproved. A fresh x86 run passes 279 tests and skips 18 native-positive proofs.
+
 ## Disposition and evidence boundary
 
 W1 remains unresolved: none of the seven historical failures can be attributed to a specific changed leaf or writer from the available assertion evidence. This report preserves the bounded unresolved inventory; it does **not** claim historical attribution acceptance. W2 changes only preservation reporting in the contract helpers. Fresh passing tests qualify the current tree, not the historical cause.
