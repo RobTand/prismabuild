@@ -2214,6 +2214,24 @@ Passing `--timeout-s` explicitly is still honoured whatever it says, capped
 only by the real announced ceiling, exactly as before.
 `pbtest` prints the deadline it sealed and the ceilings it read.
 
+`pbtest` packs by recorded durations automatically after a completed green run
+for the same resolved checkout and requested paths (#2286). It retains the
+latest report under `$XDG_STATE_HOME/prismabuild/pbtest-history-v1`, defaulting to
+`~/.local/state`; this works without `--json`. A failed or incomplete run leaves
+that history intact. Cache read/write failures warn and do not change the test
+verdict. `--history REPORT` overrides automatic lookup and remains repeatable.
+A first run without usable history rotates files round-robin.
+
+A file predicted above its capability cohort's per-shard target splits into
+node groups across shards. The group count, index and duration model are sealed
+before submission. Current pytest collection determines the current nodes,
+including new parameter cases, and preserves directory ignore hooks and
+population options. Groups balance recorded node durations when present and
+otherwise rotate sorted node IDs. The report's optional `node_groups` records
+the assignment; each shard prints predicted against pytest seconds. Coverage
+verification requires a complete, consistent group cover and every selected
+node exactly once. An individual test remains the minimum executable unit.
+
 `pbtest` reads every shard's output while the shard runs and prints each
 `pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
 `queued` line with the shard's action key, and the notices of a wait that is
