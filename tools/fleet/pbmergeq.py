@@ -501,6 +501,10 @@ class GitHub:
             self.store.record(mark)
         return ok
 
+    def head_moved(self, number: int, sha: str) -> bool:
+        return self.comment(f"approval-{sha}", number, "head-moved",
+                            "head moved after approval; re-review and enqueue the new SHA")
+
     def merge(self, batch: str, number: int, sha: str) -> bool:
         if self.dry:
             raise RuntimeError("a dry run never merges")
@@ -1120,8 +1124,7 @@ class Queue:
             why = eligibility(pr, self.cfg)
             if why is None and entry.get("sha") and entry["sha"] != pr["headRefOid"]:
                 why = f"head {pr['headRefOid'][:8]} is not the enqueued {entry['sha'][:8]}"
-                self.github.comment(f"approval-{entry['sha']}", entry["pr"], "head-moved",
-                                    "head moved after approval; re-review and enqueue the new SHA")
+                self.github.head_moved(entry["pr"], entry["sha"])
             if why:
                 skipped.append({**entry, "why": why})
             else:
@@ -1417,8 +1420,8 @@ class Queue:
         moved = []
         for p in batch["included"]:
             if self.github.pr(p["pr"])["headRefOid"] != p["sha"]:
-                self.github.comment(f"approval-{p['sha']}", p["pr"], "head-moved",
-                                    "head moved after approval; re-review and enqueue the new SHA")
+                if not self.github.head_moved(p["pr"], p["sha"]):
+                    return {"verdict": "waiting", "summary": "head-moved comment refused"}
                 moved.append(p["pr"])
         if moved:
             if not self.github.close_vehicle(batch["id"], vehicle["number"]):
@@ -1472,15 +1475,32 @@ class Queue:
         vehicle = batch["vehicle"]
         if self.github.pr(vehicle["number"])["state"] != "MERGED":
             return {"verdict": "waiting", "summary": "waiting for vehicle MERGED"}
-        for p in batch["included"]:
-            if self.github.pr(p["pr"])["state"] != "MERGED":
-                return {"verdict": "waiting", "summary": f"waiting for member #{p['pr']} MERGED"}
-            key = {"kind": "merge", "pr": p["pr"], "sha": p["sha"], "batch": batch["id"]}
-            if not self.store.recorded(**key):
-                self.store.record({**key, "vehicle": vehicle["number"]})
         key = {"kind": "merge", "pr": vehicle["number"], "sha": batch["candidate"]}
         if not self.store.recorded(**key):
             self.store.record({**key, "batch": batch["id"], "note": "reconciled vehicle"})
+        moved, waiting = [], []
+        for p in batch["included"]:
+            member = self.github.pr(p["pr"])
+            if member["headRefOid"] != p["sha"]:
+                if not self.github.head_moved(p["pr"], p["sha"]):
+                    return {"verdict": "waiting", "summary": "head-moved comment refused"}
+                key = {"kind": "member-head-moved", "pr": p["pr"], "sha": p["sha"],
+                       "batch": batch["id"]}
+                if not self.store.recorded(**key):
+                    self.store.record({**key, "head": member["headRefOid"],
+                                       "vehicle": vehicle["number"]})
+                moved.append(p["pr"])
+            elif member["state"] != "MERGED":
+                waiting.append(p["pr"])
+            else:
+                key = {"kind": "merge", "pr": p["pr"], "sha": p["sha"], "batch": batch["id"]}
+                if not self.store.recorded(**key):
+                    self.store.record({**key, "vehicle": vehicle["number"]})
+        if waiting:
+            return {"verdict": "waiting", "summary": f"waiting for members {waiting} MERGED"}
+        if moved:
+            return {"verdict": "merged-head-moved", "summary":
+                    f"vehicle #{vehicle['number']} merged; members {moved} require re-review"}
         head = self.mirror.remote_base()
         fetched = self.mirror.git("fetch", "-q", self.cfg.fetch_url, head, check=False)
         tree = self.mirror.tree(head) if fetched.returncode == 0 else ""

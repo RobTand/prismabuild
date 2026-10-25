@@ -18905,7 +18905,10 @@ on that candidate and merges only the vehicle with a matching head constraint.
 Strict branch protection is the final base compare-and-swap. A moved base closes
 the vehicle and requeues members uncharged. Member states must each reach MERGED
 before batch completion. Waiting for checks, GitHub acknowledgement or member
-state propagation preserves the batch. Unobserved fleet shards requeue uncharged
+state propagation preserves the batch. A member push during the final vehicle
+merge race receives the re-review notice and a distinct `member-head-moved`
+ledger fact. After confirming unchanged members, `merged-head-moved` releases
+the queue without claiming MERGED for the changed PR. Unobserved fleet shards requeue uncharged
 with the existing backoff; no missing observation becomes a code verdict.
 
 The PrismaBuild config uses `pb-tests`, author RobTand, celestia-local state,

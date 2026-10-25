@@ -37,7 +37,11 @@ sharding and placement.
    protection supplies the final base check. If main moves, close the vehicle
    and requeue all members uncharged. Confirm each member is `MERGED` before
    recording completion. A moved member head closes the open vehicle and
-   requests review; other members requeue uncharged.
+   requests review; other members requeue uncharged. If a head moves during the
+   final merge race, the vehicle remains a verified merge but that member gets
+   a `member-head-moved` ledger record and the re-review comment. The batch
+   ends as `merged-head-moved` once unchanged members are confirmed. It never
+   claims the moved PR is MERGED or silently adopts its new head.
 6. Red: bisect over batch prefixes, re-running only the newly failing files.
    The first failing prefix names the culprit, which gets `failure` with the
    node IDs and a comment. The other pull requests are re-queued at the front.
