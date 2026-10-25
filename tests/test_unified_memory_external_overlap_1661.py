@@ -66,3 +66,41 @@ def test_unclassifiable_sample_cannot_reuse_clear_evidence_in_a_claim(fleet, fau
     assert claimed is None
     assert queue.ledger().held_keys() == []
     assert denial(key)["reason"] == "unified_gpu_memory_unknown"
+
+
+def test_resident_bytes_above_the_reservation_are_not_credited():
+    job_a = {"complete": True, "host_bytes": 30 << 30, "budget_bytes": 40 << 30,
+             "memory_domain": "shared_system", "gpu_lower_bound_bytes": 40 << 30}
+    seen = box_capacity.observe(
+        {"cpu": 8, "gpu": 1, "mem_gb": 120}, {"mem_gb": 80},
+        gpu_sample=unified_sample(jobs=[job_a], available=54),
+        mem_gb=54, load1=0, now=100.0)
+
+    assert seen.capacity["mem_gb"] <= 86
+    assert seen.unified_memory.resident_bytes == 40 << 30
+
+
+def test_overrunning_resident_scope_denies_a_new_pool_commitment(fleet):
+    queue, _clock, _readings, sample, publish, _tick, *_rest, denial = fleet
+    capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
+    ledger = queue.ledger()
+    ledger.ensure_capacity(capacity)
+    assert ledger.acquire("a" * 64, {"mem_gb": 40})
+    assert ledger.acquire("c" * 64, {"mem_gb": 40})
+    sample.update(host_total_bytes=128 << 30, host_available_bytes=54 << 30,
+                  cpu_pressure_full=0.0, jobs=[{
+                      "complete": True, "host_bytes": 30 << 30,
+                      "budget_bytes": 40 << 30, "memory_domain": "shared_system",
+                      "gpu_lower_bound_bytes": 40 << 30}])
+    key = publish("overrunning-resident-scope", gpu=0, mem_gb=8, tags=["gb10"])
+
+    claimed = queue.claim(
+        capacity=capacity, has_gpu=True, tags=["gb10", "sparklina"],
+        gpu_sampler=lambda: sample)
+
+    assert claimed is None
+    assert ledger.held()["mem_gb"] == 80
+    decision = denial(key)["evidence"]["decision"]
+    assert decision["reason"] == "unified_gpu_memory_budget"
+    assert decision["mem_ceiling_gib"] == 86
+    assert decision["pb_resident_bytes"] == 40 << 30
