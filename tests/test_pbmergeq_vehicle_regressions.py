@@ -336,3 +336,27 @@ def test_restart_converts_an_existing_status_vehicle_to_draft_before_success(
     assert next(iter(origin.vehicles.values()))["state"] == "CLOSED"
     assert runner.runs == completed
     assert len(origin.vehicle_creations) == 1
+
+
+def test_expired_green_allowance_takes_precedence_over_exception_backoff(
+        tmp_path, monkeypatch, issue_api):
+    clock = [1000.0]
+    monkeypatch.setattr(mq.time, "time", lambda: clock[0])
+    queue, origin, github, runner = make_queue(tmp_path, mode="merge")
+    queue.cfg = mq.dataclasses.replace(queue.cfg, green_wait_s=1, stuck_backoff_s=600)
+    origin.pr(1, {"one.txt": "1\n"})
+
+    def unavailable(*args):
+        raise RuntimeError("GitHub unavailable after push")
+
+    monkeypatch.setattr(github, "find_vehicle", unavailable)
+    pending = queue.run_batch(entries(github, 1))
+    assert pending["verdict"] == "waiting"
+    completed = list(runner.runs)
+    clock[0] += 2
+
+    ended = queue.tick()
+
+    assert ended is not None and ended["verdict"] == "green-timeout"
+    assert queue.store.state["batch"] is None
+    assert runner.runs == completed
