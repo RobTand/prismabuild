@@ -34,7 +34,7 @@ def calls(requests):
     return [replies[i] for i in range(2, 2 + len(requests))]
 
 
-def inspect_action(key, expected):
+def inspect_action(key, expected, expected_tree):
     action, = calls([("pb_action", {"key_prefix": key})])
     log, = calls([("pb_log", {"key_prefix": key, "tail_lines": 2 * 1024 * 1024})])
     lines = (log.get("log") or {}).get("lines", [])
@@ -97,17 +97,37 @@ def inspect_action(key, expected):
     ]) if claims else []
     if summary["receipt"] and summary["receipt"].get("present"):
         verify = subprocess.run(["/usr/bin/python3", "-c", """
-import json, sys
+import json, re, subprocess, sys, tempfile
 sys.path.insert(0, '/mnt/shared/prismabuild-fleet/repo/src')
 from prismabuild.core import PrismaBuildCAS
 cas = PrismaBuildCAS('/mnt/shared/prismabuild-fleet/cas')
 receipt = cas.lookup(cas.read_action_request(sys.argv[1]))
 if receipt is None:
     raise RuntimeError('receipt disappeared')
+snapshot = json.loads(sys.argv[2])
+bundle = cas.input_path(snapshot['input'])
+with tempfile.TemporaryDirectory(prefix='pri19-source-proof-') as directory:
+    git = ['/usr/bin/git', '-C', directory]
+    subprocess.run(git + ['init', '--bare', '-q'], check=True)
+    subprocess.run(git + ['fetch', '-q', str(bundle), snapshot['commit']], check=True)
+    source_tree = subprocess.check_output(
+        git + ['rev-parse', snapshot['parent'] + '^{tree}'], text=True).strip()
+    if source_tree != sys.argv[3]:
+        raise RuntimeError('sealed checkout parent differs from candidate tree')
+    changes = subprocess.check_output(git + [
+        'diff', '--name-status', snapshot['parent'], snapshot['commit']], text=True).splitlines()
+    if any(not re.fullmatch(r'A\t[.]pbrun-closure[.][0-9a-f]{16}[.]json', line)
+           for line in changes):
+        raise RuntimeError('sealed checkout changes candidate source: ' + repr(changes))
 print(json.dumps({'action_key': receipt['action_key'],
                   'receipt_sha256': receipt['receipt_sha256'],
-                  'result': receipt['result']}))
-""", key], capture_output=True, text=True, timeout=30, check=True)
+                  'result': receipt['result'],
+                  'source_snapshot': {'bundle_sha256': snapshot['input']['sha256'],
+                                      'candidate_tree': source_tree,
+                                      'snapshot_changes': changes,
+                                      'verified': True}}))
+""", key, json.dumps(summary['snapshot']), expected_tree],
+            capture_output=True, text=True, timeout=60, check=True)
         summary["cas_content_verified"] = json.loads(verify.stdout)
     return summary
 
@@ -118,7 +138,8 @@ def require_passing(result, expected_passes):
     assert not result["unavailable"], result
     assert result["log_complete"] is True and result["log_bytes_match"] is True, result
     assert not result["log_truncated_head"], result
-    assert result["source_hashes_observed"] > 0, result
+    assert result.get("cas_content_verified", {}).get(
+        "source_snapshot", {}).get("verified") is True, result
     assert not result["source_mismatches_vs_candidate"], result
     assert result["runtime_exitstatus"] and all(
         status == 0 for status in result["runtime_exitstatus"]), result
@@ -143,7 +164,9 @@ def main():
     args = parser.parse_args()
     expected = {str(path.relative_to(args.checkout)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in (args.checkout / "tests").glob("*.py")}
-    results = [inspect_action(key, expected) for key in args.keys]
+    expected_tree = subprocess.check_output([
+        '/usr/bin/git', '-C', str(args.checkout), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+    results = [inspect_action(key, expected, expected_tree) for key in args.keys]
     args.output.write_text(json.dumps(results, indent=2) + "\n")
     for result in results:
         require_passing(result, args.expected_passes)
