@@ -203,9 +203,9 @@ def test_gpu_evicts_an_unknown_peer_guest_across_priority_bands(tmp_path, monkey
     gpu_claim = claim()
     assert gpu_claim["action_key"] == gpu_key
     queue.finish(gpu_key, status="executed", detail={"returncode": 0}, claim_snapshot=gpu_claim)
-    retried = claim()
-    assert retried["action_key"] == item["action_key"]
-    assert retried["cpu_guest"] is True and retried["attempts"] == 2
+    assert not queue.ledger("spark").held().get("cpu")
+    assert not queue.ledger("spark").held().get("gpu")
+    assert queue.ready_items()[0]["action_key"] == item["action_key"]
 
 
 def test_generated_pbtest_shard_is_guest_with_unknown_cpu_interpreter(tmp_path, monkeypatch):
@@ -245,4 +245,19 @@ def test_unknown_guest_rechecks_idle_evidence_after_sealed_proof(tmp_path, monke
 
     monkeypatch.setattr(queue, "_guest_restartable", proof)
     result = prepare_interpreter_claim(queue, item, candidate, placement)
+    assert result.reason == "deferred_for_unresolved_cpu_host"
+
+
+def test_unknown_guest_rechecks_gpu_reservations_after_sealed_proof(tmp_path, monkeypatch):
+    queue, item, candidate, placement, _ = interpreter_case(tmp_path, monkeypatch, "unknown")
+    original = queue._guest_restartable
+
+    def proof(record):
+        result = original(record)
+        assert queue.ledger("spark").acquire("e" * 64, {"gpu": 1})
+        return result
+
+    monkeypatch.setattr(queue, "_guest_restartable", proof)
+    result = prepare_interpreter_claim(queue, item, candidate, placement)
+    assert isinstance(result, candidate_policy.CandidateDenial)
     assert result.reason == "deferred_for_unresolved_cpu_host"
