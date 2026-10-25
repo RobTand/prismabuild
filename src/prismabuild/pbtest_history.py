@@ -1,11 +1,12 @@
 """The latest completed pbtest report for each checkout and requested path set."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
+
+from prismabuild.digest_primitives import raw_sha256
 
 
 def _report_path(checkout: Path, paths: list[str]) -> Path:
@@ -13,7 +14,7 @@ def _report_path(checkout: Path, paths: list[str]) -> Path:
     requested = sorted({(root / path).resolve().relative_to(root).as_posix()
                         for path in paths or ["tests"]})
     scope = json.dumps([str(root), requested], separators=(",", ":")).encode()
-    key = hashlib.sha256(scope).hexdigest()
+    key = raw_sha256(scope)
     state = os.environ.get("XDG_STATE_HOME")
     state_root = Path(state) if state and Path(state).is_absolute() else (
         Path.home() / ".local" / "state")

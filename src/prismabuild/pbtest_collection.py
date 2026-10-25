@@ -18,7 +18,8 @@ def encode_selection(spec: dict) -> str:
     """Compress node maps while retaining ordinary selection JSON bytes."""
     if "node_groups" not in spec:
         return json.dumps(spec)
-    raw = json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    from prismabuild.digest_primitives import compact_ascii_json_bytes
+    raw = compact_ascii_json_bytes(spec)
     return SELECTION_ENCODING_PREFIX + base64.b85encode(zlib.compress(raw, 9)).decode("ascii")
 
 
