@@ -257,6 +257,9 @@ def test_terminal_retry_is_saved_before_close_and_recovers_branch_deletion(
     clock[0] += queue.cfg.stuck_backoff_s
     github = FakeGitHub(queue.cfg, store, origin)
     resumed = mq.Queue(queue.cfg, store, github, queue.mirror, runner, "merge")
+    def already_closed(*args):
+        raise AssertionError("a closed vehicle needs branch deletion, not another close")
+    monkeypatch.setattr(github, "close_vehicle", already_closed)
     resumed.cleanup_vehicles()
 
     assert store.state["vehicle_cleanup"] == {}

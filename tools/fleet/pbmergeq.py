@@ -1298,7 +1298,7 @@ class Queue:
                 vehicle = cleanup["vehicle"]
                 found = (self.github.pr(vehicle["number"]) if "number" in vehicle
                          else self.github.find_vehicle(vehicle["branch"]))
-                if found is not None and found["state"] != "MERGED":
+                if found is not None and found["state"] == "OPEN":
                     if not self.github.close_vehicle(bid, found["number"]):
                         raise RuntimeError("vehicle close refused")
                 if not self.mirror.delete_candidate(vehicle["branch"]):
