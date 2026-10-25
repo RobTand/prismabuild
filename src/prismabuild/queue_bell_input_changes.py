@@ -6,10 +6,12 @@ caller remembers the result of its own evaluation before consuming its writes.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import math
 
+from .denial_records import diagnostic_stamp
 from .queue_bell_topics import TOPICS
 
 
@@ -73,9 +75,12 @@ class InputChanges:
 
 def claim_denial_meaning(document):
     """The latest per-publication refusals, without diagnostic pass summaries."""
+    records = document.get("records")
+    if not isinstance(records, Mapping):
+        return {}
     return {identity: {name: value for name, value in record.items()
                        if name != "denied_unix"}
-            for identity, record in document.get("records", {}).items()}
+            for identity, record in records.items() if isinstance(record, Mapping)}
 
 
 def pass_meaning(document):
@@ -105,11 +110,15 @@ def adaptive_meaning(documents):
 
 def denial_transition_meaning(document):
     """Keep refusal history and latest reason while dropping repeat counters."""
-    transitions = document.get("transitions", [])
+    transitions = [record for record in document.get("transitions", [])
+                   if isinstance(record, Mapping)]
     latest = {}
     for record in transitions:
+        if (not isinstance(record.get("host"), str)
+                or not isinstance(record.get("published_unix"), (int, float))):
+            continue
         identity = record["host"], record["published_unix"]
-        stamp = record.get("last_unix", record["unix"])
+        stamp = diagnostic_stamp(record, "last_unix" if "last_unix" in record else "unix")
         previous = latest.get(identity)
         if previous is None or stamp > previous[0]:
             latest[identity] = stamp, record
@@ -117,7 +126,7 @@ def denial_transition_meaning(document):
             "transitions": [{name: value for name, value in record.items()
                              if name not in ("last_unix", "count")}
                             for record in transitions],
-            "latest": sorted((host, publication, record["reason"], record.get("decision_reason"))
+            "latest": sorted((host, publication, record.get("reason"), record.get("decision_reason"))
                              for (host, publication), (_, record) in latest.items())}
 
 
