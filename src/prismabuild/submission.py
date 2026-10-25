@@ -1119,16 +1119,19 @@ def normalize_spool_declaration(variables: dict[str, str]) -> None:
 
     if _SPOOL_MAX_ENV not in variables:
         return
-    switch = variables.get(_SPOOL_WINDOW_ENV, "")
-    if switch == "0":
-        raise SubmissionRefused(
-            f"pbrun: {_SPOOL_MAX_ENV} declares a spool bound, but "
-            f"{_SPOOL_WINDOW_ENV}=0 would not charge it to the host "
-            f"ledger's {_SPOOL_WINDOW_KIND}; a declared spool is accounted "
-            f"by default (#905). Drop the bound to declare no spool, or "
-            f"drop {_SPOOL_WINDOW_ENV}=0.")
-    if switch in ("", "1"):
-        variables[_SPOOL_WINDOW_ENV] = "1"
+    switches = (
+        (_SPOOL_WINDOW_ENV, f"charge it to the host ledger's {_SPOOL_WINDOW_KIND}"),
+    )
+    for name, accounting in switches:
+        switch = variables.get(name, "")
+        if switch == "0":
+            raise SubmissionRefused(
+                f"pbrun: {_SPOOL_MAX_ENV} declares a spool bound, but "
+                f"{name}=0 would not {accounting}; a declared spool is accounted "
+                f"by default (#905). Drop the bound to declare no spool, or "
+                f"drop {name}=0.")
+        if switch in ("", "1"):
+            variables[name] = "1"
 
 
 def spool_window_terms(variables: dict[str, str], *, transport: str) -> dict[str, int]:
