@@ -2411,6 +2411,16 @@ the missing-summary report names `STORAGE EXHAUSTED (ENOSPC: No space left on
 device)` instead of only `NO PYTEST SUMMARY`. Coverage still remains unknown;
 the log alone cannot distinguish exhausted bytes from exhausted inodes.
 
+### Write tests that stay green (#2249)
+
+A shard that fails for timing or ordering reasons blocks work it has nothing
+to do with. Every new or changed test follows the
+[test quality rules](contributing.md#test-quality--rob-2026-10-24-2249). They
+cover determinism, assertions that can fail, and repairing a flaky test. A
+flaky-test fix must pass each touched file five times per architecture through
+`pbtest` before handoff. At least two of those runs use `--workers-per-shard 2`,
+and varied `--pytest-args` keep the result cache from serving them.
+
 ### Choose the project's test environment
 
 `pb-cpu` is the PrismaBuild infrastructure test environment. Its presence on a
