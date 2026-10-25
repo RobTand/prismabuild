@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
-from . import action_client, action_wait, client_channel, endings, contracts, manifest_layout
+from . import action_client, action_wait, client_channel, endings, contracts, manifest_layout, sealed_bundle_cache
 from . import (action_edges, adaptive_gpu, capability_eligibility, container_images,
     core as pb, decomposition as dc, dependency_digest, filesystem_floor, fleet_roster,
     materialize, movement_actions, owned_tree, pool, residency_plan, slurm_lane, storage_tiers,
@@ -717,6 +717,64 @@ def deterministic_bundle_argv(git_dir: Path) -> list[str]:
     ]
 
 
+def _bundle_attribute_inputs(root: Path, prefix: list[str], environment: dict[str, str],
+                             config: str, *, deadline: float | None
+                             ) -> tuple[list[str | None], list[tuple[int, ...] | None]]:
+    """Bind attributes outside the object closure in the private bare sealer."""
+    if (not environment.get("GIT_INDEX_FILE")
+            or any(name in environment for name in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_ATTR_SOURCE",
+                                                    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE"))
+            or any(part.startswith("core.worktree\n") for part in config.split("\0"))
+            or any("\n" in environment.get(name, "") for name in ("HOME", "XDG_CONFIG_HOME"))
+            or any("\n" in part.partition("\n")[2] for part in config.split("\0")
+                   if part.startswith("core.attributesfile\n"))):
+        raise ValueError("noncanonical attribute context")
+    paths = _snapshot_git(root, [*prefix, "rev-parse", "--is-bare-repository",
+        "--git-path", "index", "--git-path", "info/attributes"],
+        environment=environment, deadline=deadline, strip=False).splitlines()
+    if len(paths) != 3 or paths[0] != "true":
+        raise ValueError("cache requires the private bare snapshot index")
+    variables = _snapshot_git(root, [*prefix, "var", "-l"],
+        environment=environment, deadline=deadline, strip=False)
+    attributes = dict(line.split("=", 1) for line in variables.splitlines()
+                      if line.startswith(("GIT_ATTR_GLOBAL=", "GIT_ATTR_SYSTEM=")))
+    if "GIT_ATTR_GLOBAL" not in attributes:
+        raise ValueError("Git cannot identify external attribute files")
+    fingerprints, stamps = [], []
+    for index, raw in enumerate([*paths[1:], attributes["GIT_ATTR_GLOBAL"],
+                                 attributes.get("GIT_ATTR_SYSTEM", "")]):
+        if not raw:
+            fingerprints.append(None)
+            stamps.append(None)
+            continue
+        path = Path(raw)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            if index == 0:
+                raise
+            fingerprints.append(None)
+            stamps.append(None)
+            continue
+        try:
+            before = os.fstat(fd)
+            stamp = (before.st_dev, before.st_ino, before.st_size,
+                     before.st_mtime_ns, before.st_ctime_ns)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > CHECKOUT_SNAPSHOT_MAX_BYTES:
+                raise ValueError("attribute input is not a bounded regular file")
+            fingerprints.append(pb.stream_sha256(Path(f"/proc/self/fd/{fd}")))
+            after = os.fstat(fd)
+            if ((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    != stamp):
+                raise ValueError("attribute input changed while hashing")
+            stamps.append(stamp)
+        finally:
+            os.close(fd)
+    return fingerprints, stamps
+
+
 def write_deterministic_bundle(
     root: Path,
     bundle: Path,
@@ -744,6 +802,10 @@ def write_deterministic_bundle(
             in, without which the sealed commit is not visible.
     """
 
+    environment = dict(environment)
+    git_environment = sorted((key, value) for key, value in environment.items()
+        if key.startswith("GIT_") and key not in {
+            "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"})
     object_format = _snapshot_git(
         root,
         [f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
@@ -760,6 +822,57 @@ def write_deterministic_bundle(
     header += "".join(f"{oid} {name}\n" for name, oid in refs) + "\n"
     tips = "".join(f"{oid}\n" for _, oid in refs)
     argv = deterministic_bundle_argv(git_dir)
+    # The snapshot tip binds the injected stamp, tree, parent and complete
+    # reachable object closure. Paths and object storage layout do not.
+    # A version probe failure only disables this disposable optimization.
+    try:
+        git_version = _snapshot_git(root, ["--version"], environment=environment,
+                                    deadline=deadline)
+        effective_config = _snapshot_git(
+            root, [*argv[1:argv.index("pack-objects")], "config", "--null", "--list"],
+            environment=environment, deadline=deadline)
+        attribute_inputs = (_bundle_attribute_inputs(
+            root, argv[1:argv.index("pack-objects")], environment, effective_config,
+            deadline=deadline) if os.environ.get("PRISMABUILD_BUNDLE_CACHE_ROOT") != "off" else None)
+    except (SubmissionRefused, OSError, ValueError):
+        git_version = ""
+    identity = {
+        "object_format": object_format, "refs": list(refs), "header": header,
+        "tips": tips, "pack_configuration": BUNDLE_PACK_CONFIGURATION,
+        "pack_options": BUNDLE_PACK_OPTIONS, "git_version": git_version,
+        "effective_config": effective_config if git_version else "",
+        "attribute_inputs": attribute_inputs[0] if git_version and attribute_inputs is not None else None,
+        "git_environment": git_environment,
+    }
+
+    def seal() -> None:
+        _write_bundle_pack(root, bundle, header, tips, argv,
+                           environment=environment, deadline=deadline)
+
+    def inputs_unchanged() -> bool:
+        try:
+            prefix = argv[1:argv.index("pack-objects")]
+            return (
+                _snapshot_git(root, ["--version"], environment=environment,
+                              deadline=deadline) == git_version
+                and _snapshot_git(root, [*prefix, "config", "--null", "--list"],
+                                  environment=environment, deadline=deadline) == effective_config
+                and _bundle_attribute_inputs(root, prefix, environment, effective_config,
+                                              deadline=deadline) == attribute_inputs)
+        except (SubmissionRefused, OSError, ValueError):
+            return False
+
+    if git_version:
+        sealed_bundle_cache.seal_bundle_cached(bundle, identity, seal,
+            bounded_wait=deadline is not None, unchanged=inputs_unchanged)
+    else:
+        seal()
+
+
+def _write_bundle_pack(root: Path, bundle: Path, header: str, tips: str,
+                       argv: list[str], *, environment: dict[str, str],
+                       deadline: float | None) -> None:
+    """The original binary-streaming sealer, also used for every cache miss."""
     try:
         with bundle.open("wb") as handle:
             handle.write(header.encode("utf-8"))
@@ -985,7 +1098,7 @@ def snapshot_checkout(
             deadline=deadline,
         )
         bare = temporary / "bundle.git"
-        _snapshot_git(root, ["init", "-q", "--bare", str(bare)], deadline=deadline)
+        _snapshot_git(root, ["init", "-q", "--template=", "--bare", str(bare)], deadline=deadline)
         ref = f"refs/heads/{pb.PBRUN_CHECKOUT_SNAPSHOT_REF_NAME}"
         _snapshot_git(
             root,
@@ -5197,6 +5310,11 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         require_gpu_memory_scope(
             gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
             transport=args.transport,
+        )
+        from ._gpu_submission_policy import _require_gb10_memory_subset
+        _require_gb10_memory_subset(
+            demand=demand, gpu_memory_gb=args.gpu_memory_gb,
+            tags=args.tag or (), host_class=args.host_class,
         )
     except ValueError as exc:
         args.refuse_argument(str(exc))

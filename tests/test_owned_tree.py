@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -100,6 +101,49 @@ def test_an_ended_owner_keeps_its_tree_for_the_window(parent):
     owned_tree.release_owned_tree(parent.fd, "pb-failed00", lock, remove=False)
     assert parent.reap(now=_later(WINDOW_S - 60)) == []
     assert parent.reap(now=_later()) == ["pb-failed00"]
+
+
+def test_replaced_lock_inode_preserves_the_marked_tree_during_a_sweep(parent, monkeypatch):
+    name = "pb-replace0"
+    lock = parent.own(name)
+    owned_tree.start_retention(lock)
+    original_inode = os.fstat(lock).st_ino
+    os.close(lock)
+    tree = parent.path / name
+    marker = tree / "keep.txt"
+    marker.write_text("replacement lock keeps scratch")
+    named_lock = tree / owned_tree.LOCK_NAME
+    _age(named_lock, WINDOW_S + 60)
+    replacement = tree / "replacement.lock"
+    replacement.write_bytes(named_lock.read_bytes())
+    _age(replacement, WINDOW_S + 60)
+    replacement_inode = replacement.stat().st_ino
+    assert replacement_inode != original_inode
+    actual_flock = owned_tree.fcntl.flock
+    swapped = []
+
+    def replace_after_acquisition(descriptor, operation):
+        result = actual_flock(descriptor, operation)
+        if (not swapped and operation == owned_tree.fcntl.LOCK_EX | owned_tree.fcntl.LOCK_NB
+                and os.fstat(descriptor).st_ino == original_inode):
+            os.replace(replacement, named_lock)
+            swapped.append((os.fstat(descriptor).st_ino, named_lock.stat().st_ino))
+        return result
+
+    removal = Mock(wraps=owned_tree.remove_tree)
+    monkeypatch.setattr(owned_tree.fcntl, "flock", replace_after_acquisition)
+    monkeypatch.setattr(owned_tree, "remove_tree", removal)
+    assert parent.reap(now=_later()) == []
+    assert swapped == [(original_inode, replacement_inode)]
+    removal.assert_not_called()
+    assert marker.read_text() == "replacement lock keeps scratch"
+    assert named_lock.stat().st_ino == replacement_inode
+    assert named_lock.read_bytes() == owned_tree._owner_header()
+
+    # The next sweep can acquire and verify the current lock normally.
+    monkeypatch.setattr(owned_tree.fcntl, "flock", actual_flock)
+    assert parent.reap(now=_later()) == [name]
+    assert not tree.exists()
 
 
 def test_a_passing_owner_removes_its_tree_with_read_only_parts(parent):

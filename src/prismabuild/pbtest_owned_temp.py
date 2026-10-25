@@ -15,6 +15,13 @@ exec(compile(_pb_zlib.decompress(_pb_base64.b85decode(@SOURCE@)),
 """
 
 
+ROOTS_PROGRAM = """\
+_pb_temp_roots = {}
+exec(compile(_pb_zlib.decompress(_pb_base64.b85decode(@ROOT_SOURCE@)),
+             "<pbtest scratch roots>", "exec"), _pb_temp_roots)
+"""
+
+
 #: The worker-only source a sealed ``--basetemp`` executes before anything
 #: else (#1469).  The coordinator never runs it and never needs the root to
 #: exist; the worker refuses an unusable root here, before pytest, rather
@@ -81,6 +88,7 @@ _pb_derived = _pb_os.path.join(_pb_attempt_directory, "pytest")
 _pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_NOFOLLOW | _pb_os.O_CLOEXEC
 try:
     _pb_parent = _pb_os.open(_pb_root, _pb_flags)
+    _pb_temp_roots["register_pbtest_root"](_pb_parent, basetemp=True)
     try:
         _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("[0-9a-f]{64}"),
                                           inner=_pb_re.compile("[0-9a-f]{32}"))
@@ -157,6 +165,7 @@ if (_pb_tmpdir and _pb_key and "/" not in _pb_key
     _pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_CLOEXEC
     try:
         _pb_parent = _pb_os.open(_pb_tmpdir, _pb_flags)
+        _pb_temp_roots["register_pbtest_root"](_pb_parent)
         try:
             _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("pb-[a-z0-9_]{8}"))
         except Exception as _pb_exc:

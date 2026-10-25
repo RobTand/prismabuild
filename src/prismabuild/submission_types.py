@@ -158,7 +158,9 @@ ROW_NAMES = {"command": "argv", "tag": "tags", "container_image": "container_ima
 _ROW_CONTROL_FIELDS = frozenset({"withdraw", "release_origin_consumer", "reason", "detach",
     "transport", "progress_policy", "gang_group", "gang_size", "gang_index"})
 _COMMON_CONTROL_FIELDS = _ROW_CONTROL_FIELDS | {
-    "priority", "priority_reason", "as_sealed_by", "after", "supersedes", "produced_output_template"}
+    "priority", "priority_reason", "as_sealed_by", "after", "supersedes", "produced_output_template",
+    # Evidence binds one child identity; only the namespace can be shared.
+    "d38_receipt", "d38_exception"}
 
 
 @dataclass(frozen=True)

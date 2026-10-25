@@ -633,7 +633,7 @@ def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
     }
 
 
-def outcome_summary(q, outcome_path, outcome) -> dict:
+def outcome_summary(q, outcome_path, outcome, *, verify_attempts=True) -> dict:
     """One ending reduced to the fields a caller reports, after verification.
 
     The mutable terminal summary is state-machine output.  Where the record
@@ -643,6 +643,10 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     verifies every canonical path, digest, byte count and generation on the way
     through, and refuses a summary that disagrees with the attempt it adopted.
 
+    Consumer projection may defer attempt verification to the bounded streaming
+    ending reader with verify_attempts=False. It must not claim verification
+    from this summary alone. Legacy callers retain full verification here.
+
     ``transport`` defaults to the pull queue: the SLURM lane stamps its own
     records and the pool's predate the field.
     """
@@ -651,7 +655,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     detail = outcome.get("detail") or {}
     status = str(outcome.get("status"))
     adopted = None
-    if (
+    if verify_attempts and (
         "attempt_history" in outcome
         or "attempt_history_missing_before" in outcome
     ):
@@ -703,15 +707,26 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
                 or any(retained.get(field) != outcome.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
-        stopped = q.attempt_ending(retained)
-        if stopped["status"] != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
+        # The streaming consumer defers reading attempts and logs, not shape
+        # validation: malformed retained metadata must take the per-key refusal
+        # path rather than fail an index/key lookup in the observer's caller.
+        _missing, links = q._attempt_history_links(retained)
+        if not links:
+            raise pool.PoolContractError("a concluded withdrawn attempt has no immutable outcome")
+        if (not isinstance(retained.get("detail"), Mapping)
+                or any(field not in retained for field in ("finished_unix", "finished_host"))):
+            raise pool.PoolContractError("withdrawn attempt summary is malformed")
+        stopped = (q.attempt_ending(retained) if verify_attempts else
+                   {**retained, "attempt": retained.get("attempts"),
+                    "disposition": pool.WITHDRAWN})
+        if stopped.get("status") != pool.WITHDRAWN or stopped["disposition"] != pool.WITHDRAWN:
             raise pool.PoolContractError("withdrawn attempt is not a concluded cancellation")
         for field in ("resource_scope_cleanup", "container_cleanup"):
             if stopped["detail"].get(field) != outcome.get(field):
                 raise pool.PoolContractError("withdrawn cleanup differs from its immutable attempt")
         withdrawn_attempt = {field: stopped[field] for field in
                              ("attempt", "status", "disposition", "finished_unix", "finished_host")}
-        withdrawn_attempt["outcome"] = retained["attempt_history"][-1]["outcome"]
+        withdrawn_attempt["outcome"] = links[-1]["outcome"]
     return {
         "action_key": str(outcome.get("action_key") or ""),
         "status": status,

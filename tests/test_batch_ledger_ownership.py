@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+from history_inputs import source_bytes
 import subprocess
 import sys
 import tempfile
@@ -17,20 +18,12 @@ from prismabuild import pool, produced_output as po
 import test_prepaid_writer_integration as output_fixture
 from test_write_only_produced_output import _descriptor, _prewrite, _queue, _template
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'tests/compat/support'))
-from record_compat import retained
-
-# These three functions are verbatim-identical to the former d2f92f5ff533
-# baseline. Reuse its already-retained source, not the checkout's Git history.
-ORIGINAL_GENERATION = 'a17477b2b206-1791745175-65dffa700dfb'
+BASE = 'd2f92f5ff533489182dddaf286feb54afde6f34a'
 
 
 @pytest.fixture(scope='module')
 def original_records():
-    with retained() as generations:
-        _, root, _ = next(row for row in generations if row[0] == ORIGINAL_GENERATION)
-        source = (root / 'src/prismabuild/produced_output.py').read_text()
+    source = source_bytes(BASE, 'src/prismabuild/produced_output.py').decode('utf-8')
     tree = ast.parse(source)
     names = {'_read_commitments', '_write_commitments', '_class_sums'}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -39,7 +32,7 @@ def original_records():
                      ProducedOutputError=oc.ProducedOutputError,
                      _check_class_bytes=oc.output_class_bytes)
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
-                 ORIGINAL_GENERATION + '/produced_output.py', 'exec'), namespace)
+                 BASE + '/produced_output.py', 'exec'), namespace)
     return namespace
 
 
@@ -49,7 +42,7 @@ def test_original_records_load_without_git_history(monkeypatch):
     monkeypatch.setattr(subprocess, 'Popen', refuse_subprocess)
     records = original_records.__wrapped__()
     for name in ('_read_commitments', '_write_commitments', '_class_sums'):
-        assert records[name].__code__.co_filename == ORIGINAL_GENERATION + '/produced_output.py'
+        assert records[name].__code__.co_filename == BASE + '/produced_output.py'
 
 
 def test_construction_preserves_the_path_and_performs_no_read():

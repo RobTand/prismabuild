@@ -49,9 +49,12 @@ def operate(request, store, load):
     directory.mkdir(mode=0o700)
     checkout.mkdir(mode=0o700)
     bundle = cas.input_path(snapshot["input"])
+    # pb-history-ok: Restores fixture refs from the supplied snapshot bundle in a temporary repository.
     subprocess.run(["git", "clone", "--bare", "--quiet", "--template=", str(bundle), str(checkout / ".git")],
                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # pb-history-ok: Restores fixture refs from the supplied snapshot bundle in a temporary repository.
     git(checkout, "symbolic-ref", "HEAD", "refs/heads/compat")
+    # pb-history-ok: Restores fixture refs from the supplied snapshot bundle in a temporary repository.
     git(checkout, "update-ref", "refs/heads/compat", snapshot["commit"])
     assert git(checkout, "rev-parse", "HEAD") == snapshot["commit"]
     (checkout / "payload").write_bytes(b"retained private dirty bytes")

@@ -1,0 +1,118 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "ID-01",
+    "SC-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2171",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2171",
+    "validated_repairs": [
+      {
+        "id": "ID-01",
+        "actions": [
+          "70d1373ce628322df03643b25c6ae088c69c3844188072ff8fd17fb10e47d589",
+          "b20840b23c68a17a1d5de9955c7cd6c830de5ecf046092e50cd29ee604160868"
+        ],
+        "outcome": "54 collected and passed, zero skipped; terminal records, immutable logs, sealed requests, worker attestations and CAS payload digests verified."
+      }
+    ],
+    "remaining_gaps": [
+      "Principal Engineer independent review and merge remain required.",
+      "Whole staged-read requirement satisfaction, deployment and workload proof remain outside this source optimization; all unknown/proposed ledger axes remain unknown/proposed.",
+      "Full-suite and archival compatibility replay were not rerun for this review revision."
+    ],
+    "note": "Candidate source validation only. No runtime publication, new generation, deployment or service restart."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "target_vs_implemented": {
+    "ID-01": {
+      "target": "Action identity is the content hash of the sealed action.",
+      "implemented": "Existing action hashing unchanged; repeated bundle bytes and action identities still match in the focused tests.",
+      "deployed": "not deployed by this task"
+    },
+    "SC-03": {
+      "target": "Keep target, validation, deployment and workload proof distinct.",
+      "implemented": "This scoped candidate record preserves unrelated proposed and unknown ledger axes.",
+      "deployed": "not claimed"
+    }
+  },
+  "base_commit": "0f71df91645689a5aeb6cf38add07c71bd3ec47b",
+  "reviewed_head": "6677e0365824bff9466ba468d1085f70ad126968",
+  "review": "https://github.com/RobTand/prismabuild/pull/2264#issuecomment-6403399958",
+  "revision": "One hash while copying the pinned cache descriptor; copied length and digest compared before os.replace. Capability, registry and dedicated tests removed; corrupt payload reseal tests retained. Eviction barrier moved to the pinned-descriptor boundary.",
+  "tested_identity": {
+    "snapshot_commit": "7814eade35312aeb341abeddb3a595f8a2ba90a4",
+    "snapshot_parent": "b83970e49d39b34e663e9f6d638856e0d7e27245",
+    "snapshot_sha256": "dd17e73c8bc7b78a8e6201cb4e53d07fe8821d0b655da8eb166958482c94d583",
+    "validated_src_tree": "a9cc2d623192f29ab5f2e1d66baf41d92a154508",
+    "files_sha256": {
+      "src/prismabuild/sealed_bundle_cache.py": "3c119a50313b935e57c98324260b180c1c0b6d1e3f4f5e6d69e27a83b4da93e8",
+      "tests/test_sealed_bundle_cache.py": "4130d9d317972f68750812a6aee3ece10acd053800d35f5741242b433283c6d8",
+      "tests/test_pbrun_bundle_determinism.py": "32e1ffc2a99dc2b54c495f464e8cd3dd1c69b1fe431dd61e1c1a7b781ddfea23"
+    }
+  },
+  "demand": {
+    "cpus_per_shard": 3,
+    "mem_gb_per_shard": 4,
+    "max_clients": 2,
+    "aggregate_cpu_peak": 6,
+    "aggregate_mem_gb_peak": 8,
+    "gpus": 0,
+    "native_threads_per_worker": 1
+  },
+  "tests": [
+    {
+      "files": [
+        "tests/test_sealed_bundle_cache.py"
+      ],
+      "summary": "50 passed in 6.30s",
+      "collected": 50,
+      "ran": true,
+      "skipped": 0,
+      "action_key": "70d1373ce628322df03643b25c6ae088c69c3844188072ff8fd17fb10e47d589",
+      "receipt_sha256": "e5763485b13ae00675f78144ed5273e84793c085b4f5c8dccd3bf2ba2d844d56",
+      "payload": {
+        "sha256": "b3fe701e42ac87bfeabf5a7007a778692bc183d7b18e82789ce3f9d21eb03a6a",
+        "bytes": 26963
+      },
+      "producer_host": "sparky",
+      "request_attestation_payload_verified": true,
+      "log_sha256": "9e86639340fe370bcfb6d17d9aa5d66a1a551570f432a0d9a08f0098b094fd80",
+      "log_bytes_match": true
+    },
+    {
+      "files": [
+        "tests/test_pbrun_bundle_determinism.py"
+      ],
+      "summary": "4 passed in 2.26s",
+      "collected": 4,
+      "ran": true,
+      "skipped": 0,
+      "action_key": "b20840b23c68a17a1d5de9955c7cd6c830de5ecf046092e50cd29ee604160868",
+      "receipt_sha256": "54723d8e7a2722d50ed50a5bb4bb4583c0eced899a85b6171905e361988abc11",
+      "payload": {
+        "sha256": "8604666a045466680f0e35be89cca4ae4ac1de69920430dae3cdce902b2e08d5",
+        "bytes": 4256
+      },
+      "producer_host": "sparky",
+      "request_attestation_payload_verified": true,
+      "log_sha256": "cf0205dff771841b99c3e294c055f1e77cdc35a7d219d8fe10ddc656e28b6477",
+      "log_bytes_match": true
+    }
+  ],
+  "measurement": "Prior accepted action d44bad3d62731cd667050488e1ebed6fad84fbf1f200a8c950ca50ee749a2ee7 was not rerun, as requested. Its CPU numbers apply to the reviewed implementation.",
+  "submission_refusal": "Initial pbtest command refused unsupported -q before any action was published. Retried with the supported empty pytest option list."
+}

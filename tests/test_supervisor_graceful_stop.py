@@ -48,6 +48,7 @@ def test_stop_waits_for_current_action_and_reaps_owned_workers(tmp_path):
         sys.path.insert(0, {str(TOOLS)!r})
         import supervise
         root = pathlib.Path({str(tmp_path)!r})
+        supervise.pbtest_scratch_roots.REGISTRY = root / 'scratch-registry'
         supervise.MIRROR = root
         supervise.CLAIM = root / 'claim'
         supervise.LOG_DIR = root

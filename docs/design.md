@@ -2250,6 +2250,20 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
+The report monitor reads the report from its own return callback arguments.
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
+An xdist synthetic failed report with phase `???` retains that phase and
+failure in the outcome rows. Missing teardown for exactly those failed tests
+does not make file coverage unknown. Completion evidence still reports their
+missing teardown; other unfinished tests keep coverage unknown.
+Replacement workers may add collections beyond the initial worker count;
+every observed worker collection must still match the selected population.
 Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
 final-teardown completion still survives blocked exit hooks, including xdist
 workers that prevent the controller's test loop from returning.
@@ -2349,10 +2363,51 @@ reads only the selected attempt, checks stdout and filed stderr against their
 addresses, verifies the announced execution receipt and payload when present,
 and rechecks the ending before returning. Default caps are 16 MiB per log,
 4 MiB per evidence record and 64 MiB for a receipt's payload. `pbwait` also
-wraps that read in its isolated five-second observation budget. A mismatch,
-missing evidence or exceeded bound yields `unreadable`, never verified bytes.
-No bounded verified produced-output discovery exists, so `outputs` is empty.
+wraps that read in its isolated five-second observation budget.
+
+Logs are streamed in 4 MiB chunks through the stable, read-only, no-follow
+file verifier. The full byte count and recorded digest are checked, and every
+stdout line is scanned for receipt announcements during that same pass. The
+consumer projection bypasses the legacy renderer's complete log expansion;
+legacy JSON and human rendering keep their existing verification path.
+
+The 16 MiB per-stream cap bounds retained evidence, independently of total log
+size. Oversized descriptors retain `path`, `bytes` and `sha256` for the fully
+hashed log and add `truncated: true` and `evidence: {offset, bytes, sha256}`
+for the retained tail. That tail must also agree with the terminal's existing
+64 KiB stream summary. Announcements are verified wherever they occur, and
+multiple announcements refuse. Line buffering is capped at the 4 MiB evidence
+budget; oversized non-JSON lines are discarded after classification. A line
+that could contain a receipt but exceeds that bound leaves verification
+incomplete. Consumers needing the full log can read `result.stdout.path` or
+`result.stderr.path` and check its full byte count and digest.
+
+Streaming has a cooperative four-second budget within `pbwait`'s isolated
+five-second observation budget. If either expires, or bounded announcement
+scanning cannot finish, the action's status, success flag and exit outcome
+remain intact; `result.verified` is false and `result.verification_error`
+explains the incomplete read. Null receipt and log descriptors in that result
+make no claim about evidence not fully verified. A complete read returns
+`verified: true` only after full log, receipt, payload, immutable attempt and
+terminal-summary verification. A proven digest, receipt or summary mismatch
+still yields `unreadable`/74. Filesystem syscalls can exceed the cooperative
+budget; the isolated observation bounds how long the CLI waits for them.
+
+A mismatch, missing evidence or exceeded non-log bound yields `unreadable`,
+never verified bytes. No bounded verified produced-output discovery exists,
+so `outputs` is empty.
 The existing SDK exports, version and success-only guarantees are unchanged.
+
+The #1964 Core helper-pin change is qualified by six independently reproduced
+current runtime goldens (receipt, attestation and runtime, each in-process and
+script). The strict runtime adopter preserves all twelve historical rows byte
+exact and archives the superseded current goldens and capture metadata under
+`tests/compat/history-controls/superseded-runtime-0c20614e4325b088/`. The capture
+and adoption bind producer `bb2fba69f32c3775c3c0bbb00a1cf44357948de2`; their
+primary audits and exact commands are retained under
+`/mnt/shared/pbtl-probe-tmp/pb-lead-dl380/1964/round2/`. This qualifies corpus
+bytes and grants no runtime deployment credit.
+
 
 `pbrun --withdraw KEY --reason TEXT --json` returns
 `prismabuild.withdrawal.v1` with action key, prior state, withdrawal decision
@@ -2601,7 +2656,7 @@ the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
 `pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
 directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
 directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+24-hour retention clock; a later attempt or owning worker supervisor then removes it.
 A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
 under its root, and exit 0 also removes the key directory it empties. The
 sealed root and `TMPDIR` themselves are never removed or changed.
@@ -2795,6 +2850,26 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
+`pbtest_scratch_roots` registers the worker's opened pbtest root before its
+attempt directory becomes visible (#1710). The executing uid's passwd home,
+independent of sealed `HOME`, holds the private mode-0700 registry
+`.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
+`<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
+to the root's real absolute path. Registration refuses an unsafe registry or
+changed root before creating scratch. Both layouts keep the existing owner
+locks and namespace shapes; registration adds no second attempt custody.
+
+The supervisor holding the box claim sweeps at startup and hourly on its
+existing supervision cycles. `--once`, one-shot stale cycling, and a competing
+supervisor do not sweep. A pass selects at most 64 registered roots in random
+order, verifies their device and inode, refuses symlinked or missing roots,
+and delegates each layout to `owned_tree.reap_dead_trees` with its existing
+per-call bounds. Failures are reported and leave supervision running. The
+supervisor can therefore expire idle scratch without another pbtest run.
+Unregistered roots and unmarked legacy attempts remain outside automatic
+expiry. This source contract does not establish deployment or a first-pass
+space-freed measurement on real scratch.
+
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
   or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
@@ -2812,7 +2887,8 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
   pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), each new checkout reaps its checkout root, and each pbrun
+  sealed root), as does the owning supervisor for registered pbtest roots.
+  Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an
   attempt or a claim, and nothing starves. Reaping never fails the work that
@@ -3581,6 +3657,65 @@ without the member or the ordinary package import boundary.
   (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
+  Submission sealing caches those exact bundle bytes on the submitting host
+  (#2171). The default root is `prismabuild-sealed-bundles` under the client's
+  `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
+  under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
+  digest-record bytes, including active fill reservations. Before staging a
+  fill, `statvfs` available bytes minus the bundle and digest-record size must
+  leave at least the greater of 2 GiB and 10% of the filesystem's total bytes.
+  `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  another absolute root; `off` disables the cache. The opened directory must
+  be private to its owner and on a positively identified local disk filesystem
+  accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
+  The cache key binds the object format, ordered ref names and tip IDs, exact
+  header and tip stream, pack configuration and options, Git version, and the
+  effective Git configuration including inherited settings not explicitly pinned.
+  Sorted `GIT_*` variables also participate, except the private index and object
+  storage paths whose contents are already bound. External graft and shallow
+  history overrides bypass caching rather than trusting mutable path contents.
+  It also binds the private index and contents of Git's global, system and
+  repository attribute files. A configured attribute path alone is insufficient:
+  changing its `delta` rules can change pack bytes without changing any object.
+  Cache reuse requires the canonical bare repository and private index used by
+  snapshot sealing. Other attribute contexts, unsupported Git attribute-path
+  discovery and unreadable or changing inputs fall back to the original sealer.
+  A cold seal rechecks these mutable inputs' contents and
+  `(dev, ino, size, mtime_ns, ctime_ns)` before publication; a changed input
+  leaves the fresh bundle usable but prevents filling under the earlier key.
+  The snapshot tip transitively binds the injected stamp or closure, tree,
+  parent and reachable objects. Storage layout and temporary paths do not
+  participate. A Git-version or configuration probe failure bypasses the cache.
+  A per-address flock coalesces identical misses without holding up unrelated
+  addresses. A shared pin keeps its lock inode stable for owners and waiters;
+  the last user removes idle lock files. Dead owners are reaped using only
+  cache-owned nonblocking locks. Warm hits need no per-address lock.
+  Deadline callers bypass a contended miss lock.
+  Hits open metadata and payload descriptors under a nonblocking shared
+  inventory flock, then release it before copying and verification. Open
+  descriptors survive eviction. Four warm deadline readers can all hit.
+  Exclusive inventory locking covers only bookkeeping, space reservations,
+  trimming and publication; contention falls back to fresh sealing.
+  Each hit copies to a private destination-side file, computing one SHA-256
+  over the chunks read from the pinned cache descriptor. It compares the copied
+  length and digest with the record before atomically installing that same file.
+  A miss runs the original sealer. A fallback preserves an already valid cache
+  entry. Fills reserve space and mark their staging owner under inventory
+  protection, copy outside it, then rename the complete entry under it. Entries
+  are disposable and digest-verified, so cache writes require no fsync. Failed staging is removed
+  under the inventory lock; abandoned staging is reaped on a subsequent miss
+  or fill, with live reservations counted against the caps. Cache I/O errors,
+  partial records and digest mismatches fall back
+  to sealing; oversized bundles bypass storage. A hit is byte-identical to
+  a fresh seal and changes neither snapshot records nor action keys.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated checkout
+  snapshots with caching disabled and enabled, including private-index and
+  closure preparation as for multiple shards of one checkout. Run it through
+  PB. It interleaves uncached snapshots and warm bundle hits, measures process
+  and child CPU, records observed load, counts pack executions, and checks
+  every snapshot record and bundle digest against the warmup and fresh seals.
+  An ordinary portable action suffices for this CPU accounting comparison;
+  it reports no wall-time speedup or idle-host qualification.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
@@ -7125,7 +7260,16 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and every following `wedged` sample carry
+`probe.outstanding_pid`, `probe.child_state` and `probe.child_wchan`. State
+and wchan come from that child's `/proc` entry at each sample's own time;
+if it has disappeared before the read, both diagnostics are `?` (unknown).
+The log's `child=state:wchan` and Netdata's `stuck_child` label expose the
+pair for attribution (#1398), not health. Older records lacking diagnostics
+remain unhealthy when their status is `timed_out` or `wedged`; statuses,
+health decisions, chart dimensions and numeric values are unchanged.
+Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
@@ -16734,6 +16878,16 @@ references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
 
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
+
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
 entire bounded root remains protected while independently proven copies outside
@@ -18919,6 +19073,18 @@ tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-
 `gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
 nothing.
 
+The shared submission gate checks sealed intent even when a compiled producer
+supplies different queue resources or tags. Under enforcement, a row that adds
+GPU intent through demand, required tags or `needs_gpu` to a sealed CPU job is
+refused before evidence authorization or runnable publication: no receipt or
+exception for that CPU identity can bind the added GPU placement. This compares
+GPU intent, not exact resource counts or tag lists. Record-only permission and
+the enforcement setting are unchanged.
+
+Decomposed `common` accepts `d38_namespace` as shared key material. It rejects
+`d38_receipt` and `d38_exception`, since each binds one child identity. Ordinary
+campaign rows retain both evidence options.
+
 **Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
 job's params before the key is computed, so a changed namespace is a changed job; absent,
 keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its
@@ -20133,9 +20299,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old

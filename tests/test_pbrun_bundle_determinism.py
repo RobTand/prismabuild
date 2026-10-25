@@ -32,6 +32,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -49,6 +50,11 @@ _SPEC.loader.exec_module(pbrun)                       # type: ignore[union-attr]
 THREADED_FILE_COUNT = 2000
 
 MAX_BYTES = 64 * 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def fresh_packs_for_determinism(monkeypatch):
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", "off")
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -212,6 +218,7 @@ def test_the_sealed_bundle_is_a_bundle_git_can_read(tmp_path: Path) -> None:
     """The header is written here now, so prove Git still accepts the file."""
 
     checkout = _repository(tmp_path / "checkout", files=4)
+    # pb-history-ok: Builds and restores generated fixture bundles to compare deterministic bytes.
     assert _git(checkout, "branch", "gate-base").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
     snapshot = submit_core.snapshot_checkout(
@@ -219,6 +226,7 @@ def test_the_sealed_bundle_is_a_bundle_git_can_read(tmp_path: Path) -> None:
     )
     bundle = cas.input_path(snapshot["input"])
 
+    # pb-history-ok: Builds and restores generated fixture bundles to compare deterministic bytes.
     heads = _git(checkout, "bundle", "list-heads", str(bundle))
     assert heads.returncode == 0, heads.stderr
     advertised = dict(
@@ -233,13 +241,16 @@ def test_the_sealed_bundle_is_a_bundle_git_can_read(tmp_path: Path) -> None:
     materialized = tmp_path / "materialized"
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Builds and restores generated fixture bundles to compare deterministic bytes.
     assert _git(
         materialized, "fetch", "-q", "--no-tags", str(bundle), sealed_ref,
         "refs/heads/gate-base:refs/heads/gate-base",
     ).returncode == 0
+    # pb-history-ok: Builds and restores generated fixture bundles to compare deterministic bytes.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0
     assert (materialized / "f00000.txt").exists()
+    # pb-history-ok: Builds and restores generated fixture bundles to compare deterministic bytes.
     verified = _git(materialized, "bundle", "verify", str(bundle))
     assert verified.returncode == 0, verified.stderr
