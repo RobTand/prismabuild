@@ -6105,7 +6105,8 @@ class PoolQueue:
         return skews
 
     def _matching_offers(
-        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]],
+        allow_unknown_interpreter: bool = False,
     ) -> list[Mapping[str, object]]:
         """The offers among ``live`` that could run ``item``.
 
@@ -6131,7 +6132,9 @@ class PoolQueue:
                     has_gpu=presence.gpu is capability_eligibility.Presence.PRESENT):
                 continue
             if isinstance(capability_eligibility.OfferCapabilities.from_offer(offer).check(
-                    requirements, clock=_now), capability_eligibility.CapabilityRefusal):
+                    requirements, clock=_now,
+                    allow_unknown_interpreter=allow_unknown_interpreter),
+                    capability_eligibility.CapabilityRefusal):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The

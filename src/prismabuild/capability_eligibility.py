@@ -444,8 +444,12 @@ class OfferCapabilities:
         return cls(ImageAnswers.from_offer(offer), InterpreterAnswers.from_offer(offer),
                    DependencyAnswers.from_offer(offer))
 
-    def check(self, required: CapabilityRequirements, *, clock: Callable[[], float]) -> ImageAccepted | CapabilityRefusal:
-        return _check_capabilities(required, self, clock=clock)
+    def check(
+        self, required: CapabilityRequirements, *, clock: Callable[[], float],
+        allow_unknown_interpreter: bool = False,
+    ) -> ImageAccepted | CapabilityRefusal:
+        return _check_capabilities(required, self, clock=clock,
+                                   allow_unknown_interpreter=allow_unknown_interpreter)
 
     def offer_fields(self) -> dict[str, object]:
         return {**self.images.offer_fields(), **self.interpreters.offer_fields(),
@@ -511,14 +515,17 @@ class LiveCapabilities:
 
 def _check_capabilities(
     required: CapabilityRequirements, host: OfferCapabilities | LiveCapabilities, *, clock: Callable[[], float],
+    allow_unknown_interpreter: bool = False,
 ) -> ImageAccepted | CapabilityRefusal:
     interpreter = required.interpreter
     if isinstance(interpreter, CapabilityRefusal):
         return interpreter
     if contracts.INTERPRETER_TAG in required.tags and interpreter is None:
         return CapabilityRefusal("interpreter_requirement_missing", {"tags": list(required.tags)})
-    if interpreter is not None and host.interpreters.answer(interpreter) is not Presence.PRESENT:
-        return CapabilityRefusal("interpreter_not_present", {"interpreter": interpreter})
+    if interpreter is not None:
+        answer = host.interpreters.answer(interpreter)
+        if answer is Presence.ABSENT or (answer is Presence.UNKNOWN and not allow_unknown_interpreter):
+            return CapabilityRefusal("interpreter_not_present", {"interpreter": interpreter})
     local = required.local_paths
     if isinstance(local, CapabilityRefusal):
         return local
