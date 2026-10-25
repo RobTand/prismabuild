@@ -6,7 +6,14 @@ The [current-fleet report](measurements/1711-current-fleet-2026-10-25.md) recove
 and authenticates the original `full.json` and all seven tracebacks. It supersedes
 the missing-report and missing-traceback statements below. Original pytest output
 still truncates the changed queue leaves, so historical writer attribution remains
-unproved. A fresh x86 run passes 279 tests and skips 18 native-positive proofs.
+unproved for the omitted original tuples. A historical-source replay now
+reproduces two failures at four-worker concurrency and identifies the adaptive
+diagnostic directory and file as the changed leaves. A retained publisher record
+identifies the child writer for one. Matched current repeats pass 140 cases; a
+new deterministic settlement regression fails on historical source and passes
+current source. A fresh full x86 run passes 279 tests and skips 18 native-positive
+proofs. See the current report for the distinction between this reproduced
+mechanism and exact attribution of all seven original failures.
 
 ## Disposition and evidence boundary
 
