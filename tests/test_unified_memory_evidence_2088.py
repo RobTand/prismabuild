@@ -12,10 +12,15 @@ NOW = 100.0
 CAPACITY = {"cpu": 8, "gpu": 1, "mem_gb": 104}
 
 
-def unified_sample(*, foreign=(), domain="shared_system", sampled=NOW):
-    value = gpu_sample(foreign=foreign, domain=domain)
+def unified_sample(*, foreign=(), jobs=(), domain="shared_system", sampled=NOW,
+                   available=None):
+    value = gpu_sample(foreign=foreign, jobs=jobs, domain=domain)
+    if available is None:
+        known = sum(row["used_bytes"] for row in foreign
+                    if type(row.get("used_bytes")) is int and row["used_bytes"] >= 0)
+        available = min(120, 128 - known / GIB)
     value.update(sample_id="unified-sample", sampled_unix=sampled,
-                 host_total_bytes=128 * GIB, host_available_bytes=120 * GIB)
+                 host_total_bytes=128 * GIB, host_available_bytes=int(available * GIB))
     return value
 
 
@@ -67,14 +72,15 @@ def test_discrete_foreign_residency_does_not_change_host_budget(used):
 
 
 @pytest.mark.parametrize("held,available,expected", [
-    (0, 120, 88),
-    (80, 120, 88),
+    (0, 96, 88),
+    (80, 96, 88),
     (0, 80, 72),
-    (80, 80, 88),
+    (80, 80, 72),
 ])
 def test_host_and_gpu_readings_are_reconciled_without_double_charge(held, available, expected):
     seen = bc.observe(CAPACITY, {"mem_gb": held},
-                      gpu_sample=unified_sample(foreign=[foreign(32 * GIB)]),
+                      gpu_sample=unified_sample(foreign=[foreign(32 * GIB)],
+                                               available=available),
                       mem_gb=available, load1=0, now=NOW)
     assert seen.capacity["mem_gb"] == expected
 
@@ -82,9 +88,43 @@ def test_host_and_gpu_readings_are_reconciled_without_double_charge(held, availa
 def test_foreign_charge_rounds_up_without_changing_the_operating_margin():
     seen = bc.observe(CAPACITY, {"mem_gb": 80},
                       gpu_sample=unified_sample(foreign=[foreign(32 * GIB + 1)]),
-                      mem_gb=120, load1=0, now=NOW)
+                      mem_gb=95, load1=0, now=NOW)
     assert seen.capacity["mem_gb"] == 87
     assert bc.MEMORY_MARGIN_GB == 8
+
+
+def test_pb_host_and_cuda_residency_leave_foreign_bytes_counted_once():
+    job = {"complete": True, "host_bytes": 4 * GIB,
+           "memory_domain": "shared_system", "gpu_lower_bound_bytes": 60 * GIB,
+           "gpu_reported_bytes": 120 * GIB}
+    value = unified_sample(foreign=[foreign(32 * GIB)], jobs=[job], available=32)
+
+    seen = bc.observe(CAPACITY, {"mem_gb": 80}, gpu_sample=value,
+                      mem_gb=32, load1=0, now=NOW)
+
+    assert seen.capacity["mem_gb"] == 88
+    assert seen.unified_memory.resident_bytes == 64 * GIB
+    assert seen.unified_memory.external_bytes == 32 * GIB
+
+
+@pytest.mark.parametrize("update,expected", [
+    ({"gpu_lower_bound_bytes": None}, 28),
+    ({"gpu_lower_bound_bytes": -1}, 28),
+    ({"gpu_lower_bound_bytes": True}, 28),
+    ({"host_bytes": None}, 84),
+    ({"complete": False}, 24),
+    ({"memory_domain": "discrete"}, 28),
+    ({"memory_domain": "unknown"}, 28),
+])
+def test_unproven_pb_residency_does_not_earn_memory_credit(update, expected):
+    job = {"complete": True, "host_bytes": 4 * GIB,
+           "memory_domain": "shared_system", "gpu_lower_bound_bytes": 60 * GIB}
+    job.update(update)
+    seen = bc.observe(CAPACITY, {"mem_gb": 80},
+                      gpu_sample=unified_sample(jobs=[job], available=32),
+                      mem_gb=32, load1=0, now=NOW)
+
+    assert seen.capacity["mem_gb"] == expected
 
 
 def test_latest_foreign_ceiling_bounds_delayed_observer_history():
@@ -93,13 +133,13 @@ def test_latest_foreign_ceiling_bounds_delayed_observer_history():
         offered = observer.offer(
             CAPACITY, {"mem_gb": 80},
             gpu_sample=unified_sample(foreign=[foreign(used)], sampled=sampled),
-            mem_gb=120, load1=0, now=NOW)
+            mem_gb=128 - max(8, used // GIB), load1=0, now=NOW)
     assert offered["mem_gb"] == 80
     assert observer.last.unified_memory.sampled_unix == NOW
     unchanged = observer.offer(
         CAPACITY, {"mem_gb": 80},
         gpu_sample=unified_sample(foreign=[foreign(40 * GIB)]),
-        mem_gb=120, load1=0, now=NOW)
+        mem_gb=88, load1=0, now=NOW)
     assert unchanged["mem_gb"] == 80
 
 
