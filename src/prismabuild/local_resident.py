@@ -11,7 +11,7 @@ import json
 import shutil
 import socket
 import uuid
-from . import posix_lock
+from . import posix_lock, filesystem_floor
 
 from . import core, local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
 
@@ -142,9 +142,11 @@ def sources(store, record, reader_context):
     try:
         if pinned:
             paths = {entry["key"]: entry["stage_path"] for entry in pinned["pin"]["entries"]}
-            yield {path: paths[residency_map.residency_map_key(path, 0)] for path in canonical}
+            selected = {path: paths[residency_map.residency_map_key(path, 0)] for path in canonical}
         else:
-            yield canonical
+            selected = canonical
+        filesystem_floor.enforce_paths(queue.root, selected.values(), label="resident copy sources")
+        yield selected
     finally:
         if pinned:
             released = reader_lease.release(queue, pinned["pin_id"], pinned["ref_id"],
@@ -195,9 +197,11 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
             raise ValueError("resident lease expired")
         local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
         if final.exists():
+            filesystem_floor.enforce_paths(queue.root, [root, final], label="resident copy reuse")
             verification = _verify_tree(final, record)
         else:
             partial.mkdir(exist_ok=True)
+            filesystem_floor.enforce_paths(queue.root, [root, partial], label="resident copy destination")
             if partial.is_symlink():
                 raise ValueError("unsafe partial tree")
             # A resumed tree must not smuggle extra files into the final directory.
@@ -517,6 +521,8 @@ def adopt_resident_copy(store, set_id, host, spec, source, *, now=None):
     record = store.read(set_id)
     root, final, partial, evicting = _paths(set_id, spec)
     source = Path(source).absolute()
+    filesystem_floor.enforce_paths(store.queue_root,
+        [root, final if final.exists() else root, source], label="resident adoption")
     if source == Path(record["canonical_root"]) or Path(record["canonical_root"]).is_relative_to(source):
         raise ValueError("adoption must not move the authoritative canonical directory")
     if root.is_relative_to(source) or source.is_relative_to(root):

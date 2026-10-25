@@ -10,6 +10,7 @@ from prewarm_fixture import Fleet
 from test_a_mover_stages_the_range_it_declared_and_no_more import _args, _manifest, _write
 from test_local_resident_mover import world
 from local_resident_space import roomy_disk  # noqa: F401
+from test_prewarm_rollout import role  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("roomy_disk")
 
@@ -35,9 +36,13 @@ def test_canonical_read_only_prewarm_checks_source_before_receipt(tmp_path, monk
     fleet = Fleet(tmp_path)
     source, size = fleet.file("payload", 32)
     key = fleet.action("floor-source", [(source, size)])
-    checked = guard(monkeypatch, None if allowed else Path(source))
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    actual_source = mounted / "payload"
+    actual_source.write_bytes(Path(source).read_bytes())
+    checked = guard(monkeypatch, None if allowed else actual_source)
 
-    event = fleet.cycle(fleet.args())
+    event = fleet.cycle(fleet.args(mount_map=[f"{fleet.mount}={mounted}"]))
 
     if allowed:
         assert fleet.queue.prewarm(key)["status"] == "complete"
@@ -46,7 +51,7 @@ def test_canonical_read_only_prewarm_checks_source_before_receipt(tmp_path, monk
         assert not event["warmed"]
         assert any(row["action_key"] == key and row["reason"] == "filesystem_floor"
                    for row in event["skipped"])
-    assert Path(source) in checked
+    assert actual_source in checked
 
 
 @pytest.mark.parametrize("blocked", ["source", "created_destination", "reused_destination"])
@@ -99,7 +104,10 @@ def test_local_resident_refusal_preserves_existing_tree_and_state(tmp_path, monk
 
     assert denied in checked
     assert store.read_copy(record["set_id"], "test-host") == previous
-    assert not final.exists() if state != "final" else (final / "weights").read_bytes() == b"weights"
+    if state == "final":
+        assert (final / "weights").read_bytes() == b"weights"
+    else:
+        assert not final.exists()
 
 
 def test_local_resident_checks_actual_stage_source_while_pin_is_held(tmp_path, monkeypatch):
@@ -131,3 +139,14 @@ def test_local_resident_checks_actual_stage_source_while_pin_is_held(tmp_path, m
     pins, errors = reader_lease.live_for(queue, {str(staged)})
     assert not errors and not pins
     assert store.read_copy(record["set_id"], "test-host")["state"] != "resident"
+
+
+
+def test_storage_control_refusal_defers_before_cycle_or_log(role, monkeypatch, tmp_path):
+    loop, gate, parked, current, calls, argv, stop = role
+    log = tmp_path / "role.log"
+    guard(monkeypatch, log)
+
+    assert loop.main(argv + ["--once", "--log", str(log)]) == 75
+    assert calls == []
+    assert not log.exists()
