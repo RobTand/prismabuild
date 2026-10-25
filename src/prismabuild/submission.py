@@ -5037,7 +5037,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     # not mistake fleet-owned defaults for caller-owned external inputs.
     variables = {} if args.no_default_env else {
         "HOME": "/home/rob",
-        "TMPDIR": "/home/rob/tmp",
+        "TMPDIR": fleet_roster.LEGACY_ACTION_TMPDIR,
         "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
@@ -5054,6 +5054,12 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
                 "callers may not set it")
         variables[key] = value
         caller_variables[key] = value
+
+    if not args.no_default_env and "TMPDIR" not in caller_variables:
+        try:
+            variables["TMPDIR"] = fleet_roster.default_action_tmpdir(store.roster_path)
+        except (OSError, ValueError) as exc:
+            raise SubmissionRefused(f"pbrun: cannot read fleet action_tmpdir: {exc}") from exc
 
     demand = _parse_demand(args.demand)
     require_disk_metadata_scope(demand, transport=args.transport)

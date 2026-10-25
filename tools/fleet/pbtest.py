@@ -77,7 +77,7 @@ from prismabuild.submission_types import (
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pbtest_scratch_roots, pool  # noqa: E402
-from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
+from prismabuild import dependency_digest, fleet_roster, pbtest_collection  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
@@ -1733,6 +1733,8 @@ def main() -> int:
                              "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
             raise ValueError("--tmpdir must be an absolute worker-visible path")
+        shard_tmpdir = (args.tmpdir if args.tmpdir is not None else
+                        fleet_roster.default_action_tmpdir(store_for(__file__).roster_path))
         if args.basetemp is not None:
             validate_basetemp(args.basetemp)
         if args.mem_gb < 1:
@@ -1744,7 +1746,7 @@ def main() -> int:
         pytest_args = (parse_pytest_args(args.pytest_args, gpu=args.gpu,
                                         workers=args.workers_per_shard)
                        if args.pytest_args is not None else [])
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         sys.stderr.write(f"pbtest: {exc}\n")
         return 2
     # A test's bound belongs to the suite and its submitter, not to the
@@ -2140,7 +2142,7 @@ def main() -> int:
         # explicit forwarding request seals the empty addopts override.
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
-        environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
+        environment = [f"TMPDIR={shard_tmpdir}",
                        f"{pbtest_outcomes.RECORD_BINDING_ENV}={pbtest_outcomes.RECORD_BINDING_VERSION}",
                        *threads, *plan["bound_env"], *explicit_env,
                        "PYTHONPATH=src:experiments", *args.env]
