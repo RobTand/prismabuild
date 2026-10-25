@@ -1,0 +1,202 @@
+{
+ "schema": "prismabuild.gate_1730_preflight.v1",
+ "host": "sparky",
+ "started_unix": 1792963416.3208818,
+ "mounts": {
+  "/": "36 2 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro",
+  "/mnt/shared": "137 51 0:66 / /mnt/shared rw,noatime shared:743 - nfs4 10.100.98.3:/storage_pool/shared rw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=0.0.0.0,local_lock=none,addr=10.100.98.3",
+  "/stage/prewarm": "339 55 0:65 / /stage/prewarm ro,noatime shared:258 - nfs4 10.100.98.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=0.0.0.0,lookupcache=pos,local_lock=none,addr=10.100.98.3"
+ },
+ "root_vfs": {
+  "path": "/",
+  "avail_gib": 391.19,
+  "free_gib": 484.35,
+  "total_gib": 1833.18,
+  "use_pct": 78.7
+ },
+ "d1_a8s": {
+  "need_gib": 163.47,
+  "avail_gib": 391.19,
+  "floor_gib": 91.66,
+  "tmp_need_gib": 265.21,
+  "fits": true,
+  "reason": "fits"
+ },
+ "docker_root": "/var/lib/docker",
+ "docker_root_vfs": {
+  "path": "/var/lib/docker",
+  "avail_gib": 391.19,
+  "free_gib": 484.35,
+  "total_gib": 1833.18,
+  "use_pct": 78.7
+ },
+ "canonical_path": {
+  "path": "/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": true,
+  "device": 66306,
+  "mountinfo": "134 137 259:2 /home/rob/models-local/a8s-exported /mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported ro,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro"
+ },
+ "stage_path": {
+  "path": "/stage/prewarm/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": false,
+  "mountinfo": "339 55 0:65 / /stage/prewarm ro,noatime shared:258 - nfs4 10.100.98.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=0.0.0.0,lookupcache=pos,local_lock=none,addr=10.100.98.3"
+ },
+ "local_path": {
+  "path": "/home/rob/models-local",
+  "present": true,
+  "device": 66306,
+  "mountinfo": "36 2 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro"
+ },
+ "space": {
+  "destination": "/home/rob/models-local",
+  "available_bytes": 420041191424,
+  "total_bytes": 1968362958848,
+  "set_bytes": 175527382717,
+  "d1": {
+   "need_gib": 163.47,
+   "avail_gib": 391.19,
+   "floor_gib": 91.66,
+   "tmp_need_gib": 265.21,
+   "fits": true,
+   "reason": "fits"
+  }
+ },
+ "speed": {
+  "status": "not_run",
+  "reason": "prerequisites only; no model payload reads or synthetic speed files"
+ },
+ "bind": {
+  "docker": {
+   "argv": [
+    "docker",
+    "version",
+    "--format",
+    "{{.Server.Version}}"
+   ],
+   "returncode": 0,
+   "stdout": "29.6.2\n",
+   "stderr": ""
+  },
+  "image_inspect": {
+   "argv": [
+    "docker",
+    "image",
+    "inspect",
+    "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+    "--format",
+    "{{.Id}}"
+   ],
+   "returncode": 0,
+   "stdout": "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a\n",
+   "stderr": ""
+  },
+  "image": "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+  "local_marker_after_write": "local-wins\n",
+  "calls": [
+   {
+    "step": "baseline ls",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+     "-c",
+     "ls \"$1\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-5gmoc15v"
+    ],
+    "returncode": 0,
+    "stdout": "canonical.txt\n",
+    "stderr": ""
+   },
+   {
+    "step": "nested bind ls+cat",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-8fwaqf30,dst=/mnt/shared/gate-1730-shadow-5gmoc15v,readonly",
+     "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+     "-c",
+     "ls \"$1\" && cat \"$1/marker.txt\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-5gmoc15v"
+    ],
+    "returncode": 0,
+    "stdout": "marker.txt\nsecond.txt\nlocal-wins\n",
+    "stderr": ""
+   },
+   {
+    "step": "write through readonly bind",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-8fwaqf30,dst=/mnt/shared/gate-1730-shadow-5gmoc15v,readonly",
+     "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+     "-c",
+     "printf changed > \"$1/marker.txt\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-5gmoc15v"
+    ],
+    "returncode": 2,
+    "stdout": "",
+    "stderr": "sh: 1: cannot create /mnt/shared/gate-1730-shadow-5gmoc15v/marker.txt: Read-only file system\n"
+   },
+   {
+    "step": "mount with missing src",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-8fwaqf30/missing,dst=/mnt/shared/gate-1730-shadow-5gmoc15v,readonly",
+     "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+     "-c",
+     "true"
+    ],
+    "returncode": 125,
+    "stdout": "",
+    "stderr": "docker: Error response from daemon: invalid mount config for type \"bind\": bind source path does not exist: /var/tmp/gate-1730-src-8fwaqf30/missing\n\nRun 'docker run --help' for more information\n"
+   }
+  ],
+  "nested_shows_local_only": true,
+  "readonly_write_refused": true,
+  "missing_source_refused": true
+ },
+ "finished_unix": 1792963418.2987328
+}
