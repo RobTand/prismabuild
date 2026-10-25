@@ -92,7 +92,8 @@ and branch without another suite run. Vehicle lookup includes open, closed
 and merged PRs, covering a crash after remote creation but before local receipt.
 The ledger records the vehicle, candidate statuses and confirmed member merges.
 Pending checks, transient GitHub refusals and delayed member state updates retain
-the batch for the next daemon tick. A status refusal never permits a merge.
+the batch for the next daemon tick. A repeated `once` reconciles that retained
+batch before accepting another batch and refuses a mode change while it is active. A status refusal never permits a merge.
 
 ## Configuration
 

@@ -1164,7 +1164,7 @@ class Queue:
         state = self.store.state
         state["seq"] += 1
         batch = {"id": f"b{state['seq']:05d}", "mode": self.mode, "created": now(),
-                 "entries": entries}
+                 "entries": entries, "once": self.once}
         self.phase(batch, "selecting", ", ".join(f"#{e['pr']}" for e in entries))
         outdir = self.store.batches / batch["id"]
         try:
@@ -1810,7 +1810,15 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("once --mode merge has no approved SHAs; use enqueue PR SHA and daemon")
         queue.resume()
         if args.command == "once":
-            batch = queue.run_batch([{"pr": n, "sha": None, "at": now()} for n in args.prs])
+            retained = queue.store.state.get("batch")
+            if retained:
+                if retained["mode"] != args.mode:
+                    parser.error(f"unfinished {retained['mode']} batch {retained['id']}; "
+                                 "resume it in its original mode")
+                queue.once = retained.get("once", False)
+                batch = queue.tick() or retained
+            else:
+                batch = queue.run_batch([{"pr": n, "sha": None, "at": now()} for n in args.prs])
             print(json.dumps({k: batch.get(k) for k in (
                 "id", "verdict", "summary", "base", "candidate", "included", "dropped",
                 "new", "shared", "flakes", "description", "wall_s")}, indent=1))

@@ -1063,3 +1063,31 @@ def test_vehicle_issue_refs_keep_same_repository_body_and_sidebar_links():
               {'number': 104, 'url': 'https://github.com/RobTand/prismabuild/issues/104'},
               {'number': 999, 'url': 'https://github.com/Other/repo/issues/999'}]}
     assert mq.issue_numbers(pr, 'RobTand/prismabuild') == [101, 102, 103, 104]
+
+
+
+def test_once_cli_restart_reconciles_the_retained_vehicle_before_a_new_batch(
+        tmp_path, monkeypatch):
+    queue, origin, github, runner = make_queue(tmp_path)
+    origin.pr(1, {"one.txt": "1\n"})
+    queue.once = True
+    create = github.create_vehicle
+
+    def crash_after_create(*args):
+        create(*args)
+        raise SystemExit("restart before vehicle receipt")
+
+    monkeypatch.setattr(github, "create_vehicle", crash_after_create)
+    monkeypatch.setattr(mq, "open_queue", lambda *args, **kwargs: queue)
+    argv = ["--config", str(tmp_path / "config.json"), "once", "--mode", "status", "1"]
+    with pytest.raises(SystemExit, match="restart before vehicle receipt"):
+        mq.main(argv)
+    completed = list(runner.runs)
+    store = mq.Store(queue.cfg.state_dir)
+    github = FakeGitHub(queue.cfg, store, origin)
+    resumed = mq.Queue(queue.cfg, store, github, queue.mirror, runner, "status", once=True)
+    monkeypatch.setattr(mq, "open_queue", lambda *args, **kwargs: resumed)
+
+    assert mq.main(argv) == 0
+    assert len(origin.vehicle_creations) == 1 and runner.runs == completed
+    assert store.state["batch"] is None
