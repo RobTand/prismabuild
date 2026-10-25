@@ -17,6 +17,16 @@ path. See [the design document](design.md) for the current system contracts.
 
 ## Resident set records (Phase 1)
 
+Before qualifying local-set performance, read the
+[design and measurement gate](local_resident_sets_review_2026-10-25.md).
+The checkout-only `tools/fleet/gate_1730_probe.py --preflight-only` mode checks
+capacity and tiny Docker binds without reading A8S or writing speed files.
+Submit it through published `pbrun`, with one CPU, `mem_gb=2`, one native
+thread, the actual disk owner's host tag, and `--bind-image sha256:IMAGE_ID`.
+The image must already exist locally. This mode does not pull images or start
+vLLM. An absent staged path and a failed D1 check are prerequisite evidence;
+neither is a cold/warm performance measurement.
+
 `pbresident.py --pool-root QUEUE publish --manifest MANIFEST` accepts
 `--canonical-root DIRECTORY --hosts HOST[,HOST] --lease-until DATE` and
 `--hard-max DATE`. Dates include a timezone, for example
