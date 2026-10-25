@@ -141,6 +141,47 @@ def test_inventory_read_and_commit_failures_do_not_suppress_current_answers(tmp_
     assert observation.diagnostics['inventory'] == 'interpreter_inventory_unavailable'
 
 
+@pytest.mark.parametrize('serialized', ['[]', 'null', '"invalid"', '17', 'true',
+    '{"requested": {"/old-python": ' + str(10 ** 400) + '}}'])
+@pytest.mark.parametrize('stage', ['prepare', 'commit'])
+def test_malformed_inventory_shape_or_timestamp_keeps_current_observation(
+        tmp_path, serialized, stage):
+    from prismabuild import interpreter_inventory as inventory
+    saved = tmp_path / 'inventory.json'
+    path = _executable(tmp_path)
+    if stage == 'prepare':
+        saved.write_text(serialized)
+    observation = inventory.prepare_interpreters([{'interpreter': path}], inventory_path=saved)
+    if stage == 'commit':
+        saved.write_text(serialized)
+    observation.commit()
+    assert observation.answers.answer(path) is eligibility.Presence.PRESENT
+    if stage == 'prepare':
+        assert observation.diagnostics['inventory'] == 'interpreter_inventory_unavailable'
+
+
+@pytest.mark.parametrize('stage', ['prepare', 'commit'])
+def test_worker_publishes_and_admits_despite_nonobject_inventory(tmp_path, monkeypatch, stage):
+    import os
+    from prismabuild import interpreter_inventory as inventory
+    if stage == 'prepare':
+        directory = tmp_path / 'offer-publish'
+        directory.mkdir(mode=0o700)
+        saved = directory / f'prismabuild-offer-{os.getuid()}.interpreters.json'
+        saved.write_text('[]')
+    else:
+        commit = inventory.InterpreterObservation.commit
+
+        def corrupt_before_commit(observation):
+            observation.inventory_path.write_text('null')
+            commit(observation)
+
+        monkeypatch.setattr(inventory.InterpreterObservation, 'commit', corrupt_before_commit)
+    path = _executable(tmp_path)
+    offer = _poll(tmp_path, monkeypatch, [{'interpreter': path}])
+    assert eligibility.InterpreterAnswers.from_offer(offer).answer(path) is eligibility.Presence.PRESENT
+
+
 def test_refresh_budget_advances_past_unresolved_names(tmp_path, monkeypatch):
     from prismabuild import interpreter_inventory as inventory
     remaining = [2.]
