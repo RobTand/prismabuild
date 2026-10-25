@@ -4806,6 +4806,18 @@ GPU utilization percentage and an activity response alone do not prove useful
 throughput; use profiling, power, CPU activity, residency and useful work per
 joule when assessing a performance result.
 
+On unified-memory hosts, fresh known foreign GPU residency also limits the
+host-memory offer after held-token add-back and memory smoothing. The pool
+charges each action's `mem_gb` once, including its GPU subset and producer
+export allowance. Known foreign bytes and ordinary available memory impose
+independent limits, so overlapping host and GPU readings are not added twice.
+
+`unified_gpu_memory_unknown` means a fresh broker inventory contains a foreign
+process without a usable shared-memory byte count. New CPU and GPU memory
+commitments wait for a clear sample. Existing reservations, READY rows, and
+gang elections stay in place. This is a transient admission denial, with its
+sample ID and timestamp in the evidence. It is not `never_fits_capacity`.
+
 ### Elastic worker loops
 
 The supervisor treats each box's `fleet_boxes.json` loop count as a floor. With

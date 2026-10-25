@@ -22,9 +22,9 @@ pre-action memory samples and caps the first new reading at the ledger total.
 GPU evidence does not use that window: broker attribution and freshness are
 current safety facts, so GPU capacity changes immediately.
 
-The two memory domains remain separate. ``shared_system`` GPU residency is
-already reflected in host ``MemAvailable``. ``discrete`` VRAM is recorded for
-the GPU admission and budget controllers and is never added to or subtracted
+Shared-system GPU allocations consume host DRAM but need not appear in
+``MemAvailable``. Fresh foreign residency therefore bounds the host offer
+after held-token add-back and after smoothing. Discrete VRAM remains separate
 from the host ``mem_gb`` reservation.
 
 """
@@ -42,8 +42,8 @@ import time
 
 from . import adaptive_gpu
 from .gpu_sample_facts import (GPU_MEMORY_DOMAINS, SCHEMA as GPU_CAPACITY_SCHEMA,
-                               ObservationFailure, nonnegative_float, offer_header,
-                               offer_inventory)
+                               ObservationFailure, UnifiedMemoryEvidence, nonnegative_float,
+                               offer_header, offer_inventory, unified_memory_evidence)
 
 #: Memory the box keeps for itself rather than offering the queue its last
 #: byte.  Carried over from the ``--honest-memory`` flag this replaces.
@@ -209,6 +209,7 @@ class Observation:
     capacity: dict[str, int] = field(default_factory=dict)
     foreign: dict[str, int] = field(default_factory=dict)
     detail: dict[str, object] = field(default_factory=dict)
+    unified_memory: UnifiedMemoryEvidence | None = None
 
 
 def _held_snapshot(
@@ -277,9 +278,11 @@ def observe(
         foreign[kind] = foreign_units
         capacity[kind] = max(0, wanted[kind] - foreign_units)
 
+    if gpu_sample is _READ and (wanted.get("gpu", 0) > 0 or "mem_gb" in wanted):
+        gpu_sample = trusted_gpu_sample()
+    unified = unified_memory_evidence(
+        gpu_sample, now=detail["observed_unix"], max_age_s=GPU_SAMPLE_MAX_AGE_S)
     if wanted.get("gpu", 0) > 0:
-        if gpu_sample is _READ:
-            gpu_sample = trusted_gpu_sample()
         header = offer_header(gpu_sample)
         if isinstance(header, ObservationFailure):
             inventory = header
@@ -427,6 +430,15 @@ def observe(
             honest = min(wanted["mem_gb"],
                          max(0, ours.get("mem_gb", 0)) + max(0, available - margin_gb))
             clamp("mem_gb", wanted["mem_gb"] - honest)
+        if unified is not None:
+            ceiling = unified.ceiling_gib(margin_gb=margin_gb)
+            clamp("mem_gb", wanted["mem_gb"] - min(capacity["mem_gb"], ceiling))
+            detail.update(
+                unified_memory_sample_id=unified.sample_id,
+                unified_memory_sampled_unix=unified.sampled_unix,
+                external_unified_gpu_bytes=unified.foreign_bytes,
+                external_unified_gpu_unknown=unified.unknown,
+                unified_memory_ceiling_gib=ceiling)
 
     if wanted.get("cpu", 0) > 0:
         if load1 is _READ:
@@ -456,7 +468,8 @@ def observe(
             # attribute a thread to a reservation.
             detail["load1"] = round(float(load1), 2)  # type: ignore[arg-type]
 
-    return Observation(capacity=capacity, foreign=foreign, detail=detail)
+    return Observation(capacity=capacity, foreign=foreign, detail=detail,
+                       unified_memory=unified)
 
 
 def ram_policy_mem_roof(*, policy_path: str | Path, arcstats_path: str | Path,
@@ -634,7 +647,7 @@ class CapacityObserver:
         # the uncapped reading would let the next poll's maximum undo a cap
         # that has already been spent.
         self._history.append(sample)
-        return {
+        offered = {
             # Root-published GPU attribution is a current admission fact, not
             # a noisy per-process estimate. Apply it immediately in both
             # directions; the adaptive controller independently checks the
@@ -645,3 +658,7 @@ class CapacityObserver:
             else min(value, max(s.get(kind, value) for s in self._history))
             for kind, value in wanted.items()
         }
+        if seen.unified_memory is not None and "mem_gb" in offered:
+            offered["mem_gb"] = min(
+                offered["mem_gb"], seen.unified_memory.ceiling_gib(margin_gb=self.margin_gb))
+        return offered

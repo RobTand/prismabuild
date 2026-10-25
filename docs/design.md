@@ -7396,6 +7396,33 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+Unified-memory foreign residency also bounds new host-memory commitments
+(#1661, #2088, #2089). `gpu_sample_facts.unified_memory_evidence` classifies
+one fresh, complete, attributed broker inventory as clear, known foreign
+bytes, or unknown foreign residency. The classified value retains the
+sample ID and timestamp. Discrete-device residency supplies no host-memory
+credit or unified-memory fence.
+
+The ordinary `MemAvailable` plus held-token bound remains in force. A second
+bound is physical host memory minus the existing operating margin and known
+foreign GPU bytes, rounded up to GiB. Observation applies that bound after
+held-token add-back, and the observer applies it again after memory smoothing.
+The two bounds take their minimum. Subtracting GPU bytes from `MemAvailable`
+as well would double-charge allocations already visible in both counters.
+No external baseline credit is inferred from an older offer.
+
+Unknown foreign residency defers new CPU and GPU memory commitments with
+`unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
+election. READY rows, held reservations, and existing gang elections remain
+in place. A fresh clear sample removes this fence. Claim-time checks also
+bound aggregate held memory plus the candidate's incremental memory demand
+by the current physical ceiling. Producer export allowances count once;
+funded dependents consume their existing funding before the incremental fit
+check. Denial evidence retains sample identity, foreign bytes, committed
+memory, candidate demand, and the physical ceiling. A later successful claim
+retires its earlier unknown-residency status projection.
+
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -19623,10 +19650,12 @@ uses the original generation-aware idempotent readback. Canonical election
 sidecars survive unstarted retries. Persistence failures retain the original
 fence-first recovery and never replace a newer READY publication.
 
-`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
-ledger totals, placement/capability views, existing read memo and canonical
-census. It captures no new per-candidate host sample, availability or holder
-state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+`_ClaimScan` retains the ordered rows, worker inputs, ledger totals,
+placement/capability views, existing read memo, and canonical census.
+Its `_ClaimMemory` reference owns the current broker sample and classified
+unified-memory evidence. That owner refreshes evidence at candidate and
+mutation boundaries; the other pass views capture no new availability or
+holder state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
 dead-input handling, carried room and the existing ready-GPU policy in their
 original positions. A winning rename invalidates claimed names, reader plans
 and census even when the moved record later refuses.

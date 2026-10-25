@@ -223,6 +223,66 @@ def offer_inventory(header: OfferHeader, *, now: float,
 
 
 @dataclass(frozen=True)
+class UnifiedMemoryEvidence:
+    sample_id: str
+    sampled_unix: float
+    host_total_bytes: float
+    foreign_bytes: int
+    foreign_residency: ForeignProcesses
+
+    @property
+    def unknown(self) -> bool:
+        return self.foreign_residency is ForeignProcesses.UNKNOWN
+
+    def ceiling_gib(self, *, margin_gb: int) -> int:
+        if self.unknown:
+            return 0
+        return max(0, math.floor(self.host_total_bytes / 1024**3) - margin_gb
+                   - math.ceil(self.foreign_bytes / 1024**3))
+
+
+def unified_memory_evidence(sample: object, *, now: float,
+                            max_age_s: float) -> UnifiedMemoryEvidence | None:
+    """Classify foreign residency only from a fresh, complete broker inventory."""
+    header = offer_header(sample)
+    if isinstance(header, ObservationFailure):
+        return None
+    inventory = offer_inventory(header, now=now, max_age_s=max_age_s)
+    if isinstance(inventory, ObservationFailure):
+        return None
+    sample_id = header.sample.get('sample_id')
+    if not isinstance(sample_id, str) or not sample_id:
+        return None
+    devices = {device['uuid']: device['memory_domain'] for device in inventory.devices}
+    if 'shared_system' not in devices.values():
+        return None
+    all_shared = all(domain == 'shared_system' for domain in devices.values())
+    residency = ForeignProcesses.CLEAR
+    foreign_bytes = 0
+    for process in inventory.foreign_processes:
+        if not isinstance(process, Mapping):
+            residency = ForeignProcesses.UNKNOWN
+            continue
+        identity = process.get('gpu_uuid')
+        domain = devices.get(identity) if isinstance(identity, str) else None
+        if domain == 'discrete':
+            continue
+        if domain != 'shared_system' and not all_shared:
+            residency = ForeignProcesses.UNKNOWN
+            continue
+        used = nonnegative_int(process.get('used_bytes'))
+        if used is None:
+            residency = ForeignProcesses.UNKNOWN
+            continue
+        foreign_bytes += used
+        if residency is ForeignProcesses.CLEAR:
+            residency = ForeignProcesses.PRESENT
+    return UnifiedMemoryEvidence(
+        sample_id, float(header.sample['sampled_unix']),
+        float(header.sample['host_total_bytes']), foreign_bytes, residency)
+
+
+@dataclass(frozen=True)
 class FramebufferHeader:
     sample: dict[str, object]
     sample_id: str
