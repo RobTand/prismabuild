@@ -394,16 +394,14 @@ def measure_bind(*, image: str | None = None) -> dict:
     if local["path"] is None:
         out["skipped"] = "no host-local dir for the bind source"
         return out
-    src = tempfile.mkdtemp(prefix="gate-1730-src-", dir=local["path"])
-    shadow = tempfile.mkdtemp(prefix="gate-1730-shadow-", dir="/mnt/shared")
     calls: list[dict] = []
-    try:
+    with (tempfile.TemporaryDirectory(prefix="gate-1730-src-", dir=local["path"]) as src,
+          tempfile.TemporaryDirectory(prefix="gate-1730-shadow-", dir="/mnt/shared") as shadow):
         with open(os.path.join(src, "marker.txt"), "w") as stream:
             stream.write("local-wins\n")
         with open(os.path.join(src, "second.txt"), "w") as stream:
             stream.write("second\n")
         try:
-            os.makedirs(shadow, exist_ok=True)
             with open(os.path.join(shadow, "canonical.txt"), "w") as stream:
                 stream.write("canonical\n")
             made_shadow = True
@@ -429,21 +427,6 @@ def measure_bind(*, image: str | None = None) -> dict:
             calls.append({"step": "mount with missing src", **run_docker(missing)})
             with open(os.path.join(src, "marker.txt")) as stream:
                 out["local_marker_after_write"] = stream.read()
-    finally:
-        for name in ("marker.txt", "second.txt"):
-            try:
-                os.unlink(os.path.join(src, name))
-            except OSError:
-                pass
-        try:
-            os.rmdir(src)
-        except OSError:
-            pass
-        try:
-            os.unlink(os.path.join(shadow, "canonical.txt"))
-            os.rmdir(shadow)
-        except OSError:
-            pass
     out["calls"] = calls
     nested = next((c for c in calls if c.get("step") == "nested bind ls+cat"), {})
     stdout = nested.get("stdout", "")
@@ -518,7 +501,7 @@ def observe_path(path: str) -> dict:
     else:
         result.update(present=True, device=info.st_dev)
     # stat triggers autofs before the mount table is read.
-    result["mountinfo"] = mountinfo_line(os.path.abspath(path), covering=True)
+    result["mountinfo"] = mountinfo_line(os.path.realpath(path), covering=True)
     return result
 
 
