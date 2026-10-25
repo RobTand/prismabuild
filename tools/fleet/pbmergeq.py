@@ -1210,6 +1210,10 @@ class Queue:
     def finish_batch(self, batch: dict, verdict: dict) -> dict:
         state = self.store.state
         outdir = self.store.batches / batch["id"]
+        verdict = dict(verdict)
+        retry = verdict.pop("requeue", [])
+        charge = verdict.pop("charge", False)
+        self.requeue(retry, front=True, charge=charge)
         batch.update(verdict)
         batch["wall_s"] = round(time.time() - batch["timeline"][0][1], 1)
         write_atomic(outdir / "batch.json", json.dumps(batch, indent=1))
@@ -1415,8 +1419,8 @@ class Queue:
         if remote["state"] == "MERGED":
             return self.confirm_members(batch)
         if remote["state"] == "CLOSED":
-            self.requeue(batch["included"], front=True, charge=False)
-            return {"verdict": "vehicle-closed", "summary": "vehicle closed; members requeued"}
+            return {"verdict": "vehicle-closed", "summary": "vehicle closed; members requeued",
+                    "requeue": batch["included"]}
         moved = []
         for p in batch["included"]:
             if self.github.pr(p["pr"])["headRefOid"] != p["sha"]:
@@ -1426,9 +1430,8 @@ class Queue:
         if moved:
             if not self.github.close_vehicle(batch["id"], vehicle["number"]):
                 return {"verdict": "waiting", "summary": "waiting to close vehicle with moved member"}
-            self.requeue([p for p in batch["included"] if p["pr"] not in moved],
-                         front=True, charge=False)
-            return {"verdict": "approval-stale", "summary": f"heads moved after approval: {moved}"}
+            return {"verdict": "approval-stale", "summary": f"heads moved after approval: {moved}",
+                    "requeue": [p for p in batch["included"] if p["pr"] not in moved]}
         description = describe(batch["id"], batch["base"], [], len(batch["green"]),
                                self.where(batch["id"]))
         batch["description"] = description
@@ -1450,8 +1453,8 @@ class Queue:
     def stale_vehicle(self, batch: dict, summary: str) -> dict:
         if not self.github.close_vehicle(batch["id"], batch["vehicle"]["number"]):
             return {"verdict": "waiting", "summary": "waiting to close stale vehicle"}
-        self.requeue(batch["included"], front=True, charge=False)
-        return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing"}
+        return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing",
+                "requeue": batch["included"]}
 
     def merge(self, batch: dict, summary: str) -> dict:
         self.phase(batch, "merging")
