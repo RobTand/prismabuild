@@ -1091,3 +1091,36 @@ def test_once_cli_restart_reconciles_the_retained_vehicle_before_a_new_batch(
     assert mq.main(argv) == 0
     assert len(origin.vehicle_creations) == 1 and runner.runs == completed
     assert store.state["batch"] is None
+
+
+def test_member_push_during_vehicle_merge_requests_review_and_unblocks_queue(
+        tmp_path, monkeypatch):
+    queue, origin, github, _ = make_queue(tmp_path, mode='merge')
+    approved = origin.pr(1, {'one.txt': '1\n'})
+    write = github._write
+
+    def merge_then_push(what, command, stdin=None):
+        accepted = write(what, command, stdin)
+        if command[:3] == ['gh', 'pr', 'merge'] and accepted:
+            # pb-history-ok: Push a new head to this test's already-composed fake PR.
+            git('checkout', '-q', 'pr1', cwd=origin.work)
+            (origin.work / 'one.txt').write_text('unreviewed\n')
+            git('commit', '-q', '-am', 'push during vehicle merge', cwd=origin.work)
+            moved = git('rev-parse', 'HEAD', cwd=origin.work)
+            # pb-history-ok: Simulate the GitHub PR ref updating after the vehicle merged.
+            git('update-ref', 'refs/pull/1/head', moved, cwd=origin.work)
+            # pb-history-ok: Restore the fake origin fixture to its main branch.
+            git('checkout', '-q', 'main', cwd=origin.work)
+        return accepted
+
+    monkeypatch.setattr(github, '_write', merge_then_push)
+    batch = queue.run_batch(entries(github, 1))
+    assert batch['verdict'] == 'merged-head-moved', batch
+    assert github.pr(batch['vehicle']['number'])['state'] == 'MERGED'
+    assert github.pr(1)['state'] == 'OPEN'
+    assert github.comments == [(1, 'head moved after approval; re-review and enqueue the new SHA')]
+    assert not any(row.get('kind') == 'merge' and row.get('pr') == 1
+                   for row in queue.store.ledger())
+    assert any(row.get('kind') == 'member-head-moved' and row.get('pr') == 1
+               and row.get('sha') == approved for row in queue.store.ledger())
+    assert queue.store.state['batch'] is None
