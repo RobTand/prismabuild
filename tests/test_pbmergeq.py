@@ -614,7 +614,8 @@ def test_selected_head_is_fetched_when_github_pull_ref_lags(tmp_path, monkeypatc
     assert git("rev-parse", "pr1", cwd=origin.work) == selected
     advertised = github.pr
     monkeypatch.setattr(github, "pr",
-                        lambda number: {**advertised(number), "headRefOid": selected})
+                        lambda number: {**advertised(number), **(
+                            {"headRefOid": selected} if number == 1 else {})})
 
     batch = queue.run_batch([{"pr": 1, "sha": selected, "at": "now"}])
 
@@ -638,7 +639,8 @@ def test_unfetchable_or_noncommit_selected_head_is_an_explicit_error(
                 git("rev-parse", "main:base.txt", cwd=origin.work))
     advertised = github.pr
     monkeypatch.setattr(github, "pr",
-                        lambda number: {**advertised(number), "headRefOid": selected})
+                        lambda number: {**advertised(number), **(
+                            {"headRefOid": selected} if number == 1 else {})})
 
     batch = queue.run_batch([{"pr": 1, "sha": selected, "at": "now"}])
 

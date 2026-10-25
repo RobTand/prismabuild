@@ -4,9 +4,9 @@ A repository whose full suite takes most of an hour cannot afford a suite run
 per pull request, and a suite that only runs after merging lets ``main`` break.
 This client takes the pull requests queued for a repository, merges them in
 queue order onto a fresh worktree of ``origin/main``, runs the whole suite
-once through the published ``pbtest.py``, and posts a commit status on every
-tested head. PrismaBuild still owns sharding and placement; this file only
-submits ``pbtest.py`` runs and reads their ``--json`` reports.
+once through the published ``pbtest.py``, and publishes the tested candidate
+as one vehicle PR. Only the candidate receives the required success context.
+PrismaBuild still owns sharding and placement; this file only submits ``pbtest.py`` runs and reads their ``--json`` reports.
 
 The verdict is a failure-set difference, by node ID, not a count. A candidate
 is red when a node ID fails on it and not on its base, so a ``main`` that is
@@ -24,8 +24,8 @@ re-run; if they stay inconclusive the batch posts nothing and retries later.
 No verdict is ever built from a shard nobody observed.
 
 Three modes: ``dry-run`` writes what it would post and posts nothing;
-``status`` posts statuses and comments and merges nothing; ``merge`` also
-merges, and refuses to start unless the config's ``merge_enabled_file``
+``status`` opens vehicle PRs and posts statuses and comments, but merges nothing;
+``merge`` also merges, and refuses to start unless the config's ``merge_enabled_file``
 exists. Queue, batch and a ledger of every status and merge live in
 ``state_dir``, so a restart resumes without a double post or merge.
 """
@@ -237,6 +237,23 @@ def describe(batch: str, base: str, new: list[str], shared: int, where: str) -> 
                 f"(set diff): {new[0]}")
 
 
+def approved_sha(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ValueError("approved SHA must be a full lowercase Git commit")
+    return value
+
+
+def issue_numbers(pr: dict, repo: str) -> list[int]:
+    pattern = (r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)\s+"
+               rf"(?:https://github\.com/{re.escape(repo)}/issues/|{re.escape(repo)}#|#)"
+               r"([1-9][0-9]*)\b")
+    numbers = {int(n) for n in re.findall(pattern, pr.get("body") or "", re.IGNORECASE)}
+    numbers.update(issue["number"] for issue in pr.get("closingIssuesReferences", [])
+                   if not issue.get("url") or
+                   issue["url"].startswith(f"https://github.com/{repo}/issues/"))
+    return sorted(numbers)
+
+
 def eligibility(pr: dict, cfg: Config) -> str | None:
     """Why a pull request may not be tested on the fleet, or ``None``.
 
@@ -322,7 +339,8 @@ class Store:
 
     # The inbox is how other processes enqueue: one file each, renamed into
     # place, so nothing but the daemon ever writes state.json.
-    def enqueue_request(self, pr: int, sha: str | None) -> Path:
+    def enqueue_request(self, pr: int, sha: str) -> Path:
+        approved_sha(sha)
         path = self.inbox / f"{time.time_ns()}-{pr}.json"
         write_atomic(path, json.dumps({"pr": pr, "sha": sha, "at": now()}))
         return path
@@ -529,8 +547,9 @@ class GitHub:
 
     def issue_link(self, number: int, sha: str) -> str:
         result = call_tool(["gh", "api", "--paginate",
-                           f"repos/{self.cfg.repo}/commits/{sha}/check-runs"])
-        checks = json.loads(result.stdout)["check_runs"]
+                           f"repos/{self.cfg.repo}/commits/{sha}/check-runs",
+                           "--jq", ".check_runs[] | @json"])
+        checks = [json.loads(line) for line in result.stdout.splitlines() if line]
         matches = [check for check in checks if check["name"] == "issue-link"
                    and check.get("app", {}).get("slug") == "github-actions"]
         if not matches:
@@ -1090,6 +1109,9 @@ class Queue:
                     f"re-queued {entry['attempts']} times without a verdict it could "
                     "leave the queue on")})
                 continue
+            if not entry.get("sha") and not (self.once and self.mode != "merge"):
+                skipped.append({**entry, "why": "approved SHA required; re-review and enqueue PR SHA"})
+                continue
             try:
                 pr = self.github.pr(entry["pr"])
             except subprocess.CalledProcessError as exc:
@@ -1098,6 +1120,8 @@ class Queue:
             why = eligibility(pr, self.cfg)
             if why is None and entry.get("sha") and entry["sha"] != pr["headRefOid"]:
                 why = f"head {pr['headRefOid'][:8]} is not the enqueued {entry['sha'][:8]}"
+                self.github.comment(f"approval-{entry['sha']}", entry["pr"], "head-moved",
+                                    "head moved after approval; re-review and enqueue the new SHA")
             if why:
                 skipped.append({**entry, "why": why})
             else:
@@ -1105,6 +1129,7 @@ class Queue:
                 # a later push is refused rather than silently adopted.
                 chosen.append({"pr": entry["pr"], "sha": pr["headRefOid"],
                                "pin": entry.get("sha"), "title": pr.get("title", ""),
+                               "issues": issue_numbers(pr, self.cfg.repo),
                                "attempts": entry.get("attempts", 0)})
         return chosen, skipped
 
@@ -1159,11 +1184,14 @@ class Queue:
         except Inconclusive as exc:
             # Nobody observed some files: no verdict, nothing posted, retry later.
             verdict = {"verdict": "inconclusive", "summary": str(exc)}
-            self.requeue(entries, front=True, charge=True)
+            self.requeue(entries, front=True, charge=False)
             state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         except Exception as exc:  # noqa: BLE001 -- a daemon logs and backs off
             verdict = {"verdict": "error", "summary": f"{type(exc).__name__}: {exc}"[:300]}
-            self.requeue(entries, front=True, charge=True)
+            if "green" in batch:
+                verdict["verdict"] = "waiting"
+            else:
+                self.requeue(entries, front=True, charge=True)
             state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         finally:
             # A queue hold keeps only its existing clean candidate view, so
@@ -1197,9 +1225,8 @@ class Queue:
 
     def requeue(self, prs: list[dict], *, front: bool, charge: bool) -> None:
         """Put entries back. ``charge`` counts it against them: a PR that keeps
-        coming back for its own reason (refused merge, unobserved run, a
-        conflict) is dropped after ``max_attempts`` instead of holding the
-        queue head forever; one bumped by another PR's verdict is not."""
+        coming back for its own reason (a code error or conflict) is dropped after
+        ``max_attempts`` instead of holding the queue head forever; one bumped by another PR's verdict is not."""
 
         if self.once:
             return
@@ -1344,39 +1371,124 @@ class Queue:
         self.store.event(batch["id"], f"flake {nodeid} recorded, issue {issue}")
 
     def green(self, batch: dict, shared: list[str]) -> dict:
+        # Persist the tested decision before any remote side effect. Recovery
+        # resumes this candidate and branch instead of minting another batch.
+        batch["green"] = shared
+        self.mirror.git("update-ref", f"refs/mq/candidates/{batch['id']}", batch["candidate"])
+        batch["vehicle"] = {"branch": f"release-mq/{batch['id']}", "sha": batch["candidate"]}
         self.phase(batch, "posting")
-        description = describe(batch["id"], batch["base"], [], len(shared),
+        return self.publish_green(batch)
+
+    def publish_green(self, batch: dict) -> dict:
+        vehicle = batch["vehicle"]
+        if self.mode == "dry-run":
+            self.store.event(batch["id"], f"DRY-RUN would publish {vehicle['branch']} "
+                             f"at {batch['candidate']}")
+            return {"verdict": "green", "summary": "green candidate; dry run"}
+        if "number" not in vehicle:
+            self.mirror.push_candidate(vehicle["branch"], batch["candidate"])
+            found = self.github.find_vehicle(vehicle["branch"])
+            if found is None:
+                lines = []
+                for p in batch["included"]:
+                    if not p["issues"]:
+                        raise ValueError(f"#{p['pr']} has no linked issue for the vehicle")
+                    refs = ", ".join(f"Refs #{n}" for n in p["issues"])
+                    lines.append(f"- #{p['pr']} at `{p['sha']}`. {refs}")
+                body = (f"Tested merge-queue batch {batch['id']}.\n\n"
+                        f"Base: `{batch['base']}`\nCandidate: `{batch['candidate']}`\n\n"
+                        + "\n".join(lines) + f"\n\nEvidence: `{self.where(batch['id'])}`\n")
+                found = self.github.create_vehicle(vehicle["branch"],
+                    f"pbmergeq {batch['id']}: " + ", ".join(f"#{p['pr']}" for p in batch["included"]), body)
+            if found["headRefOid"] != batch["candidate"]:
+                raise ValueError("vehicle head differs from tested candidate")
+            vehicle.update(number=found["number"], url=found["url"])
+            self.store.record({"kind": "vehicle", "batch": batch["id"],
+                               "pr": vehicle["number"], **vehicle})
+            self.store.save()
+        remote = self.github.pr(vehicle["number"])
+        if remote["headRefOid"] != batch["candidate"]:
+            raise ValueError("vehicle head moved after testing")
+        if remote["state"] == "MERGED":
+            return self.confirm_members(batch)
+        if remote["state"] == "CLOSED":
+            self.requeue(batch["included"], front=True, charge=False)
+            return {"verdict": "vehicle-closed", "summary": "vehicle closed; members requeued"}
+        moved = []
+        for p in batch["included"]:
+            if self.github.pr(p["pr"])["headRefOid"] != p["sha"]:
+                self.github.comment(f"approval-{p['sha']}", p["pr"], "head-moved",
+                                    "head moved after approval; re-review and enqueue the new SHA")
+                moved.append(p["pr"])
+        if moved:
+            if not self.github.close_vehicle(batch["id"], vehicle["number"]):
+                return {"verdict": "waiting", "summary": "waiting to close vehicle with moved member"}
+            self.requeue([p for p in batch["included"] if p["pr"] not in moved],
+                         front=True, charge=False)
+            return {"verdict": "approval-stale", "summary": f"heads moved after approval: {moved}"}
+        description = describe(batch["id"], batch["base"], [], len(batch["green"]),
                                self.where(batch["id"]))
         batch["description"] = description
-        posted = [p for p in batch["included"]
-                  if self.github.post_status(batch["id"], p["sha"], "success", description)]
-        summary = ("green: " + ", ".join(f"#{p['pr']}" for p in posted)
-                   + f" ({len(shared)} failure(s) shared with main)")
+        if not self.github.post_status(batch["id"], batch["candidate"], "success", description):
+            return {"verdict": "waiting", "summary": "candidate status refused"}
+        for p in batch["included"]:
+            if not self.github.post_status(batch["id"], p["sha"], "success",
+                    clip(f"Included in vehicle #{vehicle['number']} at {batch['candidate']}"),
+                    context=f"{self.cfg.context}/members"):
+                return {"verdict": "waiting", "summary": "member informational status refused"}
+        summary = f"green vehicle #{vehicle['number']}: " + ", ".join(
+            f"#{p['pr']}" for p in batch["included"])
         if self.mode != "merge":
             return {"verdict": "green", "summary": summary}
+        if any(not p.get("pin") for p in batch["included"]):
+            raise ValueError("merge requires an approved SHA for every member")
         return self.merge(batch, summary)
+
+    def stale_vehicle(self, batch: dict, summary: str) -> dict:
+        if not self.github.close_vehicle(batch["id"], batch["vehicle"]["number"]):
+            return {"verdict": "waiting", "summary": "waiting to close stale vehicle"}
+        self.requeue(batch["included"], front=True, charge=False)
+        return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing"}
 
     def merge(self, batch: dict, summary: str) -> dict:
         self.phase(batch, "merging")
         if self.mirror.remote_base() != batch["base"]:
-            self.requeue(batch["included"], front=True, charge=False)
-            return {"verdict": "green-stale", "summary": summary + "; main moved, re-testing"}
-        merged = []
-        for index, p in enumerate(batch["included"]):
-            if not self.github.merge(batch["id"], p["pr"], p["sha"]):
-                rest = batch["included"][index:]
-                self.requeue(rest[1:], front=True, charge=False)
-                self.requeue(rest[:1], front=True, charge=True)
-                return {"verdict": "partial", "summary": f"merged {merged}; "
-                        f"#{p['pr']} refused, {len(rest)} re-queued"}
-            merged.append(p["pr"])
+            return self.stale_vehicle(batch, summary)
+        vehicle = batch["vehicle"]
+        check = self.github.issue_link(vehicle["number"], batch["candidate"])
+        if check != "success":
+            return {"verdict": "waiting", "summary": f"issue-link {check} on vehicle #{vehicle['number']}"}
+        if not self.github.merge(batch["id"], vehicle["number"], batch["candidate"]):
+            # Strict protection is the final base CAS, including the race after
+            # remote_base above. Reconcile a successful-but-unacknowledged merge.
+            if self.github.pr(vehicle["number"])["state"] == "MERGED":
+                return self.confirm_members(batch)
+            if self.mirror.remote_base() != batch["base"]:
+                return self.stale_vehicle(batch, summary)
+            return {"verdict": "waiting", "summary": "vehicle merge refused; awaiting GitHub"}
+        return self.confirm_members(batch)
+
+    def confirm_members(self, batch: dict) -> dict:
+        vehicle = batch["vehicle"]
+        if self.github.pr(vehicle["number"])["state"] != "MERGED":
+            return {"verdict": "waiting", "summary": "waiting for vehicle MERGED"}
+        for p in batch["included"]:
+            if self.github.pr(p["pr"])["state"] != "MERGED":
+                return {"verdict": "waiting", "summary": f"waiting for member #{p['pr']} MERGED"}
+            key = {"kind": "merge", "pr": p["pr"], "sha": p["sha"], "batch": batch["id"]}
+            if not self.store.recorded(**key):
+                self.store.record({**key, "vehicle": vehicle["number"]})
+        key = {"kind": "merge", "pr": vehicle["number"], "sha": batch["candidate"]}
+        if not self.store.recorded(**key):
+            self.store.record({**key, "batch": batch["id"], "note": "reconciled vehicle"})
         head = self.mirror.remote_base()
-        same = self.mirror.git("fetch", "-q", self.cfg.fetch_url, head, check=False)
-        tree = self.mirror.tree(head) if same.returncode == 0 else ""
+        fetched = self.mirror.git("fetch", "-q", self.cfg.fetch_url, head, check=False)
+        tree = self.mirror.tree(head) if fetched.returncode == 0 else ""
         note = ("main's tree equals the candidate's" if tree == batch["candidate_tree"]
                 else f"main's tree {tree[:8]} differs from the candidate's")
-        self.store.event(batch["id"], f"merged {merged}; {note}")
-        return {"verdict": "merged", "summary": f"merged {merged}; {note}"}
+        summary = f"merged vehicle #{vehicle['number']} and members; {note}"
+        self.store.event(batch["id"], summary)
+        return {"verdict": "merged", "summary": summary}
 
     def culprit(self, batch: dict, outdir: Path, new: list[str]) -> dict:
         included = batch["included"]
@@ -1420,19 +1532,18 @@ class Queue:
     # -- loop ---------------------------------------------------------------
 
     def resume(self) -> None:
-        """A batch a restart interrupted runs again from the top.
-
-        Every verdict a batch reaches is recorded in the ledger before the
-        batch moves on, so re-running posts nothing twice and merges nothing
-        twice; PrismaBuild attaches identical shard actions.
-        """
+        """Retain green vehicles; retry earlier interruptions with their pins."""
 
         batch = self.store.state.get("batch")
+        if batch and "green" in batch:
+            self.store.event(batch["id"], "restart retained tested vehicle for reconciliation")
+            return
         if batch:
             self.store.event(batch["id"], f"restart found it at phase {batch['phase']}; "
                                           "re-queued its entries at the front")
             for entry in reversed(batch.get("entries", [])):
-                self.store.add(entry["pr"], entry.get("sha"), front=True)
+                self.store.add(entry["pr"], entry.get("sha"), front=True,
+                               attempts=entry.get("attempts", 0))
             self.store.state["batch"] = None
             self.store.save()
 
@@ -1516,6 +1627,16 @@ class Queue:
     def tick(self) -> dict | None:
         if self.store.ingest():
             self.store.event(None, f"queue: {[e['pr'] for e in self.store.state['queue']]}")
+        batch = self.store.state.get("batch")
+        if batch and "green" in batch:
+            if self.store.state["not_before"] > time.time():
+                return None
+            try:
+                verdict = self.publish_green(batch)
+            except Exception as exc:
+                verdict = {"verdict": "waiting", "summary": f"{type(exc).__name__}: {exc}"[:300]}
+                self.store.state["not_before"] = time.time() + self.cfg.stuck_backoff_s
+            return self.finish_batch(batch, verdict)
         failed_heads = self.refresh_known_failure_blocks()
         if not self.store.state["queue"] or self.store.state["not_before"] > time.time():
             return None
@@ -1632,7 +1753,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     enqueue = sub.add_parser("enqueue", help="queue a pull request (any process)")
     enqueue.add_argument("pr", type=int, help="pull request number")
-    enqueue.add_argument("sha", nargs="?",
+    enqueue.add_argument("sha", type=approved_sha,
                          help="head SHA the caller approved; a later push is refused")
     daemon = sub.add_parser("daemon", help="run the queue until stopped")
     daemon.add_argument("--mode", choices=MODES, required=True,
@@ -1685,6 +1806,8 @@ def main(argv: list[str] | None = None) -> int:
     check_mode(cfg, args.mode)
     with single_instance(cfg.state_dir):
         queue = open_queue(cfg, args.mode, once=args.command == "once")
+        if args.command == "once" and args.mode == "merge":
+            parser.error("once --mode merge has no approved SHAs; use enqueue PR SHA and daemon")
         queue.resume()
         if args.command == "once":
             batch = queue.run_batch([{"pr": n, "sha": None, "at": now()} for n in args.prs])
