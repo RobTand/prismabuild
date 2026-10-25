@@ -72,6 +72,46 @@ def test_path_observation_resolves_mount_after_autofs_activation(tmp_path, monke
     assert observed["mountinfo"] == nfs.strip()
 
 
+def test_path_observation_reports_the_symlink_targets_mount(tmp_path, monkeypatch):
+    backing = tmp_path / "backing"
+    (backing / "model").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(backing, target_is_directory=True)
+    parent_mount = f"1 0 0:1 / {tmp_path} rw - ext4 /dev/local rw\n"
+    target_mount = f"2 1 0:2 / {backing} rw - nfs4 server:/stage rw\n"
+    monkeypatch.setattr(probe, "open",
+        lambda *_a, **_kw: io.StringIO(parent_mount + target_mount), raising=False)
+
+    observed = probe.observe_path(str(link / "model"))
+
+    assert observed["present"] is True
+    assert observed["mountinfo"] == target_mount.strip()
+
+
+def test_bind_cleans_local_fixture_when_shared_temp_creation_fails(tmp_path, monkeypatch):
+    make_temp = tempfile.mkdtemp
+    created = []
+
+    def make_fixture(suffix=None, prefix=None, dir=None):
+        if dir == "/mnt/shared":
+            raise PermissionError("shared fixture unavailable")
+        path = make_temp(suffix=suffix, prefix=prefix, dir=dir)
+        created.append(Path(path))
+        return path
+
+    image = "sha256:" + "a" * 64
+    monkeypatch.setattr(probe, "host_local_root", lambda: {"path": str(tmp_path)})
+    monkeypatch.setattr(probe, "run_docker",
+        lambda *_a, **_kw: {"returncode": 0, "stdout": image})
+    monkeypatch.setattr(probe.tempfile, "mkdtemp", make_fixture)
+
+    with pytest.raises(PermissionError, match="shared fixture unavailable"):
+        probe.measure_bind(image=image)
+
+    assert len(created) == 1
+    assert not created[0].exists()
+
+
 def test_sparklina_floor_blocks_the_copy():
     # Sparklina: 147 GiB free, 46 GiB floor. The 1.5N+20 rule needs
     # 265.2 GiB free, so it fails before the floor matters.

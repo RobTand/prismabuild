@@ -438,5 +438,303 @@
     "Different installed image IDs on the two hosts; correctness fixtures only.",
     "No runtime publication, enablement, mount removal or campaign proof.",
     "CAS receipts and scope cleanup establish neither reader-open tier evidence nor power-loss durability."
-  ]
+  ],
+  "review_revision": {
+    "scope": "PR #2294 review round 1: staged mount design/acceptance amendment; deterministic probe cleanup and symlink corrections only.",
+    "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+    "resources_per_action": {
+      "cpu": 1,
+      "mem_gb": 2,
+      "gpu": 0,
+      "native_threads": 1,
+      "priority": -10
+    },
+    "negative_control": {
+      "action_key": "1cd8ca47c566caf2668128ea948f7ee5f79818108fbc1017d9c817ea7e6e69d1",
+      "terminal": {
+        "state": "failed",
+        "status": "failed",
+        "returncode": 1,
+        "host": "sparky",
+        "scope_cleanup_complete": true
+      },
+      "snapshot": {
+        "commit": "11a62e04697eab91f76904dde0e9d55a210fa430",
+        "input": {
+          "bytes": 44906751,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "35e9bf533bbfdb6f5b87296fc1aad4af79aecd84f6c537a5ccc4d58bc1300f0e"
+        },
+        "parent": "57d911fea54cb230cae23c7503fd8f06c51fbc1e",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source": {
+        "tools/fleet/gate_1730_probe.py": {
+          "sha256": "953df8c9d8b35222e37eac2abb31abe3d03583782ed260880a9befbe6fe0c519",
+          "matches_current": false
+        },
+        "tests/test_gate_1730_probe.py": {
+          "sha256": "1dbf14de398424b0bc9861b2da3b3339aeb8e5a27f4359af7a727aed0fcf8d60",
+          "matches_current": true
+        }
+      },
+      "log": {
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1cd8ca47c566caf2668128ea948f7ee5f79818108fbc1017d9c817ea7e6e69d1/8a0d6988bf955938cf633a6933ca97357acd5773773ed45a3f37ff6746575ee9/00000001.stdout.b6820051c2dbc446edbf16375b514f99d8d032c6987153a07a7addc6e1568b69.log",
+        "bytes": 13913,
+        "sha256": "b6820051c2dbc446edbf16375b514f99d8d032c6987153a07a7addc6e1568b69",
+        "hash_verified": true
+      },
+      "summary": "2 failed, 17 passed in 0.24s",
+      "reconciliation": {
+        "collected": 19,
+        "ran": 19,
+        "skipped": [],
+        "problems": []
+      },
+      "receipt_expected": false,
+      "failures": [
+        "FAILED tests/test_gate_1730_probe.py::test_path_observation_reports_the_symlink_targets_mount",
+        "FAILED tests/test_gate_1730_probe.py::test_bind_cleans_local_fixture_when_shared_temp_creation_fails"
+      ]
+    },
+    "tests": {
+      "action_key": "3912cf06fe8681645f207216bcaf2fb51cd89cdceed88c5bfbe4a2351174630c",
+      "terminal": {
+        "state": "done",
+        "status": "executed",
+        "returncode": 0,
+        "host": "sparky",
+        "scope_cleanup_complete": true
+      },
+      "snapshot": {
+        "commit": "fc2e2fc0f0f02e506bac10525c9dbfe3f4ca2559",
+        "input": {
+          "bytes": 45048257,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "a54de14e1a9ee9ad088f8d1de3c902ffef4951b64344ea69f9b2ee09c700c18c"
+        },
+        "parent": "57d911fea54cb230cae23c7503fd8f06c51fbc1e",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source": {
+        "tools/fleet/gate_1730_probe.py": {
+          "sha256": "0b6f8b0c48e7717315797fe1f97cf44086a35f371f72f61670600a6b0c715fad",
+          "matches_current": true
+        },
+        "tests/test_gate_1730_probe.py": {
+          "sha256": "1dbf14de398424b0bc9861b2da3b3339aeb8e5a27f4359af7a727aed0fcf8d60",
+          "matches_current": true
+        }
+      },
+      "log": {
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3912cf06fe8681645f207216bcaf2fb51cd89cdceed88c5bfbe4a2351174630c/ef95d085ab648d29f4d82b4f5703182784f7ac9216c40caecfe5f6da3f2ea278/00000001.stdout.a0371047dd629f70b7cdaa800beafe54a53205d033e459d59eab68032b4c5fd8.log",
+        "bytes": 13507,
+        "sha256": "a0371047dd629f70b7cdaa800beafe54a53205d033e459d59eab68032b4c5fd8",
+        "hash_verified": true
+      },
+      "summary": "19 passed in 0.23s",
+      "reconciliation": {
+        "collected": 19,
+        "ran": 19,
+        "skipped": [],
+        "problems": []
+      },
+      "claim_sha256": "3dfaa8cb03e5325d731220f72b187c0af5dc53be1306a9acaae9d6aa526196bd",
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/39/3912cf06fe8681645f207216bcaf2fb51cd89cdceed88c5bfbe4a2351174630c.json",
+        "receipt_sha256": "9c280b3f486ac816565feacd3551839a4b936ec6cf71eb6d9b29ea658cec853c",
+        "action_manifest_sha256": "a704de66db1113e6dba819c8e3b4d56806e7c0976ed902c23ed7d0c40073efa6",
+        "result": {
+          "bytes": 10546,
+          "sha256": "4598ee75b8e8c08960dcce6ea843f9d73f71d315b069d23989497170d7ac4926"
+        }
+      },
+      "verification": {
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "not_checked": [
+          "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+        ]
+      }
+    },
+    "bind_smoke": {
+      "action_key": "037529888ad2fd1d771a0c0dc19a28a3ae99eaf755f111f8b3eb9a38ad0f4bb7",
+      "terminal": {
+        "state": "done",
+        "status": "executed",
+        "returncode": 0,
+        "host": "sparky",
+        "scope_cleanup_complete": true
+      },
+      "snapshot": {
+        "commit": "4d25203a001bd90b5bc5b5dd0aba1638da735d79",
+        "input": {
+          "bytes": 45048249,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "169941cb296596c8b091e452674813029aad6be8d25f642c65ffe74ac01631fb"
+        },
+        "parent": "f4e82d0eb0333264baf4a47eb485de6f29ee90f8",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source": {
+        "tools/fleet/gate_1730_probe.py": {
+          "sha256": "0b6f8b0c48e7717315797fe1f97cf44086a35f371f72f61670600a6b0c715fad",
+          "matches_current": true
+        },
+        "tests/test_gate_1730_probe.py": {
+          "sha256": "92536312e40a7adff8320dea981f299172a2dd736e840e9e0aa945548fb18c80",
+          "matches_current": false
+        }
+      },
+      "log": {
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/037529888ad2fd1d771a0c0dc19a28a3ae99eaf755f111f8b3eb9a38ad0f4bb7/4ae45e5f6e36744f7483404d7a27fbdccc4eaf5a2d530be73a1d4bbbf54b1107/00000001.stdout.a293e35e33a1a104500bdb0b4b5f399996cf555304c46adc1f5630dd7af9a81f.log",
+        "bytes": 6716,
+        "sha256": "a293e35e33a1a104500bdb0b4b5f399996cf555304c46adc1f5630dd7af9a81f",
+        "hash_verified": true
+      },
+      "claim_sha256": "f2533c4f380504368c95f41810b71a5620c1c10e895fc2b84a00e222ec75d966",
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/03/037529888ad2fd1d771a0c0dc19a28a3ae99eaf755f111f8b3eb9a38ad0f4bb7.json",
+        "receipt_sha256": "66c2eade07e3defb9509584e158bf9a3c8cfc71063d6293c74a91d688998910f",
+        "action_manifest_sha256": "618cfdc6efc61f9afc4a98e8f2fe4592edbb6908b012466cf742870707df59ac",
+        "result": {
+          "bytes": 3756,
+          "sha256": "132328b01e32ca6e0232a67b42589560058cbdcc25c0590d226d05204c538e26"
+        }
+      },
+      "verification": {
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "not_checked": [
+          "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+        ]
+      },
+      "bind": {
+        "image": "sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a",
+        "nested_shows_local_only": true,
+        "readonly_write_refused": true,
+        "missing_source_refused": true,
+        "fixture_cleanup": {
+          "source_absent": true,
+          "shadow_absent": true
+        }
+      }
+    },
+    "rebased_tests": {
+      "action_key": "e5d2786aab69d7f0b83386999634e331eb12ebef2d91c24d74decf1cfbcee6f4",
+      "terminal": {
+        "state": "done",
+        "status": "executed",
+        "returncode": 0,
+        "host": "sparky",
+        "scope_cleanup_complete": true
+      },
+      "snapshot": {
+        "commit": "e571cd8fcfdb2c10aad831756edb54bbe1fa71a6",
+        "input": {
+          "bytes": 44944869,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "87657fd983cd6ae982295d5413c6a83c60a819d8f9f78fc81ea835bb6786a23b"
+        },
+        "parent": "27909f06c6a76e7c43982a66d6986e11daf586e8",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "source": {
+        "tools/fleet/gate_1730_probe.py": {
+          "sha256": "0b6f8b0c48e7717315797fe1f97cf44086a35f371f72f61670600a6b0c715fad",
+          "matches_current": true
+        },
+        "tests/test_gate_1730_probe.py": {
+          "sha256": "1dbf14de398424b0bc9861b2da3b3339aeb8e5a27f4359af7a727aed0fcf8d60",
+          "matches_current": true
+        }
+      },
+      "log": {
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e5d2786aab69d7f0b83386999634e331eb12ebef2d91c24d74decf1cfbcee6f4/999601842f79fc5e0a8f01e4c6e27364810a02967e59b577674dd6b20f86124c/00000001.stdout.7303b751f12e76b2c03d8397d1b6517f89c827879201a77c964d88551b85a52f.log",
+        "bytes": 13507,
+        "sha256": "7303b751f12e76b2c03d8397d1b6517f89c827879201a77c964d88551b85a52f",
+        "hash_verified": true
+      },
+      "summary": "19 passed in 0.23s",
+      "reconciliation": {
+        "collected": 19,
+        "ran": 19,
+        "skipped": [],
+        "problems": []
+      },
+      "claim_sha256": "7e310baf74f9ed5816cbb9171b846b47092648241a70ec2b51d295f2768e0c5c",
+      "receipt": {
+        "path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e5/e5d2786aab69d7f0b83386999634e331eb12ebef2d91c24d74decf1cfbcee6f4.json",
+        "receipt_sha256": "3e79d635edccc0107165d937d1791f4c6af5375f56417067de9bf7c615c4ae53",
+        "action_manifest_sha256": "5c5472002c9a0fee04c06779892b7a42a0e6715deecb55bac52e70cec6ea237d",
+        "result": {
+          "bytes": 10546,
+          "sha256": "a47729d0dd4c6209600ce82ff8c4d0a3af526641916ab86fd0349ec2e8733390"
+        }
+      },
+      "verification": {
+        "checks_passed": true,
+        "checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "not_checked": [
+          "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+        ]
+      }
+    },
+    "intermediate_runs": [
+      {
+        "action_key": "557a3abe4bcc2ace998e358057be058d1838298c49b38362cc4f834dbe92a19d",
+        "outcome": "Initial test revision reproduced both faults: 2 failed, 17 passed."
+      },
+      {
+        "action_key": "6d9d17cc97b7b3322d06246e9a11eb8936919e0336d96315cf830cd810d1867f",
+        "outcome": "1 failed, 18 passed. Cleanup injection accepted only keyword dir and missed TemporaryDirectory positional calls. Final test uses the native mkdtemp signature; final negative and positive controls above use identical test bytes."
+      }
+    ],
+    "limitations": [
+      "No staged Docker lease bridge, mount resolver, receipt enum, host enablement, runtime publication or workload conformance implemented.",
+      "No new A8S payload reads or performance measurement. Original capacity and both-Spark bind evidence retain their original scope.",
+      "CAS verification checks receipt/claim/payload binding and hashes; it does not independently verify worker attestation or power-loss durability."
+    ]
+  }
 }
