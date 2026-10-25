@@ -6388,6 +6388,11 @@ The child captures the local file signature before copying and records it only
 as successful after completion, so a concurrent state update stays pending.
 These file identities are diagnostic retry hints, never admission authority.
 
+Slice 2b also supplies an explicitly owned `LocalMirrorPublisher` session for
+future host-hub installation. Existing workers keep the one-shot publisher.
+The [queue-hint contract](#queue-change-hints-on-the-queue-host-1894) documents
+its watch ownership, completion marker, recovery bounds and shutdown behavior.
+
 The files under `reservations/<host>/adaptive/` are independent diagnostic
 copies. The CPU and GPU copies add `_snapshot.source=host-local` and a copy
 timestamp, but retain the original `sampled_unix`. `pbstatus` and `pbmetrics` classify
@@ -10344,6 +10349,33 @@ reads no record bodies, and v1 receives no new topic events.
 through confirmed NFS reads within their original budget. Per-action sidecars
 continue to use the existing bounded action readers. No hint establishes an
 absence, refusal or capacity verdict.
+
+`adaptive_mirrors.LocalMirrorPublisher` supplies an explicitly owned local
+publication session. It watches the configured source directory and its parent
+before observing the fixed source files. Its observer flock permits one session
+per local state directory. Dirty source state survives the existing one-second
+start deadline and changes during a copy. The context manager owns and joins
+its observer thread; a host loop can instead use `reconcile()` and `descriptors`.
+Known older publishers are watched through verified PID/start ticks and pidfd.
+An already exited owner cannot be reused as a wake source. Closing the observer
+leaves an outstanding copy's independent flock intact until actual process exit.
+Existing workers retain their one-shot publication. The host hub owns session
+installation in slice 7.
+
+Copies retain source timestamps. Confirmed source removal removes its shared
+mirror; source-directory identity loss or unreadable evidence remains unknown.
+Byte-equivalent replacements acknowledge the local signature without another
+shared payload or completion write. Changed freshness and proof fields still
+copy. The shared completion marker follows payload changes, removals, initial
+publication, failure or recovery, and records `nonce`, `status`, `changed_files`
+and `finished_unix`. A marker failure cannot report local success. Counters
+report invalidations, coalescing, starts, completions, failures and source failures.
+A healthy clean observer has no timer. Dirty work arms the previous start plus
+one second. Copy or unavailable local-source recovery uses 0.25 seconds doubling
+to five seconds, no earlier than that start deadline, cancelled by source change,
+recovery or close. An unknown legacy lock owner uses nonblocking attempts after
+50 milliseconds doubling to one second until owner/result notification, clean
+state or close. This introduces no new blocking-operation or policy deadline.
 
 `queue_bell_input_changes.InputChanges` compares detached authoritative reader
 observations. Each observation carries semantic meaning, explicit evidence

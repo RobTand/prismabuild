@@ -1279,6 +1279,24 @@ move-in are observed. Unsafe byte-read shapes withdraw coverage. These are
 source capabilities until the Principal Engineer publishes a reviewed runtime.
 Verify all required topics on the actual endpoint before enabling a consumer.
 
+`LocalMirrorPublisher` is available for explicit host-hub ownership in slice 7.
+It is not installed by existing worker loops. Its local observer singleton
+watches source changes and copy completion, and its context manager joins the
+observer at close. An active copy retains its original publication flock until
+process exit. Inspect its `invalidations`, `starts`, `completed`, `failed`,
+`source_failures`, `coalesced`, `dirty` and `retry_at` diagnostics. The fixed
+source set comes from `adaptive_snapshot.FILES` and the existing configured
+local/shared paths. Confirmed removals retire mirrors. Unreadable or replaced
+source roots remain unknown. Equal payloads create no shared rewrite.
+
+Dirty publication waits until the previous start plus one second. Copy failure
+and unavailable local-source recovery use 0.25 seconds doubling to five seconds,
+cancelled by source change, recovery or close. A verified older owner uses pidfd;
+an unknown legacy owner uses nonblocking 50-millisecond-to-one-second retry,
+cancelled by owner/result notification, clean state or close. A clean observer
+has no recurring deadline. These timers neither extend active-copy ownership
+nor change placement or drain maturity.
+
 Later consumers use `InputChanges` after authoritative reads to coalesce
 identical observations and their own evaluated writes. Keep evidence state and
 proof maturity in the observation, even if capacity rounds to the same value.
@@ -4701,6 +4719,12 @@ publication flock. For an absent or stale copy, inspect `publisher-owner.json`
 `<digest>.adaptive-cpu-v1` directory. Compare nonces before attributing a result.
 No publication timeout establishes process exit or authorizes deleting locks.
 Other shared claim operations remain exposed to a degraded mount.
+
+The additive slice-2b `LocalMirrorPublisher` session is available for future
+host-hub installation. Existing worker loops retain the one-shot path above.
+The bell v2 operating section documents observer ownership, completion and
+recovery diagnostics, deadlines and cancellation. Source support does not
+establish that a live worker installed the session.
 
 A measurement with missing, stale, future-dated or incomplete CPU telemetry
 is refused as `measurement_sampler_unknown` (`fresh: false`,
