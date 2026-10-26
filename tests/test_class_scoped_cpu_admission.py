@@ -111,6 +111,14 @@ def test_unknown_cpu_host_tags_cannot_establish_class_exclusion(fields):
         {"tags": ["gb10"]}, [cpu_offer, _offers()[1]])
 
 
+@pytest.mark.parametrize("fields", [{}, {"has_gpu": None}, {"has_gpu": 0},
+                                   {"has_gpu": "false"}])
+def test_unknown_gpu_presence_cannot_establish_class_exclusion(fields):
+    unknown_offer = {"host": "cpu-arm", "tags": ["gb10"], **fields}
+    assert not pool.PoolQueue._excluded_from_cpu_hosts(
+        {"tags": ["gb10"]}, [*_offers(), unknown_offer])
+
+
 def test_a_stale_cpu_offer_keeps_portable_work_portable():
     stale = {"host": "dl380g10", "has_gpu": False, "tags": ["x86"],
              "announced_unix": FIRST - 10000.0}
