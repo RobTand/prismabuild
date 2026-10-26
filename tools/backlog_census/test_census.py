@@ -77,6 +77,18 @@ class GraphTests(unittest.TestCase):
                      issue(2, body="Sub-issue of #3"), issue(3))
         self.assertEqual(Graph(s.issues).trace(k(1))[0], k(3))
 
+    def test_parent_declaration_keeps_d50_descendants_together(self):
+        repo = "RobTand/prismaquant"
+        s = snapshot(issue(2411, repo=repo),
+                     issue(2430, repo=repo, body="Parent: #2411. D50 item 4."),
+                     issue(2458, repo=repo, body="Part of #2430"),
+                     issue(2911, repo=repo, native_parent=k(2430, repo)))
+        self.assertEqual(set(rollup(s)["units"]), {k(2411, repo)})
+
+    def test_split_from_does_not_declare_parent(self):
+        s = snapshot(issue(1, body="Split from #2"), issue(2))
+        self.assertEqual(Graph(s.issues).links[k(1)].source, "none")
+
     def test_closed_native_parent_never_falls_back_to_text(self):
         s = snapshot(issue(1, native_parent=k(2), body="Part of #3"), issue(2, state="CLOSED"), issue(3))
         self.assertEqual(Graph(s.issues).trace(k(1))[0], k(1))
@@ -112,6 +124,38 @@ class EvidenceTests(unittest.TestCase):
         found = candidates(s)
         self.assertEqual(found[0]["kind"], "duplicate_cluster")
         self.assertFalse(any(r["action"] == "close" for r in write_list(s, found)))
+
+    def test_three_similar_titles_are_one_cluster(self):
+        s = snapshot(issue(1), issue(2), issue(3), issue(4, title="[P1] distinct task"))
+        clusters = [c for c in candidates(s) if c["kind"] == "duplicate_cluster"]
+        self.assertEqual([c["tickets"] for c in clusters], [[k(1), k(2), k(3)]])
+
+    def test_done_when_checklist_and_prose_are_not_completion_claims(self):
+        s = snapshot(issue(1, body="Done when:\n- [ ] fixed behavior is tested\nImplementation will be completed."))
+        self.assertFalse(any(c["kind"] == "claim_without_evidence" for c in candidates(s)))
+
+    def test_completion_claims_are_scoped_to_comments_or_body_status(self):
+        s = snapshot(issue(1, body="Status: fixed in the serving adapter"),
+                     issue(2, comments=[{"url": "https://github.com/RobTand/prismabuild/issues/2#issuecomment-1",
+                                          "body": "This is resolved by the new adapter."}]),
+                     issue(3, body="Status: landed in https://github.com/RobTand/prismabuild/pull/4"),
+                     issue(4, body="We will test what was fixed in the previous version."))
+        claims = [c for c in candidates(s) if c["kind"] == "claim_without_evidence"]
+        self.assertEqual([c["tickets"] for c in claims], [[k(1)], [k(2)]])
+
+    def test_closed_parent_with_open_ancestor_proposes_known_target(self):
+        s = snapshot(issue(1, native_parent=k(2)), issue(2, state="CLOSED", native_parent=k(3)),
+                     issue(3))
+        row = next(r for r in write_list(s, []) if r["issue"] == k(1))
+        self.assertEqual((row["action"], row["target"], row["status"]),
+                         ("reparent", k(3), "needs_hindsight"))
+        self.assertIn("https://github.com/RobTand/prismabuild/issues/3", row["proof"])
+
+    def test_closed_parent_with_ambiguous_ancestry_stays_unresolved(self):
+        s = snapshot(issue(1, native_parent=k(2)),
+                     issue(2, state="CLOSED", body="Part of #3\nPart of #4"), issue(3), issue(4))
+        row = next(r for r in write_list(s, []) if r["issue"] == k(1))
+        self.assertEqual((row["action"], row["target"]), ("create_parent", None))
 
     def test_default_branch_fix_requires_issue_link_ancestry_and_matching_head(self):
         proof = {"proof": "https://github.com/RobTand/prismabuild/pull/3", "commit": "abc",
