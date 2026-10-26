@@ -13,10 +13,12 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import subprocess
 import sys
 import time
 import uuid
+from typing import Literal, NamedTuple
 
 SCHEMA = 'prismabuild.gpu_capacity.v1'
 GB10_POWER_SOURCE = 'https://docs.nvidia.com/dgx/dgx-spark/hardware.html'
@@ -461,3 +463,334 @@ def collect(snapshot, records, *, timeout_s=1.0, proc_root=Path('/proc'), device
         'gpu_process_bytes': bool(snapshot.get('gpu_process_bytes', True)),
         'jobs': jobs, 'errors': errors,
     }
+
+
+# Container readiness is independent of NVML capacity (#1895).
+RUNTIME_REASON = 'gpu_container_runtime_unready'
+RUNTIME_SCHEMA = 'prismabuild.gpu-container-runtime.v1'
+RUNTIME_GATE = Path('/run/prismabuild/gpu-container-runtime.json')
+RUNTIME_ENABLE = Path('/etc/prismabuild/gpu-container-runtime.enabled')
+NVIDIA_CONTROL_DEVICE = Path('/dev/nvidiactl')
+RUNTIME_PROBE_ENV = 'PRISMABUILD_GPU_RUNTIME_PROBE'
+RUNTIME_PROBE_LABEL = 'prismabuild.runtime-readiness'
+RUNTIME_PROBE_IMAGE = ('localhost/prismaquant/spark-vllm-nccl230@sha256:'
+                       '5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a')
+
+
+def _root_owned_directory_fd(path):
+    """Walk from / without following symlinks or trusting lexical stat results."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('host policy path must be absolute without traversal')
+    fd = None
+    try:
+        for name in path.parts:
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=fd)
+            if fd is not None:
+                os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('host policy directory is writable outside root')
+        return fd
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+
+
+def _root_owned_regular_fd(path):
+    path = Path(path)
+    parent = _root_owned_directory_fd(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('host policy file is not root-owned and regular')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def runtime_fence_enabled():
+    """One root-owned host opt-in, shared by installed clients and workers.
+
+    Absence, an invalid file or unreadability preserves pre-#1895 behavior.
+    No environment variable may enable host admission policy.
+    """
+    try:
+        with os.fdopen(_root_owned_regular_fd(RUNTIME_ENABLE), 'rb') as stream:
+            return stream.read(16) == b'enabled\n'
+    except (OSError, ValueError):
+        return False
+
+
+def runtime_probe_command():
+    """No CUDA workload: exercise CDI injection, then exit immediately."""
+    return ['docker', 'run', '--pull=never', '--network=none',
+            '--device=nvidia.com/gpu=all', '--entrypoint=/bin/true', RUNTIME_PROBE_IMAGE]
+
+
+def runtime_probe_request(token):
+    """One recipe for client sealing and the claim-time fence exception.
+
+    Exclusive pbrun submissions have a 16 GiB host-memory floor. Declare it
+    explicitly rather than asking for a request the client cannot seal.
+    """
+    return {'command': runtime_probe_command(), 'demand': {'cpu': 1, 'mem_gb': 16, 'gpu': 1},
+            'container_images': [RUNTIME_PROBE_IMAGE], 'execution_timeout_s': 30.0,
+            'gpu_exclusive': True, 'gpu_memory_gb': 1.0,
+            'environment': {RUNTIME_PROBE_ENV: token, 'OMP_NUM_THREADS': '1',
+                            'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1'}}
+
+
+def runtime_probe_options(checkout, token):
+    recipe = runtime_probe_request(token)
+    demand = recipe['demand']
+    return ['--cwd', str(checkout), '--transport', 'pool', '--here', '--gpu', '--exclusive',
+            '--gpu-capacity', str(demand['gpu']), '--cpus', str(demand['cpu']),
+            '--demand', 'mem_gb=' + str(demand['mem_gb']),
+            '--gpu-memory-gb', str(recipe['gpu_memory_gb']),
+            '--container-image', recipe['container_images'][0],
+            '--timeout-s', str(recipe['execution_timeout_s']),
+            *[arg for key, value in recipe['environment'].items() for arg in ('--env', key + '=' + value)],
+            '--detach', '--', *recipe['command']]
+
+
+class ContainerLaunchOutcome(NamedTuple):
+    kind: Literal['payload_exit', 'payload_started', 'host_fault', 'launch_error', 'unknown']
+    payload_started: bool | None
+    subtype: str | None = None
+    daemon_error: str = ''
+    payload_returncode: int | None = None
+    host_check: dict | None = None
+
+    def as_record(self):
+        return self._asdict()
+
+
+def _runtime_source_exists(path):
+    """Only ENOENT proves absence; permission and lookup errors stay unknown."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        pass
+    return True
+
+
+def container_launch_outcome(container, *, cdi_sources, source_exists=_runtime_source_exists):
+    """Classify daemon inspect state only. Callers must verify container ownership.
+
+    Exit 127 and OCI text alone prove nothing. A nonzero StartedAt means the
+    payload ran, even when its output exactly imitates a daemon failure.
+    """
+    state = container.get('State', {})
+    started = state.get('StartedAt')
+    if isinstance(started, str) and started and not started.startswith('0001-01-01T00:00:00'):
+        exited = state.get('Running') is False
+        code = state.get('ExitCode') if exited else None
+        return ContainerLaunchOutcome('payload_exit' if exited else 'payload_started', True,
+                                      payload_returncode=code if type(code) is int else None)
+    if (started != '0001-01-01T00:00:00Z' or state.get('Running') is not False
+            or not isinstance(state.get('Error'), str) or not state['Error']):
+        return ContainerLaunchOutcome('unknown', None)
+    return never_started_runtime_error(state['Error'], nvidia=container_requests_nvidia(container),
+                                       cdi_sources=cdi_sources, source_exists=source_exists)
+
+
+def container_nvidia_intent(container) -> Literal['none', 'candidate', 'nvidia']:
+    """Pure request intent; an unspecified GPU driver does not identify a vendor."""
+    host = container.get('HostConfig', {})
+    requests = host.get('DeviceRequests', []) or []
+    # A generic GPU capability also describes AMD requests. An explicit other
+    # runtime cannot become NVIDIA intent through a device or diagnostic hint.
+    if host.get('Runtime') not in (None, '', 'runc', 'nvidia'):
+        return 'none'
+    if host.get('Runtime') == 'nvidia' or any(
+        request.get('Driver') == 'nvidia'
+        or request.get('Driver') == 'cdi' and any(
+            str(device).startswith('nvidia.com/gpu=') for device in request.get('DeviceIDs', []) or [])
+        for request in requests):
+        return 'nvidia'
+    if any(not request.get('Driver') and any(
+            'gpu' in capabilities for capabilities in request.get('Capabilities', []) or [])
+        for request in requests):
+        return 'candidate'
+    return 'none'
+
+
+def nvidia_host_present():
+    """Root's NVIDIA control device identifies the host; query exits do not.
+
+    Trust directory descriptors and the node's type, owner and device number,
+    without opening a driver or following a caller-replaceable symlink. NVIDIA
+    documents this control device as character 195:255, normally mode 0666:
+    https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification
+    """
+    try:
+        parent = _root_owned_directory_fd(NVIDIA_CONTROL_DEVICE.parent)
+        try:
+            info = os.stat(NVIDIA_CONTROL_DEVICE.name, dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+    except (OSError, ValueError):
+        return False
+    return (stat.S_ISCHR(info.st_mode) and info.st_uid == 0
+            and os.major(info.st_rdev) == 195 and os.minor(info.st_rdev) == 255)
+
+
+def container_requests_nvidia(container):
+    """Resolve a default-driver candidate using independent trusted host identity."""
+    intent = container_nvidia_intent(container)
+    return intent == 'nvidia' or intent == 'candidate' and nvidia_host_present()
+
+
+def nvidia_driver_failure():
+    """A broker-owned bounded NVML query; unavailable checks are not failures."""
+    command = [NVIDIA_SMI, '--query-gpu=uuid', '--format=csv,noheader']
+    try:
+        os.close(_root_owned_regular_fd(NVIDIA_SMI))
+        result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # NVIDIA documents hardware/driver faults: power (8), driver absent (9),
+    # interrupts (10), NVML absent (12), infoROM corruption (14), lost GPU (15).
+    # https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value
+    # 255 also covers "other error", so cannot positively prove a driver fault.
+    fault = result.returncode in {8, 9, 10, 12, 14, 15}
+    kind = ('nvidia_driver_query_failed' if fault else
+            'nvidia_driver_query_succeeded' if result.returncode == 0 else 'nvidia_driver_query_unavailable')
+    return {'kind': kind, 'command': command, 'returncode': result.returncode}
+
+
+def never_started_runtime_error(error, *, nvidia, cdi_sources, source_exists=_runtime_source_exists):
+    """Error text selects a check. Only independent host evidence can fence."""
+    # Docker/runc quote payload-controlled entrypoints, args, labels and env.
+    # No text inside those fields may select a host check, even on a broken host.
+    hint = re.sub(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`[^`]*`", ' ', error)
+    lower = hint.lower()
+    if nvidia and 'oci runtime create failed' in lower:
+        missing = re.search(r'failed to fulfil mount request: open (/[^\s]+): no such file or directory', hint)
+        if missing and missing[1] in cdi_sources and not source_exists(missing[1]):
+            return ContainerLaunchOutcome('host_fault', False, 'cdi_mount_missing', error[:4096],
+                host_check={'kind': 'cdi_mount_missing', 'host_path': missing[1]})
+        nvidia_error = re.search(
+            r'nvidia-container-(?:cli|runtime): (?:initialization|device) error: ([^\n]+)', lower)
+        host_cause = nvidia_error and nvidia_error[1].startswith((
+            'nvml error: driver not loaded', 'nvml error: driver/library version mismatch',
+            'failed to initialize nvml', 'nvml error: gpu is lost'))
+        if host_cause and 'unknown device' not in nvidia_error[1]:
+            check = nvidia_driver_failure()
+            if check is not None and check['kind'] == 'nvidia_driver_query_failed':
+                return ContainerLaunchOutcome('host_fault', False, 'nvidia_initialization_failed', error[:4096],
+                                              host_check=check)
+            return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096], host_check=check)
+    return ContainerLaunchOutcome('launch_error', False, daemon_error=error[:4096])
+
+
+def cdi_mount_sources(directory):
+    """Read NVIDIA's generated JSON/YAML hostPath scalars; never rewrite CDI."""
+    sources = set()
+    for path in Path(directory).iterdir():
+        if path.suffix not in {'.json', '.yaml', '.yml'}:
+            continue
+        # A partial/unreadable spec grants no positive classification.
+        with os.fdopen(_root_owned_regular_fd(path), 'r') as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError('CDI spec exceeds accepted size')
+        if path.suffix == '.json':
+            value = json.loads(raw)
+            edits = [value.get('containerEdits', {})]
+            edits.extend(device.get('containerEdits', {}) for device in value.get('devices', []))
+            sources.update(mount['hostPath'] for edit in edits for mount in edit.get('mounts', [])
+                           if isinstance(mount.get('hostPath'), str))
+        else:
+            for match in re.finditer(r'^\s*(?:-\s*)?hostPath:\s*([^\n]+)$', raw, re.MULTILINE):
+                scalar = match[1].strip()
+                if scalar.startswith('"'):
+                    scalar = json.loads(scalar)
+                elif scalar.startswith("'") and scalar.endswith("'"):
+                    scalar = scalar[1:-1].replace("''", "'")
+                if scalar.startswith('/') and not any(ch.isspace() for ch in scalar):
+                    sources.add(scalar)
+    return sources
+
+
+class CDIChangeWatch:
+    """Block on the LOCAL directory and its parent, including atomic rename.
+
+    /var/run is a symlink to /run on the supported fleet. Watching the directory
+    rather than nvidia.yaml keeps a replacement file from losing the watch.
+    The parent watch also catches replacement/removal of the directory itself.
+    """
+    def __init__(self, directory):
+        import ctypes
+        self.directory = Path(directory).resolve()
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC)
+        if self.fd < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_init1')
+        self.watches = {}
+        try:
+            self._install()
+        except BaseException:
+            os.close(self.fd)
+            raise
+
+    def _add(self, path):
+        import ctypes
+        mask = 0x4 | 0x8 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
+        wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), mask)
+        if wd < 0:
+            raise OSError(ctypes.get_errno(), 'inotify_add_watch', str(path))
+        self.watches[wd] = Path(path)
+
+    def _install(self):
+        self._add(self.directory.parent)
+        if self.directory.is_dir():
+            self._add(self.directory)
+
+    def next_change(self, stop_fd):
+        import select
+        import struct
+        while True:
+            ready, _, _ = select.select([self.fd, stop_fd], [], [])
+            if stop_fd in ready:
+                return None
+            raw = os.read(self.fd, 65536)
+            offset = 0
+            changed = False
+            reason = 'cdi_changed'
+            reinstall = False
+            while offset < len(raw):
+                wd, mask, _, length = struct.unpack_from('iIII', raw, offset)
+                name = raw[offset + 16:offset + 16 + length].split(b'\0', 1)[0].decode(errors='replace')
+                offset += 16 + length
+                path = self.watches.get(wd)
+                if mask & 0x4000:
+                    changed = reinstall = True
+                    reason = 'watch_overflow'
+                elif path == self.directory.parent and name == self.directory.name:
+                    changed = reinstall = True
+                elif path == self.directory:
+                    if mask & (0x400 | 0x800 | 0x8000):
+                        changed = reinstall = True
+                        reason = 'watch_replaced'
+                    elif name.endswith(('.yaml', '.yml', '.json')):
+                        changed = True
+            if reinstall:
+                self._install()
+            if changed:
+                return reason
+
+    def close(self):
+        os.close(self.fd)

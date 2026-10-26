@@ -20997,3 +20997,195 @@ values are unavailable measurements, never evidence of no contention. Gate
 and hold chart samples remain suppressed for incomplete identity; mount, RPC
 and probe reporting continue. Deployment and executed qualification remain
 the release master's responsibility.
+
+## Host GPU container-runtime fence (#1895)
+
+The first #1895 slice leaves attempt accounting unchanged. A failed action still
+ends failed and consumes its attempt. An authenticated broker observation adds
+`host_fault` and `termination_reason` equal to
+`host_fault: gpu_container_runtime_unready/<subtype>` to the ending. Requeue
+without charging an attempt remains proposed work for #1895.
+
+The fence is **default off**. Every new worker and the root-installed broker and
+shim read the same host-local `/etc/prismabuild/gpu-container-runtime.enabled`
+file through `gpu_capacity.runtime_fence_enabled`. The reader walks from `/` with
+`O_DIRECTORY|O_NOFOLLOW`, validates each directory descriptor, and opens the
+final file with `openat` and `O_NOFOLLOW` relative to the verified parent. Only the exact bytes
+`enabled\n` in a root-owned regular file with no group/other write access enable
+it. All ancestors must also be root-owned and not group/other writable. Symlinks,
+absence, invalid bytes and read errors mean off. Environment variables cannot
+enable it. This persistent host policy sits outside both the runtime generation
+and the fence evidence, so an ordinary runtime publish cannot enable it.
+
+Off means no fence reads at claim/offer time, no readiness exception, no broker
+runtime object or CDI watcher on startup, no typed-protocol advertisement and no
+extra status RPC at action ending. The shim keeps main's label nonce, Docker
+argv, inherited stderr, native AutoRemove and cleanup path. A stale fence record
+cannot deny work while off and is retained as evidence. The shim checks the same
+switch before typed negotiation, including against a broker started while on.
+Operators change the file only with host admission closed and attempts settled,
+then restart the broker and converge all sibling workers before reopening.
+Turning off immediately bypasses new readers; turning on needs that restart to
+initialize the broker authority. A partial rollout preserves execution but does
+not provide host protection. Live qualification remains required before opt-in.
+
+The Docker shim and broker negotiate `launch_outcome_protocol: 2`. The
+container intent ticket is also this launch's reserved `prismabuild.shim` label.
+The broker verifies the immutable ID, that label, scope label and cgroup parent.
+An old caller cidfile cannot identify a second launch. The active socket is
+checked before authority initialization, including when an older broker has no
+lifetime lock. Native Docker AutoRemove
+stays enabled, including foreground name reuse and detached removal. Scope
+cleanup uses main's `docker rm -f`, preserving anonymous volumes. The shim's
+stop cleanup uses the same arguments, whether the opt-in is on or off.
+Readiness containers use ordinary cleanup and do not grant volume-deletion authority.
+
+Retained containers use daemon inspect state. A nonzero `StartedAt` proves that
+the payload started. For native AutoRemove, the broker opens a launch-filtered
+live daemon event stream before the shim launches Docker. This launch's unique
+ticket and scope label bind the create event to the broker intent. The destroy
+event must arrive with no start or die event. That complete daemon stream proves
+only that the payload did not start. It cannot authenticate the caller's error
+text or prove why creation failed. The same independent host checks below apply
+to retained and auto-removed containers. An inspect snapshot, when available,
+also verifies the actual labels, parent and injection. Without a snapshot, the
+watch's parsed NVIDIA injection candidate must also pass the broker's host
+vendor check. A caller-supplied intent bit alone never verifies a vendor.
+Intent includes runtime `nvidia`, CDI `nvidia.com/gpu` devices, and Docker
+`--gpus` DeviceRequests with driver `nvidia`. An unspecified driver with `gpu`
+capabilities is a candidate, not NVIDIA identity. Before a driver query can
+classify that candidate, the broker verifies `/dev/nvidiactl` as a root-owned
+character device with major 195 and minor 255. It walks trusted root-owned
+directory descriptors and stats the final node without following symlinks or
+opening the driver. Mode 0666 on the device itself is normal and accepted, as
+[NVIDIA's device-node instructions describe](https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification).
+This existing kernel device is a small independent signal; an installed binary
+or failed NVIDIA query cannot identify an NVIDIA host. Without that node,
+default-driver candidates and removed launches without inspect remain unverified.
+Explicit other-vendor runtimes do not qualify, even with NVIDIA device hints.
+Other device-request drivers supply no NVIDIA intent. The shim parses `--gpus`
+CSV fields, including `device=` IDs and quoted device lists, before the image
+boundary and carries candidate intent through AutoRemove, following
+[Docker's GPU option parser](https://github.com/docker/cli/blob/master/opts/gpus.go).
+The fence retains the stream basis, ID, ticket and the relevant identity, state
+and device fields of the optional snapshot. It does not publish container
+environment variables, arbitrary caller labels or payload arguments.
+Payload stdout and stderr after a start are never classification evidence.
+Missing create, interrupted streams, mismatched scope or IDs, duplicate create
+or an excessive event count return unknown. The initial `since` replay bridges
+Docker's HTTP-header/subscription boundary; its bounded history cannot establish
+no start if create itself was lost.
+
+For a proven never-started launch requesting NVIDIA injection, daemon or client
+error text can select a host check. Quoted payload fields are removed before
+check selection. The text itself never proves a host fault:
+
+- `cdi_mount_missing`: at verification time, the broker reads root-owned regular
+  CDI specs through trusted directory descriptors and proves that the error's
+  named `hostPath` is a mount source in those specs and is missing on the host.
+  Only ENOENT proves absence. Unreadable specs or lookup errors grant no fault.
+- `nvidia_initialization_failed`: after an NVIDIA initialization diagnostic, the
+  broker runs its own two-second `/usr/bin/nvidia-smi --query-gpu=uuid
+  --format=csv,noheader` driver/NVML check. Positive evidence is restricted to
+  [NVIDIA's documented hardware and driver fault codes](https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value):
+  8, 9, 10, 12, 14 and 15. Permission failure 4, unsupported function 13,
+  invalid arguments, signals, unknown codes and ambiguous code 255 leave
+  `launch_error`. A successful, unavailable, untrusted or timed-out check also
+  leaves `launch_error`, even if the diagnostic claims a driver failure.
+
+The outcome and durable fence retain `host_check` separately from the diagnostic
+`daemon_error`. Removed-launch `error_hint` is explicitly caller-supplied.
+Completed query status is retained in `host_check`, including non-fault results.
+
+An unmatched requested GPU UUID, generic device error, invalid configuration,
+arbitrary bind mount and payload exit remain ordinary failures or unknown.
+There is no replacement auto-removal thread or removal authority in the outcome
+RPC. Older brokers and shims retain their existing behavior, without typed
+outcomes. Protection requires converged shim, worker and installed broker bytes.
+
+Before reading or publishing authority, the broker holds a lifetime lock at
+`/var/lib/prismabuild-resource-broker/broker.lock`. A second broker cannot overwrite the active
+process's fence or its probe token. The root broker owns
+`/var/lib/prismabuild-resource-broker/gpu-container-runtime.json`. Atomic writes
+sync the file and parent directory. The record retains subtype, action key,
+attempt nonce, scope, daemon error excerpt, Unix time and boot ID. A root-owned
+mode-0644 mirror at `/run/prismabuild/gpu-container-runtime.json` lets every
+sibling worker read the same host decision. This state is host-local, independent
+of a worker PID, hostname alias, shared-store listing, GPU power sample or offer
+expiry. Restart retains a latched durable record. Malformed state means unknown
+and keeps GPU admission closed.
+
+The configured offer keeps the physical GPU bound so queued work remains
+placeable. Its observed GPU capacity becomes zero immediately with
+`gpu_container_runtime_unready` and the fence evidence in `observed_detail`.
+Every GPU claim checks that local fence before preparation and again at host
+reservation. Named denials use the existing denial records and `pbstatus` paths.
+CPU claims and CPU/memory offers continue. The resource ledger retains its
+physical bounds, so ordinary admission can reserve a readiness probe without
+inventing GPU capacity or dropping other resource checks.
+
+While fenced, claim arbitration and measurement election use a temporary view
+that suspends pending GPU measurement and gang elections targeting this host.
+Those rows cannot block the priority-zero readiness probe or CPU-only work,
+regardless of election age. The view requires positive GPU demand and matching
+pending publication evidence. Running holders, claimed members, unknown demand,
+missing publications and unreadable holder evidence keep their authority.
+No durable election is changed. Clearing the fence restores blocking authority
+on the next arbitration, including a reused census in the same claim pass.
+
+A broker thread starts on every enabled host and blocks on inotify on local
+`/run/cdi`, resolving `/var/run/cdi`
+to that path. It watches the directory and its parent, so atomic replacement of
+`nvidia.yaml`, directory removal/recreation, and watch overflow are events.
+The parent watch is installed even when CDI and the NVIDIA control device are
+absent at startup, so their later creation can authorize recovery after a fault.
+Restart revalidates once only when a durable fence is latched or unknown. A
+healthy startup does not latch or submit a probe. Overflow means unknown and
+requests one revalidation. The authority lock serializes the watcher's latch
+predicate with the complete host observation and latching decision. A CDI repair consumed during the first
+observation therefore requests one bounded readiness probe after that latch.
+An event completed before observation begins does not authorize recovery from
+a later fault. An independent blocking event consumer submits probes through
+the published `pbrun.py` as the worker UID, using a dedicated tiny Git checkout
+under the user's PB scratch.
+Queued superseded events coalesce. There is no cooldown or periodic readiness
+launch. PB never writes CDI or runs its generator; the NVIDIA package hook owns
+regeneration.
+
+The proposed pinned readiness image is the image declared by the two failed
+#1895 actions:
+`localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a`.
+The exact recipe is `docker run --pull=never --network=none
+--device=nvidia.com/gpu=all --entrypoint=/bin/true IMAGE`. It starts no vLLM or
+CUDA workload. It declares 1 CPU, 16 GiB host memory, 1 GiB GPU memory, exclusive
+GPU admission, native threads at one and a 30-second payload deadline. Existing
+image inventory must report the pinned local image; nothing pulls it. Client
+preparation/submission has a separate 120-second termination bound. A refused or
+failed probe retains the fence. A worker offer-content transition can retry a
+refused submission, including startup with no live offers. Repeated timestamps
+and utilization samples are not transitions. There is no timer retry. The
+submitter and claim exception read one authoritative probe request recipe in
+`gpu_capacity.runtime_probe_request`; the 16 GiB host memory matches pbrun's
+exclusive floor. The probe retains its container for daemon inspection and
+ordinary scope cleanup.
+
+Only the exact sealed, host-pinned captured-command recipe with those resources,
+image and deadline may pass the runtime fence. It still undergoes ordinary
+CPU/GPU pressure, attribution, image and resource admission. A queued old probe
+can finish after a newer event, but only the current event token can clear the
+fence. The broker also verifies the daemon's actual pinned image, `/bin/true`,
+empty command, CDI device request and successful terminal state before clearing.
+Docker's CLI represents CDI devices as `HostConfig.DeviceRequests` with driver
+`cdi`, as defined by the [Docker CLI source](https://github.com/docker/cli/blob/master/cli/command/container/opts.go).
+The durable clear record binds its event, action, attempt, boot and time. A new
+proven host fault invalidates any outstanding clear token.
+
+Source/fixture qualification is distinct from live daemon/CDI qualification,
+installed-client convergence and deployment. The round-2 admitted Spark preflight
+cannot start a root scratch broker: the payload has `NoNewPrivileges`, and sudo
+refuses elevation. The live scratch-CDI launch/recovery proof therefore remains
+blocked. No production CDI, broker authority or fleet pointer is changed.
+Staged-read targets SC-01, ID-02, ID-08 and ID-09 remain as written in the staged
+contract. This slice keeps PB admission ownership and charged attempt identity,
+adds a bounded host-fault observation, and makes no staged-read or campaign
+completion claim. It does not promote any ledger deployment or workload axis.
