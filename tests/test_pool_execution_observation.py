@@ -86,7 +86,9 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(
 def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tmp_path, monkeypatch):
     release = tmp_path / 'release'
     os.mkfifo(release)
-    child_code = f'open({str(release)!r}, "rb").read(1)'
+    child_code = ('import os, select; '
+                  f'gate = os.open({str(release)!r}, os.O_RDONLY | os.O_NONBLOCK); '
+                  'select.select([gate], [], [], 60); os.close(gate)')
     script = tmp_path / 'worker.py'
     script.write_text('import subprocess, sys\n'
                       f'subprocess.Popen([sys.executable, "-c", {child_code!r}])\n')
@@ -108,16 +110,20 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
 
     def observe(process, previous=None, **kwargs):
         nonlocal released
+        launcher_exited = process.poll() is not None
         observation = original_observe(process, previous, **kwargs)
-        if not released and observation['launcher_alive'] is False:
-            with release.open('wb', buffering=0) as gate:
-                gate.write(b'1')
+        if not released and launcher_exited:
+            gate.write(b'1')
             released = True
         return observation
 
     monkeypatch.setattr(pool, '_observe_execution', observe)
     monkeypatch.setattr(queue, 'write_lease', record)
-    result = queue.execute(item, heartbeat_s=0.05)
+    with os.fdopen(os.open(release, os.O_RDWR | os.O_NONBLOCK), 'r+b', buffering=0) as gate:
+        try:
+            result = queue.execute(item, heartbeat_s=0.05, timeout_s=60)
+        finally:
+            gate.write(b'1')
     assert result['status'] == 'executed'
     assert any(tick['execution_observation']['launcher_alive'] is False for tick in ticks)
     assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
