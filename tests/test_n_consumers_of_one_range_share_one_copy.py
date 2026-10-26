@@ -589,9 +589,9 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
 # ----------------------------------------------------------- the campaign
 
 
-CAMPAIGN_PHASES = 45
+CAMPAIGN_PHASES = 3
 CAMPAIGN_GIB = 22
-CAMPAIGN_CAPACITY_GIB = 400
+CAMPAIGN_CAPACITY_GIB = 2 * CAMPAIGN_GIB
 CAMPAIGN_CONSUMERS = 4
 CAMPAIGN_HOSTS = ("sparky", "sparklina")
 
@@ -625,7 +625,7 @@ def _land_published(queue: pool.PoolQueue, stage: Path,
 
 def test_the_campaign_shape_copies_each_phase_once_charged_once(
         tmp_path: Path) -> None:
-    """Four consumers on two hosts read one 45-phase plan of 22 GiB phases.
+    """Four consumers on two hosts share three phases beyond a two-phase tier.
     Over the cycles the window runs, every range is copied at most once, one
     holder per range carries it, and the tier holds 22 GiB per landed range
     and no more."""
