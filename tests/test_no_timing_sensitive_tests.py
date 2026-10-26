@@ -19,7 +19,9 @@ for this guard. Bounds of 60 seconds or more and None are allowed. Positional
 slots are wait/join/settimeout's first, communicate's second, get's second,
 and put's third. Positional get uses imported Queue constructors, annotations
 or a statically boolean block expression to distinguish mapping defaults.
-Queue receiver names and boolean bindings are collected across each file.
+Queue imports, receiver names and boolean evidence use lexical binding scopes.
+Local bindings hide outer evidence; closures retain unshadowed evidence.
+Evidence within a scope remains syntactic, without binding-order evaluation.
 The broad method matching also conservatively catches unrelated objects
 with those same timeout shapes. Ordinary str.join and dict.get are unrelated.
 Opaque get receivers with opaque block expressions remain ambiguous; the
@@ -117,43 +119,158 @@ def _queue_boolean_expression(node, known_boolean):
             or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not))
 
 
+class _QueueBindingScopes(ast.NodeVisitor):
+    def __init__(self, tree):
+        self.scope = tree
+        self.parents = {tree: None}
+        self.names = {tree: set()}
+        self.global_names = {}
+        self.nonlocal_names = {}
+        self.owners = {}
+        self.visit(tree)
+
+    def visit(self, node):
+        self.owners[node] = self.scope
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names[self.scope].add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            self.names[self.scope].update(alias.asname or alias.name.split(".")[0]
+                                          for alias in node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            self.names[self.scope].add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            self.names[self.scope].add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            self.names[self.scope].add(node.rest)
+        return super().visit(node)
+
+    def visit_Global(self, node):
+        self.global_names.setdefault(self.scope, set()).update(node.names)
+
+    def visit_Nonlocal(self, node):
+        self.nonlocal_names.setdefault(self.scope, set()).update(node.names)
+
+    def _definition(self, node):
+        outer = self.scope
+        if not isinstance(node, ast.Lambda):
+            self.names[outer].add(node.name)
+        for field, value in ast.iter_fields(node):
+            if field not in {"body", "args"}:
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        self.visit(child)
+        arguments = []
+        if not isinstance(node, ast.ClassDef):
+            for child in ast.iter_child_nodes(node.args):
+                if isinstance(child, ast.arg):
+                    arguments.append(child)
+                    if child.annotation:
+                        self.visit(child.annotation)
+                else:
+                    self.visit(child)
+        self.parents[node], self.names[node] = outer, {arg.arg for arg in arguments}
+        self.scope = node
+        self.owners.update((arg, node) for arg in arguments)
+        for child in node.body if isinstance(node.body, list) else [node.body]:
+            self.visit(child)
+        self.scope = outer
+
+    visit_FunctionDef = _definition
+    visit_AsyncFunctionDef = _definition
+    visit_ClassDef = _definition
+    visit_Lambda = _definition
+
+    def _comprehension(self, node):
+        outer = self.scope
+        self.visit(node.generators[0].iter)
+        self.parents[node], self.names[node] = outer, set()
+        self.scope = node
+        for index, generator in enumerate(node.generators):
+            if index:
+                self.visit(generator.iter)
+            self.visit(generator.target)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for field in ("elt", "key", "value"):
+            if hasattr(node, field):
+                self.visit(getattr(node, field))
+        self.scope = outer
+
+    visit_ListComp = _comprehension
+    visit_SetComp = _comprehension
+    visit_DictComp = _comprehension
+    visit_GeneratorExp = _comprehension
+
+    def visit_NamedExpr(self, node):
+        self.visit(node.value)
+        outer = self.scope
+        while isinstance(self.scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            self.scope = self.parents[self.scope]
+        self.visit(node.target)
+        self.scope = outer
+
+    def binding(self, scope, name):
+        root = name.split(".", 1)[0].split("[", 1)[0]
+        if not root.isidentifier():
+            return scope, name
+        while scope is not None:
+            if root in self.global_names.get(scope, ()):
+                while self.parents[scope] is not None:
+                    scope = self.parents[scope]
+                return scope, name
+            if root not in self.nonlocal_names.get(scope, ()) and root in self.names[scope]:
+                return scope, name
+            scope = self.parents[scope]
+            while isinstance(scope, ast.ClassDef):
+                scope = self.parents[scope]
+        return None, name
+
+
 def _queue_get_calls(tree):
-    nodes = list(ast.walk(tree))
+    scopes = _QueueBindingScopes(tree)
+    nodes = list(scopes.owners)
     queue_types, receivers, booleans = set(), set(), set()
     type_names = {"Queue", "SimpleQueue", "LifoQueue", "PriorityQueue"}
+
+    def binding(node, name=None):
+        return scopes.binding(scopes.owners[node], name or ast.unparse(node))
+
+    def is_queue_type(node):
+        name = _queue_annotation_name(node)
+        return name is not None and binding(node, name) in queue_types
+
+    def is_boolean(node):
+        return _queue_boolean_expression(node, lambda value: binding(value) in booleans)
+
     for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "queue":
-                    queue_types.update(f"{alias.asname or alias.name}.{name}" for name in type_names)
+                    queue_types.update(binding(node, f"{alias.asname or alias.name}.{name}")
+                                       for name in type_names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "queue":
-            queue_types.update(alias.asname or alias.name for alias in node.names
+            queue_types.update(binding(node, alias.asname or alias.name) for alias in node.names
                                if alias.name in type_names)
-
-    def is_boolean(node):
-        return _queue_boolean_expression(node, lambda value: ast.unparse(value) in booleans)
-
     for node in nodes:
         if isinstance(node, (ast.arg, ast.AnnAssign)):
-            name = node.arg if isinstance(node, ast.arg) else ast.unparse(node.target)
-            annotation = _queue_annotation_name(node.annotation)
-            if annotation in queue_types:
-                receivers.add(name)
-            if annotation == "bool":
-                booleans.add(name)
+            target = node if isinstance(node, ast.arg) else node.target
+            name = node.arg if isinstance(node, ast.arg) else ast.unparse(target)
+            if is_queue_type(node.annotation):
+                receivers.add(binding(target, name))
+            if _queue_annotation_name(node.annotation) == "bool":
+                booleans.add(binding(target, name))
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
             value = node.value
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names = {ast.unparse(target) for target in targets}
-            if isinstance(value, ast.Call) and _queue_annotation_name(value.func) in queue_types:
+            names = {binding(target) for target in targets}
+            if isinstance(value, ast.Call) and is_queue_type(value.func):
                 receivers.update(names)
             if is_boolean(value):
                 booleans.update(names)
     return {node for node in nodes if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
-            and (ast.unparse(node.func.value) in receivers
-                 or isinstance(node.func.value, ast.Call)
-                 and _queue_annotation_name(node.func.value.func) in queue_types
+            and (binding(node.func.value) in receivers
+                 or isinstance(node.func.value, ast.Call) and is_queue_type(node.func.value.func)
                  or node.args and is_boolean(node.args[0]))}
 
 
