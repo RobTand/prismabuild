@@ -59,7 +59,9 @@ def test_checkpoint_deadline_regression_is_independent_of_live_scheduling(
 
     monkeypatch.setattr(pb._ProfileSession, 'ingest', observe_ingest)
     monkeypatch.setattr(pb._ProfileSession, 'action_returncode', observe_end_time)
-    regression(tmp_path, monkeypatch, action_sleep, times_out)
+    regression(
+        tmp_path, monkeypatch, end_offset=action_sleep, times_out=times_out,
+    )
 
     assert comparisons, 'retain the production recorded-end-time comparison'
     status, deadline, checkpoint_time, checkpoint_count = comparisons[0]

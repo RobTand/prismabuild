@@ -185,7 +185,7 @@ def test_direct_execution_deadline_still_governs_after_a_profile_window(
     ids=('action-ended-after-deadline', 'action-ended-before-deadline'),
 )
 def test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline(
-    tmp_path, monkeypatch, end_offset, times_out,
+    tmp_path, monkeypatch, *, end_offset, times_out,
 ):
     """Ingest latency cannot turn a late windowed action into a success (#514)."""
     from test_sample_profile import _FakeBackend, _action, _speedscope
