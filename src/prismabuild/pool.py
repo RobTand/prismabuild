@@ -20740,7 +20740,7 @@ class PoolQueue:
         attempt = max(terminal)
         if (
             max(present) != attempt
-            or sorted(present) != list(range(min(present), attempt + 1))
+            or len(present) != attempt - min(present) + 1
         ):
             raise PoolContractError(
                 f"archived attempts for {key[:12]} are not a contiguous run "
@@ -20777,6 +20777,8 @@ class PoolQueue:
                     f"archived attempts for {key[:12]} begin at attempt "
                     f"{min(present)} with no handoff context proving the prefix")
             missing = 0
+        if min(present) != missing + 1:
+            raise PoolContractError("archived attempts do not match their handoff prefix")
         record["attempts"] = attempt
         record["attempt_history_missing_before"] = missing
         record["attempt_history"] = [

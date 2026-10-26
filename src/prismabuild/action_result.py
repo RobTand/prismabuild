@@ -750,7 +750,7 @@ def _read_streamed_ending_result(
         queue, record, selected, number, "stdout", log_cap, evidence_cap, deadline)
     stderr = None
     expanded = {**selected, "stdout": raw.decode("utf-8", errors="replace")}
-    if "stderr" in selected.get("logs", {}):
+    if archived or "stderr" in selected.get("logs", {}):
         stderr, stderr_raw, _ = _stream_ending_log(
             queue, record, selected, number, "stderr", log_cap, evidence_cap, deadline)
         expanded["stderr"] = stderr_raw.decode("utf-8", errors="replace")
