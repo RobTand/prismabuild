@@ -1,8 +1,9 @@
 """D-19 guard mechanics, amended by the PB lead on 2026-10-24 (#1771).
 
 Sleep sites are purely syntactic. Every `from time import sleep`, under any
-alias, is a finding, even when unused or followed only by sleep(0). Every
-<m>.sleep attribute whose name <m> occurs in `import time [as <m>]` in the
+alias, and `from time import *` is a finding, even when unused or followed
+only by sleep(0). Every <m>.sleep attribute whose name <m> occurs in
+`import time [as <m>]` in the
 file is a finding, except as the func of a Call with one literal numeric zero
 argument and no keywords. Use time.sleep(0) or t.sleep(0) for cooperative
 yields. Module names are collected across the file, conservatively including
@@ -15,10 +16,14 @@ Constant timeouts below 60 seconds are findings on .wait, .join, Queue-shaped
 .settimeout. Numeric constants include signed literals and arithmetic using
 +, -, *, /, // and %. Names, calls and other expressions are non-constant
 for this guard. Bounds of 60 seconds or more and None are allowed. Positional
-slots are wait/join/settimeout's first, communicate's second, get's second
-after a bool block flag, and put's third after an item and bool block flag.
+slots are wait/join/settimeout's first, communicate's second, get's second,
+and put's third. Positional get uses imported Queue constructors, annotations
+or a statically boolean block expression to distinguish mapping defaults.
+Queue receiver names and boolean bindings are collected across each file.
 The broad method matching also conservatively catches unrelated objects
 with those same timeout shapes. Ordinary str.join and dict.get are unrelated.
+Opaque get receivers with opaque block expressions remain ambiguous; the
+scanner cannot distinguish their Queue timeout from a mapping default.
 
 Out of scope: getattr strings (including computed strings), exec, eval,
 importlib tricks, non-constant timeouts, asyncio sleeps/waits, select/poll,
@@ -67,7 +72,7 @@ def timing_source_needs_ast(source):
     if "pb-timing-ok" in source:
         return True
     source = unicodedata.normalize("NFKC", source).replace("\\\n", "").replace("\\\r\n", "")
-    return any(word in source for word in (*TIMING_KINDS, "timeout", "pb-timing-ok"))
+    return any(word in source for word in (*TIMING_KINDS, "time", "timeout", "pb-timing-ok"))
 
 
 def _constant_timeout(node):
@@ -94,7 +99,60 @@ _TIMEOUT_ARITHMETIC = {
 }
 
 
-def _timing_call_kind(call, subprocess_modules, subprocess_runs):
+def _queue_get_calls(tree):
+    nodes = list(ast.walk(tree))
+    queue_types, receivers, booleans = set(), set(), set()
+    type_names = {"Queue", "SimpleQueue", "LifoQueue", "PriorityQueue"}
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "queue":
+                    queue_types.update(f"{alias.asname or alias.name}.{name}" for name in type_names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "queue":
+            queue_types.update(alias.asname or alias.name for alias in node.names
+                               if alias.name in type_names)
+
+    def annotation_name(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return None
+        while isinstance(node, ast.Subscript):
+            node = node.value
+        return ast.unparse(node) if node is not None else None
+
+    def is_boolean(node):
+        return (node is not None and ast.unparse(node) in booleans
+                or isinstance(node, ast.Constant) and type(node.value) is bool
+                or isinstance(node, ast.Compare)
+                or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not))
+
+    for node in nodes:
+        if isinstance(node, (ast.arg, ast.AnnAssign)):
+            name = node.arg if isinstance(node, ast.arg) else ast.unparse(node.target)
+            annotation = annotation_name(node.annotation)
+            if annotation in queue_types:
+                receivers.add(name)
+            if annotation == "bool":
+                booleans.add(name)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = node.value
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {ast.unparse(target) for target in targets}
+            if isinstance(value, ast.Call) and annotation_name(value.func) in queue_types:
+                receivers.update(names)
+            if is_boolean(value):
+                booleans.update(names)
+    return {node for node in nodes if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+            and (ast.unparse(node.func.value) in receivers
+                 or isinstance(node.func.value, ast.Call)
+                 and annotation_name(node.func.value.func) in queue_types
+                 or node.args and is_boolean(node.args[0]))}
+
+
+def _timing_call_kind(call, subprocess_modules, subprocess_runs, queue_get_calls):
     callee = call.func
     if isinstance(callee, ast.Name) and callee.id in subprocess_runs:
         method = "run"
@@ -113,11 +171,8 @@ def _timing_call_kind(call, subprocess_modules, subprocess_runs):
     # for communicate, and after the blocking flag for Queue.get/put.
     position = {"wait": 0, "join": 0, "settimeout": 0, "communicate": 1,
                 "get": 1, "put": 2}.get(method)
-    if method in {"get", "put"}:
-        blocking = position - 1
-        if not (len(call.args) > blocking and isinstance(call.args[blocking], ast.Constant)
-                and type(call.args[blocking].value) is bool):
-            position = None
+    if method == "get" and call not in queue_get_calls:
+        position = None
     if position is not None and len(call.args) > position:
         bounds.append(call.args[position])
     if method == "settimeout":
@@ -136,6 +191,7 @@ class _TimingReferences(ast.NodeVisitor):
         self.subprocess_modules = set()
         self.subprocess_runs = set()
         self.zero_callees = set()
+        self.queue_get_calls = _queue_get_calls(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 self.time_modules.update(alias.asname or alias.name for alias in node.names
@@ -153,7 +209,7 @@ class _TimingReferences(ast.NodeVisitor):
     def visit_ImportFrom(self, node):
         if node.level == 0 and node.module == "time":
             for alias in node.names:
-                if alias.name == "sleep":
+                if alias.name in {"sleep", "*"}:
                     self.references.append((self.qualname, node.lineno, "sleep"))
 
     def visit_Attribute(self, node):
@@ -163,7 +219,8 @@ class _TimingReferences(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        kind = _timing_call_kind(node, self.subprocess_modules, self.subprocess_runs)
+        kind = _timing_call_kind(node, self.subprocess_modules, self.subprocess_runs,
+                                 self.queue_get_calls)
         if kind:
             self.references.append((self.qualname, node.lineno, kind))
         self.generic_visit(node)
@@ -653,12 +710,25 @@ def test_all_timeout_slots_and_subprocess_aliases():
 
 def test_queue_get_timeout_does_not_depend_on_block_expression():
     for block in ("blocking", "settings.blocking", "should_block()", "True", "False"):
-        source = f"blocking = True\nqueue.get({block}, 5)"
+        source = f"from queue import Queue\nqueue = Queue()\nqueue.get({block}, 5)"
         assert scan_timing_source(source) == {
             TimingIdentity("tests/snippet.py", "<module>", "get"): 1}, source
         assert not scan_timing_source(f"queue.get({block}, 60)")
-    for source in ("mapping.get('key', 5)", "mapping.get(key, default)"):
+    for source in ("mapping.get('key', 5)", "mapping.get(key, default)",
+                   "mapping.get(key, 5)", "mapping = {}\nmapping.get(key, 0)"):
         assert not scan_timing_source(source), source
+
+
+def test_queue_get_boolean_bindings_and_imported_types():
+    for source in (
+        "blocking = True\nq.get(blocking, 5)",
+        "blocking: bool\nq.get(blocking, 5)",
+        "from queue import Queue as Q\nq = Q()\nq.get(should_block(), 5)",
+        "import queue as queues\nq: queues.Queue[int]\nq.get(settings.blocking, 5)",
+        "from queue import SimpleQueue\ndef check(q: 'SimpleQueue'):\n q.get(blocking, 5)",
+        "from queue import PriorityQueue\nPriorityQueue().get(blocking, 5)",
+    ):
+        assert sum(scan_timing_source(source).values()) == 1, source
 
 
 def test_queue_put_timeout_does_not_depend_on_block_expression():

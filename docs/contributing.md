@@ -72,8 +72,8 @@ them.
 
 See the Test quality section for the test-authoring rules. This guard scans
 all Python files under `tests/`, including conftest and support modules.
-It flags every `from time import sleep` and every imported time module's
-`.sleep` attribute, except a direct call with one literal zero argument and
+It flags every `from time import sleep`, `from time import *`, and every
+imported time module's `.sleep` attribute, except a direct call with one literal zero argument and
 no keywords. Use `import time; time.sleep(0)` for cooperative yields; importing
 `sleep` separately is always a finding. Import names are collected syntactically
 across each file, including shadowed names, without resolving deferred uses.
