@@ -736,8 +736,9 @@ non-gang candidate discovers measurement sidecars before M/H, then rechecks ever
 sidecar's identity, size, mtime and ctime under host admission H. Parsed sidecars
 are reused within a pass only while these observations match; new, replaced or
 missing sources require fresh discovery. An independently owned bounded child
-lists and stats every sidecar per candidate. A potentially fencing measurement receives the full census's
-per-key retirement check: exact READY, CLAIMED, finish marks and terminal slots.
+lists and stats every sidecar per candidate. A potentially fencing measurement
+receives the full census's per-key retirement check: exact READY, CLAIMED, finish
+marks and terminal slots.
 An exact-generation claim or mark takes precedence over an ending; otherwise an
 exact-generation ending or strictly newer live publications prove retirement.
 Local nonblocking M keys precede H; busy keys and retained holders stay fenced.
@@ -745,8 +746,8 @@ Gang elections, including concluded entries, remain potential fences. An
 election on another host cannot fence this row. A measurement at the row's
 priority or below cannot fence it; an equal-priority gang still can reserve
 demand after maturation. Only when no source can fence the candidate does
-admission proceed without the full census. H remains held through reservation, so a
-new election cannot race between the proof and acquisition. A dependent whose
+admission proceed without the full census. H remains held through reservation,
+so a new election cannot race between the proof and acquisition. A dependent whose
 sealed owner has a live or unproved selection also needs a complete or verified
 shared census.
 An elected measurement remains distinct from an ordinary incumbent even when
@@ -799,8 +800,8 @@ independent complete census remains available. A timeout or unreadable result
 falls back after releasing the ordinary guard and M/H, never becomes an empty
 proof. Source metadata uses JSON-native lists so transport preserves comparisons.
 Local rendezvous and cache serialization still run inline and retain their
-documented local-filesystem assumptions. Measurement and gang candidates retain their
-owned-reader path. A census refusal still ends reader attempts for the pass,
+documented local-filesystem assumptions. Measurement and gang candidates retain
+their owned-reader path. A census refusal still ends reader attempts for the pass,
 but each later ordinary candidate can prove that it is outside every fence;
 the refusal is recorded only when that candidate still needs the census.
 

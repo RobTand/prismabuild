@@ -1745,6 +1745,23 @@
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no recovered historical admission snapshot, live canary or staged-only campaign result",
     "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states; conditional liveness and NFS limitations remain owed."
+   },
+   "scoped_repair_2307": {
+    "target": "Ordinary admission proof I/O cannot retain host admission across a stalled shared-filesystem syscall; unresolved child custody survives loop restart.",
+    "implemented_source": {
+     "commit": "b8723b1f21ad5f302fde61e97a764f3bed403f39",
+     "state": "component-implemented",
+     "scope": "Independent ordinary guard before M/H, owned bounded discovery/recheck/proof children, JSON-native cache and unchanged exact retirement/fallback decisions."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2307_ordinary_proof_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2307_ordinary_proof_validation_2026-10-26.json",
+     "detail": "Five deterministic stalled-read phases fail before; 216 passing executions after, zero failures/skips. Includes 48 x86 xdist2 executions. Terminal/log/CAS/source bundle readbacks verified."
+    },
+    "deployment": "not deployed; no runtime publication, activation or service restart in this task",
+    "workload_proof": "not run; no live NFS hang or staged campaign qualification",
+    "remaining_target": "Whole-requirement axes remain unchanged. Local rendezvous/cache assumptions and global lifecycle liveness remain outside this scoped repair."
    }
   },
   {
