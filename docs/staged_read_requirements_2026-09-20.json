@@ -421,12 +421,13 @@
    "scoped_repair_2141": {
     "target": "Behavior attributed per (runtime_commit, generation_id).",
     "implemented_source": {
-     "commit": "2525d70be2951c50aa52010a17ec456e26415db5",
+     "commit": "8dc14f6774e40255a40db9916ec93242236412af",
      "scope": "Source qualification is attributed to its snapshot; runtime publication, convergence and celestia activation remain separate."
     },
     "validation": {
-     "state": "scoped-component-evidence; current native qualification pending",
-     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json"
+     "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+     "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -693,12 +694,13 @@
    "scoped_repair_2141": {
     "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
     "implemented_source": {
-     "commit": "2525d70be2951c50aa52010a17ec456e26415db5",
+     "commit": "8dc14f6774e40255a40db9916ec93242236412af",
      "scope": "The final claim fence rechecks the cap and maintenance before ready-to-claimed transition."
     },
     "validation": {
-     "state": "scoped-component-evidence; current native qualification pending",
-     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json"
+     "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+     "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -901,12 +903,13 @@
    "scoped_repair_2141": {
     "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
     "implemented_source": {
-     "commit": "2525d70be2951c50aa52010a17ec456e26415db5",
+     "commit": "8dc14f6774e40255a40db9916ec93242236412af",
      "scope": "Declared CPU and memory cap bounds startup offers, observed offers and the final claim transition. Aggregate slice contains supervisor, workers, broker and action scopes."
     },
     "validation": {
-     "state": "scoped-component-evidence; current native qualification pending",
-     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json"
+     "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+     "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -1246,12 +1249,13 @@
    "scoped_repair_2141": {
     "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
     "implemented_source": {
-     "commit": "2525d70be2951c50aa52010a17ec456e26415db5",
+     "commit": "8dc14f6774e40255a40db9916ec93242236412af",
      "scope": "Enrolling hosts require an explicit host name. General class eligibility and active-only publication/bootstrap participants use the shared roster contract."
     },
     "validation": {
-     "state": "scoped-component-evidence; current native qualification pending",
-     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json"
+     "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+     "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -2007,12 +2011,13 @@
    "scoped_repair_2141": {
     "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
     "implemented_source": {
-     "commit": "2525d70be2951c50aa52010a17ec456e26415db5",
+     "commit": "8dc14f6774e40255a40db9916ec93242236412af",
      "scope": "Deterministic component cap, claim-fence and enrollment controls only. Whole lifecycle and staged-lease race acceptance remains separate."
     },
     "validation": {
-     "state": "scoped-component-evidence; current native qualification pending",
-     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json"
+     "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+     "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+     "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
