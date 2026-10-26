@@ -22,6 +22,7 @@ CPU_PYTHON = '/home/rob/venvs/pb-cpu/bin/python'
 GPU_PYTHON = '/home/rob/venvs/pq-cu130/bin/python'
 FAST_BUDGET_S = 600
 ROOT_WAIT_S = 14400
+ROOT_RUNTIME_PROFILE = '_proof_runtime_profiles/standard3144.json'
 FAST = (
     'tests/test_sorted_json_byte_profile.py',
     'tests/test_action_keys_survive_vocabulary_removal.py',
@@ -109,18 +110,20 @@ def pbtest_command(root: Path, lane: str, python: str, report: Path) -> list[str
     return cmd + files
 
 
-def root_command(root: Path, python: str) -> list[str]:
+def root_command(root: Path) -> list[str]:
     """One detached action that prepares the pinned inputs and runs every root file."""
     required = json.loads((root / 'tests/proof_execution.json').read_text())['root']
+    runtime = json.loads((root / ROOT_RUNTIME_PROFILE).read_text())
     threads = str(required['native_threads'])
-    # The pinned image is amd64 and only x86 workers hold it.
+    # The native profile binds both the primary and installed-reader interpreters.
     return [sys.executable, str(PBRUN), '--cwd', str(root), '--tag', 'x86',
             '--cpus', str(required['cpus']), '--demand', f"mem_gb={required['memory_gib']}",
-            '--container-image', required['image'],
+            '--container-image', runtime['image'],
             *(arg for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')
               for arg in ('--env', f'{name}={threads}')),
             '--priority', '-10', '--timeout-s', '3600', '--detach', '--',
-            python, 'tests/run_root_population.py']
+            runtime['primary']['executable']['path'], 'tests/run_root_population.py',
+            '--runtime-profile', ROOT_RUNTIME_PROFILE, *populations(root)['root']]
 
 
 def tier_verdict(rows: list[dict], selected: list[str], elapsed: float, tier: str) -> dict:
@@ -165,11 +168,11 @@ def verify_cas(rows: list[dict]) -> list[dict]:
     return evidence
 
 
-def run_root_lane(python: str, report_dir: Path) -> dict:
+def run_root_lane(report_dir: Path) -> dict:
     """Submit the root action, wait for its ending, and return it as a shard row."""
     files = populations(ROOT)['root']
     with (report_dir / 'root.log').open('w') as log:
-        submitted = subprocess.run(root_command(ROOT, python), cwd=ROOT, stdout=subprocess.PIPE,
+        submitted = subprocess.run(root_command(ROOT), cwd=ROOT, stdout=subprocess.PIPE,
                                    stderr=log, text=True, check=False)
     (report_dir / 'root.submission.json').write_text(submitted.stdout)
     key = json.loads(submitted.stdout.strip().splitlines()[-1])['action_key'] \
@@ -202,8 +205,8 @@ def run_lanes(tier: str, python: str, report_dir: Path) -> tuple[list[dict], dic
     rows: list[dict] = []
     codes: dict[str, int] = {}
     if 'root' in LANES[tier]:
-        print(f'root: {report_dir / "root.log"}\n{shlex.join(root_command(ROOT, python))}', flush=True)
-        row = run_root_lane(python, report_dir)
+        print(f'root: {report_dir / "root.log"}\n{shlex.join(root_command(ROOT))}', flush=True)
+        row = run_root_lane(report_dir)
         rows.append(row)
         codes['root'] = 0 if row['verdict']['green'] else 1
     for lane, (process, report, log) in running.items():
@@ -235,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             lanes = populations(ROOT)
             print(json.dumps({'tier': args.tier, 'selected_files': selected, 'lanes': {
                 lane: {'files': lanes[lane],
-                       'command': root_command(ROOT, python) if lane == 'root'
+                       'command': root_command(ROOT) if lane == 'root'
                        else pbtest_command(ROOT, lane, python, plan_dir / f'{lane}.pbtest.json')}
                 for lane in LANES[args.tier]}}, indent=2))
             return 0

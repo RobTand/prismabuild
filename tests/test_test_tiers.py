@@ -90,7 +90,7 @@ def test_root_lane_is_the_documented_container_action():
     required = json.loads((ROOT / 'tests/proof_execution.json').read_text())['root']
     profile_path = '_proof_runtime_profiles/standard3144.json'
     profile = json.loads((ROOT / profile_path).read_text())
-    cmd = verify.root_command(ROOT, '/worker/bin/python')
+    cmd = verify.root_command(ROOT)
     assert cmd[1] == '/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py'
     assert cmd[cmd.index('--container-image') + 1] == profile['image']
     assert cmd[cmd.index('--cpus') + 1] == str(required['cpus'])

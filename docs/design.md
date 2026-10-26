@@ -20048,6 +20048,13 @@ source pins, actual qualification and remaining integration/deployment gates.
 
 ### Root proof runtime qualification
 
+The repository's CPU integration tier uses the committed x86 native profile
+`_proof_runtime_profiles/standard3144.json` for its full root population.
+The profile supplies the admitted image and exact primary interpreter; its
+installed-reader closure is required by the current root tests. The ordinary
+pbtest interpreter override does not change that route. This tier does not
+replace release qualification's separately sealed collection index.
+
 The root proof population retains its real UID/GID0 fixtures, assertions and
 node IDs. Ordinary portable execution records their real prerequisite failures.
 An explicit `tests/run_proof_container.py --runtime-profile <sealed.json>`
