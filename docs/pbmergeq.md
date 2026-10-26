@@ -28,9 +28,10 @@ sharding and placement.
    (including the published pbtest generation). In parallel, the failing files
    are re-run on the candidate: a
    node that passes there is a flake, recorded and filed once per node ID.
-5. Green: retain the tested candidate and publish it to `release-mq/<batch>-<candidate12>`.
-   The candidate prefix keeps a fresh state directory, whose batch IDs restart,
-   from finding another queue's closed vehicle.
+5. Green: retain the tested candidate and publish it to `release-mq/<batch>-<uuid>`.
+   Generate the vehicle ID once and save the branch before publication.
+   Fresh queue states use separate vehicles even for identical candidates;
+   recovery uses the saved branch.
    Open one vehicle PR listing every member, its approved SHA and `Refs #N`
    for its linked issues. Post the required context only on the candidate;
    member heads receive the informational `<context>/members` context.
