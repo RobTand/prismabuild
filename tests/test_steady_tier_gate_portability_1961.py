@@ -1,11 +1,9 @@
 """The portable steady-cycle gate checks reuse, not a particular CPU's speed.
 
 #1961 names this gate on portable-x86, whereas its absolute CPU allowance was
-calibrated on GB10 cores. Exercise the actual campaign-shaped regression with
-an affine, unit-preserving CPU clock: the work and filesystem observations stay
-real, but an unchanged cycle costs more CPU seconds. This is a deterministic
-counterexample to the portability assumption, not a reconstruction of the
-unavailable historical gate traceback.
+calibrated on GB10 cores. Exercise the real regression with a deterministic CPU
+clock above that allowance. Keep enough namespaces to exercise its read guards;
+the original regression retains the full campaign-shaped population.
 """
 from __future__ import annotations
 
@@ -14,8 +12,8 @@ import time
 
 import pytest
 
-from test_a_steady_tier_cycle_rereads_only_what_changed import loop  # noqa: F401
 from test_a_steady_tier_cycle_rereads_only_what_changed import (
+    _Loop, _small_shape,
     test_a_steady_cycle_reads_only_what_changed as steady_regression,
 )
 from prismabuild import tier_cycle
@@ -26,18 +24,20 @@ READ_COUNTERS = (
 )
 
 
+@pytest.fixture
+def loop(tmp_path):
+    shape = _small_shape()
+    shape.empty_dirs = 400
+    return _Loop(tmp_path, shape)
+
+
 def test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget(
     loop, monkeypatch,
 ):
-    real_cpu = time.process_time
-    origin = real_cpu()
     cpu_samples = []
 
     def slower_cpu():
-        # CPU seconds remain CPU seconds; this models a slower interpreter/CPU,
-        # not a clock-unit bug. No wall/monotonic clock or production work is
-        # replaced, and a relative cost comparison can still use this clock.
-        value = origin + 10_000 * (real_cpu() - origin)
+        value = 1000.0 + len(cpu_samples)
         cpu_samples.append(value)
         return value
 
@@ -55,9 +55,6 @@ def test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget(
 
     assert len(observations) >= 3, "retain real cold, warm and steady cycles"
     assert len(cpu_samples) >= 2, "retain CPU measurement as diagnostic evidence"
-    assert any(b - a > 0.636 for a, b in zip(cpu_samples, cpu_samples[1:])), (
-        "the clock must exercise CPU cost above the old GB10-derived budget"
-    )
     steady = observations[-1]
     assert steady["completed"] is True
     assert all(steady["reads"][name] == 0 for name in READ_COUNTERS)
