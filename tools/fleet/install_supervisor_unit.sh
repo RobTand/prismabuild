@@ -100,13 +100,17 @@ UNIT
         supervisor_unit
         exit 0
     fi
+    require_stopped_system_services() {
+        local service
+        for service in supervisor resource-broker client-upgrade movement-publish; do
+            if systemctl is-active --quiet "prismabuild-$service.service"; then
+                echo "drain this host and stop prismabuild-$service.service before installing the cap" >&2
+                exit 1
+            fi
+        done
+    }
     if [ "$(id -u)" -ne 0 ]; then echo 'system mode must run as root' >&2; exit 1; fi
-    for service in supervisor resource-broker client-upgrade movement-publish; do
-        if systemctl is-active --quiet "prismabuild-$service.service"; then
-            echo "drain this host and stop prismabuild-$service.service before installing the cap" >&2
-            exit 1
-        fi
-    done
+    require_stopped_system_services
     if [ -e /home/rob/.config/systemd/user/prismabuild-supervisor.service ]; then
         echo 'disable and remove the old user supervisor unit before switching to system mode' >&2
         exit 1
