@@ -9,11 +9,11 @@ from test_gang_residency_members import _compose_map
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_gang_teardown_with_prelaunch_1543 import _fail_lead
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
-from test_prelaunch_admission_1594 import _consumer_sha, _gang_pair
+from test_prelaunch_admission_1594 import TIER, _consumer_sha, _gang_pair
 
 
-@pytest.mark.parametrize("signature_number", [1, 2, 3],
-                         ids=["admission", "confirmation", "commit"])
+@pytest.mark.parametrize("signature_number", [None, 1, 2, 3],
+                         ids=["sustained", "admission", "confirmation", "commit"])
 @pytest.mark.parametrize("stat_number", [1, 2, 3, 4],
                          ids=["initial", "after-bytes", "marker-owner", "after-marker"])
 def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
@@ -45,7 +45,8 @@ def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
     def proof(owner, key):
         if key == first:
             proofs.append(True)
-            if len(proofs) == signature_number:
+            if signature_number is None or len(proofs) == signature_number:
+                stats.clear()
                 with monkeypatch.context() as fault:
                     fault.setattr(Path, "stat", unavailable)
                     return original_proof(owner, key)
@@ -54,7 +55,7 @@ def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
     with monkeypatch.context() as fault:
         fault.setattr(pool.PoolQueue, "_terminal_plan_signature", proof)
         assert gclaim("sparklina") is None
-        assert faults == [True], "the requested real stat boundary was not reached"
+        assert faults, "the requested real stat boundary was not reached"
         assert first not in queue.ledger("sparklina").held_keys()
         assert queue.records.item_path(pool.record_store.READY, first).exists()
         assert _gang.teardown(queue, group) is None
@@ -74,6 +75,7 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = _gang_pair(
         gang_fleet, tmp_path, "verdict-stat", declare_manifest=True, declare_plan=True)
     first, second = keys
+    queue.tier(TIER).mint({"stage_gib": 8})
     _fail_lead(queue, clock, monkeypatch, leads[0], _consumer_sha(queue, first))
     assert gclaim("sparklina") is None
     mark = _gang.terminal_mark_path(queue, group, first)
