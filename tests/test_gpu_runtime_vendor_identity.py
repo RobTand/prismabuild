@@ -62,7 +62,7 @@ def test_default_driver_needs_independent_vendor_identity_before_query_failure_c
     try:
         authority.launch_watches[ticket] = daemon.watch
         daemon.emit('create')
-        assert daemon.inspected.wait(5)
+        assert daemon.inspected.wait()
         daemon.emit('destroy')
         def removed(cid):
             raise ValueError('No such container')
@@ -123,7 +123,7 @@ def test_cdi_gpus_autoremove_fences_a_verified_missing_mount(
     try:
         authority.launch_watches[ticket] = daemon.watch
         daemon.emit('create')
-        assert daemon.inspected.wait(5)
+        assert daemon.inspected.wait()
         daemon.emit('destroy')
         reply = authority.handle(os.getuid(), os.getpid(), {
             'op': 'container_outcome', 'scope_id': record['scope_id'],
