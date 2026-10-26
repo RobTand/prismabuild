@@ -15,7 +15,7 @@ import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
 from .queue_bell_topics import (OutcomeNamespaces, WorkerOffers, HostReservations,
-                                AdaptiveInputs, ClaimDenials, NamespaceInputs, TOPICS)
+                                AdaptiveInputs, ClaimDenials, TierInputs, NamespaceInputs, TOPICS)
 from .queue_bell_input_shapes import InputShapes
 
 IN_MODIFY = 0x00000002
@@ -203,7 +203,7 @@ class InotifyQueue:
         self.directories = {}
         self.root_watches = {}
         self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations(),
-                         AdaptiveInputs(), ClaimDenials())
+                         AdaptiveInputs(), ClaimDenials(), TierInputs())
         self.absent_roots = set()
         self.incomplete_topics = set()
         self.file_watches = {}
@@ -535,6 +535,8 @@ class InotifyQueue:
                 if relative == Path() and mask & IN_ATTRIB:
                     ring.reset_v2()
                 elif host_topics:
+                    self._check_host_input(relative, watch_file=False)
+                    ring.set_coverage(self.covered_topics)
                     if len(relative.parts) == 1:
                         ring.reset_v2()
                     elif mask & IN_ATTRIB:

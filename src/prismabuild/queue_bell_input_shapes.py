@@ -6,7 +6,8 @@ import stat
 
 from .holder_census import CPU_METADATA, GPU_METADATA
 from .queue_bell_topics import (HostReservations, WorkerOffers, HOST_RESERVATION_TOPICS,
-                                AdaptiveInputs)
+                                AdaptiveInputs, TierInputs, TOPICS)
+from .record_store import (TIER_RESERVATIONS, TIER_FUNDING, TIER_FUNDING_RETIRED)
 
 
 class HostInputShapes:
@@ -52,12 +53,44 @@ class HostInputShapes:
         return None
 
 
+class TierInputShapes:
+    """Bounded tier read scopes, including retirement and private holders."""
+
+    @staticmethod
+    def kind(relative: Path) -> str | None:
+        parts = relative.parts
+        if not parts or parts[0] not in TierInputs.directories:
+            return None
+        if len(parts) == 1:
+            return "searchable-directory"
+        if parts[0] == TIER_RESERVATIONS:
+            if not TOPICS[TIER_RESERVATIONS].accepts_id(parts[1]):
+                return "unknown"
+            if (len(parts) == 2
+                    or (len(parts) == 3 and parts[2] in TierInputs.token_directories)
+                    or (len(parts) == 4 and (parts[2] == "held"
+                        or parts[2:] == ("minted", "dead")))):
+                return "searchable-directory"
+            if ((len(parts) == 4 and parts[2] in ("free", "minted"))
+                    or (len(parts) == 5 and (parts[2] == "held"
+                        or parts[2:4] == ("minted", "dead")))):
+                return "entry"
+            return None
+        if parts == (TIER_FUNDING, TIER_FUNDING_RETIRED):
+            return "searchable-directory"
+        record_scope = (len(parts) == 2 or (len(parts) == 3
+                        and parts[:2] == (TIER_FUNDING, TIER_FUNDING_RETIRED)))
+        if record_scope and relative.name.endswith(".json"):
+            return "file" if TierInputs.hint(relative) is not None else "unknown"
+        return None
+
+
 class InputShapes:
     """Coverage predicates for the declared names-only input families."""
 
     @staticmethod
     def kind(relative: Path) -> str | None:
-        return HostInputShapes.kind(relative)
+        return HostInputShapes.kind(relative) or TierInputShapes.kind(relative)
 
     @staticmethod
     def watchable(kind: str, info) -> bool:
@@ -65,6 +98,9 @@ class InputShapes:
             return False
         if kind == "directory":
             return stat.S_ISDIR(info.st_mode)
+        if kind == "searchable-directory":
+            return (stat.S_ISDIR(info.st_mode) and bool(info.st_mode & 0o444)
+                    and bool(info.st_mode & 0o111))
         if kind == "holder":
             # Non-directories are excluded by the authoritative predicate;
             # their later replacement is visible through the held watch.

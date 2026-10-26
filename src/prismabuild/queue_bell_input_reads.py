@@ -40,7 +40,8 @@ class DirtyInputs:
             return set(self._pending)
 
     def invalidate(self, topic: str, identity: str, *, deadline: float):
-        if topic not in ("workers", "reservations", "adaptive", "claim-denials") or not TOPICS[topic].accepts_id(identity):
+        declaration = TOPICS.get(topic)
+        if declaration is None or declaration.legacy or not declaration.accepts_id(identity):
             raise ValueError("invalid input hint")
         if not math.isfinite(deadline):
             raise ValueError("input visibility needs a finite deadline")
