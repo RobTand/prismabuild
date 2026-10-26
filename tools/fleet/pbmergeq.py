@@ -454,6 +454,11 @@ def call_tool(command: list[str], *, cwd: str | Path | None = None, check: bool 
                           capture_output=True, check=check)
 
 
+def read_json_rows(command: list[str]) -> list[dict]:
+    result = call_tool(command)
+    return [json.loads(line) for line in result.stdout.splitlines() if line]
+
+
 class GitHub:
     """The ``gh`` calls the queue makes. Writes are idempotent by the ledger."""
 
@@ -567,10 +572,9 @@ class GitHub:
                            ["gh", "pr", "ready", str(number), "-R", self.cfg.repo, "--undo"])
 
     def issue_link(self, number: int, sha: str) -> str:
-        result = call_tool(["gh", "api", "--paginate",
-                           f"repos/{self.cfg.repo}/commits/{sha}/check-runs",
-                           "--jq", ".check_runs[] | @json"])
-        checks = [json.loads(line) for line in result.stdout.splitlines() if line]
+        checks = read_json_rows(["gh", "api", "--paginate",
+                                 f"repos/{self.cfg.repo}/commits/{sha}/check-runs",
+                                 "--jq", ".check_runs[] | @json"])
         matches = [check for check in checks if check["name"] == "issue-link"
                    and check.get("app", {}).get("slug") == "github-actions"]
         if not matches:
