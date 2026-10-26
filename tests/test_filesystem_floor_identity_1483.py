@@ -124,6 +124,37 @@ def test_tmpfs_requires_explicit_complete_coverage(tmp_path, monkeypatch, tmpfs_
     assert all(v["allowed"] for v in ff.check_paths(tmp_path, [tmpfs_root]))
 
 
+def test_complete_tmpfs_coverage_allows_ram_promotion(monkeypatch, tmpfs_root):
+    from prismabuild import ram_promote, residency_map, storage_tiers
+    import test_a_promotion_handoff_defers_the_source_retirement as fixture
+
+    monkeypatch.setenv(ff.MODE_ENV, "off")
+    queue, stage, staged, manifest_sha, manifest = fixture._world(tmpfs_root)
+    ram = tmpfs_root / "ram"
+    ram.mkdir()
+    epoch = storage_tiers.ensure_ram_epoch(ram, host="testbox")
+    binding = ff.register(queue.root, tmpfs_root,
+        members=[("tier-reservations", fixture.STAGE_TIER, "stage_gib")])["binding"]
+    ff.register(queue.root, tmpfs_root, coverage=closed_coverage(binding))
+    monkeypatch.setenv(ff.MODE_ENV, "enforce")
+    args = ram_promote.build_parser().parse_args([
+        "--pool-root", str(queue.root), "--cas-root", str(tmpfs_root / "cas"),
+        "--action-key", "3" * 64, "--consumer-action-key", fixture.CONSUMER_A,
+        "--tier-id", fixture.RAM_TIER, "--ram-root", str(ram),
+        "--source-stage-root", str(stage), "--manifest-sha256", manifest_sha,
+        "--range-start-bytes", "0", "--range-end-bytes", str(fixture.SIZE),
+        "--manifest", str(manifest)])
+
+    receipt = ram_promote.promote(args)
+
+    assert receipt["complete"], receipt
+    assert (ram / staged.relative_to(stage)).read_bytes() == staged.read_bytes()
+    fragments = residency_map.read_fragments(
+        queue.root / "residency", fixture.CONSUMER_A)
+    assert any(f["tier_id"] == fixture.RAM_TIER and f["epoch"] == epoch["epoch"]
+               for f in fragments)
+
+
 def test_unidentified_disk_still_cannot_register(world, monkeypatch):
     queue, _, root = world
     found = ff.identify(root)
