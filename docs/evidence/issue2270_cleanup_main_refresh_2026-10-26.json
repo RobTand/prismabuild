@@ -1,0 +1,250 @@
+{
+  "schema": "prismabuild.issue2270.main_refresh.v1",
+  "source_commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+  "base_commit": "128c8cc9581b839555ffaadad81da8c20a9cb6fe",
+  "verified_utc": "2026-10-26T02:04:23.220922+00:00",
+  "inherited_source": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+  "unchanged_runtime_paths": [
+    "src",
+    "tools"
+  ],
+  "test_delta": [
+    "tests/test_sealed_bundle_cache.py"
+  ],
+  "delta": "Three pb-history-ok fixture comments only. Repair code and tests are byte-identical to previously qualified source.",
+  "counts": {
+    "passed": 508,
+    "failed": 0,
+    "skipped": 0
+  },
+  "full_worker_attestation": "not verified",
+  "deployment": "not performed; runtime publication and restart forbidden",
+  "workload_proof": "external adapter and both historical live reconciliations remain pending",
+  "actions": [
+    {
+      "action_key": "871801cf476f6c5e14bf8b4ffed1f0e86192cb500a8cec24fe5bd8fae07691ba",
+      "files": [
+        "tests/test_history_inputs.py"
+      ],
+      "summary": "418 passed in 8.73s",
+      "counts": {
+        "passed": 418
+      },
+      "collected": 418,
+      "ran": 418,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "5db7128ca2a8e613a6d24e06ca9580505bb7035e",
+        "input": {
+          "bytes": 45117298,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "55cb7b1567a521cb2a3308e4ae78ccc0b9d679fb5dff34731d3b21d91bbbcd2d"
+        },
+        "parent": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "local_result_claim_sha256": "09bc99acdc30be44aed17b654b59ece5993bcbe97420ed7b09aaaf3ec23c9427",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "readback_checks": {
+        "complete": true,
+        "terminal": true,
+        "stdout_hash": true,
+        "stderr_hash": true,
+        "receipt_present": true,
+        "payloads": true
+      },
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/87/871801cf476f6c5e14bf8b4ffed1f0e86192cb500a8cec24fe5bd8fae07691ba.json",
+      "receipt_sha256": "0ef958bb9b985cd03aa25ab9217d78cb1c0d19d5ab996b7f9c6fe76ec0afdd0d",
+      "result": {
+        "bytes": 313991,
+        "sha256": "e7e622be9c6fae73307bda20b0e0ffa23b8c2ca0f435a9be4cbeea2f95e1d401"
+      },
+      "canonical_logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/871801cf476f6c5e14bf8b4ffed1f0e86192cb500a8cec24fe5bd8fae07691ba/7272d55bc58989ed6f1891f32291e1e3a9e855aabd03c9c0c987e76cd560d55e/00000001.stdout.c1a2e3589141616e51b22d2d8c8673cde8841cefadffe44beaf6a74fbfd8fc82.log",
+          "recorded_sha256": "c1a2e3589141616e51b22d2d8c8673cde8841cefadffe44beaf6a74fbfd8fc82",
+          "recorded_bytes": 316959
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/871801cf476f6c5e14bf8b4ffed1f0e86192cb500a8cec24fe5bd8fae07691ba/7272d55bc58989ed6f1891f32291e1e3a9e855aabd03c9c0c987e76cd560d55e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "recorded_sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "recorded_bytes": 43
+        }
+      }
+    },
+    {
+      "action_key": "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+      "files": [
+        "tests/test_cleanup_obligation_2270.py"
+      ],
+      "summary": "36 passed, 87 warnings in 2.54s",
+      "counts": {
+        "passed": 36
+      },
+      "collected": 36,
+      "ran": 36,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "5db7128ca2a8e613a6d24e06ca9580505bb7035e",
+        "input": {
+          "bytes": 45117298,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "55cb7b1567a521cb2a3308e4ae78ccc0b9d679fb5dff34731d3b21d91bbbcd2d"
+        },
+        "parent": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "local_result_claim_sha256": "3475a09e70f57805a7b3dd126737f93d1f653ea6c349ce9e72c208086d426c4c",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "readback_checks": {
+        "complete": true,
+        "terminal": true,
+        "stdout_hash": true,
+        "stderr_hash": true,
+        "receipt_present": true,
+        "payloads": true
+      },
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/8d/8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656.json",
+      "receipt_sha256": "fe39f00388147cc1c8148484e41a4188dfadb7596d3e331c72ad447d9ca9f950",
+      "result": {
+        "bytes": 23039,
+        "sha256": "babe5185030e455c75c38a69f602ee97aa8ad9c8c3733e87c316e431d2b15621"
+      },
+      "canonical_logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656/a74d77f880275cdf13fa61953096b672ad57c83bffb9cdcd5870b134d0c35459/00000001.stdout.853d2dc5ece4e5ee1fd8a5d3a1eb9c0364bc500b6acb531e578f0cca98bf369e.log",
+          "recorded_sha256": "853d2dc5ece4e5ee1fd8a5d3a1eb9c0364bc500b6acb531e578f0cca98bf369e",
+          "recorded_bytes": 26006
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656/a74d77f880275cdf13fa61953096b672ad57c83bffb9cdcd5870b134d0c35459/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "recorded_sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "recorded_bytes": 43
+        }
+      }
+    },
+    {
+      "action_key": "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e",
+      "files": [
+        "tests/test_pool_scope_creation_recovery.py"
+      ],
+      "summary": "4 passed, 8 warnings in 0.59s",
+      "counts": {
+        "passed": 4
+      },
+      "collected": 4,
+      "ran": 4,
+      "host": "sparklina",
+      "snapshot": {
+        "commit": "5db7128ca2a8e613a6d24e06ca9580505bb7035e",
+        "input": {
+          "bytes": 45117298,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "55cb7b1567a521cb2a3308e4ae78ccc0b9d679fb5dff34731d3b21d91bbbcd2d"
+        },
+        "parent": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "local_result_claim_sha256": "2ec849e99d7e9da83aea818cca49316492ea026b26bf09b400ea33ab94f3cfb2",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "readback_checks": {
+        "complete": true,
+        "terminal": true,
+        "stdout_hash": true,
+        "stderr_hash": true,
+        "receipt_present": true,
+        "payloads": true
+      },
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/94/94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e.json",
+      "receipt_sha256": "8bb85d1d45d7f287fb7676b5eb63e490783e243a23c20a9798426d5ff736b8bf",
+      "result": {
+        "bytes": 5913,
+        "sha256": "586f68fc42b15a53b728fb664bdbce47c00d68e45494f7cb8d17554761eba3ac"
+      },
+      "canonical_logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e/ef61d7c6b3700902d199168b0da3b255d4555bb645c53353f0f69c27c1be960a/00000001.stdout.6a9e6f06e3f1a57af6869bab378c01e99fa4e79314a63d1b6f8ed33a88f43c7f.log",
+          "recorded_sha256": "6a9e6f06e3f1a57af6869bab378c01e99fa4e79314a63d1b6f8ed33a88f43c7f",
+          "recorded_bytes": 8879
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e/ef61d7c6b3700902d199168b0da3b255d4555bb645c53353f0f69c27c1be960a/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "recorded_sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "recorded_bytes": 43
+        }
+      }
+    },
+    {
+      "action_key": "cd6d9b45fd7afea2379ad39afd5db27ed9464303d008862881f96e41dd25bf4b",
+      "files": [
+        "tests/test_sealed_bundle_cache.py"
+      ],
+      "summary": "50 passed in 3.69s",
+      "counts": {
+        "passed": 50
+      },
+      "collected": 50,
+      "ran": 50,
+      "host": "sparky",
+      "snapshot": {
+        "commit": "5db7128ca2a8e613a6d24e06ca9580505bb7035e",
+        "input": {
+          "bytes": 45117298,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "55cb7b1567a521cb2a3308e4ae78ccc0b9d679fb5dff34731d3b21d91bbbcd2d"
+        },
+        "parent": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "local_result_claim_sha256": "02f720a59123ade6200ecedfc696d5c1aee249b184e4dcb82cc8968f6b86285c",
+      "claim_checks_passed": true,
+      "attestation_verified": null,
+      "readback_checks": {
+        "complete": true,
+        "terminal": true,
+        "stdout_hash": true,
+        "stderr_hash": true,
+        "receipt_present": true,
+        "payloads": true
+      },
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cd/cd6d9b45fd7afea2379ad39afd5db27ed9464303d008862881f96e41dd25bf4b.json",
+      "receipt_sha256": "cf2f91c0124a55499f0e05c5aa6eb08c3adde9ed52c234c195a8aed05558ee05",
+      "result": {
+        "bytes": 26868,
+        "sha256": "4e6d5a1f82ae2fef928a9c6f5e6724846112b80407fc9c004bc25f8dda8ff573"
+      },
+      "canonical_logs": {
+        "stdout": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/cd6d9b45fd7afea2379ad39afd5db27ed9464303d008862881f96e41dd25bf4b/0af75d0ced4f546b3340f940c8fb0994438ae0815984c79c60a599cabf9d5d94/00000001.stdout.0916fd46d6ee12365b2bb7d0e5bee0c4a6209224517b52aaae0629ff262e1f7c.log",
+          "recorded_sha256": "0916fd46d6ee12365b2bb7d0e5bee0c4a6209224517b52aaae0629ff262e1f7c",
+          "recorded_bytes": 29829
+        },
+        "stderr": {
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/cd6d9b45fd7afea2379ad39afd5db27ed9464303d008862881f96e41dd25bf4b/0af75d0ced4f546b3340f940c8fb0994438ae0815984c79c60a599cabf9d5d94/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "recorded_sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+          "recorded_bytes": 43
+        }
+      }
+    }
+  ],
+  "inherited_validation": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+  "initial_published_commit": "e915a4b71eaca5bc77629d94be3ab3f85c3fe549",
+  "main_integrated_published_commit": "daa9baec1af981b1bc2706907d078d9d31fa14d8",
+  "main_integrated_tree": "031b61c1de2fd7ca3178877cdc1a9c46408a8735",
+  "source_equality": "Rebased source and provider integration have identical full trees, including pbmcp.py mode100755. Subsequent commits update evidence only."
+}

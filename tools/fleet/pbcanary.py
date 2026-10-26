@@ -2,11 +2,16 @@
 """Fleet-executed end-to-end self-test driver (RobTand/prismabuild#688).
 
 ``pbcanary`` submits canary legs through the REAL interfaces (the existing
-``pbrun`` submission path), waits within fixed budgets, verifies CAS
+``pbrun`` submission path), observes submitted actions, verifies CAS
 receipts against fixed expectations, and renders a mechanical verdict.
 It submits, waits, and verifies. Nothing decides anything at runtime:
-legs run in fixed order, waits are bounded, there are no retries, and any
-refusal or mismatch is recorded with the leg and the refusing check named.
+legs run in fixed order, each observation is bounded, there are no action
+retries, and any refusal or mismatch is recorded with the leg and the
+refusing check named.
+Leg 3 keeps observing its one action after an observation budget expires,
+because ordinary higher-priority work has no fixed drainage deadline.
+``--leg3-wait-s`` sets an optional total observation budget. Its 600-second
+execution deadline and the other legs' total wait budgets remain fixed.
 
 Exit semantics (per the issue):
 
@@ -425,12 +430,14 @@ def submit_leg(
     return str(detach["action_key"]), detach
 
 
-def wait_leg(paths: dict, leg: str, action_key: str, wait_s: int) -> dict:
-    """Wait for one submitted leg within its fixed budget (no retries)."""
+def wait_leg(paths: dict, leg: str, action_key: str, wait_s: float,
+             *, timeout_s: float | None = None) -> dict:
+    """Observe one submitted leg within one bounded interval."""
     completed = run_process(
         [sys.executable, str(paths["pbwait"]),
          "--wait-s", str(wait_s), action_key],
-        timeout_s=float(wait_s) + 120.0,
+        timeout_s=(float(wait_s) + 120.0 if timeout_s is None
+                   else min(float(wait_s) + 120.0, timeout_s)),
     )
     record = last_json_object(completed.stdout) or {}
     return {"returncode": completed.returncode,
@@ -620,6 +627,7 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
     from prismabuild import submission
     from prismabuild import action_client, action_wait, endings
     from pbcanary_legs import leg3
+    from pbcanary_legs.common import extract_envelope
     try:
         q = submission.pool.PoolQueue(Path(paths["queue_root"]))
         landed, observed_generation = action_client.bounded_outcome_observation(
@@ -635,7 +643,7 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
         attempts = rendered["attempts"]
         stdout = (attempts[-1].get("stdout") if attempts
                   else summary["detail"].get("stdout"))
-        _, envelope, _ = leg3._extract_envelope({"stdout": stdout})
+        _, envelope, _ = extract_envelope({"stdout": stdout}, schema=leg3.LEG3_SCHEMA)
         return bool(envelope and envelope.get("ok") is False
                     and envelope.get("not_verified") == "staging_wait")
     except (OSError, ValueError, KeyError, action_wait.OutcomeReadUnavailable,
@@ -694,6 +702,41 @@ def _await_generation(label: str, generation: str | None, wait_s: int,
     time.sleep(min(15.0, max(1.0, deadline - time.monotonic())))
 
 
+def _wait_for_side(paths: dict, *, leg: str, label: str, action_key: str,
+                   wait_s: int, leg_dir: Path, file_tag: str,
+                   observation_wait_s: float | None = None) -> dict:
+    """Observe one side without assigning a deadline to higher-priority work."""
+    deadline = (time.monotonic() + observation_wait_s
+                if leg == "leg-3" and observation_wait_s is not None else None)
+    while True:
+        remaining = (max(0.0, deadline - time.monotonic())
+                     if deadline is not None else None)
+        if remaining is not None and remaining <= 0:
+            raise _SideUnverified(
+                f"{label} total observation budget expired for {action_key}",
+                action_key, "wait_budget_exhausted")
+        interval = min(wait_s, remaining) if remaining is not None else wait_s
+        try:
+            waited = wait_leg(
+                paths, leg, action_key, interval,
+                **({"timeout_s": remaining} if remaining is not None else {}))
+        except subprocess.TimeoutExpired as exc:
+            reason = ("wait_budget_exhausted" if deadline is not None
+                      and time.monotonic() >= deadline else "outcome_unobserved")
+            raise _SideUnverified(
+                f"{label} outcome observation timed out for {action_key}: {exc}",
+                action_key, reason) from exc
+        write_json(leg_dir / f"pbwait{file_tag}.json",
+                   {"returncode": waited["returncode"],
+                    "record": waited["record"],
+                    "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
+        if (leg != "leg-3" or waited["returncode"] != 75
+                or deadline is not None and time.monotonic() >= deadline):
+            return waited
+        print(f"pbcanary: {label}: observation interval expired for {action_key}; "
+              "still waiting on the same action", file=sys.stderr, flush=True)
+
+
 def _execute_side(
     paths: dict, *, leg: str, spec: dict, argv: list[str] | None,
     checkout: Path, run_id: str, generation: str | None, priority: int,
@@ -701,7 +744,7 @@ def _execute_side(
     extra_flags: list, extra_env: dict, manifest: Path | None,
     wait_s: int,
 ) -> tuple[dict, str, bytes, str]:
-    """Submit one action, wait within budget, CAS-load its receipt.
+    """Submit one action, observe its outcome, and CAS-load its receipt.
 
     Returns ``(envelope_for_verify, receipt_ref, result_blob,
     action_key)``. Raises :class:`PreconditionRefused` when nothing
@@ -755,16 +798,10 @@ def _execute_side(
     write_json(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
-    try:
-        waited = wait_leg(paths, leg, action_key, int(wait_s))
-    except subprocess.TimeoutExpired as exc:
-        raise _SideUnverified(
-            f"{label} outcome observation timed out for {action_key}: {exc}",
-            action_key, "outcome_unobserved") from exc
-    write_json(leg_dir / f"pbwait{file_tag}.json",
-               {"returncode": waited["returncode"],
-                "record": waited["record"],
-                "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
+    waited = _wait_for_side(
+        paths, leg=leg, label=label, action_key=action_key, wait_s=wait_s,
+        leg_dir=leg_dir, file_tag=file_tag,
+        observation_wait_s=spec.get("observation_wait_s"))
     if waited["returncode"] != 0:
         tail = (waited["stderr"].strip().splitlines() or ["no stderr"])[-1]
         if waited["returncode"] in (74, 75):
@@ -772,7 +809,7 @@ def _execute_side(
                       else "wait_budget_exhausted")
             raise _SideUnverified(
                 f"{label} not verified: pbwait exit {waited['returncode']} "
-                f"after {wait_s}s for {action_key}: {tail}", action_key, reason)
+                f"for {action_key}: {tail}", action_key, reason)
         if leg == "leg-3" and waited["returncode"] == 1:
             staging = staging_wait_evidence(paths, action_key, detach.get("published_unix"))
             if staging is not False:
@@ -971,7 +1008,7 @@ def run_canary(args: argparse.Namespace | None = None,
         args = argparse.Namespace(
             legs=DEFAULT_LEGS, run_id=None, priority=DEFAULT_PRIORITY,
             checkout=None, fleet_root=None, published_root=None,
-            gpu_image=None, generation=None, summary_dir=None,
+            gpu_image=None, generation=None, summary_dir=None, leg3_wait_s=None,
         )
     if generation is None:
         generation = getattr(args, "generation", None) or None
@@ -1040,6 +1077,8 @@ def run_canary(args: argparse.Namespace | None = None,
                           f"{detail}"},
                 results, stderr=True)
             continue
+        if leg == "leg-3":
+            spec = {**spec, "observation_wait_s": getattr(args, "leg3_wait_s", None)}
         write_json(leg_dir / "spec.json", spec)
 
         runner = _run_fanout_leg if "actions" in spec else _run_single_leg
@@ -1083,6 +1122,16 @@ def run_canary(args: argparse.Namespace | None = None,
     return exit_code
 
 
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be finite and positive") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be finite and positive")
+    return seconds
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Fleet-executed end-to-end self-test (issue #688).")
@@ -1093,6 +1142,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="run namespace; default UTC timestamp (must be fresh)")
     parser.add_argument("--priority", type=int, default=DEFAULT_PRIORITY,
                         help="queue hint (default: %(default)s, never contends)")
+    parser.add_argument("--leg3-wait-s", type=_positive_seconds, default=None,
+                        help="total leg-3 observation budget in seconds "
+                             "(default: keep observing the same action)")
     parser.add_argument("--checkout", default=None,
                         help="tree pbrun snapshots (default: this driver's Git toplevel)")
     parser.add_argument("--fleet-root", default=None,

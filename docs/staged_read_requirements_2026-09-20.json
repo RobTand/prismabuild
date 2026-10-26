@@ -42,6 +42,40 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2267": {
+    "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+    "implemented_source": {
+     "commit": "7dbd1079152621df08c4c5558560fbc250471f0a",
+     "state": "component-implemented",
+     "scope": "PassCensus suspends only the exact refreshed measurement election within a claim pass after fresh affirmative foreign CPU refusal, without resetting its opportunity."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2267/merge-acceptance.json",
+     "detail": "One- and two-measurement deterministic RED. Integrated x86/Python 3.14 and ARM/Python 3.12: five executed runs per architecture, two xdist each; 103 tests in each broad row and 29 in each other row. No skips. Source trees, logs, execution receipts and CAS payloads read back."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no staged-only campaign or live-host reproduction",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_2270": {
+    "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "PB owns obligation verification and reconciliation; the operator supplies identity only."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -226,6 +260,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Exact action/publication/attempt/claimant/host/nonce checks preserve immutable attempt and log evidence."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -401,6 +453,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Behavior attributed per (runtime_commit, generation_id).",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Source validation is attributed to a checkout snapshot; no runtime activation of this repair is claimed."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -435,6 +505,24 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_2270": {
+    "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Cleanup resolution remains separate from command failure and creates no command-success receipt."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -659,6 +747,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Refused create retains an obligation and capacity until owning-host cleanup proof allows normal conclusion."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -853,6 +959,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Pending claims retain capacity; historical already-released reservations are not fabricated or credited again."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -1074,6 +1198,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Fresh identity verification permits adoption of immutable cleanup proof after summary-write interruption."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -1571,7 +1713,39 @@
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "no progress; a consumer never admitted"
     }
-   ]
+   ],
+   "scoped_repair_2267": {
+    "target": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+    "implemented_source": {
+     "commit": "7dbd1079152621df08c4c5558560fbc250471f0a",
+     "state": "component-implemented",
+     "scope": "PassCensus suspends only the exact refreshed measurement election within a claim pass after fresh affirmative foreign CPU refusal, without resetting its opportunity."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2267/merge-acceptance.json",
+     "detail": "One- and two-measurement deterministic RED. Integrated x86/Python 3.14 and ARM/Python 3.12: five executed runs per architecture, two xdist each; 103 tests in each broad row and 29 in each other row. No skips. Source trees, logs, execution receipts and CAS payloads read back."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no staged-only campaign or live-host reproduction",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_1772": {
+    "target": "Observe the same canary action through feasible higher-priority waiting without weakening priority or treating elapsed wait as a pass.",
+    "implemented_source": {
+     "commit": "eb36f95ee0b978cbceb6ac06aac8f1d33e8d64d1",
+     "state": "component-implemented",
+     "scope": "Leg 3 continues bounded observations after rc75 by default; --leg3-wait-s caps one total observation budget. Execution remains 600 seconds at priority -10."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1772/merge-acceptance.json",
+     "detail": "Deterministic red 19ba88324f0f; five fresh green regression runs per architecture, two xdist each, 16 cases and no skips. Final integrated 26-file cohorts on base 954e14171565 each report 368 passed, 1 inherited #2296 failure. Earlier base and branch reproduce both #2296/#2297; #2311 fixes #2297 in the new base. All 90 endings, cleanup and logs plus success CAS payloads verified; actual canary source bundles match the review branch. Principal disposition of #2296 and contract approval remain required."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no recovered historical admission snapshot, live canary or staged-only campaign result",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states; conditional liveness and NFS limitations remain owed."
+   }
   },
   {
    "acceptance": [
@@ -1915,6 +2089,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Private-queue lifecycle tests cover broker refusal, restored connectivity and contradictory identities."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -2050,6 +2242,24 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
+    "implemented_source": {
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+     "state": "component-implemented",
+     "scope": "Recovery tests cover replay after summary-write failure and retry bookkeeping advancement."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {

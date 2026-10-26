@@ -18,7 +18,6 @@ Everything runs on ``tmp_path`` queues, stages and sources (#628).
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import math
@@ -29,7 +28,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 
 import pytest
 
@@ -48,6 +46,7 @@ from test_a_stalled_mover_ends_no_progress import (  # noqa: E402
     CONSUMER, HEARTBEAT, MEMBERS, MIB, UNDER, _Disks, _contention,
     _mover_source, _policy, _real_window, _seal_rows)
 from prismabuild import staged_path
+from controlled_action import ControlledAction, controlled_actions
 
 #: The consumer the mover waiting at the gate stages for.  Its range is a
 #: second manifest, so its staged names never meet the egressed range's.
@@ -56,11 +55,11 @@ WAITING = _hexkey("waiting-at-the-gate")
 #: The egress under test: the real ``stage_release.main``, with ``os.unlink``
 #: replaced in its own process for the staged files it drains.  Each unlink
 #: of a staged file is noted in ``marker`` first; the ``after``-th and every
-#: later one hangs (``None``: none does), and each one sleeps ``delay``.
+#: later one waits on the controller (``None``: gate every unlink).
 EGRESS = textwrap.dedent('''
     import os, sys, time
     sys.path.insert(0, {source!r})
-    from prismabuild import stage_release
+    from prismabuild import stage_release, staged_path
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     stage = os.path.realpath({stage!r}) + os.sep
@@ -75,8 +74,11 @@ EGRESS = textwrap.dedent('''
             with open({marker!r}, "a") as stream:
                 stream.write(name + "\\n")
             if after is not None and calls[0] >= after:
-                time.sleep(3600)
-            time.sleep({delay!r})
+                staged_path.egress_run.get().report()
+                _pb_gate()
+            if after is None:
+                staged_path.egress_run.get().report()
+                _pb_gate()
         return real(path, *args, **kwargs)
     os.unlink = unlink
     code = stage_release.main({argv!r})
@@ -223,15 +225,15 @@ def _staged_range(tmp_path: Path, queue: pool.PoolQueue,
 
 
 def _egress_source(tmp_path: Path, mover: str, *, after: int | None,
-                   delay: float = 0.0) -> str:
+                   control: ControlledAction) -> str:
     argv = ["--pool-root", str(tmp_path / "queue"),
             "--mover-action-key", mover, "--consumer-action-key", CONSUMER,
             "--stage-root", str(tmp_path / "stage"),
             "--receipt", str(tmp_path / "egress-receipt.json")]
-    return EGRESS.format(source=str(ROOT / "src"),
+    return control.source + EGRESS.format(source=str(ROOT / "src"),
                          heartbeat=HEARTBEAT, stage=str(tmp_path / "stage"),
                          marker=str(tmp_path / "unlinks.txt"), after=after,
-                         delay=float(delay), argv=argv,
+                         argv=argv,
                          receipt=str(tmp_path / "egress-receipt.json"))
 
 
@@ -264,58 +266,91 @@ def _brief(outcome: dict) -> str:
 
 def test_a_wedged_egress_is_killed_and_the_mover_at_its_gate_proceeds(
         tmp_path: Path, monkeypatch) -> None:
-    """The acceptance test of #1021, red on main.
+    """A stalled egress ends after the waiting mover has observed its hold.
 
-    A real egress drains a staged range of three 1 MiB entries, unlinks the
-    first and hangs unlinking the second, inside the stage's ownership lock.
-    A mover of another range then reaches its start gate and waits on that
-    lock.
-
-    On main the egress is sealed with no progress contract, so nothing ends
-    it before the worker's ceiling (here 30 s): the mover waits the whole
-    time, and no record names the egress it waited on.  Now the egress's own
-    ``no_progress`` rung ends it one grace after its last report, with the
-    diagnosis every kill carries; the lock goes with it, the mover proceeds
-    and completes, and its progress record names the egress, the wait and
-    the credited seconds.
+    Real processes stop at socket gates. The mover's first ownership request
+    precedes its explicit start gate because resume also needs ownership.
+    Two watchdog observations establish credited waiting before the egress's
+    virtual clock can spend its allowance. Its death releases the real lock.
     """
 
-    ceiling = 30.0
     queue, cas, mover, params, grace = _setup(tmp_path, monkeypatch)
+    gated_seen = threading.Event()
+
+    def wait_for_gate_credit():
+        assert gated_seen.wait(60), "mover never observed the held gate"
+
+    control = ControlledAction(tmp_path / "egress-control", before_tick=wait_for_gate_credit)
     egress = _claimed(queue, cas, tmp_path, "egress",
-                      _egress_source(tmp_path, mover, after=2), params)
+                      _egress_source(tmp_path, mover, after=2, control=control), params)
     egress_key = str(egress["action_key"])
-    ended: dict[str, dict] = {}
-
-    def run_egress() -> None:
-        ended["egress"] = queue.execute(egress, timeout_s=ceiling,
-                                        heartbeat_s=HEARTBEAT,
-                                        timeout_grace_s=0.5)
-
-    runner = threading.Thread(target=run_egress, daemon=True)
-    runner.start()
-    deadline = time.monotonic() + 20.0
-    while len(_unlinks(tmp_path)) < 2 and time.monotonic() < deadline:
-        time.sleep(HEARTBEAT)
-    # Wedged inside the lock: one staged entry unlinked, the next one hung.
-    assert len(_unlinks(tmp_path)) == 2, _unlinks(tmp_path)
-
     manifest, total = _second_window(tmp_path)
     argv = _mover_argv(tmp_path, consumer=WAITING, manifest=manifest,
                        total=total, receipt=tmp_path / "gate-receipt.json")
-    gated = _claimed(queue, cas, tmp_path, "gated", _mover_source(argv), {
+    gate_control = ControlledAction(tmp_path / "mover-control", steps=1,
+                                    step_s=3 * HEARTBEAT)
+    gate_hook = """
+import sys
+sys.path.insert(0, SOURCE)
+from prismabuild import pool
+_real_lock = pool.PoolQueue.stage_ownership_lock
+_gate_waited = False
+def _controlled_lock(self, *args, **kwargs):
+    global _gate_waited
+    if not _gate_waited and kwargs.get("blocking", True):
+        _gate_waited = True
+        _pb_gate()
+    return _real_lock(self, *args, **kwargs)
+pool.PoolQueue.stage_ownership_lock = _controlled_lock
+""".replace("SOURCE", repr(str(ROOT / "src")))
+    gated = _claimed(queue, cas, tmp_path, "gated",
+                      gate_control.source + gate_hook + _mover_source(argv), {
         pb.PROGRESS_PARAM: _policy(4),
         "progress_pool_contention": _contention(tmp_path)})
-    gated_outcome = queue.execute(gated, timeout_s=60.0, heartbeat_s=HEARTBEAT,
-                                  timeout_grace_s=0.5)
-    runner.join(ceiling + 30.0)
+    original_lease = queue.write_lease
+
+    def lease(*args, **kwargs):
+        original_lease(*args, **kwargs)
+        observed = kwargs.get("progress_observation") or {}
+        if observed.get("start_gate_exempt_s", 0) > HEARTBEAT:
+            gated_seen.set()
+
+    monkeypatch.setattr(queue, "write_lease", lease)
+    ended, errors = {}, []
+
+    def run_egress():
+        try:
+            ended["egress"] = queue.execute(
+                egress, timeout_s=30, heartbeat_s=HEARTBEAT,
+                timeout_grace_s=0.5, clock=control.clock)
+        except BaseException as error:
+            errors.append(error)
+            control.ready.set()
+
+    actions = {str(queue.records.action_progress_path(egress_key)): control,
+               str(queue.records.action_progress_path(gated["action_key"])): gate_control}
+    with controlled_actions(monkeypatch, actions):
+        runner = threading.Thread(target=run_egress)
+        runner.start()
+        try:
+            assert control.ready.wait(60) and not errors, errors
+            assert len(_unlinks(tmp_path)) == 2
+            gated_outcome = queue.execute(
+                gated, timeout_s=60, heartbeat_s=HEARTBEAT,
+                timeout_grace_s=0.5, clock=gate_control.clock)
+            assert gated_outcome["status"] == "executed", _brief(gated_outcome)
+            assert gated_seen.is_set(), _brief(gated_outcome)
+        finally:
+            gated_seen.set()
+            runner.join(60)
+        assert not runner.is_alive() and not errors, errors
     egress_outcome = ended["egress"]
 
     # The egress ends at its own allowance, not at the worker's ceiling.
     assert egress_outcome.get("termination_reason") == "no_progress", _brief(
         egress_outcome)
     assert grace is not None
-    assert egress_outcome["elapsed_s"] < ceiling
+    assert egress_outcome["stall"]["quiet_s"] == pytest.approx(grace)
     observed = egress_outcome["progress_observation"]
     assert observed["grace_s"] == grace
     landed = observed["last_accepted"]
@@ -325,16 +360,14 @@ def test_a_wedged_egress_is_killed_and_the_mover_at_its_gate_proceeds(
     assert mover[:12] in landed["unit"]
     stall = egress_outcome["stall"]
     assert stall["allowance_s"] == grace
-    # The egress's own hold of the stage's lock is not a wait.  Its worker
-    # looks only until the drain's first report, and at most two edges of
-    # one look each can fall between the grant and the holder record.
-    assert stall["credited_s"]["start_gate"] <= 2 * HEARTBEAT + 1e-9
+    # The socket milestone follows holder publication and the first report.
+    # Its own hold cannot earn any start-gate credit.
+    assert stall["credited_s"]["start_gate"] == 0
     # A kill names what it was waiting on (#990).
     assert "dependents_read_s" in egress_outcome
 
     # The mover waited out the egress at its gate, was credited for it and
     # completed; its record names the egress it waited on.
-    assert gated_outcome["status"] == "executed", _brief(gated_outcome)
     receipt = json.loads((tmp_path / "gate-receipt.json").read_text())
     assert receipt["complete"] is True
     gate = gated_outcome["progress_observation"]
@@ -351,20 +384,22 @@ def test_a_wedged_egress_is_killed_and_the_mover_at_its_gate_proceeds(
 
 def test_a_slow_but_advancing_egress_is_not_killed(tmp_path: Path,
                                                    monkeypatch) -> None:
-    """Each unlink takes 0.6 of the egress's grace, so the drain runs well
-    past one grace in all; every entry it releases is reported, and it
-    completes.  Its record shows the drain it reported."""
+    """Advance virtual time by 0.6 grace per gated unlink, retaining real I/O."""
 
     queue, cas, mover, params, grace = _setup(tmp_path, monkeypatch)
     assert grace is not None, "the egress was sealed with no progress contract"
+    control = ControlledAction(tmp_path / "egress-control", steps=3,
+                               step_s=0.6 * grace)
     egress = _claimed(queue, cas, tmp_path, "egress",
-                      _egress_source(tmp_path, mover, after=None,
-                                     delay=0.6 * grace), params)
-    outcome = queue.execute(egress, timeout_s=10.0 * grace,
-                            heartbeat_s=HEARTBEAT, timeout_grace_s=0.5)
+                      _egress_source(tmp_path, mover, after=None, control=control), params)
+    actions = {str(queue.records.action_progress_path(egress["action_key"])): control}
+    with controlled_actions(monkeypatch, actions):
+        outcome = queue.execute(egress, timeout_s=10.0 * grace,
+                                heartbeat_s=HEARTBEAT, timeout_grace_s=0.5,
+                                clock=control.clock)
 
     assert outcome["status"] == "executed", _brief(outcome)
-    assert outcome["elapsed_s"] > 1.5 * grace
+    assert control.now == pytest.approx(1.8 * grace)
     receipt = json.loads((tmp_path / "egress-receipt.json").read_text())
     assert receipt["complete"] is True
     assert receipt["entries_deleted"] == 3
@@ -548,7 +583,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 
 #: An egress wedged inside its own hold, before its drain: the stage's lock
 #: taken the way ``stage_release`` takes it, then nothing.
-HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    from prismabuild import staged_path\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        time.sleep(3600)\n')
+HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    from prismabuild import staged_path\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        _pb_gate()\n')
 
 
 def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
@@ -572,24 +607,27 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
                            queue=str(tmp_path / "queue"),
                            stage=str(tmp_path / "stage"),
                            marker=str(tmp_path / "held.txt"))
-    item = _claimed(queue, cas, tmp_path, "holder", source, {
+    control = ControlledAction(tmp_path / "hold-control")
+    item = _claimed(queue, cas, tmp_path, "holder", control.source + source, {
         pb.PROGRESS_PARAM: policy,
         "progress_pool_contention": _contention(tmp_path)})
     key = str(item["action_key"])
     ceiling = 30.0
-    outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
-                            timeout_grace_s=0.5)
+    actions = {str(queue.records.action_progress_path(key)): control}
+    with controlled_actions(monkeypatch, actions):
+        outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
+                                timeout_grace_s=0.5, clock=control.clock)
 
     assert (tmp_path / "held.txt").read_text() == "held"
     assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
-    assert outcome["elapsed_s"] < ceiling / 2
+    assert outcome["stall"]["quiet_s"] == pytest.approx(grace)
     observed = outcome["progress_observation"]
     contention = observed["pool_contention"]
     assert contention["start_gate_self_probes"] > 0
     assert all(entry["action_key"] != key
                for entry in contention["start_gate_holders"])
-    # At most the two edges a look can land between the grant and the record.
-    assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
+    # The holder record exists before the watchdog starts.
+    assert observed["start_gate_exempt_s"] == 0
 
 
 # ------------------------------------------------------------ a mover's own hold
@@ -630,7 +668,7 @@ MOVER_RESUME_HOLD = textwrap.dedent('''
             return real_validate(document)
         with open({marker!r}, "w") as stream:
             stream.write(str(os.getpid()))
-        time.sleep(3600)
+        _pb_gate()
     stage_move.residency_map.validate_fragment = wedged
     stage_move._resume_own_coverage(
         queue, consumer_action_key={consumer!r}, mover_action_key=key,
@@ -661,7 +699,7 @@ MOVER_RESUME_PARSE_HOLD = textwrap.dedent('''
     def wedged(document):
         with open({marker!r}, "w") as stream:
             stream.write(str(os.getpid()))
-        time.sleep(3600)
+        _pb_gate()
     stage_move.residency_map.validate_fragment = wedged
     stage_move._resume_own_coverage(
         queue, consumer_action_key={consumer!r}, mover_action_key=key,
@@ -699,45 +737,27 @@ def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
         source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
-    item = _claimed(queue, cas, tmp_path, "resume", source, {
+    control = ControlledAction(tmp_path / "resume-control")
+    item = _claimed(queue, cas, tmp_path, "resume", control.source + source, {
         pb.PROGRESS_PARAM: _policy(2),
         "progress_pool_contention": _contention(tmp_path)})
     key = str(item["action_key"])
     ceiling = 20.0
-    ended: dict[str, dict] = {}
-
-    def run() -> None:
-        ended["outcome"] = queue.execute(item, timeout_s=ceiling,
-                                         heartbeat_s=HEARTBEAT,
-                                         timeout_grace_s=0.5)
-
-    runner = threading.Thread(target=run, daemon=True)
-    runner.start()
-    # On main the credited hold also outlived the worker's ceiling: the
-    # action was never ended at all.  Bound the wait, and end the wedged
-    # process ourselves if the worker does not, so a regression fails here
-    # instead of hanging the suite.
-    runner.join(ceiling + 10.0)
-    if runner.is_alive():
-        marker = tmp_path / "held.txt"
-        if marker.exists():
-            with contextlib.suppress(ProcessLookupError, ValueError):
-                os.kill(int(marker.read_text()), signal.SIGKILL)
-        runner.join(30.0)
-        pytest.fail("the worker credited the mover's own resume-census hold "
-                    "and never ended it")
-    outcome = ended["outcome"]
+    actions = {str(queue.records.action_progress_path(item["action_key"])): control}
+    with controlled_actions(monkeypatch, actions):
+        outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
+                                timeout_grace_s=0.5, clock=control.clock)
 
     assert (tmp_path / "held.txt").read_text().isdigit()
     assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
-    assert outcome["elapsed_s"] < ceiling / 2
+    assert outcome["stall"]["quiet_s"] == pytest.approx(2)
     observed = outcome["progress_observation"]
     contention = observed["pool_contention"]
     assert contention["start_gate_self_probes"] > 0
     assert all(entry["action_key"] != key
                for entry in contention["start_gate_holders"])
-    # At most the two edges a look can land between the grant and the record.
-    assert observed["start_gate_exempt_s"] <= 2 * HEARTBEAT + 1e-9
+    # The holder record exists before the watchdog starts.
+    assert observed["start_gate_exempt_s"] == 0
     # The kill ended the process, and its lock with it.
     with queue.stage_ownership_lock(str(tmp_path / "stage"), blocking=False) as got:
         assert got
@@ -766,33 +786,19 @@ def test_a_mover_wedged_in_its_own_resume_parse_needs_no_credit(
         source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
-    item = _claimed(queue, cas, tmp_path, "resume", source, {
+    control = ControlledAction(tmp_path / "resume-control")
+    item = _claimed(queue, cas, tmp_path, "resume", control.source + source, {
         pb.PROGRESS_PARAM: _policy(2),
         "progress_pool_contention": _contention(tmp_path)})
     ceiling = 20.0
-    ended: dict[str, dict] = {}
-
-    def run() -> None:
-        ended["outcome"] = queue.execute(item, timeout_s=ceiling,
-                                         heartbeat_s=HEARTBEAT,
-                                         timeout_grace_s=0.5)
-
-    runner = threading.Thread(target=run, daemon=True)
-    runner.start()
-    runner.join(ceiling + 10.0)
-    if runner.is_alive():
-        marker = tmp_path / "held.txt"
-        if marker.exists():
-            with contextlib.suppress(ProcessLookupError, ValueError):
-                os.kill(int(marker.read_text()), signal.SIGKILL)
-        runner.join(30.0)
-        pytest.fail("the worker never ended the mover wedged in its own "
-                    "pre-lock parse")
-    outcome = ended["outcome"]
+    actions = {str(queue.records.action_progress_path(item["action_key"])): control}
+    with controlled_actions(monkeypatch, actions):
+        outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
+                                timeout_grace_s=0.5, clock=control.clock)
 
     assert (tmp_path / "held.txt").read_text().isdigit()
     assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
-    assert outcome["elapsed_s"] < ceiling / 2
+    assert outcome["stall"]["quiet_s"] == pytest.approx(2)
     # Nothing was blocked, so nothing needed a self-probe credit -- unlike
     # the under-the-lock case above, whose ``start_gate_self_probes`` is
     # positive for exactly this reason.

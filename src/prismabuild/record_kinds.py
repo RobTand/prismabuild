@@ -36,6 +36,11 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("q-host-hold", "prismabuild.host_hold.v1", "holds/<host>.json", "additive",
+               "prismabuild.host_hold:read_host_hold", ("prismabuild.host_hold:change_host_hold",),
+               ("active", "expired"),
+               ("absent permits claims; invalid holds fail closed; expiry does not delete the record",),
+               stable_paths=True, older_participant_absence=True),
     RecordKind("host-spool-offer", None, "host-private <box>.spool-offer.json", "additive",
                "prismabuild.local_scratch:read_spool_offer", ("prismabuild.local_scratch:write_spool_offer",),
                ("zero", "measured", "replay"), ("a missing or invalid counter means unknown, never zero",),
@@ -436,6 +441,10 @@ KINDS = (
     RecordKind("host-origin", "prismabuild.box_origin.v1", "host box-state/<digest>.origin.json", "additive",
                "prismabuild.adaptive_cpu:read_box_origin", ("prismabuild.adaptive_cpu:_record_box_origin_if_new",),
                ("first", "repeated"), ("preexisting state without an origin remains legacy and unattributed",), stable_paths=True),
+    RecordKind("host-admission-census", "prismabuild.shared_admission_census.v1", "host box-state/<digest>.shared", "closed",
+               "prismabuild._measurement_reservation:CensusReader.shared_census", ("prismabuild._measurement_reservation:CensusReader.publish_shared",),
+               ("complete",), ("optional two-second pool/boot-bound cache; source generation is rechecked under M/H before use",),
+               stable_paths=True, older_participant_absence=True),
     RecordKind("host-images", "prismabuild.container_image_inventory.v2", "host container-image cache/inventory.json", "additive",
                "prismabuild.container_images:InventoryCache._snapshot", ("prismabuild.container_images:InventoryCache._refresh",),
                ("empty", "image", "unknown"), ("supplemental image_contents/store_root may be absent; entries null means unknown",)),

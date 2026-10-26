@@ -1,0 +1,20 @@
+[
+  {
+    "action_key": "ee5d23735ffcd5f2115437235bb1c8f4369f29688276ea6ff9966e7c654a69bc",
+    "attempt": {
+      "attempt": 1,
+      "outcome": "attempts/ee5d23735ffcd5f2115437235bb1c8f4369f29688276ea6ff9966e7c654a69bc/866442e78bcc0c77be9d2f740305dc6a27f55676cafa00ea8903e3e350219e52/00000001.json"
+    },
+    "daemon_error": "failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: failed to fulfil mount request: open /usr/lib/aarch64-linux-gnu/libnvidia-egl-wayland.so.1.1.21: no such file or directory",
+    "boot_id": "1fe8478c-b46f-416b-8973-d7dd88658c60"
+  },
+  {
+    "action_key": "0409ecc408d4a28d72eea3945fd413976ac9342cf2878989ee68e3575c79e3df",
+    "attempt": {
+      "attempt": 1,
+      "outcome": "attempts/0409ecc408d4a28d72eea3945fd413976ac9342cf2878989ee68e3575c79e3df/91a9c1c081c519bd41b36192f8f02d66155c293194a64d94d7d67eb7d9f7e76c/00000001.json"
+    },
+    "daemon_error": "failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: failed to fulfil mount request: open /usr/lib/aarch64-linux-gnu/libnvidia-egl-wayland.so.1.1.21: no such file or directory",
+    "boot_id": "1fe8478c-b46f-416b-8973-d7dd88658c60"
+  }
+]

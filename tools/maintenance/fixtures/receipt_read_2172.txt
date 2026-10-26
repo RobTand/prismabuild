@@ -1,0 +1,115 @@
+    def read(self, directories: list[Path], *,
+             liveness: "Liveness | None" = None,
+             queue: pool.PoolQueue | None = None) -> list[dict[str, object]]:
+        """Every receipt in ``directories``, re-read only where it changed.
+
+        ``liveness`` is the tier loop's `Liveness` (#1148).  The read
+        checkpoints it while each directory is listed, before each entry is
+        stat-ed and parsed, and after each directory: on a loaded pool this
+        read took 113.7 s in one cycle, and a record re-announced only
+        between steps aged past the bound.  The step runs before the cycle's
+        mint, so what a checkpoint re-announces is the record the previous
+        cycle minted, which is the loop's word until this cycle's mint
+        replaces it.  These are checkpoints, not budgeted units: every
+        receipt must be read, since the fill supply is a fold over all of
+        them, so no part of the read can be left for the next cycle.  A
+        hang inside one entry is a stretch longer than any measured, and
+        gets no write.
+
+        A changed directory's entries are stat-ed and parsed by
+        :data:`RECEIPT_READERS` threads (#1153), in name order as seen by
+        this thread, which alone checkpoints and keeps what was read
+        (`kept_reads.DirectoryRecords.read`).  A stretch between two
+        checkpoints is still at most one entry's read, and a hung entry
+        stops the checkpoints once this thread reaches it.
+
+        ``queue`` (or the root derived from ``directories``) is how the
+        retired projections are read; ``movers/`` is merged with them.
+        """
+
+        owner = self._owner(directories, queue)
+        store = pool.record_store.RecordStore.kept(
+            Path(directories[0]).parent if directories else Path("."),
+            records=self.records)
+        by_directory: dict[str, list[dict[str, object]]] = {}
+        read: list[Path] = []
+        unreadable: dict[str, str] = {}
+        for directory in directories:
+            checkpoint = None
+            if liveness is not None:
+                checkpoint = functools.partial(
+                    liveness.checkpoint, f"receipts:{directory.name}")
+            try:
+                kept = store.receipt_records_at(
+                    directory, readers=RECEIPT_READERS,
+                    **({} if checkpoint is None else {"checkpoint": checkpoint}))
+            except OSError as exc:
+                unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
+                continue
+            finally:
+                if checkpoint is not None:
+                    checkpoint()      # this directory is read
+            read.append(directory)
+            by_directory[str(directory)] = [
+                record for _path, record in kept if isinstance(record, dict)]
+        retired: dict[str, dict[str, object]] = {}
+        generation: int | None = None
+        error: str | None = None
+        if owner is not None:
+            retired_dir = owner.root / pool.record_store.MOVERS_RETIRED
+            try:
+                # Through this cache's own DirectoryRecords, so the retirement
+                # documents carry the same trusted-version discipline as every
+                # other record the loop keeps -- no bare stat tuple, and an
+                # unreadable directory is not an empty one.
+                documents = {
+                    path.name: record for path, record in store.retirement_documents()}
+                generation = self.records.generation(retired_dir)
+                checkpoint = documents.get(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT)
+                state = documents.get(pool.record_store.MOVERS_RETIREMENT_STATE)
+                memo = self._retired_memo
+                if (memo is not None and checkpoint is not None
+                        and memo[0] == generation):
+                    # Only the trusted directory stamp may prove the bytes
+                    # unchanged.  A header-only comparison would let a
+                    # tampered projection (revision and self-digest kept)
+                    # suppress the refusal, so an untrusted mount re-validates
+                    # every read -- conservative, exactly as the plain read
+                    # treats it.
+                    _entries, incomplete = memo[1], memo[2]
+                else:
+                    _entries, incomplete = pool._validate_mover_retirements(
+                        pool.record_store.MOVERS_RETIREMENT_CHECKPOINT in documents,
+                        checkpoint,
+                        pool.record_store.MOVERS_RETIREMENT_STATE in documents, state,
+                        archive_root=owner.root / pool.record_store.MOVERS_ARCHIVE)
+                    # A missing checkpoint's answer depends on the archive
+                    # directory, which this cache does not track: keep only
+                    # the checkpointed (and expensive) case.
+                    self._retired_memo = (
+                        None if checkpoint is None
+                        else (generation, _entries, incomplete))
+                retired = {key: entry["projection"]  # type: ignore[misc]
+                           for key, entry in _entries.items()}
+            except (OSError, pool.PoolContractError) as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                self._retired_memo = None
+                generation = None
+                retired = {}
+        merged: list[dict[str, object]] = []
+        for directory in read:
+            records = by_directory.get(str(directory), [])
+            if directory.name == pool.record_store.MOVERS and retired:
+                union: dict[str, dict[str, object]] = {
+                    str(key): record for key, record in retired.items()}
+                for record in records:
+                    union[str(record.get("action_key") or "")] = record
+                records = [union[key] for key in sorted(union)]
+            merged.extend(records)
+        self._directories = tuple(read)
+        self._records = merged
+        self._retired_generation = generation
+        self.retired_error = error
+        self.unreadable = unreadable
+        return [pool.record_store.independent_document(record)
+                for record in merged]

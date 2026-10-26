@@ -2825,7 +2825,11 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key)),
     ):
         return found
-    age = q.lease_age(key)
+    try:
+        age = q.lease_age(key)
+    except (OSError, ValueError, pool.PoolContractError):
+        # Unknown liveness must not publish a duplicate attempt or abort attach.
+        return found
     if age is not None and age < pool.LEASE_TIMEOUT_S:
         return found
     return None
@@ -5037,7 +5041,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     # not mistake fleet-owned defaults for caller-owned external inputs.
     variables = {} if args.no_default_env else {
         "HOME": "/home/rob",
-        "TMPDIR": "/home/rob/tmp",
+        "TMPDIR": fleet_roster.LEGACY_ACTION_TMPDIR,
         "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
@@ -5054,6 +5058,12 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
                 "callers may not set it")
         variables[key] = value
         caller_variables[key] = value
+
+    if not args.no_default_env and "TMPDIR" not in caller_variables:
+        try:
+            variables["TMPDIR"] = fleet_roster.Roster.read(store.roster_path).action_tmpdir
+        except (OSError, ValueError) as exc:
+            raise SubmissionRefused(f"pbrun: cannot read fleet action_tmpdir: {exc}") from exc
 
     demand = _parse_demand(args.demand)
     require_disk_metadata_scope(demand, transport=args.transport)

@@ -13,9 +13,10 @@ import shlex
 import time
 from typing import Generic, Literal, TypeVar
 
-from . import (core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
+from . import (box_capacity, core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
+from . import host_hold
 read_cache = kept_reads
 
 SHARED_ROOT = Path("/mnt/shared/prismabuild-fleet")
@@ -430,7 +431,35 @@ def _pool_claim_denials(queue: pool.PoolQueue, *, reader=None) -> tuple[list[dic
                 notes.append(f"pool claim denial {directory.name}: invalid record")
     return denials, notes
 
-def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> list[dict]:
+def _unknown_gpu_denial_is_current(record, denial, *, now, host_observation):
+    claimed = nonnegative_number(record.get('claimed_unix'))
+    if claimed is not None and claimed >= denial['denied_unix']:
+        return False
+    decision = denial['evidence'].get('decision')
+    if not isinstance(decision, Mapping):
+        return False
+    sampled = nonnegative_number(decision.get('sampled_unix'))
+    sample_id = decision.get('sample_id')
+    max_age = box_capacity.GPU_SAMPLE_MAX_AGE_S
+    if (sampled is None or not isinstance(sample_id, str) or not sample_id
+            or not 0 <= now - sampled <= max_age):
+        return False
+    if not isinstance(host_observation, Mapping):
+        return True
+    current = nonnegative_number(host_observation.get('unified_memory_sampled_unix'))
+    current_id = host_observation.get('unified_memory_sample_id')
+    recovered = (host_observation.get('external_unified_gpu_unknown') is False
+                 and current is not None and 0 <= now - current <= max_age
+                 and isinstance(current_id, str) and bool(current_id)
+                 and current >= sampled
+                 and (current > sampled or current_id != sample_id))
+    return not recovered
+
+
+def _claim_denials_for(
+    record: dict, denials: Sequence[dict], *, now: float,
+    host_observations: Mapping[str, object] | None = None,
+) -> list[dict]:
     """Keep each host's latest observation for this exact submission generation."""
     by_host = {}
     published = record.get('published_unix')
@@ -443,15 +472,26 @@ def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> 
         host = denial['host']
         if host in by_host and by_host[host]['denied_unix'] >= denial['denied_unix']:
             continue
+        by_host[host] = denial
+    projected = []
+    for host in sorted(by_host):
+        denial = by_host[host]
+        if (denial['reason'] == 'unified_gpu_memory_unknown'
+                and not _unknown_gpu_denial_is_current(
+                    record, denial, now=now,
+                    host_observation=(host_observations or {}).get(host))):
+            continue
         decision = denial['evidence'].get('decision')
         subreason = decision.get('reason') if isinstance(decision, dict) else None
-        by_host[host] = {**denial, 'age_s': now - denial['denied_unix'],
-                         'decision_reason': subreason if isinstance(subreason, str) else None}
-    return [by_host[host] for host in sorted(by_host)]
+        projected.append({**denial, 'age_s': now - denial['denied_unix'],
+                          'decision_reason': subreason if isinstance(subreason, str) else None})
+    return projected
+
 
 def offers(queue_root: str | Path, *, reader=None,
-           captured: OfferCapture | None = None) -> Section[dict]:
-    """Worker offers and their conditional admission samples, independently read."""
+           captured: OfferCapture | None = None,
+           authoritative_holds: bool = False) -> Section[dict]:
+    """Worker observations; explicit operator views can refresh hold authority."""
     queue = pool.PoolQueue(Path(queue_root).absolute())
     if captured is None:
         workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS, reader=reader)
@@ -490,6 +530,12 @@ def offers(queue_root: str | Path, *, reader=None,
         # is read with none of this, so a drain that stopped announcing
         # still reads as the loop having stopped.
         drain = _offer_drain(offer) if fresh else None
+        hold = offer.get("hold")
+        if authoritative_holds:
+            record = host_hold.read_host_hold(queue.root, host, now=now)
+            hold = record.fields() if record is not None and not record.expired else None
+        if not isinstance(hold, Mapping):
+            hold = None
         if drain is not None:
             state = "draining"
             note = "draining for maintenance"
@@ -508,11 +554,18 @@ def offers(queue_root: str | Path, *, reader=None,
                 state = "retired"
                 note = (f"offer unrefreshed for {age / 86400:.1f} days; "
                         "box treated as retired (record kept)")
+        if hold is not None:
+            state = "held"
+            hold_note = hold.get("error") or (
+                f"operator hold; owner {hold.get('owner')}; {hold.get('reason')}; "
+                f"expires {hold.get('expires_unix')}")
+            note = f"{note}; {hold_note}" if note else hold_note
         nodes.append({
             "node": host, "transport": "pool", "state": state,
             "healthy": fresh, "age_s": age, "capacity": offer.get("capacity"),
             "offer_clock_skew_s": timing.clock_skew_s,
-            "observed_capacity": offer.get("observed_capacity"),
+            "observed_capacity": ({kind: 0 for kind in offer["capacity"]}
+                                  if hold is not None else offer.get("observed_capacity")),
             "foreign": offer.get("foreign"), "observed_detail": offer.get("observed_detail"),
             "features": offer.get("tags"), "has_gpu": offer.get("has_gpu"),
             "container_class_verdict": offer.get("container_class_verdict"),
@@ -525,6 +578,8 @@ def offers(queue_root: str | Path, *, reader=None,
             "drain_owner": drain["owner"] if drain else None,
             "drain_reason": drain["reason"] if drain else None,
             "drain_changed_unix": drain["changed_unix"] if drain else None,
+            "held": hold is not None,
+            "hold": dict(hold) if hold is not None else None,
             "reason": note,
             "admission": {
                 "cpu": _admission_sample(admission[host]['cpu'], now=now,
@@ -543,7 +598,8 @@ def offers(queue_root: str | Path, *, reader=None,
                         if isinstance(value, Exception))])
 
 
-def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
+def action_rows(queue_root: str | Path, *, reader=None,
+                authoritative_holds: bool = False) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -583,8 +639,10 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
     # spend the signal that says the mount did not answer.
     unreadable = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     observed = offers(queue_root, reader=reader,
-                      captured=OfferCapture(workers, worker_notes, admission, now))
+                      captured=OfferCapture(workers, worker_notes, admission, now),
+                      authoritative_holds=authoritative_holds)
     nodes, live = observed.value["nodes"], observed.value["live"]
+    host_observations = {offer['host']: offer.get('observed_detail') for offer in live}
     notes.extend(observed.value["notes"][len(worker_notes):])
     unreadable.extend(observed.value["unreadable"][len(worker_notes):])
     jobs: list[dict] = []
@@ -610,7 +668,8 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
                                'claimed_unix',
                            ) if state == pool.record_store.CLAIMED
                                       else record.get('published_unix'), now))
-                row['admission_denials'] = _claim_denials_for(record, denial_records, now=now)
+                row['admission_denials'] = _claim_denials_for(
+                    record, denial_records, now=now, host_observations=host_observations)
                 if state == pool.record_store.READY:
                     denial = sidecar or {}
                     count, first = denial.get('passes', 0), denial.get('first_unix')
@@ -678,10 +737,9 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
                                cleanup_attempts=record.get('container_cleanup_attempts'),
                                cleanup_pending_s=_age(
                                    record.get('container_cleanup_first_failed_unix'), now))
-                    beat = None if sidecar is None else sidecar.get('heartbeat_unix')
-                    if sidecar is not None and not isinstance(beat, (int, float)):
-                        raise pool.PoolContractError(f"lease has no heartbeat: {key}")
-                    age = None if sidecar is None else now - float(beat)
+                    beat = None if sidecar is None else queue._effective_heartbeat(
+                        sidecar, now=now, read=lambda path: _pool_sidecar(path, reader=reader))
+                    age = None if beat is None else beat.age_s
                     row['lease_age_s'] = age
                     row['stale'] = age is None or not math.isfinite(age) or not 0 <= age <= pool.LEASE_TIMEOUT_S
                     if row['stale']:
