@@ -10,7 +10,7 @@ import pytest
 from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
-from prismabuild import _gang, _measurement_reservation as reservation, pool
+from prismabuild import _gang, _measurement_reservation as reservation, host_hold, pool
 
 
 def waiting(gang_fleet):
@@ -151,6 +151,39 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
                                   decision,
                               )}.withdrawn-finish.json")
     assert archived["gang_backfill_release"]["tokens_returned_unix"] is not None
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_a_late_hold_keeps_gang_backfill_running(gang_fleet, monkeypatch, invalid):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys, incumbent, key = seeded_backfill(gang_fleet)
+    finish(incumbent, "sparky")
+    assert claim("sparky") is None
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    before = claimed_path.read_bytes()
+    preempt = queue._preempt_selected_holder
+
+    def hold_before_handoff(*args, **kwargs):
+        host_hold.change_host_hold(queue.root, "sparklina", owner="operator", reason="external load",
+                                   expires_unix=clock.now + 60)
+        if invalid:
+            host_hold.host_hold_path(queue.root, "sparklina").write_text("{broken")
+        return preempt(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, "_preempt_selected_holder", hold_before_handoff)
+        assert claim("sparklina") is None
+    assert queue.claim_hold() is not None
+    assert claimed_path.read_bytes() == before
+    assert queue.ledger("sparklina").held_keys() == [key]
+    assert not queue.records.withdrawal_decisions(key)
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
+    election = _gang.elections(queue, group, 2)[0]
+    assert not election.get("backfill_preemptions")
+    host_hold.change_host_hold(queue.root, "sparklina", owner="operator", release=True,
+                               force=invalid, reason="repair invalid record" if invalid else None)
+    assert claim("sparklina") is None
+    assert queue.records.withdrawal_decisions(key)[0][1]["preempted_by"] == keys[0]
 
 
 def test_failed_cleanup_is_visible_and_never_grants_capacity(gang_fleet, monkeypatch):

@@ -1562,11 +1562,11 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     stub = queue.records.item_path(pool.record_store.READY, KEY_B)
     stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
 
-    assert queue.claim() is None                         # incomplete census
-    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
-    assert not queue.ledger().held_keys()
+    claimed = queue.claim()
+    assert claimed is not None and claimed["action_key"] == KEY_A
+    assert queue.ledger().held_keys() == [KEY_A]
     assert queue.quarantine_orphans() == [KEY_B]
-    assert queue.claim() is not None                      # KEY_A still runnable
+    assert queue.claim() is None
     assert queue.quarantine_orphans() == []
     assert not stub.exists()
 

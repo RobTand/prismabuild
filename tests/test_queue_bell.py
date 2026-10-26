@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from prismabuild import action_wait, queue_bell, queue_notifier
+from prismabuild import action_wait, queue_bell, queue_bell_events, queue_notifier
 
 KEY = "a" * 64
 
@@ -63,12 +63,50 @@ def test_real_rename_after_now_is_delivered_even_before_wait(bell, before_wait, 
                and event["key"] == KEY for event in reply["events"])
 
 
-def test_filters_and_timeout_ignore_other_keys_dirs_and_temporary_files(bell):
-    cursor = bell.client.now()
+def _consume_through(bell, monkeypatch, directory, key, write):
+    consumed = threading.Event()
+    watch = bell.service.watch
+    consume = watch.consume
+
+    def acknowledge(data, ring):
+        offset, found = 0, False
+        while offset < len(data):
+            wd, mask, _, length = queue_notifier.EVENT_HEADER.unpack_from(data, offset)
+            start = offset + queue_notifier.EVENT_HEADER.size
+            name = os.fsdecode(data[start:start + length].split(b"\0", 1)[0])
+            offset = start + length
+            found |= (watch.directories.get(wd) == Path(directory)
+                      and name == f"{key}.json"
+                      and bool(mask & (queue_bell_events.IN_CLOSE_WRITE | queue_bell_events.IN_MOVED_TO)))
+        consume(data, ring)
+        if found:
+            consumed.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(watch, "consume", acknowledge)
+        write()
+        assert consumed.wait(60), "inotify did not consume the publication"
+
+
+def test_filters_and_timeout_ignore_other_keys_dirs_and_temporary_files(bell, monkeypatch):
+    ring = bell.service.ring
+    cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**ring.now()))
     _rename_bell_record(bell.root, "ready")
     _rename_bell_record(bell.root, key="b" * 64)
     (bell.root / "done" / ".hidden.json").write_text("{}")
-    assert bell.client.wait(cursor, ("done",), (KEY,), 0.05)["events"] == []
+    # This later event acknowledges consumption of all the preceding names.
+    _consume_through(bell, monkeypatch, "failed", "c" * 64,
+                     lambda: _rename_bell_record(bell.root, "failed", "c" * 64))
+    clock = [0.0]
+
+    def expire_wait(readers, writers, errors, remaining):
+        clock[0] += remaining
+        return [], [], []
+
+    # Exercise expiration in the real ring, without a 50 ms HTTP round trip.
+    monkeypatch.setattr(queue_bell_events, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(queue_bell_events, "select", SimpleNamespace(select=expire_wait))
+    assert ring.wait(cursor, {"done"}, {KEY}, 60)["events"] == []
 
 
 def test_close_write_without_rename_is_a_hint_too(bell):
@@ -537,22 +575,34 @@ def test_every_authoritative_namespace_wakes_its_action(bell, relative):
 
 
 @pytest.mark.parametrize("mutation", ["hardlink", "unlink", "rename-out"])
-def test_namespace_entry_changes_wake_waiters(bell, mutation):
+def test_namespace_entry_changes_wake_waiters(bell, mutation, monkeypatch):
     path = bell.root / "done" / f"{KEY}.json"
     source = bell.root / "source"
     source.write_text("{}")
     if mutation != "hardlink":
-        path.write_text("{}")
-        # Consume the preceding close-write before taking the mutation cursor.
-        bell.client.wait(bell.client.now(), (), (), 0.05)
-    cursor = bell.client.now()
-    if mutation == "hardlink":
-        os.link(source, path)
-    elif mutation == "unlink":
-        path.unlink()
-    else:
-        path.rename(bell.root / "removed")
-    assert bell.client.wait(cursor, (), (KEY,), 0.3).get("events")
+        _consume_through(bell, monkeypatch, "done", KEY, lambda: path.write_text("{}"))
+    ring = bell.service.ring
+    cursor = queue_bell.Cursor.parse("{epoch}:{seq}".format(**ring.now()))
+    subscribed = threading.Event()
+    select = queue_bell_events.select.select
+
+    def subscription_ready(*args):
+        subscribed.set()
+        return select(*args)
+
+    monkeypatch.setattr(queue_bell_events, "select", SimpleNamespace(select=subscription_ready))
+    with ThreadPoolExecutor() as executor:
+        pending = executor.submit(ring.wait, cursor, set(), {KEY}, 60)
+        assert subscribed.wait(60), "waiter did not subscribe"
+        if mutation == "hardlink":
+            os.link(source, path)
+        elif mutation == "unlink":
+            path.unlink()
+        else:
+            path.rename(bell.root / "removed")
+        reply = pending.result(60)
+    assert any(event["key"] == KEY and event["dir"] == "done"
+               and event["seq"] > cursor.seq for event in reply["events"])
 
 
 @pytest.mark.parametrize("endpoint,part", [("now", "headers"), ("now", "body"),

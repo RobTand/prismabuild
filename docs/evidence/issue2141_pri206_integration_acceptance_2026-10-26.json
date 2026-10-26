@@ -1,0 +1,596 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "c3134f0fb09a69acf10a09916bd53720bfc11a4f",
+  "scope": [
+    "ID-08",
+    "SM-01",
+    "INV-01",
+    "INV-11",
+    "ACC-02"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2141",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2141",
+    "pull_request": "https://github.com/RobTand/prismabuild/pull/2219",
+    "paperclip_task": "PRI-206",
+    "qualified_source": "c3134f0fb09a69acf10a09916bd53720bfc11a4f",
+    "parents": [
+      "31ed11afc5fe1abcf9d449b6d9237f245c2415c8",
+      "a8e0f76abc6757e1193eec7cfabea06b70a89fbf"
+    ],
+    "validated_repairs": [
+      {
+        "id": "ID-08",
+        "actions": [
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639"
+        ],
+        "receipts": {
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d": "62a8ac589957244462bb29e3019e6eb71eee9af9397015b627472f2439c75ad8",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e": "7332f82a4660e45d036314c39ee4e978392d1d09a7e13b8578b4c83bf3729b07",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96": "f8b073cee4b375f54f874a7eaa117121da8fd95a74b770f2018b249b7936941b",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630": "e347ae67d054114e0b0ac4ba29d3f95b9b57a235ce32bf5df7c2d12916b7fc80",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2": "b131e96ff32d909262109470ff4fbd48f424614cc39fc7b649f874d46035a3cd",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39": "3d86a37f9a0698102b48dd48fdb6d16cebad89933519055c7f4623db134b0073",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815": "c4a3c140eac5be04c9e3504e8d9dceef822156af19d0691181862685540e15c6",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639": "1b8634d264ec6c0aa228c8ab0a17c47f3aede0559667e8456f4855690229973b"
+        },
+        "outcome": "105 focused passes per architecture, complete native outcomes, raw log hashes, scope cleanup, source bundle trees and CAS receipt/result payload verified."
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639"
+        ],
+        "receipts": {
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d": "62a8ac589957244462bb29e3019e6eb71eee9af9397015b627472f2439c75ad8",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e": "7332f82a4660e45d036314c39ee4e978392d1d09a7e13b8578b4c83bf3729b07",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96": "f8b073cee4b375f54f874a7eaa117121da8fd95a74b770f2018b249b7936941b",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630": "e347ae67d054114e0b0ac4ba29d3f95b9b57a235ce32bf5df7c2d12916b7fc80",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2": "b131e96ff32d909262109470ff4fbd48f424614cc39fc7b649f874d46035a3cd",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39": "3d86a37f9a0698102b48dd48fdb6d16cebad89933519055c7f4623db134b0073",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815": "c4a3c140eac5be04c9e3504e8d9dceef822156af19d0691181862685540e15c6",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639": "1b8634d264ec6c0aa228c8ab0a17c47f3aede0559667e8456f4855690229973b"
+        },
+        "outcome": "105 focused passes per architecture, complete native outcomes, raw log hashes, scope cleanup, source bundle trees and CAS receipt/result payload verified."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639"
+        ],
+        "receipts": {
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d": "62a8ac589957244462bb29e3019e6eb71eee9af9397015b627472f2439c75ad8",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e": "7332f82a4660e45d036314c39ee4e978392d1d09a7e13b8578b4c83bf3729b07",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96": "f8b073cee4b375f54f874a7eaa117121da8fd95a74b770f2018b249b7936941b",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630": "e347ae67d054114e0b0ac4ba29d3f95b9b57a235ce32bf5df7c2d12916b7fc80",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2": "b131e96ff32d909262109470ff4fbd48f424614cc39fc7b649f874d46035a3cd",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39": "3d86a37f9a0698102b48dd48fdb6d16cebad89933519055c7f4623db134b0073",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815": "c4a3c140eac5be04c9e3504e8d9dceef822156af19d0691181862685540e15c6",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639": "1b8634d264ec6c0aa228c8ab0a17c47f3aede0559667e8456f4855690229973b"
+        },
+        "outcome": "105 focused passes per architecture, complete native outcomes, raw log hashes, scope cleanup, source bundle trees and CAS receipt/result payload verified."
+      },
+      {
+        "id": "INV-11",
+        "actions": [
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639"
+        ],
+        "receipts": {
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d": "62a8ac589957244462bb29e3019e6eb71eee9af9397015b627472f2439c75ad8",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e": "7332f82a4660e45d036314c39ee4e978392d1d09a7e13b8578b4c83bf3729b07",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96": "f8b073cee4b375f54f874a7eaa117121da8fd95a74b770f2018b249b7936941b",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630": "e347ae67d054114e0b0ac4ba29d3f95b9b57a235ce32bf5df7c2d12916b7fc80",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2": "b131e96ff32d909262109470ff4fbd48f424614cc39fc7b649f874d46035a3cd",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39": "3d86a37f9a0698102b48dd48fdb6d16cebad89933519055c7f4623db134b0073",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815": "c4a3c140eac5be04c9e3504e8d9dceef822156af19d0691181862685540e15c6",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639": "1b8634d264ec6c0aa228c8ab0a17c47f3aede0559667e8456f4855690229973b"
+        },
+        "outcome": "105 focused passes per architecture, complete native outcomes, raw log hashes, scope cleanup, source bundle trees and CAS receipt/result payload verified."
+      },
+      {
+        "id": "ACC-02",
+        "actions": [
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639"
+        ],
+        "receipts": {
+          "a3d4bbb80e41fc29e77167bfd3e0e044edee3f378ef4bdc5b0a2102a30edfa7d": "62a8ac589957244462bb29e3019e6eb71eee9af9397015b627472f2439c75ad8",
+          "5660ebe20a4a3657337d1cb9476496b75ab294705dbcb0daa771523d4108c72e": "7332f82a4660e45d036314c39ee4e978392d1d09a7e13b8578b4c83bf3729b07",
+          "d4ef04dfbd44fd357133f37da52839867be0f54308c817c5d5f4ca5753c1ee96": "f8b073cee4b375f54f874a7eaa117121da8fd95a74b770f2018b249b7936941b",
+          "571e42996b68873660e6c3aa94a33630bfd4366fd60c006dfceb19c6a5acf630": "e347ae67d054114e0b0ac4ba29d3f95b9b57a235ce32bf5df7c2d12916b7fc80",
+          "ae16c87538d68f266b258ff1bf661642af0e09e4d4fa325c4cd4ce9601b361e2": "b131e96ff32d909262109470ff4fbd48f424614cc39fc7b649f874d46035a3cd",
+          "4bc57217740c7f403e3bca866c75729c3baf32eee5102dd55b7c3f547fcfaa39": "3d86a37f9a0698102b48dd48fdb6d16cebad89933519055c7f4623db134b0073",
+          "20b2bbb8dd1b02f37d8e46d36ba5d1262c73e1aa615ea566267ccf7cfe408815": "c4a3c140eac5be04c9e3504e8d9dceef822156af19d0691181862685540e15c6",
+          "d3861c0d388850ce549f86ae0d0627db31655005230e9e2488b15a2bb3574639": "1b8634d264ec6c0aa228c8ab0a17c47f3aede0559667e8456f4855690229973b"
+        },
+        "outcome": "105 focused passes per architecture, complete native outcomes, raw log hashes, scope cleanup, source bundle trees and CAS receipt/result payload verified."
+      }
+    ],
+    "remaining_gaps": [
+      "All69 whole-requirement targets and axes retain the incoming-main values. Proposed and unknown obligations remain owed.",
+      "No runtime publication, role convergence, host installation, celestia activation or workload/campaign acceptance is supplied by this merge resolution.",
+      "Pre-existing publisher teardown failure reproduced on unchanged incoming main and tracked in #2384.",
+      "One opt-in claim-loop profile is skipped per architecture; no performance qualification is claimed."
+    ],
+    "note": "Scoped source integration acceptance only, pending independent Engineer24 review. This record is not merge authorization, deployment evidence, whole-requirement satisfaction or campaign completion."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "source_trees": {
+    "src": "3aa5ae3c432ce49bc783b9984aeea856bf2231d4",
+    "tools": "aded815a50a45eb8e9c7dbe66d70155013f0e916",
+    "tests": "f7805ef52be46ccaff6038948682bbceb8598658"
+  },
+  "validation_summary": "issue2141_pri206_integration_validation_2026-10-26.json",
+  "per_requirement": [
+    {
+      "id": "ID-08",
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "implemented_component": "Source qualification is attributed to its snapshot; runtime publication, convergence and celestia activation remain separate.",
+      "validation": "Source component integration qualified on x86 and ARM; review pending.",
+      "deployment": "Not deployed in PRI-206; no runtime publication, installation, activation or service restart.",
+      "workload_proof": "Not established in PRI-206; no campaign execution or staged-only workload proof.",
+      "whole_requirement_axes": {
+        "implementation": {
+          "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+          "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "remaining_scope": "This record covers the capped-host component only; whole-requirement axes remain unchanged."
+    },
+    {
+      "id": "SM-01",
+      "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+      "implemented_component": "The final claim fence rechecks the cap and maintenance before ready-to-claimed transition.",
+      "validation": "Source component integration qualified on x86 and ARM; review pending.",
+      "deployment": "Not deployed in PRI-206; no runtime publication, installation, activation or service restart.",
+      "workload_proof": "Not established in PRI-206; no campaign execution or staged-only workload proof.",
+      "whole_requirement_axes": {
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
+          "path": "src/prismabuild/pool.py ready/claimed/done/failed/withdrawn dirs + claim records (new read/lease-gated transitions absent)",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed) and 838c1c51a36d; #953 base 1bbf66324c08 (5 failed), head e0ebafc1cbd9 (3333 passed); #962 head fc58a8f0de58 (12/12 shards, 5381 passed); #969 red c6a01dc82d3f (4 failed). Component tests only; no lifecycle-wide conformance run. 2026-09-27 (#964, branch maintenance/964-20260927): the claim-side release fence now confirms a released key's index under the key's transition lock, so a ready row whose scan listed the index before the entry is refused by name (origin_consumer_released) instead of claimed; entry-without-record still reads as no release and unreadable evidence still denies as unknown. Component validation only: focused 7/7 shards green (45 passed), final-source race 3 passed and supervisor/spool 41 passed, adjacent sweep 15/16 shards green (5370 tests). No deployment and no lifecycle-wide conformance run; older running generations keep the window until adoption. Scoped record: docs/evidence/issue964_release_claim_fence_acceptance_2026-09-27.json.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "workload_proof": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn from claimed by rob@sparky; the record is pb-queue/withdrawn/683cb3caa5ea....json. That exercises one transition on a real campaign; the other transitions have no workload record.",
+          "state": "partial"
+        }
+      },
+      "remaining_scope": "This record covers the capped-host component only; whole-requirement axes remain unchanged."
+    },
+    {
+      "id": "INV-01",
+      "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+      "implemented_component": "Declared CPU and memory cap bounds startup offers, observed offers and the final claim transition. Aggregate slice contains supervisor, workers, broker and action scopes.",
+      "validation": "Source component integration qualified on x86 and ARM; review pending.",
+      "deployment": "Not deployed in PRI-206; no runtime publication, installation, activation or service restart.",
+      "workload_proof": "Not established in PRI-206; no campaign execution or staged-only workload proof.",
+      "whole_requirement_axes": {
+        "implementation": {
+          "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8; 2026-09-23 update (snapshot 13:50Z): PB:3f0f752d4211 (#840), bb939e987ab9 (#845), 288a9d90fe4e (#865), 7d618325ad4b (#875), a926a4e0c81b (#880), 1e51518108d3 (#882), b50c4b9124be (#902), 5a972f1d3e35 (#904), 0bb9de9001c1 (#922), 97faa0e67200 (#928), 2c55b69482ef (#931) deployed; ee2420db7dfd (#947), bce50d049cfd (#951), 4448dd9dcec5 (#956) merged, not deployed; 2026-09-26 update (#905 host-spool accounting lane): `pbrun.spool_window_terms` returned no `spool_gb` term for a new submission that declared `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` without `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`, so the claim charged the executing box's host ledger nothing for a declared spool. A declared bound is now normalized before sealing (`pbrun.normalize_spool_declaration`: the effective switch is sealed as 1, the demand carries ceil(bytes/GiB), and HOST_WINDOW=0 beside a declared bound is refused by name); `produced_spool.host_window_terms` keeps its switch-gated meaning for already-sealed requests, explicit 0 included. Branch maintenance/905-spool-charge-20260926, base 0fcd2b2567f5; merge and deployment pending at this update.",
+          "path": "src/prismabuild/pool.py tier mutation exclusion and atomic dead-credit reclaim; tools/fleet/tier_loop.py fresh writable/landed supply under the same lock; tools/fleet/stage_release.py shared occupancy decharge. Advance policy and prepaid output integration remain separate requirements.",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "PR742 root-reviewed CPU components: 92 tier/funding/claim/sweep tests, stronger real-claim RED dbea093b40f9 admits3 against backing2 on342095, GREENae57b5df521a8passes, integratedmembership/window/reader gate78passes atd4dd2a19. All source bundles fetched. No deployed backing/performance or full aggregate-lifetime conformance claim; publication must quiesce workers and storage until generation convergence. 2026-09-23 update (snapshot 13:50Z): #902 red dde768fd5a5f, green e49d2a53bd39; #904 red ff0ee178b3ad, green d6869b9de62d; #922 red eba0a352840d; #928 red e05102b65674 and ee8e749f8fa2 (live-number replay); #951 base 2d22f6ac1fcd (12 failed), head 6593cbc4676f (20 passed); #947 red on main ff200b3dacf1 (R13 beside R12 refused at 413 MB/s supply). Component and replay tests only. 2026-09-26 update (#905 host-spool lane, component only): red on base 0fcd2b2567f5, action c1fcb38b53a01fe8ac2fcbb69836cb8749039224762ee827f2e86180eb9f95d6, dl380g10, rc 1, 12 failed / 3 passed (the declared bound sealed no `spool_gb`; log sha256 0cccac2a9240128558cd1bf7f23f95aa3f8f1c6464f62057ac9720e5d78d3894); green on the branch action 1933469e9b2b9deb32c62cac118cb741adce6a3a0e6d7de2a2285df266c462a1, rc 0, 625 passed over the 33 spool/pbrun-touching test files, receipt 5df286d40419bf9bfedeaeb60276acb0fc3789eaeccf1c1f649860866f253571, local-result claim 67d473b60d61ae83a7178097a1d501af8d2e8a6593f49386200a7833945b2ef7 (payload c2498844e5ee242ea122427f3b303d6845e51d6ac9eaf4f6f21ea9269d603f55). Scoped to the host-spool accounting edge of INV-01; no deployment, and the row's tier/funding validation is unchanged.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #840 through #931 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #947, #951 and #956 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "workload_proof": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): No. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) ran without #902 and #904: it waited 25 minutes beside 484 GiB of orphan cache (PB#901) and held 528 of 565 GiB of stage in 24 landed ranges (PB#903). No campaign has run on 81d95cba8d91-1790160372-5d100532e024 long enough to show the repaired windows.",
+          "state": "no"
+        }
+      },
+      "remaining_scope": "This record covers the capped-host component only; whole-requirement axes remain unchanged."
+    },
+    {
+      "id": "INV-11",
+      "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
+      "implemented_component": "Enrolling hosts require an explicit host name. General class eligibility and active-only publication/bootstrap participants use the shared roster contract.",
+      "validation": "Source component integration qualified on x86 and ARM; review pending.",
+      "deployment": "Not deployed in PRI-206; no runtime publication, installation, activation or service restart.",
+      "workload_proof": "Not established in PRI-206; no campaign execution or staged-only workload proof.",
+      "whole_requirement_axes": {
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:abb13ff58bf7 (#948) seals movers as portable generation work whatever the consumer is.",
+          "path": "src/prismabuild/pool.py tag-conjunction claim (conjunction support does not itself prove bad-pair dispatch refusal)",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed), head 6c5341cc569c (5558 passed, 1 skipped, 1 failed, against 4 on control 39e0177350e2), targeted 80ec1a0ed1bc (32 passed), mutant e55d70da5570 (3 failed).",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #948 is merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "workload_proof": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): No. PB#944 was observed on 81d95cba8d91-1790160372-5d100532e024.",
+          "state": "no"
+        }
+      },
+      "remaining_scope": "This record covers the capped-host component only; whole-requirement axes remain unchanged."
+    },
+    {
+      "id": "ACC-02",
+      "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+      "implemented_component": "Deterministic component cap, claim-fence and enrollment controls only. Whole lifecycle and staged-lease race acceptance remains separate.",
+      "validation": "Source component integration qualified on x86 and ARM; review pending.",
+      "deployment": "Not deployed in PRI-206; no runtime publication, installation, activation or service restart.",
+      "workload_proof": "Not established in PRI-206; no campaign execution or staged-only workload proof.",
+      "whole_requirement_axes": {
+        "implementation": {
+          "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
+          "path": "tests/test_reader_lease_lifetime.py: rename/publish ordering, simultaneous egress, refcount double-acquire, retiring generations, epoch ABA, malformed taint, namespace isolation, promotion cover proof",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "Root-verified CPU component qualification: 260 affected tests (actions b617509546aa, fea329f0fb68), plus 57 overlapping final lifetime tests (5d51deb5cc8c); no skips. Real Socket Authority/ResourceScope/Pool finish/reaper/egress cover ordinary first release, unresolved daemon settlement, transport loss, proof-file loss and successor isolation. Pre-gate0bf6fc with final tests fails exactly two behavioral assertions (124aece15444). Actual CAS source bundles fetched and compared. Published native/container PQ integration, live both-Spark hardware and campaign qualification remain owed; no deployment or whole-requirement completion claim.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "remaining_scope": "This record covers the capped-host component only; whole-requirement axes remain unchanged."
+    }
+  ],
+  "qualification": {
+    "x86": {
+      "report": "x86-final-composite.json",
+      "audit": "x86-final-composite.audited.json",
+      "counts": {
+        "passed": 5133,
+        "skipped": 1
+      },
+      "actions": 33,
+      "files": 247,
+      "native_nodes": 5134,
+      "action_keys": [
+        "340d241668c80aff4e8201767ef650ff3e030004d784cea4cf984cc004ea4268",
+        "9e931c0456ab9c04db9bc44f46b0dcb10186281042ca9d6373fe592d7ce411fc",
+        "29907817d9d9ad033309b696fa55ff06026bb32cb20372120729db9e4c5c3cef",
+        "46087b02fa785b23736bec2657f83a0b0fefc55ab3bbc00b2fdbfdc5eb6d8f78",
+        "eea7d672df1a48f07c6509aad6b5d40bd0894f7db3c6f8ebb43da0d80197ba1e",
+        "8a94c797014039bb6a6cbf9c4139d007ee587f0eb846dc6b5841fed9c0f3df25",
+        "63e0d0f2b0e47e53489dc21610e7ea05a1d985e44dafb80ec19dbfae2fb22750",
+        "99c4d949fb0716559ab875982c47272f3cf7d1873e618a25bbe50b7d7e029247",
+        "9ce7dc041717ae182a5d47eff005c77e8715eb1c5afef1acfe676c3ef6b35888",
+        "f43e714d40a48eaddb0958009ab62784e9531ba168fe4aef9331d448e3a91873",
+        "7917cf6338d480c80ffc6dcc01bf512570ca689ee7ad222cc3c8916c65ed6136",
+        "4288659e9d057dca8a9934b5973cac8a74553f4ac8ef1b67f6ada6510471c8b5",
+        "b431a74e495694c9e416a363c88e847a24b2b43dbd2f96133b1b837b7b55d9a2",
+        "88d2445781f71007a545e32b28f80986db7e4bbf8daca7ac371d01ba8c4f880a",
+        "88b9a92b1c94326698b24c59b03f183aba3e364bc80f7e33661a9d3fa5057916",
+        "16aa7b1a849f8e27e59ad08d24ea526347a56f52479d888de584f33e76d01b0c",
+        "a9597a5ea66026df18166ee46d6a3a727ef6a0937afae5248f4cbabdd8bb93c3",
+        "b26111ad20ea35fea03bc069d3c064b23cab59e4709f569c8a2e48788750bdc4",
+        "5b27be202bd03094acdd9e783c67d343a5398f3b44e34110c28174f1e31a22ca",
+        "0d1257d700b6faf899907a02088da83b74d01715cf6184e709732d0258dbcf32",
+        "8d3aaa7f2ad6e145749623fc68302d0e88f853b2db6130dba806ecc23e446e98",
+        "efe483f4cfa22335c434bae0db458b5ee60abb6e92530b9cfbd5fb318dc34134",
+        "29f9b043902f2883ba28e16d8ca60ee87432fa53914aa574932e238e5ba68ce2",
+        "41200af31e7b60aa21caac76cb03392cb6c45c89813e5d137c620f082570806d",
+        "0be8f78441510e87ad6cd837d0484162a96f475e0aee31f8beaac5bdec996d67",
+        "c5e1c9bf0ef8cee773038375ca0d749389c49f3811784d0281c35d1aeac8d62c",
+        "fcdc46e8de9eac12339616c38486c967575a675ca2a99cccf047634aa1a94900",
+        "28274f29258efb05a0ebc0d326214dfc3c8ee08644e5a5c3d1190925617e0986",
+        "35e03a4241cb79b0f4b52d841b81dd4430f6b8f94dfc04647d31c33545e528bb",
+        "f82ef8635f8f8025accd3851acab62e39ba12fdc3ff544f953cb48a253753d0a",
+        "0bb57b2c66102ca4b919633c11b795ef91c8a1e135f3e28f700a158dda97f1ca",
+        "ffab550c7799cac6e3902f2a9742566b79682b0b402b74e55b400fcbf2d04267",
+        "25ff5b5db339e424dcbb270769b09eb64b0c791b1d1f3a83fe35ad88b991bc69"
+      ],
+      "receipts": {
+        "340d241668c80aff4e8201767ef650ff3e030004d784cea4cf984cc004ea4268": "78624c5a346e9a1dc71ad7ab82a266762407f488612caa8098e2961fd44cdaef",
+        "9e931c0456ab9c04db9bc44f46b0dcb10186281042ca9d6373fe592d7ce411fc": "5e3c92a384ba724725d01b7b559ad27c7ee4dae8716bbae1185eb3c74661e2d7",
+        "29907817d9d9ad033309b696fa55ff06026bb32cb20372120729db9e4c5c3cef": "f4136ace9b9ca5012061233ed7154ed3be2064e6c99b7f18cbce11c5acd5da2e",
+        "46087b02fa785b23736bec2657f83a0b0fefc55ab3bbc00b2fdbfdc5eb6d8f78": "ee9dcddf329549172f79a872e1019b77526f1121d38d00c4c4690524f03f7d3c",
+        "eea7d672df1a48f07c6509aad6b5d40bd0894f7db3c6f8ebb43da0d80197ba1e": "54bfbd2ea80e97d94169f53ce65e5878b3c9f1f252e955281a92ccd739f5bfd7",
+        "8a94c797014039bb6a6cbf9c4139d007ee587f0eb846dc6b5841fed9c0f3df25": "a1134bb5881734dcb6d2ad6963bcdb3b818c54ada555db625f0797be0a74d3f1",
+        "63e0d0f2b0e47e53489dc21610e7ea05a1d985e44dafb80ec19dbfae2fb22750": "828e6baa48a3c0085132cd2a30f35a8ed6f950c7f73886e07808653a2624e3f6",
+        "99c4d949fb0716559ab875982c47272f3cf7d1873e618a25bbe50b7d7e029247": "e846e47f0a632ecee44c2c103a7163ccd26634452dd4e8f5a90ff44389372f99",
+        "9ce7dc041717ae182a5d47eff005c77e8715eb1c5afef1acfe676c3ef6b35888": "0a1765a6417de7bde351fab3c8652fc31ce55fac5b86174545063cfbb31d4408",
+        "f43e714d40a48eaddb0958009ab62784e9531ba168fe4aef9331d448e3a91873": "98c3ef4e8a1c71622edfd2a759bdc99607d56cd435b872f7db0249e357da3c07",
+        "7917cf6338d480c80ffc6dcc01bf512570ca689ee7ad222cc3c8916c65ed6136": "dc113efb4f24fb7ff162b52b3091ca330397c1ad456141f779d3a60cdbe1ec40",
+        "4288659e9d057dca8a9934b5973cac8a74553f4ac8ef1b67f6ada6510471c8b5": "b4969c03e07fe774eb32c1472d86e144cf97953686da5311aa2483ecb37ac04b",
+        "b431a74e495694c9e416a363c88e847a24b2b43dbd2f96133b1b837b7b55d9a2": "c9b5927a0cf42d20f6e296ada6415d5c539138671730c68790f3b92116ea4188",
+        "88d2445781f71007a545e32b28f80986db7e4bbf8daca7ac371d01ba8c4f880a": "7e1766a5848725b61309da1713da727033fdff93881f75e5ad78e982b94f514e",
+        "88b9a92b1c94326698b24c59b03f183aba3e364bc80f7e33661a9d3fa5057916": "5ab10195d66ca3e86318651905fcea5baaa1b54401ce4b9b56baf4b820591453",
+        "16aa7b1a849f8e27e59ad08d24ea526347a56f52479d888de584f33e76d01b0c": "b248ad64a2571a74dac835d30c0af74c8b48aba34d6b678d745b73beff28d4bc",
+        "a9597a5ea66026df18166ee46d6a3a727ef6a0937afae5248f4cbabdd8bb93c3": "b3c63287376bfd0401fafe7cc7a5b4eeb28721842ea6a65ad5d2a02e382edc2b",
+        "b26111ad20ea35fea03bc069d3c064b23cab59e4709f569c8a2e48788750bdc4": "45017391c1307b1a926e48f8cf80fb663eb5b973d9ed25e2250a8322ac668535",
+        "5b27be202bd03094acdd9e783c67d343a5398f3b44e34110c28174f1e31a22ca": "b28d11816bb1d4642a0531819859e4440876d7f3be74077ea4c759db4085c636",
+        "0d1257d700b6faf899907a02088da83b74d01715cf6184e709732d0258dbcf32": "b65409ebaf756f8e7a0d7c043f43e2280a4a6ed5671d601d78bb5b57eee937c7",
+        "8d3aaa7f2ad6e145749623fc68302d0e88f853b2db6130dba806ecc23e446e98": "855b9588889f3c39f5242dc0e1bfabf7360607e419db655ee4bc01073f07dae6",
+        "efe483f4cfa22335c434bae0db458b5ee60abb6e92530b9cfbd5fb318dc34134": "ec4fd9f50b97eba54eacd44c6b961bc3f1b7f0395d2ee04e3bb3d7d8e052f167",
+        "29f9b043902f2883ba28e16d8ca60ee87432fa53914aa574932e238e5ba68ce2": "84789bc90134c4c4aab81571d870a9538bec7c418ad1346aebc49868c7b8f831",
+        "41200af31e7b60aa21caac76cb03392cb6c45c89813e5d137c620f082570806d": "bf69c53ca39f91be515d16af72bf53aec0519864882d5da4459b4235cb4db334",
+        "0be8f78441510e87ad6cd837d0484162a96f475e0aee31f8beaac5bdec996d67": "c6239433e4f7b2776cd586247ff587a55329a795e63ac0f2e5ca3f7b059c25ca",
+        "c5e1c9bf0ef8cee773038375ca0d749389c49f3811784d0281c35d1aeac8d62c": "57398648863f589c78ab2f025f0d70154f34e7c59f445ebe3857564d7994de8d",
+        "fcdc46e8de9eac12339616c38486c967575a675ca2a99cccf047634aa1a94900": "36d59c9ba3cf7c25261bf5fead27d2662b57c653680fb80168e76286fab75bc2",
+        "28274f29258efb05a0ebc0d326214dfc3c8ee08644e5a5c3d1190925617e0986": "a5eb194cf792a0b705128bdec75b7d445a70d3b7062815cc14e36a5ec35c3e86",
+        "35e03a4241cb79b0f4b52d841b81dd4430f6b8f94dfc04647d31c33545e528bb": "ad0e7f64e35a171b48e5527c9bce37270bbf45197908f3cdaeaec3c937979525",
+        "f82ef8635f8f8025accd3851acab62e39ba12fdc3ff544f953cb48a253753d0a": "a60092a2cf180342297f81837148c54eff82c53c0461ad515c17a07be9cbcf7b",
+        "0bb57b2c66102ca4b919633c11b795ef91c8a1e135f3e28f700a158dda97f1ca": "bceff05344fe112ee8b48f934f9e5df062faea7aa65ea3ba47b1451234a93501",
+        "ffab550c7799cac6e3902f2a9742566b79682b0b402b74e55b400fcbf2d04267": "04785ef70f42ba2c8ff697821fe8c5998d7c66f397d56d1baed7fbdb439a17b3",
+        "25ff5b5db339e424dcbb270769b09eb64b0c791b1d1f3a83fe35ad88b991bc69": "ae031ce877e5766c5599285e2c60da5024932a0568651e54bd69e2b1d8b63585"
+      },
+      "skips": [
+        {
+          "nodeid": "tests/test_claim_denial_profile.py::test_private_claim_loop_profile",
+          "when": "setup",
+          "reason": "opt-in PB claim-loop profile",
+          "location": "tests/test_claim_denial_profile.py:20"
+        }
+      ],
+      "required_files_missing": [],
+      "mandatory_guards": [
+        "tests/test_wire_inventory.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_design_doc_line_references.py"
+      ]
+    },
+    "arm": {
+      "report": "v2-arm.json",
+      "audit": "v2-arm.audited.json",
+      "counts": {
+        "passed": 4824,
+        "skipped": 1
+      },
+      "actions": 20,
+      "files": 245,
+      "native_nodes": 4825,
+      "action_keys": [
+        "2822bce2ecd93437ef2f372542ea2dfdf6672e2e3dd2f313b321100981e74a4d",
+        "117d0fd1e959e92cce7da241314ec7bcb19c45c848b3a89756d59e47c948d46b",
+        "45a1020166d4761a43066f33bc85267eba1ace804a1cdf6929c1c08865a2b931",
+        "6732a6aeb2ce38277bd2ce90b880ed5984f5dd4dd6b8b1d49a9335dc67135e78",
+        "92c02c35ed64331954ac902337660d0163130342071dd777497c858ee6804cc4",
+        "a731e546ffa3adf3fdb1d3777e66e8a64da2b541a1014017270bc29b86d5093e",
+        "fddfcd42cabd8e2e607cd301d95fdc74ecac86ed97ff83cc9e242395448930c8",
+        "6b51755d313b53c01b972dae668be34d421ffb0bbc8bb5186cea4f200b24d026",
+        "27afc0efe5532052f20c0b2fa85623353ed5d3212e6e9e3d250962224945fff3",
+        "53af3f85f7e43f02111e105b14b907a0e465c8a8d6b1fa54a43d18d10433dc87",
+        "c823f9730ce6eaf0bc9a245e34ace41574ae0f4390eefd5732e8ee53bdade50c",
+        "7011e9a2d25307e18da09c6e8082c4118782f37812cfc5a065a5fd75e94d63bd",
+        "2a4d63d4a1be5de0aa60faadf82c2cae83c92d2c529865f59f7482f6be69de8b",
+        "cd0dd946f8b6559898ee92562da33056b07188645186dee7249512c0213f6e7d",
+        "6ca72309af6544ca5d7dd738c2af93ddba3f98ad00a0ba7c0e7bc4cffaa41e75",
+        "d631b614d45504ccbf55d77aa4a258b661b07409c8195eda8df037be22262227",
+        "689502dd22c0fa2802127ddfd268eb6d5ec42a93aa33ce15283e78d68b9f6526",
+        "1c2bc635f84070806dd3b022986af7ed03a6053386509368d313d7b718c13c47",
+        "10df7f94da33585ffd426864b69266c2a324b987435cd04809728cd1ef762ea0",
+        "50d2e86223998e9a5a2d8a529e1bb322df4aff07616d5afdd6d7edeacec34dad"
+      ],
+      "receipts": {
+        "2822bce2ecd93437ef2f372542ea2dfdf6672e2e3dd2f313b321100981e74a4d": "e7b952c159a7dfc2d839effd8bcc048d1f42e9cc9c8ce7925249daf60cc29124",
+        "117d0fd1e959e92cce7da241314ec7bcb19c45c848b3a89756d59e47c948d46b": "80ffc51562601fd89831bd89dbf51c1cd0306e59d33bee1eeefd51424230c562",
+        "45a1020166d4761a43066f33bc85267eba1ace804a1cdf6929c1c08865a2b931": "a417424ac16af787fae952da1f287924548abdc29d16d5274664bd95c0d6b2e7",
+        "6732a6aeb2ce38277bd2ce90b880ed5984f5dd4dd6b8b1d49a9335dc67135e78": "957df92ded2708f71c7413e747e7850be7100e0236eae599da957d68d2acb15a",
+        "92c02c35ed64331954ac902337660d0163130342071dd777497c858ee6804cc4": "c7a4d6be6505803389356457edf614d8a7d40dec4b2f822d280a3918316f8cf9",
+        "a731e546ffa3adf3fdb1d3777e66e8a64da2b541a1014017270bc29b86d5093e": "79a782f355093e5cd50defda7c3e0ad97b94d1d41dc4aad712f4a3b50085006a",
+        "fddfcd42cabd8e2e607cd301d95fdc74ecac86ed97ff83cc9e242395448930c8": "e77a06bee32ac3b51f1d61b7dbe2d8edfca354a919ea056d76fc2c01499a72e7",
+        "6b51755d313b53c01b972dae668be34d421ffb0bbc8bb5186cea4f200b24d026": "42135604710d25233e4d189ae3d0337fdb1c75ea12e634df72ef6a540f34be7a",
+        "27afc0efe5532052f20c0b2fa85623353ed5d3212e6e9e3d250962224945fff3": "ffd7e74e33723052cfd9819c6f1b580b08703ed72cede64a4d5af1a7d2f53b31",
+        "53af3f85f7e43f02111e105b14b907a0e465c8a8d6b1fa54a43d18d10433dc87": "cc034ece834d78dd58a3211ff46ea518c75c8c2152884277a04a14b3e01cb87c",
+        "c823f9730ce6eaf0bc9a245e34ace41574ae0f4390eefd5732e8ee53bdade50c": "281b020a73e58d91e5c141e7d8d00c53d1cd7ce4210c9fc9a28b3378390ed1b4",
+        "7011e9a2d25307e18da09c6e8082c4118782f37812cfc5a065a5fd75e94d63bd": "580f1a8d33bc88b0f115fc870871b44e3302eaa74aee8f19453ed25497f1af4a",
+        "2a4d63d4a1be5de0aa60faadf82c2cae83c92d2c529865f59f7482f6be69de8b": "05ea530972809479d51f4d20e9e3dc0d5018ba08af03ad4424a224abcd42d951",
+        "cd0dd946f8b6559898ee92562da33056b07188645186dee7249512c0213f6e7d": "a88a0b7809dff356e119cf0a88a214b3999d8960b2605c880c2914a15e5360f0",
+        "6ca72309af6544ca5d7dd738c2af93ddba3f98ad00a0ba7c0e7bc4cffaa41e75": "de1cacf3253f3db06862f259a648d3cee2ae2335ec0d511ce0e1c49a48e82649",
+        "d631b614d45504ccbf55d77aa4a258b661b07409c8195eda8df037be22262227": "0c5d3c9c89010acf6bc7ca18795f05afc79d416ed50f6210d223d65fc874b986",
+        "689502dd22c0fa2802127ddfd268eb6d5ec42a93aa33ce15283e78d68b9f6526": "b58f0c9dd0ed2987e10021dbeaa731d9df71ea11dc7e65df1374be58f98787a1",
+        "1c2bc635f84070806dd3b022986af7ed03a6053386509368d313d7b718c13c47": "d600f1cbc0dc9eb17fae91d568134136af84151e198df94cc935f60f6a7240e3",
+        "10df7f94da33585ffd426864b69266c2a324b987435cd04809728cd1ef762ea0": "1ae5d8ebc1bed3d932f616c65f1054a2f4fa653f5f9b303bd4fa9bf2d35316aa",
+        "50d2e86223998e9a5a2d8a529e1bb322df4aff07616d5afdd6d7edeacec34dad": "7df1009e86528e1f1a6a0726f84c45a940e4293d754a17a75d48945f818762b7"
+      },
+      "skips": [
+        {
+          "nodeid": "tests/test_claim_denial_profile.py::test_private_claim_loop_profile",
+          "when": "setup",
+          "reason": "opt-in PB claim-loop profile",
+          "location": "tests/test_claim_denial_profile.py:20"
+        }
+      ],
+      "required_files_missing": [],
+      "mandatory_guards": [
+        "tests/test_wire_inventory.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_design_doc_line_references.py"
+      ]
+    }
+  },
+  "edited_file_repeats": {
+    "x86": [
+      {
+        "audit": "repeat-x86-1.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "eb59763db9a28e089c0a640e82393f0f37315241c1864c5981c3de43834581de",
+          "1cacf6853c5f4d853cb21084ea11a2e9f457b1945cdbb2ffb85553614e6f99d2",
+          "dd80f79f84f668c725831d21d0bf71ea1b92ec45267d129fff36793c67e01970"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-x86-2.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "6fb7765e2c4bc05e1147c802545e3e441c303f6a5d3e2e9539ab7c9080e0b56d",
+          "3844a3cae7f91b2e438af2c40c0397ccdfa92213cfc46474e2067ba0dc1cd5c0",
+          "b124546569e4d2c85ad70048cea5e24aca3414a0f3f765d897ed0ac72d64082a"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-x86-3.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "13863551794b0dfefacd0a59307a34eff72138ccb93739a05ff1aa800127381d",
+          "fc0b1e4fdc88285928f02213c487f9428695609b99fee1103a402deb56d9a73e",
+          "36e796c4e754217c0e0f91c39356a6cdb9a6ea01eb7bdbfe4b1191b1119ecf1c"
+        ],
+        "workers": 2
+      },
+      {
+        "audit": "repeat-x86-4.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "b53944ef37d280235cdb3e86464d318d98c99c54e3eff78d3957d9961330ab17",
+          "e168a87666c1b60938df11ac601069bd0cac67120cbf91451e56b97a00e86435",
+          "9ab5ce02005d084472775808e02e82eeb21a9bcecab0cf1d67d4770cb0d81447"
+        ],
+        "workers": 2
+      }
+    ],
+    "arm": [
+      {
+        "audit": "repeat-arm-1.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "685f26181527c263d362f771ead600a716b1406d04504e37b2ef5045fb9dad9b",
+          "0ede7df67f044e720aa16af2c3c8b68cfa5c17269e2e8cf02d96b11250983b4f",
+          "1fae3790ff406c07cab9b3d89cbfb9b6d08d8f16ce5b34e195dc61392a5247a8"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-arm-2.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "e1f784c63ba140b9f8cfd4aeebc64572371ecaca7e12df8a47a6ddd534ee2ee7",
+          "a22ee7cfd87a94f0189a97a21cdeafd46be9b7454c0388a3d7c8ad39ba177073",
+          "7d98a82aa066c49793049fab5aef9b0e7c419be1e9394da44812e0ed196d8e9b"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-arm-3.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "47b8611c484244f05e13654df87e7687ed1c9f016d06782142b8f341d648a426",
+          "20c1ebeee9a9b45e72c50e581f6c638704f1b4282d727eb164fa67fbd3709455",
+          "0f8ffcdacb6a1bc32cdc9ce971859304edd8bf0ec24e1769d90cce04d0ddbb1a"
+        ],
+        "workers": 2
+      },
+      {
+        "audit": "repeat-arm-4.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "921e9cf6176e1268dbedeeace11321d936ae2f91c34e20cb242e17cb67a7a24b",
+          "81bd8f9e1e437e86d932719154e4aace782dac88174aab0ba34af29820b7db20",
+          "558e53e332b465d1042ac360de02d8f55c3eb9d11e4e1ec64aff922617877ab9"
+        ],
+        "workers": 2
+      }
+    ]
+  },
+  "baseline": {
+    "issue": "https://github.com/RobTand/prismabuild/issues/2384",
+    "audit": "publisher-controls.audited.json",
+    "main_action": "cdc6129eddcd420e55c5207a00ba8428531333ca6829be22af2ad00c73906148",
+    "candidate_action": "fb2fc1d173b82d94f986eeee00b16e482d8d4d48f8926c77237e430e9b3412bb",
+    "verdict": "Matching teardown assertion reproduced on unchanged incoming main. Root cause remains open; no teardown assertion weakened."
+  },
+  "failed_evidence": [
+    "Original 296298ef candidate failed the Docker recognition and operator-hold integrations; repaired and qualified on c3134f0f.",
+    "Original and v2 x86 serial mutation populations exhausted the 900-second shard budget. New immutable xdist requests completed the same file population.",
+    "Original and v2 supplemental archival replay shards lacked complete native population at timeout; new immutable two-worker requests completed all309 supplemental tests.",
+    "The v2 publisher teardown error matches unchanged incoming main; tracked by #2384."
+  ],
+  "evidence_root": "/mnt/shared/paperclip-runs/PRI-206/",
+  "persistence_assumption": "Readback and digests establish retained records and identity. They establish no power-loss durability; no storage policy change is made."
+}

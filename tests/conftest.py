@@ -411,6 +411,7 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
+    ("prismabuild.gpu_capacity", "RUNTIME_GATE", "gpu-container-runtime.json"),
     ("prismabuild.sealed_bundle_cache", "CACHE_ROOT", "sealed-bundles"),
     ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
     ("prismabuild.host_cap", "HOST_CAP_CONFIG", "host-cap.conf"),

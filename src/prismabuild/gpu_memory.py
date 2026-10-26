@@ -274,6 +274,107 @@ def _host(proc: Path):
     return total, available, some, full, errors
 
 
+def _capture_identities(proc: Path, pids, deadline: float):
+    """Fresh start-time/membership proof for just this phase's inventory."""
+    identities, errors = {}, []
+    for pid in pids:
+        if time.monotonic() >= deadline:
+            errors.append("process identity capture exceeded collection deadline")
+            break
+        identity = _process_identity(proc, pid)
+        if identity is not None:
+            identities[pid] = identity
+    if time.monotonic() >= deadline and not errors:
+        errors.append("process identity capture exceeded collection deadline")
+    return identities, errors
+
+
+def _measure_processes(proc: Path, devices, device_node: Path, timeout_s: float,
+                       deadline: float):
+    """Discover candidates, fence identities, then obtain independent rows.
+
+    NVIDIA discovery counters are discarded. AMD needs a host-wide identity
+    inventory before its measured descriptor census: idle processes can open
+    new handles without changing their PID identity.
+    """
+    devices = list(devices or ())
+    handles = bool(devices) and all(device.get("vendor") == "amd" for device in devices)
+    bytes_readable = not handles
+    foreign_scope = FOREIGN_SCOPE_HOST_HANDLES if handles else FOREIGN_SCOPE_COMPUTE_APPS
+    errors = []
+    before = {}
+    rows = None
+    if handles:
+        try:
+            pids = (int(entry.name) for entry in proc.iterdir() if entry.name.isdigit())
+            before, errors = _capture_identities(proc, pids, deadline)
+        except OSError:
+            errors.append("process identity inventory unavailable")
+    else:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, before, bytes_readable, foreign_scope, ["collection deadline elapsed before GPU discovery"]
+        candidates, error = _nvidia_processes(min(timeout_s, remaining))
+        if error:
+            return None, before, bytes_readable, foreign_scope, [error]
+        before, errors = _capture_identities(proc, {pid for pid, _ in candidates}, deadline)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        errors.append("collection deadline elapsed before GPU measurement")
+    else:
+        rows, error, bytes_readable, foreign_scope = _gpu_processes(
+            min(timeout_s, remaining), devices, proc_root=proc, device_node=device_node)
+        if error:
+            errors.append(error)
+        if time.monotonic() >= deadline:
+            errors.append("GPU measurement exceeded collection deadline")
+    return rows, before, bytes_readable, foreign_scope, errors
+
+
+def _attribute_processes(scopes, proc_root: Path, cgroup_root: Path, domains,
+                         rows, before, deadline: float, complete: bool):
+    """Attribute measured rows only with matching bracketing identities."""
+    errors = []
+    attributed = {scope.scope_id: [] for scope in scopes}
+    foreign = 0
+    foreign_processes = []
+    foreign_unknown = False
+    after, identity_errors = _capture_identities(proc_root, {pid for pid, _ in (rows or {})}, deadline)
+    errors.extend(identity_errors)
+    complete = complete and not identity_errors
+    for (pid, device), used in (rows or {}).items():
+        if time.monotonic() >= deadline:
+            complete = False
+            errors.append("GPU attribution exceeded collection deadline")
+            break
+        identity = after.get(pid)
+        if identity is None or identity != before.get(pid):
+            complete = False
+            errors.append(f"GPU process {pid} identity changed or unavailable")
+            continue
+        group = Path(identity[1])
+        owner = None
+        for scope in scopes:
+            relative = Path("/") / Path(scope.cgroup_path).relative_to(cgroup_root)
+            if group == relative or relative in group.parents:
+                owner = scope.scope_id
+                break
+        if owner is None:
+            foreign_processes.append({"pid": pid, "start_ticks": identity[0],
+                                      "cgroup": identity[1], "gpu_uuid": device,
+                                      "used_bytes": used})
+            if used is None:
+                foreign_unknown = True
+            else:
+                foreign += used
+        else:
+            attributed[owner].append({"pid": pid, "start_ticks": identity[0],
+                                      "cgroup": identity[1], "gpu_uuid": device,
+                                      "used_bytes": used,
+                                      "memory_domain": domains.get(device, "unknown")})
+    return attributed, foreign, foreign_processes, foreign_unknown, complete, errors
+
+
 def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
             cgroup_root: Path = Path("/sys/fs/cgroup"), timeout_s: float = 1.0,
             max_collect_s: float = 3.0,
@@ -301,7 +402,6 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
                for uuid, domain in (gpu_memory_domains or {}).items()}
     started = time.monotonic()
     deadline = started + max_collect_s
-    timed_out = False
     expected = {}
     initial = {}
     for scope in scopes:
@@ -318,65 +418,12 @@ def collect(scopes: Sequence[Scope], *, proc_root: Path = Path("/proc"),
             initial[scope.scope_id] = stat.st_dev, stat.st_ino
         except OSError:
             initial[scope.scope_id] = None
-    before = {}
-    try:
-        for entry in proc_root.iterdir():
-            if time.monotonic() >= deadline - timeout_s:
-                timed_out = True
-                break
-            if entry.name.isdigit():
-                pid = int(entry.name)
-                identity = _process_identity(proc_root, pid)
-                if identity is not None:
-                    before[pid] = identity
-    except OSError:
-        pass
-    remaining = deadline - time.monotonic()
-    bytes_readable, foreign_scope = True, FOREIGN_SCOPE_COMPUTE_APPS
-    if remaining <= 0:
-        rows, error = None, "collection deadline elapsed before GPU query"
-    else:
-        rows, error, bytes_readable, foreign_scope = _gpu_processes(
-            min(timeout_s, remaining), gpu_devices, proc_root=proc_root,
-            device_node=gpu_device_node)
-    errors = [error] if error else []
-    complete = rows is not None and not timed_out
-    if timed_out:
-        errors.append("process census exceeded collection deadline")
-    attributed = {scope.scope_id: [] for scope in scopes}
-    foreign = 0
-    foreign_processes = []
-    foreign_unknown = False
-    for (pid, device), used in (rows or {}).items():
-        if time.monotonic() >= deadline:
-            complete = False
-            errors.append("GPU attribution exceeded collection deadline")
-            break
-        identity = _process_identity(proc_root, pid)
-        if identity is None or identity != before.get(pid):
-            complete = False
-            errors.append(f"GPU process {pid} identity changed or unavailable")
-            continue
-        group = Path(identity[1])
-        owner = None
-        for scope in scopes:
-            relative = Path("/") / Path(scope.cgroup_path).relative_to(cgroup_root)
-            if group == relative or relative in group.parents:
-                owner = scope.scope_id
-                break
-        if owner is None:
-            foreign_processes.append({"pid": pid, "start_ticks": identity[0],
-                                      "cgroup": identity[1], "gpu_uuid": device,
-                                      "used_bytes": used})
-            if used is None:
-                foreign_unknown = True
-            else:
-                foreign += used
-        else:
-            attributed[owner].append({"pid": pid, "start_ticks": identity[0],
-                                      "cgroup": identity[1], "gpu_uuid": device,
-                                      "used_bytes": used,
-                                      "memory_domain": domains.get(device, "unknown")})
+    rows, before, bytes_readable, foreign_scope, errors = _measure_processes(
+        proc_root, gpu_devices, gpu_device_node, timeout_s, deadline)
+    complete = rows is not None and not errors
+    attributed, foreign, foreign_processes, foreign_unknown, complete, attribution_errors = _attribute_processes(
+        scopes, proc_root, cgroup_root, domains, rows, before, deadline, complete)
+    errors.extend(attribution_errors)
     jobs = []
     for scope in scopes:
         failures = []

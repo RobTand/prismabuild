@@ -1,0 +1,145 @@
+"""Check fix PRs for changed Python test behavior without executing PR code."""
+from __future__ import annotations
+
+import argparse
+import ast
+from dataclasses import asdict, dataclass
+import json
+from pathlib import Path, PurePosixPath
+import re
+
+
+_FIX_TITLE = re.compile(
+    r"^\s*(?:\[[^\]]+\]\s*)*(?:fix(?:es|ed)?|repair|bugfix|regression)"
+    r"(?:\([^)]*\))?(?:\s|:|$)", re.IGNORECASE,
+)
+_FIX_LABELS = {"bug", "fix", "bugfix", "regression", "type:bug", "type:fix"}
+_RELEASE_BRANCH = "tl/release-"
+_CHANGE_TYPES = {"fix", "bugfix", "feature", "docs", "refactor", "test", "chore", "perf", "build", "ci", "revert"}
+
+
+@dataclass(frozen=True)
+class Verdict:
+    allowed: bool
+    reason: str
+    tests: tuple[str, ...] = ()
+
+
+def is_test_file(filename: str) -> bool:
+    path = PurePosixPath(filename)
+    return ("tests" in path.parts and path.suffix == ".py"
+            and (path.name.startswith("test_") or path.name.endswith("_test.py")))
+
+
+def is_fix(pull: dict) -> bool:
+    labels = {label["name"].strip().lower() for label in pull["labels"]}
+    return bool(_FIX_TITLE.search(pull["title"]) or labels & _FIX_LABELS
+                or re.search(r"(?im)^\s*change type:\s*(?:fix|bugfix)\s*$", pull["body"] or ""))
+
+
+def change_type(pull: dict) -> str | None:
+    declarations = re.findall(r"(?im)^[ \t]*change type:[ \t]*([^\r\n]*)", pull["body"] or "")
+    if len(declarations) == 1 and declarations[0].strip().lower() in _CHANGE_TYPES:
+        return declarations[0].strip().lower()
+    return None
+
+
+def _has_assertion(node: ast.AST) -> bool:
+    return any(isinstance(child, ast.Assert) or (
+        isinstance(child, ast.Call) and (
+            isinstance(child.func, ast.Attribute) and (
+                child.func.attr.startswith("assert") or
+                ast.unparse(child.func) in {"pytest.raises", "pytest.fail", "pytest.warns"})
+        )) for child in ast.walk(node))
+
+
+def _test_bodies(source: str) -> dict[str, tuple[str, bool]]:
+    tree = ast.parse(source)
+    asserted_helpers = {node.name for node in tree.body
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and _has_assertion(node)}
+    tests = {}
+    for scope in [tree, *(node for node in tree.body if isinstance(node, ast.ClassDef)
+                          and (node.name.startswith("Test") or any(
+                              ast.unparse(base).endswith("TestCase") for base in node.bases)))]:
+        prefix = scope.name + "." if isinstance(scope, ast.ClassDef) else ""
+        for node in scope.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.name.startswith("test_"):
+                continue
+            if any(ast.unparse(decorator).split("(", 1)[0].endswith("fixture")
+                   for decorator in node.decorator_list):
+                continue
+            name = prefix + node.name
+            node.name = "test"
+            if (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                node.body.pop(0)
+            proof = _has_assertion(node) or any(
+                isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                and child.func.id in asserted_helpers for child in ast.walk(node))
+            tests[name] = (ast.dump(node, include_attributes=False), proof)
+    return tests
+
+
+def check_pull_request(pull: dict, files: list[dict]) -> Verdict:
+    # The release train opens tl/release-* PRs that only merge PRs this check
+    # already judged; issue-link exempts the same branches from its name rule.
+    if (pull.get("head") or {}).get("ref", "").startswith(_RELEASE_BRANCH):
+        return Verdict(True, "Release-train PR; its member PRs were checked individually.")
+    if change_type(pull) is None:
+        return Verdict(False, "Declare exactly one Change type: line in the PR body: "
+                       + ", ".join(sorted(_CHANGE_TYPES)) + ".")
+    if not is_fix(pull):
+        return Verdict(True, "Declared change is not classified as a fix by title, labels or Change type.")
+    if len(files) != pull["changed_files"] or len(files) > 3000:
+        return Verdict(False, "Incomplete PR file inventory; rerun after reducing the PR or repairing the API read.")
+    parsed = []
+    for file in files:
+        if not is_test_file(file["filename"]) or file["status"] not in {"added", "modified", "renamed", "removed"}:
+            continue
+        if not isinstance(file.get("before"), str) or not isinstance(file.get("after"), str):
+            return Verdict(False, f"Complete test source unavailable: {file['filename']}.")
+        try:
+            before = _test_bodies(file["before"])
+            after = _test_bodies(file["after"])
+        except SyntaxError:
+            return Verdict(False, f"Cannot parse Python tests: {file['filename']}.")
+        parsed.append((file, before, after))
+    changed = []
+    previous_bodies = {body for _, before, _ in parsed for body, _ in before.values()}
+    for file, before, after in parsed:
+        if file["status"] == "removed" or file["additions"] == 0:
+            continue
+        for name, (body, proof) in after.items():
+            if proof and body not in previous_bodies:
+                changed.append(f"{file['filename']}::{name}")
+    if changed:
+        return Verdict(True, "Changed executable test behavior found; reviewer must verify relevance and red-to-green evidence.", tuple(changed))
+    return Verdict(False, "Fix PR requires an added or modified Python test with an assertion or expected-exception check. Fixtures, comments, renames and deletions alone do not qualify.")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", type=Path, help="JSON with pull and files; test files include before/after source")
+    args = parser.parse_args()
+    try:
+        data = json.loads(args.input.read_text())
+        pull, files = data["pull"], data["files"]
+        if not (isinstance(pull["title"], str) and isinstance(pull.get("body"), (str, type(None)))
+                and isinstance(pull["labels"], list) and all(isinstance(x["name"], str) for x in pull["labels"])
+                and type(pull["changed_files"]) is int and pull["changed_files"] >= 0
+                and isinstance(files, list) and all(isinstance(f["filename"], str)
+                    and isinstance(f["status"], str) and type(f["additions"]) is int
+                    and f["additions"] >= 0 for f in files)):
+            raise ValueError("invalid PR metadata")
+        verdict = check_pull_request(pull, files)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(json.dumps(asdict(Verdict(False, f"Gate input unavailable or invalid: {exc}"))))
+        return 2
+    print(json.dumps(asdict(verdict)))
+    return 0 if verdict.allowed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

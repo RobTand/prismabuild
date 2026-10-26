@@ -68,10 +68,7 @@ def test_blocking_a_stale_capability_cannot_claim_without_its_fence(capped, tmp_
     assert not fence(), "the fence itself observes the change"
     with pytest.raises(TypeError, match="registered claim fence"):
         queue.claim(**parameters, cpu_sampler=_sampler)
-    claimed = None
-    outcome = {"producer": producer, "claimed": claimed is not None,
+    outcome = {"producer": producer,
                "held": queue.ledger().held_keys() == [key]}
     _evidence("FENCELESS STALE CAPABILITY", outcome)
-    assert claimed is None, "stale clamp-minted capacity claimed outside the declared slice"
     assert queue.ledger().held_keys() == []
-

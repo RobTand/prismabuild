@@ -1,0 +1,401 @@
+"""Operator holds close every admission route without altering running actions."""
+from datetime import datetime, timezone
+import importlib.util
+import json
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+import time
+
+import pytest
+
+from prismabuild import census, host_hold, pool, role_session
+from admitted_queue_fixture import simulated_admission
+from test_a_draining_worker_stays_visible import _load_loop, HOST, DRAIN_GATE
+from test_gpu_evicts_cpu_guests import guest_fleet
+import pbstatus
+
+
+@pytest.fixture(autouse=True)
+def fixed_hold_clock(monkeypatch):
+    monkeypatch.setattr(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
+
+
+@pytest.fixture
+def fixed_offer_clock(fixed_hold_clock, monkeypatch):
+    monkeypatch.setattr(census, "time", host_hold.time)
+    monkeypatch.setattr(pool, "_now", lambda: host_hold.time.time())
+
+
+def put_hold(root, host=HOST, **kw):
+    return host_hold.change_host_hold(root, host, owner="operator", reason="external load",
+                                      expires_unix=host_hold.time.time() + 3600, **kw)
+
+
+@pytest.mark.parametrize("route", ["cpu", "gpu", "guest"])
+@pytest.mark.parametrize("arrival", ["before-pass", "before-rename"])
+def test_every_claim_route_obeys_the_same_hold_check(guest_fleet, monkeypatch, route, arrival):
+    fleet = guest_fleet
+    key = fleet.publish("a", gpu=route == "gpu",
+                        **({"tags": ["sparky"]} if route == "cpu" else {}))
+    commit = fleet.queue._rename_and_commit_claim
+    if arrival == "before-pass":
+        put_hold(fleet.queue.root, "sparky")
+    else:
+        def hold_at_commit(*args):
+            put_hold(fleet.queue.root, "sparky")
+            return commit(*args)
+
+        monkeypatch.setattr(fleet.queue, "_rename_and_commit_claim", hold_at_commit)
+    assert fleet.claim() is None
+    assert fleet.queue.records.item_path(pool.READY, key).exists()
+    assert not fleet.queue.records.item_path(pool.CLAIMED, key).exists()
+    assert not fleet.queue.records.lease_path(key).exists()
+    assert fleet.queue.ledger("sparky").held() == {}
+    host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", release=True)
+    monkeypatch.setattr(fleet.queue, "_rename_and_commit_claim", commit)
+    claimed = fleet.claim()
+    assert claimed["action_key"] == key
+    assert bool(claimed.get("cpu_guest")) is (route == "guest")
+
+
+def test_a_hold_leaves_a_running_claim_and_its_reservation_untouched(guest_fleet):
+    fleet = guest_fleet
+    key = fleet.publish("a")
+    running = fleet.claim()
+    path = fleet.queue.records.item_path(pool.CLAIMED, key)
+    before = path.read_bytes()
+    held = fleet.queue.ledger("sparky").held()
+    put_hold(fleet.queue.root, "sparky")
+    fleet.publish("b", gpu=True, cpu=8)
+    assert fleet.claim() is None
+    assert path.read_bytes() == before
+    assert fleet.queue.ledger("sparky").held() == held
+    assert not fleet.stopped(key)
+    fleet.finish(running)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("route", ["guest-tokens", "background-tokens", "guest-pressure"])
+@pytest.mark.parametrize("arrival", ["host-refusal", "withdrawal", "withdrawal-proof"])
+def test_a_late_hold_prevents_admission_withdrawal(guest_fleet, monkeypatch, route, arrival):
+    fleet = guest_fleet
+    pressure = route == "guest-pressure"
+    background = route == "background-tokens"
+    cpu = 2 if pressure else 8
+    key = fleet.publish("a", cpu=cpu,
+                        **({"priority": -10, "tags": ["sparky"]} if background else {}))
+    running = fleet.claim()
+    assert bool(running.get("cpu_guest")) is (not background)
+    path = fleet.queue.records.item_path(pool.CLAIMED, key)
+    before = path.read_bytes()
+    lease = fleet.queue.records.lease_path(key)
+    lease_before = lease.read_bytes()
+    held = fleet.queue.ledger("sparky").held()
+    challenger = fleet.publish("b", gpu=True, cpu=cpu)
+    arrived = []
+
+    def install_hold():
+        arrived.append(put_hold(fleet.queue.root, "sparky"))
+
+    with monkeypatch.context() as patch:
+        if pressure:
+            # Keep real drain classification and withdrawal, changing only the
+            # observation so free tokens fit but a guest occupies pressured CPUs.
+            def pressured(controller, item, demand, **kwargs):
+                controller.last_decision = {"reason": "host_pressure",
+                    "held_cpus": running["cpu_allocation"]["preferred"], "foreign_cpus": []}
+                return None
+            patch.setattr(pool.cpu_admission.Controller, "decision", pressured)
+        boundary = "_account_host_refusal" if arrival == "host-refusal" else "withdraw"
+        original = getattr(fleet.queue, boundary)
+        resolve = fleet.queue.resolve_claim_holder
+
+        def hold_after_proof(*args, **kwargs):
+            host = resolve(*args, **kwargs)
+            install_hold()
+            return host
+
+        def hold_during_admission(*args, **kwargs):
+            if arrival == "withdrawal-proof":
+                # A check before calling withdraw is too early: ownership reads
+                # can stall before the immutable cancellation is written.
+                with monkeypatch.context() as proof_patch:
+                    proof_patch.setattr(fleet.queue, "resolve_claim_holder", hold_after_proof)
+                    return original(*args, **kwargs)
+            install_hold()
+            return original(*args, **kwargs)
+
+        patch.setattr(fleet.queue, boundary, hold_during_admission)
+        options = {"adaptive_cpu": True, "gpu_sampler": lambda: {}} if pressure else {}
+        assert fleet.claim(**options) is None
+    assert arrived and fleet.queue.claim_hold() is not None
+    assert path.read_bytes() == before
+    assert lease.read_bytes() == lease_before
+    assert fleet.queue.ledger("sparky").held() == held
+    assert not fleet.stopped(key)
+    assert not fleet.queue.records.item_path(pool.READY, key).exists()
+    assert fleet.queue.records.item_path(pool.READY, challenger).exists()
+    assert not fleet.queue.records.item_path(pool.CLAIMED, challenger).exists()
+    # Reopening admission restores the ordinary handoff, without having spent
+    # an interruption or a new generation during the hold.
+    host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", release=True)
+    with monkeypatch.context() as patch:
+        if pressure:
+            patch.setattr(pool.cpu_admission.Controller, "decision", pressured)
+        assert fleet.claim(**options) is None
+    assert fleet.stopped(key)[0]["preempted_by"] == challenger
+    fleet.finish(running, "withdrawn")
+    assert fleet.claim()["action_key"] == challenger
+
+
+@pytest.mark.parametrize("arrival", ["before-pass", "before-rename"])
+def test_adaptive_claims_also_cross_the_hold_check(tmp_path, monkeypatch, arrival):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    capacity = {"cpu": 2, "mem_gb": 4}
+    tiers = {"preferred": [0, 1], "fallback": []}
+    queue.ledger().configure_cpu_tiers(tiers)
+    queue.publish(action_key="a" * 64, cas_root=tmp_path / "cas",
+                  checkout_root=tmp_path, worker_script="worker.py", resources={"cpu": 1})
+    monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("shape", False))
+    commit = queue._rename_and_commit_claim
+    if arrival == "before-pass":
+        put_hold(queue.root)
+    else:
+        def close_at_commit(*args):
+            put_hold(queue.root)
+            return commit(*args)
+        monkeypatch.setattr(queue, "_rename_and_commit_claim", close_at_commit)
+    options = dict(**simulated_admission(queue, capacity), cpu_tiers=tiers, adaptive_cpu=True,
+        cpu_sampler=lambda: dict(sampled_unix=time.time(), cpu_count=2,
+                                interval_s=1., busy_cpus=0., psi_some=0.))
+    assert queue.claim(**options) is None
+    assert queue.ledger().held() == {}
+    host_hold.change_host_hold(queue.root, HOST, owner="operator", release=True)
+    monkeypatch.setattr(queue, "_rename_and_commit_claim", commit)
+    assert queue.claim(**options)["action_key"] == "a" * 64
+
+
+def test_a_hold_does_not_stop_a_committed_preemption_handoff(guest_fleet, monkeypatch):
+    fleet = guest_fleet
+    key = fleet.publish("a", cpu=8)
+    running = fleet.claim()
+    challenger = fleet.publish("b", gpu=True, cpu=8)
+    withdraw = fleet.queue.withdraw
+
+    def hold_after_cancellation(*args, **kwargs):
+        result = withdraw(*args, **kwargs)
+        assert result["status"] == "withdrawn"
+        put_hold(fleet.queue.root, "sparky")
+        return result
+
+    monkeypatch.setattr(fleet.queue, "withdraw", hold_after_cancellation)
+    assert fleet.claim() is None
+    assert fleet.queue.claim_hold() is not None
+    assert fleet.stopped(key)[0]["preempted_by"] == challenger
+    retry = pool.record_store.value_or_raise(fleet.queue.records.item(pool.READY, key))
+    assert retry["attempts"] == 1
+    assert retry["supersedes_withdrawal"]["published_unix"] == running["published_unix"]
+    # Cleanup and retry publication complete even though new claims stay closed.
+    fleet.finish(running, "withdrawn")
+    assert fleet.queue.ledger("sparky").held() == {}
+    assert fleet.claim() is None
+
+
+def test_operator_withdrawal_remains_available_while_held(guest_fleet):
+    fleet = guest_fleet
+    key = fleet.publish("a")
+    running = fleet.claim()
+    put_hold(fleet.queue.root, "sparky")
+    result = fleet.queue.withdraw(key, by="operator", reason="cancel this work", signal_child=False)
+    assert result["status"] == "withdrawn"
+    assert "preempted_by" not in fleet.stopped(key)[0]
+    fleet.finish(running, "withdrawn")
+    assert fleet.queue.ledger("sparky").held() == {}
+    assert fleet.queue.claim_hold() is not None
+
+
+def test_expiry_resumes_claiming_and_is_logged_once(guest_fleet, monkeypatch, capsys):
+    fleet = guest_fleet
+    clock = host_hold.time.time()
+    monkeypatch.setattr(host_hold.time, "time", lambda: clock)
+    host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", reason="load",
+                              now=clock, expires_unix=clock + 1)
+    key = fleet.publish("a")
+    assert fleet.claim() is None
+    monkeypatch.setattr(host_hold.time, "time", lambda: clock + 2)
+    assert fleet.claim()["action_key"] == key
+    assert fleet.queue.claim_hold() is None
+    assert fleet.queue.claim_hold() is None
+    assert capsys.readouterr().out.count("operator hold expired") == 1
+
+
+@pytest.mark.parametrize("fault", ["json", "schema", "owner", "expiry", "too-long", "bool", "directory", "symlink", "unreadable"])
+def test_invalid_hold_is_fail_closed_and_visible(tmp_path, monkeypatch, fault):
+    root = tmp_path / "queue"
+    put_hold(root)
+    path = host_hold.host_hold_path(root, HOST)
+    body = json.loads(path.read_text())
+    if fault == "json":
+        path.write_text("{")
+    elif fault in ("directory", "symlink"):
+        path.unlink()
+        path.mkdir() if fault == "directory" else path.symlink_to(tmp_path / "absent")
+    elif fault == "unreadable":
+        read = host_hold.immutable_files.read_replaced_record
+        def denied(leaf, **kw):
+            if leaf == path:
+                raise PermissionError("fixture")
+            return read(leaf, **kw)
+        monkeypatch.setattr(host_hold.immutable_files, "read_replaced_record", denied)
+    else:
+        if fault == "schema": body["schema"] = "unknown"
+        if fault == "owner": body["owner"] = ""
+        if fault == "expiry": body["expires_unix"] = "later"
+        if fault == "too-long": body["expires_unix"] += 12 * 3600
+        if fault == "bool": body["created_unix"] = True
+        path.write_text(json.dumps(body))
+    queue = pool.PoolQueue(root)
+    queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1})
+    assert queue.claim_hold().error
+    node = census.offers(root, authoritative_holds=True).value["nodes"][0]
+    assert node["state"] == "held" and node["hold"]["error"]
+    assert "operator hold" in "\n".join(pbstatus.pool_node_lines([node]))
+
+
+def test_only_the_owner_can_release_or_replace_and_force_needs_a_reason(tmp_path):
+    put_hold(tmp_path)
+    for release in (True, False):
+        with pytest.raises(ValueError, match="another owner"):
+            host_hold.change_host_hold(tmp_path, HOST, owner="other", reason="takeover",
+                                      expires_unix=host_hold.time.time() + 100, release=release)
+    with pytest.raises(ValueError, match="requires --reason"):
+        host_hold.change_host_hold(tmp_path, HOST, owner="other", force=True, release=True)
+    host_hold.change_host_hold(tmp_path, HOST, owner="other", force=True,
+                              reason="incident override", release=True)
+    assert host_hold.read_host_hold(tmp_path, HOST) is None
+    put_hold(tmp_path)
+    host_hold.change_host_hold(tmp_path, HOST, owner="operator", release=True)
+    host_hold.change_host_hold(tmp_path, HOST, owner="operator", release=True)
+
+
+def test_expired_hold_release_still_requires_its_recorded_owner(tmp_path):
+    host_hold.change_host_hold(tmp_path, HOST, owner="original", reason="load",
+                              now=100, expires_unix=200)
+    path = host_hold.host_hold_path(tmp_path, HOST)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="another owner"):
+        host_hold.change_host_hold(tmp_path, HOST, owner="other", release=True, now=300)
+    assert path.read_bytes() == before
+    assert host_hold.read_host_hold(tmp_path, HOST, now=300).expired
+    host_hold.change_host_hold(tmp_path, HOST, owner="original", release=True, now=300)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("seconds", [-1, 0, 43201, float("inf"), float("nan"), True])
+def test_expiry_must_be_finite_future_and_at_most_twelve_hours(tmp_path, seconds):
+    with pytest.raises(ValueError):
+        host_hold.change_host_hold(tmp_path, HOST, owner="operator", reason="load",
+                                  now=0, expires_unix=seconds)
+
+
+@pytest.mark.usefixtures("fixed_offer_clock")
+@pytest.mark.parametrize("drain", [False, True])
+def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_path, monkeypatch, capsys, drain):
+    root = tmp_path / "pb-queue"
+    queue = pool.PoolQueue(root)
+    queue.records.ensure_layout()
+    hold = put_hold(root)
+    gate = DRAIN_GATE if drain else {"draining": False}
+    loop = _load_loop(tmp_path, monkeypatch, gate)
+    gate_bytes = role_session.MAINTENANCE_GATE.read_bytes()
+    with monkeypatch.context() as patch:
+        if drain:
+            def unexpected_hold_read(*args, **kwargs):
+                pytest.fail("maintenance park read the hold record")
+            patch.setattr(host_hold, "read_host_hold", unexpected_hold_read)
+        assert loop._run_loop(Event()) == 0
+    offer = json.loads((root / "workers" / f"{HOST}.json").read_text())
+    if drain:
+        assert "hold" not in offer
+    else:
+        assert offer["hold"]["owner"] == "operator"
+    assert all(value == 0 for value in offer["observed_capacity"].values())
+    assert role_session.MAINTENANCE_GATE.read_bytes() == gate_bytes
+    node = census.offers(root, authoritative_holds=True).value["nodes"][0]
+    assert node["state"] == "held"
+    assert node["hold"]["expires_unix"] == hold.expires_unix
+    assert node["draining"] is drain
+    assert "external load" in "\n".join(pbstatus.pool_node_lines([node]))
+    capsys.readouterr()
+    assert pbstatus.main(["--transport", "pool", "--json", "--recent", "0",
+                          "--queue-root", str(root)]) == 0
+    rendered = json.loads(capsys.readouterr().out)
+    assert rendered["nodes"][0]["state"] == "held"
+    assert rendered["nodes"][0]["hold"]["owner"] == "operator"
+    host_hold.change_host_hold(root, HOST, owner="operator", release=True)
+    assert loop._run_loop(Event()) == 0
+    node = census.offers(root).value["nodes"][0]
+    assert node["state"] == ("draining" if drain else "live")
+    assert node["held"] is False
+
+
+@pytest.mark.usefixtures("fixed_offer_clock")
+def test_census_uses_the_published_hold_without_reading_its_record(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    hold = put_hold(queue.root)
+    queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1},
+                   hold=hold.fields(), observed_capacity={"cpu": 0})
+
+    def unexpected_hold_read(*args, **kwargs):
+        pytest.fail("ordinary census read hold authority")
+
+    monkeypatch.setattr(host_hold, "read_host_hold", unexpected_hold_read)
+    for observed in (census.offers(queue.root), census.action_rows(queue.root)):
+        node = observed.value["nodes"][0]
+        assert node["state"] == "held"
+        assert node["hold"] == hold.fields()
+        assert node["observed_capacity"] == {"cpu": 0}
+
+
+@pytest.mark.usefixtures("fixed_offer_clock")
+@pytest.mark.parametrize("record", ["active", "malformed", "expired", "released"])
+def test_pbstatus_refreshes_hold_authority_without_a_worker_poll(tmp_path, capsys, record):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    if record == "expired":
+        hold = host_hold.change_host_hold(queue.root, HOST, owner="operator", reason="load",
+                                          now=100, expires_unix=200)
+    else:
+        hold = put_hold(queue.root)
+    queue.announce(host=HOST, tags=[], has_gpu=False, capacity={"cpu": 1},
+                   **({"hold": hold.fields()} if record in ("expired", "released") else {}))
+    if record == "malformed":
+        host_hold.host_hold_path(queue.root, HOST).write_text("broken")
+    elif record == "released":
+        host_hold.change_host_hold(queue.root, HOST, owner="operator", release=True)
+    assert pbstatus.main(["--transport", "pool", "--json", "--recent", "0",
+                          "--queue-root", str(queue.root)]) == 0
+    node = json.loads(capsys.readouterr().out)["nodes"][0]
+    assert node["held"] is (record in ("active", "malformed"))
+    if node["held"]:
+        assert node["state"] == "held" and node["observed_capacity"] == {"cpu": 0}
+        assert bool(node["hold"]["error"]) is (record == "malformed")
+    else:
+        assert node["state"] == "live" and node["hold"] is None
+
+
+def test_pbhold_command_sets_lists_and_releases_a_fixture(tmp_path, capsys):
+    tool = Path(__file__).resolve().parents[1] / "tools/fleet/pbhold.py"
+    spec = importlib.util.spec_from_file_location("operator_pbhold", tool)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    until = datetime.fromtimestamp(host_hold.time.time() + 100, timezone.utc).isoformat()
+    common = ["--queue-root", str(tmp_path), "--host", HOST]
+    assert module.hold_main(common + ["--owner", "operator", "--reason", "load", "--until", until]) == 0
+    assert module.hold_main(common + ["--list"]) == 0
+    assert '"owner": "operator"' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        module.hold_main(common + ["--release", "--owner", "wrong"])
+    assert module.hold_main(common + ["--release", "--owner", "wrong", "--force", "--reason", "incident"]) == 0
+    assert host_hold.read_host_hold(tmp_path, HOST) is None

@@ -1,0 +1,853 @@
+{
+  "schema": "pb.pri206.integration_qualification.v1",
+  "qualified_source": "c3134f0fb09a69acf10a09916bd53720bfc11a4f",
+  "parents": [
+    "31ed11afc5fe1abcf9d449b6d9237f245c2415c8",
+    "a8e0f76abc6757e1193eec7cfabea06b70a89fbf"
+  ],
+  "source_trees": {
+    "src": "3aa5ae3c432ce49bc783b9984aeea856bf2231d4",
+    "tools": "aded815a50a45eb8e9c7dbe66d70155013f0e916",
+    "tests": "f7805ef52be46ccaff6038948682bbceb8598658"
+  },
+  "qualification": {
+    "x86": {
+      "report": "x86-final-composite.json",
+      "audit": "x86-final-composite.audited.json",
+      "counts": {
+        "passed": 5133,
+        "skipped": 1
+      },
+      "actions": 33,
+      "files": 247,
+      "native_nodes": 5134,
+      "action_keys": [
+        "340d241668c80aff4e8201767ef650ff3e030004d784cea4cf984cc004ea4268",
+        "9e931c0456ab9c04db9bc44f46b0dcb10186281042ca9d6373fe592d7ce411fc",
+        "29907817d9d9ad033309b696fa55ff06026bb32cb20372120729db9e4c5c3cef",
+        "46087b02fa785b23736bec2657f83a0b0fefc55ab3bbc00b2fdbfdc5eb6d8f78",
+        "eea7d672df1a48f07c6509aad6b5d40bd0894f7db3c6f8ebb43da0d80197ba1e",
+        "8a94c797014039bb6a6cbf9c4139d007ee587f0eb846dc6b5841fed9c0f3df25",
+        "63e0d0f2b0e47e53489dc21610e7ea05a1d985e44dafb80ec19dbfae2fb22750",
+        "99c4d949fb0716559ab875982c47272f3cf7d1873e618a25bbe50b7d7e029247",
+        "9ce7dc041717ae182a5d47eff005c77e8715eb1c5afef1acfe676c3ef6b35888",
+        "f43e714d40a48eaddb0958009ab62784e9531ba168fe4aef9331d448e3a91873",
+        "7917cf6338d480c80ffc6dcc01bf512570ca689ee7ad222cc3c8916c65ed6136",
+        "4288659e9d057dca8a9934b5973cac8a74553f4ac8ef1b67f6ada6510471c8b5",
+        "b431a74e495694c9e416a363c88e847a24b2b43dbd2f96133b1b837b7b55d9a2",
+        "88d2445781f71007a545e32b28f80986db7e4bbf8daca7ac371d01ba8c4f880a",
+        "88b9a92b1c94326698b24c59b03f183aba3e364bc80f7e33661a9d3fa5057916",
+        "16aa7b1a849f8e27e59ad08d24ea526347a56f52479d888de584f33e76d01b0c",
+        "a9597a5ea66026df18166ee46d6a3a727ef6a0937afae5248f4cbabdd8bb93c3",
+        "b26111ad20ea35fea03bc069d3c064b23cab59e4709f569c8a2e48788750bdc4",
+        "5b27be202bd03094acdd9e783c67d343a5398f3b44e34110c28174f1e31a22ca",
+        "0d1257d700b6faf899907a02088da83b74d01715cf6184e709732d0258dbcf32",
+        "8d3aaa7f2ad6e145749623fc68302d0e88f853b2db6130dba806ecc23e446e98",
+        "efe483f4cfa22335c434bae0db458b5ee60abb6e92530b9cfbd5fb318dc34134",
+        "29f9b043902f2883ba28e16d8ca60ee87432fa53914aa574932e238e5ba68ce2",
+        "41200af31e7b60aa21caac76cb03392cb6c45c89813e5d137c620f082570806d",
+        "0be8f78441510e87ad6cd837d0484162a96f475e0aee31f8beaac5bdec996d67",
+        "c5e1c9bf0ef8cee773038375ca0d749389c49f3811784d0281c35d1aeac8d62c",
+        "fcdc46e8de9eac12339616c38486c967575a675ca2a99cccf047634aa1a94900",
+        "28274f29258efb05a0ebc0d326214dfc3c8ee08644e5a5c3d1190925617e0986",
+        "35e03a4241cb79b0f4b52d841b81dd4430f6b8f94dfc04647d31c33545e528bb",
+        "f82ef8635f8f8025accd3851acab62e39ba12fdc3ff544f953cb48a253753d0a",
+        "0bb57b2c66102ca4b919633c11b795ef91c8a1e135f3e28f700a158dda97f1ca",
+        "ffab550c7799cac6e3902f2a9742566b79682b0b402b74e55b400fcbf2d04267",
+        "25ff5b5db339e424dcbb270769b09eb64b0c791b1d1f3a83fe35ad88b991bc69"
+      ],
+      "receipts": {
+        "340d241668c80aff4e8201767ef650ff3e030004d784cea4cf984cc004ea4268": "78624c5a346e9a1dc71ad7ab82a266762407f488612caa8098e2961fd44cdaef",
+        "9e931c0456ab9c04db9bc44f46b0dcb10186281042ca9d6373fe592d7ce411fc": "5e3c92a384ba724725d01b7b559ad27c7ee4dae8716bbae1185eb3c74661e2d7",
+        "29907817d9d9ad033309b696fa55ff06026bb32cb20372120729db9e4c5c3cef": "f4136ace9b9ca5012061233ed7154ed3be2064e6c99b7f18cbce11c5acd5da2e",
+        "46087b02fa785b23736bec2657f83a0b0fefc55ab3bbc00b2fdbfdc5eb6d8f78": "ee9dcddf329549172f79a872e1019b77526f1121d38d00c4c4690524f03f7d3c",
+        "eea7d672df1a48f07c6509aad6b5d40bd0894f7db3c6f8ebb43da0d80197ba1e": "54bfbd2ea80e97d94169f53ce65e5878b3c9f1f252e955281a92ccd739f5bfd7",
+        "8a94c797014039bb6a6cbf9c4139d007ee587f0eb846dc6b5841fed9c0f3df25": "a1134bb5881734dcb6d2ad6963bcdb3b818c54ada555db625f0797be0a74d3f1",
+        "63e0d0f2b0e47e53489dc21610e7ea05a1d985e44dafb80ec19dbfae2fb22750": "828e6baa48a3c0085132cd2a30f35a8ed6f950c7f73886e07808653a2624e3f6",
+        "99c4d949fb0716559ab875982c47272f3cf7d1873e618a25bbe50b7d7e029247": "e846e47f0a632ecee44c2c103a7163ccd26634452dd4e8f5a90ff44389372f99",
+        "9ce7dc041717ae182a5d47eff005c77e8715eb1c5afef1acfe676c3ef6b35888": "0a1765a6417de7bde351fab3c8652fc31ce55fac5b86174545063cfbb31d4408",
+        "f43e714d40a48eaddb0958009ab62784e9531ba168fe4aef9331d448e3a91873": "98c3ef4e8a1c71622edfd2a759bdc99607d56cd435b872f7db0249e357da3c07",
+        "7917cf6338d480c80ffc6dcc01bf512570ca689ee7ad222cc3c8916c65ed6136": "dc113efb4f24fb7ff162b52b3091ca330397c1ad456141f779d3a60cdbe1ec40",
+        "4288659e9d057dca8a9934b5973cac8a74553f4ac8ef1b67f6ada6510471c8b5": "b4969c03e07fe774eb32c1472d86e144cf97953686da5311aa2483ecb37ac04b",
+        "b431a74e495694c9e416a363c88e847a24b2b43dbd2f96133b1b837b7b55d9a2": "c9b5927a0cf42d20f6e296ada6415d5c539138671730c68790f3b92116ea4188",
+        "88d2445781f71007a545e32b28f80986db7e4bbf8daca7ac371d01ba8c4f880a": "7e1766a5848725b61309da1713da727033fdff93881f75e5ad78e982b94f514e",
+        "88b9a92b1c94326698b24c59b03f183aba3e364bc80f7e33661a9d3fa5057916": "5ab10195d66ca3e86318651905fcea5baaa1b54401ce4b9b56baf4b820591453",
+        "16aa7b1a849f8e27e59ad08d24ea526347a56f52479d888de584f33e76d01b0c": "b248ad64a2571a74dac835d30c0af74c8b48aba34d6b678d745b73beff28d4bc",
+        "a9597a5ea66026df18166ee46d6a3a727ef6a0937afae5248f4cbabdd8bb93c3": "b3c63287376bfd0401fafe7cc7a5b4eeb28721842ea6a65ad5d2a02e382edc2b",
+        "b26111ad20ea35fea03bc069d3c064b23cab59e4709f569c8a2e48788750bdc4": "45017391c1307b1a926e48f8cf80fb663eb5b973d9ed25e2250a8322ac668535",
+        "5b27be202bd03094acdd9e783c67d343a5398f3b44e34110c28174f1e31a22ca": "b28d11816bb1d4642a0531819859e4440876d7f3be74077ea4c759db4085c636",
+        "0d1257d700b6faf899907a02088da83b74d01715cf6184e709732d0258dbcf32": "b65409ebaf756f8e7a0d7c043f43e2280a4a6ed5671d601d78bb5b57eee937c7",
+        "8d3aaa7f2ad6e145749623fc68302d0e88f853b2db6130dba806ecc23e446e98": "855b9588889f3c39f5242dc0e1bfabf7360607e419db655ee4bc01073f07dae6",
+        "efe483f4cfa22335c434bae0db458b5ee60abb6e92530b9cfbd5fb318dc34134": "ec4fd9f50b97eba54eacd44c6b961bc3f1b7f0395d2ee04e3bb3d7d8e052f167",
+        "29f9b043902f2883ba28e16d8ca60ee87432fa53914aa574932e238e5ba68ce2": "84789bc90134c4c4aab81571d870a9538bec7c418ad1346aebc49868c7b8f831",
+        "41200af31e7b60aa21caac76cb03392cb6c45c89813e5d137c620f082570806d": "bf69c53ca39f91be515d16af72bf53aec0519864882d5da4459b4235cb4db334",
+        "0be8f78441510e87ad6cd837d0484162a96f475e0aee31f8beaac5bdec996d67": "c6239433e4f7b2776cd586247ff587a55329a795e63ac0f2e5ca3f7b059c25ca",
+        "c5e1c9bf0ef8cee773038375ca0d749389c49f3811784d0281c35d1aeac8d62c": "57398648863f589c78ab2f025f0d70154f34e7c59f445ebe3857564d7994de8d",
+        "fcdc46e8de9eac12339616c38486c967575a675ca2a99cccf047634aa1a94900": "36d59c9ba3cf7c25261bf5fead27d2662b57c653680fb80168e76286fab75bc2",
+        "28274f29258efb05a0ebc0d326214dfc3c8ee08644e5a5c3d1190925617e0986": "a5eb194cf792a0b705128bdec75b7d445a70d3b7062815cc14e36a5ec35c3e86",
+        "35e03a4241cb79b0f4b52d841b81dd4430f6b8f94dfc04647d31c33545e528bb": "ad0e7f64e35a171b48e5527c9bce37270bbf45197908f3cdaeaec3c937979525",
+        "f82ef8635f8f8025accd3851acab62e39ba12fdc3ff544f953cb48a253753d0a": "a60092a2cf180342297f81837148c54eff82c53c0461ad515c17a07be9cbcf7b",
+        "0bb57b2c66102ca4b919633c11b795ef91c8a1e135f3e28f700a158dda97f1ca": "bceff05344fe112ee8b48f934f9e5df062faea7aa65ea3ba47b1451234a93501",
+        "ffab550c7799cac6e3902f2a9742566b79682b0b402b74e55b400fcbf2d04267": "04785ef70f42ba2c8ff697821fe8c5998d7c66f397d56d1baed7fbdb439a17b3",
+        "25ff5b5db339e424dcbb270769b09eb64b0c791b1d1f3a83fe35ad88b991bc69": "ae031ce877e5766c5599285e2c60da5024932a0568651e54bd69e2b1d8b63585"
+      },
+      "skips": [
+        {
+          "nodeid": "tests/test_claim_denial_profile.py::test_private_claim_loop_profile",
+          "when": "setup",
+          "reason": "opt-in PB claim-loop profile",
+          "location": "tests/test_claim_denial_profile.py:20"
+        }
+      ],
+      "required_files_missing": [],
+      "mandatory_guards": [
+        "tests/test_wire_inventory.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_design_doc_line_references.py"
+      ]
+    },
+    "arm": {
+      "report": "v2-arm.json",
+      "audit": "v2-arm.audited.json",
+      "counts": {
+        "passed": 4824,
+        "skipped": 1
+      },
+      "actions": 20,
+      "files": 245,
+      "native_nodes": 4825,
+      "action_keys": [
+        "2822bce2ecd93437ef2f372542ea2dfdf6672e2e3dd2f313b321100981e74a4d",
+        "117d0fd1e959e92cce7da241314ec7bcb19c45c848b3a89756d59e47c948d46b",
+        "45a1020166d4761a43066f33bc85267eba1ace804a1cdf6929c1c08865a2b931",
+        "6732a6aeb2ce38277bd2ce90b880ed5984f5dd4dd6b8b1d49a9335dc67135e78",
+        "92c02c35ed64331954ac902337660d0163130342071dd777497c858ee6804cc4",
+        "a731e546ffa3adf3fdb1d3777e66e8a64da2b541a1014017270bc29b86d5093e",
+        "fddfcd42cabd8e2e607cd301d95fdc74ecac86ed97ff83cc9e242395448930c8",
+        "6b51755d313b53c01b972dae668be34d421ffb0bbc8bb5186cea4f200b24d026",
+        "27afc0efe5532052f20c0b2fa85623353ed5d3212e6e9e3d250962224945fff3",
+        "53af3f85f7e43f02111e105b14b907a0e465c8a8d6b1fa54a43d18d10433dc87",
+        "c823f9730ce6eaf0bc9a245e34ace41574ae0f4390eefd5732e8ee53bdade50c",
+        "7011e9a2d25307e18da09c6e8082c4118782f37812cfc5a065a5fd75e94d63bd",
+        "2a4d63d4a1be5de0aa60faadf82c2cae83c92d2c529865f59f7482f6be69de8b",
+        "cd0dd946f8b6559898ee92562da33056b07188645186dee7249512c0213f6e7d",
+        "6ca72309af6544ca5d7dd738c2af93ddba3f98ad00a0ba7c0e7bc4cffaa41e75",
+        "d631b614d45504ccbf55d77aa4a258b661b07409c8195eda8df037be22262227",
+        "689502dd22c0fa2802127ddfd268eb6d5ec42a93aa33ce15283e78d68b9f6526",
+        "1c2bc635f84070806dd3b022986af7ed03a6053386509368d313d7b718c13c47",
+        "10df7f94da33585ffd426864b69266c2a324b987435cd04809728cd1ef762ea0",
+        "50d2e86223998e9a5a2d8a529e1bb322df4aff07616d5afdd6d7edeacec34dad"
+      ],
+      "receipts": {
+        "2822bce2ecd93437ef2f372542ea2dfdf6672e2e3dd2f313b321100981e74a4d": "e7b952c159a7dfc2d839effd8bcc048d1f42e9cc9c8ce7925249daf60cc29124",
+        "117d0fd1e959e92cce7da241314ec7bcb19c45c848b3a89756d59e47c948d46b": "80ffc51562601fd89831bd89dbf51c1cd0306e59d33bee1eeefd51424230c562",
+        "45a1020166d4761a43066f33bc85267eba1ace804a1cdf6929c1c08865a2b931": "a417424ac16af787fae952da1f287924548abdc29d16d5274664bd95c0d6b2e7",
+        "6732a6aeb2ce38277bd2ce90b880ed5984f5dd4dd6b8b1d49a9335dc67135e78": "957df92ded2708f71c7413e747e7850be7100e0236eae599da957d68d2acb15a",
+        "92c02c35ed64331954ac902337660d0163130342071dd777497c858ee6804cc4": "c7a4d6be6505803389356457edf614d8a7d40dec4b2f822d280a3918316f8cf9",
+        "a731e546ffa3adf3fdb1d3777e66e8a64da2b541a1014017270bc29b86d5093e": "79a782f355093e5cd50defda7c3e0ad97b94d1d41dc4aad712f4a3b50085006a",
+        "fddfcd42cabd8e2e607cd301d95fdc74ecac86ed97ff83cc9e242395448930c8": "e77a06bee32ac3b51f1d61b7dbe2d8edfca354a919ea056d76fc2c01499a72e7",
+        "6b51755d313b53c01b972dae668be34d421ffb0bbc8bb5186cea4f200b24d026": "42135604710d25233e4d189ae3d0337fdb1c75ea12e634df72ef6a540f34be7a",
+        "27afc0efe5532052f20c0b2fa85623353ed5d3212e6e9e3d250962224945fff3": "ffd7e74e33723052cfd9819c6f1b580b08703ed72cede64a4d5af1a7d2f53b31",
+        "53af3f85f7e43f02111e105b14b907a0e465c8a8d6b1fa54a43d18d10433dc87": "cc034ece834d78dd58a3211ff46ea518c75c8c2152884277a04a14b3e01cb87c",
+        "c823f9730ce6eaf0bc9a245e34ace41574ae0f4390eefd5732e8ee53bdade50c": "281b020a73e58d91e5c141e7d8d00c53d1cd7ce4210c9fc9a28b3378390ed1b4",
+        "7011e9a2d25307e18da09c6e8082c4118782f37812cfc5a065a5fd75e94d63bd": "580f1a8d33bc88b0f115fc870871b44e3302eaa74aee8f19453ed25497f1af4a",
+        "2a4d63d4a1be5de0aa60faadf82c2cae83c92d2c529865f59f7482f6be69de8b": "05ea530972809479d51f4d20e9e3dc0d5018ba08af03ad4424a224abcd42d951",
+        "cd0dd946f8b6559898ee92562da33056b07188645186dee7249512c0213f6e7d": "a88a0b7809dff356e119cf0a88a214b3999d8960b2605c880c2914a15e5360f0",
+        "6ca72309af6544ca5d7dd738c2af93ddba3f98ad00a0ba7c0e7bc4cffaa41e75": "de1cacf3253f3db06862f259a648d3cee2ae2335ec0d511ce0e1c49a48e82649",
+        "d631b614d45504ccbf55d77aa4a258b661b07409c8195eda8df037be22262227": "0c5d3c9c89010acf6bc7ca18795f05afc79d416ed50f6210d223d65fc874b986",
+        "689502dd22c0fa2802127ddfd268eb6d5ec42a93aa33ce15283e78d68b9f6526": "b58f0c9dd0ed2987e10021dbeaa731d9df71ea11dc7e65df1374be58f98787a1",
+        "1c2bc635f84070806dd3b022986af7ed03a6053386509368d313d7b718c13c47": "d600f1cbc0dc9eb17fae91d568134136af84151e198df94cc935f60f6a7240e3",
+        "10df7f94da33585ffd426864b69266c2a324b987435cd04809728cd1ef762ea0": "1ae5d8ebc1bed3d932f616c65f1054a2f4fa653f5f9b303bd4fa9bf2d35316aa",
+        "50d2e86223998e9a5a2d8a529e1bb322df4aff07616d5afdd6d7edeacec34dad": "7df1009e86528e1f1a6a0726f84c45a940e4293d754a17a75d48945f818762b7"
+      },
+      "skips": [
+        {
+          "nodeid": "tests/test_claim_denial_profile.py::test_private_claim_loop_profile",
+          "when": "setup",
+          "reason": "opt-in PB claim-loop profile",
+          "location": "tests/test_claim_denial_profile.py:20"
+        }
+      ],
+      "required_files_missing": [],
+      "mandatory_guards": [
+        "tests/test_wire_inventory.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_design_doc_line_references.py"
+      ]
+    }
+  },
+  "edited_file_repeats": {
+    "x86": [
+      {
+        "audit": "repeat-x86-1.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "eb59763db9a28e089c0a640e82393f0f37315241c1864c5981c3de43834581de",
+          "1cacf6853c5f4d853cb21084ea11a2e9f457b1945cdbb2ffb85553614e6f99d2",
+          "dd80f79f84f668c725831d21d0bf71ea1b92ec45267d129fff36793c67e01970"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-x86-2.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "6fb7765e2c4bc05e1147c802545e3e441c303f6a5d3e2e9539ab7c9080e0b56d",
+          "3844a3cae7f91b2e438af2c40c0397ccdfa92213cfc46474e2067ba0dc1cd5c0",
+          "b124546569e4d2c85ad70048cea5e24aca3414a0f3f765d897ed0ac72d64082a"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-x86-3.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "13863551794b0dfefacd0a59307a34eff72138ccb93739a05ff1aa800127381d",
+          "fc0b1e4fdc88285928f02213c487f9428695609b99fee1103a402deb56d9a73e",
+          "36e796c4e754217c0e0f91c39356a6cdb9a6ea01eb7bdbfe4b1191b1119ecf1c"
+        ],
+        "workers": 2
+      },
+      {
+        "audit": "repeat-x86-4.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "b53944ef37d280235cdb3e86464d318d98c99c54e3eff78d3957d9961330ab17",
+          "e168a87666c1b60938df11ac601069bd0cac67120cbf91451e56b97a00e86435",
+          "9ab5ce02005d084472775808e02e82eeb21a9bcecab0cf1d67d4770cb0d81447"
+        ],
+        "workers": 2
+      }
+    ],
+    "arm": [
+      {
+        "audit": "repeat-arm-1.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "685f26181527c263d362f771ead600a716b1406d04504e37b2ef5045fb9dad9b",
+          "0ede7df67f044e720aa16af2c3c8b68cfa5c17269e2e8cf02d96b11250983b4f",
+          "1fae3790ff406c07cab9b3d89cbfb9b6d08d8f16ce5b34e195dc61392a5247a8"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-arm-2.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "e1f784c63ba140b9f8cfd4aeebc64572371ecaca7e12df8a47a6ddd534ee2ee7",
+          "a22ee7cfd87a94f0189a97a21cdeafd46be9b7454c0388a3d7c8ad39ba177073",
+          "7d98a82aa066c49793049fab5aef9b0e7c419be1e9394da44812e0ed196d8e9b"
+        ],
+        "workers": 1
+      },
+      {
+        "audit": "repeat-arm-3.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "47b8611c484244f05e13654df87e7687ed1c9f016d06782142b8f341d648a426",
+          "20c1ebeee9a9b45e72c50e581f6c638704f1b4282d727eb164fa67fbd3709455",
+          "0f8ffcdacb6a1bc32cdc9ce971859304edd8bf0ec24e1769d90cce04d0ddbb1a"
+        ],
+        "workers": 2
+      },
+      {
+        "audit": "repeat-arm-4.audited.json",
+        "counts": {
+          "passed": 90
+        },
+        "action_keys": [
+          "921e9cf6176e1268dbedeeace11321d936ae2f91c34e20cb242e17cb67a7a24b",
+          "81bd8f9e1e437e86d932719154e4aace782dac88174aab0ba34af29820b7db20",
+          "558e53e332b465d1042ac360de02d8f55c3eb9d11e4e1ec64aff922617877ab9"
+        ],
+        "workers": 2
+      }
+    ]
+  },
+  "repeat_total_passed": 720,
+  "common_architecture_native_nodes": 4825,
+  "x86_only_supplemental_native_nodes": 309,
+  "regression_repair_controls": {
+    "x86_64": {
+      "passed": 105
+    },
+    "aarch64": {
+      "passed": 105
+    }
+  },
+  "generated_artifacts": {
+    "configuration-adoption.json": {
+      "added_box": "celestia",
+      "archive": "tests/compat/history-controls/superseded-fleet-config-1a1f1ca69a12a763",
+      "capture_source_parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+      "case": "config-fleet/source",
+      "current_goldens_sha256": "b5299888ad49d17411d58c66f3dfd356715ab77bd66d3da638d1f0ac8e3d942e",
+      "historical_sha256": "4c0a02b7b382892e8a1da66d19487d480a79216137903afaa485c47b18b77791"
+    },
+    "rollout-adoption.json": {
+      "archive": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54",
+      "capture_source_parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+      "cases": 1,
+      "current_goldens_sha256": "6b9a15eb3ec95d8963f3265c7dd42e271aad47391001d1df92402e6e1e52d8f1",
+      "differences": {
+        "upgrade-intent/armed": [
+          {
+            "after": "18b02933a4008e9edfe9daf91d5566b4f057b74437d8cbd181a230c9b8a1473c",
+            "before": "43dc9a0fbf8f25a8ee8040bf6c3154b3983f3e36ac7fea82b4c5534a6d3d7287",
+            "path": "/coordinator_sha256"
+          }
+        ]
+      },
+      "historical_rows_byte_exact": 2,
+      "source_identities": {
+        "agent": {
+          "bytes": 95565,
+          "sha256": "fecc8d6cc0f332cfcf08a59c69b0e6679fd943009b00f48faebd72e08b6f6a0a"
+        },
+        "coordinator": {
+          "bytes": 140756,
+          "sha256": "18b02933a4008e9edfe9daf91d5566b4f057b74437d8cbd181a230c9b8a1473c"
+        }
+      }
+    },
+    "fieldsets-applied.json": {
+      "before_source": "a8e0f76abc6757e1193eec7cfabea06b70a89fbf",
+      "current_head": "31ed11afc5fe1abcf9d449b6d9237f245c2415c8",
+      "current_dirty": [
+        "A  .agents/skills/verify-prismabuild/SKILL.md",
+        "A  .agents/skills/verify-prismabuild/features/README.md",
+        "A  .agents/skills/verify-prismabuild/features/fast.md",
+        "A  .agents/skills/verify-prismabuild/features/gpu.md",
+        "A  .agents/skills/verify-prismabuild/features/integration.md",
+        "M  .github/pull_request_template.md",
+        "A  .github/workflows/regression-test.yml",
+        "M  README.md",
+        "M  docs/canary_runbook_2026-09-19.md",
+        "M  docs/checkout_recovery_snapshot_attribution.md",
+        "M  docs/design.md",
+        "A  docs/evidence/1711-fleet-verification-2026-10-25.json",
+        "A  docs/evidence/1917-fleet-verification-2026-10-25.json",
+        "A  docs/evidence/1917-lifecycle-followup-2026-10-25.json",
+        "A  docs/evidence/1917-merge-acceptance-2026-10-25.json",
+        "A  docs/evidence/1917-metadata-attribution-2026-10-26.json",
+        "A  docs/evidence/1917-metadata-attribution-review-revision-2026-10-26.json",
+        "A  docs/evidence/1917-tests-followup-2026-10-25.json",
+        "A  docs/evidence/campaign_read_stall_disposition_2160.md",
+        "A  docs/evidence/issue1483_compat_repair_acceptance_2026-10-26.json",
+        "A  docs/evidence/issue1483_compat_validation_plan_2026-10-26.json",
+        "A  docs/evidence/issue1483_source_acceptance_2026-10-26.json",
+        "A  docs/evidence/issue1483_verify_2026-10-26.py",
+        "A  docs/evidence/issue1483_verify_compat_repair_2026-10-26.py",
+        "A  docs/evidence/issue1589/README.md",
+        "A  docs/evidence/issue1589/field-policy-review.json",
+        "A  docs/evidence/issue1589/merge-acceptance.json",
+        "A  docs/evidence/issue1589/verify.py",
+        "A  docs/evidence/issue1589/verify_rebase.py",
+        "A  docs/evidence/issue1772/README.md",
+        "A  docs/evidence/issue1772/fleet-validation.jsonl",
+        "A  docs/evidence/issue1772/merge-acceptance.json",
+        "A  docs/evidence/issue1772/published-commits.json",
+        "A  docs/evidence/issue1895_source_acceptance_2026-10-25.json",
+        "A  docs/evidence/issue1895_source_evidence_2026-10-25.md",
+        "A  docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+        "A  docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json",
+        "A  docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+        "M  docs/evidence/pb1485/README.md",
+        "A  docs/evidence/pb1485/install-after-sparklina-receipt.json",
+        "A  docs/evidence/pb1485/install-after-sparklina.stderr.txt",
+        "A  docs/evidence/pb1485/install-after-sparklina.stdout.txt",
+        "A  docs/evidence/pb1485/install-after-sparky-receipt.json",
+        "A  docs/evidence/pb1485/install-after-sparky.stderr.txt",
+        "A  docs/evidence/pb1485/install-after-sparky.stdout.txt",
+        "A  docs/evidence/pb1485/install-before.stderr.txt",
+        "A  docs/evidence/pb1485/install-before.stdout.txt",
+        "A  docs/evidence/pb1485/pack-install-acceptance.json",
+        "A  docs/evidence/pb1485/pack-install-diagnosis.md",
+        "A  docs/evidence/pb1485/pack-install-results.json",
+        "A  docs/evidence/pb1485/pip-prerequisite-results.json",
+        "A  docs/evidence/pb1485/prerequisite-legacy-pip24.stdout.txt",
+        "A  docs/evidence/pb1485/prerequisite-repaired-pip24-receipt.json",
+        "A  docs/evidence/pb1485/prerequisite-repaired-pip24.stdout.txt",
+        "A  docs/evidence/pb1485/prerequisite-unit-after-receipt.json",
+        "A  docs/evidence/pb1485/reproduce_pack_install.py",
+        "A  docs/evidence/pri8_field_policy_review.json",
+        "M  docs/filesystem_floor.md",
+        "A  docs/measurements/1513-forest-listing-recovery-disposition.md",
+        "A  docs/measurements/1711-current-fleet-2026-10-25.md",
+        "A  docs/measurements/1917-current-fleet-2026-10-25.md",
+        "M  docs/measurements/2060-stalled-leader-contract.md",
+        "M  docs/measurements/2062-broker-read-baseline.md",
+        "A  docs/measurements/2199-ordinary-proof-acceptance.json",
+        "A  docs/measurements/2199-ordinary-proof-followup.md",
+        "A  docs/measurements/2199-shared-census-repair.md",
+        "M  docs/operating_prismabuild.md",
+        "A  docs/results/demand3_slice2b_1941_acceptance.json",
+        "A  docs/results/demand3_slice2b_1941_acceptance.md",
+        "A  docs/results/demand3_slice2b_1941_batch_repair.md",
+        "A  docs/results/demand3_slice2b_1941_batch_repair_acceptance.json",
+        "A  docs/results/demand3_slice2b_1941_verify.py",
+        "A  docs/results/pri8_regression_replay_2026-10-25.json.gz",
+        "A  docs/stage_coverage_handoff.md",
+        "M  docs/staged_read_contract_2026-09-20.md",
+        "UU docs/staged_read_requirements_2026-09-20.json",
+        "A  docs/testing.md",
+        "A  docs/testing_regression_gate.md",
+        "M  src/prismabuild/_bounded_reader.py",
+        "M  src/prismabuild/_gang.py",
+        "M  src/prismabuild/_measurement_reservation.py",
+        "M  src/prismabuild/adaptive_cpu.py",
+        "A  src/prismabuild/adaptive_mirrors.py",
+        "M  src/prismabuild/adaptive_snapshot.py",
+        "M  src/prismabuild/candidate_policy.py",
+        "UU src/prismabuild/census.py",
+        "M  src/prismabuild/checkout_recovery.py",
+        "A  src/prismabuild/cleanup_obligation.py",
+        "M  src/prismabuild/client.py",
+        "M  src/prismabuild/filesystem_floor.py",
+        "M  src/prismabuild/flock_owner.py",
+        "M  src/prismabuild/gpu_capacity.py",
+        "M  src/prismabuild/gpu_memory.py",
+        "A  src/prismabuild/gpu_runtime_gate.py",
+        "A  src/prismabuild/host_hold.py",
+        "M  src/prismabuild/kept_reads.py",
+        "M  src/prismabuild/lifecycle.py",
+        "M  src/prismabuild/local_resident.py",
+        "M  src/prismabuild/pbtest_collection.py",
+        "UU src/prismabuild/pool.py",
+        "M  src/prismabuild/prewarm_loop.py",
+        "M  src/prismabuild/produced_output.py",
+        "M  src/prismabuild/queue_bell_events.py",
+        "M  src/prismabuild/queue_bell_host_reads.py",
+        "A  src/prismabuild/queue_bell_input_changes.py",
+        "A  src/prismabuild/queue_bell_input_shapes.py",
+        "M  src/prismabuild/queue_bell_topics.py",
+        "M  src/prismabuild/ram_promote.py",
+        "M  src/prismabuild/record_kinds.py",
+        "M  src/prismabuild/record_store.py",
+        "M  src/prismabuild/residency_map.py",
+        "M  src/prismabuild/residency_plan.py",
+        "M  src/prismabuild/resource_scope.py",
+        "M  src/prismabuild/stage_move.py",
+        "M  src/prismabuild/submission.py",
+        "M  src/prismabuild/tier_cycle.py",
+        "M  src/prismabuild/tier_holdings.py",
+        "A  tests/compat/absent-participants-host-hold.jsonl",
+        "A  tests/compat/absent-participants-shared-admission-census-2199.jsonl",
+        "UU tests/compat/capture-configuration.json",
+        "A  tests/compat/capture-host-hold.json",
+        "UU tests/compat/capture-rollout.json",
+        "A  tests/compat/capture-shared-admission-census-2199.json",
+        "A  tests/compat/field-set-review-broker-2229.json",
+        "A  tests/compat/field-set-review-gpu-runtime-1895.json",
+        "UU tests/compat/field_sets.json",
+        "UU tests/compat/goldens-configuration.jsonl",
+        "M  tests/compat/goldens-floor.jsonl",
+        "A  tests/compat/goldens-host-hold.jsonl",
+        "UU tests/compat/goldens-rollout.jsonl",
+        "A  tests/compat/goldens-shared-admission-census-2199.jsonl",
+        "A  tests/compat/history-controls/superseded-config-fleet-3b2c34dc4131c8e5/capture-configuration.json",
+        "A  tests/compat/history-controls/superseded-config-fleet-3b2c34dc4131c8e5/goldens-configuration.jsonl",
+        "A  tests/compat/history-controls/superseded-config-fleet-3b2c34dc4131c8e5/provenance.json",
+        "AA tests/compat/history-controls/superseded-upgrade-intent-563da2ff3aa4ad5d/provenance.json",
+        "A  tests/compat/support/capture_floor_goldens.py",
+        "M  tests/compat/support/compat_adapters.py",
+        "M  tests/compat/support/compat_floor_adapters.py",
+        "M  tests/compat/support/compat_host_adapters.py",
+        "M  tests/compat/support/compat_pool_wire_adapters.py",
+        "M  tests/compat/support/compat_references.py",
+        "M  tests/conftest.py",
+        "A  tests/controlled_action.py",
+        "A  tests/filesystem_floor_fixture.py",
+        "A  tests/fixtures/gpu_container_runtime_1895.json",
+        "A  tests/fixtures/gpu_runtime_legacy_1895.txt",
+        "M  tests/kept_read_clock.py",
+        "A  tests/qualification/test_cuda.py",
+        "A  tests/run_root_population.py",
+        "M  tests/test_a_kill_names_what_it_waited_on.py",
+        "M  tests/test_a_prewarm_record_prices_the_warm_against_the_disks.py",
+        "M  tests/test_a_residency_map_names_bytes_a_mover_verified.py",
+        "A  tests/test_a_same_tick_receipt_removal_invalidates_the_folds.py",
+        "M  tests/test_a_slow_receipts_read_keeps_the_tier_record_alive.py",
+        "M  tests/test_a_stalled_mover_ends_no_progress.py",
+        "M  tests/test_a_steady_tier_cycle_rereads_only_what_changed.py",
+        "M  tests/test_a_stopped_role_is_named_in_supervisor_health.py",
+        "M  tests/test_a_wedged_egress_ends_no_progress.py",
+        "M  tests/test_a_yielding_copy_neither_deadlocks_nor_stalls.py",
+        "A  tests/test_adaptive_mirror_publication.py",
+        "A  tests/test_adaptive_mirror_recovery.py",
+        "M  tests/test_advance_needs_names_its_fence_target.py",
+        "M  tests/test_an_owner_waiting_on_its_own_export_is_not_no_progress.py",
+        "M  tests/test_an_unreadable_tier_announcement_is_not_an_epoch_move.py",
+        "A  tests/test_bell_input_changes.py",
+        "A  tests/test_broker_bridge_2229.py",
+        "A  tests/test_broker_bridge_publication_2229.py",
+        "M  tests/test_broker_listener_restart_semantics.py",
+        "M  tests/test_broker_read_baseline.py",
+        "M  tests/test_canary_generation_wait.py",
+        "A  tests/test_canary_leg3_priority_wait.py",
+        " M tests/test_capped_host_review_probes.py",
+        " M tests/test_capped_host_stale_admission.py",
+        "M  tests/test_census_admission_nfs_slow_1498.py",
+        "M  tests/test_census_refusal_is_once_per_pass_1571.py",
+        "M  tests/test_census_reuse_transitions_1571.py",
+        "M  tests/test_census_reused_once_per_pass_1571.py",
+        "M  tests/test_census_sections.py",
+        "A  tests/test_checkout_recovery_fixture_settlement_1711.py",
+        "M  tests/test_claim_arbitration_histories.py",
+        "M  tests/test_claim_completion_histories.py",
+        "A  tests/test_class_scoped_cpu_admission.py",
+        "A  tests/test_class_scoped_cpu_headroom.py",
+        "A  tests/test_cleanup_obligation_2270.py",
+        "A  tests/test_client_logical_request_validation.py",
+        "M  tests/test_client_sdk_surface.py",
+        "A  tests/test_controlled_action.py",
+        "M  tests/test_core.py",
+        "M  tests/test_filesystem_floor_1483.py",
+        "A  tests/test_filesystem_floor_accounting_1483.py",
+        "A  tests/test_filesystem_floor_identity_1483.py",
+        "A  tests/test_floor_ledger_snapshot.py",
+        "M  tests/test_gang_fence_backfill.py",
+        "M  tests/test_generation_drift_refusals.py",
+        "A  tests/test_gpu_container_runtime.py",
+        "M  tests/test_gpu_host_ready_work_admission.py",
+        "M  tests/test_gpu_memory.py",
+        "A  tests/test_gpu_runtime_claim_regression.py",
+        "A  tests/test_gpu_runtime_daemon_events.py",
+        "A  tests/test_gpu_runtime_enablement.py",
+        "A  tests/test_gpu_runtime_host_evidence.py",
+        "A  tests/test_gpu_runtime_integration.py",
+        "A  tests/test_gpu_runtime_optin_ancestry.py",
+        "A  tests/test_gpu_runtime_recovery_race.py",
+        "A  tests/test_gpu_runtime_reservations.py",
+        "A  tests/test_gpu_runtime_vendor_identity.py",
+        "A  tests/test_heartbeat_liveness_2230.py",
+        "A  tests/test_heartbeat_review_judges_2230.py",
+        "A  tests/test_heartbeat_stamp_skew_2230.py",
+        "A  tests/test_infeasible_future_leader_does_not_starve_window_1772.py",
+        "A  tests/test_kept_read_clock.py",
+        "M  tests/test_live_store_constants_are_repointed.py",
+        "M  tests/test_measurement_census_reader_fence_1498.py",
+        "M  tests/test_measurement_reservation_census_1419.py",
+        "M  tests/test_measurement_reservation_undeclared_incumbent_1419.py",
+        "M  tests/test_mount_latency.py",
+        "A  tests/test_nfs_metadata_attribution.py",
+        "M  tests/test_offer_refusal_retry.py",
+        "A  tests/test_operator_host_hold.py",
+        "A  tests/test_ordinary_census_admission_2199.py",
+        "A  tests/test_ordinary_observation_memory_2199.py",
+        "A  tests/test_ordinary_shared_fallback_2199.py",
+        "A  tests/test_output_reconciliation_cycle.py",
+        "A  tests/test_pb1485_pack_install_recipe.py",
+        "M  tests/test_pbcampaign_inflight.py",
+        "M  tests/test_pbcampaign_observation_retry.py",
+        "M  tests/test_pbmergeq_gate.py",
+        "M  tests/test_pbmetrics.py",
+        "M  tests/test_pbrun_bounded_attachment.py",
+        "M  tests/test_pbstatus_cancellation_review.py",
+        "M  tests/test_pbstatus_deadline.py",
+        "M  tests/test_pbstatus_review_boundaries.py",
+        "M  tests/test_pbstatus_stat_predicates_review.py",
+        "M  tests/test_pbtest_publishes_its_own_shards.py",
+        "M  tests/test_pbtest_reconciles_outcomes.py",
+        "A  tests/test_pbtest_selection_index_1551.py",
+        "M  tests/test_pool.py",
+        "M  tests/test_pool_scope_creation_recovery.py",
+        "M  tests/test_pool_unreadable_ready_record.py",
+        "M  tests/test_pool_withdrawn_retention_1533.py",
+        "M  tests/test_produced_output_public_vocabulary.py",
+        "M  tests/test_produced_output_restage.py",
+        "M  tests/test_produced_spool_paced_export.py",
+        "M  tests/test_progress_reporting_boundaries.py",
+        "M  tests/test_proof_runtime_budget.py",
+        "M  tests/test_qualify_scratch_lifetime.py",
+        "M  tests/test_queue_bell.py",
+        "A  tests/test_queue_bell_adaptive_inputs.py",
+        "M  tests/test_queue_bell_watch_lifecycle.py",
+        "M  tests/test_receipt_activation_direction.py",
+        "M  tests/test_record_compatibility_controller.py",
+        "M  tests/test_record_store_mutation_controls.py",
+        "A  tests/test_regression_test_gate.py",
+        "M  tests/test_scratch_lifetime_sdk_contract.py",
+        "M  tests/test_scratch_lifetime_selection.py",
+        "M  tests/test_sealed_bundle_cache.py",
+        "A  tests/test_shared_census_safety_2199.py",
+        "A  tests/test_stage_coverage_handoff_2197.py",
+        "A  tests/test_stage_partial_floor_1483.py",
+        "M  tests/test_supervisor_declares_the_spool_budget.py",
+        "M  tests/test_supervisor_elastic_workers.py",
+        "M  tests/test_supervisor_graceful_stop.py",
+        "M  tests/test_supervisor_keeps_role_diagnostics_bounded.py",
+        "M  tests/test_supervisor_no_churn_on_alternating_claims_1571.py",
+        "M  tests/test_supervisor_prunes_worker_logs.py",
+        "M  tests/test_supervisor_rereads_its_shape.py",
+        "A  tests/test_test_tiers.py",
+        "A  tests/test_tests_keep_sleep_module_local.py",
+        "M  tests/test_tier_ledger_directory_names.py",
+        "A  tests/test_used_filesystem_callers_2049.py",
+        "M  tests/test_worker_gpu_adaptive_contract.py",
+        "M  tests/test_worker_loop_follows_a_rename.py",
+        "M  tests/test_worker_loop_offers_its_affinity.py",
+        "M  tests/test_worker_loop_park_boundary.py",
+        "M  tests/test_would_block_open.py",
+        "A  tools/ci/check_regression_test.py",
+        "A  tools/ci/replay_regression_gate.py",
+        "UU tools/fleet/docker",
+        "M  tools/fleet/mount_latency.py",
+        "M  tools/fleet/pbcanary.py",
+        "M  tools/fleet/pbcanary_legs/leg3.py",
+        "A  tools/fleet/pbhold.py",
+        "M  tools/fleet/pbmcp.py",
+        "M  tools/fleet/pbmetrics.py",
+        "M  tools/fleet/pbstatus.py",
+        "M  tools/fleet/pbwait.py",
+        "M  tools/fleet/publish_runtime.py",
+        "M  tools/fleet/qualify_scratch_lifetime.py",
+        "UU tools/fleet/resource_broker.py",
+        "M  tools/fleet/supervise.py",
+        "UU tools/fleet/worker_loop.py",
+        "A  tools/maintenance/bench_bell_subtrees.py",
+        "A  tools/maintenance/bench_receipt_thaws.py",
+        "A  tools/maintenance/check_cleanup_obligation_mutants.py",
+        "A  tools/maintenance/checkout_recovery_repeat_1711.py",
+        "A  tools/maintenance/fixtures/bell_drop_tree_2173.txt",
+        "A  tools/maintenance/fixtures/receipt_read_2172.txt",
+        "A  tools/maintenance/nfs_metadata_attribution.py",
+        "A  tools/maintenance/nfs_probe_lifecycle.py",
+        "A  tools/qualify_test_time_isolation.py",
+        "A  tools/verify.py",
+        "?? tests/compat/history-controls/superseded-upgrade-intent-563da2ff3aa4ad5d/provenance-pr2219-before-merge.json"
+      ],
+      "before_metadata_git_blob": "af9b53cb769126b015babf759ae7cd9d7d0f6293",
+      "after_metadata_git_blob": "d314deff7c84f14907edfcc5d9dd0fbe02359a43",
+      "before_count": 584,
+      "after_count": 587,
+      "reviewed": true,
+      "applied": true,
+      "changes": [
+        {
+          "change": "added",
+          "row": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "owner": "refresh_fleet_addition",
+            "fields": [
+              "add_box",
+              "entry"
+            ]
+          },
+          "count": 1,
+          "reason": "Retain the approved capped-host capability/refusal metadata in the merged source inventory; current-main records remain unchanged.",
+          "before": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "source_absent": true
+          },
+          "after": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "source_git_blob": "e0827a16af3a9048e6505448602cf0959438b07b",
+            "owner": "refresh_fleet_addition",
+            "owner_present": true,
+            "line": 16,
+            "end_line": 96,
+            "source": "def refresh_fleet_addition(args):\n    root, capture = args.root.resolve(), args.capture.resolve()\n    data = root / \"tests/compat\"\n    report = json.loads((capture / \"qualification.json\").read_bytes())\n    expected = {\"config-fleet/source\"}\n    if (report.get(\"passed\") is not True or report.get(\"failures\") != []\n            or report.get(\"independent_writer_reproduction_required\") is not True\n            or set(report[\"selected_cases\"]) != expected):\n        raise ValueError(\"requires one fully reproduced and qualified fleet-config capture\")\n    parents = report[\"source_git\"][\"parents\"]\n    if len(parents) != 1:\n        raise ValueError(\"capture must bind one frozen source parent\")\n    producer = parents[0]\n    drift = subprocess.check_output(\n        [\"git\", \"-C\", str(root), \"diff\", \"--name-only\", producer, \"--\",\n         \"src\", \"tools/fleet\", \"tools/prismabuild_worker.py\", \"tests/compat/support\"], text=True).splitlines()\n    if drift:\n        raise ValueError((\"capture source differs\", drift))\n    prior, historical = data / \"goldens-configuration.jsonl\", data / \"historical-configuration.jsonl\"\n    old_raw = prior.read_bytes()\n    before = [row for row in rows(prior) if row[\"case\"] in expected]\n    after = rows(capture / \"goldens.jsonl\")\n    if len(before) != 1 or len(after) != 1 or after[0][\"case\"] not in expected:\n        raise ValueError(\"requires exactly one old and new current fleet record\")\n    review = json.loads(args.review.read_bytes())\n    if set(review) != {\"add_box\", \"entry\"}:\n        raise ValueError(\"review must name the one added box and its complete entry\")\n    old, new = json.loads(wire(before[0])), json.loads(wire(after[0]))\n    key = review[\"add_box\"]\n    if key in old[\"boxes\"] or new != {**old, \"boxes\": {**old[\"boxes\"], key: review[\"entry\"]}}:\n        raise ValueError(\"fleet config changed outside the reviewed box addition\")\n    source = (root / \"tools/fleet/fleet_boxes.json\").read_bytes()\n    if wire(after[0]) != source:\n        raise ValueError(\"capture must contain the actual current roster bytes\")\n    selected_history = b\"\".join(line for line in historical.read_bytes().splitlines(keepends=True)\n                                 if json.loads(line)[\"case\"] in expected)\n    if (capture / \"historical.jsonl\").read_bytes() != selected_history:\n        raise ValueError(\"retained historical records changed\")\n    if (capture / \"absent-participants.jsonl\").read_bytes():\n        raise ValueError(\"fleet config requires both actual retained writers and readers\")\n    archive = data / \"history-controls\" / (\"superseded-fleet-config-\" + sha(old_raw)[:16])\n    if archive.exists() or args.report.exists():\n        raise ValueError(\"adoption already exists; inspect partial results\")\n    manifest = data / \"capture-configuration.json\"\n    with tempfile.TemporaryDirectory(prefix=\"adopt-fleet-\") as temporary:\n        staged = Path(temporary)\n        subprocess.run([sys.executable, str(root / \"tests/compat/support/adopt_compat_capture.py\"),\n                        \"--capture\", str(capture), \"--destination\", str(staged),\n                        \"--suffix\", \"configuration\", \"--primary-audit\", str(args.primary_audit)], check=True)\n        adopted = (staged / prior.name).read_bytes()\n        if (staged / historical.name).read_bytes() != selected_history:\n            raise ValueError(\"adopter changed historical bytes\")\n        replacement = b\"\".join(adopted if json.loads(line)[\"case\"] in expected else line\n                                for line in old_raw.splitlines(keepends=True))\n        metadata = json.loads((staged / manifest.name).read_bytes())\n        metadata[\"retained_current_cases\"] = [row[\"case\"] for row in rows(prior)\n                                               if row[\"case\"] not in expected]\n        metadata[\"superseded_current_archive\"] = str(archive.relative_to(root))\n        metadata[\"files\"] = {prior.name: sha(replacement), historical.name: sha(historical.read_bytes())}\n        archive.mkdir(parents=True)\n        shutil.copyfile(prior, archive / prior.name)\n        shutil.copyfile(manifest, archive / manifest.name)\n        provenance = {\"capture_source_parent\": producer, \"review\": review,\n                      \"review_sha256\": sha(args.review.read_bytes()),\n                      \"previous_current_sha256\": sha(old_raw),\n                      \"historical_sha256\": sha(historical.read_bytes()),\n                      \"credit\": \"superseded current fixture; no historical generation credit\"}\n        (archive / \"provenance.json\").write_text(sorted_json(provenance) + \"\\n\")\n        for path in archive.iterdir():\n            path.chmod(0o444)\n        for path, raw in ((prior, replacement), (manifest, (sorted_json(metadata) + \"\\n\").encode())):\n            path.chmod(0o644)\n            path.write_bytes(raw)\n            path.chmod(0o444)\n    result = {\"capture_source_parent\": producer, \"case\": \"config-fleet/source\",\n              \"added_box\": key, \"archive\": str(archive.relative_to(root)),\n              \"current_goldens_sha256\": sha(prior.read_bytes()),\n              \"historical_sha256\": sha(historical.read_bytes())}\n    with args.report.open(\"x\") as stream:\n        stream.write(sorted_json(result) + \"\\n\")\n    print(sorted_json(result))"
+          }
+        },
+        {
+          "change": "added",
+          "row": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "owner": "refresh_fleet_addition",
+            "fields": [
+              "config-fleet/source"
+            ]
+          },
+          "count": 1,
+          "reason": "Retain the approved capped-host capability/refusal metadata in the merged source inventory; current-main records remain unchanged.",
+          "before": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "source_absent": true
+          },
+          "after": {
+            "path": "tools/maintenance/refresh_compat_fleet.py",
+            "source_git_blob": "e0827a16af3a9048e6505448602cf0959438b07b",
+            "owner": "refresh_fleet_addition",
+            "owner_present": true,
+            "line": 16,
+            "end_line": 96,
+            "source": "def refresh_fleet_addition(args):\n    root, capture = args.root.resolve(), args.capture.resolve()\n    data = root / \"tests/compat\"\n    report = json.loads((capture / \"qualification.json\").read_bytes())\n    expected = {\"config-fleet/source\"}\n    if (report.get(\"passed\") is not True or report.get(\"failures\") != []\n            or report.get(\"independent_writer_reproduction_required\") is not True\n            or set(report[\"selected_cases\"]) != expected):\n        raise ValueError(\"requires one fully reproduced and qualified fleet-config capture\")\n    parents = report[\"source_git\"][\"parents\"]\n    if len(parents) != 1:\n        raise ValueError(\"capture must bind one frozen source parent\")\n    producer = parents[0]\n    drift = subprocess.check_output(\n        [\"git\", \"-C\", str(root), \"diff\", \"--name-only\", producer, \"--\",\n         \"src\", \"tools/fleet\", \"tools/prismabuild_worker.py\", \"tests/compat/support\"], text=True).splitlines()\n    if drift:\n        raise ValueError((\"capture source differs\", drift))\n    prior, historical = data / \"goldens-configuration.jsonl\", data / \"historical-configuration.jsonl\"\n    old_raw = prior.read_bytes()\n    before = [row for row in rows(prior) if row[\"case\"] in expected]\n    after = rows(capture / \"goldens.jsonl\")\n    if len(before) != 1 or len(after) != 1 or after[0][\"case\"] not in expected:\n        raise ValueError(\"requires exactly one old and new current fleet record\")\n    review = json.loads(args.review.read_bytes())\n    if set(review) != {\"add_box\", \"entry\"}:\n        raise ValueError(\"review must name the one added box and its complete entry\")\n    old, new = json.loads(wire(before[0])), json.loads(wire(after[0]))\n    key = review[\"add_box\"]\n    if key in old[\"boxes\"] or new != {**old, \"boxes\": {**old[\"boxes\"], key: review[\"entry\"]}}:\n        raise ValueError(\"fleet config changed outside the reviewed box addition\")\n    source = (root / \"tools/fleet/fleet_boxes.json\").read_bytes()\n    if wire(after[0]) != source:\n        raise ValueError(\"capture must contain the actual current roster bytes\")\n    selected_history = b\"\".join(line for line in historical.read_bytes().splitlines(keepends=True)\n                                 if json.loads(line)[\"case\"] in expected)\n    if (capture / \"historical.jsonl\").read_bytes() != selected_history:\n        raise ValueError(\"retained historical records changed\")\n    if (capture / \"absent-participants.jsonl\").read_bytes():\n        raise ValueError(\"fleet config requires both actual retained writers and readers\")\n    archive = data / \"history-controls\" / (\"superseded-fleet-config-\" + sha(old_raw)[:16])\n    if archive.exists() or args.report.exists():\n        raise ValueError(\"adoption already exists; inspect partial results\")\n    manifest = data / \"capture-configuration.json\"\n    with tempfile.TemporaryDirectory(prefix=\"adopt-fleet-\") as temporary:\n        staged = Path(temporary)\n        subprocess.run([sys.executable, str(root / \"tests/compat/support/adopt_compat_capture.py\"),\n                        \"--capture\", str(capture), \"--destination\", str(staged),\n                        \"--suffix\", \"configuration\", \"--primary-audit\", str(args.primary_audit)], check=True)\n        adopted = (staged / prior.name).read_bytes()\n        if (staged / historical.name).read_bytes() != selected_history:\n            raise ValueError(\"adopter changed historical bytes\")\n        replacement = b\"\".join(adopted if json.loads(line)[\"case\"] in expected else line\n                                for line in old_raw.splitlines(keepends=True))\n        metadata = json.loads((staged / manifest.name).read_bytes())\n        metadata[\"retained_current_cases\"] = [row[\"case\"] for row in rows(prior)\n                                               if row[\"case\"] not in expected]\n        metadata[\"superseded_current_archive\"] = str(archive.relative_to(root))\n        metadata[\"files\"] = {prior.name: sha(replacement), historical.name: sha(historical.read_bytes())}\n        archive.mkdir(parents=True)\n        shutil.copyfile(prior, archive / prior.name)\n        shutil.copyfile(manifest, archive / manifest.name)\n        provenance = {\"capture_source_parent\": producer, \"review\": review,\n                      \"review_sha256\": sha(args.review.read_bytes()),\n                      \"previous_current_sha256\": sha(old_raw),\n                      \"historical_sha256\": sha(historical.read_bytes()),\n                      \"credit\": \"superseded current fixture; no historical generation credit\"}\n        (archive / \"provenance.json\").write_text(sorted_json(provenance) + \"\\n\")\n        for path in archive.iterdir():\n            path.chmod(0o444)\n        for path, raw in ((prior, replacement), (manifest, (sorted_json(metadata) + \"\\n\").encode())):\n            path.chmod(0o644)\n            path.write_bytes(raw)\n            path.chmod(0o444)\n    result = {\"capture_source_parent\": producer, \"case\": \"config-fleet/source\",\n              \"added_box\": key, \"archive\": str(archive.relative_to(root)),\n              \"current_goldens_sha256\": sha(prior.read_bytes()),\n              \"historical_sha256\": sha(historical.read_bytes())}\n    with args.report.open(\"x\") as stream:\n        stream.write(sorted_json(result) + \"\\n\")\n    print(sorted_json(result))"
+          }
+        },
+        {
+          "change": "added",
+          "row": {
+            "path": "src/prismabuild/host_cap.py",
+            "owner": "HostCap.parse",
+            "fields": [
+              "cpus",
+              "mem_gb",
+              "slice"
+            ]
+          },
+          "count": 1,
+          "reason": "Retain the approved capped-host capability/refusal metadata in the merged source inventory; current-main records remain unchanged.",
+          "before": {
+            "path": "src/prismabuild/host_cap.py",
+            "source_absent": true
+          },
+          "after": {
+            "path": "src/prismabuild/host_cap.py",
+            "source_git_blob": "0eb344252c9775b07debdb3ca5c772174dce4459",
+            "owner": "HostCap.parse",
+            "owner_present": true,
+            "line": 185,
+            "end_line": 194,
+            "source": "def parse(cls, value: object) -> HostCap:\n        if not isinstance(value, Mapping) or set(value) != {\"cpus\", \"mem_gb\", \"slice\"}:\n            raise ValueError(\"cap must declare exactly cpus, mem_gb and slice\")\n        cpus = cap_cpu_set(value[\"cpus\"])\n        memory, unit = value[\"mem_gb\"], value[\"slice\"]\n        if type(memory) is not int or memory <= CAP_OVERHEAD_GB:\n            raise ValueError(\"cap mem_gb must exceed the one GiB PB overhead reserve\")\n        if not isinstance(unit, str) or re.fullmatch(r\"[A-Za-z0-9_]+\\.slice\", unit) is None:\n            raise ValueError(\"cap slice must be a top-level system slice\")\n        return cls(cpus, memory, unit)"
+          }
+        }
+      ],
+      "scanner_git_blob": "7e3839b1cfb3d66218b8340d30dfe1ec16b167ef"
+    }
+  },
+  "capture_actions": [
+    {
+      "action_key": "e33a3d42fa3fc98bb6784cd5883829f544f0158e71182b024704320fd7ef20eb",
+      "cleanup_complete": true,
+      "completion": null,
+      "inputs": [
+        {
+          "bytes": 46571178,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "b54bd291ac242cb875f74a9702a6d7e42cee0f2ce279a3931cfb9724e3de00a9"
+        }
+      ],
+      "logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/e33a3d42fa3fc98bb6784cd5883829f544f0158e71182b024704320fd7ef20eb/3fcd375df9b4bc28c3c3e777a2d54a0cc40d4c0deb69a70bed724ed0058352ce/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 3096,
+          "path": "attempts/e33a3d42fa3fc98bb6784cd5883829f544f0158e71182b024704320fd7ef20eb/3fcd375df9b4bc28c3c3e777a2d54a0cc40d4c0deb69a70bed724ed0058352ce/00000001.stdout.c6bdf50a33b6c36b84fc2f92ce8def88d8b2907a6d408d437bd2f9019d6e2fd3.log",
+          "sha256": "c6bdf50a33b6c36b84fc2f92ce8def88d8b2907a6d408d437bd2f9019d6e2fd3"
+        }
+      },
+      "native_completion": null,
+      "native_counts": [],
+      "outcomes": null,
+      "receipt_sha256": "98f716d33eb82be9e2a8fc3160b046c3f3bdc29985d8cc381d34b0e47be0d64f",
+      "request_sha256": "3d1930d737492e8c9c0afd30329cc3f913737f5c3f6d39fcdf66e023ff9850bf",
+      "returncode": 0,
+      "runtime_sha256": "fdda8d0fed727244b9b64b6141e1b63086c7f356dca45b7fbad96cc93960811a",
+      "source_bundle_heads_verified": true,
+      "source_git": {
+        "bundle_sha256": "b54bd291ac242cb875f74a9702a6d7e42cee0f2ce279a3931cfb9724e3de00a9",
+        "commit": "06759d368a9a57255be12973be72547a2d94a252",
+        "dirty_paths": [],
+        "git_objects_verified": true,
+        "parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+        "tree": "e49d1d89ea9ced79ecbdd3f49f12341715d57a90"
+      },
+      "source_parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+      "source_snapshot": {
+        "commit": "06759d368a9a57255be12973be72547a2d94a252",
+        "input": {
+          "bytes": 46571178,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "b54bd291ac242cb875f74a9702a6d7e42cee0f2ce279a3931cfb9724e3de00a9"
+        },
+        "parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/e33a3d42fa3fc98bb6784cd5883829f544f0158e71182b024704320fd7ef20eb.json",
+      "worker": "sparklina"
+    },
+    {
+      "action_key": "a72961af8555e41a24e7835c45f7bf97230fea27ef018fa8dca1795b38f07d78",
+      "cleanup_complete": true,
+      "completion": null,
+      "inputs": [
+        {
+          "bytes": 46571177,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c0f354060866808305119a1faf73ac5d89aa5d354c6dbf905f25cb343a7b0c9"
+        }
+      ],
+      "logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/a72961af8555e41a24e7835c45f7bf97230fea27ef018fa8dca1795b38f07d78/c985f1af8494642611c5f937231be00ff63acc3f67bf296956e1e223ecc0eae5/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 3097,
+          "path": "attempts/a72961af8555e41a24e7835c45f7bf97230fea27ef018fa8dca1795b38f07d78/c985f1af8494642611c5f937231be00ff63acc3f67bf296956e1e223ecc0eae5/00000001.stdout.2c177119347ee9a0eb37376c73a1caddc0bd91a67816e1dbfeaf64da25253e50.log",
+          "sha256": "2c177119347ee9a0eb37376c73a1caddc0bd91a67816e1dbfeaf64da25253e50"
+        }
+      },
+      "native_completion": null,
+      "native_counts": [],
+      "outcomes": null,
+      "receipt_sha256": "5930c374a9770b143e4c8ff3c1a7f49fb37397b42c35082f53f78115309fed28",
+      "request_sha256": "c8a79de83c975009ce3f6c0a9b605e2a86d73684f63aa804ea0af4677f92f312",
+      "returncode": 0,
+      "runtime_sha256": "fdda8d0fed727244b9b64b6141e1b63086c7f356dca45b7fbad96cc93960811a",
+      "source_bundle_heads_verified": true,
+      "source_git": {
+        "bundle_sha256": "3c0f354060866808305119a1faf73ac5d89aa5d354c6dbf905f25cb343a7b0c9",
+        "commit": "9d54bb6d7801bfa8abf4a17c00bfc6ba53b5ba11",
+        "dirty_paths": [],
+        "git_objects_verified": true,
+        "parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+        "tree": "c859b464feaf543e28564522d2ab6b7a6909bb1a"
+      },
+      "source_parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+      "source_snapshot": {
+        "commit": "9d54bb6d7801bfa8abf4a17c00bfc6ba53b5ba11",
+        "input": {
+          "bytes": 46571177,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "3c0f354060866808305119a1faf73ac5d89aa5d354c6dbf905f25cb343a7b0c9"
+        },
+        "parent": "7a1491545e028f4333221ba0f72c63225dd61e91",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/a72961af8555e41a24e7835c45f7bf97230fea27ef018fa8dca1795b38f07d78.json",
+      "worker": "sparklina"
+    }
+  ],
+  "baseline_exception": {
+    "issue": "https://github.com/RobTand/prismabuild/issues/2384",
+    "audit": "publisher-controls.audited.json",
+    "main_action": "cdc6129eddcd420e55c5207a00ba8428531333ca6829be22af2ad00c73906148",
+    "candidate_action": "fb2fc1d173b82d94f986eeee00b16e482d8d4d48f8926c77237e430e9b3412bb",
+    "verdict": "Matching teardown assertion reproduced on unchanged incoming main. Root cause remains open; no teardown assertion weakened."
+  },
+  "retained_failures": [
+    "Original 296298ef candidate failed the Docker recognition and operator-hold integrations; repaired and qualified on c3134f0f.",
+    "Original and v2 x86 serial mutation populations exhausted the 900-second shard budget. New immutable xdist requests completed the same file population.",
+    "Original and v2 supplemental archival replay shards lacked complete native population at timeout; new immutable two-worker requests completed all309 supplemental tests.",
+    "The v2 publisher teardown error matches unchanged incoming main; tracked by #2384."
+  ],
+  "deployed": false,
+  "campaign_completion_claimed": false,
+  "whole_requirement_targets_and_axes_equal_incoming_main": true
+}

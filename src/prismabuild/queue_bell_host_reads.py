@@ -40,7 +40,7 @@ class DirtyHostInputs:
             return set(self._pending)
 
     def invalidate(self, topic: str, host: str, *, deadline: float):
-        if topic not in ("workers", "reservations") or not TOPICS[topic].accepts_id(host):
+        if topic not in ("workers", "reservations", "adaptive", "claim-denials") or not TOPICS[topic].accepts_id(host):
             raise ValueError("invalid host input hint")
         if not math.isfinite(deadline):
             raise ValueError("host input visibility needs a finite deadline")

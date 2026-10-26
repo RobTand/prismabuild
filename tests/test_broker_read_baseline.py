@@ -125,3 +125,34 @@ def test_broker_read_baseline_counts_are_repeatable(tmp_path):
     first = read_baseline.run_synthetic(tmp_path / "first", populations=(0, 8, 64), cycles=2)
     again = read_baseline.run_synthetic(tmp_path / "again", populations=(0, 8, 64), cycles=2)
     assert projection(first) == projection(again), "no host-load, PID-order or timing-dependent counters"
+
+
+def test_w2_nvidia_read_counts_remove_w1_unrelated_pid_slope(tmp_path):
+    """Reuse W1's actual collector/monitor observers, not a second cost model."""
+    report = _brb_load_reproducer().run_synthetic(tmp_path / 'w2', populations=(0, 8, 64), cycles=2)
+    projection = []
+    for case in report['cases']:
+        if case['phase'] not in ('collector', 'monitor'):
+            continue
+        projection.append(dict(phase=case['phase'], scenario=case['scenario'],
+                               unrelated_pids=case['unrelated_pids'],
+                               reads=sum(row['reads'] for row in case['reads']),
+                               bytes=sum(row['bytes'] for row in case['reads']),
+                               identity_attempts=sum(row['attempts'] for row in case['reads']
+                                                     if row['file_class'] == 'proc_identity'),
+                               membership_attempts=sum(row['attempts'] for row in case['reads']
+                                                       if row['file_class'] == 'proc_membership'),
+                               vendor_calls=sum(child['calls'] for child in case['subprocesses'])))
+    print(sorted_json(dict(measurement_kind=report['measurement_kind'], sources=report['sources'],
+                           w1_unrelated_pid_slope_per_two_calls=dict(reads=4, bytes=142),
+                           observations=projection)))
+    for row in projection:
+        expected = 4 if row['scenario'] == 'gpu_present' else 0
+        assert row['identity_attempts'] == row['membership_attempts'] == expected, (
+            'only GPU candidates need before/after identity reads; W1 host census must disappear', row)
+    for phase in ('collector', 'monitor'):
+        for scenario in ('empty', 'no_gpu', 'gpu_error', 'gpu_present'):
+            matching = [row for row in projection if row['phase'] == phase and row['scenario'] == scenario]
+            assert len(matching) == 3
+            assert len({(row['reads'], row['bytes']) for row in matching}) == 1, (
+                'unrelated host PID population must not add collector or monitor file reads', matching)

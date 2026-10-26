@@ -84,6 +84,7 @@ from . import action_result as _action_result
 from . import contracts as _contracts
 from . import core as _core
 from . import data_manifest as manifest_codec
+from . import decomposition as _decomposition
 from . import local_scratch as _local_scratch
 from . import pool as _pool
 from . import produced_output as _produced_output
@@ -93,7 +94,11 @@ from . import storage_tiers as _storage_tiers
 
 #: The contract version.  Bumped on any change to the names below, their
 #: signatures, or the values of the constants.
-SDK_VERSION = 6
+SDK_VERSION = 7
+
+# -- logical-request validation (no planning or publication) ------------------
+
+validate_logical_request = _decomposition.validate_logical_request
 
 # -- reader leases (capability ``reader-lease-v1``) --------------------------
 
@@ -342,6 +347,8 @@ CAPABILITIES = frozenset({
 
 __all__ = [
     "SDK_VERSION",
+    # logical-request validation
+    "validate_logical_request",
     # reader leases
     "READER_LEASE_TAG", "injected_context", "acquire_for", "open_pinned",
     "release", "covers_for_keys", "leases_root", "live_for",

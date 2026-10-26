@@ -211,4 +211,3 @@ def test_installer_recap_and_reinstall_keep_ancillary_limits(tmp_path):
     assert seen["prismabuild-movement-publish.service"] == {
         "Slice": "prismabuild.slice", "AllowedCPUs": "4-7,12-15", "MemoryMax": "256M", "TasksMax": "16"}
     assert seen["prismabuild-resource-broker.service"]["AllowedCPUs"] == "4-7,12-15"
-
