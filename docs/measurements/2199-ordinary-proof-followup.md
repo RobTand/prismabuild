@@ -82,44 +82,35 @@ SC-02 movement authority and INV-07 settlement remain unchanged. No staged-read
 requirement, deployment axis or campaign acceptance is declared complete here.
 Principal review, x86 evidence and merge remain required for issue closure.
 
-## Integrated result
+## Review validation gate
 
-The final integrated check on 47f74a7259 passed **193 tests in ten actions**,
-with no skips. This includes ordinary admission, ordinary observation memory,
-shared fallback, reused-census transitions, the slow-reader sweep, and all four
-mandatory guards. The earlier broad sweep's other behavioral files passed;
-its five failures were repaired and their complete files passed in this run.
+The earlier integrated 193-test run at 47f74a7259 is excluded from merge
+acceptance. One action's canonical logs were restored by the submitter from
+terminal-retained bytes. None of that run's ten actions is a merge evidence
+source, including the repaired action. The original attachment remains history.
+No further canonical logs, endings, or receipts will be repaired by this task.
 
-A reused-complete-census counterexample was reproduced separately by action
-75892dd7aa80528dadecb57119448c37b5b6bc9fcf359ba12303bbc22910690b
-(1 failed, 9 deselected). Ordinary observations now join any already stored
-census before fallback can reuse it. The updated memory file passes ten cases.
+The review continuation rebases the reviewed c40fbd3b9c tree onto current main
+and starts fresh ARM and x86 admission/guard selections at the resulting clean
+head. The report paths are `/mnt/shared/paperclip-runs/PRI-27/review2-arm.json`
+and `/mnt/shared/paperclip-runs/PRI-27/review2-x86.json`. A report is acceptance
+evidence only after its terminal status, unmodified canonical log hashes, and
+CAS receipt and payload bindings are verified. The review handoff links the
+reports and their exact checkout parent. Pending, timed-out, or unreadable
+results remain gaps.
 
-The broad check also caught retirement resurrection and a selection replacement
-within one publication. Observations now distinguish the complete selection
-identity. A matching complete-census retirement does not become a live election
-again. The generation-check mutation control now asserts that the independent
-ordinary observation still preserves the live fence when that check is removed.
+PRI-68's action 27ae66c919453d6d9a4c65326128bf3ae370ad63b0f1b4d8ebe9e11a6d7fe393
+independently observed the deployed reader-busy refusal on dl380g10 at runtime
+9dce28460e76-1792959923-b5904f02524e. Read-only observation on continuation
+shows it has since reached a failed ending. This does not establish its payload
+verdict or qualify the repaired source. The earlier x86 guard action
+6257a9db9cbcd0a7f2af901224c558e152f8e90ddb7c115843cb3acb94ef3806 is now done.
+Fresh validation still covers the rebased head.
 
-All ten terminal records returned zero. Canonical stdout/stderr lengths and
-SHA-256 digests, CAS claim addresses and digests, receipt bindings, payload
-lengths and payload SHA-256 digests were independently checked. One action's
-missing canonical log files were restored through RecordStore.file_attempt_log_at
-using its complete terminal-retained bytes, after exact length and hash checks.
-The client then reconciled all ten green shards. No ending or result was edited.
-These checks do not verify worker attestation signatures.
-
-| Action | Result |
-| --- | --- |
-| 48d44f87de72413c819cfc349bd80be33525c72d391083cc85c168f838caa1df | 43 passed in 9.11s |
-| 5b71182eb9703061de4aa1155ddb7ca16bf4ea4ca45bd3579e15783fd1eb2649 | 10 passed in 0.81s |
-| c71c5f8396d6b050374b48302a014fbe31477ca95b094d1420658dd446bd85a0 | 3 passed in 0.67s |
-| 69ee2735f9e68f7a1e0d21dad104e8a9ccbe32e1fb52c46eb54a9b5aefb43d1b | 13 passed, 28 warnings in 3.96s |
-| 49717bd392eebcf33d46c9ca626aaf34192260ae5b297e7b1bda2e513a9f48b7 | 10 passed in 13.92s |
-| 3c0b656308f4b7bab55fb8e028867efc68e33ed599e2b1cf88e4f4c5fb814aa9 | 5 passed in 5.24s |
-| 3afa40d39cbab06477f3f85255ac180e1b57d27c1dfb667fabd9c0e2cd9bb304 | 8 passed in 20.79s |
-| 85e427e453173bfe55bf98c3ac5367cb26fa48f8e03e869975504c047efbddb4 | 92 passed in 0.91s |
-| 464ecb334f693a2b6360a53b0211f1399c1575d49278ffc8a481fa171d24e25a | 8 passed in 9.86s |
-| bc848d887345a5fdad44f7df8e5a48954546eb29ee3942ba0dfa855a41cd8373 | 1 passed in 0.09s |
-
-The final rebase onto d0b92d267d adds main's sealed-bundle cache. Regenerate the field inventory after resolving its data-file conflict, then rerun the admission/guard selection against that integrated source. The x86 gate and Principal review remain pending.
+The inline ordinary-proof I/O limitation has a tracking sub-issue,
+[#2307](https://github.com/RobTand/prismabuild/issues/2307). It preserves the
+boundary explicitly excluded by #2273 rather than widening this repair.
+The two optional source-generation helpers also add work under H on full
+censuses. They enable sibling reuse, but their hold cost is not assumed free.
+A separate fixture-only paired experiment records that cost. Its evidence
+cannot replace the admission or architecture guard results.

@@ -12,30 +12,13 @@
   "merge": {
     "branch": "prismabuild-2199",
     "issue": "https://github.com/RobTand/prismabuild/issues/2199",
-    "validated_repairs": [
-      {
-        "id": "SC-01",
-        "actions": [
-          "48d44f87de72413c819cfc349bd80be33525c72d391083cc85c168f838caa1df",
-          "5b71182eb9703061de4aa1155ddb7ca16bf4ea4ca45bd3579e15783fd1eb2649",
-          "c71c5f8396d6b050374b48302a014fbe31477ca95b094d1420658dd446bd85a0",
-          "69ee2735f9e68f7a1e0d21dad104e8a9ccbe32e1fb52c46eb54a9b5aefb43d1b",
-          "49717bd392eebcf33d46c9ca626aaf34192260ae5b297e7b1bda2e513a9f48b7",
-          "3c0b656308f4b7bab55fb8e028867efc68e33ed599e2b1cf88e4f4c5fb814aa9",
-          "3afa40d39cbab06477f3f85255ac180e1b57d27c1dfb667fabd9c0e2cd9bb304",
-          "85e427e453173bfe55bf98c3ac5367cb26fa48f8e03e869975504c047efbddb4",
-          "464ecb334f693a2b6360a53b0211f1399c1575d49278ffc8a481fa171d24e25a",
-          "bc848d887345a5fdad44f7df8e5a48954546eb29ee3942ba0dfa855a41cd8373"
-        ],
-        "outcome": "193 component tests passed; ten zero-returncode terminal records, canonical log hashes and CAS receipts/payloads verified"
-      }
-    ],
+    "validated_repairs": [],
     "remaining_gaps": [
-      "x86 validation is blocked by deployed measurement_census_unavailable / reader busy; no waiver",
-      "Principal Engineer review and merge pending",
+      "Fresh exact-head ARM and x86 admission/guard reports and unmodified canonical evidence are required",
+      "Principal Engineer independent review and merge pending",
       "No deployed or staged-only campaign conformance claimed"
     ],
-    "note": "Prepared source merge record only. PB retains admission at candidate_admission_census and locked_census. No application placement/movement or settlement behavior added. Post-rebase checks are recorded in the follow-up evidence document."
+    "note": "Prepared source record only; prior 193-test run excluded because canonical logs of one action were restored by the submitter. Fresh report paths and continuation evidence are linked in the follow-up and PR. No exception or deployment authority is claimed."
   },
   "deploy": {
     "status": "not-this-step"
