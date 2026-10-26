@@ -28,10 +28,19 @@ def write_json(path: Path, value: object) -> None:
 
 
 def prepare(root: Path, runtime: Path) -> None:
+    sys.path.insert(0, str(runtime / "src"))
+    from prismabuild import pool, staged_path
+
     root.mkdir(parents=True, exist_ok=False)
     source = root / "source"
     source.mkdir()
     (root / "stage").mkdir()
+    queue = pool.PoolQueue(root / "queue")
+    queue.records.ensure_layout()
+    registration = staged_path.register_stage_root(
+        queue, tier_id="diag811:private", stage_root=root / "stage")
+    if registration != "registered":
+        raise SystemExit(f"private stage registration failed: {registration}")
     entries = []
     for index in range(4):
         payload = bytes([index + 1]) * (TOTAL_BYTES // 4)
@@ -55,6 +64,7 @@ def prepare(root: Path, runtime: Path) -> None:
         "runtime_root": str(runtime), "bytes": TOTAL_BYTES,
         "manifest_sha256": hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest(),
         "private_queue": True, "tier_reservations": False,
+        "stage_root_marker": staged_path.STAGE_ROOT_MARKER,
     })
 
 
@@ -77,7 +87,10 @@ def command(mode: str, root: Path, runtime: Path) -> list[str]:
 
 
 def staged_files(root: Path) -> list[Path]:
-    return sorted(path for path in (root / "stage").rglob("*") if path.is_file())
+    fixture = json.loads((root / "fixture.json").read_text())
+    marker = root / "stage" / fixture["stage_root_marker"]
+    return sorted(path for path in (root / "stage").rglob("*")
+                  if path.is_file() and path != marker)
 
 
 def run_payload(mode: str, root: Path, profile: Path | None) -> None:

@@ -66,3 +66,37 @@ def test_egress_rejects_a_retained_range_despite_a_success_receipt(egress_case, 
     monkeypatch.setattr(harness.runpy, 'run_path', incomplete_release)
     with pytest.raises(SystemExit, match='egress left fixture bytes behind'):
         harness.run_payload('egress', root, None)
+
+
+def test_preparation_registers_the_stage_with_its_private_queue(egress_case):
+    from prismabuild import pool, staged_path
+
+    _, root, _ = egress_case
+    queue = pool.PoolQueue(root / 'queue')
+    assert staged_path.stage_root_refusal(queue, root / 'stage') is None
+    marker = staged_path.read_stage_root_marker(root / 'stage')
+    assert marker['tier_id'] == 'diag811:private'
+
+
+def test_registered_fixture_moves_and_releases_only_its_ranges(egress_case, tmp_path):
+    from prismabuild import pool, staged_path
+
+    harness, _, _ = egress_case
+    repo = Path(__file__).resolve().parents[1]
+    runtime = tmp_path / 'fixture-runtime'
+    runtime.mkdir()
+    (runtime / 'tools').symlink_to(repo / 'tools' / 'fleet', target_is_directory=True)
+    (runtime / 'src').symlink_to(repo / 'src', target_is_directory=True)
+    root = tmp_path / 'complete-fixture'
+    harness.prepare(root, runtime)
+    queue = pool.PoolQueue(root / 'queue')
+    assert staged_path.register_stage_root(
+        queue, tier_id='diag811:private', stage_root=root / 'stage') == 'registered'
+
+    harness.run_payload('move', root, None)
+    harness.run_payload('egress', root, None)
+
+    assert not harness.staged_files(root)
+    assert staged_path.stage_root_refusal(queue, root / 'stage') is None
+    receipt = json.loads((root / 'egress-receipt.json').read_text())
+    assert receipt['complete'] and receipt['bytes_deleted'] == 8356
