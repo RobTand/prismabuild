@@ -596,6 +596,7 @@ _RESIDENCY_KEYS = frozenset({
 #: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
+GANG_REGISTRATION_GRACE_S = 600.0
 CLAIM_DENIALS = "claim-denials.json"
 #: Per-ledger report of holders a census could not read (#936): written by
 #: every inexact retire, removed by the next exact one.
@@ -9508,17 +9509,53 @@ class PoolQueue:
                     os.close(descriptor)
         return pruned
 
+    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
+        """Withdraw old member publications whose group was never filed."""
+        from . import _gang
+        considered = 0
+        for path in self.records.json_slot_paths(READY):
+            if considered >= limit:
+                break
+            try:
+                item = record_store.read_document(path)
+                if item is None:
+                    continue
+                gang = _gang.declaration(item.get("gang"))
+                if (gang is None
+                        or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                        or _gang.read_group(self, gang["group"]) is not None):
+                    continue
+                considered += 1
+                key = str(item["action_key"])
+                with self.action_transition_lock(key, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    current = record_store.value_or_raise(self.records.item(READY, key))
+                    if (current is None
+                            or current.get("published_unix") != item["published_unix"]
+                            or _gang.declaration(current.get("gang")) != gang
+                            or _now() - float(current["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                            or _gang.read_group(self, gang["group"]) is not None
+                            or record_store.value_or_raise(self.records.item(CLAIMED, key)) is not None):
+                        continue
+                    self.withdraw(key, reason="gang group not published within registration grace",
+                                  by=f"gang-registration:{gang['group']}")
+            except (_gang.GangContractError, PoolContractError, OSError,
+                    pb.PrismaBuildError, KeyError, TypeError, ValueError):
+                continue
+
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
 
         Runs on the orphan-passes schedule. A torn-down gang's members still
-        READY are withdrawn here (a claim pass that found the teardown could
+        READY or CLAIMED are withdrawn here (a claim pass that found the teardown could
         not withdraw the row whose lock it held). A gang whose every member
         has an exact ending -- none READY or CLAIMED -- loses its record and
         state, so the census never reads a dead gang. A gang with a live or
         unaccounted member is kept; failures are per gang.
         """
         from . import _gang
+        self._sweep_unregistered_gang_members(limit=limit)
         pruned: list[str] = []
         try:
             with os.scandir(_gang.root(self)) as entries:
@@ -9532,7 +9569,6 @@ class PoolQueue:
                 record = _gang.read_group(self, group)
                 if record is None:
                     continue
-                keys = [str(member["action_key"]) for member in record["members"]]
                 torn = _gang.teardown(self, group)
                 if torn is None:
                     # Every terminal path, including the reaper failing a
@@ -9549,28 +9585,14 @@ class PoolQueue:
                             reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
                         torn = _gang.teardown(self, group)
                 if torn is not None:
-                    for key in keys:
-                        if bool(
-                            record_store.value_or_raise(self.records.item_presence(READY, key)),
-                        ):
-                            try:
-                                member = next(member for member in record["members"]
-                                              if member["action_key"] == key)
-                                self._withdraw_gang_member(
-                                    record, member, reason=str(torn.get("reason")))
-                            except (PoolContractError, OSError, pb.PrismaBuildError):
-                                continue
-                if any(bool(
-                    record_store.value_or_raise(self.records.item_presence(READY, key)),
-                ) or bool(
-                    record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
-                )
-                       for key in keys):
-                    continue
-                if not all(any(bool(
-                    record_store.value_or_raise(self.records.item_presence(state, key)),
-                )
-                               for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
+                    for member in record["members"]:
+                        try:
+                            self._withdraw_gang_member(
+                                record, member, reason=str(torn.get("reason")))
+                        except (PoolContractError, OSError, pb.PrismaBuildError):
+                            continue
+                states = _gang.member_states(self, record)
+                if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
                     continue
                 shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
                 _gang.group_path(self, group).unlink(missing_ok=True)
@@ -21022,9 +21044,25 @@ class PoolQueue:
 
     def _withdraw_gang_member(self, record: Mapping[str, object],
                               member: Mapping[str, object], *, reason: str) -> None:
-        """Withdraw one member selected by a gang cleanup owner."""
-        self.withdraw(str(member["action_key"]), reason=f"gang teardown: {reason}",
-                      by=f"gang:{record['group']}")
+        """Withdraw only the exact member publication, retaining worker custody."""
+        from . import _gang
+        key = str(member["action_key"])
+        with self.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                return
+            claimed = record_store.value_or_raise(self.records.item(CLAIMED, key))
+            item = claimed if claimed is not None else record_store.value_or_raise(
+                self.records.item(READY, key))
+            if item is None or item.get("published_unix") != member["published_unix"]:
+                return
+            declared = _gang.declaration(item.get("gang"))
+            if declared != {"group": record["group"], "size": record["size"],
+                            "index": member["index"]}:
+                return
+            if self.withdrawal_covers(item) is not None:
+                return
+            self.withdraw(key, reason=f"gang teardown: {reason}",
+                          by=f"gang:{record['group']}", expected_claim=claimed)
 
     def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
                                 reason: str, by: str,

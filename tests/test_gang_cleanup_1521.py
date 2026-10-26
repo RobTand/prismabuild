@@ -127,3 +127,20 @@ def test_pruning_requires_the_groups_exact_terminal_publications(gang_fleet):
     queue.withdraw(keys[0], reason='successor ended')
     assert queue.sweep_gangs() == []
     assert _gang.read_group(queue, group) is not None
+
+
+def test_repeated_teardown_does_not_retarget_a_covered_claims_successor(gang_fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, first, second = _both_claimed(queue, publish, finish, claim, members)
+    original = _row(queue, pool.CLAIMED, first)
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'sparky')
+    queue.finish(second, status='failed', detail={'returncode': 1})
+    assert queue.withdrawal_covers(original) is not None
+    clock.now += 1
+    _republish(queue, original)
+    successor = _row(queue, pool.READY, first)
+    assert successor is not None
+    queue.sweep_gangs()
+    assert _row(queue, pool.READY, first) == successor
+    assert queue.withdrawal_covers(successor) is None
+    assert queue.ledger('sparklina').held_keys() == [first]
