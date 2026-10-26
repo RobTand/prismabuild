@@ -1780,9 +1780,6 @@ class ResourceMonitor:
                 if not record.get('stopped_unix') or record.get('monitor_stop_pending')}
         return active,interests
 
-    def _records(self):
-        return self._inventory()[0]
-
     def _stop(self,scope,expected,identity,reason,evidence):
         with self.authority.lock:
             current=self.authority.records.get(scope)
