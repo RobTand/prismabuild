@@ -5440,6 +5440,7 @@ class _HostClaimRequest:
     scratch_boundary: tuple[float, float, object, object] | None
     runtime_probe: str | None = None
     cpu_guest: bool = False
+    class_room: Mapping[str, object] | None = None
 
 
 class _ClaimHandled(Enum):
@@ -5525,6 +5526,7 @@ class _RefusalAccounting:
 class _OpenClaimRow:
     key: str
     held_back: bool
+    class_room: Mapping[str, object] | None = None
 
 
 @dataclass
@@ -5601,11 +5603,19 @@ class _ClaimScanReads:
         self.ledger = ledger
         self.tags = tags
         self.has_gpu = has_gpu
+        self._class_offer_records: list[dict[str, object]] | None = None
+        self.class_rooms: dict[str, tuple[dict[str, object] | None, str | None]] = {}
         self._host_verdicts: Mapping[str, object] | None = None
         self._bootstrap_authority: list[bool] = []
         self._claimed_names: record_store.ClaimedNames | None = None
         self.reader_plans: dict[str, dict[str, object]] = {}
         self.dead_input_hints: dict[str, KeyStanding] = {}
+
+    def class_offer_records(self) -> list[dict[str, object]]:
+        # Class evidence includes stale offers; a brief outage changes no architecture.
+        if self._class_offer_records is None:
+            self._class_offer_records = self.queue._offer_records()
+        return self._class_offer_records
 
     def verdicts(self) -> Mapping[str, object]:
         if self._host_verdicts is None:
@@ -5785,11 +5795,10 @@ class PoolQueue:
         return tombstone, True
 
 
-    def _successor_generation(
-        self, original: Mapping[str, object], successor: Mapping[str, object],
+    def _validated_ready_generation(
+        self, key: str, successor: Mapping[str, object],
     ) -> float:
         self.records.attempt_generation(successor)
-        key = str(original["action_key"])
         try:
             usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
                       and self._ready_record_usable(successor, key))
@@ -5800,7 +5809,12 @@ class PoolQueue:
             raise PoolContractError("invalid successor publication item") from exc
         if not usable or not host_demand:
             raise PoolContractError("invalid successor publication item")
-        generation = float(successor["published_unix"])
+        return float(successor["published_unix"])
+
+    def _successor_generation(
+        self, original: Mapping[str, object], successor: Mapping[str, object],
+    ) -> float:
+        generation = self._validated_ready_generation(str(original["action_key"]), successor)
         if generation < float(original["published_unix"]):
             raise PoolContractError("successor publication precedes its original")
         return generation
@@ -7243,7 +7257,7 @@ class PoolQueue:
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
-        "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        "finish_pending", "resource_scope_intent", "cleanup_obligation", "scratch_declaration_record",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -11960,7 +11974,8 @@ class PoolQueue:
             invalid=AmbiguousClaimHolder,
         )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix", "scratch_declaration_record",
+                      "claimed_unix", "published_unix", "attempts", "claimed_by", "claimed_host",
+                      "cleanup_obligation", "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
@@ -15025,7 +15040,17 @@ class PoolQueue:
                         "error": f"late scope ownership unavailable: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
             try:
-                self._recover_resource_scope_creation(record)
+                recovered = (False if (record.get('cleanup_obligation') or {}).get('state') == 'resolved'
+                             else self._recover_resource_scope_creation(record))
+                if not recovered:
+                    key = str(record['action_key'])
+                    generation = self.records.attempt_generation(record)
+                    verified = self._recover_cleanup_obligation(
+                        key, generation, int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
             except Exception as exc:                                 # noqa: BLE001
                 # The third enumerated tuple on this path, and it is retired
                 # for the reason the other two were (#286, #288): the list is
@@ -15048,6 +15073,14 @@ class PoolQueue:
             prior = record.get("resource_scope_cleanup")
             if (isinstance(prior, dict) and prior.get("complete") is True
                     and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                if record.get('cleanup_obligation') is not None:
+                    verified = self._recover_cleanup_obligation(
+                        str(record['action_key']), self.records.attempt_generation(record),
+                        int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
                 # The shortcut must not permanently bypass proof
                 # publication: if the shared mount blipped while filing,
                 # cleanup recorded complete and future calls return here.
@@ -15161,6 +15194,13 @@ class PoolQueue:
                 self.records.replace_record_at(path, live)
             if isinstance(record, dict):
                 record["resource_scope_cleanup"] = cleanup
+            if record.get('cleanup_obligation') is not None:
+                verified = self._recover_cleanup_obligation(
+                    key, self.records.attempt_generation(record), int(record.get('attempts', 0)) + 1)
+                if isinstance(record, dict):
+                    record.update(verified)
+                return {**verified['container_cleanup'],
+                        'resource_scope': verified['resource_scope_cleanup']}
             if scope_only:
                 # A delayed cleanup is not a fresh runtime measurement and
                 # must not train the live admission model for this action.
@@ -15236,9 +15276,8 @@ class PoolQueue:
             return {"complete": False, "used": True, "removed": [], "remaining": [],
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
 
-    @staticmethod
     def _note_cleanup_attempt(
-        pending: dict[str, object], prior: Mapping[str, object] | None,
+        self, pending: dict[str, object], prior: Mapping[str, object] | None,
         cleanup: Mapping[str, object],
     ) -> None:
         """Record that cleanup was tried again and still could not be proved.
@@ -15260,6 +15299,10 @@ class PoolQueue:
         What this makes possible is deciding it on evidence.
         """
 
+        intent = pending.get('resource_scope_intent')
+        if isinstance(intent, dict) and pending.get('resource_scope') is None:
+            from .cleanup_obligation import _obligation_for
+            pending.setdefault('cleanup_obligation', _obligation_for(self, pending, intent['nonce']))
         attempts = (prior or {}).get("container_cleanup_attempts")
         pending["container_cleanup_attempts"] = (
             int(attempts) + 1 if isinstance(attempts, int) and not isinstance(attempts, bool)
@@ -16116,6 +16159,230 @@ class PoolQueue:
             except (TypeError, ValueError):
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
         return None
+
+    @staticmethod
+    def _excluded_from_cpu_hosts(
+        item: Mapping[str, object], records: Sequence[Mapping[str, object]],
+    ) -> bool:
+        """Whether ``item``'s tags name something no host without a GPU offers (#1721).
+
+        The class-scoped case of #1262: CPU-only work tagged for the GPU hosts'
+        class (aarch64 work tagged ``gb10``) has no CPU host to be left to. It is
+        read from the offers every box has filed, stale ones included, because
+        what a class offers does not change when one of its boxes is briefly
+        away: portable work (tags every box carries) stays portable while the
+        x86 box is down, and keeps waiting for it. It needs evidence on both
+        sides -- some host without a GPU on file that carries none of the
+        row's required tags, and a GPU host that does -- and with none on
+        file there is no evidence, so the row is not excluded.
+        """
+        required = {str(tag) for tag in (item.get("tags") or []) if isinstance(tag, str)}
+        # Automatic capability tags cannot establish an architecture requirement (#2030).
+        required.difference_update(contract.tag for contract in contracts.CONTRACTS)
+        if not required:
+            return False
+        without_gpu, with_gpu = [], []
+        for record in records:
+            presence = capability_eligibility.HostPresence.from_offer(record).gpu
+            if presence is capability_eligibility.Presence.UNKNOWN:
+                return False
+            offered = record.get("tags")
+            if not isinstance(offered, list) or any(not isinstance(tag, str) for tag in offered):
+                if presence is capability_eligibility.Presence.ABSENT:
+                    return False
+                continue
+            target = without_gpu if presence is capability_eligibility.Presence.ABSENT else with_gpu
+            target.append(set(offered))
+        if not without_gpu or not with_gpu:
+            return False
+        return (not any(required <= offered for offered in without_gpu)
+                and any(required <= offered for offered in with_gpu))
+
+    def _class_scoped_candidate(
+        self, item: Mapping[str, object], records: Sequence[Mapping[str, object]],
+    ) -> bool:
+        """Whether ``item`` may be considered for #1721's exemption from the READY-GPU rule.
+
+        Its tags name something no host without a GPU offers, it is no gang member
+        (a gang election is written before any later check and outlives a refusal,
+        so it could fence the GPU row out with every token free), and its sealed
+        host demand is bounded: explicit ``cpu`` and ``mem_gb``, optional
+        ``spool_gb``, no GPU, no tier or fill kind (a tier demand takes what a
+        GPU row's own claim may need). This only makes the row a candidate; whether it passes is
+        decided at the token boundary (:meth:`_class_scoped_beside_room`).
+        """
+        if item.get("gang") is not None or not self._excluded_from_cpu_hosts(item, records):
+            return False
+        try:
+            host, tiers = storage_tiers.split_demand(self.demand_of(item))
+        except (TypeError, ValueError, PoolContractError):
+            return False
+        return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb", "spool_gb"}
+                and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
+
+    def _class_scoped_action_shape(
+        self, item: Mapping[str, object],
+    ) -> tuple[str | None, bool | None, str | None]:
+        """The action's sealed shape and measurement flag, or why unknown (#1721).
+
+        Affirmative evidence only: an unreadable, missing, mismatched or invalid
+        sealed request is ``(None, None, reason)``, never an ordinary
+        non-measurement contract.
+        """
+        try:
+            key = str(item.get("action_key", ""))
+            cas_root = item.get("cas_root")
+            if not key or not isinstance(cas_root, str) or not cas_root:
+                return None, None, "gpu_row_request_unreadable"
+            request = _sealed_action_request(cas_root, key)
+        except (OSError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, None, "gpu_row_request_unreadable"
+        if request is None:
+            return None, None, "gpu_row_request_unreadable"
+        try:
+            action = pb.validate_action(request)
+        except (ValueError, TypeError, KeyError, pb.ActionContractError):
+            return None, None, "gpu_row_request_unreadable"
+        if action.get("action_key") != key:
+            return None, None, "gpu_row_request_unreadable"
+        task = action.get("task")
+        if not isinstance(task, Mapping):
+            return None, None, "gpu_row_request_unreadable"
+        measurement = task.get("task_class") == "measurement"
+        try:
+            shape, flag = cpu_admission.action_identity(item)
+        except (OSError, ValueError, TypeError):
+            return None, None, "gpu_row_request_unreadable"
+        if shape is None or flag != measurement:
+            return None, None, "gpu_row_request_unreadable"
+        return shape, measurement, None
+
+    def _class_scoped_room(
+        self, ready_gpu: Mapping[str, object], *, ledger: "ResourceLedger",
+        total: Mapping[str, int], controller: object | None,
+        gpu_controller: object | None, observed_images: Container[str] | None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
+    ) -> tuple[dict[str, object] | None, str | None]:
+        """The room a class-scoped CPU row must leave the eligible GPU row, or why none (#1721).
+
+        Read once per pass, BEFORE host admission and under no lock. The GPU
+        row must be one a running CPU holder cannot keep from starting beyond
+        the tokens it takes: not a gang member (its election fences the host),
+        with an explicit ``cpu`` and ``mem_gb`` (an unbounded row is refused
+        whenever the box holds anything), not a measurement row (it needs an
+        idle host), and a readable sealed contract. Then the room is the
+        reservation its own claim charges (:meth:`_ready_gpu_row_room`).
+        """
+        if ready_gpu.get("gang") is not None:
+            return None, "gpu_row_is_gang_member"
+        try:
+            host, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
+            if int(host.get("cpu", 0)) <= 0 or int(host.get("mem_gb", 0)) <= 0:
+                return None, "gpu_row_cpu_unbounded"
+            shape, measurement, _why = self._class_scoped_action_shape(ready_gpu)
+            if _why is not None or shape is None:
+                return None, "gpu_row_contract_unreadable"
+            _shape, _flag, _exclusive, _budget = gpu_admission.action_contract(
+                ready_gpu, host)
+            if _shape is None:
+                return None, "gpu_row_contract_unreadable"
+        except (OSError, TypeError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, "gpu_row_contract_unreadable"
+        if measurement:
+            return None, "gpu_row_is_measurement"
+        room = self._ready_gpu_row_room(
+            ready_gpu, ledger=ledger, total=total, controller=controller,
+            gpu_controller=gpu_controller, observed_images=observed_images,
+            container_class_policy=container_class_policy,
+            container_inventory=container_inventory)
+        if room is None:
+            return None, "gpu_room_unknown"
+        return room, None
+
+    @staticmethod
+    def _class_scoped_projected_headroom(
+        room: Mapping[str, object], demand: Mapping[str, int], *,
+        cpu_count: int, holder_costs: Mapping[str, float] | None,
+        candidate_demand: Mapping[str, int] | None = None,
+    ) -> dict[str, object] | None:
+        """``None`` when the GPU row keeps adaptive headroom beside ``demand``; else why not (#1721).
+
+        The token fit is not enough: ``adaptive_cpu.decision`` refuses the GPU
+        row on ``projected_cpu_cost`` when the host's holder costs plus the GPU
+        row's own cost cross the host. This replays the owner's rule through
+        the one shared calculation (:func:`adaptive_cpu.projected_cpu_fits`)
+        with the live terms: every holder on the box plus this candidate at
+        its future busy-holder cost, including the owner's margin on accepted
+        export allowances before funding deductions, plus the GPU row at its
+        declared demand. Without holder costs the row waits: unknown is unknown,
+        never zero.
+        """
+        if holder_costs is None:
+            return {"class_scoped": "holder_costs_unreadable"}
+        try:
+            full = candidate_demand if candidate_demand is not None else demand
+            holder_cost = cpu_admission.cpu_consumption_cost(float(int(full.get("cpu", 0))))
+            gpu_cost = float(int(room["room"].get("cpu", 0)))  # type: ignore[union-attr]
+            active = float(holder_costs["active"]) + holder_cost
+            pending = float(holder_costs["pending"]) + holder_cost
+            busy = float(holder_costs["busy_cpus"])
+        except (TypeError, ValueError, KeyError):
+            return {"class_scoped": "holder_costs_unreadable"}
+        if not cpu_admission.projected_cpu_fits(
+                busy_cpus=busy, pending_cpu_cost=pending, active_cpu_cost=active,
+                requested_cpu_cost=gpu_cost, cpu_count=cpu_count):
+            return {"gpu_row": str(room["action_key"])[:12],
+                    "kept_for": "class_scoped_cpu_projected_cpu_cost",
+                    "active_cpu_cost": active, "pending_cpu_cost": pending,
+                    "host_busy_cpus": busy, "holder_cost": holder_cost, "gpu_cost": gpu_cost,
+                    "cpu_count": cpu_count}
+        return None
+
+    @staticmethod
+    def _class_scoped_beside_room(
+        room: Mapping[str, object], *, ledger: "ResourceLedger", identity: object,
+        demand: Mapping[str, int], cpu_count: int | None = None,
+        holder_costs: Mapping[str, float] | None = None,
+        candidate_demand: Mapping[str, int] | None = None,
+    ) -> dict[str, object] | None:
+        """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1721).
+
+        Called under host admission, with the row's own demand known, just before
+        it takes its tokens; it reads nothing but the free tokens. ``demand`` is
+        the token remainder this claim takes; ``candidate_demand`` is the row's
+        complete admission demand (sealed host demand plus accepted export
+        allowances, before funding deductions). The headroom check charges
+        that full cost; funding reduces only the token remainder.
+        The row passes only if, after it takes its own, ``room``
+        (:meth:`_class_scoped_room`) still fits them, and -- under adaptive
+        admission -- the projected-cost gate keeps headroom for the GPU row
+        beside every holder on the box plus this new one. Without a controller
+        there is no projected-cost gate to keep headroom for, so the token fit
+        stands alone. A measurement row is held. Later samples, learned costs,
+        host pressure and the GPU row's own later gates still decide its claim.
+        """
+        if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
+            return {"class_scoped": "measurement_row"}
+        try:
+            available = ledger.available()
+        except OSError:
+            return {"class_scoped": "free_tokens_unreadable"}
+        if any(int(available.get(kind, 0)) - int(demand.get(kind, 0)) < int(need)
+               for kind, need in room["room"].items()):  # type: ignore[union-attr]
+            return {"gpu_row": str(room["action_key"])[:12], "room": dict(room["room"]),  # type: ignore[call-overload]
+                    "kept_for": "class_scoped_cpu_beside_ready_gpu",
+                    "available": dict(available), "demand": dict(demand)}
+        if cpu_count is not None:
+            headroom = PoolQueue._class_scoped_projected_headroom(
+                room, demand, cpu_count=cpu_count, holder_costs=holder_costs,
+                candidate_demand=candidate_demand)
+            if headroom is not None:
+                if headroom.get("kept_for") != "class_scoped_cpu_projected_cpu_cost":
+                    return headroom
+                return dict(headroom, available=dict(available), demand=dict(demand))
+        return None
+
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
@@ -17596,7 +17863,8 @@ class PoolQueue:
             adaptive = controller.decision(
                 item, demand, identity=identity, owner=dependent_owner,
                 allowance=allowance,
-                foreign_load_exempt=canary_exempt)
+                foreign_load_exempt=canary_exempt,
+                include_holder_costs=request.class_room is not None)
             cpu_decision = getattr(controller, "last_decision", None)
             refused = adaptive is None
             if refused:
@@ -17608,6 +17876,8 @@ class PoolQueue:
                 "withheld_for": arbitration.blocker["action_key"],
                 "selection": arbitration.blocker, "candidate_release_bound": "UNKNOWN"})
             return _ClaimHandled.REFUSED
+        # Accepted export allowances are charged even when funding takes no free tokens.
+        class_full_demand = dict(demand)
         if funded_claim:
             # The funded kinds come from the producer's
             # allowance, not ``free/`` (#985): only the
@@ -17655,6 +17925,19 @@ class PoolQueue:
                 refused = True
                 refusal_source = "deferred_for_ready_gpu_row"
                 adaptive = None
+        if not refused and request.class_room is not None:
+            # Final token/headroom checks share the candidate's host admission lock.
+            costs = controller.holder_costs if controller is not None else None
+            why = self._class_scoped_beside_room(
+                request.class_room, ledger=ledger, identity=identity,
+                demand=reservation_demand,
+                cpu_count=len(controller.cpus) if controller is not None else None,
+                holder_costs=costs, candidate_demand=class_full_demand)
+            if why is not None:
+                refused = True
+                refusal_source = "deferred_for_ready_gpu_row"
+                adaptive = None
+                room_taken = why
         if not refused and gpu_controller is not None and demand.get("gpu"):
             adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
             gpu_decision = getattr(gpu_controller, "last_decision", None)
@@ -18867,11 +19150,31 @@ class PoolQueue:
         next_opening = candidate_policy.row_after_placement(
             item, opening, order=scan, key=key, released=released, matches=matches,
             worker_tags=tagset, has_gpu=has_gpu, ready_gpu=ready_gpu, host=host)
+        class_room = None
         if next_opening is candidate_policy.RowProbe.GPU_SCOPE:
             takes_gpu = self._demands_withheld_kind(item, frozenset({"gpu"}))
+            class_why = None
+            if (not takes_gpu and scan_pass.ledger is not None
+                    and self._class_scoped_candidate(item, reads.class_offer_records())):
+                gpu_key = str(ready_gpu["action_key"])
+                if gpu_key not in reads.class_rooms:
+                    reads.class_rooms[gpu_key] = self._class_scoped_room(
+                        ready_gpu, ledger=scan_pass.ledger, total=total,
+                        controller=scan_pass.controller, gpu_controller=scan_pass.gpu_controller,
+                        observed_images=scan_pass.observed_images,
+                        container_class_policy=scan_pass.container_class_policy,
+                        container_inventory=scan_pass.container_inventory)
+                class_room, class_why = reads.class_rooms[gpu_key]
+                if class_room is not None:
+                    _shape, measurement, why = self._class_scoped_action_shape(item)
+                    if why is not None or measurement:
+                        class_room = None
+                        class_why = "cpu_row_contract_unreadable" if why else "cpu_row_is_measurement"
             opening = candidate_policy.row_after_gpu_scope(
                 opening, order=scan, takes_gpu=takes_gpu, ready_gpu=ready_gpu,
-                total=total)
+                total=total, class_scoped=class_room is not None)
+            if isinstance(opening, candidate_policy.CandidateDenial) and class_why:
+                opening = replace(opening, evidence={**opening.evidence, "class_scoped": class_why})
         else:
             opening = next_opening
         if isinstance(opening, candidate_policy.CandidateDenial):
@@ -18891,7 +19194,7 @@ class PoolQueue:
             # regardless, and an unprovable dependency answers False
             # and claims exactly as before.
             return _ClaimHandled.REFUSED
-        return _OpenClaimRow(key, held_back)
+        return _OpenClaimRow(key, held_back, class_room)
 
     def _refuse_busy_row(self, item, opening: _OpenClaimRow, scan, scan_pass: _ClaimScan):
         fence = gpu_runtime_gate.runtime_gate_state()
@@ -19060,6 +19363,7 @@ class PoolQueue:
                         if isinstance(prepared, candidate_policy.ScanOrder):
                             order = prepared
                             continue
+                        prepared = replace(prepared, class_room=opening.class_room)
                         gang = self._prepare_claim_gang(
                             prepared, ledger=scan_pass.ledger, host_gate=scan_pass.host_gate,
                             memory=scan_pass.memory)
@@ -20651,6 +20955,22 @@ class PoolQueue:
         """Conclude the exact executed claim under the worker-result policy."""
         return lifecycle.conclude(self, lifecycle.WorkerFinish(
             action_key, status, detail, claim_snapshot))
+
+    def _recover_cleanup_obligation(self, action_key: str, generation: str, attempt: int) -> dict:
+        from .cleanup_obligation import _verify_cleanup_identity, _publish_cleanup_permit
+        if not record_store.key_shaped(action_key):
+            raise PoolContractError('cleanup recovery requires a full key')
+        with self.action_transition_lock(action_key):
+            permit = _verify_cleanup_identity(self, action_key, generation, attempt)
+            return _publish_cleanup_permit(self, permit)
+
+    def reconcile_cleanup(self, action_key: str, generation: str, attempt: int) -> dict:
+        """Verify this host's exact cleanup debt; accept identity only."""
+        record = self._recover_cleanup_obligation(action_key, generation, attempt)
+        return {'action_key': action_key, 'generation': generation, 'attempt': attempt,
+                'cleanup_obligation': record['cleanup_obligation'],
+                'resource_scope_cleanup': record['resource_scope_cleanup'],
+                'container_cleanup': record['container_cleanup']}
 
     def retire_residency_plan(self, consumer_action_key: str) -> bool:
         """Move a concluded consumer's residency plan out of the census (#1041).

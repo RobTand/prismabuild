@@ -2038,7 +2038,7 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `7`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
@@ -2047,7 +2047,28 @@ selected immutable attempt and exact execution receipt (#1481). Version 6
 exposes the generation-bound scratch lifetime contract (Refs #1360): the
 `scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
 field, its sealed variable, and a builder for the sealed selection. Earlier
-exports and capability tags remain available.
+exports and capability tags remain available. Version 7 adds the direct
+`validate_logical_request` re-export (#2149), with no new capability tag.
+
+`validate_logical_request(value: object) -> dict[str, Any]` returns the existing
+validator's canonicalized, independently owned request, including detached nested
+declarations, without mutating the input or reordering tasks. It checks common
+shape, the task roster and estimates, batching policy, placeholder use, residency
+pricing and optional task-data projections. Refusals preserve the owner's
+`ActionContractError` type and diagnostics and are `ValueError`-compatible;
+there is no additional public error alias or public planning API.
+
+Validation does not plan, stage, submit or publish anything, and does not prove
+execution feasibility. Structurally valid requests with impossible batching
+budgets still validate. Declared cwd, argv and manifests do not establish that
+executable inputs or resources exist or are available.
+
+This is a source-only additive SDK release. Source availability does not establish
+availability in PQ's installed or sealed generation. Handoff must identify the
+reviewed PB revision and SDK7 contract for TrustLadder/the authorized publisher
+to publish before consumer adoption. This change neither requires a concurrent
+PQ change nor modifies PQ's pinned runtime, publishes fleet runtime or performs
+workflow transitions.
 
 The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
 SDK5 consumers must keep their existing behavior.
@@ -2078,10 +2099,11 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 6).**
+**The surface (version 7).**
 
 | Area | Names |
 |---|---|
+| Logical-request validation | `validate_logical_request` |
 | Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
 | The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
 | The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
@@ -2096,8 +2118,8 @@ names the generation root, never `src`; the client appends `src` itself.
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
 `prismabuild.data_manifest` owns manifest parsing, validation, format limits and
-the declared-input identifier. The SDK keeps its existing manifest names and
-version 6. The parser uses Core's existing validation helpers; Core does not
+the declared-input identifier. SDK7 keeps the existing manifest names and
+behavior. The parser uses Core's existing validation helpers; Core does not
 import the manifest module. Manifest changes therefore stay outside the
 attested run-local and profiling implementation. `manifest_layout` retains
 the pure read-order operations.
@@ -5044,12 +5066,34 @@ leg's typed wait. Historical free-text failures are not reclassified.
 The leg-3 classification requires the exact submitted generation's verified
 immutable attempt stdout and its explicit `staging_wait` marker. The driver
 retains per-leg action keys and reasons in its run summary; a supporting
-publisher carries that summary in rollout detail. Bounded waits, progress,
-admission and activation are unchanged. No wait or missing evidence passes.
+publisher carries that summary in rollout detail. Progress, admission and
+activation retain their existing gates. No wait or missing evidence passes.
 This change requires rollout-verdict/interface review before merge/publication;
 source/component validation establishes neither deployment nor a live canary.
 The running fleet adopts these semantics only when a carrying generation is
 published.
+
+**Leg-3 observation patience (#1772).** A feasible higher-priority window may
+retain the same tier for longer than any finite canary observation budget.
+The canary therefore keeps observing its original leg-3 action after `pbwait`
+returns 75, using bounded 900-second observation intervals with no default
+total wait limit. Each interval records its observation before another begins.
+This repeats observation only: the driver neither resubmits the action nor
+changes its priority, sealed request, residency plan, reservations or attempts.
+An outcome-read failure (74), process observation timeout or terminal failure
+ends observation through the existing non-verification or failure path.
+Receipt, staged-serving and accepted-progress verification still decide success.
+
+Standalone `pbcanary --leg3-wait-s SECONDS` supplies one positive finite total
+observation budget, measured from the first observation and never renewed.
+Expiry is NOT VERIFIED and retains the action key; it implies neither
+withdrawal nor containment. Other legs retain their fixed waits. Leg 3's
+600-second execution deadline and staged-read progress allowances remain
+independent of admission patience. Cancellation stops the observer, not the
+submitted action. Qualification completes only if contention eventually drains
+and the action executes and verifies. A publisher waiting on leg 3 can retain
+its publication lock indefinitely; this policy requires release-owner review.
+Source validation of this repair supplies no live-canary or deployment proof.
 
 **Publisher GPU boundary slot (#1213; approved 2026-09-27).** The publication
 canary's single GPU leg targets the publisher's GPU host and is submitted before
@@ -6254,9 +6298,22 @@ attributed job at a time. Absent power *without* the declaration remains
 invalid, so this narrows one declared class of device rather than weakening the
 contract for every sample.
 
-Attribution on such a host is a census of the GPU device node's open handles in
-`/proc`, routed through the same PID start-time and cgroup-identity checks as
-the NVML rows. It resolves ownership and reports no per-process bytes, which
+NVIDIA process attribution first runs a bounded compute-app discovery query,
+then captures start-time and cgroup membership only for those candidate PIDs.
+A separate compute-app query supplies measured bytes; fresh identities after
+measurement must match the pre-measurement identities. Discovery counters are
+never attributed. Empty discovery still requires measurement, and a PID first
+seen in measurement stays unknown/incomplete. Failed discovery performs no
+process-identity census, including with no active scopes; idle foreign inventory
+is still collected. Both queries and identity work share one collection deadline,
+with each query capped by the remaining budget and exhaustion incomplete even
+for empty rows. Scope inode fencing and Guard confirmations remain unchanged.
+
+Attribution on an AMD/WSL host is still a census of the GPU device node's open
+handles in `/proc`, bracketed by fresh PID start-time and cgroup-identity reads.
+The pre-measurement identities cover host PIDs because previously idle processes
+can open handles; pidfds do not announce those opens. This is not event-driven
+discovery, and mutable memberships, counters and capacity are not stably cached. It resolves ownership and reports no per-process bytes, which
 the sample declares as `gpu_process_bytes: false` and each scope as
 `gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
 violation it has no counter for. Ownership unknown still refuses; bytes unknown
@@ -6521,11 +6578,56 @@ lock or timeout, and grants no GPU or CPU admission credit.
 A CPU row whose sealed tags include this host's hostname is pinned, whether
 by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
 a GPU are also unchanged. The rule is evaluated once from the existing READY
-snapshot before candidate transition locks, and a deferred CPU row records
+snapshot before candidate transition locks, and a deferred portable CPU row records
 `deferred_for_ready_gpu` without a pass or reservation. It adds no census,
 transition, or host-admission lock and does not change GPU admission, GPU row
 order, measurement election, or running claims. The READY snapshot remains
 advisory; the existing per-key transition and claim rename still decide ownership.
+
+Rob approved the following limits on 2026-10-25 through PRI-31 confirmation
+`7c2a2fb9-0d6a-444b-b9f0-9963002ab7ab`, bound to policy-decision revision
+`3d0d1914-ce34-4afa-887e-6a65efd5db21`. This approves source policy; independent
+review, merge, and release remain separate gates.
+
+Class-bound CPU work whose complete explicit tag conjunction excludes every recorded CPU-only host
+can pass this READY-GPU guard (#1721, #1589). Stale offers still establish
+class membership; an absent interpreter answer never makes portable work
+class-bound. Both a known CPU-only offer and a matching GPU class tag are
+required. Unknown GPU presence on any recorded host, or missing or malformed
+tags on a recorded CPU-only host, keeps the guard in place. Automatic capability
+tags cannot establish class exclusion. Unknown
+interpreter evidence on a CPU-only offer cannot promote portable work to this
+exception. The candidate must have a readable non-measurement contract, bounded
+CPU and memory demand, optional bounded host `spool_gb`, no gang, and no tier or
+fill demand. Each offer must satisfy the complete required tag set. The eligible GPU
+row must have a readable sealed contract, bounded CPU and memory, and be neither
+a measurement nor a gang member. Its existing room calculation retains image, residency, GPU
+sample and export-allowance checks, outside host admission.
+
+At reservation, under the existing host admission lock, free tokens after the
+CPU candidate must still fit that GPU room. Adaptive placement also keeps
+projected CPU headroom beside every current holder and the new candidate,
+using the same `adaptive_cpu.projected_cpu_fits` calculation as CPU admission.
+The candidate pays its future busy-holder cost: complete admission CPU demand
+times the adaptive owner's 1.25 margin, including accepted export allowances
+before funding deductions. Funding reduces only its free-token remainder.
+Current holder costs are calculated once by `adaptive_cpu` and reused for
+room protection, including funded candidates; the pool does not rescan or
+reprice holders. Host spool tokens use the same remaining-room check as CPU
+and memory. Missing holder costs or stale samples grant no exemption. Refusal
+records `deferred_for_ready_gpu_row` without aging or taking a reservation.
+Ordinary CPU/GPU admission, host memory checks, preemption and #1929 guest
+marking still apply. Explicit class tags do not make these rows portable guests.
+
+This source repair removes #1589's READY-GPU starvation when the bounded
+arm64 prerequisite, including the original row's `spool_gb`, fits beside the
+GPU row. It also prevents repeated class replacements from starving a GPU
+whose future adaptive headroom they would consume.
+Runtime publication and live qualification, including gang behavior across a
+runtime roll, remain separate.
+These checks guarantee current reservation and projected CPU-cost headroom.
+Later telemetry, host pressure, and the GPU row's other gates can still delay
+its claim. No staged-read requirement's deployment or workload-proof status changes.
 
 Idle GPU hosts now take restartable portable CPU work first (#1929, Rob,
 2026-10-21). Idle means no PB GPU reservation, fresh trusted GPU capacity
@@ -7068,6 +7170,54 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
+A broker refusal before scope creation leaves an exact cleanup obligation
+(#2270). `cleanup_obligation` binds action key, publication generation, attempt,
+claimant, claiming host and scope nonce. The pending claim keeps its saved
+command outcome and capacity until cleanup is proved. A connection refusal
+cannot establish whether a delayed create reached the broker, so releasing
+capacity at that boundary would permit overlapping unproved work. The existing
+owning-host finish recovery retries the obligation after connectivity returns.
+
+Companion records retain their separate roles during verification. A withdrawal
+is a generation-scoped cancellation decision; the worker or reaper still owns
+its claim, lease and reservation. A valid distinct READY successor may wait
+behind that claim. Cleanup verifies only the saved owner's exact scope and
+leaves the successor and cancellation decisions intact. If a newer cancellation
+occupies the visible marker, ordinary conclusion archives the older cancelled
+attempt under its own generation. Same-generation READY, DONE, duplicate
+physical owners, malformed companions and contradictory claim or lease identity
+refuse recovery before cleanup effects or capacity release.
+READY coexistence compares generation identity without timestamp ordering,
+preserving public resubmission after a clock rollback. READY shape and demand
+validation share one validator with chronological publication-supersession
+checks; those other callers retain their existing ordering rule.
+
+`pbwait --reconcile-cleanup --generation <digest> --attempt <number> <key>`
+provides explicit recovery on the claiming host, including historical failed
+attempts whose tokens were already released. Its public authority accepts only
+identity. It derives claim, immutable attempt/logs, intent and broker address
+from durable state. A fresh random challenge binds the broker response to this
+verification. The broker fences an absent nonce against delayed creation before
+attesting absence, or confirms that its exact recorded scope is released and
+absent. An existing kernel scope, unknown authority, conflicting identity,
+foreign host or stale reply refuses recovery. Container cleanup must also
+succeed. Verification mints a queue-bound single-use capability; the final writer
+checks that capability and rereads the same durable owner before publication.
+Plain, forged, copied, subclassed and serialized values grant no authority.
+
+The immutable `<number>.cleanup-recovery.json` supplement preserves the original
+owner record, its canonical digest and verified scope/container evidence. The
+mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
+obligation. Original command status, immutable attempts, logs, generation and
+publication endings remain intact. A crash between supplement and summary is
+replayable only after another fresh verification. Replay binds the saved claim
+identity and scope intent while allowing cleanup counters and recovered control
+to advance after a partial summary write. `pb_action` exposes pending
+obligations independently of the command outcome. This operation neither
+creates success receipts nor changes an already released reservation. This is
+source support; deployment and reconciliation of the two live actions require
+the lead's separate runtime publication and operator execution.
+
 Pool receipt reconciliation is an explicit evidence operation, exposed by
 `pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
 It requires the current failed submission generation and its final immutable
@@ -7255,7 +7405,12 @@ things that answer different questions: NFS per-operation queue time and
 round-trip time differenced from `/proc/self/mountstats`, which costs the mount
 no operation and therefore keeps reporting when the mount does not, and a
 bounded set of timed syscalls including the create/rename/unlink the claim path
-performs. The queue/rtt split is the attribution -- time at the server against
+performs. Claim scratch is created empty and closed before rename and unlink:
+the dirty-file cycle retained NFS server open states in #1917, while the empty
+cycle preserved the RENAME diagnostic without retention in the bounded private
+reproduction. This is a source repair, not evidence that the deployed collector
+has changed or that already-retained states have been reclaimed.
+The queue/rtt split is the attribution -- time at the server against
 time this client could not send -- and it separates a healthy mount from a
 client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
@@ -9310,6 +9465,21 @@ The loop now keeps what it read from one cycle to the next, on its
   explicit `RecordStore.kept` questions for receipts, state records and
   withdrawal names. Helpers receive that Store directly. Residency's
   `EpochRecords` uses the same C11 reader for fragment headers.
+  Receipt thaws are retained by the exact frozen input returned by that
+  reader (#2172). Its six-field file identity, current filesystem trust and
+  coarse-clock fence qualify every reuse; an untrusted or same-tick parse
+  produces a new frozen input and invalidates the thaw. Removed names are
+  forgotten. The active/retired merge is reused only while the reader and
+  all participating directory generations and observed receipt names hold.
+  A receipt filed in the read's coarse clock tick, or on an untrusted
+  filesystem, can be returned without being kept. Removing that receipt
+  before the next read need not advance the kept-set generation, even while
+  other receipts remain. The observed names invalidate both `fill_supply`
+  and `mover_cap` in this case. Public receipt reads still
+  detach every JSON container. The cycle's native discovery and folds read
+  the private retained inputs; extension discovery callbacks receive copies.
+  This skips repeated thawing and merging of unchanged receipt inputs.
+  Clock-sensitive discovery, liveness, policy and ledger decisions stay fresh.
 - `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
@@ -10117,6 +10287,14 @@ sequence behavior. It invalidates descendants observed and deleted before their
 watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
+
+Host-tree watch removal compares normalized path strings (#2173). The removed
+root and its slash-terminated prefix are computed once per removal. Each
+installed Path supplies its cached normalized string; the watch loop compares
+that string for equality or the descendant prefix, without constructing Paths
+or running per-watch pathlib ancestry checks. Exact component boundaries keep
+sibling host names distinct. Removal order, inode-watch retirement, coverage
+resets, event ordering and v1/v2 reply fields are unchanged.
 
 The v2 client methods perform one bounded request. They positively check requested
 topics before accepting a cursor or successful wait. They introduce no consumer

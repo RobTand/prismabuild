@@ -1524,6 +1524,29 @@ After a 75 that says the fate of a submission is unknown, run the `squeue` in
 the message instead. There is nothing to wait on: no submission was recorded,
 because none is known.
 
+### Verify cleanup after a broker refusal before creation
+
+Run on the action's claiming host after publishing a runtime with #2270:
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbwait.py \
+  --reconcile-cleanup --generation GENERATION_SHA256 --attempt 1 ACTION_KEY
+```
+
+Use the exact publication generation and attempt from the ending. The command
+derives its intent and evidence internally. It refuses an existing scope,
+wrong host or identity, unavailable broker, stale response, or unproved
+container cleanup. It supports failed historical attempts with released tokens
+and pending claims that still hold capacity. For a pending claim, the owning
+worker's normal finish recovery subsequently returns capacity. It preserves
+the command failure and immutable history, appends verified recovery evidence,
+and resolves the separate cleanup obligation shown by `pb_action`.
+
+A withdrawal keeps its cancellation decision while the worker completes
+cleanup. A distinct READY successor can wait behind the original claim.
+Reconciliation leaves both intact; ordinary finish then returns the original
+capacity and retains the cancelled attempt's cleanup under its generation.
+
 ### Recover a receipt after a pool broker reply is lost
 
 A broker connection can close while its payload completes and publishes a
@@ -4219,6 +4242,15 @@ bitwise-equal across sparky+sparklina). A failed canary marks and exits
 nonzero; it never rolls back and never touches admission. This source
 default reaches the fleet only when a generation carrying it is published.
 See the [canary runbook](canary_runbook_2026-09-19.md).
+
+Leg 3 observes its original action in 900-second intervals until a terminal
+outcome, unless the operator cancels or sets `pbcanary --leg3-wait-s SECONDS`.
+That option sets one total observation budget; expiry is NOT VERIFIED and
+retains the action key. It does not withdraw or retry the action. The
+600-second payload execution deadline still applies after launch. Higher-priority
+work may keep qualification pending, and the publishing process may retain its
+publication lock throughout that wait. See the runbook's
+[observation contract](canary_runbook_2026-09-19.md#leg-3-observation-patience).
 
 ## Smoke-test a transport
 
