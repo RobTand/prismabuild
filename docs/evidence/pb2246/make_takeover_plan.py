@@ -25,8 +25,6 @@ def main():
         first_test = next(i for i, value in enumerate(argv)
                           if value.startswith('tests/'))
         row['argv'] = argv[:first_test] + selection
-        if row['tags'] == ['gb10']:
-            row['tags'] = []
         row['env']['TMPDIR'] = '/home/rob/pbt17'
     args.output.write_text(json.dumps(rows, indent=2) + '\n')
 
