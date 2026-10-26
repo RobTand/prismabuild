@@ -10,8 +10,7 @@ from types import SimpleNamespace
 KEY, HOST = "uuid:compat", "compat-host"
 
 
-def operate(request, store, load):
-    family, variant = request["case"].split("/", 1)
+def prepare(store, load):
     ff, pool = load("prismabuild.filesystem_floor"), load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
     queue.records.ensure_layout()
@@ -32,6 +31,12 @@ def operate(request, store, load):
     member = ("tier-reservations", "compat-stage", "stage_gib")
     binding = ff.register(queue.root, root, members=[member], filesystem_gib=4,
                           filesystem_ledger="compat-fs", now=100.0)["binding"]
+    return ff, pool, queue, root, member, binding
+
+
+def operate(request, store, load):
+    family, variant = request["case"].split("/", 1)
+    ff, pool, queue, root, member, binding = prepare(store, load)
     directory = ff.fs_dir(queue.root, KEY)
     write = request["op"] == "write"
     if family == "floor-owner":
