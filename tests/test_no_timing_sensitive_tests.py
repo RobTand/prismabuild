@@ -912,3 +912,30 @@ def outer():
 """
     assert scan_timing_source(source) == {
         TimingIdentity("tests/snippet.py", "outer.inner", "get"): 2}
+
+
+def test_assigned_time_module_aliases_retain_sleep_provenance():
+    for source in (
+        "import time; clock = time; clock.sleep(1)",
+        "import time; clock = time; callback = clock.sleep",
+        "import time as t; first = t; clock = first; register(clock.sleep)",
+        "import time; first = clock = time; callback = clock.sleep",
+        "import time; clock: object = time; callback = clock.sleep",
+        "import time; callback = (clock := time).sleep",
+        "import time; (clock := time); callback = clock.sleep",
+        "import time; later = clock; clock = time; callback = later.sleep",
+    ):
+        assert scan_timing_source(source) == {
+            TimingIdentity("tests/snippet.py", "<module>", "sleep"): 1}, source
+
+
+def test_assigned_module_aliases_preserve_zero_and_fake_clock_controls():
+    for source in (
+        "import time; clock = time; clock.sleep(0)",
+        "import time; clock = time; clock.sleep(0.0)",
+        "import time; clock = fake_clock; clock.sleep(1)",
+        "import time; clock = getattr(holder, 'time'); clock.sleep(1)",
+        "def real():\n import time; clock = time\ndef fake(clock):\n clock.sleep(1)",
+        "import time; clock = time\ndef fake(clock):\n clock.sleep(1)",
+    ):
+        assert not scan_timing_source(source), source
