@@ -165,6 +165,45 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(proof["on_default"])
         self.assertEqual(api.calls[1][2]["cursor"], "next")
 
+    def test_unavailable_native_blockers_preserve_other_evidence_and_collection(self):
+        for refusal in ("HTTP 403", "HTTP 404"):
+            with self.subTest(refusal=refusal):
+                api = FakeAPI()
+                first = node()
+                second = node(2)
+                def repository(values):
+                    return {"repository": {"defaultBranchRef": {"name": "main", "target": {"oid": "head"}},
+                                           "issues": page(values)}}
+                api.graphql_results = [repository([first, second]), repository([first, second])]
+                for number in (1, 2):
+                    base = f"repos/{REPO}/issues/{number}"
+                    api.page_results[f"{base}/comments"] = [{"html_url": "comment", "body": "Evidence remains readable"}]
+                    api.page_results[f"{base}/timeline"] = [{"event": "closed", "created_at": NOW}]
+                    api.page_results[f"{base}/dependencies/blocked_by"] = []
+                pages = api.pages
+                def read_pages(path):
+                    if path == f"repos/{REPO}/issues/1/dependencies/blocked_by":
+                        raise fetch.GitHubError(refusal)
+                    return pages(path)
+                api.pages = read_pages
+                result = fetch.Collector(api, SINCE, [REPO]).collect()
+                issues = {value["number"]: value for value in result["issues"]}
+                self.assertEqual(set(issues), {1, 2})
+                self.assertFalse(issues[1]["blockers_complete"])
+                self.assertEqual(issues[1]["blockers"], [])
+                self.assertTrue(issues[1]["comments_complete"])
+                self.assertTrue(issues[1]["timeline_complete"])
+                self.assertEqual(len(issues[1]["comments"]), 1)
+                self.assertTrue(issues[2]["blockers_complete"])
+                limitations = result["coverage"]["limitations"]
+                self.assertEqual(len(limitations), 1)
+                self.assertIn(f"{REPO}#1", limitations[0])
+                self.assertIn(refusal, limitations[0])
+
+    def test_parent_declaration_targets_use_the_graph_parent_parser(self):
+        self.assertEqual(fetch.relation_targets("Parent: #2. D50 item 4.\nSplit from #3", REPO),
+                         {f"{REPO}#2"})
+
     def test_normalize_preserves_reopens_blockers_and_parent_targets(self):
         api = FakeAPI()
         value = node(parent={"number": 2, "repository": {"nameWithOwner": REPO}})
