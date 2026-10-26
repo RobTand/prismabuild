@@ -243,18 +243,29 @@ def candidate(kind: str, tickets: list[str], proof: list[str], **details) -> dic
             "tickets": sorted(tickets), "proof": proof, **details}
 
 
-def candidates(snapshot: Snapshot) -> list[dict]:
-    scope = sorted((i for i in snapshot.issues.values() if i.in_scope), key=lambda i: i.key)
-    result = []
+def duplicate_clusters(scope: list[Issue]) -> list[list[str]]:
     titles = {i.key: re.sub(r"\W+", " ", PREFIX.sub("", i.title).casefold()).strip() for i in scope}
+    groups = []
     for n, issue in enumerate(scope):
         for other in scope[n + 1:]:
             left, right = titles[issue.key], titles[other.key]
             if left and right and (left == right or (len(left) >= 30 and len(right) >= 30 and
                                                        SequenceMatcher(None, left, right).ratio() >= .92)):
-                result.append(candidate("duplicate_cluster", [issue.key, other.key],
-                                        [url(issue.key), url(other.key)],
-                                        reason="Title similarity requires semantic review; it does not prove an exact duplicate."))
+                groups.append([issue.key, other.key])
+    return groups
+
+
+def claim_sources(issue: Issue) -> list[str]:
+    texts = [(url(issue.key), issue.body)] + [(c["url"], c["body"]) for c in issue.evidence.get("comments", [])]
+    return [source for source, body in texts if CLAIM.search(body) and not PROOF.search(body)]
+
+
+def candidates(snapshot: Snapshot) -> list[dict]:
+    scope = sorted((i for i in snapshot.issues.values() if i.in_scope), key=lambda i: i.key)
+    result = [candidate("duplicate_cluster", members, [url(k) for k in members],
+                        reason="Title similarity requires semantic review; it does not prove an exact duplicate.")
+              for members in duplicate_clusters(scope)]
+    for issue in scope:
         fixes = issue.evidence.get("fixes", [])
         default_oid = snapshot.repositories.get(issue.repo, {}).get("default_oid")
         verified = [f for f in fixes if f.get("on_default") is True and f.get("closes_issue") is True
@@ -274,8 +285,7 @@ def candidates(snapshot: Snapshot) -> list[dict]:
             if complete and states and all(s == "CLOSED" for s in states.values()):
                 result.append(candidate("dead_blocked_chain", [issue.key], [url(issue.key)] + [url(r) for r in states],
                                         blockers=states, labels=sorted(issue.labels & BLOCKED)))
-        texts = [(url(issue.key), issue.body)] + [(c["url"], c["body"]) for c in issue.evidence.get("comments", [])]
-        unproven = [source for source, body in texts if CLAIM.search(body) and not PROOF.search(body)]
+        unproven = claim_sources(issue)
         if unproven:
             result.append(candidate("claim_without_evidence", [issue.key], unproven,
                                     reason="Claim words without a linked commit or PR; human review must check context."))
@@ -291,7 +301,7 @@ def write_list(snapshot: Snapshot, found: list[dict], hindsight: dict | None = N
             continue
         link = graph.links[k]
         parent = snapshot.issues.get(link.target)
-        _, diagnostics = graph.trace(k)
+        root, diagnostics = graph.trace(k)
         if parent and parent.state == "CLOSED":
             rows.append({"action": "create_parent", "issue": k, "target": None,
                          "proof": [url(k), url(parent.key)], "status": "needs_parent_design",
