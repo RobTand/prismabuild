@@ -1674,8 +1674,8 @@ class ResourceMonitor:
             _atomic(path,current)
             return True
 
-    def poll_once(self):
-        records=self._records();stopped=[];errors=[]
+    def _observe_scopes(self,records):
+        stopped=[];errors=[]
         # Only a local OOM identifies exhaustion of this aggregate limit.
         # Hierarchical victim counts also include safely contained child OOMs.
         # Stop at local exhaustion even before a victim appears: allocation
@@ -1705,6 +1705,9 @@ class ResourceMonitor:
                               'oom_kill_baseline':baseline,'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
+        return stopped,errors
+
+    def _sample_numeric(self,records,stopped,errors):
         scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
                     **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
                        if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
@@ -1728,6 +1731,9 @@ class ResourceMonitor:
                                   decision.reason,decision.as_dict()):stopped.append(decision.scope_id)
                 except (OSError,ValueError,KeyError) as exc:
                     errors.append({'scope_id':decision.scope_id,'error':str(exc)[:1500]})
+        return snapshot,device_readings
+
+    def _publish_sample(self,records,stopped,errors,snapshot,device_readings):
         status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
                 'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
         if self.capacity is not None and snapshot is not None:
@@ -1741,6 +1747,13 @@ class ResourceMonitor:
                 public['errors'].append('scope inventory changed or monitor errors during sample')
             _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
         _atomic(self.authority.state_dir/'monitor.status',status)
+        return status
+
+    def poll_once(self):
+        records=self._records()
+        stopped,errors=self._observe_scopes(records)
+        snapshot,device_readings=self._sample_numeric(records,stopped,errors)
+        status=self._publish_sample(records,stopped,errors,snapshot,device_readings)
         self.last_success_monotonic=time.monotonic()
         return status
 
