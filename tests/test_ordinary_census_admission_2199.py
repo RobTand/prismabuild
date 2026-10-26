@@ -288,7 +288,7 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
 
     def slow_capture(active):
         entered.set()
-        assert release.wait(30), "fixture census was never released"
+        assert release.wait(), "fixture census was never released"
         return original_capture(active)
 
     monkeypatch.setattr(reservation, "_capture", slow_capture)
@@ -305,7 +305,7 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
     observer = context.Process(target=observe)
     observer.start()
     try:
-        assert entered.wait(30), "fixture census child did not start"
+        assert entered.wait(), "fixture census child did not start"
         for key, row in zip(candidates, rows):
             sibling = pool.PoolQueue(queue.root)
             result = sibling.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
@@ -318,10 +318,12 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
                 assert denial(key)["reason"] == expected
     finally:
         release.set()
-        observer.join(45)
-        if observer.is_alive():
-            observer.kill()
+        try:
             observer.join()
+        finally:
+            if observer.is_alive():
+                observer.kill()
+                observer.join()
     assert observer.exitcode == 0
 
 

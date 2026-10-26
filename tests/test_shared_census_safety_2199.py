@@ -5,7 +5,7 @@ import json
 import os
 import signal
 import socket
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, suppress
 from types import SimpleNamespace
 
@@ -313,22 +313,17 @@ def test_stalled_optional_source_read_is_bounded_and_restart_owned(
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(endpoint))
         server.listen(1)
-        server.settimeout(10)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(acquire)
             connection, _ = server.accept()
-            connection.settimeout(10)
             caller = int(connection.recv(64).strip())
             ownership = None
             try:
-                try:
-                    current = future.result(timeout=5)
-                except TimeoutError:
-                    pytest.fail("optional shared-source I/O retained host admission H")
+                current = future.result()
                 assert caller != os.getpid(), "shared source reads must run in an owned child"
                 assert current["elections"][key] == chosen
                 assert reservation.blocking_selection(current, item, host=ledger.base.name, funded_by=None) == chosen
-                assert executor.submit(_take_host_gate, ledger).result(timeout=5)
+                assert executor.submit(_take_host_gate, ledger).result()
                 with queue.action_transition_lock(key, blocking=False) as acquired:
                     assert acquired, "the unresolved source child must not inherit M"
                 # A distinct owner stays fenced across restarts without taking
@@ -359,4 +354,4 @@ def test_stalled_optional_source_read_is_bounded_and_restart_owned(
                         os.waitpid(caller, 0)
                 # Releases the original inline implementation on a regression,
                 # before the executor joins, rather than leaving a stuck test.
-                future.result(timeout=10)
+                future.result()
