@@ -5,6 +5,7 @@ import time
 import pytest
 
 from fleet_world import FleetWorld
+from filesystem_floor_fixture import closed_coverage
 from prismabuild import filesystem_floor as ff
 
 
@@ -16,7 +17,7 @@ def world(tmp_path, monkeypatch):
 
     def identify(path):
         return dict(path=str(Path(path)), key="uuid:private-test-filesystem",
-                    fstype="ext4", source="/dev/test-only", device=1, **space)
+                    fstype="ext4", source="/dev/test-only", device=1, mount_id=34, **space)
 
     monkeypatch.setattr(ff, "identify", identify)
     monkeypatch.setattr(ff, "_sample", lambda found: dict(space))
@@ -34,15 +35,7 @@ def bind(world, *members, closed=True, **coverage_changes):
     binding = ff.register(queue.root, root, members=members)["binding"]
     if not closed:
         return binding
-    coverage = dict(version="test-coverage-v1", mapping_version="test-mapping-v1",
-                    population_version="test-population-v1", bounds_version="test-bounds-v1",
-                    configuration_version="test-config-v1", writer_fence="test-owner-protocol",
-                    authority="private test fixture", evidence=["synthetic test evidence"],
-                    scope_sha256=ff.coverage_identity(binding),
-                    valid_from_unix=time.time() - 60, valid_until_unix=time.time() + 600,
-                    bytes_per_token={ff.member_id(*m): ff.BYTE_KINDS[m[2]] for m in members},
-                    additional_bytes=0)
-    coverage.update(coverage_changes)
+    coverage = closed_coverage(binding, **coverage_changes)
     return ff.register(queue.root, root, members=members, coverage=coverage)["binding"]
 
 
@@ -185,6 +178,15 @@ def test_nfs_mapping_is_bound_to_the_exact_mount_incarnation(world, monkeypatch)
     assert all(not v["allowed"] for v in ff.check_paths(queue.root, [root]))
 
 
+def test_local_remount_holds_before_the_next_owner_refresh(world, monkeypatch):
+    queue, _, root = world
+    bind(world, ("reservations", "test-host", "spool_gb"))
+    found = ff.identify(root)
+    monkeypatch.setattr(ff, "identify", lambda path: {**found, "mount_id": found["mount_id"] + 1})
+    verdicts = ff.check_paths(queue.root, [root])
+    assert verdicts and all(not v["allowed"] and v["reason"] == "mapping_unknown" for v in verdicts)
+
+
 def test_native_mount_probe_uses_statx_and_never_fdinfo(tmp_path, monkeypatch):
     import os
 
@@ -221,6 +223,39 @@ def test_growth_cannot_treat_a_server_address_as_an_export_mapping(world, monkey
         with ff.operation(queue.root, growth_gib={root: 1}):
             pytest.fail("unmapped export entered the write window")
     assert not ledger.held()
+
+
+def test_growth_uses_the_authenticated_export_even_without_server_address_routing(world, monkeypatch):
+    import os
+    from prismabuild.pool import ResourceLedger
+
+    queue, _, root = world
+    ledger = ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="growth")
+    ledger.ensure_capacity({"filesystem_gib": 8})
+    alias = dict(server="192.0.2.1", source="example:/mapped-export",
+                 machine_id=ff._machine_id(), boot_id=ff._floor_boot_id(),
+                 mount_namespace=os.stat("/proc/self/ns/mnt").st_ino, device=12, mount_id=34)
+    bind(world, (ff.FILESYSTEM_RESERVATIONS, "growth", "filesystem_gib"), nfs_aliases=[alias])
+    remote = dict(ff.identify(root), key=None, fstype="nfs4", server=alias["server"],
+                  source=alias["source"], device=12, mount_id=34)
+    monkeypatch.setattr(ff, "identify", lambda path: remote)
+    with ff.operation(queue.root, growth_gib={root: 1}):
+        assert ledger.held() == {"filesystem_gib": 1}
+    assert not ledger.held()
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({"bytes_per_token": {}}, "bounds_unknown"),
+    ({"additional_bytes": None}, "bounds_unknown"),
+    ({"valid_until_unix": 0}, "population_unknown"),
+    ({"scope_sha256": "unknown-mapping"}, "mapping_unknown"),
+])
+def test_unknown_or_expired_coverage_never_admits(world, changes, reason):
+    queue, _, _ = world
+    bind(world, ("reservations", "test-host", "spool_gb"), **changes)
+    host = queue.ledger("test-host")
+    assert not host.acquire("a" * 64, {"spool_gb": 1})
+    assert host.last_token_shortage["reason"] == reason
 
 
 def test_older_refresh_cannot_overwrite_a_newer_incomplete_census(world, monkeypatch):

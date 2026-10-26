@@ -11,21 +11,44 @@ from test_a_mover_stages_the_range_it_declared_and_no_more import _args, _manife
 from test_local_resident_mover import world
 from local_resident_space import roomy_disk  # noqa: F401
 from test_prewarm_rollout import role  # noqa: F401
+from filesystem_floor_fixture import closed_coverage
 
 pytestmark = pytest.mark.usefixtures("roomy_disk")
+_enforce_paths = floor.enforce_paths
 
 
 def guard(monkeypatch, denied=None, *, on_check=None):
     checked = []
+    initialized = set()
+    space = dict(size_bytes=100 * floor.GIB, free_bytes=10 * floor.GIB,
+                 size_inodes=1000, free_inodes=900, floor_inodes=50, inode_refusal=None)
+
+    def identify(path):
+        blocked = denied is not None and Path(path).is_relative_to(denied)
+        return {**space, "path": str(path),
+                "key": "uuid:caller-refused" if blocked else "uuid:caller-test",
+                "source": "/dev/test-refused" if blocked else "/dev/test-only",
+                "device": 2 if blocked else 1, "mount_id": 2 if blocked else 1, "fstype": "ext4",
+                **({"free_bytes": 0} if blocked else {})}
+
+    monkeypatch.setattr(floor, "identify", identify)
+    monkeypatch.setattr(floor, "_sample", lambda found:
+        {**space, "free_bytes": found["free_bytes"]})
+    monkeypatch.setattr(floor, "_host_addresses", lambda: [])
+    monkeypatch.setenv(floor.MODE_ENV, "enforce")
 
     def enforce(queue_root, paths, *, label):
         paths = [Path(path) for path in paths]
+        if str(queue_root) not in initialized:
+            for root in [queue_root] + ([] if denied is None else [denied]):
+                binding = floor.register(queue_root, root)["binding"]
+                floor.register(queue_root, root,
+                    coverage=closed_coverage(binding, additional_bytes=4 * floor.GIB))
+            initialized.add(str(queue_root))
         checked.extend(paths)
         if on_check is not None:
             on_check(paths)
-        if denied is not None and any(path == denied for path in paths):
-            raise floor.FloorRefused([floor.floor_refusal(str(denied), "below_floor")])
-        return []
+        return _enforce_paths(queue_root, paths, label=label)
 
     monkeypatch.setattr(floor, "enforce_paths", enforce)
     return checked
@@ -165,11 +188,16 @@ def test_resident_copy_checks_nested_destinations_before_publication(tmp_path, m
         (partial / "nested" / "weights").write_bytes(b"weights")
     refused = (final if state == "final" else partial) / "nested"
     checked = guard(monkeypatch, refused)
+    previous = store.read_copy(record["set_id"], "test-host")
 
     with pytest.raises(floor.FloorRefused):
         local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert refused in checked
-    assert store.read_copy(record["set_id"], "test-host")["state"] != "resident" or state == "final"
+    result = store.read_copy(record["set_id"], "test-host")
+    if state == "final":
+        assert result == previous
+    else:
+        assert result["state"] != "resident"
 
 
 def nested_world(tmp_path):
@@ -180,6 +208,7 @@ def nested_world(tmp_path):
     (root / "weights").rename(nested)
     manifest = {**original["manifest"], "entries": [
         {**original["manifest"]["entries"][0], "path": str(nested)}]}
+    pool.PoolQueue(store.queue_root).tier("local:test-host").mint({"local_gib": 2})
     record = store.publish(manifest=manifest, canonical_root=str(root),
         hosts=["test-host"], lease={"until": 150, "hard_max": 200},
         created_by="test", now=100)
