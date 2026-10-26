@@ -1186,7 +1186,9 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
             for key in busy:
                 # Mid-transition under another loop: fenced for this pass.
                 chosen = current["selections"].get(key, discovered["selections"][key])
+                current["selections"][key] = chosen
                 current["elections"][key] = chosen
+            current["keys"] = sorted(set(current["keys"]) | busy)
             # A success/cancellation slot is not physical ownership settlement.
             # Under H, retained tokens on this elected host still prevent refill.
             for holder in ledger.holder_census().non_private_holders:

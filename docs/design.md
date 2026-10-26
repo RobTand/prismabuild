@@ -762,6 +762,9 @@ sorted nonblocking M keys before H, verifies the generation and age under H,
 and restores fences for busy keys and retained holders. A sibling's omission
 is not retirement authority: selections remembered by this pass but absent
 from the shared result remain remembered, with their live fences intact.
+An election retained from busy discovery remains in the refreshed census's
+selections and keys as well as its live elections, so later candidates retain
+its M lock and fence even when the sidecar vanished before refresh.
 Both owned and accepted shared censuses update pass memory before candidate
 evaluation; candidate-relative ordinary negative proofs never replace it.
 Missing, stale or unverifiable results fall back. Shared reuse never supplies a
