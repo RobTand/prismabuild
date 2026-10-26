@@ -81,14 +81,14 @@ The archival client exited 1. Both actions have verified log hashes, source
 and cleanup; the host action has an exact success receipt. The controller
 failure has no success receipt.
 
-The config golden lacks `action_tmpdir` and `_action_tmpdir_why` from #1914.
+The historical config golden lacked `action_tmpdir` and `_action_tmpdir_why` from #1914.
 Unchanged-main action
 `ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2`
-reproduced it: one failure, two passes, 234 deselected. Branch and current
-main retain identical production config blob
+reproduced it: one failure, two passes, 234 deselected. Branch and the then-current
+main retained identical production config blob
 `fc953a49d95a2b3a874dbd133e417ad277c117ba`. Existing #2253 records this case.
-This remains a baseline compatibility failure. No golden, assertion, skip
-or timeout was changed to obtain a pass.
+This was a baseline compatibility failure, retained as historical evidence.
+The baseline reproduction changed no golden, assertion, skip or timeout.
 
 The subsequent rebase onto main `e2be346b0c1` retains #2272's exact cleanup
 obligations. The pricing and candidate-policy modules and all four touched
@@ -125,6 +125,47 @@ Reports, launch manifests, verification and reconciliation live under
 remain pending. No runtime was published. The staged-read ledger axes are
 unchanged. [The candidate merge record](merge-acceptance.json) keeps targets,
 component test evidence, deployment and workload proof separate.
+
+## Merge-readiness refresh after #2329
+
+Principal review at `cbb83702fba` found zero Standards and Spec findings.
+Main `19bdca60f63` then supplied #2329's accepted capture repair. The clean
+rebase is frozen source `27f8b437d313cbb872ece0610a3de78e4fffdb7b`.
+All 11 commits retain their order and patch identity. Exactly five compatibility
+capture files came from main; the other 1,736 `src` and `tests` entries remain
+identical to the reviewed head. Scheduler and test logic are unchanged.
+The existing matrix, cleanup integration and unaffected archival proof are reused.
+
+Action `2c45483225335363dc21676347a93c48e3485933add8a9a89d963097c35f2c85`
+on dl380g10 passed the repaired `config-fleet/source` case and both
+`config-fleet` controls: **3 passed, 234 deselected**, no skips. The pbtest
+client exited zero. Every selected test has an outcome and final teardown.
+Exact logs, sealed source, runtime identity and scope cleanup are verified.
+Its exact execution receipt is
+`d859fa61c02c9ec38a80b9eea8b93e11ac31a5db626f8cc5a1affe6c644f2464`.
+The run reserved 2 CPUs, 4 GiB and zero GPUs with one native thread, priority
+-10, a 900-second action deadline, and an 1800-second client wait.
+It ran in persistent unit `pb-pri31-config-refresh-27f8b437d3`.
+
+The historical failed archival action and failed client remain visible.
+This targeted refresh does not claim a new all-green full archival replay.
+Exact launch, report, ending, verification and reconciliation artifacts use
+prefix `/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3`.
+`rebase-27f8b437d3-verification.json` records the unchanged-byte proof and
+`rebase-27f8b437d3-range-diff.txt` records ordered history preservation.
+
+`verify_rebase.py` repeats the read-only byte check:
+
+```bash
+python3 docs/evidence/issue1589/verify_rebase.py \
+  --checkout "$PWD" --reviewed cbb83702fba \
+  --old-base e2be346b0c1 --new-base 19bdca60f63 \
+  --candidate 27f8b437d3 --output /tmp/pri31-rebase.json
+```
+
+The final evidence commit and published-head mapping live in the task's
+merge-readiness document. Exact-head Principal acceptance and merge remain
+pending. No runtime publication, restart or campaign completion occurred.
 
 ## Recheck recorded fleet artifacts
 

@@ -51,14 +51,20 @@
           "63fa547fdf7fedcd73f5728e9b0679406fe23235bf4413abd26e91c6ffb96948"
         ],
         "outcome": "Current integrated source 89a4e1dc25: 232 passed per architecture, no skips, complete outcomes and teardown. All 16 action receipts and cleanup/log/source checks verified; the listed actions cover the class admission and headroom component."
+      },
+      {
+        "id": "SC-03",
+        "actions": [
+          "2c45483225335363dc21676347a93c48e3485933add8a9a89d963097c35f2c85"
+        ],
+        "outcome": "Main #2329 compatibility capture imported exactly; 3 config-fleet checks passed at frozen rebased head with verified receipt d859fa61c02c9ec38a80b9eea8b93e11ac31a5db626f8cc5a1affe6c644f2464. Historical failures and source/test reuse limits remain explicit."
       }
     ],
     "remaining_gaps": [
-      "Archival controller config-fleet/source fails on unchanged main and candidate: #1914 added action_tmpdir fields absent from the golden. Full controller replay 236 passed, one known failure; host replay 65 passed. Verified unchanged-main action ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2. No golden or assertion changed. Existing #2253 remains separate.",
-      "Independent Principal Engineer review and merge are pending.",
+      "Principal review of cbb83702fba found zero Standards and Spec findings. Exact rebased head acceptance and merge remain pending.",
       "Deployment, live runtime qualification and staged-only campaign completion are outside this source repair. Broader #1721 gang/runtime-roll acceptance remains open."
     ],
-    "note": "Candidate merge record, not merge acceptance by the Principal. Approval authorizes only the class CPU source policy. Existing ledger axes remain unchanged."
+    "note": "Candidate merge record, not Principal merge acceptance. The reviewed scheduler and test logic are byte-identical after rebase; prior verified matrix and cleanup evidence is reused. Main #2329 repaired the historical config-fleet/source failure, now passed at this frozen head. Existing ledger axes remain unchanged."
   },
   "deploy": {
     "status": "not-this-step"
@@ -83,7 +89,7 @@
         "deployment": "unknown",
         "workload_proof": "unknown"
       },
-      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After the cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Rebase onto main 19bdca60f63 changes only five compatibility-capture files; all 1736 other src/tests entries are identical to reviewed cbb83702fba. The repaired config-fleet scope now passes 3 tests with exact receipt, logs, source and cleanup verified. Historical full archival failure remains retained. Final exact-head acceptance and merge pending. No runtime publication or workload proof."
     },
     {
       "id": "SC-03",
@@ -105,7 +111,7 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After the cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Rebase onto main 19bdca60f63 changes only five compatibility-capture files; all 1736 other src/tests entries are identical to reviewed cbb83702fba. The repaired config-fleet scope now passes 3 tests with exact receipt, logs, source and cleanup verified. Historical full archival failure remains retained. Final exact-head acceptance and merge pending. No runtime publication or workload proof."
     },
     {
       "id": "INV-11",
@@ -116,10 +122,10 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After the cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Rebase onto main 19bdca60f63 changes only five compatibility-capture files; all 1736 other src/tests entries are identical to reviewed cbb83702fba. The repaired config-fleet scope now passes 3 tests with exact receipt, logs, source and cleanup verified. Historical full archival failure remains retained. Final exact-head acceptance and merge pending. No runtime publication or workload proof."
     }
   ],
-  "source_commit": "89a4e1dc25a535b7de9120a45b42dc5dd7c33c4e",
+  "source_commit": "27f8b437d313cbb872ece0610a3de78e4fffdb7b",
   "verification": {
     "ending": "/tmp/PRI-31-resume/final-focused-ending.json",
     "verified": "/mnt/shared/paperclip-runs/PRI-31/focused-verified/verified.json",
@@ -160,7 +166,8 @@
       "verdict": "1 failed, 2 passed, 234 deselected; config-fleet/source golden mismatch",
       "verified": "/mnt/shared/paperclip-runs/PRI-31/baseline-config-verified/verified.json",
       "production_config_blob": "fc953a49d95a2b3a874dbd133e417ad277c117ba",
-      "assertions_changed": false
+      "assertions_changed": false,
+      "disposition": "Historical failure retained; main #2329 repairs its capture. Frozen rebased candidate passes the exact case and both config-fleet controls in rebase_refresh."
     },
     "archival": {
       "source_head": "19511051f7ccdfe6f96881e7bb38cf8589921bf7",
@@ -171,7 +178,8 @@
       "host_receipt": "b82c29dcec6a538ece6a27e743cbd7195b6a0b2d80cbb0ee9a9979e966b2d90b",
       "client_exit_code": 1,
       "verified": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-archival-verified/verified.json",
-      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-archival-reconciliation.json"
+      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-archival-reconciliation.json",
+      "disposition": "Historical full replay remains failed. Unaffected cases are reused after unchanged source/test proof; the previously failing case and its two controls pass in rebase_refresh."
     },
     "cleanup_integration": {
       "source_head": "89a4e1dc25a535b7de9120a45b42dc5dd7c33c4e",
@@ -256,6 +264,27 @@
       "source_head": "a70f06917f",
       "client_exit_code": 1,
       "reason": "HEAD moved during active client; 901 shard passes do not erase identity failure; repetitions 2-5 never launched. Corrected frozen-head run passed."
+    },
+    "rebase_refresh": {
+      "source_head": "27f8b437d313cbb872ece0610a3de78e4fffdb7b",
+      "base": "19bdca60f63e253056378f2e770ac206d4c9aa02",
+      "reviewed_head": "cbb83702fba14d3979867dcba4861cd536c732a8",
+      "byte_comparison": "/mnt/shared/paperclip-runs/PRI-31/rebase-27f8b437d3-verification.json",
+      "range_diff": "/mnt/shared/paperclip-runs/PRI-31/rebase-27f8b437d3-range-diff.txt",
+      "unchanged_src_tests_entries": 1736,
+      "incoming_main_files": 5,
+      "source_or_test_logic_changed": false,
+      "action_key": "2c45483225335363dc21676347a93c48e3485933add8a9a89d963097c35f2c85",
+      "receipt_sha256": "d859fa61c02c9ec38a80b9eea8b93e11ac31a5db626f8cc5a1affe6c644f2464",
+      "snapshot": "1de08132f48f72c836037490d87a5e712badac75",
+      "host": "dl380g10",
+      "verdict": "3 passed, 234 deselected, zero skips; all outcomes and final teardowns complete; pbtest client exited zero",
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-verified/verified.json",
+      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-reconciliation.json",
+      "launch": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-launch.json",
+      "unit": "pb-pri31-config-refresh-27f8b437d3",
+      "main_repair": "https://github.com/RobTand/prismabuild/pull/2329",
+      "reused_evidence": "Existing frozen matrix, cleanup integration and unaffected archival cases. No new whole-suite all-green archival replay is claimed."
     }
   }
 }
