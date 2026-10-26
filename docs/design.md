@@ -6002,6 +6002,10 @@ Per member host, inside the ordinary claim pass:
    the record. A stale publisher cannot register withdrawn rows. Replaying an
    identical existing group remains valid after its members advance or end.
 
+   The legacy empty object in `teardown.json` remains a stop marker. The start
+   barrier reports `gang_torn_down` for it; nonempty records still require the
+   teardown schema, group, reason, author and finite timestamp.
+
    Malformed group, election and teardown records refuse only their own gang.
    Both full and refreshed reservation censuses discard that gang's whole
    election projection while continuing to honor healthy gangs. Global directory

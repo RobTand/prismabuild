@@ -222,7 +222,7 @@ def member(record: Mapping[str, object], item: Mapping[str, object], gang: Mappi
 
 def teardown(queue, group: str) -> dict | None:
     record = _gang_read(state_dir(queue, group) / "teardown.json")
-    if record is not None and (
+    if record and (
             record.get("schema") != TEARDOWN_SCHEMA or record.get("group") != group
             or not isinstance(record.get("reason"), str)
             or not isinstance(record.get("by"), str)
