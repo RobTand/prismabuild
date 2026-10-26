@@ -16,12 +16,14 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
-from prismabuild import stage_release  # noqa: E402
+from prismabuild import stage_release, tier_cycle  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     PHASE_GIB, STAGE_KIND, TIER, _claim_with_progress, _cycle, _row,
     _stage_range, _tier_record)
@@ -129,7 +131,8 @@ def _queued_row(queue, gib: int) -> None:
                              gib, TIER, "f" * 64, gib * GIB))
 
 
-def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path) -> None:
+@pytest.mark.parametrize("declared", [True, False], ids=["declared", "streaming"])
+def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path, declared) -> None:
     """P1: held 14 + queued 4 + footprint 9 = 27 on a tier of 20.
 
     A probe that leaves the queued row out asks for 3 and evicts two orphans.
@@ -144,12 +147,17 @@ def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path) -> None:
     _queued_row(queue, 4)
     consumer = _hexkey("waiter-with-queue")
     plan = _declared_plan(queue, consumer,
-                          [("p0", 8, True, 1), ("p1", 1, False, 1)], tag="q")
+                          [("p0", 8, declared, 1), ("p1", 1, False, 1)], tag="q")
     _live(queue, plan, consumer)             # peak 9
+    assert tier_cycle.window_pressure(
+        queue, tiers={TIER: _tier_record(stage, gib=CAPACITY)}) == {TIER: 13}
     for _ in range(8):
         _cycle(queue, stage, gib=CAPACITY)
     assert _held_orphans(queue, movers) <= 3, "relief stopped before the gate"
-    assert _prefix_tokens(queue, consumer, plan) == 8, "the declared prefix never reserved"
+    assert residency_plan.leads_for(plan)[0] in {
+        item["action_key"] for item in queue.ready_items()}
+    if declared:
+        assert _prefix_tokens(queue, consumer, plan) == 8
 
 
 def _funded_next(queue, stage, movers_below: int = 3) -> int:
@@ -179,7 +187,8 @@ def _funded_next(queue, stage, movers_below: int = 3) -> int:
     return 4
 
 
-def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path) -> None:
+@pytest.mark.parametrize("declared", [True, False], ids=["declared", "streaming"])
+def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path, declared) -> None:
     """P1 (review of f3a2e3c): a row its funding covers commits nothing new.
 
     Tier 20: three orphans (6), a landed prefix of a live reader (2) and its
@@ -195,13 +204,18 @@ def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path) -> None:
     movers = _orphans(queue, stage, 3)
     _funded_next(queue, stage)
     waiter = _hexkey("waiter-beside-funded-row")
-    plan = _declared_plan(queue, waiter, [("w0", 10, True, 1), ("w1", 1, False, 1)],
+    plan = _declared_plan(queue, waiter, [("w0", 10, declared, 1), ("w1", 1, False, 1)],
                           tag="fw")
     _live(queue, plan, waiter)                           # peak 11
+    assert tier_cycle.window_pressure(
+        queue, tiers={TIER: _tier_record(stage, gib=CAPACITY)}) == {TIER: 11}
     for _ in range(8):
         _cycle(queue, stage, gib=CAPACITY)
     assert _held_orphans(queue, movers) < 3, "futile: no orphan was given back"
-    assert _prefix_tokens(queue, waiter, plan) == 10, "the declared prefix never reserved"
+    assert residency_plan.leads_for(plan)[0] in {
+        item["action_key"] for item in queue.ready_items()}
+    if declared:
+        assert _prefix_tokens(queue, waiter, plan) == 10
 
 
 def test_a_live_declared_prefix_is_not_counted_as_evictable(tmp_path) -> None:
