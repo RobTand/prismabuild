@@ -1036,15 +1036,14 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
     return verdicts
 
 
-def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]]:
-    """Use an authority's exact export mapping; an address alone is unknown."""
-
+def _nfs_bindings(found, known, now=None) -> list[dict]:
+    """Resolve exact, effective export aliases from the binding authority."""
     identity = {"server": found["server"], "source": found.get("source"),
                 "machine_id": _machine_id(), "boot_id": _floor_boot_id(),
                 "mount_namespace": os.stat("/proc/self/ns/mnt").st_ino,
                 "device": found.get("device"), "mount_id": found.get("mount_id")}
     if not identity["mount_id"] or identity["device"] is None:
-        return [floor_refusal(name, "mapping_unknown", path=found["path"])]
+        return []
     matched = []
     for b in known:
         try:
@@ -1053,6 +1052,13 @@ def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]
             continue
         if identity in coverage.get("nfs_aliases", []):
             matched.append(b)
+    return matched
+
+
+def _nfs_verdicts(queue_root, found, name, known, now) -> list[dict[str, object]]:
+    """Use an authority's exact export mapping; an address alone is unknown."""
+
+    matched = _nfs_bindings(found, known, now)
     if len(matched) != 1:
         return [floor_refusal(name, "mapping_unknown", path=found["path"],
                              detail="no unique authenticated export mapping")]

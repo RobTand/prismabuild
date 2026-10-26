@@ -73,7 +73,6 @@ def hash_file(path):
 
 def copy_file(source, destination, entry):
     """Hash the bytes written, then fsync before any file is considered landed."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
     source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
     dest_fd = None
     try:
@@ -164,7 +163,7 @@ def _paths(set_id, spec):
     return root, root / set_id, root / (set_id + ".partial"), root / (set_id + ".evicting")
 
 
-def _verify_tree(root, record):
+def _verify_tree(queue_root, root, record):
     expected = {str(Path(entry["path"]).relative_to(record["canonical_root"])): entry["bytes"]
                 for entry in record["manifest"]["entries"]}
     if resident_sets.directory_files(root) != expected:
@@ -198,7 +197,7 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
         local_tier.reserve(queue, set_id, [host], record["manifest"]["total_bytes"])
         if final.exists():
             filesystem_floor.enforce_paths(queue.root, [root, final], label="resident copy reuse")
-            verification = _verify_tree(final, record)
+            verification = _verify_tree(queue.root, final, record)
         else:
             partial.mkdir(exist_ok=True)
             filesystem_floor.enforce_paths(queue.root, [root, partial], label="resident copy destination")
@@ -219,6 +218,7 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
                 for entry in record["manifest"]["entries"]:
                     relative = Path(entry["path"]).relative_to(record["canonical_root"])
                     destination = partial / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
                     if destination.exists():
                         size, digest = hash_file(destination)
                         reusable = size == entry["bytes"] and digest == entry["sha256"]
@@ -537,12 +537,12 @@ def adopt_resident_copy(store, set_id, host, spec, source, *, now=None):
         if final.exists():
             if source.exists():
                 raise ValueError("adoption destination already exists")
-            verification = _verify_tree(final, record)
+            verification = _verify_tree(store.queue_root, final, record)
         else:
             if not same_filesystem(source, root):
                 raise ValueError("adoption requires the same filesystem")
             require_adoption_unmounted(record, source)
-            verification = _verify_tree(source, record)
+            verification = _verify_tree(store.queue_root, source, record)
             for entry in record["manifest"]["entries"]:
                 file = source / Path(entry["path"]).relative_to(record["canonical_root"])
                 with file.open("rb") as stream:
