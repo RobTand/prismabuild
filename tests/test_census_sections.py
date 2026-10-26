@@ -346,6 +346,14 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                              env=environment, capture_output=True, text=True, timeout=60)
         assert run.returncode == 0, run.stderr
         readings.append(json.loads(run.stdout))
+    consumer = next(row for row in readings[1]["values"]["rows"]["jobs"]
+                    if row["action_key"] == fixture.CONSUMER_KEY)
+    assert consumer["progress_observation"] == "encode committed 3 quiet 800/900s"
+    for reference in (readings[0], readings[2]):
+        consumer = next(row for row in reference["values"]["rows"]["jobs"]
+                        if row["action_key"] == fixture.CONSUMER_KEY)
+        assert consumer["progress_observation"] == "encode quiet 800/900s"
+        consumer["progress_observation"] = "encode committed 3 quiet 800/900s"
     assert readings[0]["values"] == readings[1]["values"]
     assert readings[2]["values"] == readings[1]["values"]
     for reading in readings:
