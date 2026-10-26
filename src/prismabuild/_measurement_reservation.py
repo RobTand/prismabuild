@@ -164,8 +164,8 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode):
             raise CensusUnavailable("nonregular ordinary election source")
-        version = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-                   info.st_mtime_ns, info.st_ctime_ns)
+        version = [info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                   info.st_mtime_ns, info.st_ctime_ns]
         prior = cached.get(name)
         if prior is not None and prior[0] == version:
             current[name] = prior
@@ -178,7 +178,7 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
             chosen = selection(record)
             if chosen is not None and chosen["action_key"] != key:
                 raise CensusUnavailable("ordinary selection sidecar key mismatch")
-            current[name] = (version, chosen)
+            current[name] = [version, chosen]
         if deadline.remaining() <= 0:
             raise CensusUnavailable("ordinary election proof budget exceeded")
     if recheck and current != cached:
