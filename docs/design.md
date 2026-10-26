@@ -20525,6 +20525,22 @@ source pins, actual qualification and remaining integration/deployment gates.
 
 ### Root proof runtime qualification
 
+The repository's CPU integration tier uses the committed x86 native profile
+`_proof_runtime_profiles/standard3144.json` for its full root population.
+The profile supplies the admitted image and exact primary interpreter; its
+installed-reader closure is required by the current root tests. The ordinary
+pbtest interpreter override does not change that route. This tier does not
+replace release qualification's separately sealed collection index.
+
+The tier's root verdict consumes the retained stdout through
+`pbtest_outcomes.judge_shards` with its independent selected-file roster and
+invocation-owned record binding. Green requires a successful PB ending,
+reconciled outcomes and a complete pytest completion record. The proof
+launcher's runtime-closure checks and successful-action CAS verification remain
+required. A zero process exit or complete runtime attestation alone grants no
+test completion. `root.pbtest.json` retains the root observation, reconciliation,
+completion and skip reasons; the tier verdict includes its outcome counts.
+
 The root proof population retains its real UID/GID0 fixtures, assertions and
 node IDs. Ordinary portable execution records their real prerequisite failures.
 An explicit `tests/run_proof_container.py --runtime-profile <sealed.json>`
