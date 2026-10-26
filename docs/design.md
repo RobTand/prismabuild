@@ -6536,7 +6536,8 @@ Class-bound CPU work whose complete explicit tag conjunction excludes every reco
 can pass this READY-GPU guard (#1721, #1589). Stale offers still establish
 class membership; an absent interpreter answer never makes portable work
 class-bound. Both a known CPU-only offer and a matching GPU class tag are
-required. Automatic capability tags cannot establish class exclusion. Unknown
+required. Missing or malformed tags on a recorded CPU-only host keep the
+guard in place. Automatic capability tags cannot establish class exclusion. Unknown
 interpreter evidence on a CPU-only offer cannot promote portable work to this
 exception. The candidate must have a readable non-measurement contract, bounded
 CPU and memory demand, optional bounded host `spool_gb`, no gang, and no tier or

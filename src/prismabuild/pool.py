@@ -16181,12 +16181,18 @@ class PoolQueue:
         required.difference_update(contract.tag for contract in contracts.CONTRACTS)
         if not required:
             return False
-        without_gpu = [{str(tag) for tag in (record.get("tags") or [])}
-                       for record in records if capability_eligibility.HostPresence.from_offer(record).gpu
-                       is capability_eligibility.Presence.ABSENT]
-        with_gpu = [{str(tag) for tag in (record.get("tags") or [])}
-                    for record in records if capability_eligibility.HostPresence.from_offer(record).gpu
-                    is capability_eligibility.Presence.PRESENT]
+        without_gpu, with_gpu = [], []
+        for record in records:
+            presence = capability_eligibility.HostPresence.from_offer(record).gpu
+            if presence is capability_eligibility.Presence.UNKNOWN:
+                continue
+            offered = record.get("tags")
+            if not isinstance(offered, list) or any(not isinstance(tag, str) for tag in offered):
+                if presence is capability_eligibility.Presence.ABSENT:
+                    return False
+                continue
+            target = without_gpu if presence is capability_eligibility.Presence.ABSENT else with_gpu
+            target.append(set(offered))
         if not without_gpu or not with_gpu:
             return False
         return (not any(required <= offered for offered in without_gpu)
@@ -16214,18 +16220,18 @@ class PoolQueue:
         return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb", "spool_gb"}
                 and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
 
-    def _class_scoped_gpu_shape(
-        self, ready_gpu: Mapping[str, object],
+    def _class_scoped_action_shape(
+        self, item: Mapping[str, object],
     ) -> tuple[str | None, bool | None, str | None]:
-        """The eligible GPU row's sealed shape and measurement flag, or why unknown (#1721).
+        """The action's sealed shape and measurement flag, or why unknown (#1721).
 
         Affirmative evidence only: an unreadable, missing, mismatched or invalid
         sealed request is ``(None, None, reason)``, never an ordinary
         non-measurement contract.
         """
         try:
-            key = str(ready_gpu.get("action_key", ""))
-            cas_root = ready_gpu.get("cas_root")
+            key = str(item.get("action_key", ""))
+            cas_root = item.get("cas_root")
             if not key or not isinstance(cas_root, str) or not cas_root:
                 return None, None, "gpu_row_request_unreadable"
             request = _sealed_action_request(cas_root, key)
@@ -16244,7 +16250,7 @@ class PoolQueue:
             return None, None, "gpu_row_request_unreadable"
         measurement = task.get("task_class") == "measurement"
         try:
-            shape, flag = cpu_admission.action_identity(ready_gpu)
+            shape, flag = cpu_admission.action_identity(item)
         except (OSError, ValueError, TypeError):
             return None, None, "gpu_row_request_unreadable"
         if shape is None or flag != measurement:
@@ -16274,7 +16280,7 @@ class PoolQueue:
             host, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
             if int(host.get("cpu", 0)) <= 0 or int(host.get("mem_gb", 0)) <= 0:
                 return None, "gpu_row_cpu_unbounded"
-            shape, measurement, _why = self._class_scoped_gpu_shape(ready_gpu)
+            shape, measurement, _why = self._class_scoped_action_shape(ready_gpu)
             if _why is not None or shape is None:
                 return None, "gpu_row_contract_unreadable"
             _shape, _flag, _exclusive, _budget = gpu_admission.action_contract(
@@ -19160,7 +19166,7 @@ class PoolQueue:
                         container_inventory=scan_pass.container_inventory)
                 class_room, class_why = reads.class_rooms[gpu_key]
                 if class_room is not None:
-                    _shape, measurement, why = self._class_scoped_gpu_shape(item)
+                    _shape, measurement, why = self._class_scoped_action_shape(item)
                     if why is not None or measurement:
                         class_room = None
                         class_why = "cpu_row_contract_unreadable" if why else "cpu_row_is_measurement"
