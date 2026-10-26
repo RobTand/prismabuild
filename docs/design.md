@@ -19958,6 +19958,12 @@ distinguish absence from present but empty, malformed or unreadable records.
 Those invalid slots consume the same read budget and make discovery incomplete,
 including when an in-place write leaves namespace coverage unchanged. Explicit
 key inspection retains its existing permissive read behavior.
+Leaf parsing verifies both the filename identity and membership in the addressed
+facet or UTC-day bucket using the writer's bucket derivation. A parseable leaf
+whose address disagrees with its contents is unreadable index evidence, even
+when an in-place edit preserves all directory coverage stamps. The reader marks
+discovery incomplete and retains readable candidates within the same budgets.
+Other filter predicates may still exclude a valid leaf as a genuine nonmatch.
 
 This index changes inspection cost and diagnostics. It grants no lifecycle,
 admission, residency, cleanup or dev-certification authority. Source inclusion

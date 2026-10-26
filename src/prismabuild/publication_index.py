@@ -97,7 +97,8 @@ def _read_leaf(root: Path, path: Path) -> PublicationCandidate:
         raise ValueError("invalid publication facets")
     candidate = _publication_candidate(record)
     candidate = PublicationCandidate(candidate.action_key, candidate.published_unix, facets)
-    if path.name != _leaf(candidate):
+    if (path.name != _leaf(candidate) or path.parent.name != "entries"
+            or path.parent.parent not in _buckets(root, candidate)):
         raise ValueError("publication leaf identity disagrees with its address")
     return candidate
 
