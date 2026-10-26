@@ -13,6 +13,10 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+sys.path.insert(0, str(ROOT / 'tools/fleet'))
+import pbtest_outcomes
+
 FLEET = Path('/mnt/shared/prismabuild-fleet')
 PBTEST = FLEET / 'repo/tools/pbtest.py'
 PBRUN = FLEET / 'repo/tools/pbrun.py'
@@ -185,8 +189,18 @@ def run_root_lane(report_dir: Path) -> dict:
     (report_dir / 'root.endings.json').write_text(waited.stdout)
     endings = json.loads(waited.stdout) if waited.stdout.strip() else {}
     ending = endings['endings'][-1] if endings.get('complete') and endings.get('endings') else {}
-    row['verdict'] = {'green': ending.get('succeeded') is True, 'status': ending.get('status'),
-                      'exit_code': ending.get('exit_code')}
+    output_path = (ending.get('result') or {}).get('stdout', {}).get('path')
+    output = Path(output_path).read_text(errors='replace') if output_path else ''
+    row.update(output=output, returncode=ending.get('exit_code')
+               if type(ending.get('exit_code')) is int else 1,
+               timed_out=ending.get('status') == 'timeout',
+               record_binding=pbtest_outcomes.RECORD_BINDING_VERSION)
+    judged = pbtest_outcomes.judge_shards([row], requested_files=files)
+    verdict = judged['shards'][0]
+    verdict.update(green=judged['green'] and ending.get('succeeded') is True
+                   and verdict['completion']['status'] == 'complete',
+                   status=ending.get('status'), exit_code=ending.get('exit_code'))
+    row.update(verdict=verdict, skipped=verdict['skipped'])
     return row
 
 
@@ -207,6 +221,7 @@ def run_lanes(tier: str, python: str, report_dir: Path) -> tuple[list[dict], dic
     if 'root' in LANES[tier]:
         print(f'root: {report_dir / "root.log"}\n{shlex.join(root_command(ROOT))}', flush=True)
         row = run_root_lane(report_dir)
+        (report_dir / 'root.pbtest.json').write_text(json.dumps([row], indent=2) + '\n')
         rows.append(row)
         codes['root'] = 0 if row['verdict']['green'] else 1
     for lane, (process, report, log) in running.items():

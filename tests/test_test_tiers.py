@@ -4,6 +4,10 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import runpy
+import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -174,3 +178,60 @@ def test_failed_shards_name_their_lane_and_files():
     report = verify.tier_verdict([row(['a']), failed], ['a', 'b'], 1, 'integration')
     assert report['verdict'] == 'FAIL'
     assert report['failed_shards'] == [{'lane': 'root', 'action_key': 'a' * 64, 'files': ['b']}]
+
+
+@pytest.mark.parametrize('case', ['early_exit', 'complete', 'skip', 'missing_completion',
+                                 'failed_ending'])
+def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case):
+    sample = tmp_path / 'sample'
+    (sample / 'tests').mkdir(parents=True)
+    selected = ['tests/test_root_sample.py']
+    first = ("pytest.exit('controlled early exit', returncode=0)" if case == 'early_exit'
+             else "pytest.skip('recorded root skip')" if case == 'skip' else 'assert True')
+    (sample / selected[0]).write_text(
+        f'import pytest\ndef test_first():\n    {first}\n'
+        'def test_second():\n    assert True\n')
+    bootstrap = (
+        'import runpy; from pathlib import Path; '
+        f"owner=runpy.run_path({str(ROOT / 'tools/fleet/pbtest_outcomes.py')!r}); "
+        "raise SystemExit(owner['main']("
+        f"['-q', '-rA', '-o', 'addopts=', '-p', 'no:cacheprovider', *{selected!r}], "
+        f"collection_spec={{'files': {selected!r}, 'roots': [[{selected[0]!r}, 'file']]}}, "
+        f"collection_source=Path({str(ROOT / 'src/prismabuild/pbtest_collection.py')!r}).read_text()))"
+    )
+    observed = subprocess.run([sys.executable, '-c', bootstrap], cwd=sample,
+                              capture_output=True, text=True, check=False)
+    assert observed.returncode == 0, observed.stdout + observed.stderr
+    owner = runpy.run_path(str(ROOT / 'tools/fleet/pbtest_outcomes.py'))
+    record = owner['parse'](observed.stdout, record_binding=owner['RECORD_BINDING_VERSION'])
+    assert len(record['collected']) == 2
+    if case == 'early_exit':
+        assert owner['reconcile'](record, None, None)['never_ran']
+    output = observed.stdout
+    if case == 'missing_completion':
+        output = '\n'.join(line for line in output.splitlines()
+                           if not line.startswith(owner['COMPLETION_PREFIX']))
+    payload = tmp_path / 'root.stdout'
+    payload.write_text(output)
+    key = 'a' * 64
+    ending = {'action_key': key, 'succeeded': case != 'failed_ending',
+              'status': 'executed', 'exit_code': 0,
+              'result': {'stdout': {'path': str(payload)}}}
+    replies = iter([
+        SimpleNamespace(returncode=0, stdout=json.dumps({'action_key': key})),
+        SimpleNamespace(returncode=0, stdout=json.dumps({'complete': True, 'endings': [ending]})),
+    ])
+    monkeypatch.setattr(verify, 'populations', lambda root: {'root': selected})
+    monkeypatch.setattr(verify.subprocess, 'run', lambda *args, **kwargs: next(replies))
+    report = tmp_path / 'evidence'
+    report.mkdir()
+    result = verify.run_root_lane(report)
+    verdict = verify.tier_verdict([result], selected, 1, 'integration')
+    assert verdict['verdict'] == ('PASS' if case in ('complete', 'skip') else 'FAIL')
+    if case in ('complete', 'skip'):
+        assert result['verdict']['completion']['status'] == 'complete'
+        assert verdict['counts'] == ({'passed': 1, 'skipped': 1} if case == 'skip'
+                                     else {'passed': 2})
+        assert len(verdict['skipped']) == (1 if case == 'skip' else 0)
+        if case == 'skip':
+            assert 'recorded root skip' in verdict['skipped'][0]['reason']
