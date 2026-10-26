@@ -19,9 +19,19 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 @pytest.fixture
 def cache_clock(monkeypatch):
-    clock = Clock()
+    clock, fence_clock = Clock(), Clock()
+
+    class FenceDeadline:
+        def __init__(self, seconds):
+            self.expires = fence_clock.now + seconds
+
+        def remaining(self):
+            return self.expires - fence_clock.now
+
+    monkeypatch.setattr(reservation, "reader", SimpleNamespace(
+        **{**vars(reader), "Deadline": FenceDeadline}))
     monkeypatch.setattr(reservation, "time", SimpleNamespace(
-        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
+        monotonic=lambda: clock.now, time=time.time, sleep=fence_clock.advance))
     return clock
 
 
