@@ -73,6 +73,11 @@ def test_orphan_lease_preserves_unanswered_creation_for_exact_recovery(scoped,mo
     def unavailable(scope,operation,**extra):
         seen.append((operation,scope.nonce))
         if operation=='create':raise TimeoutError('reply lost')
+        if operation=='cleanup_verdict':
+            from prismabuild.produced_output import _broker_scope_id
+            return {'ok':True,'action_key':scope.action_key,'nonce':scope.nonce,
+                    'scope_id':_broker_scope_id(scope.action_key,scope.nonce),
+                    'challenge':extra['challenge'],'empty':True,'released':True}
         if operation=='recover_create':
             unit='prismabuild-job'+hashlib.sha256((scope.action_key+scope.nonce).encode()).hexdigest()[:32]+'.slice'
             return {'ok':True,'scope_id':unit,'missing':True}

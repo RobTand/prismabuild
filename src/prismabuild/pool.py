@@ -144,6 +144,7 @@ from . import endings, lifecycle, tier_holdings
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
+from . import host_hold
 from . import drain_policy
 from .drain_policy import (DRAIN_HELD_CPUS, MEASUREMENT_UNMEASURED_CEILING_S,
                            STARVATION_FLOOR, WITHHOLD_CEILING_S)
@@ -211,6 +212,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import gpu_runtime_gate
 from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, UnifiedMemoryEvidence,
                                device_identity, is_nonnegative_number, memory_counters,
                                unified_memory_evidence)
@@ -877,13 +879,20 @@ WITHHOLD_STAMP_FRESH_S = OFFER_TIMEOUT_S
 
 #: Offer discovery tolerates up to one minute of future skew. This bound stays
 #: finite even when a submitter reads retained capability with an infinite TTL.
-#: It grants no freshness credit to CPU/GPU admission samples or claim leases.
+#: It grants no freshness credit to CPU/GPU admission samples. Matching claim
+#: stamps reuse this cross-host clock-skew bound.
 OFFER_FUTURE_TOLERANCE_S = 60.0
 
 
 class OfferTiming(NamedTuple):
     age_s: float | None
     clock_skew_s: float | None
+
+
+class _LeaseHeartbeat(NamedTuple):
+    heartbeat_unix: float
+    age_s: float
+    lease_age_s: float
 
 
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
@@ -4363,6 +4372,63 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts, unreadable
 
+    def floor_snapshot(self, kinds: Iterable[str]) -> dict[str, int]:
+        """Whole held-token counts from a fresh, closed owner census.
+
+        Private acquisitions and unknown holders retain their obligations.
+        Unlike the cycle's capacity readers, this snapshot never uses cached
+        names or interprets inaccessible custody as an empty population.
+        """
+        selected = frozenset(kinds)
+        sidecars = {cpu_admission.METADATA, gpu_admission.METADATA}
+
+        def scan(directory: Path):
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise PoolContractError(f"floor snapshot: unsafe directory {directory}")
+            return immutable_files.scan_required(directory)
+
+        def token_names(paths, *, metadata: bool = False) -> set[str]:
+            names = set()
+            for path in paths:
+                if not stat.S_ISREG(path.lstat().st_mode):
+                    raise PoolContractError(f"floor snapshot: unsafe token {path}")
+                if metadata and path.name in sidecars:
+                    continue
+                kind, separator, ordinal = path.name.rpartition("-")
+                if (not kind or not separator or not ordinal.isascii()
+                        or not ordinal.isdigit()
+                        or ordinal != f"{int(ordinal):04d}"):
+                    raise PoolContractError(f"floor snapshot: malformed token {path}")
+                if kind in selected:
+                    names.add(path.name)
+            return names
+
+        with self._mutation_locked(blocking=False) as acquired:
+            if not acquired:
+                raise PoolContractError(f"floor snapshot: owner lock busy for {self.base}")
+            try:
+                minted_paths = scan(self.minted_dir)
+                dead = [path for path in minted_paths if path.name == "dead"]
+                minted = token_names(path for path in minted_paths if path.name != "dead")
+                dead_names = set()
+                if dead:
+                    dead_names = token_names(scan(dead[0]))
+                free = token_names(scan(self.free_dir))
+                held = set()
+                for holder in scan(self.held_dir):
+                    names = token_names(scan(holder), metadata=True)
+                    if held & names:
+                        raise PoolContractError(f"floor snapshot: duplicate custody in {holder}")
+                    held.update(names)
+                if free & held or dead_names & (free | held):
+                    raise PoolContractError(f"floor snapshot: conflicting token custody in {self.base}")
+                if minted != free | held | dead_names:
+                    raise PoolContractError(f"floor snapshot: incomplete token population in {self.base}")
+                return {kind: sum(name.rsplit("-", 1)[0] == kind for name in held)
+                        for kind in selected}
+            except OSError as exc:
+                raise PoolContractError(f"floor snapshot: {self.base}: {exc}") from exc
+
     def _minted_and_dead_names(self) -> tuple[set[str], set[str]]:
         """The mint markers and the destroyed names, error-visible.
 
@@ -4493,10 +4559,10 @@ class ResourceLedger:
                 if not allowed:
                     self.last_token_shortage = gate.shortage()
                     return None
-                handle = self._begin_acquire_locked(action_key, demand, **kwargs)
-                if handle is not None:
-                    gate.granted()
-                return handle
+                if not gate.reserve():
+                    self.last_token_shortage = gate.shortage()
+                    return None
+                return self._begin_acquire_locked(action_key, demand, **kwargs)
 
     @_guarded_mutation(blocking=False)
     def _begin_acquire_locked(
@@ -5597,6 +5663,7 @@ class _QualifiedClaim:
     scratch_intent: dict[str, object] | None
     dependent_owner: object
     reservation: _ClaimReservation
+    runtime_probe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -5608,7 +5675,9 @@ class _HostClaimRequest:
     contract: object
     scratch_evidence: dict[str, object] | None
     scratch_boundary: tuple[float, float, object, object] | None
+    runtime_probe: str | None = None
     cpu_guest: bool = False
+    class_room: Mapping[str, object] | None = None
 
 
 class _ClaimHandled(Enum):
@@ -5694,6 +5763,7 @@ class _RefusalAccounting:
 class _OpenClaimRow:
     key: str
     held_back: bool
+    class_room: Mapping[str, object] | None = None
 
 
 @dataclass
@@ -5770,11 +5840,19 @@ class _ClaimScanReads:
         self.ledger = ledger
         self.tags = tags
         self.has_gpu = has_gpu
+        self._class_offer_records: list[dict[str, object]] | None = None
+        self.class_rooms: dict[str, tuple[dict[str, object] | None, str | None]] = {}
         self._host_verdicts: Mapping[str, object] | None = None
         self._bootstrap_authority: list[bool] = []
         self._claimed_names: record_store.ClaimedNames | None = None
         self.reader_plans: dict[str, dict[str, object]] = {}
         self.dead_input_hints: dict[str, KeyStanding] = {}
+
+    def class_offer_records(self) -> list[dict[str, object]]:
+        # Class evidence includes stale offers; a brief outage changes no architecture.
+        if self._class_offer_records is None:
+            self._class_offer_records = self.queue._offer_records()
+        return self._class_offer_records
 
     def verdicts(self) -> Mapping[str, object]:
         if self._host_verdicts is None:
@@ -5843,6 +5921,7 @@ class PoolQueue:
         # (#924); never read as admission authority on their own.
         self._drain_accounting = _DrainAccounting()
         self._admission_busy_logged_at: float | None = None
+        self._expired_host_holds: dict[str, tuple[object, ...]] = {}
         # Queue directories are created once per process (see
         # ``ensure_layout``): nothing in the pool ever removes them.
         if not self.root.is_absolute():
@@ -5954,11 +6033,10 @@ class PoolQueue:
         return tombstone, True
 
 
-    def _successor_generation(
-        self, original: Mapping[str, object], successor: Mapping[str, object],
+    def _validated_ready_generation(
+        self, key: str, successor: Mapping[str, object],
     ) -> float:
         self.records.attempt_generation(successor)
-        key = str(original["action_key"])
         try:
             usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
                       and self._ready_record_usable(successor, key))
@@ -5969,7 +6047,12 @@ class PoolQueue:
             raise PoolContractError("invalid successor publication item") from exc
         if not usable or not host_demand:
             raise PoolContractError("invalid successor publication item")
-        generation = float(successor["published_unix"])
+        return float(successor["published_unix"])
+
+    def _successor_generation(
+        self, original: Mapping[str, object], successor: Mapping[str, object],
+    ) -> float:
+        generation = self._validated_ready_generation(str(original["action_key"]), successor)
         if generation < float(original["published_unix"]):
             raise PoolContractError("successor publication precedes its original")
         return generation
@@ -6047,6 +6130,7 @@ class PoolQueue:
         drain_owner: str | None = None,
         drain_reason: str | None = None,
         drain_changed_unix: float | None = None,
+        hold: Mapping[str, object] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -6131,6 +6215,8 @@ class PoolQueue:
         fields: the loop's own gate check is what stops it claiming.
         """
 
+        observed_capacity, observed_detail = gpu_runtime_gate.runtime_fenced_offer(
+            dict(observed_capacity or {}), dict(observed_detail or {}))
         record = {
             "schema": POOL_OFFER_SCHEMA_V1,
             "host": host,
@@ -6183,9 +6269,12 @@ class PoolQueue:
             record["drain_reason"] = str(drain_reason)
         if drain_changed_unix is not None:
             record["drain_changed_unix"] = float(drain_changed_unix)
+        if hold is not None:
+            record["hold"] = dict(hold)
         directory = self.records.worker_directory()
         directory.mkdir(parents=True, exist_ok=True)
         self.records.replace_record_at(self.records.worker_offer_path(host), record)
+        gpu_runtime_gate.runtime_offer_published(record)
 
     def _offer_records(self) -> list[dict[str, object]]:
         directory = self.records.worker_directory()
@@ -7411,7 +7500,7 @@ class PoolQueue:
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
-        "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        "finish_pending", "resource_scope_intent", "cleanup_obligation", "scratch_declaration_record",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -7647,6 +7736,8 @@ class PoolQueue:
         binds nothing.
         """
 
+        if gpu_runtime_gate.runtime_gate_state() is not None:
+            return None
         try:
             if gpu_controller is not None:
                 sample = _gpu_sample_for(gpu_controller, {"gpu": 1})  # type: ignore[arg-type]
@@ -11626,11 +11717,16 @@ class PoolQueue:
         except (OSError, ValueError, PoolContractError):
             return None
         if (not isinstance(lease, Mapping)
-                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+                or lease.get("claimed_unix") != claim.get("claimed_unix")
+                or self._heartbeat_conflicts(claim, lease)):
             return None
-        age = offer_timing(lease.get("heartbeat_unix"), now=now).age_s
-        if age is None:
+        try:
+            heartbeat = self._effective_heartbeat(lease, now=now)
+        except (OSError, ValueError, PoolContractError):
             return None
+        if heartbeat is None:
+            return None
+        age = heartbeat.age_s
         out: dict[str, object] = {"lease_heartbeat_age_s": round(age, 3),
                                   "lease_live": age <= LEASE_TIMEOUT_S}
         observation = lease.get("progress_observation")
@@ -11832,16 +11928,21 @@ class PoolQueue:
         except (OSError, ValueError, PoolContractError):
             return carried("unread")
         if (not isinstance(lease, Mapping)
-                or lease.get("claimed_unix") != claim.get("claimed_unix")):
+                or lease.get("claimed_unix") != claim.get("claimed_unix")
+                or self._heartbeat_conflicts(claim, lease)):
             return carried("unread")
         observation = lease.get("progress_observation")
         if not isinstance(observation, Mapping):
             return carried("unread")
         count = observation.get("accepted_count")
         credited = observation.get("staged_wait_exempt_s")
+        try:
+            heartbeat = self._effective_heartbeat(lease, now=now)
+        except (OSError, ValueError, PoolContractError):
+            return carried("unread")
         for field, value in (("quiet_s", observation.get("quiet_s")),
                              ("grace_s", observation.get("grace_s")),
-                             ("heartbeat_unix", lease.get("heartbeat_unix"))):
+                             ("heartbeat_unix", None if heartbeat is None else heartbeat.heartbeat_unix)):
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[field] = float(value)
         if isinstance(count, bool) or not isinstance(count, int):
@@ -11866,7 +11967,7 @@ class PoolQueue:
         elif then is not None and now - then <= window_s:
             return carried("none")
         else:
-            within = self._ahead_within_grace(lease, observation, now=now)
+            within = self._ahead_within_grace(heartbeat, observation)
             if within is None:
                 return carried("none")
             out.update({"evidence": "ahead-within-grace", "evidence_unix": within[0],
@@ -11874,29 +11975,28 @@ class PoolQueue:
         return True, out
 
     @staticmethod
-    def _ahead_within_grace(lease: Mapping[str, object],
-                            observation: Mapping[str, object], *, now: float
+    def _ahead_within_grace(heartbeat: _LeaseHeartbeat | None,
+                            observation: Mapping[str, object]
                             ) -> tuple[float, float] | None:
         """``(heartbeat_unix, heartbeat_age_s)`` when a consumer's own watch
         has not ended it (#1022 review round 3), else ``None``.
 
-        Its heartbeat is within ``LEASE_TIMEOUT_S``, and ``quiet_s`` plus the
-        heartbeat's age is within ``grace_s``: the quiet its watch reported
-        at the heartbeat, projected to now, is inside the allowance the watch
+        Its effective heartbeat is within ``LEASE_TIMEOUT_S``, and ``quiet_s``
+        plus the lease's own age is within ``grace_s``: the quiet reported
+        at the lease write, projected to now, is inside the allowance the watch
         judges it by (``ProgressWatch.as_record``: ``quiet_s`` is measured
         from the deadline's base, which every credited exemption moves).
         """
 
-        heartbeat = lease.get("heartbeat_unix")
-        age = offer_timing(heartbeat, now=now).age_s
+        age = None if heartbeat is None else heartbeat.age_s
         quiet, grace = observation.get("quiet_s"), observation.get("grace_s")
         if (age is None or age > LEASE_TIMEOUT_S
                 or isinstance(quiet, bool) or not isinstance(quiet, (int, float))
                 or isinstance(grace, bool) or not isinstance(grace, (int, float))
                 or not math.isfinite(float(quiet)) or not math.isfinite(float(grace))
-                or float(quiet) + age > float(grace)):
+                or float(quiet) + heartbeat.lease_age_s > float(grace)):
             return None
-        return float(heartbeat), float(age)                 # type: ignore[arg-type]
+        return heartbeat.heartbeat_unix, age
 
     def _tier_loop_alive(self, tier_id: str, *, now: float
                          ) -> tuple[bool, float | None]:
@@ -12072,7 +12172,6 @@ class PoolQueue:
         if isinstance(marker, Mapping) and marker.get("owner") == owner:
             path.unlink(missing_ok=True)
 
-    @_serialized_key
     def write_lease(
         self,
         action_key: str,
@@ -12095,55 +12194,164 @@ class PoolQueue:
         writes, because at that moment nothing is running yet.
         """
 
-        lease = {
-                "schema": POOL_LEASE_SCHEMA_V1,
-                "action_key": action_key,
-                "owner": owner,
-                "host": socket.gethostname(),
-                "pid": os.getpid(),
-                "child_pid": int(child_pid) if child_pid is not None else None,
-                "heartbeat_unix": _now(),
-            }
-        if container_owner is not None:
-            lease["container_owner"] = str(container_owner)
-        if execution_observation is not None:
-            lease["execution_observation"] = dict(execution_observation)
-        if progress_observation is not None:
-            # So ``pbstatus`` can say "last advanced 40 s ago, 768 anchors" while
-            # the action is still running.  Nobody has to *authorize* anything
-            # -- continuation is the loop's decision and stays the loop's -- but
-            # an operator who cannot see what governs cannot review it either.
-            lease["progress_observation"] = dict(progress_observation)
-        claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
-        if (claim is None or claim.get("claimed_by") != owner
-                or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
-            raise PoolContractError("claim changed before heartbeat publication")
-        # A stale claim read must not erase the successor lease's ownership
-        # evidence, including the evidence used by finish's cleanup guard.
-        claim_identity.check_lease_identity(
-            action_key,
-            claim,
-            record_store.read_document(self.records.lease_path(action_key)),
-            invalid=AmbiguousClaimHolder,
-        )
-        for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix", "scratch_declaration_record",
-                      scratch_lifetime.SCRATCH_LIFETIME_FIELD):
-            if field in claim:
-                lease[field] = claim[field]
-        self.records.replace_record_at(self.records.lease_path(action_key), lease)
-        if progress_observation is not None:
-            try:
-                self.records.append_supervision_event(claim, {
-                    "event": "payload-supervision", "action_key": action_key,
-                    **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
-                    "unix": lease["heartbeat_unix"],
-                    "age_s": max(0.0, lease["heartbeat_unix"] - claim["claimed_unix"]),
-                    "progress_observation": dict(progress_observation),
-                }, limit=MAX_CONSUMER_EVENT_LINES)
-            except OSError as exc:
-                print(f"PrismaBuild: supervision event unwritten: {exc!r}",
-                      file=sys.stderr, flush=True)
+        with self.action_transition_lock(action_key, blocking=False) as acquired:
+            if not acquired:
+                self._stamp_contended_heartbeat(action_key, owner, claim_snapshot)
+                return  # The attempt-specific stamp needs no transition lock.
+            sampled_unix = _now()
+            lease = {
+                    "schema": POOL_LEASE_SCHEMA_V1,
+                    "action_key": action_key,
+                    "owner": owner,
+                    "host": socket.gethostname(),
+                    "pid": os.getpid(),
+                    "child_pid": int(child_pid) if child_pid is not None else None,
+                    "heartbeat_unix": sampled_unix,
+                }
+            if container_owner is not None:
+                lease["container_owner"] = str(container_owner)
+            if execution_observation is not None:
+                lease["execution_observation"] = dict(execution_observation)
+            if progress_observation is not None:
+                # So ``pbstatus`` can say "last advanced 40 s ago, 768 anchors" while
+                # the action is still running.  Nobody has to *authorize* anything
+                # -- continuation is the loop's decision and stays the loop's -- but
+                # an operator who cannot see what governs cannot review it either.
+                lease["progress_observation"] = dict(progress_observation)
+            claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
+            if (claim is None or claim.get("claimed_by") != owner
+                    or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
+                raise PoolContractError("claim changed before heartbeat publication")
+            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
+                          "claimed_unix", "published_unix",
+                          "cleanup_obligation", "scratch_declaration_record",
+                          scratch_lifetime.SCRATCH_LIFETIME_FIELD):
+                if field in claim:
+                    lease[field] = claim[field]
+            if all(claim.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+                # Partial legacy claims have no exact incarnation to stamp.
+                # Preserve their lease wire format rather than invent identity.
+                for field in ("claimed_by", "claimed_host", "attempts"):
+                    if field in claim:
+                        lease[field] = claim[field]
+                lease["pid_start_ticks"] = _contained_worker_start_ticks(os.getpid())
+            previous = record_store.read_document(self.records.lease_path(action_key))
+            # A delayed final read must not import another attempt's envelope.
+            # Re-read the claim under the same transition before publishing too.
+            current = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+            if current is None or not claim_identity.same_claim(current, claim):
+                raise PoolContractError("claim changed before heartbeat publication")
+            if previous is not None and self._heartbeat_conflicts(current, previous):
+                raise AmbiguousClaimHolder("foreign heartbeat lease custody observed before publication")
+            self.records.replace_record_at(self.records.lease_path(action_key), lease)
+            if progress_observation is not None:
+                try:
+                    self.records.append_supervision_event(claim, {
+                        "event": "payload-supervision", "action_key": action_key,
+                        **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+                        "unix": sampled_unix,
+                        "age_s": max(0.0, sampled_unix - claim["claimed_unix"]),
+                        "progress_observation": dict(progress_observation),
+                    }, limit=MAX_CONSUMER_EVENT_LINES)
+                except OSError as exc:
+                    print(f"PrismaBuild: supervision event unwritten: {exc!r}",
+                          file=sys.stderr, flush=True)
+
+    def _heartbeat_stamp_path(self, lease: Mapping[str, object]) -> Path:
+        identity = {field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
+        return (self.root / "lease-heartbeats" / str(lease["action_key"])
+                / (pb.digest_primitives.canonical_sha256(identity) + ".json"))
+
+    def _stamp_contended_heartbeat(self, action_key, owner, snapshot):
+        """Publish liveness for this process and incarnation without a key lock.
+
+        A delayed rename can only replace its own attempt's stamp. The stamp
+        grants no cleanup or release authority, and never rewrites the lease.
+        """
+        lease = record_store.read_document(self.records.lease_path(action_key))
+        live = record_store.read_document(self.records.item_path(CLAIMED, action_key))
+        if (lease is None or live is None or lease.get("action_key") != action_key
+                or live.get("action_key") != action_key or lease.get("owner") != owner
+                or live.get("claimed_by") != owner or self._heartbeat_conflicts(live, lease)
+                or snapshot is not None and not claim_identity.same_claim(live, snapshot)):
+            raise PoolContractError("claim changed before contended heartbeat")
+        if not all(live.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+            # No exact incarnation to stamp. Keep the legacy lease-age bound
+            # without turning lock contention into a payload failure.
+            return
+        if not claim_identity.same_claim(live, lease):
+            raise PoolContractError("claim changed before contended heartbeat")
+        ticks = _contained_worker_start_ticks(os.getpid())
+        if (lease.get("pid") != os.getpid() or lease.get("host") != socket.gethostname()
+                or ticks is None or lease.get("pid_start_ticks") != ticks):
+            raise PoolContractError("contended heartbeat belongs to another process")
+        self.records.replace_record_at(self._heartbeat_stamp_path(lease), {
+            **{field: lease[field] for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+            "action_key": action_key, "host": socket.gethostname(), "pid": os.getpid(),
+            "pid_start_ticks": ticks, "heartbeat_unix": _now()})
+
+    @staticmethod
+    def _heartbeat_time(value: object) -> float | None:
+        if type(value) not in (int, float):
+            return None
+        try:
+            beat = float(value)
+        except OverflowError:
+            return None
+        return beat if math.isfinite(beat) else None
+
+    def _effective_heartbeat(self, lease: Mapping[str, object], *, now: float | None = None,
+                             read=None) -> _LeaseHeartbeat | None:
+        """The one heartbeat observation used by all claim freshness readers.
+
+        All ages use a clock sampled after the lease and stamp reads. A future
+        lease is live at age zero. A matching stamp within the cross-host skew
+        bound also counts at age zero; excessive skew adds no credit. Malformed
+        or foreign stamps add no credit. Unreadable I/O retains custody.
+        """
+        observe = record_store.read_document if read is None else read
+        stamp = (observe(self._heartbeat_stamp_path(lease))
+                 if isinstance(lease.get("action_key"), str) else None)
+        if isinstance(stamp, Exception):
+            raise stamp
+        # Sample after the stamp read: a concurrent beat is not future merely
+        # because this reader began before its publication.
+        sampled = _now()
+        now = sampled if now is None else max(now, sampled)
+        beat = self._heartbeat_time(lease.get("heartbeat_unix"))
+        if beat is None:
+            return None
+        lease_age = max(0.0, now - beat)
+        if (stamp is not None and claim_identity.same_claim(stamp, lease)
+                and all(stamp.get(field) == lease.get(field)
+                        for field in ("action_key", "host", "pid", "pid_start_ticks"))
+                and type(lease.get("pid")) is int and lease["pid"] > 0
+                and type(lease.get("pid_start_ticks")) is int and lease["pid_start_ticks"] > 0):
+            stamped = self._heartbeat_time(stamp.get("heartbeat_unix"))
+            if stamped is not None and stamped - now <= OFFER_FUTURE_TOLERANCE_S:
+                beat = max(beat, min(stamped, now))
+        return _LeaseHeartbeat(beat, max(0.0, now - beat), lease_age)
+
+    @staticmethod
+    def _heartbeat_conflicts(claim, lease):
+        try:
+            claim_identity.check_lease_identity(
+                str(claim.get("action_key", "")), claim, lease, invalid=PoolContractError)
+        except PoolContractError:
+            return True
+        return any(claim.get(field) is not None and lease.get(field) is not None
+                   and claim[field] != lease[field] for field in ("claimed_by", "claimed_host", "attempts"))
+
+    def _heartbeat_cleanup_due(self, lease, *, timeout_s=LEASE_TIMEOUT_S):
+        """Detection only; age or exact process death never proves cleanup."""
+        beat = self._effective_heartbeat(lease)
+        stale = beat is not None and beat.age_s > timeout_s
+        pid, ticks = lease.get("pid"), lease.get("pid_start_ticks")
+        dead = (lease.get("host") == socket.gethostname()
+                and type(pid) is int and pid > 0 and type(ticks) is int and ticks > 0
+                and (not _process_alive(pid) or (
+                    (observed := _contained_worker_start_ticks(pid)) is not None and observed != ticks)))
+        return stale or dead
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         """Host tokens share the reservation owner's reentrant mutation lock.
@@ -15204,7 +15412,17 @@ class PoolQueue:
                         "error": f"late scope ownership unavailable: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
             try:
-                self._recover_resource_scope_creation(record)
+                recovered = (False if (record.get('cleanup_obligation') or {}).get('state') == 'resolved'
+                             else self._recover_resource_scope_creation(record))
+                if not recovered:
+                    key = str(record['action_key'])
+                    generation = self.records.attempt_generation(record)
+                    verified = self._recover_cleanup_obligation(
+                        key, generation, int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
             except Exception as exc:                                 # noqa: BLE001
                 # The third enumerated tuple on this path, and it is retired
                 # for the reason the other two were (#286, #288): the list is
@@ -15227,6 +15445,14 @@ class PoolQueue:
             prior = record.get("resource_scope_cleanup")
             if (isinstance(prior, dict) and prior.get("complete") is True
                     and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                if record.get('cleanup_obligation') is not None:
+                    verified = self._recover_cleanup_obligation(
+                        str(record['action_key']), self.records.attempt_generation(record),
+                        int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
                 # The shortcut must not permanently bypass proof
                 # publication: if the shared mount blipped while filing,
                 # cleanup recorded complete and future calls return here.
@@ -15340,6 +15566,13 @@ class PoolQueue:
                 self.records.replace_record_at(path, live)
             if isinstance(record, dict):
                 record["resource_scope_cleanup"] = cleanup
+            if record.get('cleanup_obligation') is not None:
+                verified = self._recover_cleanup_obligation(
+                    key, self.records.attempt_generation(record), int(record.get('attempts', 0)) + 1)
+                if isinstance(record, dict):
+                    record.update(verified)
+                return {**verified['container_cleanup'],
+                        'resource_scope': verified['resource_scope_cleanup']}
             if scope_only:
                 # A delayed cleanup is not a fresh runtime measurement and
                 # must not train the live admission model for this action.
@@ -15415,9 +15648,8 @@ class PoolQueue:
             return {"complete": False, "used": True, "removed": [], "remaining": [],
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
 
-    @staticmethod
     def _note_cleanup_attempt(
-        pending: dict[str, object], prior: Mapping[str, object] | None,
+        self, pending: dict[str, object], prior: Mapping[str, object] | None,
         cleanup: Mapping[str, object],
     ) -> None:
         """Record that cleanup was tried again and still could not be proved.
@@ -15439,6 +15671,10 @@ class PoolQueue:
         What this makes possible is deciding it on evidence.
         """
 
+        intent = pending.get('resource_scope_intent')
+        if isinstance(intent, dict) and pending.get('resource_scope') is None:
+            from .cleanup_obligation import _obligation_for
+            pending.setdefault('cleanup_obligation', _obligation_for(self, pending, intent['nonce']))
         attempts = (prior or {}).get("container_cleanup_attempts")
         pending["container_cleanup_attempts"] = (
             int(attempts) + 1 if isinstance(attempts, int) and not isinstance(attempts, bool)
@@ -16247,6 +16483,9 @@ class PoolQueue:
         overflow must not keep refilling a host while eligible GPU work waits.
         Ordinary GPU admission still decides whether the row can claim now.
         """
+        if gpu_runtime_gate.runtime_gate_state() is not None:
+            # A fenced GPU row cannot withhold CPU work for this host (#1895).
+            return None
         def local_capabilities():
             host = socket.gethostname()
             local = capability_eligibility.OfferCapabilities.from_offer(
@@ -16293,6 +16532,246 @@ class PoolQueue:
                 continue  # an unplaceable or malformed GPU row cannot starve CPU work
         return None
 
+    @staticmethod
+    def _excluded_from_cpu_hosts(
+        item: Mapping[str, object], records: Sequence[Mapping[str, object]],
+    ) -> bool:
+        """Whether ``item``'s tags name something no host without a GPU offers (#1721).
+
+        The class-scoped case of #1262: CPU-only work tagged for the GPU hosts'
+        class (aarch64 work tagged ``gb10``) has no CPU host to be left to. It is
+        read from the offers every box has filed, stale ones included, because
+        what a class offers does not change when one of its boxes is briefly
+        away: portable work (tags every box carries) stays portable while the
+        x86 box is down, and keeps waiting for it. It needs evidence on both
+        sides -- some host without a GPU on file that carries none of the
+        row's required tags, and a GPU host that does -- and with none on
+        file there is no evidence, so the row is not excluded.
+        """
+        required = {str(tag) for tag in (item.get("tags") or []) if isinstance(tag, str)}
+        # Automatic capability tags cannot establish an architecture requirement (#2030).
+        required.difference_update(contract.tag for contract in contracts.CONTRACTS)
+        if not required:
+            return False
+        without_gpu, with_gpu = [], []
+        for record in records:
+            presence = capability_eligibility.HostPresence.from_offer(record).gpu
+            if presence is capability_eligibility.Presence.UNKNOWN:
+                return False
+            offered = record.get("tags")
+            if not isinstance(offered, list) or any(not isinstance(tag, str) for tag in offered):
+                if presence is capability_eligibility.Presence.ABSENT:
+                    return False
+                continue
+            target = without_gpu if presence is capability_eligibility.Presence.ABSENT else with_gpu
+            target.append(set(offered))
+        if not without_gpu or not with_gpu:
+            return False
+        return (not any(required <= offered for offered in without_gpu)
+                and any(required <= offered for offered in with_gpu))
+
+    def _class_scoped_candidate(
+        self, item: Mapping[str, object], records: Sequence[Mapping[str, object]],
+    ) -> bool:
+        """Whether ``item`` may be considered for #1721's exemption from the READY-GPU rule.
+
+        Its tags name something no host without a GPU offers, it is no gang member
+        (a gang election is written before any later check and outlives a refusal,
+        so it could fence the GPU row out with every token free), and its sealed
+        host demand is bounded: explicit ``cpu`` and ``mem_gb``, optional
+        ``spool_gb``, no GPU, no tier or fill kind (a tier demand takes what a
+        GPU row's own claim may need). This only makes the row a candidate; whether it passes is
+        decided at the token boundary (:meth:`_class_scoped_beside_room`).
+        """
+        if item.get("gang") is not None or not self._excluded_from_cpu_hosts(item, records):
+            return False
+        try:
+            host, tiers = storage_tiers.split_demand(self.demand_of(item))
+        except (TypeError, ValueError, PoolContractError):
+            return False
+        return (not tiers and not host.get("gpu") and set(host) <= {"cpu", "mem_gb", "spool_gb"}
+                and int(host.get("cpu", 0)) > 0 and int(host.get("mem_gb", 0)) > 0)
+
+    def _class_scoped_action_shape(
+        self, item: Mapping[str, object],
+    ) -> tuple[str | None, bool | None, str | None]:
+        """The action's sealed shape and measurement flag, or why unknown (#1721).
+
+        Affirmative evidence only: an unreadable, missing, mismatched or invalid
+        sealed request is ``(None, None, reason)``, never an ordinary
+        non-measurement contract.
+        """
+        try:
+            key = str(item.get("action_key", ""))
+            cas_root = item.get("cas_root")
+            if not key or not isinstance(cas_root, str) or not cas_root:
+                return None, None, "gpu_row_request_unreadable"
+            request = _sealed_action_request(cas_root, key)
+        except (OSError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, None, "gpu_row_request_unreadable"
+        if request is None:
+            return None, None, "gpu_row_request_unreadable"
+        try:
+            action = pb.validate_action(request)
+        except (ValueError, TypeError, KeyError, pb.ActionContractError):
+            return None, None, "gpu_row_request_unreadable"
+        if action.get("action_key") != key:
+            return None, None, "gpu_row_request_unreadable"
+        task = action.get("task")
+        if not isinstance(task, Mapping):
+            return None, None, "gpu_row_request_unreadable"
+        measurement = task.get("task_class") == "measurement"
+        try:
+            shape, flag = cpu_admission.action_identity(item)
+        except (OSError, ValueError, TypeError):
+            return None, None, "gpu_row_request_unreadable"
+        if shape is None or flag != measurement:
+            return None, None, "gpu_row_request_unreadable"
+        return shape, measurement, None
+
+    def _class_scoped_room(
+        self, ready_gpu: Mapping[str, object], *, ledger: "ResourceLedger",
+        total: Mapping[str, int], controller: object | None,
+        gpu_controller: object | None, observed_images: Container[str] | None,
+        container_class_policy: image_inventory.ClassImagePolicy | None = None,
+        container_inventory: Mapping[str, object] | None = None,
+    ) -> tuple[dict[str, object] | None, str | None]:
+        """The room a class-scoped CPU row must leave the eligible GPU row, or why none (#1721).
+
+        Read once per pass, BEFORE host admission and under no lock. The GPU
+        row must be one a running CPU holder cannot keep from starting beyond
+        the tokens it takes: not a gang member (its election fences the host),
+        with an explicit ``cpu`` and ``mem_gb`` (an unbounded row is refused
+        whenever the box holds anything), not a measurement row (it needs an
+        idle host), and a readable sealed contract. Then the room is the
+        reservation its own claim charges (:meth:`_ready_gpu_row_room`).
+        """
+        if ready_gpu.get("gang") is not None:
+            return None, "gpu_row_is_gang_member"
+        try:
+            host, _tiers = storage_tiers.split_demand(self.demand_of(ready_gpu))
+            if int(host.get("cpu", 0)) <= 0 or int(host.get("mem_gb", 0)) <= 0:
+                return None, "gpu_row_cpu_unbounded"
+            shape, measurement, _why = self._class_scoped_action_shape(ready_gpu)
+            if _why is not None or shape is None:
+                return None, "gpu_row_contract_unreadable"
+            _shape, _flag, _exclusive, _budget = gpu_admission.action_contract(
+                ready_gpu, host)
+            if _shape is None:
+                return None, "gpu_row_contract_unreadable"
+        except (OSError, TypeError, ValueError, PoolContractError, pb.PrismaBuildError):
+            return None, "gpu_row_contract_unreadable"
+        if measurement:
+            return None, "gpu_row_is_measurement"
+        room = self._ready_gpu_row_room(
+            ready_gpu, ledger=ledger, total=total, controller=controller,
+            gpu_controller=gpu_controller, observed_images=observed_images,
+            container_class_policy=container_class_policy,
+            container_inventory=container_inventory)
+        if room is None:
+            return None, "gpu_room_unknown"
+        return room, None
+
+    @staticmethod
+    def _class_scoped_projected_headroom(
+        room: Mapping[str, object], demand: Mapping[str, int], *,
+        cpu_count: int, holder_costs: Mapping[str, float] | None,
+        candidate_demand: Mapping[str, int] | None = None,
+    ) -> dict[str, object] | None:
+        """``None`` when the GPU row keeps adaptive headroom beside ``demand``; else why not (#1721).
+
+        The token fit is not enough: ``adaptive_cpu.decision`` refuses the GPU
+        row on ``projected_cpu_cost`` when the host's holder costs plus the GPU
+        row's own cost cross the host. This replays the owner's rule through
+        the one shared calculation (:func:`adaptive_cpu.projected_cpu_fits`)
+        with the live terms: every holder on the box plus this candidate at
+        its future busy-holder cost, including the owner's margin on accepted
+        export allowances before funding deductions, plus the GPU row at its
+        declared demand. Without holder costs the row waits: unknown is unknown,
+        never zero.
+        """
+        if holder_costs is None:
+            return {"class_scoped": "holder_costs_unreadable"}
+        try:
+            full = candidate_demand if candidate_demand is not None else demand
+            holder_cost = cpu_admission.cpu_consumption_cost(float(int(full.get("cpu", 0))))
+            gpu_cost = float(int(room["room"].get("cpu", 0)))  # type: ignore[union-attr]
+            active = float(holder_costs["active"]) + holder_cost
+            pending = float(holder_costs["pending"]) + holder_cost
+            busy = float(holder_costs["busy_cpus"])
+        except (TypeError, ValueError, KeyError):
+            return {"class_scoped": "holder_costs_unreadable"}
+        if not cpu_admission.projected_cpu_fits(
+                busy_cpus=busy, pending_cpu_cost=pending, active_cpu_cost=active,
+                requested_cpu_cost=gpu_cost, cpu_count=cpu_count):
+            return {"gpu_row": str(room["action_key"])[:12],
+                    "kept_for": "class_scoped_cpu_projected_cpu_cost",
+                    "active_cpu_cost": active, "pending_cpu_cost": pending,
+                    "host_busy_cpus": busy, "holder_cost": holder_cost, "gpu_cost": gpu_cost,
+                    "cpu_count": cpu_count}
+        return None
+
+    @staticmethod
+    def _class_scoped_beside_room(
+        room: Mapping[str, object], *, ledger: "ResourceLedger", identity: object,
+        demand: Mapping[str, int], cpu_count: int | None = None,
+        holder_costs: Mapping[str, float] | None = None,
+        candidate_demand: Mapping[str, int] | None = None,
+    ) -> dict[str, object] | None:
+        """``None`` when a class-scoped CPU row may take its tokens now; else why not (#1721).
+
+        Called under host admission, with the row's own demand known, just before
+        it takes its tokens; it reads nothing but the free tokens. ``demand`` is
+        the token remainder this claim takes; ``candidate_demand`` is the row's
+        complete admission demand (sealed host demand plus accepted export
+        allowances, before funding deductions). The headroom check charges
+        that full cost; funding reduces only the token remainder.
+        The row passes only if, after it takes its own, ``room``
+        (:meth:`_class_scoped_room`) still fits them, and -- under adaptive
+        admission -- the projected-cost gate keeps headroom for the GPU row
+        beside every holder on the box plus this new one. Without a controller
+        there is no projected-cost gate to keep headroom for, so the token fit
+        stands alone. A measurement row is held. Later samples, learned costs,
+        host pressure and the GPU row's own later gates still decide its claim.
+        """
+        if isinstance(identity, tuple) and len(identity) > 1 and identity[1]:
+            return {"class_scoped": "measurement_row"}
+        try:
+            available = ledger.available()
+        except OSError:
+            return {"class_scoped": "free_tokens_unreadable"}
+        if any(int(available.get(kind, 0)) - int(demand.get(kind, 0)) < int(need)
+               for kind, need in room["room"].items()):  # type: ignore[union-attr]
+            return {"gpu_row": str(room["action_key"])[:12], "room": dict(room["room"]),  # type: ignore[call-overload]
+                    "kept_for": "class_scoped_cpu_beside_ready_gpu",
+                    "available": dict(available), "demand": dict(demand)}
+        if cpu_count is not None:
+            headroom = PoolQueue._class_scoped_projected_headroom(
+                room, demand, cpu_count=cpu_count, holder_costs=holder_costs,
+                candidate_demand=candidate_demand)
+            if headroom is not None:
+                if headroom.get("kept_for") != "class_scoped_cpu_projected_cpu_cost":
+                    return headroom
+                return dict(headroom, available=dict(available), demand=dict(demand))
+        return None
+
+
+    def claim_hold(self) -> host_hold.HostHold | None:
+        """The shared hold check for every claim route and the parked offer."""
+        host = socket.gethostname()
+        hold = host_hold.read_host_hold(self.root, host)
+        if hold is None:
+            self._expired_host_holds.pop(host, None)
+            return None
+        if not hold.expired:
+            return hold
+        identity = (hold.owner, hold.created_unix, hold.expires_unix)
+        if self._expired_host_holds.get(host) != identity:
+            print(f"[{host}] operator hold expired at {hold.expires_unix}; "
+                  "new claims may resume when maintenance is open", flush=True)
+            self._expired_host_holds[host] = identity
+        return None
+
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
@@ -16314,6 +16793,8 @@ class PoolQueue:
         immediately before the intent write, so a fence that closed after the
         poll check is still observed. ``None`` preserves current behavior.
         """
+        if self.claim_hold() is not None:
+            return None
         ledger = self.ledger()
         memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
                   if has_gpu else None)
@@ -17294,6 +17775,13 @@ class PoolQueue:
             self.record_denial(item, "malformed_tier_demand", {
                 "demand": sealed_demand, "error": str(exc)})
             return scan
+        runtime_probe = None
+        if demand.get("gpu") and gpu_runtime_gate.runtime_gate_state() is not None:
+            runtime_probe = gpu_runtime_gate.runtime_probe_identity(item)
+            fence = gpu_runtime_gate.runtime_claim_fence(runtime_probe)
+            if fence is not None:
+                return candidate_policy.CandidateDenial(
+                    gpu_runtime_gate.gpu_capacity.RUNTIME_REASON, fence, scan)
         admission_refusal = candidate_policy.admission_denial(
             demand, capacity_present=capacity is not None)
         if admission_refusal is not None:
@@ -17346,7 +17834,7 @@ class PoolQueue:
             residency=residency, declared_images=declared_images,
             class_verdict=class_verdict, canary_exempt=canary_exempt,
             scratch_intent=scratch_intent, dependent_owner=dependent_owner,
-            reservation=reservation)
+            reservation=reservation, runtime_probe=runtime_probe)
 
     def _prepare_host_claim(
         self, candidate: _QualifiedClaim, scan: candidate_policy.ScanOrder, *,
@@ -17366,6 +17854,7 @@ class PoolQueue:
         allowance = None
         dependent_owner = candidate.dependent_owner
         scratch_evidence = scratch_boundary = None
+        runtime_probe = candidate.runtime_probe
         if memory is not None:
             refusal = memory.denial(demand, scan, unknown_only=True)
             if refusal is not None:
@@ -17462,7 +17951,7 @@ class PoolQueue:
                 return refusal
         return _HostClaimRequest(
             candidate=candidate, identity=identity, allowance=allowance,
-            dependent_owner=dependent_owner, contract=contract,
+            dependent_owner=dependent_owner, contract=contract, runtime_probe=runtime_probe,
             scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary,
             cpu_guest=cpu_guest)
 
@@ -17535,6 +18024,7 @@ class PoolQueue:
         backfill_binding = None
         backfill_eligible = None
         from . import movement_actions, _measurement_reservation as measurement_reservation
+        census = measurement_reservation.runtime_reservation_census(census, ledger)
         reservation_now = _now()
         reservation_authority = (
             copy_authority and measurement_reservation.movement_drained(
@@ -17753,11 +18243,18 @@ class PoolQueue:
                 0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                 and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
             refused = scratch_expired or scratch_changed
+        if demand.get("gpu"):
+            fence = gpu_runtime_gate.runtime_claim_fence(request.runtime_probe)
+            if fence is not None:
+                refused = True
+                refusal_source = gpu_runtime_gate.gpu_capacity.RUNTIME_REASON
+                gpu_decision = fence
         if controller is not None and not refused:
             adaptive = controller.decision(
                 item, demand, identity=identity, owner=dependent_owner,
                 allowance=allowance,
-                foreign_load_exempt=canary_exempt)
+                foreign_load_exempt=canary_exempt,
+                include_holder_costs=request.class_room is not None)
             cpu_decision = getattr(controller, "last_decision", None)
             refused = adaptive is None
             if refused:
@@ -17769,6 +18266,8 @@ class PoolQueue:
                 "withheld_for": arbitration.blocker["action_key"],
                 "selection": arbitration.blocker, "candidate_release_bound": "UNKNOWN"})
             return _ClaimHandled.REFUSED
+        # Accepted export allowances are charged even when funding takes no free tokens.
+        class_full_demand = dict(demand)
         if funded_claim:
             # The funded kinds come from the producer's
             # allowance, not ``free/`` (#985): only the
@@ -17816,6 +18315,19 @@ class PoolQueue:
                 refused = True
                 refusal_source = "deferred_for_ready_gpu_row"
                 adaptive = None
+        if not refused and request.class_room is not None:
+            # Final token/headroom checks share the candidate's host admission lock.
+            costs = controller.holder_costs if controller is not None else None
+            why = self._class_scoped_beside_room(
+                request.class_room, ledger=ledger, identity=identity,
+                demand=reservation_demand,
+                cpu_count=len(controller.cpus) if controller is not None else None,
+                holder_costs=costs, candidate_demand=class_full_demand)
+            if why is not None:
+                refused = True
+                refusal_source = "deferred_for_ready_gpu_row"
+                adaptive = None
+                room_taken = why
         if not refused and gpu_controller is not None and demand.get("gpu"):
             adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
             gpu_decision = getattr(gpu_controller, "last_decision", None)
@@ -17925,6 +18437,9 @@ class PoolQueue:
             changed=scratch_changed, expired=scratch_expired)
         if scratch_refusal is not None:
             self.record_denial(item, scratch_refusal)
+            return _RefusalAccounting(scan, preempted)
+        if refused and refusal_source == gpu_runtime_gate.gpu_capacity.RUNTIME_REASON:
+            self.record_denial(item, refusal_source, gpu_decision)
             return _RefusalAccounting(scan, preempted)
         if refused:
             # Aging is shared diagnostic/fairness bookkeeping, not
@@ -18196,6 +18711,11 @@ class PoolQueue:
         # empty scopes) accounts for it before SUCCESS. ``None``
         # preserves current behavior for fenceless callers. The
         # unwind mirrors the tier-shortage path above it.
+        hold = self.claim_hold()
+        if hold is not None:
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "operator_held", hold.fields())
+            return _ClaimHandled.REFUSED
         if admission_open is not None and not admission_open():
             reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
             self.record_denial(item, "resign_fenced", {
@@ -19025,11 +19545,31 @@ class PoolQueue:
         next_opening = candidate_policy.row_after_placement(
             item, opening, order=scan, key=key, released=released, matches=matches,
             worker_tags=tagset, has_gpu=has_gpu, ready_gpu=ready_gpu, host=host)
+        class_room = None
         if next_opening is candidate_policy.RowProbe.GPU_SCOPE:
             takes_gpu = self._demands_withheld_kind(item, frozenset({"gpu"}))
+            class_why = None
+            if (not takes_gpu and scan_pass.ledger is not None
+                    and self._class_scoped_candidate(item, reads.class_offer_records())):
+                gpu_key = str(ready_gpu["action_key"])
+                if gpu_key not in reads.class_rooms:
+                    reads.class_rooms[gpu_key] = self._class_scoped_room(
+                        ready_gpu, ledger=scan_pass.ledger, total=total,
+                        controller=scan_pass.controller, gpu_controller=scan_pass.gpu_controller,
+                        observed_images=scan_pass.observed_images,
+                        container_class_policy=scan_pass.container_class_policy,
+                        container_inventory=scan_pass.container_inventory)
+                class_room, class_why = reads.class_rooms[gpu_key]
+                if class_room is not None:
+                    _shape, measurement, why = self._class_scoped_action_shape(item)
+                    if why is not None or measurement:
+                        class_room = None
+                        class_why = "cpu_row_contract_unreadable" if why else "cpu_row_is_measurement"
             opening = candidate_policy.row_after_gpu_scope(
                 opening, order=scan, takes_gpu=takes_gpu, ready_gpu=ready_gpu,
-                total=total)
+                total=total, class_scoped=class_room is not None)
+            if isinstance(opening, candidate_policy.CandidateDenial) and class_why:
+                opening = replace(opening, evidence={**opening.evidence, "class_scoped": class_why})
         else:
             opening = next_opening
         if isinstance(opening, candidate_policy.CandidateDenial):
@@ -19049,9 +19589,13 @@ class PoolQueue:
             # regardless, and an unprovable dependency answers False
             # and claims exactly as before.
             return _ClaimHandled.REFUSED
-        return _OpenClaimRow(key, held_back)
+        return _OpenClaimRow(key, held_back, class_room)
 
     def _refuse_busy_row(self, item, opening: _OpenClaimRow, scan, scan_pass: _ClaimScan):
+        fence = gpu_runtime_gate.runtime_gate_state()
+        if fence is not None and self._demands_withheld_kind(item, frozenset({"gpu"})):
+            self.record_denial(item, gpu_runtime_gate.gpu_capacity.RUNTIME_REASON, fence)
+            return scan
         key = opening.key
         reads = scan_pass.reads
         gpu_first = scan_pass.gpu_first
@@ -19214,18 +19758,17 @@ class PoolQueue:
                         if isinstance(prepared, candidate_policy.ScanOrder):
                             order = prepared
                             continue
+                        prepared = replace(prepared, class_room=opening.class_room)
                         gang = self._prepare_claim_gang(
                             prepared, ledger=scan_pass.ledger, host_gate=scan_pass.host_gate,
                             memory=scan_pass.memory)
                         if gang is _ClaimHandled.REFUSED:
                             continue
                         from . import _measurement_reservation as measurement_reservation
-                        if scan_pass.census_refusal is not None:
-                            self.record_denial(item, scan_pass.census_refusal.reason,
-                                               scan_pass.census_refusal.evidence)
-                            continue
-                        with measurement_reservation.pass_admission_census(
-                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate) as census:
+                        with measurement_reservation.candidate_admission_census(
+                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate,
+                                item, scan_pass.census_refusal,
+                                dependent_owner=prepared.dependent_owner) as census:
                             host_claim = self._reserve_claim_host(
                                 prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:
@@ -19262,10 +19805,10 @@ class PoolQueue:
         record = record_store.read_document(self.records.lease_path(action_key))
         if record is None:
             return None
-        beat = record.get("heartbeat_unix")
-        if not isinstance(beat, (int, float)):
+        beat = self._effective_heartbeat(record)
+        if beat is None:
             raise PoolContractError(f"lease has no heartbeat: {action_key}")
-        return _now() - float(beat)
+        return beat.age_s
 
     def claim_intent_age(self, action_key: str) -> float | None:
         """Seconds since a claimant declared intent, or ``None`` without one.
@@ -19740,7 +20283,11 @@ class PoolQueue:
                     if result == self.records.item_path(READY, key):
                         requeued.append(key)
                     continue
-                age = self.lease_age(key)
+                try:
+                    age = self.lease_age(key)
+                except (OSError, ValueError, PoolContractError) as exc:
+                    print(f"pool reaper: unreadable heartbeat for {key}: {exc}; custody retained", file=sys.stderr)
+                    continue
                 if age is not None and age <= timeout_s:
                     continue
                 if age is None:
@@ -20806,6 +21353,22 @@ class PoolQueue:
         return lifecycle.conclude(self, lifecycle.WorkerFinish(
             action_key, status, detail, claim_snapshot))
 
+    def _recover_cleanup_obligation(self, action_key: str, generation: str, attempt: int) -> dict:
+        from .cleanup_obligation import _verify_cleanup_identity, _publish_cleanup_permit
+        if not record_store.key_shaped(action_key):
+            raise PoolContractError('cleanup recovery requires a full key')
+        with self.action_transition_lock(action_key):
+            permit = _verify_cleanup_identity(self, action_key, generation, attempt)
+            return _publish_cleanup_permit(self, permit)
+
+    def reconcile_cleanup(self, action_key: str, generation: str, attempt: int) -> dict:
+        """Verify this host's exact cleanup debt; accept identity only."""
+        record = self._recover_cleanup_obligation(action_key, generation, attempt)
+        return {'action_key': action_key, 'generation': generation, 'attempt': attempt,
+                'cleanup_obligation': record['cleanup_obligation'],
+                'resource_scope_cleanup': record['resource_scope_cleanup'],
+                'container_cleanup': record['container_cleanup']}
+
     def retire_residency_plan(self, consumer_action_key: str) -> bool:
         """Move a concluded consumer's residency plan out of the census (#1041).
 
@@ -21638,8 +22201,16 @@ class PoolQueue:
             if host is None and isinstance(lease.get("host"), str):
                 host = str(lease["host"])
 
-        if (existing is not None and record is not None
-                and self.withdrawal_covers(record, action_key=key) is None):
+        supersede_existing = (existing is not None and record is not None
+                              and self.withdrawal_covers(record, action_key=key) is None)
+        # Admission can reach withdrawal through a refusal without reaching the
+        # final claim check. Recheck after ownership reads, before retiring an
+        # old marker or filing new cancellation authority. A committed handoff
+        # and explicit operator withdrawals must still be able to complete.
+        if (preempted_by is not None and (existing is None or supersede_existing)
+                and self.claim_hold() is not None):
+            raise PoolContractError("operator hold prevents admission preemption")
+        if supersede_existing:
             self._supersede_withdrawal(key)
             existing = None
 
@@ -22329,6 +22900,16 @@ class PoolQueue:
                                 else None)))
                     except Exception as exc:          # noqa: BLE001
                         outcome["dependents_error"] = repr(exc)
+                if scope is not None and gpu_runtime_gate.gpu_capacity.runtime_fence_enabled():
+                    try:
+                        fault = scope.container_host_fault()
+                        if fault is not None:
+                            outcome["host_fault"] = fault
+                            if outcome.get("status") == "failed" and not outcome.get("termination_reason"):
+                                outcome["termination_reason"] = (
+                                    f"host_fault: {fault['reason']}/{fault['subtype']}")
+                    except (OSError, ValueError) as exc:
+                        outcome["container_launch_outcome_error"] = str(exc)
                 framebuffer = getattr(scope, "_framebuffer_window", None)
                 if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
                     group = framebuffer.group()

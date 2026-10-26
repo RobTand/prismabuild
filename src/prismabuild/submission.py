@@ -2861,7 +2861,11 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key)),
     ):
         return found
-    age = q.lease_age(key)
+    try:
+        age = q.lease_age(key)
+    except (OSError, ValueError, pool.PoolContractError):
+        # Unknown liveness must not publish a duplicate attempt or abort attach.
+        return found
     if age is not None and age < pool.LEASE_TIMEOUT_S:
         return found
     return None

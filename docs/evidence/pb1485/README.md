@@ -5,6 +5,10 @@ End-to-end [#1485](https://github.com/RobTand/prismabuild/issues/1485)
 qualification remains unmet. This is a prerequisite handoff for the Principal
 Engineer and the consumer/campaign owners, dated 2026-10-25.
 
+The [2026-10-26 install diagnosis](pack-install-diagnosis.md) adds a failing
+Python 3.12 aarch64 reproduction and repaired scratch installs on both Sparks.
+Pack production and delivered-interpreter qualification remain gated.
+
 The baseline remains the accepted packet
 `local://pb1485-sdk5-publication-compatibility-predecision.json#3441`,
 SHA256 `50e87c70ea4c5c64161c7f7e5e77a424685ac42b26a53fdb6c26f276b445f46b`,

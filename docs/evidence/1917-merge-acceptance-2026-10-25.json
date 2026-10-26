@@ -1,0 +1,61 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "SC-03",
+    "ID-08",
+    "ID-09"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1917-fleet-evidence",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1917",
+    "validated_repairs": [],
+    "remaining_gaps": [
+      "SC-03: unmatched shared-mount traffic is still unattributed; no historical 1779 ops/s baseline reconstructed.",
+      "ID-08: source probe mitigation is not deployed; old production collector remains active. Principal owns reviewed batch release and growth readback.",
+      "ID-09: broad guard runs retain a field-inventory failure also reproduced unchanged on main; these are failed actions, not passing suites.",
+      "Existing NFS retained states and kernel remediation require Rob operator authority; no reclamation is claimed."
+    ],
+    "note": "Prospective source-merge review record only. This PR changes diagnostic scratch content, not staged-read enforcement, action lifecycle, residency or dev identity. No global requirement is newly marked implemented or deployed. Private-prefix tests validate the probe mitigation; all public runtime publication remains prohibited for this task."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirement_status": [
+    {
+      "id": "SC-03",
+      "target": "Keep target, implementation, deployment and proof separate.",
+      "ledger_implementation": "no",
+      "ledger_deployment": "unknown",
+      "this_scope": "Measured source repair and remaining unknowns are stated; no global enforcement claim."
+    },
+    {
+      "id": "ID-08",
+      "target": "Attribute behavior to runtime commit and generation.",
+      "ledger_implementation": "yes",
+      "ledger_deployment": "partial",
+      "this_scope": "All 12 private actions record generation 9dce28460e76-1792959923-b5904f02524e and sealed source. New collector source is validated, not deployed."
+    },
+    {
+      "id": "ID-09",
+      "target": "Distinguish acknowledgement, terminal exit, CAS publication and semantic validity.",
+      "ledger_implementation": "partial",
+      "ledger_deployment": "yes",
+      "this_scope": "Executed probes have independent terminal/log/CAS verification. Server observations establish bounded semantic result; failed and transient reads remain explicit."
+    }
+  ],
+  "evidence": [
+    "docs/evidence/1917-lifecycle-followup-2026-10-25.json",
+    "docs/evidence/1917-tests-followup-2026-10-25.json"
+  ],
+  "review_gate": "Principal Engineer standards/spec review and merge pending; this record is not approval."
+}

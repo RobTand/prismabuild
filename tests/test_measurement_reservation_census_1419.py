@@ -94,7 +94,7 @@ def test_a_real_mirror_arriving_between_holder_reads_prevents_measurement_electi
 
 def test_new_unlocked_measurement_at_refresh_restarts_without_tokens(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
-    lower = publish("refresh-candidate")
+    lower = publish("refresh-candidate", measurement=True)
     original = reservation.CensusReader.capture
     reads = []
     measurement = []
@@ -159,7 +159,7 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
     assert queue.records.item_path(pool.record_store.READY, lower).exists()
 
 
-def test_measurement_keys_and_H_cover_begin_but_not_commit(fleet, monkeypatch):
+def test_an_unfenced_priority_keeps_H_through_begin_without_needing_M(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
     candidate = publish("higher-boundary-candidate", priority=1)
@@ -168,20 +168,28 @@ def test_measurement_keys_and_H_cover_begin_but_not_commit(fleet, monkeypatch):
     def can_take_M():
         with queue.action_transition_lock(measurement, blocking=False) as acquired:
             return acquired
+    def can_take_H():
+        try:
+            with adaptive_cpu.AdmissionGate(queue.ledger()).locked():
+                return True
+        except adaptive_cpu.AdmissionBusy:
+            return False
     begin = pool.ResourceLedger.begin_acquire
     commit = pool.ResourceLedger.commit_acquire
     def acquire(self, *args, **kwargs):
         with ThreadPoolExecutor(max_workers=1) as executor:
-            events.append(("begin", executor.submit(can_take_M).result(timeout=5)))
+            events.append(("begin", executor.submit(can_take_M).result(timeout=5),
+                           executor.submit(can_take_H).result(timeout=5)))
         return begin(self, *args, **kwargs)
     def settle(self, *args, **kwargs):
         with ThreadPoolExecutor(max_workers=1) as executor:
-            events.append(("commit", executor.submit(can_take_M).result(timeout=5)))
+            events.append(("commit", executor.submit(can_take_M).result(timeout=5),
+                           executor.submit(can_take_H).result(timeout=5)))
         return commit(self, *args, **kwargs)
     monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", acquire)
     monkeypatch.setattr(pool.ResourceLedger, "commit_acquire", settle)
     assert claim() == candidate
-    assert events == [("begin", False), ("commit", True)]
+    assert events == [("begin", True, False), ("commit", True, True)]
     assert _chosen(queue, measurement)["host"] == "sparklina"
 
 
@@ -287,7 +295,7 @@ def test_locked_authoritative_retirement_allows_lower_progress(fleet, ending):
 
 def test_census_cap_is_unknown_not_an_empty_election(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
-    candidate = publish("capped")
+    candidate = publish("capped", measurement=True)
     monkeypatch.setattr(reservation, "MAX_RECORDS", 0)
     assert claim() is None
     assert denial(candidate)["reason"] == "measurement_census_unavailable"

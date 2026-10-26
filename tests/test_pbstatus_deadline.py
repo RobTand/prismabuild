@@ -264,7 +264,8 @@ def test_a_prompt_error_is_not_a_complete_read(tmp_path, monkeypatch, capsys):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
 
-    def refuse(root, *, reader=None):
+    def refuse(root, *, reader=None, authoritative_holds=False):
+        assert authoritative_holds is True
         raise PermissionError("queue unavailable")
 
     monkeypatch.setattr(fleet_census, "action_rows", refuse)

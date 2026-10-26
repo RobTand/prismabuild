@@ -114,6 +114,11 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "host-local publication fence owned by live workers; repointed so "
         "tests never contend on their lock inode"
     ),
+    ("prismabuild.gpu_capacity", "RUNTIME_GATE"): (
+        "host-local GPU container-runtime fence state under /run/prismabuild, "
+        "owned by the live resource broker (#1895); repointed so tests never "
+        "read or write the real fence file"
+    ),
     # Per-uid role singleton locks under /tmp (#709): not the live store, so
     # the mount scan rightly ignores it -- but live *state* owned by this
     # box's running roles, and a routine ``ensure_roles`` or role-entrypoint

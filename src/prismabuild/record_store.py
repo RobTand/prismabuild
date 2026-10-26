@@ -1643,12 +1643,12 @@ class RecordStore:
         return Absent()
 
     def gang_member_slots(self, key: str) -> Iterator[RecordObservation]:
-        """Stable strict 64 KiB slots in gang membership's original priority."""
+        """Replaceable strict 64 KiB slots in gang membership's original priority."""
         for state in (CLAIMED, DONE, FAILED, WITHDRAWN, READY):
             path = self.item_path(state, key)
             address = QueueAddress(path, state, key)
             try:
-                raw = immutable_files.read_stable_file(
+                raw = immutable_files.read_replaced_record(
                     path, where="gang record", max_bytes=64 * 1024)
             except FileNotFoundError:
                 yield RecordObservation(address, Absent())
@@ -2556,24 +2556,32 @@ class RecordStore:
                                   parse=_document_bytes, thaw=_document_from_bytes)
 
     def receipt_records_at(self, directory: Path, *, checkpoint=None,
-                           readers: int = 1) -> list[tuple[Path, JsonRecord | None]]:
-        """Visible receipt names at a domain-held receipt directory."""
+                           readers: int = 1, thaw=None) -> list[tuple[Path, JsonRecord | None]]:
+        """Visible receipt names at a domain-held receipt directory.
+
+        A private consumer may supply ``thaw(path, frozen)`` to retain derived
+        inputs. Only DirectoryRecords decides whether the frozen input holds;
+        its file identity, trust and coarse-clock fences still apply.
+        The default hands out independent mutable documents.
+        """
         if self._records is None:
             return [(path, read_document(path))
                     for path in immutable_files.scan_optional(directory)
                     if _visible_json_entry(path)]
         return self._records.read(
             directory, select=_visible_json_entry, parse=_frozen_document,
-            thaw=_thawed_document, checkpoint=checkpoint, readers=readers)
+            thaw=_thawed_document if thaw is None else thaw,
+            checkpoint=checkpoint, readers=readers)
 
-    def retirement_documents(self) -> list[tuple[Path, JsonRecord | None]]:
+    def retirement_documents(self, *, thaw=None) -> list[tuple[Path, JsonRecord | None]]:
         directory = self.root / MOVERS_RETIRED
         if self._records is None:
             return [(path, read_document(path))
                     for path in immutable_files.scan_optional(directory)
                     if _retirement_entry(path)]
         return self._records.read(directory, select=_retirement_entry,
-                                  parse=_frozen_document, thaw=_thawed_document)
+                                  parse=_frozen_document,
+                                  thaw=_thawed_document if thaw is None else thaw)
 
     def diagnostic_records_at(self, directory: Path
                               ) -> list[tuple[Path, DiagnosticRecord]]:

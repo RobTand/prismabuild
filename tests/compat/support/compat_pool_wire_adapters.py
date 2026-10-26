@@ -34,7 +34,21 @@ def operate(request, store, load):
                              resources={"cpu": 1, "mem_gb": 1}, **kw)
         return path, json.loads(path.read_bytes())
 
-    if family == "q-item":
+    if family == "q-host-hold":
+        holds = load("prismabuild.host_hold")
+        path = holds.host_hold_path(queue.root, "compat-host")
+        if write:
+            holds.change_host_hold(queue.root, "compat-host", owner="compat", reason="load",
+                                   now=100., expires_unix=200.)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(base64.b64decode(request["raw"]))
+            request["_consumer_boundary"]()
+            value = holds.read_host_hold(queue.root, "compat-host", now=300. if variant == "expired" else 150.)
+            assert value is not None and value.error is None, "actual hold consumer refused"
+            assert value.expired is (variant == "expired")
+            return value.fields()
+    elif family == "q-item":
         if write:
             path, record = publish()
         else:

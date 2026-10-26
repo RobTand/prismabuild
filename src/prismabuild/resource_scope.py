@@ -662,6 +662,12 @@ class ResourceScope:
             argv, python=sys.executable, helper=helper, socket_path=self.socket_path,
             action_key=self.action_key, nonce=self.nonce, token=self.token)
 
+    def container_host_fault(self) -> dict[str, Any] | None:
+        """Only the authenticated broker's launch outcome names a host fault."""
+        result = self._request('status')
+        value = result.get('host_fault')
+        return value if isinstance(value, dict) else None
+
     def _prior_process_io(self) -> dict[str, Any]:
         """What an earlier sampler already accounted for *this* attempt.
 

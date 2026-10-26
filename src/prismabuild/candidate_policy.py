@@ -417,8 +417,9 @@ def row_after_placement(
 def row_after_gpu_scope(
     opening: RowOpening, *, order: ScanOrder, takes_gpu: bool,
     ready_gpu: Mapping[str, object], total: Mapping[str, int],
+    class_scoped: bool = False,
 ) -> CandidateDenial | RowOpening:
-    if not takes_gpu:
+    if not takes_gpu and not class_scoped:
         return CandidateDenial("deferred_for_ready_gpu", {
             "gpu_row": ready_gpu.get("action_key"),
             "gpu_published_unix": ready_gpu.get("published_unix"),
