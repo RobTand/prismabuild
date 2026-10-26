@@ -2019,6 +2019,50 @@ For observed rows, an observation error outranks an ordinary failure, which
 outranks supersession, which outranks waiting. Supersession never cancels
 existing work, follows the successor, or releases capacity on its own.
 
+## Broker maintenance bridge (#2229)
+
+Publish and converge the broker bridge as its own generation through normal
+rolling publication and the enrolled updater before a custody cutover. A
+hand-installed broker can be replaced on the updater's next tick. Verify the
+installed managed-member hashes and an authorized unprivileged query on each
+host before relying on the bridge. This source change does not publish it.
+
+Root closes or releases its gate through the locally installed, root-owned
+helper, using the existing maintenance owner protocol:
+
+```bash
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-begin OWNER --reason 'operator maintenance'
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-end OWNER
+```
+
+Use the exact owner that holds the gate for the second command. Never run PB
+Python from the shared NFS generation as root. `-I` excludes ambient Python
+import paths. Verify the installed broker path, ownership and bytes before
+running either command. The helper's file check runs after Python has loaded
+it; it catches an accidental invocation from an untrusted path, but cannot
+make already executed code trustworthy. The local RPC is bounded to 30 seconds.
+Begin sends the operator reason, defaulting to `operator maintenance` when
+`--reason` is absent or empty. Both commands print bounded health errors.
+
+The configured execution UID can observe the gate through the existing
+unprivileged broker client:
+
+```python
+from prismabuild.resource_scope import broker_request
+state = broker_request({"op": "maintenance_query"})
+```
+
+Check `draining`, the exact `maintenance_owner`, `health`, `active_scopes` and
+the truncation/error fields. Missing or unhealthy evidence is not a zero. The
+query accepts no owner or caller proof and cannot change the gate, clean a
+pending setup, reclaim memory, retire a scope or write broker records. Its
+retired-container classification agrees with root status when root housekeeping
+succeeds. A failed root reap can leave root status unhealthy while the query
+reports healthy with none active. Ending maintenance re-runs the root check
+and refuses until it succeeds. Root maintenance must perform required cleanup; a query reporting zero active scopes does
+not certify checkout absence or resource return. Full stopped-writer proof and
+legacy adoption belong to the later custody deployment.
+
 ## Fan a test suite out
 
 `pbtest` shards a test suite across the fleet instead of running it on one box:
