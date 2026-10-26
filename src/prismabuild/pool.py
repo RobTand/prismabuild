@@ -16185,7 +16185,7 @@ class PoolQueue:
         for record in records:
             presence = capability_eligibility.HostPresence.from_offer(record).gpu
             if presence is capability_eligibility.Presence.UNKNOWN:
-                continue
+                return False
             offered = record.get("tags")
             if not isinstance(offered, list) or any(not isinstance(tag, str) for tag in offered):
                 if presence is capability_eligibility.Presence.ABSENT:
