@@ -1324,6 +1324,7 @@ def _sealed_action_request(
     action_key: str,
     *, max_bytes: int | None = None,
 ) -> Mapping[str, object] | None:
+    """Translate sealed authority failures at the pool publication boundary."""
     try:
         return _validated_action_request(cas_root, action_key, max_bytes=max_bytes)
     except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
@@ -1337,11 +1338,10 @@ def _validated_action_request(
     action_key: str,
     *, max_bytes: int | None = None,
 ) -> Mapping[str, object] | None:
-    """Read one validated sealed request for all publication policies.
+    """Read sealed authority and preserve core validation errors.
 
     An absent request permits only the legacy direct-publish path. Corrupt,
     unreadable or key-mismatched authority never silently becomes legacy.
-    R5 batch binding and #1213 canary binding share this read.
     """
 
     key = str(action_key)
@@ -1402,7 +1402,7 @@ def _sealed_progress_policy(
     contention spec a stage mover declares beside it (#1010).
     """
 
-    action = _sealed_action_request(str(item["cas_root"]), str(item["action_key"]))
+    action = _validated_action_request(str(item["cas_root"]), str(item["action_key"]))
     if action is None:
         return None
     try:
@@ -2387,7 +2387,7 @@ def _sealed_execution_policy(
     authority instead of rereading shared CAS at the deadline.
     """
 
-    action = _sealed_action_request(str(item["cas_root"]), str(item["action_key"]))
+    action = _validated_action_request(str(item["cas_root"]), str(item["action_key"]))
     if action is None:
         return None, False
     mode = action["params"].get("profile")
@@ -2445,7 +2445,7 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
     ``PoolContractError`` exactly as it does there.
     """
 
-    action = _sealed_action_request(
+    action = _validated_action_request(
         str(item["cas_root"]), str(item["action_key"]), max_bytes=max_bytes)
     if action is None:
         return "deadline", None
