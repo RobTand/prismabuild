@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
+from prismabuild import _bounded_reader as reader
 from fleet_world import Clock
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
@@ -292,10 +293,17 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
         return original_capture(active)
 
     monkeypatch.setattr(reservation, "_capture", slow_capture)
-    monkeypatch.setattr(reservation, "READ_BUDGET_S", 40)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
 
     def observe():
+        class ParkedDeadline(reader.Deadline):
+            def remaining(self):
+                return self.timeout_s
+
+        real_select = reader.select.select
+        monkeypatch.setattr(reader, "Deadline", ParkedDeadline)
+        monkeypatch.setattr(reader, "select", SimpleNamespace(
+            select=lambda ready, write, error, timeout: real_select(ready, write, error)))
         try:
             reservation.CensusReader(queue, queue.ledger()).capture()
         except reservation.CensusUnavailable:
