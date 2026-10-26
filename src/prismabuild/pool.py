@@ -1394,19 +1394,9 @@ def _sealed_progress_policy(
     contention spec a stage mover declares beside it (#1010).
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(request, where="pool action request")
-    except FileNotFoundError:
-        # Same rule as the deadline: a legacy launcher with no request declares
-        # nothing, and the canonical worker refuses a missing request itself.
+    action = _sealed_action_request(str(item["cas_root"]), str(item["action_key"]))
+    if action is None:
         return None
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
     try:
         return read(action)
     except pb.ActionContractError as exc:
@@ -2389,29 +2379,27 @@ def _sealed_execution_policy(
     authority instead of rereading shared CAS at the deadline.
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(request, where="pool action request")
-    except FileNotFoundError:
-        # Legacy/custom launchers can have no request. The canonical worker
-        # independently refuses a missing request before executing any action.
+    action = _sealed_action_request(str(item["cas_root"]), str(item["action_key"]))
+    if action is None:
         return None, False
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
     mode = action["params"].get("profile")
     profiled = isinstance(mode, str) and bool(mode)
-    requested = action["params"].get("execution_timeout_s")
+    requested = _action_execution_timeout(action)
     if requested is None:
         return None, profiled
+    return (requested if ceiling is None else min(requested, ceiling)), profiled
+
+
+def _action_execution_timeout(action: Mapping[str, object]) -> float | None:
+    """Validate the total deadline shared by execution and admission."""
+
+    requested = action["params"].get("execution_timeout_s")
+    if requested is None:
+        return None
     if (type(requested) not in (int, float) or not math.isfinite(requested)
             or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
-    return (float(requested) if ceiling is None
-            else min(float(requested), ceiling)), profiled
+    return float(requested)
 
 
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
@@ -2449,33 +2437,19 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
     ``PoolContractError`` exactly as it does there.
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(
-            request,
-            where="pool action request",
-            max_bytes=max_bytes,
-        )
-    except FileNotFoundError:
+    action = _sealed_action_request(
+        str(item["cas_root"]), str(item["action_key"]), max_bytes=max_bytes)
+    if action is None:
         return "deadline", None
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
     try:
         policy = pb.action_progress_policy(action)
     except pb.ActionContractError as exc:
         raise PoolContractError(str(exc)) from exc
-    requested = action["params"].get("execution_timeout_s")
-    if requested is not None and (type(requested) not in (int, float)
-                                  or not math.isfinite(requested) or requested <= 0):
-        raise PoolContractError("execution_timeout_s must be a positive finite number")
+    requested = _action_execution_timeout(action)
     if policy is not None:
-        return "progress", (None if requested is None else float(requested))
+        return "progress", requested
     if requested is not None:
-        return "deadline", float(requested)
+        return "deadline", requested
     return "stall", None
 
 
