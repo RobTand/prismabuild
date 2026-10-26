@@ -18,11 +18,13 @@ REPOS = tuple(f"RobTand/{name}" for name in ("prismaquant", "prismabuild", "tess
 BLOCKED = {"tl:blocked", "ig:blocked"}
 PREFIX = re.compile(r"^\s*\[(P0|P1|P2\+|P2|P3|P4)\]")
 REFERENCE = r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)"
-PARENT = re.compile(r"^\s*(?:[-*]\s+)?(?:part of|sub-issue of)\s*:?\s*" + REFERENCE, re.I | re.M)
+PARENT = re.compile(r"^\s*(?:[-*]\s+)?(?:part of|sub-issue of|parent)\s*:?\s*" + REFERENCE, re.I | re.M)
 BLOCKER = re.compile(r"^(?:[-*][ \t]+)?(?:blocked by|depends on|blockers?|dependencies)\b[ \t]*:?[ \t]*(.*)$", re.I)
 BLOCKER_WORD = re.compile(r"\b(?:blocked by|depends on|blockers?|dependencies)\b", re.I)
 REF = re.compile(REFERENCE)
-CLAIM = re.compile(r"\b(?:fixed|implemented|resolved|completed|done)\b", re.I)
+CLAIM = re.compile(r"\b(?:(?:fixed|implemented|resolved|completed)\s+(?:in|by)|landed\s+in)\b", re.I)
+BODY_STATUS = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?(?:status|resolution)(?:\*\*)?\s*:|"
+                         r"^\s*(?:[-*]\s+)?(?:fixed|implemented|resolved|completed|landed)\s+(?:in|by)\b", re.I)
 PROOF = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:pull/\d+|commit/[0-9a-f]{7,40})\b", re.I)
 
 
@@ -245,19 +247,31 @@ def candidate(kind: str, tickets: list[str], proof: list[str], **details) -> dic
 
 def duplicate_clusters(scope: list[Issue]) -> list[list[str]]:
     titles = {i.key: re.sub(r"\W+", " ", PREFIX.sub("", i.title).casefold()).strip() for i in scope}
-    groups = []
+    roots = {i.key: i.key for i in scope}
+
+    def root(k):
+        while roots[k] != k:
+            roots[k] = roots[roots[k]]
+            k = roots[k]
+        return k
+
     for n, issue in enumerate(scope):
         for other in scope[n + 1:]:
             left, right = titles[issue.key], titles[other.key]
             if left and right and (left == right or (len(left) >= 30 and len(right) >= 30 and
                                                        SequenceMatcher(None, left, right).ratio() >= .92)):
-                groups.append([issue.key, other.key])
-    return groups
+                a, b = sorted((root(issue.key), root(other.key)))
+                roots[b] = a
+    groups = defaultdict(list)
+    for k in sorted(roots):
+        groups[root(k)].append(k)
+    return [members for _, members in sorted(groups.items()) if len(members) > 1]
 
 
 def claim_sources(issue: Issue) -> list[str]:
-    texts = [(url(issue.key), issue.body)] + [(c["url"], c["body"]) for c in issue.evidence.get("comments", [])]
-    return [source for source, body in texts if CLAIM.search(body) and not PROOF.search(body)]
+    texts = [(url(issue.key), line) for line in issue.body.splitlines() if BODY_STATUS.match(line)]
+    texts.extend((c["url"], c["body"]) for c in issue.evidence.get("comments", []))
+    return sorted({source for source, body in texts if CLAIM.search(body) and not PROOF.search(body)})
 
 
 def candidates(snapshot: Snapshot) -> list[dict]:
@@ -288,7 +302,7 @@ def candidates(snapshot: Snapshot) -> list[dict]:
         unproven = claim_sources(issue)
         if unproven:
             result.append(candidate("claim_without_evidence", [issue.key], unproven,
-                                    reason="Claim words without a linked commit or PR; human review must check context."))
+                                    reason="Completion phrase in a comment or body status line without a linked commit or PR; review context."))
     return sorted(result, key=lambda c: (c["kind"], c["tickets"]))
 
 
@@ -303,9 +317,14 @@ def write_list(snapshot: Snapshot, found: list[dict], hindsight: dict | None = N
         parent = snapshot.issues.get(link.target)
         root, diagnostics = graph.trace(k)
         if parent and parent.state == "CLOSED":
-            rows.append({"action": "create_parent", "issue": k, "target": None,
-                         "proof": [url(k), url(parent.key)], "status": "needs_parent_design",
-                         "preconditions": ["Choose an open parent and review its scope; do not reopen the closed parent implicitly."]})
+            if root != k and not diagnostics:
+                rows.append({"action": "reparent", "issue": k, "target": root,
+                             "proof": [url(k), url(parent.key), url(root)], "status": "proposed",
+                             "preconditions": ["Recheck the closed parent chain to the known open ancestor before replacing the parent."]})
+            else:
+                rows.append({"action": "create_parent", "issue": k, "target": None,
+                             "proof": [url(k), url(parent.key)], "status": "needs_parent_design",
+                             "preconditions": ["Choose an open parent and review its scope; do not reopen the closed parent implicitly."]})
         elif link.source == "text" and parent and not diagnostics:
             rows.append({"action": "native_sub_issue", "issue": k, "target": parent.key,
                          "proof": [url(k), url(parent.key)], "status": "proposed",

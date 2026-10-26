@@ -130,6 +130,15 @@ class EvidenceTests(unittest.TestCase):
         clusters = [c for c in candidates(s) if c["kind"] == "duplicate_cluster"]
         self.assertEqual([c["tickets"] for c in clusters], [[k(1), k(2), k(3)]])
 
+    def test_similarity_clusters_are_transitive_and_order_independent(self):
+        rows = [issue(1, title="a" * 70 + "x" * 10),
+                issue(2, title="a" * 70 + "x" * 5 + "y" * 5),
+                issue(3, title="a" * 70 + "y" * 10), issue(4, title="distinct")]
+        first = [c for c in candidates(snapshot(*rows)) if c["kind"] == "duplicate_cluster"]
+        self.assertEqual([c["tickets"] for c in first], [[k(1), k(2), k(3)]])
+        second = [c for c in candidates(snapshot(*reversed(rows))) if c["kind"] == "duplicate_cluster"]
+        self.assertEqual(first, second)
+
     def test_done_when_checklist_and_prose_are_not_completion_claims(self):
         s = snapshot(issue(1, body="Done when:\n- [ ] fixed behavior is tested\nImplementation will be completed."))
         self.assertFalse(any(c["kind"] == "claim_without_evidence" for c in candidates(s)))
