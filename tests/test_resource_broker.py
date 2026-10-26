@@ -591,11 +591,22 @@ def test_cgroup_watch_loss_is_visible_and_does_not_spin_on_numeric_ticks(event_m
 
 def test_monitor_close_wakes_blocked_event_wait(event_monitored):
     _,_,_,_,monitor,events,_=event_monitored
+    import select
+    read,write=os.pipe();finished=threading.Event()
+    events.on_wait=lambda timeout:select.select([monitor.wake_read,read],[],[])
+    def close():
+        monitor.close();finished.set()
+    closer=threading.Thread(target=close,daemon=True)
     monitor.start()
     try:
         assert events.waiting.wait(5), 'monitor never reached its event wait'
+        closer.start()
+        closed=finished.wait(5)
     finally:
-        monitor.close()
+        os.write(write,b'x')
+        if closer.ident is not None:closer.join(timeout=5)
+        monitor.close();os.close(read);os.close(write)
+    assert closed, 'close did not wake the event wait'
     assert not monitor.thread.is_alive()
     assert events.closed
 
@@ -662,6 +673,42 @@ def test_linux_cgroup_event_source_overflow_invalidates_all_retained_scopes(moni
         source.close()
 
 
+def test_linux_cgroup_event_source_caps_work_before_discarding_uncertain_queue(monitored,monkeypatch):
+    import struct
+    m=module();source=m.CgroupEventSource()
+    packet=struct.pack('iIII',-2,0x2,0,0)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(m.os,'read',lambda fd,size:packet*2)
+            with pytest.raises(OSError,match='budget'):
+                source.drain(max_events=1)
+    finally:
+        source.close()
+
+
+def test_event_only_capacity_invalidation_keeps_numeric_timestamp(event_monitored,monkeypatch):
+    a,_,rows,gpu,monitor,events,clock=event_monitored
+    original=gpu.collect
+    monkeypatch.setattr(gpu,'collect',lambda scopes,**options:original(scopes,timeout_s=options['timeout_s']))
+    class Capacity:
+        def devices(self,**options):return [],[]
+        def collect(self,*args,**options):
+            return {'complete':True,'errors':[],'sampled_unix':clock()}
+    monitor.capacity=Capacity();monitor.poll_once()
+    path=a.state_dir.parent/'gpu-capacity.json';before=json.loads(path.read_text())
+    assert before['complete']
+    clock.advance(2);scope=rows[0][1]['scope_id']
+    (rows[0][2]/'cgroup.events').write_text('populated 1\nfrozen 0\n')
+    events.dirty.add(scope);monitor.poll_events_once()
+    changed=json.loads(path.read_text())
+    assert changed['complete'] is False
+    assert changed['sampled_unix']==before['sampled_unix']
+    assert len(gpu.calls)==1
+    monitor.poll_once();fresh=json.loads(path.read_text())
+    assert fresh['complete']
+    assert fresh['sampled_unix']==clock()
+
+
 def test_cgroup_source_failure_recreates_descriptor_after_recovery_deadline(event_monitored):
     import errno
     a,b,rows,gpu,old,_,clock=event_monitored
@@ -682,6 +729,34 @@ def test_cgroup_source_failure_recreates_descriptor_after_recovery_deadline(even
         assert len(gpu.calls)==1
     finally:
         monitor.close()
+
+
+def test_scope_change_wake_after_inventory_snapshot_is_not_consumed(event_monitored,monkeypatch):
+    import select
+    a,_,rows,_,monitor,_,_=event_monitored
+    monitor.poll_once();original=monitor._inventory
+    request,record,_=rows[0]
+    def snapshot_then_retire():
+        result=original()
+        monkeypatch.setattr(monitor,'_inventory',original)
+        a.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+        return result
+    monkeypatch.setattr(monitor,'_inventory',snapshot_then_retire)
+    monitor.poll_events_once()
+    assert select.select([monitor.wake_read],[],[],0)[0]==[monitor.wake_read], (
+        'scope-change wake arriving after inventory must remain ready for reconciliation')
+    assert monitor.poll_events_once()['active_scopes']==1
+
+
+def test_failed_enrollment_prefix_cannot_starve_a_healthy_scope(event_monitored):
+    _,_,rows,_,monitor,events,clock=event_monitored
+    monitor.event_work_limit=1
+    events.fail.add(rows[0][1]['scope_id'])
+    healthy=rows[1][1]['scope_id']
+    for _ in range(3):
+        monitor.poll_events_once()
+        clock.advance(monitor.recovery_interval_s)
+    assert healthy in events.watched, 'failed enrollment prefix starved a healthy later scope'
 
 
 def test_gpu_monitor_stops_only_attributed_attempt_and_preserves_first_cause(monitored):

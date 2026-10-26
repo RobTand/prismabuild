@@ -4907,6 +4907,25 @@ broker attachment, an unaccounted container or incomplete telemetry refuses
 lending. A new worker needs broker installation and qualification before it can
 join this execution path; runtime publication alone does not install the broker.
 
+The #2064 source monitor watches `memory.events`, `memory.events.local` and
+`cgroup.events`. Unchanged event inputs are read at enrollment and after
+invalidation, rather than on every numeric sample. Its private `monitor.status`
+adds `event_coverage.complete`, `source_error` and per-scope coverage diagnostics.
+A lost scope has no retained counters or population evidence. Watch registration
+retries after one second. Notification overflow or excessive drain work discards
+the descriptor and its queued events before reenrollment. Coverage uncertainty
+makes broker monitor health and public GPU capacity incomplete.
+
+Numeric memory, pressure and vendor telemetry still require the default
+one-second sampler. Event-only status updates retain the last numeric sample's
+timestamp and cannot restore public completeness. A pending exact-attempt stop
+retries independently of new notifications. Shutdown wakes the notification
+wait; ongoing bounded collection finishes before the monitor joins. Population
+notifications never replace the backend's fresh checks before release or reaping.
+The controlled source tests and read-count baseline do not qualify privileged
+live cgroups or establish a deployed read rate. Rollout remains a separate
+reviewed installation and qualification step.
+
 A retired tombstone's kernel group can disappear while its record lives -- an
 out-of-band slice removal, or a reboot. A maintenance status pass then closes
 only the record's administrative lifetime, and only on the full proof:
