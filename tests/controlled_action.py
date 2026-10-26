@@ -115,7 +115,7 @@ def controlled_actions(monkeypatch, actions):
     native = pool.subprocess.Popen
 
     def launch(argv, **kwargs):
-        path = kwargs.get("env", {}).get(pool.pb.ACTION_PROGRESS_PATH_ENV)
+        path = (kwargs.get("env") or {}).get(pool.pb.ACTION_PROGRESS_PATH_ENV)
         action = actions.get(path)
         return (native(argv, **kwargs) if action is None
                 else action.launch(native, argv, **kwargs))
