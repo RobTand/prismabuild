@@ -89,6 +89,7 @@ def run_payload(mode: str, root: Path, profile: Path | None) -> None:
             raise SystemExit("egress needs all four landed fixture entries")
     sys.argv = argv
     profiler = cProfile.Profile() if profile else None
+    profile_data = None
     if profiler:
         profiler.enable()
     try:
@@ -105,11 +106,13 @@ def run_payload(mode: str, root: Path, profile: Path | None) -> None:
                      "primitive_calls": values[0], "calls": values[1],
                      "self_s": values[2], "cumulative_s": values[3]}
                     for key, values in stats.stats.items()]
-            write_json(profile.with_suffix(".json"), {
+            profile_data = {
                 "scope": "payload runpy, including runtime imports; excludes outer PB launcher",
                 "runtime_root": str(runtime), "argv": argv,
                 "rows": sorted(rows, key=lambda row: row["cumulative_s"], reverse=True),
-            })
+                "pstats_sha256": hashlib.sha256(profile.read_bytes()).hexdigest(),
+            }
+            write_json(profile.with_suffix(".json"), profile_data)
     receipt = json.loads((root / f"{mode}-receipt.json").read_text())
     if not receipt.get("complete"):
         raise SystemExit(f"{mode} did not complete: {receipt}")
@@ -120,7 +123,8 @@ def run_payload(mode: str, root: Path, profile: Path | None) -> None:
     if mode == "egress" and receipt.get("bytes_deleted") != TOTAL_BYTES:
         raise SystemExit("egress did not delete the full fixture")
     print(json.dumps({"mode": mode, "verified": True, "bytes": TOTAL_BYTES,
-                      "runtime_root": str(runtime), "profile": str(profile) if profile else None}))
+                      "runtime_root": str(runtime), "profile": str(profile) if profile else None,
+                      "profile_data": profile_data}))
 
 
 def main() -> None:
