@@ -1,0 +1,271 @@
+# Pre-1895 behavior, extracted verbatim from main 57f192581baa4f1324267cdbca4402b652151de6.
+
+def _has_reserved_label(argv: list[str]) -> bool:
+    for value in _label_values(argv):
+        if value.split("=", 1)[0] in {LABEL, JOB_LABEL, SCOPE_LABEL, SHIM_LABEL}:
+            return True
+    return False
+
+def _container_options(argv: list[str], *, memory_limit: int | None = None) -> tuple[list[str], list[str], str | None]:
+    """Retain argv verbatim except cpuset options before IMAGE.
+
+    Return retained argv, normalized label options for ownership checks, and the
+    last explicit cpuset (Docker scalar options use the last supplied value).
+    Values consumed by another option and tokens after IMAGE are opaque.
+    """
+    kept: list[str] = []
+    options: list[str] = []
+    cpuset = None
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--" or not token.startswith("-") or token == "-":
+            return [*kept, *argv[index:]], options, cpuset
+        end = index + 1
+        name, equals, value = token.partition("=")
+        if token.startswith("--"):
+            if name in CONTAINER_VALUE_OPTIONS:
+                if not equals:
+                    if end >= len(argv):
+                        raise Refused(f"container option {name} requires a value")
+                    value = argv[end]
+                    end += 1
+            elif name not in CONTAINER_FLAGS:
+                raise Refused(f"unknown container option {name}; cannot locate image safely")
+        else:
+            # Docker's short flags may be grouped (-it) and value options may
+            # be attached (-v/tmp:/tmp), including after booleans (-itw/tmp).
+            offset = 1
+            while offset < len(token):
+                short = "-" + token[offset]
+                offset += 1
+                if short in CONTAINER_VALUE_OPTIONS:
+                    name = short
+                    value = token[offset:]
+                    if offset == len(token):
+                        if end >= len(argv):
+                            raise Refused(f"container option {short} requires a value")
+                        value = argv[end]
+                        end += 1
+                    elif value.startswith("="):
+                        value = value[1:]
+                    break
+                if short not in CONTAINER_FLAGS:
+                    raise Refused(f"unknown container option {short}; cannot locate image safely")
+                if token[offset:offset + 1] == "=":
+                    break  # Explicit short boolean value, left for Docker to validate.
+        if name in {"--label", "-l"}:
+            options.extend(["--label", value])
+        if name == "--cidfile":
+            options.extend(["--cidfile", value])
+        if memory_limit is not None and name == "--oom-score-adj":
+            try:
+                adjustment = int(value)
+            except ValueError as exc:
+                raise Refused("invalid --oom-score-adj value") from exc
+            if adjustment == -1000:
+                raise Refused("containers may not opt out of the PB group OOM boundary")
+        if memory_limit is not None and name == "--restart" and value != "no":
+            raise Refused("container restart policies cannot resurrect a completed PB job")
+        if memory_limit is not None and name in {"--cgroup-parent", "--oom-kill-disable"}:
+            raise Refused(f"{name} cannot override the PB aggregate memory boundary")
+        if memory_limit is not None and name in {"--memory", "-m", "--memory-swap"}:
+            # A PB parent provides the aggregate hard limit. Preserve any
+            # stricter container limit, but never permit unlimited swap.
+            if name in {"--memory", "-m"}:
+                requested_bytes = _memory_bytes(value)
+                options.extend(["--memory", str(min(memory_limit, requested_bytes)
+                                                if requested_bytes else memory_limit)])
+            if name == "-m" and offset > 2:
+                kept.append(token[:offset - 1])
+            index = end
+            continue
+        if name == "--cpuset-cpus":
+            cpuset = value
+        else:
+            kept.extend(argv[index:end])
+        index = end
+    return kept, options, cpuset
+
+def main() -> int:
+    argv = sys.argv[1:]
+    owner = os.environ.get(OWNER_ENV, "")
+    marker_raw = os.environ.get(MARKER_ENV, "")
+    real = _real_docker()
+    if not owner and not marker_raw:
+        os.execv(real, [real, *argv])
+    if len(owner) != 64 or any(ch not in "0123456789abcdef" for ch in owner):
+        sys.stderr.write(f"docker shim: {OWNER_ENV} is not a 64-hex digest\n")
+        return 125
+    if not marker_raw:
+        sys.stderr.write(f"docker shim: {MARKER_ENV} is missing\n")
+        return 125
+    try:
+        command = _verb_index(argv, GLOBAL_VALUE_OPTIONS, GLOBAL_FLAGS,
+                              what="global")
+        sub = [] if command is None else argv[command:]
+        unowned = _starts_unowned_container(sub)
+        if os.environ.get("PRISMABUILD_PROFILE_NSYS") == "1" and (
+                _creation_index(sub) is not None or unowned
+                or sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
+            raise Refused(
+                "--profile nsys cannot trace CUDA work launched by the Docker "
+                "daemon; container execution is refused before contacting it. "
+                "Run the CUDA workload as a native child under --profile nsys, "
+                "or omit that mode and explicitly instrument inside the "
+                "admitted container (for PyTorch, use --profile torch and "
+                "forward/mount PRISMABUILD_PROFILE_TORCH_OUT). Keep using "
+                "PB's Docker shim for resource scope and CPU affinity.")
+        route = _container_route(sub)
+        if os.environ.get(SAMPLE_GUARD_ENV) == "1" and route is not None:
+            recorded = _record_sample_route(
+                os.environ.get(SAMPLE_MARKER_ENV, ""), route)
+            raise Refused(
+                f"--profile sample cannot cover a workload started by the "
+                f"Docker daemon ({route}); py-spy follows the action's own "
+                "process tree, and a process the daemon starts is not in it. "
+                "The container route was refused before contacting the daemon, "
+                "and the profile record will say it does not cover a container "
+                "workload."
+                + ("" if recorded else
+                   " The attempted route could not be written to the profile "
+                   "marker, which leaves the profile's coverage unknown rather "
+                   "than clean; treat this action as unprofiled.")
+                + " Run the workload as a native child under --profile sample, "
+                "or omit that mode and instrument inside the admitted container "
+                "(for PyTorch, use --profile torch and forward/mount "
+                "PRISMABUILD_PROFILE_TORCH_OUT). Keep using PB's Docker shim "
+                "for resource scope and CPU affinity.")
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+    if unowned:
+        sys.stderr.write(
+            "docker shim: start/compose-up cannot attach PrismaBuild's owner "
+            "label; use docker run/create inside this action\n")
+        return 125
+
+    try:
+        scope = _resource_scope()
+        _refuse_unaccounted_work(sub, scope=scope)
+        if scope and (sub[:1] == ["exec"] or sub[:2] == ["container", "exec"]):
+            forwarded, environment = _owned_exec(real, argv[:command], sub, scope)
+            os.execvpe(real, [real, *forwarded], environment)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+    relative = _creation_index(sub)
+    if relative is None:
+        os.execv(real, [real, *argv])
+    insertion = command + relative
+    try:
+        creation, options, requested = _container_options(
+            argv[insertion:], memory_limit=scope[1] if scope else None)
+        cpuset = _reserved_cpuset(requested)
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+    if _has_reserved_label(options):
+        sys.stderr.write(
+            f"docker shim: callers may not set the reserved {LABEL} or "
+            f"{JOB_LABEL} label\n")
+        return 125
+
+    try:
+        global_options, environment = _local_daemon(real, argv[:command])
+        if scope and global_options[-1] not in {"unix:///var/run/docker.sock", "unix:///run/docker.sock"}:
+            raise Refused("PB resource scopes require the local system Docker daemon")
+    except Refused as refusal:
+        sys.stderr.write(f"docker shim: {refusal}\n")
+        return 125
+
+    marker = Path(marker_raw)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(marker, os.O_RDWR | os.O_CREAT, 0o644)
+    cid_directory = None
+    try:
+        # Held until the Docker CLI returns or this action is killed.  Cleanup
+        # acquires the same lock before querying the daemon, so it cannot race
+        # a container creation request still in flight.
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, owner.encode() + b"\n")
+        os.fsync(descriptor)
+        labels = ["--label", f"{LABEL}={owner}"]
+        nonce = os.urandom(16).hex()
+        job = _slurm_job_id()
+        if job:
+            labels += ["--label", f"{JOB_LABEL}={job}"]
+        containment = []
+        if scope:
+            unit, limit = scope
+            labels += ["--label", f"{SCOPE_LABEL}={unit}"]
+            memory_options = [value for index, value in enumerate(options)
+                              if index and options[index - 1] == "--memory"]
+            limit = int(memory_options[-1]) if memory_options else limit
+            containment = ["--cgroup-parent", unit, "--memory", str(limit),
+                           "--memory-swap", str(limit)]
+        labels += ["--label", f"{SHIM_LABEL}={nonce}"]
+        # The client's own record of the container id, for the stop path.  A
+        # cidfile the caller named is theirs and is kept; ours is made fresh,
+        # because Docker refuses a cidfile that exists, and is removed after.
+        caller_cidfile = [options[i + 1] for i, token in enumerate(options)
+                          if token == "--cidfile" and i + 1 < len(options)]
+        if caller_cidfile:
+            cidfile, cid_option = Path(caller_cidfile[-1]), []
+        else:
+            cid_directory = Path(tempfile.mkdtemp(prefix="pbdocker-cid-"))
+            cidfile = cid_directory / "cid"
+            cid_option = ["--cidfile", str(cidfile)]
+        labelled = [*global_options, *sub[:relative], *labels, *containment,
+                    "--cpuset-cpus", cpuset, *cid_option, *creation]
+        try:
+            ticket = _container_intent(scope[0])["ticket"] if scope else None
+            receipt_path = marker.with_name(f"{marker.name}.stop-{nonce[:12]}.json")
+            result = subprocess.CompletedProcess(
+                [real, *labelled], _run_relayed(
+                    real, labelled, environment, owner=owner, scope=scope,
+                    global_options=global_options, nonce=nonce, cidfile=cidfile,
+                    receipt_path=receipt_path))
+            # Only CLI success proves the daemon operation settled. A nonzero
+            # exit can follow a connection failure after daemon acceptance.
+            # Retain its pending ticket (also for an ordinary user-command
+            # failure), so release keeps a frozen tombstone for late creation.
+            if ticket is not None and result.returncode == 0:
+                _container_intent(scope[0], ticket=ticket)
+            return result.returncode
+        except Refused as refusal:
+            sys.stderr.write(f"docker shim: {refusal}\n")
+            return 125
+    finally:
+        os.close(descriptor)
+        if cid_directory is not None:
+            shutil.rmtree(cid_directory, ignore_errors=True)
+
+def legacy_container(self,uid,pid,request):
+    op=request['op'];scope=request.get('scope_id')
+    fields={'op','scope_id'} if op=='container_begin' else {'op','scope_id','ticket'}
+    if set(request)-fields or not isinstance(scope,str) or not re.fullmatch(r'prismabuild-job[0-9a-f]{32}\.slice',scope):
+        raise ValueError('invalid container intent fields')
+    with self.lock:
+        record=self.records.get(scope)
+        if record is None or record.get('uid')!=uid:raise PermissionError('unknown scope owner')
+        if record.get('released_unix'):raise ValueError('attempt is released')
+        if op=='container_begin':
+            if record.get('stopped_unix'):raise ValueError('attempt is stopped')
+            # This check grants only conservative intent registration, not
+            # process migration or a kill capability. A vanished peer
+            # cannot make another scope runnable or clear an intent.
+            group=Path(f'/proc/{pid}/cgroup').read_text()
+            if not any(scope in line.split('/') for line in group.splitlines()):
+                raise PermissionError('container creator is not in its scope')
+            ticket=secrets.token_hex(32)
+            record.setdefault('container_tickets',[]).append(ticket)
+            _atomic(self.state_dir/(scope+'.json'),record)
+            return {'ok':True,'ticket':ticket}
+        ticket=request.get('ticket')
+        if not isinstance(ticket,str) or HEX64.fullmatch(ticket) is None or ticket not in record.get('container_tickets',[]):
+            raise PermissionError('container intent authority does not match')
+        record['container_tickets'].remove(ticket)
+        _atomic(self.state_dir/(scope+'.json'),record)
+        return {'ok':True}
