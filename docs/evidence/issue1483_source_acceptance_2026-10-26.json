@@ -1,0 +1,751 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "ce2a3be4915c024fdc1677d973cc8a77d8bef95c",
+  "scope": [
+    "SC-02",
+    "SM-02",
+    "INV-01",
+    "INV-07",
+    "DUR-01"
+  ],
+  "requirement_scope": [
+    {
+      "id": "SC-02",
+      "target": "Keep movement and reservation authority in the existing PB owners.",
+      "implemented": "filesystem_floor, ResourceLedger.floor_snapshot, TierLedger and existing movement/prewarm callers share the same guard; no second ledger or dispatcher.",
+      "validated": "Source component evidence: integrated 62-file selection, five repeats per architecture with two xdist runs each, and rebase affected-delta check. No live activation or workload proof.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      }
+    },
+    {
+      "id": "SM-02",
+      "target": "Preserve lifecycle authority; infer no physical deletion from token return or copy completion.",
+      "implemented": "Existing release and transfer owners remain authoritative; this floor adds conservative whole-reservation accounting and no materialization credit.",
+      "validated": "Source component evidence: integrated 62-file selection, five repeats per architecture with two xdist runs each, and rebase affected-delta check. No live activation or workload proof.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "INV-01",
+      "target": "Count all outstanding whole reservations across owners before new admission.",
+      "implemented": "spool_gb, stage_gib, local_gib and filesystem_gib are charged together; unknown mapping/population/bounds HOLD; grant counters persist before token mutation.",
+      "validated": "Source component evidence: integrated 62-file selection, five repeats per architecture with two xdist runs each, and rebase affected-delta check. No live activation or workload proof.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "INV-07",
+      "target": "Keep ownership and charge coherent across private acquisition, transfer, and competing refreshes.",
+      "implemented": "Strict owner snapshots count private, committed, transferred and orphan holdings; refresh identities fence stale publication; materialization gives zero credit.",
+      "validated": "Source component evidence: integrated 62-file selection, five repeats per architecture with two xdist runs each, and rebase affected-delta check. No live activation or workload proof.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "DUR-01",
+      "target": "State the persistence assumption separately from process-visible publication.",
+      "implemented": "Counter writes fsync the file and parent before token admission; write failure refuses admission. No power-loss durability claim. The contract records storage_pool/shared sync=disabled; that storage policy was not reobserved or changed in this run.",
+      "validated": "Source component evidence: integrated 62-file selection, five repeats per architecture with two xdist runs each, and rebase affected-delta check. No live activation or workload proof.",
+      "deployed": "Not published or activated by this task.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "no",
+        "validation": "partial",
+        "deployment": "no",
+        "workload_proof": "unknown"
+      }
+    }
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1483",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1483",
+    "source": "38d7450dd54e6d55d91d7c7d122b69c57902dacf",
+    "validated_repairs": [
+      {
+        "id": "SC-02",
+        "actions": [
+          "6affd2edfe7cbbfe203281cce48be27374f311bb282920b84dccaa8215c4fba7",
+          "585b47818e5770263175c0a0fbf2d2dece0e99c184c0376463c253b8a36a87c7"
+        ],
+        "outcome": "Integrated 1079 passed, 3 existing-main guard failures, 2 skipped, 1 deselected. Five x86 repeats each 144 passed and 2 existing environment skips; five GB10 repeats each 146 passed; two xdist runs per architecture. After rebase: 304 passed and 1 unchanged-main wire-inventory failure. 80 verified terminal results/logs and 77 successful CAS receipts/payloads. Existing-main failures are retained, not waived or called green."
+      },
+      {
+        "id": "SM-02",
+        "actions": [
+          "d31186d081541dc2798aa1e4063dbddc9eb28a7439c5ed50609b8e03b206bdf4",
+          "6a7c44e280f14dde943a76e13f92a4ad96776200ae02ac67ae69051be952947c"
+        ],
+        "outcome": "Integrated 1079 passed, 3 existing-main guard failures, 2 skipped, 1 deselected. Five x86 repeats each 144 passed and 2 existing environment skips; five GB10 repeats each 146 passed; two xdist runs per architecture. After rebase: 304 passed and 1 unchanged-main wire-inventory failure. 80 verified terminal results/logs and 77 successful CAS receipts/payloads. Existing-main failures are retained, not waived or called green."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "d31186d081541dc2798aa1e4063dbddc9eb28a7439c5ed50609b8e03b206bdf4",
+          "6a7c44e280f14dde943a76e13f92a4ad96776200ae02ac67ae69051be952947c"
+        ],
+        "outcome": "Integrated 1079 passed, 3 existing-main guard failures, 2 skipped, 1 deselected. Five x86 repeats each 144 passed and 2 existing environment skips; five GB10 repeats each 146 passed; two xdist runs per architecture. After rebase: 304 passed and 1 unchanged-main wire-inventory failure. 80 verified terminal results/logs and 77 successful CAS receipts/payloads. Existing-main failures are retained, not waived or called green."
+      },
+      {
+        "id": "INV-07",
+        "actions": [
+          "d31186d081541dc2798aa1e4063dbddc9eb28a7439c5ed50609b8e03b206bdf4",
+          "fba08a4b07d49e3ee33dc8568c49d93e1c461aaf0be74377aa0a5860a51f8615",
+          "6a7c44e280f14dde943a76e13f92a4ad96776200ae02ac67ae69051be952947c",
+          "15f36aef78305d666df2a54fa9e751efb7ef5a630b3be3015f1a9a89a261cb48"
+        ],
+        "outcome": "Integrated 1079 passed, 3 existing-main guard failures, 2 skipped, 1 deselected. Five x86 repeats each 144 passed and 2 existing environment skips; five GB10 repeats each 146 passed; two xdist runs per architecture. After rebase: 304 passed and 1 unchanged-main wire-inventory failure. 80 verified terminal results/logs and 77 successful CAS receipts/payloads. Existing-main failures are retained, not waived or called green."
+      },
+      {
+        "id": "DUR-01",
+        "actions": [
+          "d31186d081541dc2798aa1e4063dbddc9eb28a7439c5ed50609b8e03b206bdf4",
+          "6a7c44e280f14dde943a76e13f92a4ad96776200ae02ac67ae69051be952947c"
+        ],
+        "outcome": "Integrated 1079 passed, 3 existing-main guard failures, 2 skipped, 1 deselected. Five x86 repeats each 144 passed and 2 existing environment skips; five GB10 repeats each 146 passed; two xdist runs per architecture. After rebase: 304 passed and 1 unchanged-main wire-inventory failure. 80 verified terminal results/logs and 77 successful CAS receipts/payloads. Existing-main failures are retained, not waived or called green."
+      }
+    ],
+    "remaining_gaps": [
+      "Independent code and Principal source review and merge remain pending.",
+      "Full #1483 operational acceptance stays open pending activation qualification. #2050 requires Principal acceptance of this bounded source/evidence handoff.",
+      "Activation requires authenticated fleet mappings, actual destinations/offers, closed populations, complete bounds and obsolete-writer fencing under accepted #2045. No fleet coverage values are supplied.",
+      "Rob retains authority for the dl380g10 NFS export mapping and the live native diagnostic. Those actions remain stopped.",
+      "No whole staged-read requirement, deployment or campaign completion is claimed."
+    ],
+    "note": "Source merge evidence only. Enforcement remains off by default. Whole-requirement ledger axes are unchanged. This record supplies no deployment, activation, maintenance, parking or live-diagnostic authority. Counter fsync proves process-visible publication only. The contract records storage_pool/shared sync=disabled; no storage policy was reobserved or changed.",
+    "base": "954e14171565e849198cd0287abe24ff1ea7d076",
+    "qualified_source": "233f19b0d2507f4d92782d4642190767725e291e",
+    "source_blob_identity": {
+      "docs/design.md": true,
+      "docs/filesystem_floor.md": true,
+      "docs/operating_prismabuild.md": true,
+      "src/prismabuild/filesystem_floor.py": true,
+      "src/prismabuild/local_resident.py": true,
+      "src/prismabuild/pool.py": true,
+      "src/prismabuild/prewarm_loop.py": true,
+      "src/prismabuild/ram_promote.py": true,
+      "src/prismabuild/stage_move.py": true,
+      "src/prismabuild/tier_holdings.py": true,
+      "tests/filesystem_floor_fixture.py": true,
+      "tests/test_filesystem_floor_1483.py": true,
+      "tests/test_filesystem_floor_accounting_1483.py": true,
+      "tests/test_floor_ledger_snapshot.py": true,
+      "tests/test_supervisor_declares_the_spool_budget.py": true,
+      "tests/test_used_filesystem_callers_2049.py": true,
+      "tools/fleet/supervise.py": true
+    }
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "qualification": {
+    "head": "233f19b0d2507f4d92782d4642190767725e291e",
+    "state": "verified",
+    "rows": [
+      {
+        "name": "repeat-x86-1",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-x86-1-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "22cfe3f7bb447dcc8abd9f0c5dfc27ab6a9c21698230ee3e66c0402df72b828c",
+          "22cfe3f7bb447dcc8abd9f0c5dfc27ab6a9c21698230ee3e66c0402df72b828c",
+          "22cfe3f7bb447dcc8abd9f0c5dfc27ab6a9c21698230ee3e66c0402df72b828c",
+          "22cfe3f7bb447dcc8abd9f0c5dfc27ab6a9c21698230ee3e66c0402df72b828c",
+          "22cfe3f7bb447dcc8abd9f0c5dfc27ab6a9c21698230ee3e66c0402df72b828c"
+        ],
+        "counts": {
+          "passed": 144,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 1
+        },
+        "actions": [
+          "d4699fa4c761f27fdc5e89c799ecc2d0472fe69c9709f24d8cd3859432782fba",
+          "fb9dcb813aacb959e8523d972fbdc89da5d5988bd439af42f562cd04c366a394",
+          "9e20799442639e7fc316622912882c3bbe2e4eb9e4e1aa6d6beffddd332aa075",
+          "5e38a2ebd5901c8b4f85b8138cc1c48eaa7c86b9aa0c42d8076b9d96fa048f74",
+          "8f63d62b8e41dbc6ee7433d74177465768f93635c9829e6ef32d6cc5a8f0ad65"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-x86-2",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-x86-2-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "25971b3a37680fdec7343ecd6a6bf78255f4392512c7518d3cf8a516a768259e",
+          "25971b3a37680fdec7343ecd6a6bf78255f4392512c7518d3cf8a516a768259e",
+          "25971b3a37680fdec7343ecd6a6bf78255f4392512c7518d3cf8a516a768259e",
+          "25971b3a37680fdec7343ecd6a6bf78255f4392512c7518d3cf8a516a768259e",
+          "25971b3a37680fdec7343ecd6a6bf78255f4392512c7518d3cf8a516a768259e"
+        ],
+        "counts": {
+          "passed": 144,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 1
+        },
+        "actions": [
+          "2f5f2045386b76e105d95f9ef060650fa9ab1286933ada7a30d06278b25bf125",
+          "97bac6b3eb021f82f80179b0377e612dac86e4a1eeb1c94cc0141e348a258bfa",
+          "4b305e333133e201dc23b10f5fd6eb534b6d9040e1f497ca82a7d75ee54f7899",
+          "93a84bdd436696a3251ffa92d42851c4c3e88084cdf5f1649cf56d0a1d4a58e7",
+          "d4be78478efa9908374e645a8f1bddf2d52dd2c279e313f8943ff35bbd30a6f3"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-x86-3",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-x86-3-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "25de80343515e822e8fd3f7d4b8d593c09b28eab36983bb0ede7582fdfab1968",
+          "25de80343515e822e8fd3f7d4b8d593c09b28eab36983bb0ede7582fdfab1968",
+          "25de80343515e822e8fd3f7d4b8d593c09b28eab36983bb0ede7582fdfab1968",
+          "25de80343515e822e8fd3f7d4b8d593c09b28eab36983bb0ede7582fdfab1968",
+          "25de80343515e822e8fd3f7d4b8d593c09b28eab36983bb0ede7582fdfab1968"
+        ],
+        "counts": {
+          "passed": 144,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 1
+        },
+        "actions": [
+          "7215f56bcf261edb726327b49a0cf460b8e52cb474af328ee1c036b82667978b",
+          "cb5e008796bc630e2f39b7ea0e04cefaba633f8dfd890114722dba225dee6ac5",
+          "7a083428a6be4189c3f565b0463699ae7f0b1bdfc89e7aaca29537c2341850ad",
+          "26a5bef1297b5223262a39897c181536e74769b7bcc3298f626eaeac82d23a23",
+          "5704d4e7858a7a937159fd9f121a9d8e40a3e3fa210848ec9a773d966fd4112d"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-x86-4",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-x86-4-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "ab31af7c9aa200dd81a4b197e5659987f99ffd7bf73822836bbc96be10d7ddd7",
+          "ab31af7c9aa200dd81a4b197e5659987f99ffd7bf73822836bbc96be10d7ddd7",
+          "ab31af7c9aa200dd81a4b197e5659987f99ffd7bf73822836bbc96be10d7ddd7",
+          "ab31af7c9aa200dd81a4b197e5659987f99ffd7bf73822836bbc96be10d7ddd7",
+          "ab31af7c9aa200dd81a4b197e5659987f99ffd7bf73822836bbc96be10d7ddd7"
+        ],
+        "counts": {
+          "passed": 144,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 0
+        },
+        "actions": [
+          "d3caf1e05c84e9e73931c825e0d882595087cd3af4ba58dd3ce421a4fd303236",
+          "2a19836486e6177e7c73f03660d93aba1c86185f7f0fbbee0e80c71302edf2a7",
+          "90e569055116adb7a52425abc1486d15a354c400232191418eb85c6692999bf8",
+          "af4a90d34280a57929a1a33dcd58ebf7c926698f8b82b3e2c919cc01e2d5845e",
+          "21076d3b0592fb175c348bd13d230a0e0db13560c13f96327310002a2d573d4f"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "repeat-x86-5",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-x86-5-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "09323db1564148c7f9bb4ba4561b250b01d6f3f88b8daa1ad9162ba9d2a07125",
+          "09323db1564148c7f9bb4ba4561b250b01d6f3f88b8daa1ad9162ba9d2a07125",
+          "09323db1564148c7f9bb4ba4561b250b01d6f3f88b8daa1ad9162ba9d2a07125",
+          "09323db1564148c7f9bb4ba4561b250b01d6f3f88b8daa1ad9162ba9d2a07125",
+          "09323db1564148c7f9bb4ba4561b250b01d6f3f88b8daa1ad9162ba9d2a07125"
+        ],
+        "counts": {
+          "passed": 144,
+          "failed": 0,
+          "skipped": 2,
+          "deselected": 0
+        },
+        "actions": [
+          "9670c61e893c5633a0a5f3d4c4bb384e33722f7ede2a24fc976cb8ac7e6ddfc4",
+          "8daa3ce5b6618e2bbffe10cccc8bc8e122ebc8084ce360240c165d0392f0f2cf",
+          "34ec1f44dd7467385516d60b0cc497471b4d6e9507bbf0897507b638a0d4d6df",
+          "3a4b456de6901d504d1e581915f80bb4af49e97e93124e6d86ac3d30dc7919b3",
+          "98ca6926aa05274ff09f0a5045a5dae09db864a8d4e82325eccd424eaa8bd7ae"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "repeat-gb10-1",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-gb10-1-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "505030bef110cfb5fc46506f68722db1fcabf02d38400e21fd411bcaba7fccb5",
+          "505030bef110cfb5fc46506f68722db1fcabf02d38400e21fd411bcaba7fccb5",
+          "505030bef110cfb5fc46506f68722db1fcabf02d38400e21fd411bcaba7fccb5",
+          "505030bef110cfb5fc46506f68722db1fcabf02d38400e21fd411bcaba7fccb5",
+          "505030bef110cfb5fc46506f68722db1fcabf02d38400e21fd411bcaba7fccb5"
+        ],
+        "counts": {
+          "passed": 146,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 1
+        },
+        "actions": [
+          "4825e29b07128da9c08b7fe5608ba5cf46af5c27e7e0c4483930ba3f55310686",
+          "bd07d86ead82e4df76f680e89a7322ebb0726c6e11deb7520d0dd31eecf6bdf2",
+          "fa99c44f291595a9f93c367e2130d09889750fea0fb37d3638687ba8af420f1c",
+          "047df57e6c33be087bbf78578677cff6fdbaa2f17b7ba308936ddaf8000eb0b9",
+          "3926e5af53544afe87aaf1034d8b653d83ebbd2b59cb187bea6fa45e19b42c67"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-gb10-2",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-gb10-2-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "9fc5c6926b7a48a0b757c8619ade007985258fb8d52a4373beac5153b2a8174d",
+          "9fc5c6926b7a48a0b757c8619ade007985258fb8d52a4373beac5153b2a8174d",
+          "9fc5c6926b7a48a0b757c8619ade007985258fb8d52a4373beac5153b2a8174d",
+          "9fc5c6926b7a48a0b757c8619ade007985258fb8d52a4373beac5153b2a8174d",
+          "9fc5c6926b7a48a0b757c8619ade007985258fb8d52a4373beac5153b2a8174d"
+        ],
+        "counts": {
+          "passed": 146,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 1
+        },
+        "actions": [
+          "5c226ea074d59f31059f3b399664429a1e5f6a81d95e84f2c7334b928cf99c3c",
+          "4e94543ae1863d92421c89f0741a0d3f7391a095da6a3712d338d671aa6ab59d",
+          "f4a686fa057af3e37faa73145db83459ba12aaf3a451ae93601b03851957fbbc",
+          "63d891e38b2f28815fba2edfa881649301d41bdce6bb888ba86adfb1e4fbdf13",
+          "5e003904d983a49a3b25fa4f1d383f30bfb499049f4c7ffcaa069e37883d5ff4"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-gb10-3",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-gb10-3-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "e49d189eb485d023b7c7034ff6b58d7fa662b11975a7aacc21d979c007781f0b",
+          "e49d189eb485d023b7c7034ff6b58d7fa662b11975a7aacc21d979c007781f0b",
+          "e49d189eb485d023b7c7034ff6b58d7fa662b11975a7aacc21d979c007781f0b",
+          "e49d189eb485d023b7c7034ff6b58d7fa662b11975a7aacc21d979c007781f0b",
+          "e49d189eb485d023b7c7034ff6b58d7fa662b11975a7aacc21d979c007781f0b"
+        ],
+        "counts": {
+          "passed": 146,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 1
+        },
+        "actions": [
+          "0add52ab84e6917730520d1ab4d285744e97e174fd35a58c1c0df6db87540bce",
+          "7a30712aa2cbc65a13cf6320121ca4725b6ef00f1a345a458108ff32812da542",
+          "b9b391158b26c03af05f2b98590aeec026e7e6e30b3a43127b91288aebc68f59",
+          "bfb39078344e5a2f307ca3419698d5d33cd2c858320af0938a924da04ce70e8a",
+          "ff3024e6ac0cefdc0f4badd11b0cd634e3a98be881e74098e0a548403f37e246"
+        ],
+        "xdist": false
+      },
+      {
+        "name": "repeat-gb10-4",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-gb10-4-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "94c3723a94b4e87e53baaaf1a37c4c6431683efdcce85381fa10704db013e69d",
+          "94c3723a94b4e87e53baaaf1a37c4c6431683efdcce85381fa10704db013e69d",
+          "94c3723a94b4e87e53baaaf1a37c4c6431683efdcce85381fa10704db013e69d",
+          "94c3723a94b4e87e53baaaf1a37c4c6431683efdcce85381fa10704db013e69d",
+          "94c3723a94b4e87e53baaaf1a37c4c6431683efdcce85381fa10704db013e69d"
+        ],
+        "counts": {
+          "passed": 146,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "f299b83bcf1b73c566131f14df5d3774409fdd4069bcded8afb9bea9cae93314",
+          "9f6385732a4399b0926c5377c4457d6d105410df667d9413221cccb567677004",
+          "25591ed9487e72065868d319e2f4b47efb6bd8a34db9fb69f7f59d9cd7e05ce5",
+          "ef6c8937c4ea0dfa31ea4ebb7d3d41df7ea70d270d4da012e576a2144dd7932d",
+          "5fb5c67ace1a8d461ec28cd46acdafb0dbbabe7b38a21036156f843359a4821f"
+        ],
+        "xdist": true
+      },
+      {
+        "name": "repeat-gb10-5",
+        "report": "/mnt/shared/paperclip-runs/PRI-36/repeat-gb10-5-233f19b0.json",
+        "state": "verified",
+        "source_bundles": [
+          "171ff5e73d6aebf0cc86570f65213765c553b1df72e705b69e1e69895850ba36",
+          "171ff5e73d6aebf0cc86570f65213765c553b1df72e705b69e1e69895850ba36",
+          "171ff5e73d6aebf0cc86570f65213765c553b1df72e705b69e1e69895850ba36",
+          "171ff5e73d6aebf0cc86570f65213765c553b1df72e705b69e1e69895850ba36",
+          "171ff5e73d6aebf0cc86570f65213765c553b1df72e705b69e1e69895850ba36"
+        ],
+        "counts": {
+          "passed": 146,
+          "failed": 0,
+          "skipped": 0,
+          "deselected": 0
+        },
+        "actions": [
+          "65e65f0c763e10e55aac4bffc8f36b96f8bfbaa4cd21d1246747db3875c4f244",
+          "5de1da40470394a0a8ec78a9c6ad47556c0f9b750018487a2a2505ba2729b1f3",
+          "d2664ff4f2551e3d86f9f80ad34d2808921344f934fc18bce8b36a49baa7d74a",
+          "bb60573b4feceae8129952877d683acf1869db915293f8657443dd1f58d9eff9",
+          "175ead9fa6b1bbc50007f8ab958e413bd38625a2a3c95f008a36a42dbf294d09"
+        ],
+        "xdist": true
+      }
+    ]
+  },
+  "rebase_delta": {
+    "source": "38d7450dd54e6d55d91d7c7d122b69c57902dacf",
+    "base": "954e14171565e849198cd0287abe24ff1ea7d076",
+    "counts": {
+      "passed": 304,
+      "failed": 1,
+      "skipped": 0,
+      "deselected": 1
+    },
+    "actions": [
+      {
+        "action_key": "f73a60d9fe93ba53b83f216dcd32f4d55f0ec3d24b03ea94735efcfd9e335d65",
+        "receipt_sha256": "0513ffc2dec492b1a0cea0c021f2940bd81051fcc20f29df275537e916798c74",
+        "result_sha256": "f17b23ef28c26a92b51fdee62f54af08201518b364435a880659af56dd5996eb",
+        "files": [
+          "tests/test_design_doc_line_references.py"
+        ]
+      },
+      {
+        "action_key": "29bbe58d330347349b42e3fdc92feb5e9120ab82c8b84614b99c69a302d2e4a3",
+        "receipt_sha256": "e83c45291059157cb8aef10e8d4f6f83303dd2c4078b2c8f654183348fe792cc",
+        "result_sha256": "581171d2eeb8be8b06504efacb69a4926b00aabbb6024a67c5688962a9b831e5",
+        "files": [
+          "tests/test_duplication_baseline.py"
+        ]
+      },
+      {
+        "action_key": "ac7b28234656253e14d7a8b121d354d58fdcb9b3cfdd040358dbf5788192bac2",
+        "receipt_sha256": "4a04ca41f70fa4d692afe7538afa8889352f4e6f5c51281c45969b1bd7c1fc8a",
+        "result_sha256": "2066bc353ced3351264632b55e2cb5d9b359373012a484dacec16faf68ec6ede",
+        "files": [
+          "tests/test_filesystem_floor_1483.py"
+        ]
+      },
+      {
+        "action_key": "6a7c44e280f14dde943a76e13f92a4ad96776200ae02ac67ae69051be952947c",
+        "receipt_sha256": "7539a315c0c16319914fb742f44ceb3f5dcc76405edf0297073fb61891e43df6",
+        "result_sha256": "68de45e6584a8807c54f2c537936f200eaccf8e697baee707e8f578302c57127",
+        "files": [
+          "tests/test_filesystem_floor_accounting_1483.py"
+        ]
+      },
+      {
+        "action_key": "3aec4a9cf682e0fddb52992498311b2ee6a6d9f9ae7f0c8d84b9563c2e6e33f9",
+        "receipt_sha256": "820a376a662fbbb3d095b6608cb110e6c9f041e1235b6e58f25d6d755b4be3fd",
+        "result_sha256": "32bc151fe56ab05a83a826fc473f6d80690fee066d6d7027d8058730d2a4f578",
+        "files": [
+          "tests/test_fleet_tool_flags_have_help.py"
+        ]
+      },
+      {
+        "action_key": "15f36aef78305d666df2a54fa9e751efb7ef5a630b3be3015f1a9a89a261cb48",
+        "receipt_sha256": "ffdb3746f3bd4166d9682d4ee38789c42fd8bc746c306d33080de87d908bef6f",
+        "result_sha256": "4c0dd4839c68079c3fe3db3cf28a3b85f65ec811d6faa4989835838cf6ffe5e3",
+        "files": [
+          "tests/test_floor_ledger_snapshot.py"
+        ]
+      },
+      {
+        "action_key": "a6e8dd64f2d7bff85ca31b7a9631a5bea0889680864b47015e3309b869720e62",
+        "receipt_sha256": "1f409a8a065be786b87aebd41aab807dd5fe5bd011e689b8d35c1047fd8e9503",
+        "result_sha256": "97ec39ca86efd9341166f8921fd560ce1ee1005baee052f1d5e41540a3bb748d",
+        "files": [
+          "tests/test_sealed_bundle_cache.py"
+        ]
+      },
+      {
+        "action_key": "38d95f36aa9124d94732566ae3006d73ece63c817a431bf87e433ed4b37b598b",
+        "receipt_sha256": "febfbc7a78bd6eac3f2063cf5bdbedafc9220321d79a0e5f762229ee787434de",
+        "result_sha256": "ba5cb98300812fae4a8816f7d63fbe921c2b6f6342e689270eafb2ff97aa33fd",
+        "files": [
+          "tests/test_supervisor_declares_the_spool_budget.py"
+        ]
+      },
+      {
+        "action_key": "585b47818e5770263175c0a0fbf2d2dece0e99c184c0376463c253b8a36a87c7",
+        "receipt_sha256": "32acb8c77248fd1a725979184c37ced34f102bcf42b225890ff9a0920dc1fd11",
+        "result_sha256": "00f2096ee9bf4ab47557e5f06ab32b279f8c78d59431051868643803187e2c39",
+        "files": [
+          "tests/test_used_filesystem_callers_2049.py"
+        ]
+      },
+      {
+        "action_key": "fc9635d49daf44f5004d9c268f1b680e57c9003814434f1ff0409eaaf5e8bbfd",
+        "receipt_sha256": null,
+        "result_sha256": null,
+        "files": [
+          "tests/test_wire_inventory.py"
+        ]
+      }
+    ],
+    "wire_comparison": {
+      "head": "38d7450dd54e6d55d91d7c7d122b69c57902dacf",
+      "main_action": "d35eb6d5054de434efb5fce2a8bb69583aa0b83b04741229156b4e71e9201f42",
+      "wire_action": "fc9635d49daf44f5004d9c268f1b680e57c9003814434f1ff0409eaaf5e8bbfd",
+      "expected": [
+        "E         At index 560 diff: {'path': 'tools/maintenance/test_runtime_inventory.py', 'owner': 'observe_inventory_process', 'unresolved': 'Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()', 'binding': 'fields'} != {'path': 'tools/maintenance/verify_proof_runtime_capture.py', 'owner': 'bind_proof_runtime_capture', 'fields': ['members', 'regular_bytes']}",
+        "E         Left contains 2 more items, first extra item: {'path': 'tools/maintenance/verify_proof_runtime_capture.py', 'owner': 'verify_capture_storage_record', 'fields': ['private', 'publication', 'published_sources', 'schema']}"
+      ],
+      "actual": [
+        "E         At index 560 diff: {'path': 'tools/maintenance/test_runtime_inventory.py', 'owner': 'observe_inventory_process', 'unresolved': 'Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()', 'binding': 'fields'} != {'path': 'tools/maintenance/verify_proof_runtime_capture.py', 'owner': 'bind_proof_runtime_capture', 'fields': ['members', 'regular_bytes']}",
+        "E         Left contains 2 more items, first extra item: {'path': 'tools/maintenance/verify_proof_runtime_capture.py', 'owner': 'verify_capture_storage_record', 'fields': ['private', 'publication', 'published_sources', 'schema']}"
+      ],
+      "exact_match": true
+    },
+    "verified_source_bundles": [
+      "60ff3ff6e7fe987df1cf290a45366a1671c978bba7abf89e0d3ef9dca2bc85dd"
+    ]
+  },
+  "evidence_directory": "/mnt/shared/paperclip-runs/PRI-36",
+  "reproduce": [
+    {
+      "action": "6d97b1503c8efdd44653103bb76853d9250433aaf9f86f9db3a44ecd5b123448",
+      "outcome": "5 intended pre-fix admission failures"
+    },
+    {
+      "action": "f1441e2d892a622b2f711ad2e63182d82cb11e05a22a0b04d1b5348dabac43bc",
+      "outcome": "9 intended failures against pre-fix code with corrected test fixtures"
+    },
+    {
+      "action": "0569da87c88ee21808a3bd30ad430c78a32ecd01784cb2b1a76bf92155bc7357",
+      "outcome": "2 intended identity-refresh failures"
+    }
+  ],
+  "integrated": {
+    "source": "233f19b0d2507f4d92782d4642190767725e291e",
+    "counts": {
+      "passed": 1079,
+      "failed": 3,
+      "skipped": 2,
+      "deselected": 1
+    },
+    "actions": [
+      {
+        "action_key": "6affd2edfe7cbbfe203281cce48be27374f311bb282920b84dccaa8215c4fba7",
+        "receipt_sha256": "81fbb56f3b220d0429c306660d91b5ae553cf348e8fc6c8761640b860efaf442",
+        "files": [
+          "tests/test_a_declared_container_image_is_sealed_and_checked.py",
+          "tests/test_local_resident_locking.py",
+          "tests/test_resource_scope.py",
+          "tests/test_used_filesystem_callers_2049.py"
+        ]
+      },
+      {
+        "action_key": "b9d53970f53a8e7f73a7d7068f1269cfd240e0ee345a55c9008237718df27d42",
+        "receipt_sha256": null,
+        "files": [
+          "tests/test_a_divergent_staged_copy_never_loops_its_mover.py",
+          "tests/test_local_resident_metadata.py",
+          "tests/test_runtime_capture_source_binding.py",
+          "tests/test_wire_inventory.py"
+        ]
+      },
+      {
+        "action_key": "d8fcfa7594c038f5133f9150f697fc260c34ffc1889e7c2bc5d52f387b33364a",
+        "receipt_sha256": "f4c7297e0a7bd06ecc23d0314c703b11c5116319148046ff319d551457115725",
+        "files": [
+          "tests/test_a_mover_stages_the_range_it_declared_and_no_more.py",
+          "tests/test_local_resident_mover.py",
+          "tests/test_runtime_source_pin.py"
+        ]
+      },
+      {
+        "action_key": "564c8b106d445d5f74f2a2abf52b24e58893b5d904142da2488aca538364295c",
+        "receipt_sha256": "018bf56da71423436db6fbdb9f21b53cdc3eca71aed60dc88b8c826e8d2e175a",
+        "files": [
+          "tests/test_a_mover_warms_the_range_it_staged.py",
+          "tests/test_local_resident_space_isolation.py",
+          "tests/test_submission_review_boundaries.py"
+        ]
+      },
+      {
+        "action_key": "9221280be5345d8b2d227076857d44819f1a42f8e958d3bf86fbbbc01592f770",
+        "receipt_sha256": "3f4afa15d4573da7682834a62ed60060bbff402b58431d6d41b65af309b95523",
+        "files": [
+          "tests/test_a_promotion_handoff_defers_its_source_retirement.py",
+          "tests/test_local_resident_stage2.py",
+          "tests/test_submission_review_lifetimes.py"
+        ]
+      },
+      {
+        "action_key": "a908f6b899714f8414b95a0b89cf43cd55dc3801bc6925df197fa0867ac75381",
+        "receipt_sha256": "08bc8c3f539bb96878ccbf007cba7c0c8d132d56982328779d303e18d04994b4",
+        "files": [
+          "tests/test_a_promotion_handoff_defers_the_source_retirement.py",
+          "tests/test_local_scratch_core_recipes.py",
+          "tests/test_supervisor_declares_the_spool_budget.py"
+        ]
+      },
+      {
+        "action_key": "0a1ddb6f10d9bca613b159876d209be0a73dcf4214d97ff27a31eaa059e1f324",
+        "receipt_sha256": "dcb6b9ff545fa96b1b0beccf220647f261241882eec22039e95e8907975a39d9",
+        "files": [
+          "tests/test_a_reserved_range_is_not_resident_until_published.py",
+          "tests/test_local_scratch_decorated_refusals.py",
+          "tests/test_the_prewarm_cycle_names_whose_reads_it_paced.py"
+        ]
+      },
+      {
+        "action_key": "55462765506c445da93b05c4a98605182b177b3fe83e47d3aa43ee772380acd4",
+        "receipt_sha256": "05c484e8542a7f466e4da375d4a1904ef1a6bfffac5d61d3797d7dff9012435d",
+        "files": [
+          "tests/test_a_residency_map_names_bytes_a_mover_verified.py",
+          "tests/test_local_scratch_host_kind.py",
+          "tests/test_the_prewarm_loop_boots_from_the_published_generation.py"
+        ]
+      },
+      {
+        "action_key": "526a3ab2da218b9e77516bdfc8611d6332eaa44aa99d09b1f6b38cbaf87caa72",
+        "receipt_sha256": "578b7cd2e067105699d823372dd6d0097fc054783d920290811591ce4ef7b2a3",
+        "files": [
+          "tests/test_container_image_inventory.py",
+          "tests/test_local_scratch_measured_placement.py",
+          "tests/test_the_prewarm_loop_follows_the_queues_own_claim_order.py"
+        ]
+      },
+      {
+        "action_key": "1f6af16dca0034862d1797ed533b5373fb71e58339777d81d7f9a54865ec6999",
+        "receipt_sha256": "d12bf3daf86b27c050b0a3a5ca29ca9e3e3c37f0daa0228d11cbf0851d0470e1",
+        "files": [
+          "tests/test_design_doc_line_references.py",
+          "tests/test_local_scratch_retained_review_boundaries.py",
+          "tests/test_the_prewarm_loop_follows_the_running_actions_progress.py"
+        ]
+      },
+      {
+        "action_key": "44c6a556abe8bac0e768e511aa9bb1a6afff181ea2490d658293f14454bfba8f",
+        "receipt_sha256": null,
+        "files": [
+          "tests/test_duplication_baseline.py",
+          "tests/test_prewarm_defers_to_tier_planner.py",
+          "tests/test_the_prewarm_loop_leaves_claimed_work_alone.py"
+        ]
+      },
+      {
+        "action_key": "eae51f704faa5ba1e8f6e111bbd4bcf558f583d31537f9130b35910f8d94bb20",
+        "receipt_sha256": "d5ab8f03c442a1c1b507cb63063530f24396da0fcdf6d1c4726ae3a3b0429146",
+        "files": [
+          "tests/test_filesystem_floor_1483.py",
+          "tests/test_prewarm_pool_contract.py",
+          "tests/test_the_prewarm_loop_refuses_a_row_that_does_not_fit.py"
+        ]
+      },
+      {
+        "action_key": "d31186d081541dc2798aa1e4063dbddc9eb28a7439c5ed50609b8e03b206bdf4",
+        "receipt_sha256": "a062047cd92c2d5f6488a4e65942460782ffad880101548f6b0f3e38dc0c6dd1",
+        "files": [
+          "tests/test_filesystem_floor_accounting_1483.py",
+          "tests/test_prewarm_receipt_recovery.py",
+          "tests/test_the_prewarm_loop_skips_a_released_origin_consumer.py"
+        ]
+      },
+      {
+        "action_key": "caa79e8966926e4d4dc9bb3293ff53fa410ef50d8f1cb1e8a65e2ef965dc75b6",
+        "receipt_sha256": "159adb24db68740c2edeeab8b5f6192f90230cf15539160018bc8d3806f235f4",
+        "files": [
+          "tests/test_fleet_tool_flags_have_help.py",
+          "tests/test_prewarm_requires_known_receipts.py",
+          "tests/test_the_prewarm_loop_stops_for_a_terminal_consumer.py"
+        ]
+      },
+      {
+        "action_key": "fba08a4b07d49e3ee33dc8568c49d93e1c461aaf0be74377aa0a5860a51f8615",
+        "receipt_sha256": "07d7a81281d50ac8f6d70c8e6119e64a9a5c95743b5a709828e80dd41579f4eb",
+        "files": [
+          "tests/test_floor_ledger_snapshot.py",
+          "tests/test_prewarm_rollout.py",
+          "tests/test_the_prewarm_loop_warms_more_than_one_row_when_they_fit.py"
+        ]
+      },
+      {
+        "action_key": "e828208b3ae85a00d669588fdedd106aca30a7f8167c6aec0d5db6f02e5a3f51",
+        "receipt_sha256": "e87fecb4bd69a46ad23c10355e93d4bb6ed54d983668fdcafb6526b62a7cfb50",
+        "files": [
+          "tests/test_fullstack_stage_ram_chain.py",
+          "tests/test_produced_output_restage.py",
+          "tests/test_the_prewarm_loop_windows_a_manifest_larger_than_the_arc.py"
+        ]
+      },
+      {
+        "action_key": "d332556397baa57714bc8c219b32ed75ccb33db1f4d4d9e6fcb6c6f3477c3da8",
+        "receipt_sha256": "b90fb2b99ae436e62fba2fb6d09c87668900a279d09d2c3bfbe262eee2de9c2a",
+        "files": [
+          "tests/test_local_resident_adoption.py",
+          "tests/test_produced_spool.py",
+          "tests/test_the_prewarm_loop_windows_a_manifest_that_declares_no_phases.py"
+        ]
+      },
+      {
+        "action_key": "0020c767835e6368a253515e8accb82a8dbd66f9abfc1f9f7490a903773e0c53",
+        "receipt_sha256": "b92ea00a59ec78c35754a7bc163cb18b7d9b2c81605cf02cab6dda3a601fa1ac",
+        "files": [
+          "tests/test_local_resident_commands.py",
+          "tests/test_produced_spool_host_window.py",
+          "tests/test_the_prewarm_pacer_does_not_hold_against_the_action_it_serves.py"
+        ]
+      },
+      {
+        "action_key": "5b1bdb03a39762812a0c176065fb6f8914c7fca67aab1ef16595b0a70e9da449",
+        "receipt_sha256": "15824055bb6ae33372c73efa48e107da71ba1be0b0cd1f87173d35b7700dbf46",
+        "files": [
+          "tests/test_local_resident_dispatch.py",
+          "tests/test_produced_spool_paced_export.py",
+          "tests/test_the_prewarm_pacer_holds_only_when_a_client_is_reading.py"
+        ]
+      },
+      {
+        "action_key": "b53f0b7d15f7a9e7c9b7c4bf0a2e002e59b45b04e0a1b2a680007b31064f06cf",
+        "receipt_sha256": "ec23394a176dbf964b5ef30085e687e2f96867e7e7d376a59bfb3128fa81adbc",
+        "files": [
+          "tests/test_local_resident_lifecycle.py",
+          "tests/test_reader_lease_lifetime.py",
+          "tests/test_the_prewarm_reader_is_paced_by_the_disks.py"
+        ]
+      }
+    ]
+  }
+}
