@@ -29,7 +29,7 @@ The retained implementation and completed follow-ups at b8ea84e61b,
 e3d94fc3fa and 61a986bf35 are reused. No archival captures or goldens were
 recaptured. New changes normalize busy-discovery elections into selections and
 keys before pass/shared reuse, separate ordinary source metadata from election
-observations, and retain observations by action key and publication generation.
+observations, and retain observations by their complete validated election identity, including publication generation, host, priority and election epoch.
 Metadata is rechecked under H before observation; remembered local M keys are
 acquired nonblocking before H. Ordinary proofs use the existing exact retirement
 rule. Complete/shared fallback conservatively retains the strongest local fence
@@ -57,8 +57,7 @@ The targeted final residual run passed 25 tests on the ARM fleet:
 
 The initial 21-file ARM sweep passed all behavioral files. Its field-set pin
 failed because the retained branch's generated inventory omitted two entries
-added to main. Regenerate with the repository inventory tool and rerun the guards;
-this is inventory maintenance, not golden adoption or a new wire contract.
+added to main. The repository inventory export restored the missing main entries and all mandatory ARM guards passed. This is inventory maintenance, not golden adoption or a new wire contract.
 
 The initial x86 sweep is pending behind the deployed #2199 refusal. Rows
 d477bfcd1901ffc008f9434c5b5c7dd1a6e3fd8522c2e4005a7eb5d7bdae50a2 and
@@ -82,3 +81,45 @@ exercises real fixture claims on workers. Deployment is not performed or claimed
 SC-02 movement authority and INV-07 settlement remain unchanged. No staged-read
 requirement, deployment axis or campaign acceptance is declared complete here.
 Principal review, x86 evidence and merge remain required for issue closure.
+
+## Integrated result
+
+The final integrated check on 47f74a7259 passed **193 tests in ten actions**,
+with no skips. This includes ordinary admission, ordinary observation memory,
+shared fallback, reused-census transitions, the slow-reader sweep, and all four
+mandatory guards. The earlier broad sweep's other behavioral files passed;
+its five failures were repaired and their complete files passed in this run.
+
+A reused-complete-census counterexample was reproduced separately by action
+75892dd7aa80528dadecb57119448c37b5b6bc9fcf359ba12303bbc22910690b
+(1 failed, 9 deselected). Ordinary observations now join any already stored
+census before fallback can reuse it. The updated memory file passes ten cases.
+
+The broad check also caught retirement resurrection and a selection replacement
+within one publication. Observations now distinguish the complete selection
+identity. A matching complete-census retirement does not become a live election
+again. The generation-check mutation control now asserts that the independent
+ordinary observation still preserves the live fence when that check is removed.
+
+All ten terminal records returned zero. Canonical stdout/stderr lengths and
+SHA-256 digests, CAS claim addresses and digests, receipt bindings, payload
+lengths and payload SHA-256 digests were independently checked. One action's
+missing canonical log files were restored through RecordStore.file_attempt_log_at
+using its complete terminal-retained bytes, after exact length and hash checks.
+The client then reconciled all ten green shards. No ending or result was edited.
+These checks do not verify worker attestation signatures.
+
+| Action | Result |
+| --- | --- |
+| 48d44f87de72413c819cfc349bd80be33525c72d391083cc85c168f838caa1df | 43 passed in 9.11s |
+| 5b71182eb9703061de4aa1155ddb7ca16bf4ea4ca45bd3579e15783fd1eb2649 | 10 passed in 0.81s |
+| c71c5f8396d6b050374b48302a014fbe31477ca95b094d1420658dd446bd85a0 | 3 passed in 0.67s |
+| 69ee2735f9e68f7a1e0d21dad104e8a9ccbe32e1fb52c46eb54a9b5aefb43d1b | 13 passed, 28 warnings in 3.96s |
+| 49717bd392eebcf33d46c9ca626aaf34192260ae5b297e7b1bda2e513a9f48b7 | 10 passed in 13.92s |
+| 3c0b656308f4b7bab55fb8e028867efc68e33ed599e2b1cf88e4f4c5fb814aa9 | 5 passed in 5.24s |
+| 3afa40d39cbab06477f3f85255ac180e1b57d27c1dfb667fabd9c0e2cd9bb304 | 8 passed in 20.79s |
+| 85e427e453173bfe55bf98c3ac5367cb26fa48f8e03e869975504c047efbddb4 | 92 passed in 0.91s |
+| 464ecb334f693a2b6360a53b0211f1399c1575d49278ffc8a481fa171d24e25a | 8 passed in 9.86s |
+| bc848d887345a5fdad44f7df8e5a48954546eb29ee3942ba0dfa855a41cd8373 | 1 passed in 0.09s |
+
+The final rebase onto d0b92d267d adds main's sealed-bundle cache. Regenerate the field inventory after resolving its data-file conflict, then rerun the admission/guard selection against that integrated source. The x86 gate and Principal review remain pending.
