@@ -13,7 +13,6 @@ import sys
 import tempfile
 import urllib.parse
 import venv
-import zipfile
 
 SNAPSHOT = "b50b6763de3467c45efb4de65349ed9836a3ee71"
 SOURCE = "027103d9a8417e06c7f13356e58779a313cd7088"
@@ -28,17 +27,17 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Comple
     return result
 
 
-def bootstrap_overlay(overlay: Path, wheels: Path, *, cwd: Path, env: dict[str, str]) -> str:
+def bootstrap_overlay(overlay: Path, *, cwd: Path, env: dict[str, str]) -> str:
     python = str(overlay / "bin" / "python")
     try:
         venv.create(overlay, with_pip=True)
-        run([python, "-m", "pip", "--version"], cwd=cwd,
-            env=env).check_returncode()
+        result = run([python, "-I", "-c", "import pip; print(pip.__version__)"],
+                     cwd=cwd, env=env)
+        result.check_returncode()
     except (subprocess.CalledProcessError, OSError) as error:
-        print(json.dumps({"bootstrap_fallback": str(error)}), flush=True)
-        venv.create(overlay, with_pip=False)
-        with zipfile.ZipFile(wheels / "pip-26.2.1-py3-none-any.whl") as archive:
-            archive.extractall(overlay / "lib" / "python3.12" / "site-packages")
+        raise SystemExit("reproduction requires pip 24.0; ensurepip/pip unavailable") from error
+    if result.stdout.strip() != "24.0":
+        raise SystemExit(f"reproduction requires pip 24.0; observed {result.stdout.strip()!r}")
     return python
 
 
@@ -65,7 +64,7 @@ def main() -> int:
             raise SystemExit("historical checkout differs")
         overlay = scratch / "overlay"
         wheels = checkout / "_pb1485" / "wheels"
-        python = bootstrap_overlay(overlay, wheels, cwd=scratch, env=env)
+        python = bootstrap_overlay(overlay, cwd=scratch, env=env)
         run([python, "-m", "pip", "install", "--no-index", "--no-deps",
              "--find-links", str(wheels), "setuptools"], cwd=scratch,
             env=env).check_returncode()

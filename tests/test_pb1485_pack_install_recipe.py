@@ -23,12 +23,12 @@ def test_bootstrap_requires_pip24(recipe, monkeypatch, tmp_path, version):
     monkeypatch.setattr(recipe["subprocess"], "run", pip_version)
     overlay = tmp_path / "overlay"
     if version == "24.0":
-        assert recipe["bootstrap_overlay"](overlay, tmp_path, cwd=tmp_path, env={}) == str(
+        assert recipe["bootstrap_overlay"](overlay, cwd=tmp_path, env={}) == str(
             overlay / "bin/python"
         )
     else:
         with pytest.raises(SystemExit, match="requires pip 24.0"):
-            recipe["bootstrap_overlay"](overlay, tmp_path, cwd=tmp_path, env={})
+            recipe["bootstrap_overlay"](overlay, cwd=tmp_path, env={})
 
 
 @pytest.mark.parametrize("failure", ["ensurepip", "pip"])
@@ -43,4 +43,4 @@ def test_bootstrap_refuses_unavailable_pip(recipe, monkeypatch, tmp_path, failur
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", "pip unavailable"),
     )
     with pytest.raises(SystemExit, match="requires pip 24.0"):
-        recipe["bootstrap_overlay"](tmp_path / "overlay", tmp_path, cwd=tmp_path, env={})
+        recipe["bootstrap_overlay"](tmp_path / "overlay", cwd=tmp_path, env={})
