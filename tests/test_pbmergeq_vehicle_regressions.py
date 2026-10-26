@@ -362,7 +362,12 @@ def test_expired_green_allowance_takes_precedence_over_exception_backoff(
     assert runner.runs == completed
 
 
-def test_fresh_state_never_adopts_another_queues_closed_vehicle(tmp_path, issue_api):
+@pytest.mark.parametrize("same_candidate", [False, True],
+                         ids=["different-candidate", "same-candidate"])
+def test_fresh_state_never_adopts_another_queues_closed_vehicle(
+        tmp_path, monkeypatch, issue_api, same_candidate):
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-25T20:00:00+00:00")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-10-25T20:00:00+00:00")
     # A smoke run in a scratch state directory leaves a closed vehicle behind.
     # The shadow's fresh state restarts its batch sequence on the same repo.
     smoke, origin, _, _ = make_queue(tmp_path)
@@ -380,11 +385,14 @@ def test_fresh_state_never_adopts_another_queues_closed_vehicle(tmp_path, issue_
     mirror.ensure()
     shadow_github = ShadowGitHub(cfg, store, origin)
     shadow = mq.Queue(cfg, store, shadow_github, mirror, FakeRunner(), "status")
-    origin.pr(2, {"two.txt": "2\n"})
+    member = 1 if same_candidate else 2
+    if not same_candidate:
+        origin.pr(member, {"two.txt": "2\n"})
 
-    second = shadow.run_batch(entries(shadow_github, 2))
+    second = shadow.run_batch(entries(shadow_github, member))
 
     assert second["id"] == first["id"]
+    assert (second["candidate"] == first["candidate"]) == same_candidate
     assert second["verdict"] == "green", second
     assert second["vehicle"]["branch"] != first["vehicle"]["branch"]
     assert len(origin.vehicle_creations) == 2
