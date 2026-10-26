@@ -602,26 +602,26 @@ def _registered_resume(source: str, monkeypatch, tmp_path: Path):
     os.mkfifo(commands_path)
     observed = []
     registration_window = textwrap.dedent(f'''
-        startup_events = open({str(events_path)!r}, "wb", buffering=0)
-        startup_commands = open({str(commands_path)!r}, "rb", buffering=0)
         real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
         def registered_holder_writer(self, *args, **kwargs):
             pool.PoolQueue.write_stage_ownership_holder = real_holder_writer
+            startup_events = open({str(events_path)!r}, "wb", buffering=0)
+            startup_commands = open({str(commands_path)!r}, "rb", buffering=0)
             startup_events.write(b"L")
             assert startup_commands.read(1) == b"R"
             record = real_holder_writer(self, *args, **kwargs)
             startup_events.write(b"H")
             assert startup_commands.read(1) == b"A"
+            real_reporter_start = stage_move._ProgressReporter.start
+            def registered_copy(self):
+                real_reporter_start(self)
+                assert self.reported_phase == "copy"
+                startup_events.write(b"C")
+                startup_events.close()
+                startup_commands.close()
+            stage_move._ProgressReporter.start = registered_copy
             return record
         pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
-        real_reporter_start = stage_move._ProgressReporter.start
-        def registered_copy(self):
-            real_reporter_start(self)
-            assert self.reported_phase == "copy"
-            startup_events.write(b"C")
-            startup_events.close()
-            startup_commands.close()
-        stage_move._ProgressReporter.start = registered_copy
     ''')
     source = source.replace("code = stage_move.main(",
                             registration_window + "code = stage_move.main(", 1)
