@@ -228,6 +228,11 @@ class Collector:
         found = self.pulls[cache_key]
         return {key: value for key, value in found.items() if key != "closes"} | {"closes_issue": target in found["closes"]}
 
+    def native_blockers(self, repo, number):
+        values = self.api.pages(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
+        return [issue_key(value["repository_url"].split("/repos/", 1)[1], value["number"])
+                for value in values]
+
     def normalize(self, node):
         repo, number = node["repository"]["nameWithOwner"], node["number"]
         key = node_key(node)
@@ -248,9 +253,7 @@ class Collector:
             issue["comments"] = [{"url": comment["html_url"], "body": comment.get("body") or ""}
                                  for comment in self.api.pages(f"{base}/comments")]
             issue["comments_complete"] = True
-            blockers = self.api.pages(f"{base}/dependencies/blocked_by")
-            issue["blockers"] = [issue_key(value["repository_url"].split("/repos/", 1)[1], value["number"])
-                                 for value in blockers]
+            issue["blockers"] = self.native_blockers(repo, number)
             issue["blockers_complete"] = True
             targets.update(issue["blockers"])
             for comment in issue["comments"]:
