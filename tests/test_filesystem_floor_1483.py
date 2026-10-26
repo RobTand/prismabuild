@@ -256,7 +256,8 @@ def test_register_refresh_admit_and_refuse(tmp_path, enforce, ample_space):
     assert not ledger.acquire("b" * 64, {"spool_gb": 2})
     shortage = ledger.last_token_shortage
     assert shortage["resource"] == "filesystem_floor"
-    assert shortage["reason"] == "below_floor" and shortage["filesystem"] == key
+    expected = "below_dataset_floor" if found.get("capacity_constraints") else "below_floor"
+    assert shortage["reason"] == expected and shortage["filesystem"] == key
     assert ledger.holder_tokens("b" * 64) == {}
     # Exactly the remaining headroom is admitted: the boundary passes.
     assert ledger.acquire("b" * 64, {"spool_gb": 1})
