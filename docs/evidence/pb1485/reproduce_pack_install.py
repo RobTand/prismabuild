@@ -28,6 +28,20 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Comple
     return result
 
 
+def bootstrap_overlay(overlay: Path, wheels: Path, *, cwd: Path, env: dict[str, str]) -> str:
+    python = str(overlay / "bin" / "python")
+    try:
+        venv.create(overlay, with_pip=True)
+        run([python, "-m", "pip", "--version"], cwd=cwd,
+            env=env).check_returncode()
+    except (subprocess.CalledProcessError, OSError) as error:
+        print(json.dumps({"bootstrap_fallback": str(error)}), flush=True)
+        venv.create(overlay, with_pip=False)
+        with zipfile.ZipFile(wheels / "pip-26.2.1-py3-none-any.whl") as archive:
+            archive.extractall(overlay / "lib" / "python3.12" / "site-packages")
+    return python
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--legacy-requirement", action="store_true",
@@ -51,16 +65,7 @@ def main() -> int:
             raise SystemExit("historical checkout differs")
         overlay = scratch / "overlay"
         wheels = checkout / "_pb1485" / "wheels"
-        python = str(overlay / "bin" / "python")
-        try:
-            venv.create(overlay, with_pip=True)
-            run([python, "-m", "pip", "--version"], cwd=scratch,
-                env=env).check_returncode()
-        except (subprocess.CalledProcessError, OSError) as error:
-            print(json.dumps({"bootstrap_fallback": str(error)}), flush=True)
-            venv.create(overlay, with_pip=False)
-            with zipfile.ZipFile(wheels / "pip-26.2.1-py3-none-any.whl") as archive:
-                archive.extractall(overlay / "lib" / "python3.12" / "site-packages")
+        python = bootstrap_overlay(overlay, wheels, cwd=scratch, env=env)
         run([python, "-m", "pip", "install", "--no-index", "--no-deps",
              "--find-links", str(wheels), "setuptools"], cwd=scratch,
             env=env).check_returncode()
