@@ -5785,11 +5785,10 @@ class PoolQueue:
         return tombstone, True
 
 
-    def _successor_generation(
-        self, original: Mapping[str, object], successor: Mapping[str, object],
+    def _validated_ready_generation(
+        self, key: str, successor: Mapping[str, object],
     ) -> float:
         self.records.attempt_generation(successor)
-        key = str(original["action_key"])
         try:
             usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
                       and self._ready_record_usable(successor, key))
@@ -5800,7 +5799,12 @@ class PoolQueue:
             raise PoolContractError("invalid successor publication item") from exc
         if not usable or not host_demand:
             raise PoolContractError("invalid successor publication item")
-        generation = float(successor["published_unix"])
+        return float(successor["published_unix"])
+
+    def _successor_generation(
+        self, original: Mapping[str, object], successor: Mapping[str, object],
+    ) -> float:
+        generation = self._validated_ready_generation(str(original["action_key"]), successor)
         if generation < float(original["published_unix"]):
             raise PoolContractError("successor publication precedes its original")
         return generation
@@ -7243,7 +7247,7 @@ class PoolQueue:
         "container_cleanup_pending", "container_cleanup_checked_unix",
         "container_cleanup_attempts", "container_cleanup_first_failed_unix",
         "stop_pending", "resource_scope", "resource_scope_cleanup",
-        "finish_pending", "resource_scope_intent", "scratch_declaration_record",
+        "finish_pending", "resource_scope_intent", "cleanup_obligation", "scratch_declaration_record",
         scratch_lifetime.SCRATCH_LIFETIME_FIELD,
         local_scratch.PLACEMENT,
     )
@@ -11960,7 +11964,8 @@ class PoolQueue:
             invalid=AmbiguousClaimHolder,
         )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
-                      "claimed_unix", "published_unix", "scratch_declaration_record",
+                      "claimed_unix", "published_unix", "attempts", "claimed_by", "claimed_host",
+                      "cleanup_obligation", "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
@@ -15025,7 +15030,17 @@ class PoolQueue:
                         "error": f"late scope ownership unavailable: {type(exc).__name__}: {exc}"}
         if record.get("resource_scope") is None and record.get("resource_scope_intent") is not None:
             try:
-                self._recover_resource_scope_creation(record)
+                recovered = (False if (record.get('cleanup_obligation') or {}).get('state') == 'resolved'
+                             else self._recover_resource_scope_creation(record))
+                if not recovered:
+                    key = str(record['action_key'])
+                    generation = self.records.attempt_generation(record)
+                    verified = self._recover_cleanup_obligation(
+                        key, generation, int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
             except Exception as exc:                                 # noqa: BLE001
                 # The third enumerated tuple on this path, and it is retired
                 # for the reason the other two were (#286, #288): the list is
@@ -15048,6 +15063,14 @@ class PoolQueue:
             prior = record.get("resource_scope_cleanup")
             if (isinstance(prior, dict) and prior.get("complete") is True
                     and prior.get("nonce") == record["resource_scope"].get("nonce")):
+                if record.get('cleanup_obligation') is not None:
+                    verified = self._recover_cleanup_obligation(
+                        str(record['action_key']), self.records.attempt_generation(record),
+                        int(record.get('attempts', 0)) + 1)
+                    if isinstance(record, dict):
+                        record.update(verified)
+                    return {**verified['container_cleanup'],
+                            'resource_scope': verified['resource_scope_cleanup']}
                 # The shortcut must not permanently bypass proof
                 # publication: if the shared mount blipped while filing,
                 # cleanup recorded complete and future calls return here.
@@ -15161,6 +15184,13 @@ class PoolQueue:
                 self.records.replace_record_at(path, live)
             if isinstance(record, dict):
                 record["resource_scope_cleanup"] = cleanup
+            if record.get('cleanup_obligation') is not None:
+                verified = self._recover_cleanup_obligation(
+                    key, self.records.attempt_generation(record), int(record.get('attempts', 0)) + 1)
+                if isinstance(record, dict):
+                    record.update(verified)
+                return {**verified['container_cleanup'],
+                        'resource_scope': verified['resource_scope_cleanup']}
             if scope_only:
                 # A delayed cleanup is not a fresh runtime measurement and
                 # must not train the live admission model for this action.
@@ -15236,9 +15266,8 @@ class PoolQueue:
             return {"complete": False, "used": True, "removed": [], "remaining": [],
                     "error": f"resource scope cleanup incomplete: {type(exc).__name__}: {exc}"}
 
-    @staticmethod
     def _note_cleanup_attempt(
-        pending: dict[str, object], prior: Mapping[str, object] | None,
+        self, pending: dict[str, object], prior: Mapping[str, object] | None,
         cleanup: Mapping[str, object],
     ) -> None:
         """Record that cleanup was tried again and still could not be proved.
@@ -15260,6 +15289,10 @@ class PoolQueue:
         What this makes possible is deciding it on evidence.
         """
 
+        intent = pending.get('resource_scope_intent')
+        if isinstance(intent, dict) and pending.get('resource_scope') is None:
+            from .cleanup_obligation import _obligation_for
+            pending.setdefault('cleanup_obligation', _obligation_for(self, pending, intent['nonce']))
         attempts = (prior or {}).get("container_cleanup_attempts")
         pending["container_cleanup_attempts"] = (
             int(attempts) + 1 if isinstance(attempts, int) and not isinstance(attempts, bool)
@@ -20759,6 +20792,22 @@ class PoolQueue:
         """Conclude the exact executed claim under the worker-result policy."""
         return lifecycle.conclude(self, lifecycle.WorkerFinish(
             action_key, status, detail, claim_snapshot))
+
+    def _recover_cleanup_obligation(self, action_key: str, generation: str, attempt: int) -> dict:
+        from .cleanup_obligation import _verify_cleanup_identity, _publish_cleanup_permit
+        if not record_store.key_shaped(action_key):
+            raise PoolContractError('cleanup recovery requires a full key')
+        with self.action_transition_lock(action_key):
+            permit = _verify_cleanup_identity(self, action_key, generation, attempt)
+            return _publish_cleanup_permit(self, permit)
+
+    def reconcile_cleanup(self, action_key: str, generation: str, attempt: int) -> dict:
+        """Verify this host's exact cleanup debt; accept identity only."""
+        record = self._recover_cleanup_obligation(action_key, generation, attempt)
+        return {'action_key': action_key, 'generation': generation, 'attempt': attempt,
+                'cleanup_obligation': record['cleanup_obligation'],
+                'resource_scope_cleanup': record['resource_scope_cleanup'],
+                'container_cleanup': record['container_cleanup']}
 
     def retire_residency_plan(self, consumer_action_key: str) -> bool:
         """Move a concluded consumer's residency plan out of the census (#1041).

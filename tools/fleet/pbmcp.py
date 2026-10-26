@@ -1146,6 +1146,7 @@ class Session:
                 "withdrawn_attempt": record.get("withdrawn_attempt"),
                 "resource_scope_cleanup": record.get("resource_scope_cleanup"),
                 "container_cleanup": record.get("container_cleanup"),
+                "cleanup_obligation": record.get("cleanup_obligation"),
             },
             # #372 files a per-action resource profile on the outcome.  Read
             # optionally from both places it can appear, and passed through
@@ -1422,6 +1423,7 @@ class Session:
             "withdrawn_attempt": record.get("withdrawn_attempt"),
             "resource_scope_cleanup": record.get("resource_scope_cleanup"),
             "container_cleanup": record.get("container_cleanup"),
+                "cleanup_obligation": record.get("cleanup_obligation"),
             "superseded": _superseded_view(answer),
             "receipt": call.read(f"receipts:{prefix}:receipt",
                                  lambda: _receipt_summary(record)),
