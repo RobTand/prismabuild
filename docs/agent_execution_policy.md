@@ -165,8 +165,10 @@ only a total duration -- and an action that declares a policy refuses to
 launch if the launcher gave it no channel, rather than running with nothing
 bounding it.
 
-`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the quiet time
-against the current phase's allowance, and how many reports have been accepted.
+`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the current phase,
+committed count and optional unit, quiet time against the phase's allowance,
+and accepted report count. JSON jobs carry the same observation. Activity
+samples retain their output/CPU counters without a committed-work label.
 `OUTPUT` age is log traffic and proves nothing; `PROGRESS` is what the watchdog
 acts on. A blank column means no valid progress observation is available; it
 alone does not identify the action's execution policy. Read the sealed request

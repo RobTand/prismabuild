@@ -1697,8 +1697,10 @@ requires the `progress-v1` watchdog tag and the `progress-helper-v1` action
 environment tag, so an old loop mid-upgrade cannot claim an action using the
 helper. Upgraded loops continue to offer `progress-v1`, so they can claim
 already-sealed watchdog actions. `pbstatus`'s node table shows what each box
-announces, and its job table's `PROGRESS` column shows a running action's quiet
-time against the allowance in force.
+announces, and its job table's `PROGRESS` column shows the phase, committed
+count and optional unit, quiet time against the allowance, and accepted report
+count. JSON jobs retain the same observation. Activity observations show
+output/CPU activity without labelling it committed work.
 The action reports through `prismabuild.progress.commit(units, phase)`, or
 without importing anything by running the module the worker names in
 `PRISMABUILD_ACTION_PROGRESS_HELPER` -- `runpy.run_path(...)["commit"]` from

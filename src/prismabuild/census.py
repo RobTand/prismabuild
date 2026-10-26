@@ -256,6 +256,13 @@ def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str
     phase = value.get("phase")
     accepted = value.get("accepted_count")
     said = f"{phase if isinstance(phase, str) and phase else '?'} "
+    committed = value.get("last_accepted")
+    if value.get("source") != "activity" and isinstance(committed, dict):
+        units = committed.get("units_completed")
+        if type(units) in (int, float) and math.isfinite(units) and units >= 0:
+            said += f"committed {units:g}"
+            unit = committed.get("unit")
+            said += f" {unit} " if isinstance(unit, str) and unit else " "
     said += f"quiet {float(quiet):.0f}/{float(grace):g}s"
     if type(accepted) is int:
         said += f" ({accepted} accepted)"

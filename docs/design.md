@@ -4536,7 +4536,10 @@ Both watchers use the execution clock and refund only measured checkpoint I/O.
 An expired allowance ends `timeout` with `termination_reason: no_progress`;
 an explicit budget ends `timeout` with `termination_reason: execution_deadline`.
 Leases and endings carry activity totals or semantic phase/counter observations;
-`pbstatus` displays these with age and quiet time. Each heartbeat also records
+`pbstatus` displays these with age and quiet time. Ordinary table and JSON jobs
+include the semantic committed count and optional unit separately from the
+accepted report count. Activity samples never receive a committed-work label.
+Each heartbeat also records
 age and the observation in the action's `residency-events` log, before payload
 completion. A separate file per exact claim retains the newest 256 records
 after it exceeds 512. These records never count as payload activity. A sealed action without a
