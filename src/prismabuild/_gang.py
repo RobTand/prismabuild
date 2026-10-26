@@ -60,6 +60,15 @@ def _is_hex(text: object, length: int) -> bool:
             and all(c in "0123456789abcdef" for c in text))
 
 
+def _finite_number(value: object) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def declaration(value: object) -> dict | None:
     """Validate a ``params.gang`` / row ``gang`` declaration, or ``None``."""
     if value is None:
@@ -105,11 +114,13 @@ def _gang_read(path: Path, *, optional: bool = True) -> dict | None:
             where="gang record",
             max_bytes=MAX_RECORD_BYTES,
         )
+        value = core.digest_primitives.decode_strict_json(raw, where="gang record")
     except FileNotFoundError:
         if optional:
             return None
         raise
-    value = core.digest_primitives.decode_strict_json(raw, where="gang record")
+    except (OSError, core.PrismaBuildError) as exc:
+        raise GangContractError(f"unreadable gang record: {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise GangContractError(f"non-object gang record: {path}")
     return value
@@ -169,11 +180,17 @@ def read_group(queue, group: str) -> dict | None:
         return None
     members = record.get("members")
     if (record.get("schema") != GROUP_SCHEMA or record.get("group") != group
-            or not isinstance(members, list) or record.get("size") != len(members)
+            or not isinstance(members, list) or type(record.get("size")) is not int
+            or record["size"] != len(members)
             or not 2 <= len(members) <= MAX_MEMBERS
             or [m.get("index") if isinstance(m, Mapping) else None for m in members]
             != list(range(len(members)))
             or any(not _is_hex(m.get("action_key"), 64) for m in members)
+            or any(type(m.get("index")) is not int
+                   or not _finite_number(m.get("published_unix"))
+                   or type(m.get("priority")) is not int for m in members)
+            or not _finite_number(record.get("skew_s"))
+            or not 0 < record["skew_s"] <= 3600
             or type(record.get("priority")) is not int):
         raise GangContractError(f"malformed gang group record {group}")
     return record
@@ -189,7 +206,14 @@ def member(record: Mapping[str, object], item: Mapping[str, object], gang: Mappi
 
 
 def teardown(queue, group: str) -> dict | None:
-    return _gang_read(state_dir(queue, group) / "teardown.json")
+    record = _gang_read(state_dir(queue, group) / "teardown.json")
+    if record is not None and (
+            record.get("schema") != TEARDOWN_SCHEMA or record.get("group") != group
+            or not isinstance(record.get("reason"), str)
+            or not isinstance(record.get("by"), str)
+            or not _finite_number(record.get("torn_down_unix"))):
+        raise GangContractError(f"malformed gang teardown {group}")
+    return record
 
 
 def elections(queue, group: str, size: int) -> dict[int, dict]:
@@ -199,8 +223,10 @@ def elections(queue, group: str, size: int) -> dict[int, dict]:
         if record is None:
             continue
         if (record.get("schema") != ELECT_SCHEMA or record.get("group") != group
-                or record.get("index") != index or not isinstance(record.get("host"), str)
+                or type(record.get("index")) is not int or record["index"] != index
+                or not isinstance(record.get("host"), str) or not record["host"]
                 or not _is_hex(record.get("action_key"), 64)
+                or not _finite_number(record.get("epoch_unix"))
                 or type(record.get("priority")) is not int):
             raise GangContractError(f"malformed gang election {group}/{index}")
         found[index] = record
@@ -443,7 +469,7 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
             row = pool.record_store.value_or_raise(observation.result)
             name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
-                    and float(row.get("published_unix", other["published_unix"]))
+                    and float(row.get("published_unix", math.nan))
                     == float(other["published_unix"])):
                 state = name
                 break
