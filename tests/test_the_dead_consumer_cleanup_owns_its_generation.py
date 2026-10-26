@@ -37,13 +37,6 @@ from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
 
-#: How long the paused pass waits for the concurrent resubmission to publish.
-#: The corrected pass holds the consumer's lock here, so the resubmission
-#: cannot publish at all and the wait expires; the buggy pass holds nothing,
-#: and the resubmission completes in well under this bound.
-RESUBMISSION_WINDOW_S = 5.0
-
-
 def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """RED before the fix: the new consumer was published, its lead withdrawn."""
@@ -67,7 +60,7 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
         queue.records.item_path(pool.record_store.READY, mover_key).unlink()
 
     real_read_filed = residency_plan.read_filed
-    published = threading.Event()
+    observed_lock = threading.Event()
     results: dict[str, object] = {}
     started: list[threading.Thread] = []
 
@@ -78,8 +71,17 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
         submission._tier_cycle(queue, tmp_path / "stage")
 
     def resubmit() -> None:
-        publish_resubmission()
-        published.set()
+        try:
+            with queue.action_transition_lock(key, blocking=False) as acquired:
+                results["probe_acquired"] = acquired
+                if acquired:
+                    # Force the stale sweep to see the new generation if it owns no lock.
+                    publish_resubmission()
+            observed_lock.set()
+            if not acquired:
+                publish_resubmission()
+        finally:
+            observed_lock.set()
 
     def observe_then_resubmit(q, consumer, **kwargs):
         plan, filing = real_read_filed(q, consumer, **kwargs)
@@ -91,7 +93,7 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
             thread = threading.Thread(target=resubmit, daemon=True)
             started.append(thread)
             thread.start()
-            published.wait(RESUBMISSION_WINDOW_S)
+            assert observed_lock.wait(60), "the resubmitter never observed the lock"
         return plan, filing
 
     monkeypatch.setattr(residency_plan, "read_filed", observe_then_resubmit)
@@ -99,10 +101,11 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     for thread in started:
-        thread.join(10)
+        thread.join(60)
         assert not thread.is_alive(), "the resubmission never returned"
     assert started, "the pass never reached its plan attribution"
     assert results.get("returncode") == 0, results
+    assert results["probe_acquired"] is False, "the stale sweep did not own its consumer"
 
     final = residency_plan.read(queue, key)
     assert final is not None, "the live generation left no plan filed"
