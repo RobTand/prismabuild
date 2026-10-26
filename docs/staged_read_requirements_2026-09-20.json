@@ -62,7 +62,7 @@
    "scoped_repair_2270": {
     "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "PB owns obligation verification and reconciliation; the operator supplies identity only."
     },
@@ -70,7 +70,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -263,7 +264,7 @@
    "scoped_repair_2270": {
     "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Exact action/publication/attempt/claimant/host/nonce checks preserve immutable attempt and log evidence."
     },
@@ -271,7 +272,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -455,7 +457,7 @@
    "scoped_repair_2270": {
     "target": "Behavior attributed per (runtime_commit, generation_id).",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Source validation is attributed to a checkout snapshot; no runtime activation of this repair is claimed."
     },
@@ -463,7 +465,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -506,7 +509,7 @@
    "scoped_repair_2270": {
     "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Cleanup resolution remains separate from command failure and creates no command-success receipt."
     },
@@ -514,7 +517,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -747,7 +751,7 @@
    "scoped_repair_2270": {
     "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Refused create retains an obligation and capacity until owning-host cleanup proof allows normal conclusion."
     },
@@ -755,7 +759,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -958,7 +963,7 @@
    "scoped_repair_2270": {
     "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Pending claims retain capacity; historical already-released reservations are not fabricated or credited again."
     },
@@ -966,7 +971,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -1196,7 +1202,7 @@
    "scoped_repair_2270": {
     "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Fresh identity verification permits adoption of immutable cleanup proof after summary-write interruption."
     },
@@ -1204,7 +1210,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -2070,7 +2077,7 @@
    "scoped_repair_2270": {
     "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Private-queue lifecycle tests cover broker refusal, restored connectivity and contradictory identities."
     },
@@ -2078,7 +2085,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
@@ -2222,7 +2230,7 @@
    "scoped_repair_2270": {
     "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
     "implemented_source": {
-     "commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+     "commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
      "state": "component-implemented",
      "scope": "Recovery tests cover replay after summary-write failure and retry bookkeeping advancement."
     },
@@ -2230,7 +2238,8 @@
      "state": "scoped-component-qualified-with-main-baselines",
      "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
      "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
-     "detail": "Current-main integration29909c8ff2 on c5b02a072966: 40 focused passes per architecture and301 nearby passes, zero failures/skips. Earlier source-identical repair: ten40-pass repeats, five per architecture with two xdist each;14 mutation controls killed. Terminals, canonical logs, result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+     "detail": "Source69a085f8b5 on main128c8cc9581 changes only cache-fixture comments from previously qualified runtime. Four portable ARM shards passed508 tests,zero failures/skips,including40 focused and468 cache/history tests. Terminal/log/claim/receipt/payload readbacks verified. Prior29909c8ff2 qualification retains40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. No full worker-attestation or deployed behavior claim.",
+     "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
     },
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",

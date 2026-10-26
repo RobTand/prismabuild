@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+  "ledger_commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
   "scope": [
     "SC-01",
     "ID-02",
@@ -20,7 +20,7 @@
   "merge": {
     "branch": "prismabuild-2270",
     "issue": "https://github.com/RobTand/prismabuild/issues/2270",
-    "source_commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+    "source_commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
     "validated_repairs": [
       {
         "id": "SC-01",
@@ -28,9 +28,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "ID-02",
@@ -38,9 +40,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "ID-08",
@@ -48,9 +52,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "ID-09",
@@ -58,9 +64,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "SM-01",
@@ -68,9 +76,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "INV-01",
@@ -78,9 +88,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "INV-08",
@@ -88,9 +100,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "ACC-02",
@@ -98,9 +112,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       },
       {
         "id": "ACC-04",
@@ -108,9 +124,11 @@
           "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
           "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
           "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
-          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2",
+          "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+          "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e"
         ],
-        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
+        "outcome": "Source69a085f8b5 integrates main128c8cc9581 with unchanged runtime and repair tests. Refresh:508 collected/executed passes,zero failures/skips on ARM, including40 focused and468 cache/history checks. Four terminal/log/claim/receipt/payload readbacks verified. Inherited29909c8ff2:40 focused passes per architecture and301 nearby passes; earlier ten40-pass repeats and14 killed mutation controls. Scope remains component qualification."
       }
     ],
     "remaining_gaps": [
@@ -119,7 +137,9 @@
       "No end-to-end staged-read campaign,whole-requirement conformance or full worker-attestation verification is claimed.",
       "Immutable records and CAS receipts establish the observed commit/recovery boundaries; no power-loss durability experiment was run."
     ],
-    "note": "Scoped source merge candidate only; Principal standards/spec review and merge remain required. Earlier scratch and main-baseline failures are preserved as historical evidence, not current-source failures. Native GitHub publication must preserve pbmcp.py mode100755: file-blob equality alone does not pass the publication gate. Whole-requirement axes remain unchanged; no staged-policy exception."
+    "note": "Source merge acceptance only; independent Principal standards/spec review and merge remain required. Published mode-restored source and current-main integration have exact full-tree matches. Later evidence-only commit must also pass provider/tree readback. Earlier failures remain historical evidence. Whole-requirement axes unchanged; no staged-policy exception.",
+    "inherited_qualified_source": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
+    "main_refresh_record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json"
   },
   "deploy": {
     "status": "not-this-step"

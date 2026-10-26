@@ -2732,5 +2732,20 @@
         ]
       }
     ]
+  },
+  "main_refresh": {
+    "record": "docs/evidence/issue2270_cleanup_main_refresh_2026-10-26.json",
+    "source_commit": "69a085f8b5d7b09dd26d5d495464d5d66d0b0986",
+    "base_commit": "128c8cc9581b839555ffaadad81da8c20a9cb6fe",
+    "passed": 508,
+    "failed": 0,
+    "skipped": 0,
+    "actions": [
+      "871801cf476f6c5e14bf8b4ffed1f0e86192cb500a8cec24fe5bd8fae07691ba",
+      "8de68c305e146dd2a32f254df677ad4a7bce4c3f9a6c4c6ed654c3c46fc4e656",
+      "94fe95494a13232767beda461572d65c54b4c25ed27a32ae5e257e9b7b342e6e",
+      "cd6d9b45fd7afea2379ad39afd5db27ed9464303d008862881f96e41dd25bf4b"
+    ],
+    "claim": "Runtime and repair test bytes unchanged; existing architecture/nearby/mutation qualification retained. Additional portable refresh executed on ARM; it is not a new x86 repetition."
   }
 }
