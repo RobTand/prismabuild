@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "ce2a3be4915c024fdc1677d973cc8a77d8bef95c",
+  "ledger_commit": "f6fa642f8d1f7081e17d51635eeee346e7b3819d",
   "scope": [
     "LIVE-01"
   ],
@@ -25,15 +25,17 @@
           "b9613a7f05299314cecb6bd834eb5cb414090dd87a3ae2b51cb5f837a6710a50",
           "b7534079e6bee67f8534912fbdae016de8d3a5231336c8109f87b21bbd9a9056",
           "d3b7a7ae6b9cd770cf98e171cd533ebe963fc2e8347577340f075f858e9557a1",
-          "ced1823aba71d6c2a613c241129ecc2ed531d59d31a460900bb2867a9feccc95"
+          "ced1823aba71d6c2a613c241129ecc2ed531d59d31a460900bb2867a9feccc95",
+          "e42e4310a74f176f6ff70bb802d2a3334d39ab1922cc5e9d62c6793578f8f328",
+          "b969be1431aae36f24255ec73c76b640e16a34b217e6b8f2bde19b5b0d44eda6"
         ],
-        "outcome": "Ten executed actions, exit 0, complete cleanup, verified immutable logs and CAS receipts/payloads. Five fresh runs per architecture, two xdist runs each. Each covers all 16 regression cases. Source bundles match 762fdafcbf. See fleet-validation.jsonl.",
+        "outcome": "Twelve executed actions, exit 0, complete cleanup, verified immutable logs and CAS receipts/payloads. Five fresh regression runs per architecture, two xdist each, plus the final integrated cohort on each architecture. All cover the 16 regression cases. Tested canary source bytes match the review branch. See fleet-validation.jsonl.",
         "scope": "Canary observer continues only leg-3 rc75 on its original action. Explicit finite patience is one absolute budget. Scheduler priority and payload execution/progress limits are preserved."
       }
     ],
     "remaining_gaps": [
       "LIVE-01 remains a whole-policy target. Eventual qualification requires contention to drain, eligible workers and finite I/O. No unconditional completion guarantee or historical safe-backfill proof.",
-      "Required guards remain red on the unchanged base and branch: test_closed_field_sets_remain_pinned (#2296) and test_primitive_digest_sites_only_shrink (#2297). No exemptions or baseline growth. Independent Principal disposition is required before merge.",
+      "Final integrated cohorts on base 954e14171565 each report 368 passed and one inherited test_closed_field_sets_remain_pinned failure (#2296). The earlier unchanged-base run reproduced both #2296 and #2297; #2311 fixes #2297 in the new base. Historical failures remain in the evidence. No exemptions or baseline growth. Independent Principal disposition of #2296 is required before merge.",
       "ACC-07, INV-03/INV-04 and ID-08: component tests establish no new strict-reader, live canary, both-Spark workload or deployed-generation support.",
       "Release-owner approval of unlimited default observation and its potentially indefinite publication-lock hold remains required in PR review."
     ],

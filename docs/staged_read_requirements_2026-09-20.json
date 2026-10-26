@@ -1607,14 +1607,14 @@
    "scoped_repair_1772": {
     "target": "Observe the same canary action through feasible higher-priority waiting without weakening priority or treating elapsed wait as a pass.",
     "implemented_source": {
-     "commit": "db21a2434d2",
+     "commit": "e8e5c75f523706e44ccfb863db4f0df8ed36879c",
      "state": "component-implemented",
      "scope": "Leg 3 continues bounded observations after rc75 by default; --leg3-wait-s caps one total observation budget. Execution remains 600 seconds at priority -10."
     },
     "validation": {
      "state": "component-qualified",
      "acceptance_record": "docs/evidence/issue1772/merge-acceptance.json",
-     "detail": "Deterministic red 19ba88324f0f; five fresh green regression runs per architecture, two xdist each, 16 cases and no skips. Full 26-file cohort per architecture: 367 passed, 2 inherited guard failures. Exact source bundles, terminal cleanup, logs and CAS receipts/payloads verified. Baseline independently reproduces both guard failures. Principal disposition of #2296/#2297 and contract approval remain required."
+     "detail": "Deterministic red 19ba88324f0f; five fresh green regression runs per architecture, two xdist each, 16 cases and no skips. Final integrated 26-file cohorts on base 954e14171565 each report 368 passed, 1 inherited #2296 failure. Earlier base and branch reproduce both #2296/#2297; #2311 fixes #2297 in the new base. All 90 endings, cleanup and logs plus success CAS payloads verified; actual canary source bundles match the review branch. Principal disposition of #2296 and contract approval remain required."
     },
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no recovered historical admission snapshot, live canary or staged-only campaign result",
