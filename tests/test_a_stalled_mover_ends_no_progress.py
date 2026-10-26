@@ -592,15 +592,8 @@ def _brief(outcome: dict) -> str:
         "stall", "stderr")})
 
 
-@contextmanager
-def _registered_resume(source: str, monkeypatch, tmp_path: Path):
-    """Force grant-before-registration, then observe the real self-holder."""
-
-    events_path = tmp_path / "resume-events"
-    commands_path = tmp_path / "resume-commands"
-    os.mkfifo(events_path)
-    os.mkfifo(commands_path)
-    observed = []
+def _registered_source(source: str, events_path: Path,
+                       commands_path: Path) -> str:
     registration_window = textwrap.dedent(f'''
         real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
         def registered_holder_writer(self, *args, **kwargs):
@@ -623,8 +616,20 @@ def _registered_resume(source: str, monkeypatch, tmp_path: Path):
             return record
         pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
     ''')
-    source = source.replace("code = stage_move.main(",
+    return source.replace("code = stage_move.main(",
                             registration_window + "code = stage_move.main(", 1)
+
+
+@contextmanager
+def _registered_resume(source: str, monkeypatch, tmp_path: Path):
+    """Force grant-before-registration, then observe the real self-holder."""
+
+    events_path = tmp_path / "resume-events"
+    commands_path = tmp_path / "resume-commands"
+    os.mkfifo(events_path)
+    os.mkfifo(commands_path)
+    observed = []
+    source = _registered_source(source, events_path, commands_path)
 
     def before(queue):
         read_holder = queue.stage_ownership_holder
