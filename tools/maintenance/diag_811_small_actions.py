@@ -76,6 +76,10 @@ def command(mode: str, root: Path, runtime: Path) -> list[str]:
             "--action-key", EGRESS, "--mover-action-key", MOVER]
 
 
+def staged_files(root: Path) -> list[Path]:
+    return sorted(path for path in (root / "stage").rglob("*") if path.is_file())
+
+
 def run_payload(mode: str, root: Path, profile: Path | None) -> None:
     fixture = json.loads((root / "fixture.json").read_text())
     runtime = Path(fixture["runtime_root"])
@@ -84,7 +88,7 @@ def run_payload(mode: str, root: Path, profile: Path | None) -> None:
     if hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest() != expected:
         raise SystemExit("fixture manifest changed")
     if mode == "egress":
-        landed = list((root / "stage").rglob("part-*.bin"))
+        landed = staged_files(root)
         if len(landed) != 4 or sum(path.stat().st_size for path in landed) != TOTAL_BYTES:
             raise SystemExit("egress needs all four landed fixture entries")
     sys.argv = argv
@@ -118,7 +122,7 @@ def run_payload(mode: str, root: Path, profile: Path | None) -> None:
         raise SystemExit(f"{mode} did not complete: {receipt}")
     if mode == "move" and receipt.get("bytes_staged") != TOTAL_BYTES:
         raise SystemExit("mover did not stage the full fixture")
-    if mode == "egress" and any((root / "stage").rglob("part-*.bin")):
+    if mode == "egress" and staged_files(root):
         raise SystemExit("egress left fixture bytes behind")
     if mode == "egress" and receipt.get("bytes_deleted") != TOTAL_BYTES:
         raise SystemExit("egress did not delete the full fixture")
