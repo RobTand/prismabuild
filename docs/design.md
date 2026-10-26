@@ -7422,8 +7422,16 @@ Plain, forged, copied, subclassed and serialized values grant no authority.
 The immutable `<number>.cleanup-recovery.json` supplement preserves the original
 owner record, its canonical digest and verified scope/container evidence. The
 mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
-obligation. Original command status, immutable attempts, logs, generation and
-publication endings remain intact. A crash between supplement and summary is
+obligation. Verified recovery also clears `container_cleanup_pending` when the
+record has no registered scratch. Separate scratch cleanup remains owned by
+the scratch lifecycle and is not proved by the scope/container permit.
+Historical `lease_lost_max_attempts` endings use this same identity-bound
+recovery, including its fresh broker challenge and container checks (#1838).
+Ordinary lease recovery clears an earlier cleanup refusal before publishing an
+ending only after the public cleanup operation returns complete. An empty
+container list alone grants no completion. No periodic scan of historical
+terminal records is added. Original command status, immutable attempts, logs,
+generation and publication endings remain intact. A crash between supplement and summary is
 replayable only after another fresh verification. Replay binds the saved claim
 identity and scope intent while allowing cleanup counters and recovered control
 to advance after a partial summary write. `pb_action` exposes pending
