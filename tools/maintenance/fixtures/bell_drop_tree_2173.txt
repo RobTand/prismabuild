@@ -1,0 +1,9 @@
+    def _drop_host_tree(self, relative):
+        # A parent rename/delete is the invalidation. Stop watching the old
+        # inode before it can move outside the queue or retain an old host ID.
+        for wd, path in list(self.directories.items()):
+            if path is not None and path.is_relative_to(relative):
+                self.libc.inotify_rm_watch(self.fd, wd)
+                self.directories.pop(wd, None)
+                self.root_watches.pop(path, None)
+                self.file_watches.pop(path, None)
