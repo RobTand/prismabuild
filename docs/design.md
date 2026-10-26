@@ -731,6 +731,71 @@ This source change retains PB admission authority (SC-01), movement authority
 (SC-02), and token settlement requirements (INV-07). It establishes no runtime
 deployment or campaign completion.
 
+**Ordinary admission without the census reader (#2199).** A non-measurement,
+non-gang candidate discovers measurement sidecars before M/H, then rechecks every
+sidecar's identity, size, mtime and ctime under host admission H. Parsed sidecars
+are reused within a pass only while these observations match; new, replaced or
+missing sources require fresh discovery. This lists and stats every sidecar per
+candidate, inline. A potentially fencing measurement receives the full census's
+per-key retirement check: exact READY, CLAIMED, finish marks and terminal slots.
+An exact-generation claim or mark takes precedence over an ending; otherwise an
+exact-generation ending or strictly newer live publications prove retirement.
+Local nonblocking M keys precede H; busy keys and retained holders stay fenced.
+Gang elections, including concluded entries, remain potential fences. An
+election on another host cannot fence this row. A measurement at the row's
+priority or below cannot fence it; an equal-priority gang still can reserve
+demand after maturation. Only when no source can fence the candidate does
+admission proceed without the reader. H remains held through reservation, so a
+new election cannot race between the proof and acquisition. A dependent whose
+sealed owner has a live or unproved selection also needs a complete or verified
+shared census.
+An elected measurement remains distinct from an ordinary incumbent even when
+the dependent is outside its direct priority fence. Unreadable,
+malformed, vanished, over-budget or ambiguous sources take the complete census
+path. No publisher or election writer gains a new participation requirement.
+
+Sibling loops may also reuse a complete under-H census for at most two seconds.
+The host-local record binds the pool, boot identity, monotonic creation time,
+payload digest and source generation. The generation includes identities, sizes,
+mtime and ctime for pass sidecars, gang records and state files, exact elected
+publication and retirement slots, and gang members. A live gang also includes
+all READY and CLAIMED sources for its movement obligations. Unrelated ordinary
+claims do not invalidate a measurement-only result. Directory identities
+bracket listings. Publication requires equal generations before and after the
+complete locked read. Reuse takes the cached and pass-remembered selections'
+sorted nonblocking M keys before H, verifies the generation and age under H,
+and restores fences for busy keys and retained holders. A sibling's omission
+is not retirement authority: selections remembered by this pass but absent
+from the shared result remain remembered, with their live fences intact.
+An election retained from busy discovery remains in the refreshed census's
+selections and keys as well as its live elections, so later candidates retain
+its M lock and fence even when the sidecar vanished before refresh.
+Both owned and accepted shared censuses update pass memory before candidate
+evaluation; candidate-relative ordinary negative proofs never replace it.
+Ordinary source parsing and election memory are separate. After the under-H
+metadata recheck, each observed measurement publication remains in pass memory
+even if its sidecar disappears or the current candidate outranks it. Later
+ordinary proofs apply the same exact retirement rule to those observations,
+taking their local M keys before H. Complete and shared fallback retain the
+strongest observed local fence per key, including across publication generations.
+An advisory source-verification refusal permits an independent ordinary proof;
+unsafe local rendezvous storage still refuses before either shortcut.
+Missing, stale or unverifiable results fall back. Shared reuse never supplies a
+new retirement proof. The ordinary proof uses exactly the complete census's
+per-key retirement rule. Optional source-generation preparation and verification
+run in a separately owned bounded child using the refresh budget. Its independent
+nonblocking guard never waits for the census reader fence. The persist-before-read
+handshake and inherited-descriptor isolation are the same as the census reader's:
+a timed-out child cannot retain M/H, and an unsettled child prevents another
+source helper across loop restarts without preventing a complete census. A busy,
+timed-out or unverifiable optional read disables cache publication or reuse,
+not an otherwise authoritative complete census. Ordinary sidecar proofs and local
+cache serialization still run inline; their cooperative deadlines do not bound a
+stalled filesystem syscall. Measurement and gang candidates retain their
+owned-reader path. A census refusal still ends reader attempts for the pass,
+but each later ordinary candidate can prove that it is outside every fence;
+the refusal is recorded only when that candidate still needs the census.
+
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
 or a progress-governed action) does not void the election: requiring one left
 most live hosts unelected, so once the bounded attention above lapsed a

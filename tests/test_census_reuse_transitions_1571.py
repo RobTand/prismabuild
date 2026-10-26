@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -113,6 +114,13 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     holder = publish("slow-refresh-holder", priority=10, cpu=2, gpu=0, mem_gb=112)
     assert claim() == holder
+    from test_ordinary_census_admission_2199 import _fixture_selection
+    retired = publish("slow-refresh-retired", measurement=True, priority=10, gpu=0)
+    _fixture_selection(queue, retired)
+    queue.withdraw(retired)
+    # Exercise owned-reader reuse, including its timeout, with shared reuse expired.
+    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", -1)
+    monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     keys = [publish(f"slow-refresh-{index}", priority=-10, timeout_s=600,
                     cpu=2, gpu=0, mem_gb=16) for index in range(3)]
     rows = [pool.record_store.value_or_raise(
@@ -170,9 +178,13 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in keys)
 
 
-def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
+@pytest.mark.parametrize("shared", [False, True], ids=["owned-refresh", "shared-census"])
+def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, shared):
     """Elections without a live READY/CLAIMED member are not fences."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(reservation, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
+    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60 if shared else -1)
     incumbents = {}
     for host in ("sparklina", "sparky"):
         incumbents[host] = publish(f"incumbent-{host}", priority=-10, timeout_s=None,
@@ -209,7 +221,13 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
     rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
             for key in (probe, follower)]
     refreshes = []
+    captures = []
     real_refresh = reservation.CensusReader.refresh_elections
+    real_capture = reservation.CensusReader.capture
+
+    def observed_capture(self):
+        captures.append(1)
+        return real_capture(self)
 
     def observed_refresh(self):
         refreshed = real_refresh(self)
@@ -217,8 +235,16 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch):
         return refreshed
 
     monkeypatch.setattr(reservation.CensusReader, "refresh_elections", observed_refresh)
+    monkeypatch.setattr(reservation.CensusReader, "capture", observed_capture)
     result = gclaim("sparklina", ready=rows, advance=None)
-    assert len(refreshes) == 1, "the follower must reach election refresh"
+    if shared:
+        assert captures == [], "the first candidate must reuse the verified shared census"
+    else:
+        assert len(captures) == 2, "the first candidate needs discovery and locked capture"
+    # The probe's resource denial writes a pass counter, changing the source
+    # generation. Both paths now remember a census and narrowly refresh it for
+    # the follower rather than performing another complete capture.
+    assert len(refreshes) == 1
     assert refreshes[0]["gang_elections"] == {}
     assert queue.records.item_path(pool.record_store.READY, probe).exists()
     assert result is not None, denial(follower, "sparklina")
