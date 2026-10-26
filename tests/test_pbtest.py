@@ -206,11 +206,11 @@ def test_worker_visible_tmpdir_reaches_the_shard_as_one_argument(
     assert sum(part.startswith("TMPDIR=") for part in command) == 1
 
 
-def test_default_tmpdir_keeps_the_existing_shard_environment(
+def test_default_tmpdir_uses_the_fleet_nvme_scratch(
     tmp_path: Path, monkeypatch,
 ) -> None:
     command = _dispatch(tmp_path, monkeypatch, [])
-    assert shard_environment(command)["TMPDIR"] == "/home/rob/tmp"
+    assert shard_environment(command)["TMPDIR"] == "/home/rob/pbt17"
 
 
 def test_relative_tmpdir_refuses_before_submission(

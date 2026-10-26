@@ -1,15 +1,16 @@
 """One envelope extractor for canary legs 3-4 (issue #1315).
 
-``common.extract_envelope`` owns the scan, parametrized by schema marker;
-each leg's thin ``_extract_envelope`` passes its own marker. The tests pin
-both markers through the shared helper and through each leg wrapper, so the
-verify legs stay in lockstep. tmp_path-free: pure receipt dicts, no fleet.
+``common.extract_envelope`` owns the scan, parametrized by schema marker.
+Both verifiers pass their marker directly. Tests pin both markers and the
+leg-4 requirement for raw envelope bytes.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
@@ -19,8 +20,8 @@ from pbcanary_legs.common import extract_envelope  # noqa: E402
 
 
 def _receipt(schema: str, *, where: str = "envelope") -> dict:
-    body = {"schema": schema, "digest": "d" * 64}
-    text = '{"schema": "%s", "digest": "%s"}' % (schema, "d" * 64)
+    body = {"schema": schema, "input_digest": "d" * 64}
+    text = '{"schema": "%s", "input_digest": "%s"}' % (schema, "d" * 64)
     if where == "envelope":
         return {"envelope": text}
     if where == "parsed":
@@ -55,17 +56,19 @@ def test_shared_helper_rejects_other_marker():
     assert (raw, parsed, where) == (None, None, "receipt[envelope]")
 
 
-def test_leg_wrappers_agree_with_shared_helper():
-    for leg in (leg3, leg4):
-        schema = leg3.LEG3_SCHEMA if leg is leg3 else leg4.LEG4_SCHEMA
-        for where in ("envelope", "parsed", "stdout", "detail"):
-            receipt = _receipt(schema, where=where)
-            assert leg._extract_envelope(receipt) == extract_envelope(
-                receipt, schema=schema
-            ), where
+@pytest.mark.parametrize("where", ["envelope", "parsed", "stdout", "detail"])
+def test_leg4_verifier_requires_raw_envelope_bytes(where):
+    receipt = _receipt(leg4.LEG4_SCHEMA, where=where)
+    ok, reason = leg4.verify(receipt, receipt, {"input_digest": "d" * 64})
+    assert ok == (where != "parsed"), reason
+    if where == "parsed":
+        assert "envelope bytes absent" in reason
 
 
-def test_leg_wrappers_reject_each_others_marker():
-    assert leg3._extract_envelope(_receipt(leg4.LEG4_SCHEMA))[1] is None
-    assert leg4._extract_envelope(_receipt(leg3.LEG3_SCHEMA))[1] is None
-    assert leg3._extract_envelope("not a receipt") == (None, None, "")
+def test_leg_verifiers_reject_each_others_marker():
+    ok, reason = leg3.verify(_receipt(leg4.LEG4_SCHEMA), {})
+    assert not ok and reason == "leg3: no leg3 envelope in receipt"
+    receipt = _receipt(leg3.LEG3_SCHEMA)
+    ok, reason = leg4.verify(receipt, receipt, {})
+    assert not ok and "envelope bytes absent" in reason
+    assert extract_envelope("not a receipt", schema=leg3.LEG3_SCHEMA) == (None, None, "")

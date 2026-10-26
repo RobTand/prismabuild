@@ -25,7 +25,7 @@ from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MO
 
 
 def configured_store() -> FleetStore:
-    return FleetStore(Path("/mnt/shared/prismabuild-fleet"), RUNTIME_ROOT, fleet_roster.Roster.beside(__file__))
+    return FleetStore(Path("/mnt/shared/prismabuild-fleet"), RUNTIME_ROOT, fleet_roster.Roster.beside(_PB_ENTRYPOINT))
 
 
 def request_from_args(args: argparse.Namespace) -> SubmissionRequest:

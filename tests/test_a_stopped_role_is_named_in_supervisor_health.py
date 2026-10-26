@@ -28,6 +28,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -272,7 +273,9 @@ def test_the_supervisor_tick_writes_a_stopped_role_into_its_log(
     def sleep(_seconds):
         raise CycleComplete
 
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
 
     with pytest.raises(CycleComplete):
         supervise.main()

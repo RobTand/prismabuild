@@ -1,0 +1,14 @@
+[
+  {
+    "change": "added",
+    "count": 1,
+    "row": {
+      "path": "tools/fleet/resource_broker.py",
+      "owner": "Authority.handle",
+      "fields": [
+        "op"
+      ]
+    },
+    "reason": "Read-only maintenance query rejects every request field except op. Retain all current-main policies, including the sealed bundle-cache record bytes/key/sha256 boundary."
+  }
+]

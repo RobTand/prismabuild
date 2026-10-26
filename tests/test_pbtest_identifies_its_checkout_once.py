@@ -199,7 +199,7 @@ def test_without_caller_env_shard_requests_keep_their_default_bytes(tmp_path, mo
         actual = build(request, environment=environment,
                        python_entry=python_entry, arguments=arguments)
         expected = replace(request, env=(
-            "TMPDIR=/home/rob/tmp", "PRISMABUILD_PBTEST_RECORD_BINDING=1",
+            "TMPDIR=/home/rob/pbt17", "PRISMABUILD_PBTEST_RECORD_BINDING=1",
             "OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1",
             "OPENBLAS_NUM_THREADS=1", "TORCH_NUM_THREADS=1",
             f"PRISMABUILD_TEST_TIMEOUT_S={120 - pool.HEARTBEAT_S:g}",

@@ -14,7 +14,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import host_hold, pool  # noqa: E402
 from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 
@@ -225,6 +225,64 @@ class MetricsFixture(unittest.TestCase):
         self.assertIn(
             'prismabuild_worker_observed_capacity{host="parked",resource="cpu"} 0',
             text)
+
+    def test_held_offer_metrics_preserve_freshness(self) -> None:
+        self.assertEqual(['prismabuild_collection_success 1'],
+                         _samples(self.collect(), 'prismabuild_collection_success'))
+        queue = pool.PoolQueue(self.queue)
+        hold = host_hold.change_host_hold(
+            self.queue, 'sparky', owner='operator', reason='external load',
+            now=NOW, expires_unix=NOW + 3600)
+        for age, fresh, retired in (
+            (2, True, False),
+            (pool.OFFER_TIMEOUT_S + 5, False, False),
+            (fleet_census.OFFER_RETIRED_AFTER_S + 5, False, True),
+        ):
+            with self.subTest(age=age):
+                with mock.patch.object(pool, '_now', return_value=NOW - age):
+                    queue.announce(
+                        host='sparky', tags=['gb10'], has_gpu=True,
+                        capacity={'cpu': 8, 'gpu': 1, 'mem_gb': 32},
+                        observed_capacity={'cpu': 0, 'gpu': 0, 'mem_gb': 0},
+                        observed_detail={'mem_available_gb': 29,
+                                         'gpu_memory_domains': ['shared_system']},
+                        loops=2, state='held', hold=hold.fields())
+                node = next(node for node in fleet_census.offers(self.queue).value['nodes']
+                            if node['node'] == 'sparky')
+                self.assertEqual(node['state'], 'held')
+                self.assertIs(node['healthy'], fresh)
+                # Metrics consume the published observation, never hold authority.
+                with mock.patch.object(host_hold, 'read_host_hold',
+                                       side_effect=AssertionError('hold authority read')) as read:
+                    text = self.collect()
+                read.assert_not_called()
+                self.assertEqual(['prismabuild_collection_success 1'],
+                                 _samples(text, 'prismabuild_collection_success'))
+                self.assertIn(f'prismabuild_worker_up{{host="sparky"}} {int(fresh)}',
+                              _samples(text, 'prismabuild_worker_up'))
+                self.assertIn(f'prismabuild_worker_retired{{host="sparky"}} {int(retired)}',
+                              _samples(text, 'prismabuild_worker_retired'))
+                self.assertIn(f'prismabuild_worker_offer_age_seconds{{host="sparky"}} {age:g}',
+                              _samples(text, 'prismabuild_worker_offer_age_seconds'))
+                if fresh:
+                    for resource, value in (('cpu', 8), ('gpu', 1),
+                                            ('memory_bytes', 32 * 1024 ** 3)):
+                        self.assertIn(
+                            f'prismabuild_worker_capacity{{host="sparky",resource="{resource}"}} {value}',
+                            _samples(text, 'prismabuild_worker_capacity'))
+                        self.assertIn(
+                            f'prismabuild_worker_observed_capacity{{host="sparky",resource="{resource}"}} 0',
+                            _samples(text, 'prismabuild_worker_observed_capacity'))
+                    self.assertIn('prismabuild_worker_loops{host="sparky"} 2',
+                                  _samples(text, 'prismabuild_worker_loops'))
+                else:
+                    for family in ('capacity', 'observed_capacity', 'memory_available_bytes',
+                                   'memory_domain_info', 'loops'):
+                        self.assertFalse(any('host="sparky"' in line for line in
+                                             _samples(text, f'prismabuild_worker_{family}')))
+                # A hold never hides work already running on the host.
+                self.assertIn('prismabuild_active_jobs{host="sparky",kind="gpu"} 1',
+                              _samples(text, 'prismabuild_active_jobs'))
 
     def test_admission_and_terminal_metrics_are_window_gauges(self) -> None:
         text = self.collect(terminal_window_seconds=60, terminal_limit=20)

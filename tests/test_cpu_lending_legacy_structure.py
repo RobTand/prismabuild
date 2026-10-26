@@ -9,7 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / 'tests/fixtures/cpu_lending_main_methods.json'
-PIN = 'd6ce1339b26318acb3939cda57e3cd31ed664849b7c5b866f1bc86eb40e3a325'
+PIN = '3050e7e6ed434d55d4abe1456d9ae8fa6dc968576333a0c4d25d2044534f8f3b'
 METHODS = json.loads(REFERENCE.read_bytes())['methods']
 
 

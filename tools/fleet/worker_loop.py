@@ -1234,16 +1234,22 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             continue
         loaded_commit = decision.identity.commit
         offered = offered_tags(host)
+        gate = role_session.read_maintenance_gate()
+        if gate is not None:
+            role_session.post_park_marker(gate)
         if not swept_dead_offers:
             swept_dead_offers = True
             swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
             if swept:
                 print(f"[{host}] swept {len(swept)} dead offer temporary "
                       f"file(s) (issue #1040)", flush=True)
-        gate = role_session.read_maintenance_gate()
-        if gate is not None:
-            role_session.post_park_marker(gate)
-            print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
+        hold = queue.claim_hold() if gate is None else None
+        if gate is not None or hold is not None:
+            if gate is not None:
+                print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
+            if hold is not None:
+                print(f"[{host}] operator hold; admission paused: "
+                      f"{hold.error or hold.reason}", flush=True)
             # Retry this box's own saved finishes under the closed gate
             # (#1403).  A saved outcome claims nothing, so it is safe while
             # admission is paused, and the queue applies the owner-host rule
@@ -1310,7 +1316,11 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 observed_images = None
                 if class_policy is not None:
                     class_verdict = class_policy.evaluate(None, now=time.time())
-            drain_fields = role_session.drain_offer_fields(gate)
+            drain_fields = role_session.drain_offer_fields(gate) if gate is not None else {}
+            if hold is not None:
+                drain_fields["hold"] = hold.fields()
+                if gate is None:
+                    drain_fields["state"] = "held"
             # What the last open poll declared, not a fresh ledger read: the
             # spool figure ``stable_host_capacity`` holds up survives the gate
             # closing, and this capacity still comes from that declaration --
@@ -1362,7 +1372,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                       flush=True)
             if args.once:
                 return 0
-            time.sleep(args.poll_s)
+            # The shared queue cannot signal this host; recheck on the normal poll cadence.
+            stop.wait(args.poll_s)
             continue
         if not observer_initialized:
             observer = (None if args.assume_idle and not gpu_capable else
@@ -1652,6 +1663,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 adaptive_cpu=not args.assume_idle, containment=True,
                 cpu_lending_ramp_cap=lending_cap,
                 ready=discovery.snapshot, observed_images=claim_images,
+                unified_memory=(observer.last.unified_memory
+                                if observer is not None and observer.last is not None else None),
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),
                 # Re-checked under the per-key transition lock just before

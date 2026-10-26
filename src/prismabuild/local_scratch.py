@@ -755,7 +755,9 @@ def profile_command(command):
 
 def profile_environment(variables, *, derived=False):
     """Closed recorder environment, never startup/loader or custom PATH hooks."""
-    defaults = {"HOME": "/home/rob", "TMPDIR": "/home/rob/tmp",
+    from . import fleet_roster
+
+    defaults = {"HOME": "/home/rob", "TMPDIR": fleet_roster.LEGACY_ACTION_TMPDIR,
                 "TRITON_CACHE_DIR": "/home/rob/.triton-cache", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
     threads = {"OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"}
     allowed = set(defaults) | threads | {"PATH", "CUDA_VISIBLE_DEVICES", PAIRS_ENV,
@@ -764,7 +766,10 @@ def profile_environment(variables, *, derived=False):
         allowed |= {PROFILE_OWNER_ENV, PROFILE_MARKER_ENV}
     if set(variables) - allowed:
         raise LocalScratchError("scratch recorder environment contains unsupported startup/loader/custom fields")
-    if any(k in variables and variables[k] != v for k, v in defaults.items()):
+    if (variables.get("TMPDIR", defaults["TMPDIR"]) not in
+            {fleet_roster.LEGACY_ACTION_TMPDIR, "/home/rob/pbt17"}
+            or any(k in variables and variables[k] != v for k, v in defaults.items()
+                   if k != "TMPDIR")):
         raise LocalScratchError("scratch recorder requires exact default environment values")
     paths = {PROFILE_PATH} if derived else {PROFILE_PATH, "/usr/local/bin:/usr/bin:/bin"}
     if (("PATH" in variables and variables["PATH"] not in paths)
