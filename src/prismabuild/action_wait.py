@@ -682,6 +682,7 @@ def _read_preemption_successor(q, key: str, ending, generation) -> float | None:
 
 def outcome_poll(
     q, key: str, generation: float | None, *, report_unreadable: bool = False,
+    bounded_archives: bool = False,
 ) -> tuple[endings.ObservedEnding | None, float | None]:
     """Capture this poll's facts and fulfill the pure run query's needed reads.
 
@@ -718,8 +719,11 @@ def outcome_poll(
                          else q.records.withdrawal_decisions(key, generation=answer.generation))
             capture = replace(capture, withdrawals=tuple(decisions))
         elif isinstance(answer, endings.ArchiveInputs):
-            capture = replace(capture, archives=tuple(q.archived_generation_outcomes(
-                key, generation=answer.generation)))
+            archives = (q.archived_generation_summaries(
+                key, generation=answer.generation, max_bytes=4 * 1024 * 1024)
+                if bounded_archives else q.archived_generation_outcomes(
+                    key, generation=answer.generation))
+            capture = replace(capture, archives=tuple(archives))
         elif isinstance(answer, endings.PublicationInputs):
             try:
                 publication = q.publication_ending(key, generation=answer.generation)
