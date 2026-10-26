@@ -236,3 +236,17 @@ def test_complete_tests_without_final_outcomes_cannot_make_an_exit_zero_green(
     assert record["ran"] is False
     assert code == 1
     assert "0/1 shards green" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
+def test_blocker_readiness_survives_output_larger_than_a_pipe(
+        tmp_path, monkeypatch, workers):
+    diagnostic = "blocker diagnostic\n" * 65536
+    monkeypatch.setattr(sys.modules[__name__], "BLOCKER", BLOCKER.replace(
+        "    faulthandler.dump_traceback()",
+        f"    os.write(2, {diagnostic.encode()!r})\n"
+        "    faulthandler.dump_traceback()"))
+    output = blocked_shard(
+        tmp_path, workers=workers, incomplete=False, exit_hook="unconfigure")
+    assert diagnostic in output
+    assert pbtest.pbtest_outcomes.pytest_summary(output.splitlines()).startswith("2 passed")
