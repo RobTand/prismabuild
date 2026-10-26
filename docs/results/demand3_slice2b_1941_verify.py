@@ -68,7 +68,6 @@ def audit(key):
 
 plan = json.loads((ROOT / 'submission.json').read_text())
 report = json.loads((ROOT / 'integrated.json').read_text())
-prior = json.loads((CHECKOUT / 'docs/results/demand3_slice2b_1941_acceptance.json').read_text())
 assert len({r['action_key'] for r in report}) == len(report)
 assert sorted(f for r in report for f in r['files']) == sorted(plan['files'])
 all_nodes = []
@@ -111,10 +110,30 @@ for shard in report:
                finished_unix=terminal['finished_unix'], warnings=sum(int(v) for v in re.findall(r'(\d+) warnings?', shard['summary'])))
     rows.append(row)
 assert len(all_nodes) == len(set(all_nodes))
-source = {p: hashlib.sha256((CHECKOUT / p).read_bytes()).hexdigest() for p in prior['tested_source_blobs']}
-assert source == prior['tested_source_blobs']
 def git(*args):
     return subprocess.check_output(['git', '-C', str(CHECKOUT), *args], text=True).strip()
+
+source = {p: digest((CHECKOUT / p).read_bytes()) for p in plan['source_blobs']}
+assert source == plan['source_blobs']
+review_delta = None
+if 'reviewed_source_blobs' in plan:
+    reviewed = plan['reviewed_source_blobs']
+    assert source.keys() == reviewed.keys()
+    for path, expected in reviewed.items():
+        data = subprocess.check_output(['git', '-C', str(CHECKOUT), 'show', plan['reviewed_head'] + ':' + path])
+        assert digest(data) == expected, path
+    changed = {p for p in source if source[p] != reviewed[p]}
+    if changed:
+        upstream = plan['upstream_delta']
+        assert changed == {upstream['path']}
+        subprocess.run(['git', '-C', str(CHECKOUT), 'merge-base', '--is-ancestor', upstream['commit'], plan['base']], check=True)
+        def edits(patch):
+            return [line for line in patch.splitlines()
+                    if line.startswith(('+', '-')) and not line.startswith(('+++', '---'))]
+        actual = git('diff', plan['reviewed_head'], plan['head'], '--', upstream['path'])
+        expected = git('diff', upstream['commit'] + '^', upstream['commit'], '--', upstream['path'])
+        assert edits(actual) and edits(actual) == edits(expected)
+        review_delta = dict(commit=upstream['commit'], path=upstream['path'], edits_equal=True)
 snapshots = {r['snapshot']['commit'] for r in rows}
 assert len(snapshots) == 1
 snapshot = snapshots.pop()
@@ -141,6 +160,7 @@ result = dict(schema='prismabuild.slice2b_freshness_audit.v1', source_commit=pla
               population=dict(files=len(plan['files']), collected=len(all_nodes), ran=len(all_nodes), passed=len(all_nodes),
                               skipped=0, shards=len(rows), green_shards=len(rows), warnings=sum(r['warnings'] for r in rows)),
               hosts=sorted({r['host'] for r in rows}), source_blobs=source, actions=rows,
+              reviewed_upstream_delta=review_delta,
               population_sha256=hashlib.sha256(json.dumps(sorted(all_nodes), separators=(',', ':')).encode()).hexdigest(),
               audit_script=str(Path(__file__).resolve()))
 (ROOT / 'integrated-audit.json').write_text(json.dumps(result, indent=2) + '\n')
