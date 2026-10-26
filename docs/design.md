@@ -7346,8 +7346,8 @@ recovery, including its fresh broker challenge and container checks (#1838).
 Ordinary lease recovery clears an earlier cleanup refusal before publishing an
 ending only after the public cleanup operation returns complete. An empty
 container list alone grants no completion. No periodic scan of historical
-terminal records is added. Original command status, immutable attempts, logs, generation and
-publication endings remain intact. A crash between supplement and summary is
+terminal records is added. Original command status, immutable attempts, logs,
+generation and publication endings remain intact. A crash between supplement and summary is
 replayable only after another fresh verification. Replay binds the saved claim
 identity and scope intent while allowing cleanup counters and recovered control
 to advance after a partial summary write. `pb_action` exposes pending

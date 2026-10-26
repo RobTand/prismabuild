@@ -278,6 +278,23 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_1838": {
+    "target": "Cleanup recovery remains bound to the original action, publication generation, attempt and scope nonce.",
+    "implemented_source": {
+     "commit": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+     "state": "component-implemented",
+     "scope": "Clear expired-claim refusal after public cleanup succeeds; use existing fresh-proof recovery for historical lease_lost_max_attempts. Preserve registered scratch obligations."
+    },
+    "validation": {
+     "state": "scoped-component-qualified",
+     "acceptance_record": "docs/evidence/issue1838/acceptance.json",
+     "evidence": "docs/evidence/issue1838/fleet-validation.json",
+     "detail": "Two regressions failed before the source change. Nine final xdist shards passed 139 tests, no failures/skips. Removing the scratch guard produced two failures. Terminal records, immutable log digests, source bundles and full-manifest execution CAS receipts verified."
+    },
+    "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
+    "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
+    "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
    }
   },
   {
@@ -765,6 +782,23 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_1838": {
+    "target": "Lease-loss cleanup must preserve its failed ending and retire a refusal only after complete cleanup.",
+    "implemented_source": {
+     "commit": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+     "state": "component-implemented",
+     "scope": "Clear expired-claim refusal after public cleanup succeeds; use existing fresh-proof recovery for historical lease_lost_max_attempts. Preserve registered scratch obligations."
+    },
+    "validation": {
+     "state": "scoped-component-qualified",
+     "acceptance_record": "docs/evidence/issue1838/acceptance.json",
+     "evidence": "docs/evidence/issue1838/fleet-validation.json",
+     "detail": "Two regressions failed before the source change. Nine final xdist shards passed 139 tests, no failures/skips. Removing the scratch guard produced two failures. Terminal records, immutable log digests, source bundles and full-manifest execution CAS receipts verified."
+    },
+    "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
+    "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
+    "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
    }
   },
   {
@@ -977,6 +1011,23 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_1838": {
+    "target": "Unproved cleanup retains capacity. Historical recovery must not fabricate or return already-released tokens.",
+    "implemented_source": {
+     "commit": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+     "state": "component-implemented",
+     "scope": "Clear expired-claim refusal after public cleanup succeeds; use existing fresh-proof recovery for historical lease_lost_max_attempts. Preserve registered scratch obligations."
+    },
+    "validation": {
+     "state": "scoped-component-qualified",
+     "acceptance_record": "docs/evidence/issue1838/acceptance.json",
+     "evidence": "docs/evidence/issue1838/fleet-validation.json",
+     "detail": "Two regressions failed before the source change. Nine final xdist shards passed 139 tests, no failures/skips. Removing the scratch guard produced two failures. Terminal records, immutable log digests, source bundles and full-manifest execution CAS receipts verified."
+    },
+    "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
+    "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
+    "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
    }
   },
   {
@@ -2260,6 +2311,23 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_1838": {
+    "target": "Deterministic lease-loss/reboot recovery preserves attempt identity and immutable history.",
+    "implemented_source": {
+     "commit": "fdcb9cbaddc8a3a7303f945b6cff4a0420ed0172",
+     "state": "component-implemented",
+     "scope": "Clear expired-claim refusal after public cleanup succeeds; use existing fresh-proof recovery for historical lease_lost_max_attempts. Preserve registered scratch obligations."
+    },
+    "validation": {
+     "state": "scoped-component-qualified",
+     "acceptance_record": "docs/evidence/issue1838/acceptance.json",
+     "evidence": "docs/evidence/issue1838/fleet-validation.json",
+     "detail": "Two regressions failed before the source change. Nine final xdist shards passed 139 tests, no failures/skips. Removing the scratch guard produced two failures. Terminal records, immutable log digests, source bundles and full-manifest execution CAS receipts verified."
+    },
+    "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
+    "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
+    "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
    }
   },
   {
