@@ -6899,7 +6899,8 @@ the preferred CPU count from each offer. If the local preferred count minus
 load cannot cover the row's CPU demand, a compatible peer with enough such
 headroom and complete measured CPU/memory/other resource fit gets up to 20
 seconds to claim. The exact publication's monotonic timer persists across
-passes. Missing, malformed, future or stale evidence supplies no preference;
+passes. A request larger than the local preferred tier keeps the existing
+preferred-CPU fallback rule. Missing, malformed, future or stale evidence supplies no preference;
 expiry leaves local admission authoritative. Equal saturated peers do not
 defer to each other. The denial is `deferred_for_cpu_load`, and an ordinary
 CPU-host denial already supplies #1262's existing pass-on evidence.

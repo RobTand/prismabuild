@@ -15653,7 +15653,7 @@ class PoolQueue:
         local_offer = next((offer for offer in live if offer.get("host") == host), {})
         local = _peer_placement.cpu_load(
             local_offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
-        if local is None or local.headroom >= cpus:
+        if local is None or cpus > local.preferred or local.headroom >= cpus:
             return None
         generation = (str(item["action_key"]), repr(item.get("published_unix")))
         if placement.timer_expired(_peer_placement.TimedPreference.CPU_LOAD, generation):
