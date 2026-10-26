@@ -274,11 +274,6 @@ tests/test_metrics_supervisor_retirement.py::test_supervisor_retires_real_metric
 tests/test_metrics_supervisor_retirement.py::test_supervisor_retires_real_metrics_and_owns_its_drift_record wait 3 #2035
 tests/test_missing_produced_input_terminal.py::test_a_busy_transition_lock_does_not_block_the_claim_pass wait 1 #2035
 tests/test_missing_produced_input_terminal.py::test_the_dead_input_hold_is_timed_into_the_pass.slowed.slow_proof sleep 1 #2035
-tests/test_mount_latency.py::test_a_mount_that_does_not_answer_is_recorded_not_raised.never_returns sleep 1 #2035
-tests/test_mount_latency.py::test_a_rate_is_never_reported_without_the_window_it_was_measured_over sleep 1 #2035
-tests/test_mount_latency.py::test_a_remount_restarts_the_counters_and_the_window_says_so sleep 1 #2035
-tests/test_mount_latency.py::test_external_plugin_interval_emits_charts_and_samples communicate 2 #2035
-tests/test_mount_latency.py::test_once_cli_preserves_human_and_json_output run 1 #2035
 tests/test_mount_lock_identity.py::test_exited_holder_does_not_leave_a_named_holder communicate 1 #2035
 tests/test_mount_lock_identity.py::test_exited_holder_does_not_leave_a_named_holder wait 1 #2035
 tests/test_nfs_readahead.py::test_systemd_unit_verifies_with_mount_enablement run 1 #2035
