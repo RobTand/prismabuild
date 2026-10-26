@@ -1,5 +1,7 @@
 # Demand 3 slice 2b source acceptance
 
+Current head validation is the [serialization ownership repair](demand3_slice2b_1941_batch_repair.md). The 664-test audit below is historical and remains bound to its tested source.
+
 PR #2299 implements #1941 and existing children #2102 and #2103. This record covers source validation for independent review. Existing worker loops retain one-shot publication. Later slices install the owned publisher session and consume semantic input changes. This change is not deployed.
 
 ## Freshness validation

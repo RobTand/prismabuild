@@ -7,7 +7,7 @@
   ],
   "source_commit": "d7798f6a0d75bc01ee0e9553f9d4afa82d376176",
   "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
-  "status": "freshness validated; local evidence awaiting Chief of Staff publication relay and independent freshness review",
+  "status": "historical 664-test source audit; current serialization repair acceptance is demand3_slice2b_1941_batch_repair_acceptance.json",
   "deployed": false,
   "tests": {
     "files": 27,
@@ -1486,5 +1486,6 @@
     "record_commit": "328bf33945d",
     "run_dir": "/mnt/shared/paperclip-runs/PRI-64/refresh",
     "note": "Historical post-incident audit retained in the previous committed record; superseded by the current run."
-  }
+  },
+  "superseded_for_head_validation_by": "docs/results/demand3_slice2b_1941_batch_repair_acceptance.json"
 }
