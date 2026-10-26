@@ -5979,8 +5979,26 @@ Per member host, inside the ordinary claim pass:
    expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
    once. The writer withdraws the other members through the ordinary withdrawal
    path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
-   orphan-passes schedule, withdraws leftover READY members and prunes the
-   records of a gang whose every member has an exact ending.
+   orphan-passes schedule, retries withdrawal of both READY and CLAIMED
+   members until each exact publication ends. Immediate teardown and sweep
+   cancellation recheck the member's group and publication under its transition
+   lock. A covered claim is never retargeted to a queued successor. Running
+   members retain their tokens until the ordinary worker containment and ending
+   path completes. Pruning requires positive terminal evidence for every exact
+   member publication; another generation's ending is not sufficient.
+
+   A READY gang member whose group record was never filed is withdrawn after
+   `GANG_REGISTRATION_GRACE_S` (600 seconds). The sweep rechecks the same row,
+   its age and the absent group under the member transition lock. A filed group,
+   unreadable record, busy lock or successor publication prevents this orphan
+   cancellation. Each pass considers at most `ORPHAN_PASSES_SWEEP_LIMIT` expired
+   unregistered members. This registration grace never expires a filed gang's
+   pre-claim fence.
+
+   Malformed group, election and teardown records refuse only their own gang.
+   Both full and refreshed reservation censuses discard that gang's whole
+   election projection while continuing to honor healthy gangs. Global directory
+   failures and census record-cap exhaustion still refuse admission.
 
 **Ranking between gangs.** Gangs are totally ordered by (higher priority,
 earliest member publication, group). Before electing or readying, a member is
@@ -5988,7 +6006,15 @@ deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranke
 live gang holds an election on any host its gang uses. Two gangs sharing hosts
 therefore never each commit one member and then wait on each other until both
 fail. Residual: a better-ranked gang that first appears after a lower gang has
-already committed one member costs that lower gang its run, bounded by `skew_s`.
+already committed one member, or two hosts making simultaneous first elections
+from different views, can cost a gang its run, bounded by `skew_s`.
+
+The recorded policy rejects time-only fence expiry. A slow but live gang can
+still retain its pre-claim fences indefinitely. The dual-evidence dead-partner
+bounded-loan exception and submitter opt-in queue-wait cancellation remain owed
+in [#2343](https://github.com/RobTand/prismabuild/issues/2343), split from #1521.
+Neither that policy target nor these cleanup changes establishes deployment,
+live GB10 release latency, or general starvation freedom.
 
 **Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
 sweep. It also tears down any gang with a member whose exact-generation ending is
