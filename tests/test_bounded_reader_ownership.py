@@ -193,21 +193,32 @@ def test_unprovable_spawn_identity_cannot_run_callback_or_read(tmp_path, monkeyp
             os.waitpid(child["pid"], 0)
 
 
-def test_callback_cannot_extend_deadline_or_release_after_expiry(tmp_path):
+def test_callback_cannot_extend_deadline_or_release_after_expiry(tmp_path, monkeypatch):
     marker = tmp_path / "ownership.json"
     fifo = tmp_path / "read.fifo"
     os.mkfifo(fifo)
     seen = []
+    released = []
+    deadline = reader.Deadline(60)
+    write_payload = reader._write_reader_payload
+
+    def observe_release(descriptor, payload):
+        if payload == b"R":
+            released.append(payload)
+        return write_payload(descriptor, payload)
+
+    monkeypatch.setattr(reader, "_write_reader_payload", observe_release)
 
     def expire(ownership):
         seen.append(ownership)
         _persist(marker, ownership)
-        time.sleep(2.1)
+        monkeypatch.setattr(deadline, "remaining", lambda: 0.0)
 
     result = reader.bounded(SECTION, lambda: _read_fifo(fifo),
-                            deadline=reader.Deadline(2), abandoned=[],
+                            deadline=deadline, abandoned=[],
                             on_spawn=expire, pool_identity=_scope(tmp_path))
     assert result["status"] == "timed_out" and result["started"] is True
+    assert released == []
     assert marker.exists()
     _no_fifo_reader(fifo)
     _wait_settled(seen[0])
