@@ -86,7 +86,8 @@ def summarize_trace(lines, roles, start, end):
         pid, _, _, call, result, body = completed
         if call in ('clone', 'clone3', 'fork', 'vfork') and result > 0:
             parents[str(result)] = pid
-        if not start <= completed.entered_at < end:
+        if not (start <= completed.entered_at < end
+                and start <= completed.completed_at < end):
             continue
         path = shared_path(body)
         if path is None:
