@@ -165,7 +165,7 @@ def test_installer_recap_and_reinstall_keep_ancillary_limits(tmp_path):
         "id": "print('0')",
         "stat": "import sys; print('0' if '%u' in sys.argv else '755')",
         "chown": "pass",
-        "systemctl": "import sys; sys.exit(3 if 'is-active' in sys.argv else 0)",
+        "systemctl": "import sys; print('inactive') if 'show' in sys.argv else None; sys.exit(3 if 'is-active' in sys.argv else 0)",
         "install": "import os,sys\na=[]; i=1\nwhile i<len(sys.argv):\n if sys.argv[i] in ('-o','-g'): i+=2\n else: a.append(sys.argv[i]); i+=1\nos.execv('/usr/bin/install',['install',*a])",
     }
     for name, program in programs.items():

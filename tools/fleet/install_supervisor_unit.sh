@@ -101,9 +101,13 @@ UNIT
         exit 0
     fi
     require_stopped_system_services() {
-        local service
+        local service state
         for service in supervisor resource-broker client-upgrade movement-publish; do
-            if systemctl is-active --quiet "prismabuild-$service.service"; then
+            if ! state=$(systemctl show --property=ActiveState --value "prismabuild-$service.service"); then
+                echo "cannot establish stopped state for prismabuild-$service.service before installing the cap" >&2
+                exit 1
+            fi
+            if [ "$state" != inactive ]; then
                 echo "drain this host and stop prismabuild-$service.service before installing the cap" >&2
                 exit 1
             fi
