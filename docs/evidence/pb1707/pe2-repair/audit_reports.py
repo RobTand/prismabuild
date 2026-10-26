@@ -87,7 +87,22 @@ def main():
         assert runtime['executable_path_matches_running']
         assert runtime['native_threads'] == {'OMP_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1'}
         assert len(runtime['affinity']) == len(set(runtime['affinity'])) == 2
-        assert set(runtime['selected_files']) == set(report['files'])
+        expected_files = set(report['files'])
+        assert set(runtime['files']) == expected_files
+        assert set(outcomes['file_selection']['files']) == expected_files
+        assert {node.split('::')[0] for node in population} == expected_files
+        if not runtime['selected_files']:
+            command = request['params']['command']
+            assert '-n' in command and int(command[command.index('-n') + 1]) > 1
+            assert runtime['selected_source_sha256'] == {}
+        else:
+            assert set(runtime['selected_files']) == expected_files
+        for path in expected_files:
+            source = subprocess.check_output(['git', '-C', str(snapshots[commit]), 'show', commit + ':' + path])
+            parent_source = subprocess.check_output(['git', '-C', str(snapshots[commit]), 'show', args.head + ':' + path])
+            assert source == parent_source
+        conftest = subprocess.check_output(['git', '-C', str(snapshots[commit]), 'show', commit + ':tests/conftest.py'])
+        assert sha(conftest) == runtime['conftest_sha256']
         for path, expected in runtime['selected_source_sha256'].items():
             source = subprocess.check_output(['git', '-C', str(snapshots[commit]), 'show', commit + ':' + path])
             assert sha(source) == expected
