@@ -334,6 +334,48 @@ def test_a_partial_that_appears_mid_range_is_seen_by_the_next_name(
         "the blocked name's bytes are never replaced")
 
 
+def test_a_mid_range_partial_with_an_aliased_creation_tick_is_seen_by_the_next_name(
+        fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    publisher, destinations = _adoption_world(
+        fleet, 3, monkeypatch, trust=ObservedTrust())
+    directory = destinations[0].parent
+    previous = directory.stat()
+    real_lstat = os.lstat
+    real_write = Path.write_bytes
+
+    class SameTick:
+        def __init__(self, info):
+            self.info = info
+            self.st_ctime_ns = previous.st_ctime_ns
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        return SameTick(info) if os.fspath(path) == str(directory) else info
+
+    def write(path, data):
+        written = real_write(path, data)
+        if path.parent == directory and path.name.endswith(".partial"):
+            os.utime(directory, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        return written
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(Path, "write_bytes", write)
+    entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
+    assert publisher.try_adopt(entry, destinations[0]) is not None
+
+    in_flight = destinations[1]
+    _write_range_partial(in_flight, base._key())
+    assert publisher.try_adopt(entry, in_flight) is None, (
+        "a copy in flight that appeared after the census must still be "
+        "seen by the next name of the same range")
+    assert publisher.try_adopt(entry, destinations[2]) is not None
+    assert in_flight.read_bytes() == NEW, (
+        "the blocked name's bytes are never replaced")
+
+
 def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """A claim sealed after the census moves ``claimed/``; the next name
