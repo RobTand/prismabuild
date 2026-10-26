@@ -1,0 +1,314 @@
+[
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py",
+      "tests/test_measurement_reservation_backfill_1419.py",
+      "tests/test_measurement_reservation_undeclared_incumbent_1419.py",
+      "tests/test_measurement_drains_gpu_backfill.py",
+      "tests/test_measurement_sampler_unknown.py",
+      "tests/test_measurement_foreign_load_starvation.py",
+      "tests/test_measurement_foreign_ambient_withholds.py",
+      "tests/test_measurement_clear_ambient_1422.py",
+      "tests/test_a_measurement_admits_its_own_spool_exports.py",
+      "tests/test_census_reuse_transitions_1571.py",
+      "tests/test_census_reused_once_per_pass_1571.py",
+      "tests/test_census_reuse_reader_custody_1571.py",
+      "tests/test_census_refusal_is_once_per_pass_1571.py"
+    ],
+    "tags": [
+      "x86"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "1"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "x86"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "2"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "x86"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "3"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-n",
+      "2",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "x86"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "4"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-n",
+      "2",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "x86"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "5"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py",
+      "tests/test_measurement_reservation_backfill_1419.py",
+      "tests/test_measurement_reservation_undeclared_incumbent_1419.py",
+      "tests/test_measurement_drains_gpu_backfill.py",
+      "tests/test_measurement_sampler_unknown.py",
+      "tests/test_measurement_foreign_load_starvation.py",
+      "tests/test_measurement_foreign_ambient_withholds.py",
+      "tests/test_measurement_clear_ambient_1422.py",
+      "tests/test_a_measurement_admits_its_own_spool_exports.py",
+      "tests/test_census_reuse_transitions_1571.py",
+      "tests/test_census_reused_once_per_pass_1571.py",
+      "tests/test_census_reuse_reader_custody_1571.py",
+      "tests/test_census_refusal_is_once_per_pass_1571.py"
+    ],
+    "tags": [
+      "gb10"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "1"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "gb10"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "2"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "gb10"
+    ],
+    "demand": {
+      "cpu": 1,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "3"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-n",
+      "2",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "gb10"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "4"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  },
+  {
+    "cwd": "/home/rob/paperclip-worktrees/prismabuild/PRI-26-delivery",
+    "argv": [
+      "/home/rob/venvs/pb-cpu/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-n",
+      "2",
+      "tests/test_measurement_reservation_foreign_load_2267.py",
+      "tests/test_measurement_reservation_census_1419.py"
+    ],
+    "tags": [
+      "gb10"
+    ],
+    "demand": {
+      "cpu": 2,
+      "mem_gb": 4
+    },
+    "env": {
+      "OMP_NUM_THREADS": "1",
+      "MKL_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "TMPDIR": "/tmp",
+      "PYTEST_ADDOPTS": "",
+      "PRI26_VALIDATION_REPEAT": "5"
+    },
+    "priority": -10,
+    "timeout_s": 300
+  }
+]
