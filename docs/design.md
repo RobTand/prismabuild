@@ -7090,6 +7090,54 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
+A broker refusal before scope creation leaves an exact cleanup obligation
+(#2270). `cleanup_obligation` binds action key, publication generation, attempt,
+claimant, claiming host and scope nonce. The pending claim keeps its saved
+command outcome and capacity until cleanup is proved. A connection refusal
+cannot establish whether a delayed create reached the broker, so releasing
+capacity at that boundary would permit overlapping unproved work. The existing
+owning-host finish recovery retries the obligation after connectivity returns.
+
+Companion records retain their separate roles during verification. A withdrawal
+is a generation-scoped cancellation decision; the worker or reaper still owns
+its claim, lease and reservation. A valid distinct READY successor may wait
+behind that claim. Cleanup verifies only the saved owner's exact scope and
+leaves the successor and cancellation decisions intact. If a newer cancellation
+occupies the visible marker, ordinary conclusion archives the older cancelled
+attempt under its own generation. Same-generation READY, DONE, duplicate
+physical owners, malformed companions and contradictory claim or lease identity
+refuse recovery before cleanup effects or capacity release.
+READY coexistence compares generation identity without timestamp ordering,
+preserving public resubmission after a clock rollback. READY shape and demand
+validation share one validator with chronological publication-supersession
+checks; those other callers retain their existing ordering rule.
+
+`pbwait --reconcile-cleanup --generation <digest> --attempt <number> <key>`
+provides explicit recovery on the claiming host, including historical failed
+attempts whose tokens were already released. Its public authority accepts only
+identity. It derives claim, immutable attempt/logs, intent and broker address
+from durable state. A fresh random challenge binds the broker response to this
+verification. The broker fences an absent nonce against delayed creation before
+attesting absence, or confirms that its exact recorded scope is released and
+absent. An existing kernel scope, unknown authority, conflicting identity,
+foreign host or stale reply refuses recovery. Container cleanup must also
+succeed. Verification mints a queue-bound single-use capability; the final writer
+checks that capability and rereads the same durable owner before publication.
+Plain, forged, copied, subclassed and serialized values grant no authority.
+
+The immutable `<number>.cleanup-recovery.json` supplement preserves the original
+owner record, its canonical digest and verified scope/container evidence. The
+mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
+obligation. Original command status, immutable attempts, logs, generation and
+publication endings remain intact. A crash between supplement and summary is
+replayable only after another fresh verification. Replay binds the saved claim
+identity and scope intent while allowing cleanup counters and recovered control
+to advance after a partial summary write. `pb_action` exposes pending
+obligations independently of the command outcome. This operation neither
+creates success receipts nor changes an already released reservation. This is
+source support; deployment and reconciliation of the two live actions require
+the lead's separate runtime publication and operator execution.
+
 Pool receipt reconciliation is an explicit evidence operation, exposed by
 `pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
 It requires the current failed submission generation and its final immutable
