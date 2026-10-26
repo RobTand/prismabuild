@@ -13,10 +13,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(params=["source", "flat", "nested"])
-def physical_entry(request, tmp_path):
-    if request.param == "source":
-        return ROOT, ROOT / "tools" / "fleet"
+@pytest.fixture
+def published_generation(tmp_path):
     # Copy the real publisher members, without publishing or inventing a receipt.
     # Keep both physical spellings, just as a generation does.
     import publish_runtime
@@ -28,6 +26,14 @@ def physical_entry(request, tmp_path):
         destination = generation / member
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(publish_runtime._source_for(member), destination)
+    return generation
+
+
+@pytest.fixture(params=["source", "flat", "nested"])
+def physical_entry(request):
+    if request.param == "source":
+        return ROOT, ROOT / "tools" / "fleet"
+    generation = request.getfixturevalue("published_generation")
     directory = generation / "tools"
     if request.param == "nested":
         directory /= "fleet"
