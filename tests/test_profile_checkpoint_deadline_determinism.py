@@ -11,12 +11,12 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ('action_sleep', 'times_out'),
-    [(0.30, True), (0.02, False)],
+    ('end_offset', 'times_out'),
+    [(0.15, True), (-0.13, False)],
     ids=('action-ended-after-deadline', 'action-ended-before-deadline'),
 )
 def test_checkpoint_deadline_regression_is_independent_of_live_scheduling(
-    tmp_path, monkeypatch, action_sleep, times_out,
+    tmp_path, monkeypatch, end_offset, times_out,
 ):
     from prismabuild import core as pb
     from test_profile_window_deadline import (
@@ -60,7 +60,7 @@ def test_checkpoint_deadline_regression_is_independent_of_live_scheduling(
     monkeypatch.setattr(pb._ProfileSession, 'ingest', observe_ingest)
     monkeypatch.setattr(pb._ProfileSession, 'action_returncode', observe_end_time)
     regression(
-        tmp_path, monkeypatch, end_offset=action_sleep, times_out=times_out,
+        tmp_path, monkeypatch, end_offset=end_offset, times_out=times_out,
     )
 
     assert comparisons, 'retain the production recorded-end-time comparison'
