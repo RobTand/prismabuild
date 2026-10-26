@@ -114,6 +114,16 @@ def _kernel_holds_the_reader_until(monkeypatch, *, release_at: float | None,
     monkeypatch.setattr(submit_core._bounded_reader, "_reap_within", reap_within)
 
 
+class _WaitClock:
+    now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -127,17 +137,20 @@ def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
     queue = Queue(tmp_path / "queue")
     record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
+    read_timeout = submit_core.action_wait.OUTCOME_READ_TIMEOUT_S
 
     def land():
         # The mount recovers: the FIFO that blocked every read is replaced by
         # the action's real ending, as the worker had written it all along.
         record.unlink()
         record.write_text(json.dumps(_ending()), encoding="utf-8")
+        os.waitpid(readers.forked[0], 0)
+        monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", read_timeout)
 
     monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(submit_core.action_wait, "time", _WaitClock())
     readers = Readers(monkeypatch)
-    _kernel_holds_the_reader_until(
-        monkeypatch, release_at=time.monotonic() + 2.0, on_release=land)
+    _hold_one_reader(monkeypatch, readers, index=0, calls=4, on_release=land)
     try:
         assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         out, err = capsys.readouterr()
@@ -160,16 +173,19 @@ def test_a_long_wait_on_a_retained_reader_is_not_silent(
     queue = Queue(tmp_path / "queue")
     record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
+    read_timeout = submit_core.action_wait.OUTCOME_READ_TIMEOUT_S
 
     def land():
         record.unlink()
         record.write_text(json.dumps(_ending()), encoding="utf-8")
+        os.waitpid(readers.forked[0], 0)
+        monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", read_timeout)
 
     monkeypatch.setattr(submit_core.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(submit_core.action_wait, "UNAVAILABLE_NOTICE_INTERVAL_S", 0.3)
+    monkeypatch.setattr(submit_core.action_wait, "time", _WaitClock())
     readers = Readers(monkeypatch)
-    _kernel_holds_the_reader_until(
-        monkeypatch, release_at=time.monotonic() + 1.5, on_release=land)
+    _hold_one_reader(monkeypatch, readers, index=0, calls=4, on_release=land)
     try:
         assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         err = capsys.readouterr().err
