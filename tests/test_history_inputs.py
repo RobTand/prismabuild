@@ -799,12 +799,13 @@ def history_read_sites(source, root=None, path=None):
 
 def history_tree_reads(root):
     found = {}
+    modules = {}
     for path in sorted((root / 'tests').rglob('*.py')):
         relative = path.relative_to(root / 'tests').as_posix()
         if relative in HISTORY_TOOLS:
             continue
         source = path.read_bytes()
-        sites = history_read_sites(source, root, path)
+        sites = _HistoryGuard(source, root, path, modules).sites()
         if sites:
             found[str(path.relative_to(root))] = sites
     return found
