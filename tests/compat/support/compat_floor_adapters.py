@@ -19,19 +19,42 @@ def prepare(store, load):
     # These are external sensor inputs, not evidence about the fleet's disk
     # or process identity. All locks, counters, tokens and file I/O are real.
     ff.identify = lambda path: {"key": KEY, "path": str(root), "fstype": "btrfs",
-                               "size_bytes": 64 * ff.GIB, "free_bytes": 60 * ff.GIB}
+                               "source": "/dev/compat", "device": 7, "mount_id": 7,
+                               "size_bytes": 64 * ff.GIB, "free_bytes": 60 * ff.GIB,
+                               "size_inodes": 1000, "free_inodes": 900,
+                               "floor_inodes": 50, "inode_refusal": None}
     ff._sample = lambda found: {"size_bytes": 64 * ff.GIB, "free_bytes": 60 * ff.GIB,
                                "size_inodes": 1000, "free_inodes": 900, "floor_inodes": 50, "inode_refusal": None}
     ff._machine_id = lambda: "f" * 32
     ff._floor_boot_id = lambda: "7" * 32
+    ff._owner_incarnation = lambda: {"machine_id": "f" * 32, "boot_id": "7" * 32,
+                                      "mount_namespace": 7}
     ff._host_addresses = lambda: ["192.0.2.1"]
     ff._process_start = lambda pid: "7"
     uuid.uuid4 = lambda: SimpleNamespace(hex="7" * 32)
     os.environ[ff.MODE_ENV] = "enforce"
     member = ("tier-reservations", "compat-stage", "stage_gib")
-    binding = ff.register(queue.root, root, members=[member], filesystem_gib=4,
-                          filesystem_ledger="compat-fs", now=100.0)["binding"]
+    binding = register(ff, pool, queue, root, members=[member], filesystem_gib=4,
+                       filesystem_ledger="compat-fs")
     return ff, pool, queue, root, member, binding
+
+
+def register(ff, pool, queue, root, *, now=100.0, **kwargs):
+    binding = ff.register(queue.root, root, now=now, **kwargs)["binding"]
+    if hasattr(ff, "coverage_identity"):
+        for member in binding["members"]:
+            ledger = pool.ResourceLedger(queue.root / member["ledger_root"], host=member["ledger"])
+            ledger.ensure_capacity({member["kind"]: 4})
+        coverage = dict(version="compat-v1", mapping_version="compat-v1",
+            population_version="compat-v1", bounds_version="compat-v1",
+            configuration_version="compat-v1", writer_fence="isolated fixture",
+            authority="isolated compatibility fixture", evidence=["synthetic sensor inputs"],
+            scope_sha256=ff.coverage_identity(binding), valid_from_unix=0, valid_until_unix=1000,
+            bytes_per_token={ff.member_id(m["ledger_root"], m["ledger"], m["kind"]):
+                             ff.BYTE_KINDS[m["kind"]] for m in binding["members"]},
+            additional_bytes=0)
+        binding = ff.register(queue.root, root, coverage=coverage, now=now)["binding"]
+    return binding
 
 
 def operate(request, store, load):
@@ -62,10 +85,8 @@ def operate(request, store, load):
         path = directory / "granted.json"
         amount = 2 if variant == "two" else 1
         if write:
-            gate = ff.LedgerGate(queue.root, "enforce", {}, {KEY: {"binding": binding, "bytes": amount * ff.GIB}}, [])
-            with gate.admitted() as admitted:
-                assert admitted
-                gate.granted()
+            ledger = pool.ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="compat-fs")
+            assert ledger.acquire("compat-grant", {"filesystem_gib": amount})
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()
@@ -76,13 +97,14 @@ def operate(request, store, load):
     else:
         path = (ff.member_path(queue.root, *member) if family == "floor-member" else
                 directory / ("binding.json" if family == "floor-binding" else "sample.json"))
+        if variant == "grown":
+            binding = register(ff, pool, queue, root,
+                               members=[("reservations", HOST, "spool_gb")], now=101.0)
+        if variant == "charged":
+            queue.tier("compat-stage").mint({"stage_gib": 1})
+            assert queue.tier("compat-stage").take("compat-holder", {"stage_gib": 1})
+            ff.refresh_binding(queue.root, binding, now=100.0)
         if write:
-            if variant == "grown":
-                ff.register(queue.root, root, members=[("reservations", HOST, "spool_gb")], now=101.0)
-            if variant == "charged":
-                queue.tier("compat-stage").mint({"stage_gib": 1})
-                assert queue.tier("compat-stage").take("compat-holder", {"stage_gib": 1})
-                ff.refresh_binding(queue.root, binding, now=100.0)
             raw = path.read_bytes()
         else:
             path.write_bytes(base64.b64decode(request["raw"]))
@@ -95,8 +117,18 @@ def operate(request, store, load):
                 table = ff.member_bindings(queue.root, max_age_s=0)
                 binding = table[ff.member_id(*member)]
             result = ff.published_verdict(queue.root, binding, now=100.0)
-            assert result["allowed"] is True, result
-            if family == "floor-sample":
-                assert result["charge_bytes"] == (ff.GIB if variant == "charged" else 0)
+            body = json.loads(base64.b64decode(request["raw"]))
+            if (hasattr(ff, "coverage_identity") and family == "floor-binding"
+                    and body.get("status") == "active" and "mount_namespace" not in body):
+                assert result == ff.floor_refusal(KEY, "mapping_unknown",
+                    detail="local owner incarnation changed"), result
+            elif (hasattr(ff, "coverage_identity") and family == "floor-sample"
+                    and "binding_sha256" not in body):
+                assert result == ff.floor_refusal(KEY, "population_unknown",
+                    detail="sample coverage changed"), result
+            else:
+                assert result["allowed"] is True, result
+                if family == "floor-sample":
+                    assert result["charge_bytes"] == (ff.GIB if variant == "charged" else 0)
             return result
     return {"raw": base64.b64encode(raw).decode()}
