@@ -61,15 +61,6 @@ def _is_hex(text: object, length: int) -> bool:
             and all(c in "0123456789abcdef" for c in text))
 
 
-def _finite_number(value: object) -> bool:
-    if type(value) not in (int, float):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
 def declaration(value: object) -> dict | None:
     """Validate a ``params.gang`` / row ``gang`` declaration, or ``None``."""
     if value is None:
@@ -211,9 +202,9 @@ def read_group(queue, group: str) -> dict | None:
             != list(range(len(members)))
             or any(not _is_hex(m.get("action_key"), 64) for m in members)
             or any(type(m.get("index")) is not int
-                   or not _finite_number(m.get("published_unix"))
+                   or not core.is_finite_number(m.get("published_unix"))
                    or type(m.get("priority")) is not int for m in members)
-            or not _finite_number(record.get("skew_s"))
+            or not core.is_finite_number(record.get("skew_s"))
             or not 0 < record["skew_s"] <= 3600
             or type(record.get("priority")) is not int):
         raise GangContractError(f"malformed gang group record {group}")
@@ -235,7 +226,7 @@ def teardown(queue, group: str) -> dict | None:
             record.get("schema") != TEARDOWN_SCHEMA or record.get("group") != group
             or not isinstance(record.get("reason"), str)
             or not isinstance(record.get("by"), str)
-            or not _finite_number(record.get("torn_down_unix"))):
+            or not core.is_finite_number(record.get("torn_down_unix"))):
         raise GangContractError(f"malformed gang teardown {group}")
     return record
 
@@ -250,7 +241,7 @@ def elections(queue, group: str, size: int) -> dict[int, dict]:
                 or type(record.get("index")) is not int or record["index"] != index
                 or not isinstance(record.get("host"), str) or not record["host"]
                 or not _is_hex(record.get("action_key"), 64)
-                or not _finite_number(record.get("epoch_unix"))
+                or not core.is_finite_number(record.get("epoch_unix"))
                 or type(record.get("priority")) is not int):
             raise GangContractError(f"malformed gang election {group}/{index}")
         found[index] = record
@@ -493,7 +484,7 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
             row = pool.record_store.value_or_raise(observation.result)
             name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
-                    and _finite_number(row.get("published_unix"))
+                    and core.is_finite_number(row.get("published_unix"))
                     and row["published_unix"] == other["published_unix"]):
                 state = name
                 break
