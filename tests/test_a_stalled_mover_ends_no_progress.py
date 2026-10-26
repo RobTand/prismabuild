@@ -29,7 +29,6 @@ import os
 from pathlib import Path
 import socket
 import sys
-import tempfile
 import textwrap
 import time
 import types
@@ -594,75 +593,66 @@ def _brief(outcome: dict) -> str:
 
 
 @contextmanager
-def _registered_resume(source: str, monkeypatch):
+def _registered_resume(source: str, monkeypatch, tmp_path: Path):
     """Force grant-before-registration, then observe the real self-holder."""
 
-    with tempfile.TemporaryDirectory(prefix="pb-mover-") as scratch, socket.socket(
-            socket.AF_UNIX) as listener:
-        address = str(Path(scratch) / "holder")
-        listener.bind(address)
-        listener.listen(1)
-        listener.settimeout(10.0)
-        observed = []
-        peers = []
-        registration_window = textwrap.dedent(f'''
-            import socket
-            startup = socket.socket(socket.AF_UNIX)
-            startup.settimeout(10.0)
-            startup.connect({address!r})
-            real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
-            def registered_holder_writer(self, *args, **kwargs):
-                pool.PoolQueue.write_stage_ownership_holder = real_holder_writer
-                startup.sendall(b"L")
-                assert startup.recv(1) == b"R"
-                record = real_holder_writer(self, *args, **kwargs)
-                startup.sendall(b"H")
-                assert startup.recv(1) == b"A"
-                return record
-            pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
-            real_reporter_start = stage_move._ProgressReporter.start
-            def registered_copy(self):
-                real_reporter_start(self)
-                assert self.reported_phase == "copy"
-                startup.sendall(b"C")
-                startup.close()
-            stage_move._ProgressReporter.start = registered_copy
-        ''')
-        source = source.replace("code = stage_move.main(",
-                                registration_window + "code = stage_move.main(", 1)
+    events_path = tmp_path / "resume-events"
+    commands_path = tmp_path / "resume-commands"
+    os.mkfifo(events_path)
+    os.mkfifo(commands_path)
+    observed = []
+    registration_window = textwrap.dedent(f'''
+        startup_events = open({str(events_path)!r}, "wb", buffering=0)
+        startup_commands = open({str(commands_path)!r}, "rb", buffering=0)
+        real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
+        def registered_holder_writer(self, *args, **kwargs):
+            pool.PoolQueue.write_stage_ownership_holder = real_holder_writer
+            startup_events.write(b"L")
+            assert startup_commands.read(1) == b"R"
+            record = real_holder_writer(self, *args, **kwargs)
+            startup_events.write(b"H")
+            assert startup_commands.read(1) == b"A"
+            return record
+        pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
+        real_reporter_start = stage_move._ProgressReporter.start
+        def registered_copy(self):
+            real_reporter_start(self)
+            assert self.reported_phase == "copy"
+            startup_events.write(b"C")
+            startup_events.close()
+            startup_commands.close()
+        stage_move._ProgressReporter.start = registered_copy
+    ''')
+    source = source.replace("code = stage_move.main(",
+                            registration_window + "code = stage_move.main(", 1)
 
-        def before(queue):
-            read_holder = queue.stage_ownership_holder
+    def before(queue):
+        read_holder = queue.stage_ownership_holder
 
-            def holder_at_registration(stage_root):
-                if observed:
-                    return read_holder(stage_root)
-                peer, _ = listener.accept()
-                peers.append(peer)
-                peer.settimeout(10.0)
-                assert peer.recv(1) == b"L"
+        def holder_at_registration(stage_root):
+            if observed:
+                return read_holder(stage_root)
+            with (events_path.open("rb", buffering=0) as events,
+                  commands_path.open("wb", buffering=0) as commands):
+                assert events.read(1) == b"L"
                 unknown = read_holder(stage_root)
                 assert unknown["recorded"] is False
-                peer.sendall(b"R")
-                assert peer.recv(1) == b"H"
+                commands.write(b"R")
+                assert events.read(1) == b"H"
                 holder = read_holder(stage_root)
                 assert holder["recorded"] is True and holder["live"] is True
                 assert queue.records.claimed_names().blocks(str(holder["action_key"]))
                 assert holder["host"] == socket.gethostname()
                 assert holder["role"] == "mover-resume"
                 observed.extend((unknown, holder))
-                peer.sendall(b"A")
-                assert peer.recv(1) == b"C"
+                commands.write(b"A")
+                assert events.read(1) == b"C"
                 return holder
 
-            monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
+        monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
 
-        try:
-            yield source, before
-            assert len(observed) == 2, "resume ownership was never observed"
-        finally:
-            for peer in peers:
-                peer.close()
+    yield source, before
+    assert len(observed) == 2, "resume ownership was never observed"
 
 
 def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
@@ -684,7 +674,8 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
                        manifest=tmp_path / "manifest.json")
 
     with _registered_resume(
-            _mover_source(argv, hold_on=2, hold=hold), monkeypatch) as (source, before):
+            _mover_source(argv, hold_on=2, hold=hold), monkeypatch, tmp_path
+            ) as (source, before):
         outcome, receipt = _run_mover(
             base, source, _policy(grace),
             contention=_contention(base), ceiling=60.0, before=before)
@@ -721,7 +712,7 @@ def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
     argv = _mover_argv(base, digest=digest, total=total, readers=3,
                        manifest=tmp_path / "manifest.json")
     with _registered_resume(
-            _mover_source(argv, read="share", rate=MB / 10.0), monkeypatch
+            _mover_source(argv, read="share", rate=MB / 10.0), monkeypatch, tmp_path
             ) as (source, before):
         outcome, receipt = _run_mover(
             base, source, _policy(grace),
