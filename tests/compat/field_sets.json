@@ -4793,6 +4793,22 @@
     "binding": "keys"
   },
   {
+    "path": "tools/fleet/stage_ownership.py",
+    "owner": "collect_stage_ownership",
+    "fields": [
+      "fragment_declared_bytes",
+      "observed_allocated_bytes",
+      "observed_apparent_bytes",
+      "owned_bytes",
+      "source_mark_bytes",
+      "source_mark_fragment_overlap_bytes",
+      "source_only_bytes",
+      "unattributed_bytes",
+      "unknown_bytes"
+    ],
+    "binding": "keys"
+  },
+  {
     "path": "tools/fleet/stage_reclaim.py",
     "owner": "_metadata_matches",
     "unresolved": "('mtime_ns', 'atime_ns', 'mode') if check_atime else ('mtime_ns', 'mode')",

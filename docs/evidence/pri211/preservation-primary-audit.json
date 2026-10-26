@@ -1,0 +1,57 @@
+[
+  {
+    "action_key": "b4180d05c5e9dc6bec15701599d124322f64833cd6fa6efa988cec3cbe156269",
+    "cleanup_complete": true,
+    "completion": null,
+    "inputs": [
+      {
+        "bytes": 46419172,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "a1f3ea5b8c5d3cbd9426d4928111a0bb30bfa43e0d0bdaf35914d777a4c29956"
+      }
+    ],
+    "logs": {
+      "stderr": {
+        "bytes": 46,
+        "path": "attempts/b4180d05c5e9dc6bec15701599d124322f64833cd6fa6efa988cec3cbe156269/e6c6dfc984816225e627b63243bcf8b02cd76343fd115c9552ef13d053397f97/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+        "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+      },
+      "stdout": {
+        "bytes": 3338,
+        "path": "attempts/b4180d05c5e9dc6bec15701599d124322f64833cd6fa6efa988cec3cbe156269/e6c6dfc984816225e627b63243bcf8b02cd76343fd115c9552ef13d053397f97/00000001.stdout.2595eb81605060c29a1791a77d3fe909ef798ae4b83aed24fdcc95ad9ca40cfb.log",
+        "sha256": "2595eb81605060c29a1791a77d3fe909ef798ae4b83aed24fdcc95ad9ca40cfb"
+      }
+    },
+    "native_completion": null,
+    "native_counts": [],
+    "outcomes": null,
+    "receipt_sha256": "8ffa283b5fc48e26f2983ea015a41deb61b1ab46d48d6d04af5bc5e24c2d533e",
+    "request_sha256": "bd4638b7ab1d72727b951f17e269548a8b9030a7a80e1611e88b8cde48c60512",
+    "returncode": 0,
+    "runtime_sha256": "fdda8d0fed727244b9b64b6141e1b63086c7f356dca45b7fbad96cc93960811a",
+    "source_bundle_heads_verified": true,
+    "source_git": {
+      "bundle_sha256": "a1f3ea5b8c5d3cbd9426d4928111a0bb30bfa43e0d0bdaf35914d777a4c29956",
+      "commit": "4718f5f3ad1b41f431b2c9bd5d81376a435eaf26",
+      "dirty_paths": [],
+      "git_objects_verified": true,
+      "parent": "5c9b94a3507f014171e0d844e2e5f4fee76d1201",
+      "tree": "c5732d01803ddd95515440840bcbcf7127f07ee4"
+    },
+    "source_parent": "5c9b94a3507f014171e0d844e2e5f4fee76d1201",
+    "source_snapshot": {
+      "commit": "4718f5f3ad1b41f431b2c9bd5d81376a435eaf26",
+      "input": {
+        "bytes": 46419172,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "a1f3ea5b8c5d3cbd9426d4928111a0bb30bfa43e0d0bdaf35914d777a4c29956"
+      },
+      "parent": "5c9b94a3507f014171e0d844e2e5f4fee76d1201",
+      "refs": {},
+      "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+      "subdirectory": "."
+    },
+    "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/b4180d05c5e9dc6bec15701599d124322f64833cd6fa6efa988cec3cbe156269.json",
+    "worker": "dl380g10"
+  }
+]
