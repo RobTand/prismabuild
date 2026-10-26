@@ -259,6 +259,18 @@ def last_json_object(text: str) -> dict | None:
     return None
 
 
+def _publication_placement(spec: dict, host: str) -> dict:
+    from prismabuild import contracts as _contracts
+    from prismabuild import publication_canary as _canary
+    image = str(spec.get("container_image") or "").strip()
+    return {
+        "tags": [host, _canary.CAPABILITY, _contracts.CONTAINER_IMAGE_TAG],
+        "container_images": [image],
+        "needs_gpu": True,
+        "resources": {"gpu": 1},
+    }
+
+
 def generation_pending(paths: dict, spec: dict, generation: str | None,
                         host: str) -> bool:
     """Whether a refused image-pinned leg waits only on the new generation (#1239).
@@ -277,23 +289,15 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     if not image or generation is None:
         return False
     sys.path.insert(0, str(paths["published_src"]))
-    from prismabuild import contracts as _contracts
     from prismabuild import pool as _pool
-    from prismabuild import publication_canary as _canary
     queue = _pool.PoolQueue(paths["queue_root"])
-    base = {
-        "tags": [host, _canary.CAPABILITY, _contracts.CONTAINER_IMAGE_TAG],
-        "container_images": [image],
-        "needs_gpu": True,
-        "resources": {"gpu": 1},
-    }
+    base = _publication_placement(spec, host)
     full = {**base, "tags": [*base["tags"],
                              f"runtime-generation:{generation}"]}
     # pbrun's placement verdict reads every recorded offer, not the live
     # window, so a box busy past it still blocks on its retained
     # old-generation offer.  Read the same offers, or "not pending" lets the
     # leg submit into that refusal (#1278).
-    from prismabuild import submission
     from prismabuild import submission
     recorded = submission.RECORDED_OFFER_MAX_AGE_S
     if queue.placeable(full, max_age_s=recorded) is True:

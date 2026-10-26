@@ -1109,7 +1109,7 @@ def _canary_driver_path() -> Path:
     return CHECKOUT / "tools" / "fleet" / "pbcanary.py"
 
 
-def _load_canary_driver():
+def _load_canary_module():
     """Import the driver; never duplicate its submit-and-verify logic.
 
     CONFIRMED crew-A entry shape (verified at #688 integration against
@@ -1151,7 +1151,11 @@ def _load_canary_driver():
             f"canary driver at {driver} has no run_canary(generation=...) "
             "entry: assumed crew-A shape drifted; refusing to invent a verdict"
         )
-    return entry
+    return module
+
+
+def _load_canary_driver():
+    return _load_canary_module().run_canary
 
 
 def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
