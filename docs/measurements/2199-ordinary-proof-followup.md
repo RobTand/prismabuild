@@ -118,7 +118,7 @@ cannot replace the admission or architecture guard results.
 ## Review continuation results
 
 Fresh reports at published head `37b1597df1b8f230054c4bd8ed5eeee22c5d5757`
-completed on ARM and x86. Each 19-file selection reported 305 passed, one
+completed on ARM and x86. Each 19-file selection reported 300 passed, one
 failed, and no skips. The sole failure on each architecture is
 `test_primitive_digest_sites_only_shrink`, the existing main defect
 [#2297](https://github.com/RobTand/prismabuild/issues/2297). Unchanged main
@@ -131,12 +131,13 @@ Reports are retained under `/mnt/shared/paperclip-runs/PRI-27/`:
 
 | Report | Result |
 | --- | --- |
-| review2-arm-37b1597df1.json | 305 passed, 1 failed |
-| review2-x86-37b1597df1.json | 305 passed, 1 failed |
+| review2-arm-37b1597df1.json | 300 passed, 1 failed |
+| review2-x86-37b1597df1.json | 300 passed, 1 failed |
 | review2-foreign-arm-37b1597df1.json | 5 passed |
 | review2-foreign-x86-37b1597df1.json | 5 passed |
 
 The separate foreign-load checks cover integration with merged #2267.
+Including those five tests, each architecture has 305 passed and one failed.
 Across these reports, 38 successful actions contain 298 passed tests per
 architecture. Read-only verification checked their exact checkout parent,
 terminal return code, canonical stdout and stderr lengths and SHA-256 hashes,
