@@ -6725,3 +6725,24 @@ mismatch. This is strict log equality, not an input-equivalence verifier or a
 policy-coverage certificate; the experiment must establish identical inputs and
 exercise the decisions of interest. Unrelated live windows do not establish
 decision parity.
+
+
+### Unresolved CPU-peer interpreters (#2014)
+
+A live CPU-only peer with an otherwise matching UNKNOWN named interpreter
+keeps portable CPU work READY on a GPU host. The refusal is
+`deferred_for_unresolved_cpu_host`; it has no timeout. Peer fullness or a prior
+pass cannot answer whether the interpreter exists. PRESENT restores ordinary
+fit/pass behavior. A completed ABSENT observation or a draining, stale or
+removed peer ends that peer's wait. Explicit host and architecture requirements
+keep their existing rules. Actual execution still requires positive capability
+evidence. Only a proven restartable guest on a positively idle GPU host may
+run while the CPU peer remains unresolved.
+
+The worker retains a bounded requested-name inventory and fair cursor across
+sibling, empty and drain polls. Names expire after one hour without a READY
+request. Each publication uses fresh completed observations from a bounded
+refresh outside the publisher. Slow paths report UNKNOWN and an
+`interpreter_probes` diagnostic; repeated timeouts never establish absence.
+Drain refreshes also revoke an earlier PRESENT answer when an executable is
+removed. Persisted inventory metadata cannot grant execution capability.

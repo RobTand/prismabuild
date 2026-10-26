@@ -1131,6 +1131,21 @@ generation whose row a later run replaced, with no handoff context to follow.
 Recovery writes no queue pointer and names the immutable attempt as its source.
 Attempts predating this context provide no inferred link.
 
+UNKNOWN interpreter evidence on an otherwise matching live CPU-only peer is
+placement uncertainty (#2014), even when that peer is full or has passed on
+the row. Advisory CPU-host matching tolerates only that UNKNOWN answer;
+submission placeability, ordinary offer matching and live claim/launch checks
+still require PRESENT and share all other capability and capacity predicates.
+A portable CPU row remains READY with `deferred_for_unresolved_cpu_host`,
+without a timer, unless a positively idle GPU host proves sealed restartability
+and marks the claim `cpu_guest`. The idle sample is rechecked after proof reads.
+Missing CAS, inconsistent interruption history, missing retry safety and an
+exhausted budget cannot turn uncertainty into a protected claim. PRESENT
+restores the existing fit/pass rules; completed ABSENT observations, draining,
+stale or disappeared peers end that peer's unresolved wait. Explicit host or
+architecture requirements retain their existing placement. These are source
+semantics, not a claim of deployed behavior or measured GPU latency.
+
 GPU denial also has a guest policy (#1929). A portable CPU claim on a GPU
 host carries the claim-scoped `cpu_guest: true` only when its sealed generation
 action is restartable and its portability follows a matching CPU-only offer
@@ -20396,6 +20411,21 @@ contention, reservation normalization, gang/canary authority and scratch trust
 remain with their current owners. Unknown advertised capacity is still distinct
 from zero. These answer fit, authority and admission questions beyond host
 capability. No C01 reservation, census, lock or commit owner changes.
+
+Worker interpreter observations retain at most 32 requested path names and
+request timestamps in host-local per-UID state, with a fair cursor across
+larger READY populations (#2164). Unrequested names expire after one hour;
+empty and drain snapshots do not renew their request time. Each open, empty
+or drain refresh probes selected names through abandonable readers, with a
+one-second per-path and two-second total budget outside the publisher child,
+publication lock and publication deadline. The publisher only merges captured
+scheduling progress and publishes captured answers. A child-held path lock
+prevents siblings from stacking behind an outstanding filesystem probe.
+Persistence stores no executable-presence answers. Incomplete probes remain
+UNKNOWN after any number of timeouts, with separate `interpreter_probes`
+diagnostics. Completed negative observations may report ABSENT. Drain still
+publishes zero observed capacity and admits no new action. A blocked filesystem
+has no promised eventual conclusive answer.
 
 ### Scratch lifetime ownership (C24)
 
