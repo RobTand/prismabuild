@@ -18,7 +18,11 @@
     "evidence_actions": [
       "3ed46d1d6b6d50c0f73df935834610e8a3e813b24e3479e043f3d7e2bcbc7dc8",
       "edf0d6e0ac156ffb7f6602e9df493528b128301a7d81682032dc917f74fb96a0",
-      "0012609a5ddb952abb2b22b8b7df8e6a724ac8f35ae96904609c4e8f9d56b314"
+      "0012609a5ddb952abb2b22b8b7df8e6a724ac8f35ae96904609c4e8f9d56b314",
+      "60eac6948c095bbfd4d440a0ec649fb6651d7e70d969b1f08660205a85ff2703",
+      "7a8b5deb7e6da7dd2afb5db4e387b876b0bd3e92c7ed0db72fa094083765508e",
+      "62c6887f2f6bf8fd4c24a2e7eb6e73a520fa00afaa03977f6102427496ff3a8b",
+      "b46e908bb7daf35c8caa19009adbe79be1293fbc52f1b2488697f47f7e0b1883"
     ],
     "remaining_gaps": [
       "SC-03: diagnostic recipe and evidence only, no new contract enforcement.",
@@ -48,7 +52,13 @@
         "deployed_here": "Observed execution on existing generation only; no new generation."
       }
     ],
-    "note": "Independent review required. This scoped evidence merge cannot complete #1485 or its three sub-issues and requests no deployment decision."
+    "note": "Independent review required. This scoped evidence merge cannot complete #1485 or its three sub-issues and requests no deployment decision.",
+    "pip_prerequisite_correction": {
+      "target": "Both install arms use pip 24.0; a missing or different bootstrap refuses.",
+      "implemented_here": "One shared bootstrap checks actual pip.__version__ before either requirement; pip26 fallback removed.",
+      "deployed_here": "No runtime publication or shared interpreter change.",
+      "validation": "Four pre-fix failures and five post-fix unit passes; pip24 legacy failure and repaired success on sparklina. Terminal cleanup, logs and successful CAS payload claims checked."
+    }
   },
   "deploy": {
     "status": "not-this-step"

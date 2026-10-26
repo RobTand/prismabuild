@@ -56,7 +56,7 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
   --cwd /path/to/prismabuild --tag gb10 --cpus 1 --demand mem_gb=2 \
   --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 \
   --env OPENBLAS_NUM_THREADS=1 --env PYTHONDONTWRITEBYTECODE=1 \
-  --filesystem-growth-gib 1 --timeout-s 180 -- \
+  --filesystem-growth-gib 1 --timeout-s 180 --priority -10 -- \
   /usr/bin/python3 -B docs/evidence/pb1485/reproduce_pack_install.py
 ```
 
@@ -65,6 +65,37 @@ The GB10 constraint declares the Python 3.12 aarch64 reproduction requirement.
 The explicit sparklina run checked the repair on the host of the red control.
 This command requires the retained historical bundle at its recorded CAS path.
 It does not invoke the historical packer's main function.
+
+## Review correction: require the pip24 parser
+
+The initial recipe accepted any ensurepip version and fell back to bundled
+pip 26.2.1. That changed the parser under test and could make the negative
+control succeed. The recipe now requires exactly pip 24.0 from the disposable
+interpreter before installing setuptools or selecting either requirement.
+Missing ensurepip, missing pip and a different pip version refuse. There is
+no fallback or download. The original fleet evidence above remains valid
+because those logs record pip 24.0.
+
+The bootstrap was extracted without a behavior change before adding the
+[focused regression checks](../../../tests/test_pb1485_pack_install_recipe.py).
+The checks inject pip versions and bootstrap failures at the subprocess
+boundary. They run without a real installation or network access.
+
+| Check | Action key | Result |
+| --- | --- | --- |
+| Prerequisite checks before repair, dl380g10 | `b46e908bb7daf35c8caa19009adbe79be1293fbc52f1b2488697f47f7e0b1883` | 4 failed, 1 passed; newer pip versions accepted and unavailable pip attempted fallback |
+| Prerequisite checks after repair, dl380g10 | `62c6887f2f6bf8fd4c24a2e7eb6e73a520fa00afaa03977f6102427496ff3a8b` | 5 passed |
+| Legacy requirement with enforced pip24, sparklina | `60eac6948c095bbfd4d440a0ec649fb6651d7e70d969b1f08660205a85ff2703` | Failed, rc 1, `ERROR: Invalid requirement` |
+| Repaired requirement with enforced pip24, sparklina | `7a8b5deb7e6da7dd2afb5db4e387b876b0bd3e92c7ed0db72fa094083765508e` | Executed, rc 0; Git027, SDK5, 48 RECORD files verified |
+
+[Review-correction evidence](pip-prerequisite-results.json) retains the terminal
+identities, complete log hashes and successful receipts. All four actions used
+one CPU, 2 GiB RAM, zero GPU, one native thread and a 180-second payload limit,
+at priority -10. Cleanup completed. Both successful local-result claims pass
+published `pb_verify_claim(hash_payload=true)` with `complete=true`,
+`checks_passed=true` and no unavailable reads. Attestation signatures remain
+unverified. These actions used existing worker generation
+`9dce28460e76-1792959923-b5904f02524e`; this correction publishes no runtime.
 
 ## Remaining production and consumer gates
 
