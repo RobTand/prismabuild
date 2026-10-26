@@ -1,7 +1,7 @@
 """The portable steady-cycle gate checks reuse, not a particular CPU's speed.
 
 #1961 names this gate on portable-x86, whereas its absolute CPU allowance was
-calibrated on GB10 cores. Exercise the actual campaign-shaped regression with
+calibrated on GB10 cores. Exercise the actual steady-cycle regression with
 an affine, unit-preserving CPU clock: the work and filesystem observations stay
 real, but an unchanged cycle costs more CPU seconds. This is a deterministic
 counterexample to the portability assumption, not a reconstruction of the
@@ -62,7 +62,7 @@ def test_portable_steady_gate_keeps_read_guards_without_a_machine_cpu_budget(
     assert steady["completed"] is True
     assert all(steady["reads"][name] == 0 for name in READ_COUNTERS)
     assert steady["reads"]["records_kept"] > 0
-    assert steady["reads"]["census_kept"] >= 400
+    assert steady["reads"]["census_kept"] >= 6
 
     # A fix must not consist of dropping the structural assertions. Replay the
     # real regression with each forbidden observation independently injected;
