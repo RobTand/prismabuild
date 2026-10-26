@@ -19923,9 +19923,7 @@ verified in `requeue-generation/integrated-evidence.json` and
 directory. These component qualifications do not promote staged-read
 deployment or workload-proof axes.
 
-### Queue-key standing read owner
-
-#### Publication candidate discovery (#1897, #2167, #2168)
+### Publication candidate discovery (#1897, #2167, #2168)
 
 RecordStore owns an advisory publication index separately from canonical
 queue state. PoolQueue publication records candidates after canonical READY
@@ -19959,6 +19957,8 @@ and reject candidates from another publication generation.
 This index changes inspection cost and diagnostics. It grants no lifecycle,
 admission, residency, cleanup or dev-certification authority. Source inclusion
 does not establish fleet deployment or staged-read requirement satisfaction.
+
+### Queue-key standing read owner
 
 `record_store.RecordStore(root).standing(key)` owns the queue-key observation
 used by produced-output retirement, attempt checks, action edges, deferred
