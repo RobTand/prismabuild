@@ -14,6 +14,7 @@ from pathlib import Path
 import posixpath
 import re
 import sys
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fleet.mount_latency import read_mountstats
@@ -24,6 +25,15 @@ RESUME = re.compile(r"^<\.\.\. (\w+) resumed>(.*)$")
 RESULT = re.compile(r"\)\s+=\s+(-?\d+)")
 
 
+class CompletedCall(NamedTuple):
+    pid: str
+    entered_at: float
+    completed_at: float
+    name: str
+    result: int
+    body: str
+
+
 def completed_calls(lines):
     pending = {}
     for line in lines:
@@ -31,12 +41,13 @@ def completed_calls(lines):
         if match is None:
             continue
         pid, stamp, body = match.groups()
+        entered_at = stamp
         resumed = RESUME.match(body)
         if resumed:
             previous = pending.pop((pid, resumed[1]), None)
             if previous is None:
                 continue
-            stamp, prefix = previous
+            entered_at, prefix = previous
             body = prefix + resumed[2]
         elif '<unfinished ...>' in body:
             call = START.match(body)
@@ -46,7 +57,8 @@ def completed_calls(lines):
         call = START.match(body)
         result = RESULT.search(body)
         if call and result:
-            yield pid, float(stamp), call[1], int(result[1]), body
+            yield CompletedCall(pid, float(entered_at), float(stamp),
+                                call[1], int(result[1]), body)
 
 
 def shared_path(body):
@@ -70,10 +82,11 @@ def shared_path(body):
 def summarize_trace(lines, roles, start, end):
     parents = {}
     counts = Counter()
-    for pid, stamp, call, result, body in completed_calls(lines):
+    for completed in completed_calls(lines):
+        pid, _, _, call, result, body = completed
         if call in ('clone', 'clone3', 'fork', 'vfork') and result > 0:
             parents[str(result)] = pid
-        if not start <= stamp < end:
+        if not start <= completed.entered_at < end:
             continue
         path = shared_path(body)
         if path is None:
