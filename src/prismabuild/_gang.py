@@ -25,6 +25,7 @@ from . import immutable_files
 
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 import math
 import os
@@ -168,8 +169,31 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
-    if not _link_new(group_path(queue, group), record):
-        if read_group(queue, group) != record:
+    standing = read_group(queue, group)
+    if standing is not None:
+        if standing != record:
+            raise GangContractError("a different record already names this gang group")
+        return record
+    from . import pool
+    with ExitStack() as locks:
+        for entry in sorted(entries, key=lambda entry: entry["action_key"]):
+            if not locks.enter_context(queue.action_transition_lock(
+                    str(entry["action_key"]), blocking=False)):
+                raise GangContractError("gang registration busy with a member transition")
+        standing = read_group(queue, group)
+        if standing is None:
+            for entry in entries:
+                current = pool.record_store.value_or_raise(queue.records.item(
+                    pool.record_store.READY, str(entry["action_key"])))
+                if (current is None or current.get("action_key") != entry["action_key"]
+                        or current.get("published_unix") != entry["published_unix"]
+                        or declaration(current.get("gang")) != {
+                            "group": group, "size": len(entries), "index": entry["index"]}):
+                    raise GangContractError("gang member publication changed before registration")
+            if _link_new(group_path(queue, group), record):
+                return record
+            standing = read_group(queue, group)
+        if standing != record:
             raise GangContractError("a different record already names this gang group")
     return record
 
