@@ -24,7 +24,7 @@ def main(argv=None):
     with RecordStore(args.queue_root).begin_publication_reconciliation() as run:
         for _ in range(args.max_steps):
             progress = run.step(max_entries=args.entries_per_step)
-            print(json.dumps(progress, sort_keys=True), flush=True)
+            print(json.dumps(progress), flush=True)
             if progress["finished"]:
                 return 0 if progress["complete"] else 1
     return 75

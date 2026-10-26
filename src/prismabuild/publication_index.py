@@ -50,7 +50,7 @@ def _hash(value: str) -> str:
     return digest_primitives.raw_sha256(value.encode())
 
 
-def _candidate(record: Mapping[str, object]) -> PublicationCandidate:
+def _publication_candidate(record: Mapping[str, object]) -> PublicationCandidate:
     key, published = record.get("action_key"), record.get("published_unix")
     if (not key_shaped(key) or isinstance(published, bool)
             or not isinstance(published, (int, float))):
@@ -95,7 +95,7 @@ def _read_leaf(path: Path) -> PublicationCandidate:
     if (not isinstance(facets, dict) or not set(facets) <= set(FACETS)
             or not all(isinstance(value, str) for value in facets.values())):
         raise ValueError("invalid publication facets")
-    candidate = _candidate(record)
+    candidate = _publication_candidate(record)
     candidate = PublicationCandidate(candidate.action_key, candidate.published_unix, facets)
     if path.name != _leaf(candidate):
         raise ValueError("publication leaf identity disagrees with its address")
@@ -105,7 +105,7 @@ def _read_leaf(path: Path) -> PublicationCandidate:
 def index_publication(root: Path, record: Mapping[str, object]) -> bool:
     """Best-effort sidecars after canonical publication; replay is idempotent."""
     try:
-        candidate = _candidate(record)
+        candidate = _publication_candidate(record)
         body = _body(candidate)
         for bucket in _buckets(root, candidate):
             path = bucket / "entries" / _leaf(candidate)
@@ -120,7 +120,7 @@ def index_publication(root: Path, record: Mapping[str, object]) -> bool:
         return False
 
 
-def _stamp(path: Path) -> list[int] | None:
+def _publication_stamp(path: Path) -> list[int] | None:
     try:
         info = path.stat(follow_symlinks=False)
     except FileNotFoundError:
@@ -134,7 +134,7 @@ def _namespace_stamps(root: Path) -> dict[str, list[int] | None]:
     index = _root(root)
     paths = [root, *(root / state for state in STATES),
              *(index / "facets" / field for field in FACETS), index / "days"]
-    return {str(path.relative_to(root)) or ".": _stamp(path) for path in paths}
+    return {str(path.relative_to(root)) or ".": _publication_stamp(path) for path in paths}
 
 
 def _clock_fence() -> int:
@@ -215,8 +215,8 @@ def publication_candidates(
                 break
             pages += 1
             directory = bucket / "entries"
-            observed[bucket] = _stamp(bucket)
-            observed[directory] = _stamp(directory)
+            observed[bucket] = _publication_stamp(bucket)
+            observed[directory] = _publication_stamp(directory)
             if observed[bucket] is not None:
                 reasons.extend(_trust(root, {str(bucket): observed[bucket]}))
                 reasons.extend(_trust(root, {str(directory): observed[directory]}))
@@ -255,7 +255,7 @@ def publication_candidates(
                         candidates[candidate.action_key, candidate.published_unix] = candidate
             if entries >= max_entries:
                 break
-        if _namespace_stamps(root) != before or any(_stamp(path) != stamp for path, stamp in observed.items()):
+        if _namespace_stamps(root) != before or any(_publication_stamp(path) != stamp for path, stamp in observed.items()):
             reasons.append("coverage-changed")
     except (OSError, ValueError, digest_primitives.PrismaBuildError):
         reasons.append("index-unreadable")
@@ -326,7 +326,7 @@ class Reconciliation:
                         self.finished = True
                         continue
                     immutable_files.write_json_atomic(bucket / "coverage.json", {
-                        "schema": SCHEMA, "entries": _stamp(bucket / "entries"),
+                        "schema": SCHEMA, "entries": _publication_stamp(bucket / "entries"),
                         "namespaces": _namespace_stamps(self.root)})
                     continue
                 if self.listing is None:
@@ -352,7 +352,7 @@ class Reconciliation:
                 if record is None or record.get("action_key") != entry.name[:-5]:
                     self.reasons.append("canonical-record-unreadable")
                     continue
-                candidate = _candidate(record)
+                candidate = _publication_candidate(record)
                 if not self.store.index_publication(record):
                     self.reasons.append("index-write-failed")
                 else:

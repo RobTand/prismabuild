@@ -176,7 +176,7 @@ def test_corrupt_leaf_returns_partial_candidates_without_complete_coverage(tmp_p
     item = record(1)
     file_record(store, item)
     reconcile(store)
-    candidate = publication_index._candidate(item)
+    candidate = publication_index._publication_candidate(item)
     path = (publication_index._buckets(store.root, candidate)[0]
             / 'entries' / publication_index._leaf(candidate))
     path.write_text('{broken')
@@ -219,7 +219,7 @@ def test_missing_entries_directory_invalidates_an_existing_bucket(tmp_path):
     item = record(1)
     file_record(store, item)
     reconcile(store)
-    candidate = publication_index._candidate(item)
+    candidate = publication_index._publication_candidate(item)
     directory = publication_index._buckets(store.root, candidate)[0] / 'entries'
     (directory / publication_index._leaf(candidate)).unlink()
     directory.rmdir()
@@ -233,7 +233,7 @@ def test_repeated_generation_indexing_does_not_duplicate_or_rewrite_leaves(tmp_p
     store = RecordStore(tmp_path)
     item = record(1)
     file_record(store, item)
-    candidate = publication_index._candidate(item)
+    candidate = publication_index._publication_candidate(item)
     directory = publication_index._buckets(store.root, candidate)[0] / 'entries'
     path = directory / publication_index._leaf(candidate)
     with path.open('rb') as retained:
