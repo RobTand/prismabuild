@@ -611,6 +611,25 @@ def test_a_number_caps_the_measured_room(roster, monkeypatch):
     assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "40"]
 
 
+def test_log_headroom_does_not_cap_a_different_spool_filesystem(roster, monkeypatch, tmp_path):
+    roster(args=[*BASE_ARGS, "--spool-gb", "auto"])
+    _stat(monkeypatch, 1000, 100)
+    log = tmp_path / "separate-log-disk"
+    monkeypatch.setattr(supervise, "LOG_DIR", log)
+    monkeypatch.setattr(supervise.filesystem_floor, "mode", lambda *a, **k: "enforce")
+    checked = []
+
+    def verdicts(queue_root, paths, *, label):
+        checked.extend(paths)
+        return [dict(allowed=True, free_bytes=GIB if path == log else 100 * GIB,
+                     required_bytes=GIB // 2 if path == log else 60 * GIB)
+                for path in paths]
+
+    monkeypatch.setattr(supervise.filesystem_floor, "enforce_paths", verdicts)
+    assert supervise.declared_shape("boxa", 0)[1][-2:] == ["--spool-gb", "40"]
+    assert log in checked
+
+
 def _holder_queue(tmp_path, monkeypatch):
     """A queue at the supervisor's own root, claiming as host ``boxa``."""
 

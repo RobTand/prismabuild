@@ -69,6 +69,9 @@ class TierLedger:
         return (self._ledger.held() if holder is None
                 else self._ledger.holder_tokens(holder))
 
+    def floor_snapshot(self, kinds: Iterable[str]) -> dict[str, int]:
+        return self._ledger.floor_snapshot(kinds)
+
     def holders(self) -> list[str]:
         return self._ledger.held_keys()
 
