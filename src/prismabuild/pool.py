@@ -15595,7 +15595,14 @@ class PoolQueue:
         not prefer a box on a stale picture of either side.
         """
 
+        if gpu_job:
+            load = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            return load.load1 / load.preferred if load is not None else None
+
         detail = offer.get("observed_detail") or {}
+        if not isinstance(detail, Mapping):
+            return None
 
         def number(value: object) -> bool:
             return type(value) in (int, float) and math.isfinite(value) and value >= 0
@@ -15603,12 +15610,6 @@ class PoolQueue:
         stamp = detail.get("observed_unix")
         if not number(stamp) or not 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S:
             return None
-        if gpu_job:
-            # CPU load per preferred core, so boxes with different core counts
-            # compare.  Load is already what the CPU admission controller reads.
-            cores = len((offer.get("cpu_tiers") or {}).get("preferred", []))
-            load = detail.get("load1")
-            return load / cores if cores and number(load) else None
         gpu = capability_eligibility.HostPresence.from_offer(offer).gpu
         if gpu is capability_eligibility.Presence.ABSENT:
             return 0.0            # no GPU to take power from; nothing to prefer away
