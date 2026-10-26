@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = ROOT / 'tests/fixtures/cpu_legacy_main_43234d0f'
 MANIFEST_PIN = 'b5d5919010b58a4cd38892063f984242c9b3f87f1d4f72e8a37c7dec2d0eeddc'
 MANIFEST = json.loads((REFERENCE / 'manifest.json').read_bytes())
+HOST_READS_PIN = 'b1554fe17e7b179e0e7d6012b0d51cf2948fe5eeed921d618699157dc1a11d67'
 
 
 def _prepare_legacy_checkout(source, checkout):
@@ -28,6 +29,10 @@ def _prepare_legacy_checkout(source, checkout):
         (tests / name).write_bytes(raw)
     for name in ('src', 'tools'):
         shutil.copytree(source / name, checkout / name)
+    # The archived test needs its original support after the production relocation.
+    support = (REFERENCE / 'queue_bell_host_reads.py.fixture').read_bytes()
+    assert hashlib.sha256(support).hexdigest() == HOST_READS_PIN
+    (checkout / 'src/prismabuild/queue_bell_host_reads.py').write_bytes(support)
     for name in ('pyproject.toml', 'pytest.ini'):
         if (source / name).is_file():
             shutil.copyfile(source / name, checkout / name)
