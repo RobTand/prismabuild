@@ -55,7 +55,7 @@ def test_sparse_facet_ignores_unrelated_history_before_record_opens(tmp_path, mo
         store.item_path("done", other["action_key"]).write_text(json.dumps(other))
         assert store.index_publication(other)
     native_scan = os.scandir
-    native_read = pool.record_store.RecordStore.inspection_slot
+    native_read = pool.record_store.RecordStore.inspection_slot_result
     visits = []
     reads = []
 
@@ -70,7 +70,7 @@ def test_sparse_facet_ignores_unrelated_history_before_record_opens(tmp_path, mo
         return native_read(records, state, key)
 
     monkeypatch.setattr(os, "scandir", scan)
-    monkeypatch.setattr(pool.record_store.RecordStore, "inspection_slot", read)
+    monkeypatch.setattr(pool.record_store.RecordStore, "inspection_slot_result", read)
     value = {"checkout_root": str(fleet.checkout), "snapshot_parent": "1" * 40,
              "snapshot_commit": "2" * 40, "published_by": wanted["published_by"]}[field]
     result = pbmcp._scan_actions(fleet.queue_root, states=["ready"], keys=[], limit=1,
@@ -150,14 +150,14 @@ def test_canonical_predicates_reject_stale_index_metadata(tmp_path):
 def test_canonical_read_budget_counts_missing_slots(tmp_path, monkeypatch):
     fleet = fx.build(tmp_path)
     monkeypatch.setattr(pbmcp, "ACTION_CANONICAL_READS", 2)
-    native = pool.record_store.RecordStore.inspection_slot
+    native = pool.record_store.RecordStore.inspection_slot_result
     reads = []
 
     def read(store, state, key):
         reads.append((state, key))
         return native(store, state, key)
 
-    monkeypatch.setattr(pool.record_store.RecordStore, "inspection_slot", read)
+    monkeypatch.setattr(pool.record_store.RecordStore, "inspection_slot_result", read)
     result = pbmcp._scan_actions(
         fleet.queue_root, states=["ready", "done"], keys=[], limit=0,
         facets={"checkout_root": str(fleet.checkout)})

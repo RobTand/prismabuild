@@ -1977,9 +1977,13 @@ def _scan_publication_candidates(root: Path, *, states: Sequence[str],
                 exhausted = True
                 break
             reads += 1
-            record = store.inspection_slot(state, key)
-            if record is None:
+            result = store.inspection_slot_result(state, key)
+            if isinstance(result, pool.record_store.Unknown):
+                reasons.append("canonical-record-unreadable")
                 continue
+            if isinstance(result, pool.record_store.Absent):
+                continue
+            record = result.value
             scanned += 1
             if record.get("action_key") != key:
                 reasons.append("candidate-key-mismatch")

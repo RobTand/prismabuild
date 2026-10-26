@@ -19953,6 +19953,11 @@ unknown filesystem trust, or an unsettled directory clock leaves coverage
 incomplete. Remote filesystem timestamps do not establish complete coverage.
 Index leaves may outlive canonical records; consumers verify canonical slots
 and reject candidates from another publication generation.
+Missing canonical slots are ordinary stale candidates. Indexed inspection reads
+distinguish absence from present but empty, malformed or unreadable records.
+Those invalid slots consume the same read budget and make discovery incomplete,
+including when an in-place write leaves namespace coverage unchanged. Explicit
+key inspection retains its existing permissive read behavior.
 
 This index changes inspection cost and diagnostics. It grants no lifecycle,
 admission, residency, cleanup or dev-certification authority. Source inclusion
