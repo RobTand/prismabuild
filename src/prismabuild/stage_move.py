@@ -528,7 +528,7 @@ class _Copier:
         source = str(source)
         if self.publisher is not None:
             filesystem_floor.enforce_paths(self.publisher.queue.root,
-                [source, self.stage_root, destination.parent, destination, self.publisher.queue.root,
+                [source, self.stage_root, destination.parent, destination, temporary, self.publisher.queue.root,
                  self.publisher.residency_root, self.publisher.cas_root], label="stage copy")
         offset = int(source_offset
                      if source_offset is not None else entry["offset"])
@@ -584,7 +584,7 @@ class _Copier:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if self.publisher is not None:
                     filesystem_floor.enforce_paths(self.publisher.queue.root,
-                        [source, destination.parent], label="stage copy retry")
+                        [source, destination.parent, temporary], label="stage copy retry")
                 temporary_handle = open(temporary, "wb")
             with temporary_handle as sink:
                 buffer = bytearray(self.block)
@@ -638,7 +638,8 @@ class _Copier:
                 os.fsync(sink.fileno())
                 spent["fsync"] += now() - mark
         except BaseException:
-            temporary.unlink(missing_ok=True)
+            if temporary_handle is not None:
+                temporary.unlink(missing_ok=True)
             raise
         finally:
             os.close(fd)
