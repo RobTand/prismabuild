@@ -1,5 +1,10 @@
 # Local resident sets: a GPU-host NVMe cache tier with leases (design note, DRAFT for review)
 
+Historical draft. For current source status, the staged-only fallback constraint,
+and the next design approval gate, read the
+[2026-10-25 design review](local_resident_sets_review_2026-10-25.md).
+The space and deployment statements below describe October 5 only.
+
 Author: pb-integrator, 2026-10-05. Status: **design only, nothing built.** Revision 2 (after the pool review `rev-1005-164242-445d` at 28b6978f, REQUEST_CHANGES: three blockers B1-B3 fixed below, plus the reviewer's corrections; the review also noted that my first request carried a wrong SHA, which I had filed in error). Direction from Rob via the CEO: "Things that will be needed a lot
 should probably not be streamed from dl380 and instead delivered for campaign duration and cleaned up afterwards." The CEO's sketch has five parts
 (resident sets with leases, transparent paths, locality-aware placement, capacity, migration of the manual A8S copies). This note keeps the goal,

@@ -412,6 +412,8 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
     ("prismabuild.gpu_capacity", "RUNTIME_GATE", "gpu-container-runtime.json"),
+    ("prismabuild.sealed_bundle_cache", "CACHE_ROOT", "sealed-bundles"),
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
     ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
@@ -486,6 +488,7 @@ LIVE_DEFAULTS = (
 
 #: Environment variables the lane and the pool read on use.
 LIVE_ENV = (
+    ("PRISMABUILD_BUNDLE_CACHE_ROOT", "sealed-bundles"),
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
     ("PRISMABUILD_POOL_ROOT", "pb-queue"),

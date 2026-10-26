@@ -131,7 +131,7 @@ def test_new_workers_with_legacy_siblings_keep_cpu_and_healthy_gpu_claims(
     state = {'schema': gpu_capacity.RUNTIME_SCHEMA, 'latched': latched,
              'reason': gpu_capacity.RUNTIME_REASON, 'subtype': 'cdi_mount_missing'}
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: enabled)
-    monkeypatch.setattr(adaptive_gpu, 'trusted_sample', lambda path: state)
+    monkeypatch.setattr(adaptive_gpu, 'trusted_sample', lambda path=None: state)
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / 'queue'),
         capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1}, default_demand={'cpu': 1, 'mem_gb': 1})
     queue.announce(host='new', has_gpu=True, tags=[], capacity={'cpu': 2, 'gpu': 1},

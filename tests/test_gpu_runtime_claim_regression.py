@@ -14,8 +14,9 @@ def test_broker_fence_denies_gpu_claim_and_recovery_restores_it(tmp_path, monkey
     monkeypatch.setattr(gpu_capacity, 'RUNTIME_GATE', mirror, raising=False)
     monkeypatch.setattr(gpu_capacity, 'runtime_fence_enabled', lambda: True, raising=False)
     trusted_sample = adaptive_gpu.trusted_sample
-    monkeypatch.setattr(adaptive_gpu, 'trusted_sample', lambda path: (
-        json.loads(mirror.read_text()) if Path(path) == mirror else trusted_sample(path)))
+    monkeypatch.setattr(adaptive_gpu, 'trusted_sample', lambda path=None: (
+        json.loads(mirror.read_text()) if path is not None and Path(path) == mirror
+        else trusted_sample(path)))
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / 'queue'),
         capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1}, default_demand={'cpu': 1, 'mem_gb': 1})
     gpu_key, cpu_key = 'a' * 64, 'b' * 64

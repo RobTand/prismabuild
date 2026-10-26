@@ -212,8 +212,9 @@ from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
 from . import gpu_runtime_gate
-from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, device_identity,
-                               is_nonnegative_number, memory_counters)
+from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, UnifiedMemoryEvidence,
+                               device_identity, is_nonnegative_number, memory_counters,
+                               unified_memory_evidence)
 from . import holder_census
 from .holder_census import ACQUIRING_PREFIX
 from . import container_images as image_inventory
@@ -5527,6 +5528,39 @@ class _OpenClaimRow:
 
 
 @dataclass
+class _ClaimMemory:
+    sampler: Callable[[], Mapping[str, object] | None]
+    evidence: UnifiedMemoryEvidence | None = None
+    cached_sample: Mapping[str, object] | None = None
+
+    def gpu_sample(self):
+        return self.cached_sample if self.cached_sample is not None else self.sampler()
+
+    def observe(self):
+        sample = self.sampler()
+        self.cached_sample = sample
+        now = _now()
+        current = unified_memory_evidence(
+            sample, now=now, max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        if current is not None:
+            self.evidence = current
+        elif self.evidence is not None:
+            self.evidence = replace(self.evidence, foreign_residency=ForeignProcesses.UNKNOWN,
+                                    resident_bytes=0)
+        return self.evidence
+
+    def denial(self, demand, order, *, ledger=None, unknown_only=False):
+        if demand.get("mem_gb", 0) <= 0:
+            return None
+        evidence = self.observe()
+        if evidence is None or (unknown_only and not evidence.unknown):
+            return None
+        return candidate_policy.unified_memory_denial(
+            evidence, held={} if evidence.unknown else ledger.held(), demand=demand,
+            margin_gb=box_capacity.MEMORY_MARGIN_GB, order=order)
+
+
+@dataclass
 class _ClaimScan:
     ready: list[dict[str, object]]
     tags: frozenset[str]
@@ -5540,6 +5574,7 @@ class _ClaimScan:
     container_class_policy: image_inventory.ClassImagePolicy | None
     container_inventory: Mapping[str, object] | None
     admission_open: Callable[[], bool] | None
+    memory: _ClaimMemory | None
     withdrawn: Container[str]
     released: Container[str]
     placement: _peer_placement.PlacementPass
@@ -16092,6 +16127,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        unified_memory: UnifiedMemoryEvidence | None = None,
         cpu_sampler: Callable[[], dict[str, object]] | None = None,
         gpu_sampler: Callable[[], Mapping[str, object] | None] | None = None,
     ) -> dict[str, object] | None:
@@ -16103,13 +16139,15 @@ class PoolQueue:
         poll check is still observed. ``None`` preserves current behavior.
         """
         ledger = self.ledger()
+        memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
+                  if has_gpu else None)
         tiers = cpu_tiers or record_store.read_document(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
             controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler)
             # Resolving the ledger identity may stat the shared mount. Prepare
             # both controllers before taking the host-wide admission lock.
             gpu_controller = (gpu_admission.Controller(ledger, publisher=controller,
-                                                       sampler=gpu_sampler)
+                                                       sampler=memory.gpu_sample)
                               if has_gpu else None)
             evaluating = False
             try:
@@ -16154,7 +16192,7 @@ class PoolQueue:
                                    observed_images=observed_images,
                                    container_class_policy=container_class_policy,
                                    container_inventory=container_inventory,
-                                   admission_open=admission_open)
+                                   admission_open=admission_open, memory=memory)
             except cpu_admission.AdmissionBusy as exc:
                 # Another loop on this box is mid-decision. Waiting here means
                 # waiting on a host-local lock whose holder is deciding, and
@@ -16176,7 +16214,7 @@ class PoolQueue:
                                ready=ready, observed_images=observed_images,
                                container_class_policy=container_class_policy,
                                container_inventory=container_inventory,
-                               admission_open=admission_open)
+                               admission_open=admission_open, memory=memory)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
             return None
@@ -16421,7 +16459,9 @@ class PoolQueue:
         arguments.pop("preempted_claim", None)
         return {"arguments": arguments, "snapshot": snapshot}
 
-    def _preempt_gang_backfill(self, ledger, record, entry, *, controller=None):
+    def _preempt_gang_backfill(
+        self, ledger, record, entry, *, demand, controller=None, memory=None,
+    ):
         """Request reclamation BEFORE capacity gates; never credit future releases."""
         from . import _gang
         here = ledger.base.name
@@ -16445,6 +16485,11 @@ class PoolQueue:
             proofs = self._preemption_eligibility_proofs(ledger, action_key=entry["action_key"])
             selected = None
             with self._admission_lock(controller):
+                if memory is not None:
+                    refusal = memory.denial(
+                        demand, candidate_policy.ScanOrder(), unknown_only=True)
+                    if refusal is not None:
+                        return refusal
                 for key, holder in sorted(_gang.backfill_holders(self, mine).items()):
                     proof = proofs.get(key)
                     if (proof is not None and proof[2] and claim_identity.same_claim(holder, proof[0])
@@ -16471,6 +16516,7 @@ class PoolQueue:
         exclude_gang_election: Mapping[str, object] | None = None,
         guest_drain: str | None = None,
         held_cpus: Sequence[int] | None = None,
+        memory: _ClaimMemory | None = None,
     ) -> str | None:
         """Take the box back for a denied foreground item.  Name who yielded.
 
@@ -16542,6 +16588,12 @@ class PoolQueue:
                 ledger, action_key=action_key,
                 **({"guests": True} if guest_drain is not None else {}))
             with self._admission_lock(controller):
+                if memory is not None:
+                    wanted = candidate_policy.unified_memory_preemption_demand(
+                        memory.observe(), demand=demand, capacity=ledger.capacity(),
+                        margin_gb=box_capacity.MEMORY_MARGIN_GB)
+                    if wanted is None:
+                        return None
                 selected = self._select_background_holder(
                     ledger, action_key=action_key, wanted=wanted, proofs=proofs,
                     exclude_gang_election=exclude_gang_election,
@@ -17135,6 +17187,7 @@ class PoolQueue:
         placement: _peer_placement.PlacementPass,
         ready: Sequence[Mapping[str, object]],
         ready_gpu: Mapping[str, object] | None,
+        memory: _ClaimMemory | None,
     ) -> _HostClaimRequest | candidate_policy.CandidateDenial | candidate_policy.ScanOrder:
         item = candidate.item
         demand = candidate.demand.host
@@ -17145,6 +17198,10 @@ class PoolQueue:
         dependent_owner = candidate.dependent_owner
         scratch_evidence = scratch_boundary = None
         runtime_probe = candidate.runtime_probe
+        if memory is not None:
+            refusal = memory.denial(demand, scan, unknown_only=True)
+            if refusal is not None:
+                return refusal
         if candidate_policy.never_fits(reservation_demand, total):
             return candidate_policy.CandidateDenial("never_fits_capacity", {
                 "capacity_total": total, "demand": demand,
@@ -17230,6 +17287,11 @@ class PoolQueue:
             except (ValueError, OSError, KeyError, TypeError) as exc:
                 self.record_denial(item, "local_scratch_io_profile_invalid", {"error": str(exc)})
                 return scan
+        if memory is not None:
+            refusal = memory.denial(
+                reservation_demand, scan, unknown_only=True)
+            if refusal is not None:
+                return refusal
         return _HostClaimRequest(
             candidate=candidate, identity=identity, allowance=allowance,
             dependent_owner=dependent_owner, contract=contract, runtime_probe=runtime_probe,
@@ -17238,6 +17300,7 @@ class PoolQueue:
 
     def _prepare_claim_gang(
         self, request: _HostClaimRequest, *, ledger: ResourceLedger, host_gate,
+        memory: _ClaimMemory | None,
     ) -> _ClaimGang | _ClaimHandled:
         item = request.candidate.item
         key = request.candidate.key
@@ -17276,7 +17339,11 @@ class PoolQueue:
                 return _ClaimHandled.REFUSED
         if gang_record is not None:
             pending_backfill = self._preempt_gang_backfill(
-                ledger, gang_record, gang_entry, controller=host_gate)
+                ledger, gang_record, gang_entry, controller=host_gate,
+                demand=request.candidate.demand.reservation, memory=memory)
+            if isinstance(pending_backfill, candidate_policy.CandidateDenial):
+                self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
+                return _ClaimHandled.REFUSED
             if pending_backfill:
                 self.record_denial(item, "gang_waiting_for_backfill_release", {
                     "group": gang["group"], "holders": pending_backfill,
@@ -17287,7 +17354,7 @@ class PoolQueue:
     def _arbitrate_claim_census(
         self, request: _HostClaimRequest, gang_context: _ClaimGang, census, *,
         ledger: ResourceLedger, total, copy_authority, tagset, has_gpu,
-        placement,
+        placement, memory: _ClaimMemory | None,
     ) -> _CensusArbitration | _ClaimHandled:
         item = request.candidate.item
         dependent_owner = request.dependent_owner
@@ -17439,6 +17506,12 @@ class PoolQueue:
                         item, "deferred_for_gang_prelaunch",
                         prelaunch_blocker)
                     return _ClaimHandled.REFUSED
+                if memory is not None:
+                    refusal = memory.denial(
+                        reservation_demand, candidate_policy.ScanOrder(), unknown_only=True)
+                    if refusal is not None:
+                        self.record_denial(item, refusal.reason, refusal.evidence)
+                        return _ClaimHandled.REFUSED
                 try:
                     mine = _gang.elect_gang_member(self, gang_record, gang_entry, here, _now())
                 except (_gang.GangContractError, OSError, pb.PrismaBuildError) as exc:
@@ -17457,7 +17530,7 @@ class PoolQueue:
     def _reserve_claim_host(
         self, request: _HostClaimRequest, gang_context: _ClaimGang, census, scan,
         scan_pass: _ClaimScan, *, held_back,
-    ) -> _HostAccepted | _HostRefusal | _ClaimHandled:
+    ) -> _HostAccepted | _HostRefusal | candidate_policy.CandidateDenial | _ClaimHandled:
         ledger = scan_pass.ledger
         total = scan_pass.total
         copy_authority = scan_pass.copy_authority
@@ -17492,11 +17565,16 @@ class PoolQueue:
         refusal_source = room_taken = None
         cpu_decision = gpu_decision = token_shortage = None
         free_at_refusal = asked = None
+        if scan_pass.memory is not None:
+            refusal = scan_pass.memory.denial(
+                reservation_demand, scan, unknown_only=True)
+            if refusal is not None:
+                return refusal
         arbitration = self._arbitrate_claim_census(
             request, gang_context,
             census, ledger=ledger, total=total,
             copy_authority=copy_authority, tagset=tagset,
-            has_gpu=has_gpu, placement=placement)
+            has_gpu=has_gpu, placement=placement, memory=scan_pass.memory)
         if arbitration is _ClaimHandled.REFUSED:
             return _ClaimHandled.REFUSED
         if scratch_boundary is not None:
@@ -17599,6 +17677,10 @@ class PoolQueue:
                 scratch_evidence["admission_checked_unix"] = _now()
                 scratch_evidence["reservation_demand"] = dict(reservation_demand)
         if not refused:
+            if scan_pass.memory is not None:
+                refusal = scan_pass.memory.denial(reservation_demand, scan, ledger=ledger)
+                if refusal is not None:
+                    return refusal
             if adaptive_gpu is not None:
                 reservation.host_handle = ledger.begin_acquire(
                     key, reservation_demand, adaptive=adaptive,
@@ -17723,6 +17805,7 @@ class PoolQueue:
                     cpu_decision=cpu_decision,
                     gpu_sample=_gpu_sample_for(gpu_controller, demand),
                     authority=copy_authority, tags=tagset, has_gpu=has_gpu)
+                scan_pass.census.observe_measurement_refusal(item, verdict, cpu_decision)
             prefix = candidate_policy.prepare_adaptive_refusal(
                 refusal_source, decision, verdict, order=scan,
                 dependent_owner=dependent_owner, room_taken=room_taken)
@@ -17740,9 +17823,14 @@ class PoolQueue:
                     and denial.evidence.get("drain_resolves") is True):
                 preempted = self._preempt_background_holder(
                     ledger, action_key=key, demand=reservation_demand,
-                    priority=int(item.get("priority", 0)), controller=controller,
+                    priority=int(item.get("priority", 0)), controller=scan_pass.host_gate,
                     guest_drain=mode,
-                    held_cpus=decision.get("held_cpus")) is not None
+                    held_cpus=decision.get("held_cpus"), memory=scan_pass.memory) is not None
+            if scan_pass.memory is not None:
+                current_refusal = scan_pass.memory.denial(demand, scan, unknown_only=True)
+                if current_refusal is not None:
+                    self.record_denial(item, current_refusal.reason, current_refusal.evidence)
+                    return _RefusalAccounting(scan, preempted)
             scan = denial.order_before
             self.record_denial(item, denial.reason, denial.evidence)
             if denial.withhold_after is not None:
@@ -17773,8 +17861,8 @@ class PoolQueue:
                     and verdict.get("drain_resolves") is not False):
                 preempted = self._preempt_background_holder(
                     ledger, action_key=key, demand=asked,
-                    priority=int(item.get("priority", 0)), controller=controller,
-                    guest_drain="tokens") is not None
+                    priority=int(item.get("priority", 0)), controller=scan_pass.host_gate,
+                    guest_drain="tokens", memory=scan_pass.memory) is not None
             if not preempted:
                 # Selection reacquires admission, while the separate
                 # handoff lock spans withdrawal/requeue as well. A
@@ -17786,9 +17874,14 @@ class PoolQueue:
                 preempted = self._preempt_background_holder(
                     ledger, action_key=key, demand=asked,
                     priority=int(item.get("priority", 0)),
-                    controller=controller,
+                    controller=scan_pass.host_gate, memory=scan_pass.memory,
                     **({"exclude_gang_election": exclusion}
                        if exclusion is not None else {})) is not None
+            if scan_pass.memory is not None:
+                current_refusal = scan_pass.memory.denial(demand, scan, unknown_only=True)
+                if current_refusal is not None:
+                    self.record_denial(item, current_refusal.reason, current_refusal.evidence)
+                    return _RefusalAccounting(scan, preempted)
             withholding = bool(verdict["eligible"])
             age = self.withhold_age(key) if withholding else None
             evidence = {
@@ -18590,10 +18683,14 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        memory: _ClaimMemory | None = None,
     ) -> _ClaimScan:
         """Prepare the ordered ready scan and its existing pass-lived views."""
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        if memory is None and has_gpu:
+            memory = _ClaimMemory(
+                gpu_controller.sample if gpu_controller is not None else gpu_admission.trusted_sample)
         tagset = frozenset(str(t) for t in tags)
         self.records.ensure_layout()
         # The load-bearing half of ``withdraw``.  A withdrawal that lands while
@@ -18715,6 +18812,7 @@ class PoolQueue:
             container_class_policy=container_class_policy,
             container_inventory=container_inventory,
             admission_open=admission_open,
+            memory=memory,
             withdrawn=withdrawn,
             released=released,
             placement=placement,
@@ -18873,6 +18971,23 @@ class PoolQueue:
             self.record_denial(item, denial.reason, denial.evidence)
         return scan
 
+    def _preempt_unified_memory_shortage(
+        self, item, denial, scan_pass, *, preempted, gang_context=None,
+    ):
+        if preempted or denial.reason != "unified_gpu_memory_budget":
+            return preempted
+        exclusion = None
+        if gang_context is not None and gang_context.record is not None:
+            gang = gang_context.declaration
+            api = gang_context.api
+            if not api.backfill_reclaiming(self, gang_context.record):
+                exclusion = api.elections(self, gang["group"], gang["size"]).get(gang["index"])
+        return self._preempt_background_holder(
+            scan_pass.ledger, action_key=str(item["action_key"]),
+            demand=denial.evidence["reservation_demand"],
+            priority=int(item.get("priority", 0)), controller=scan_pass.host_gate,
+            memory=scan_pass.memory, exclude_gang_election=exclusion) is not None
+
     def _claim_pass(
         self,
         *,
@@ -18889,6 +19004,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        memory: _ClaimMemory | None = None,
     ) -> dict[str, object] | None:
         """Drive one ordered scan through T, canonical M/H, commit and publication."""
         scan_pass = self._start_claim_scan(
@@ -18896,7 +19012,7 @@ class PoolQueue:
             cpu_tiers=cpu_tiers, controller=controller, gpu_controller=gpu_controller,
             ready=ready, observed_images=observed_images,
             container_class_policy=container_class_policy, container_inventory=container_inventory,
-            admission_open=admission_open)
+            admission_open=admission_open, memory=memory)
         order = candidate_policy.ScanOrder()
         preempted = False
         for item in scan_pass.ready:
@@ -18933,7 +19049,7 @@ class PoolQueue:
                             qualified, order, total=scan_pass.total, has_gpu=scan_pass.has_gpu,
                             controller=scan_pass.controller, gpu_controller=scan_pass.gpu_controller,
                             placement=scan_pass.placement, ready=scan_pass.ready,
-                            ready_gpu=scan_pass.ready_gpu)
+                            ready_gpu=scan_pass.ready_gpu, memory=scan_pass.memory)
                         if isinstance(prepared, candidate_policy.CandidateDenial):
                             order = prepared.order_before
                             if prepared.evidence is None:
@@ -18945,7 +19061,8 @@ class PoolQueue:
                             order = prepared
                             continue
                         gang = self._prepare_claim_gang(
-                            prepared, ledger=scan_pass.ledger, host_gate=scan_pass.host_gate)
+                            prepared, ledger=scan_pass.ledger, host_gate=scan_pass.host_gate,
+                            memory=scan_pass.memory)
                         if gang is _ClaimHandled.REFUSED:
                             continue
                         from . import _measurement_reservation as measurement_reservation
@@ -18959,6 +19076,12 @@ class PoolQueue:
                                 prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:
                                 continue
+                        if isinstance(host_claim, candidate_policy.CandidateDenial):
+                            preempted = self._preempt_unified_memory_shortage(
+                                item, host_claim, scan_pass, preempted=preempted,
+                                gang_context=gang)
+                            self.record_denial(item, host_claim.reason, host_claim.evidence)
+                            continue
                         if isinstance(host_claim, _HostRefusal):
                             accounted = self._account_host_refusal(
                                 host_claim, order, scan_pass, preempted=preempted)
@@ -22381,6 +22504,7 @@ class PoolQueue:
         container_class_policy: image_inventory.ClassImagePolicy | None = None,
         container_inventory: Mapping[str, object] | None = None,
         admission_open: Callable[[], bool] | None = None,
+        unified_memory: UnifiedMemoryEvidence | None = None,
         on_sweep: Callable[[], object] | None = None,
     ) -> dict[str, object] | None:
         """Reap, claim, run, record.  ``None`` when the queue had nothing.
@@ -22417,7 +22541,7 @@ class PoolQueue:
                           ready=ready, observed_images=observed_images,
                           container_class_policy=container_class_policy,
                           container_inventory=container_inventory,
-                          admission_open=admission_open)
+                          admission_open=admission_open, unified_memory=unified_memory)
         if item is None:
             return None
         key = str(item["action_key"])

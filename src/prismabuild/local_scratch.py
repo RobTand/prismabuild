@@ -685,7 +685,7 @@ def _descriptor_mount(fd):
             "filesystem_type": fields[0], "root_inode": str(info.st_ino)}
 
 
-def _descriptor_identity(fd):
+def descriptor_identity(fd):
     """One disk-scratch I/O profile root, under its closed filesystem policy.
 
     ``LOCAL_FILESYSTEM_TYPES`` is the qualified local disk set.  tmpfs is an
@@ -721,7 +721,7 @@ def root_identity(root):
         raise LocalScratchError("scratch root must be canonical absolute")
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        return _descriptor_identity(fd)
+        return descriptor_identity(fd)
     finally:
         os.close(fd)
 
@@ -755,7 +755,9 @@ def profile_command(command):
 
 def profile_environment(variables, *, derived=False):
     """Closed recorder environment, never startup/loader or custom PATH hooks."""
-    defaults = {"HOME": "/home/rob", "TMPDIR": "/home/rob/tmp",
+    from . import fleet_roster
+
+    defaults = {"HOME": "/home/rob", "TMPDIR": fleet_roster.LEGACY_ACTION_TMPDIR,
                 "TRITON_CACHE_DIR": "/home/rob/.triton-cache", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
     threads = {"OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"}
     allowed = set(defaults) | threads | {"PATH", "CUDA_VISIBLE_DEVICES", PAIRS_ENV,
@@ -764,7 +766,10 @@ def profile_environment(variables, *, derived=False):
         allowed |= {PROFILE_OWNER_ENV, PROFILE_MARKER_ENV}
     if set(variables) - allowed:
         raise LocalScratchError("scratch recorder environment contains unsupported startup/loader/custom fields")
-    if any(k in variables and variables[k] != v for k, v in defaults.items()):
+    if (variables.get("TMPDIR", defaults["TMPDIR"]) not in
+            {fleet_roster.LEGACY_ACTION_TMPDIR, "/home/rob/pbt17"}
+            or any(k in variables and variables[k] != v for k, v in defaults.items()
+                   if k != "TMPDIR")):
         raise LocalScratchError("scratch recorder requires exact default environment values")
     paths = {PROFILE_PATH} if derived else {PROFILE_PATH, "/usr/local/bin:/usr/bin:/bin"}
     if (("PATH" in variables and variables["PATH"] not in paths)
@@ -830,7 +835,7 @@ def record_profile(envelope):
             "write_bytes": 0, "read_bytes": 0, "write_elapsed_s": 0., "read_elapsed_s": 0.,
             "completed": False, "errors": []}
     try:
-        identity = _descriptor_identity(directory)
+        identity = descriptor_identity(directory)
         body.update(identity, start_identity=identity)
         fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
                      0o600, dir_fd=directory)
@@ -859,7 +864,7 @@ def record_profile(envelope):
                 remaining -= len(data)
                 body["read_bytes"] += len(data)
             body["read_elapsed_s"] += time.perf_counter() - begin
-        end_identity = _descriptor_identity(directory)
+        end_identity = descriptor_identity(directory)
         body["end_identity"] = end_identity
         if end_identity != identity or root_identity(root) != identity:
             raise LocalScratchError("scratch root identity changed during measurement")
