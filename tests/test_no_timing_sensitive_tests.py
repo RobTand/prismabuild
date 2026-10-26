@@ -111,12 +111,13 @@ def _timing_call_kind(call, subprocess_modules, subprocess_runs):
     bounds = [kw.value for kw in call.keywords if kw.arg == "timeout"]
     # The positional slots are timeout for wait/join/settimeout, after input
     # for communicate, and after the blocking flag for Queue.get/put.
-    position = {"wait": 0, "join": 0, "settimeout": 0, "communicate": 1}.get(method)
+    position = {"wait": 0, "join": 0, "settimeout": 0, "communicate": 1,
+                "get": 1, "put": 2}.get(method)
     if method in {"get", "put"}:
-        blocking = 0 if method == "get" else 1
-        if len(call.args) > blocking and isinstance(call.args[blocking], ast.Constant):
-            if type(call.args[blocking].value) is bool:
-                position = blocking + 1
+        blocking = position - 1
+        if not (len(call.args) > blocking and isinstance(call.args[blocking], ast.Constant)
+                and type(call.args[blocking].value) is bool):
+            position = None
     if position is not None and len(call.args) > position:
         bounds.append(call.args[position])
     if method == "settimeout":
