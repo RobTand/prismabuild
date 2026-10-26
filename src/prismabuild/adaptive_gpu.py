@@ -462,10 +462,10 @@ def action_contract(item, demand):
         return None, measurement, True, int(demand.get('mem_gb', 0)) * GIB
 
 
-def trusted_sample(path=SAMPLE_PATH):
+def trusted_sample(path=None):
     """Read only a root-owned, non-writable public broker snapshot."""
     try:
-        path = Path(path)
+        path = Path(SAMPLE_PATH if path is None else path)
         for parent in (path.parent, *path.parent.parents):
             info = parent.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:

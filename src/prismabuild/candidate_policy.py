@@ -7,6 +7,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import cast
 
+from .gpu_sample_facts import ForeignProcesses, UnifiedMemoryEvidence
+
 
 #: Residency states the claim pass refuses a row on before any token is taken
 #: (``residency_<state>``): its bytes are not there, or cannot be reached.  A
@@ -221,6 +223,52 @@ class CandidateDenial:
     evidence: Mapping[str, object] | None
     order_before: ScanOrder
     withhold_after: WithholdAfterDenial | None = None
+
+
+def unified_memory_denial(
+    evidence: UnifiedMemoryEvidence | None, *, held: Mapping[str, int],
+    demand: Mapping[str, int], margin_gb: int, order: ScanOrder,
+) -> CandidateDenial | None:
+    if evidence is None or demand.get("mem_gb", 0) <= 0:
+        return None
+    committed = held.get("mem_gb", 0)
+    requested = demand.get("mem_gb", 0)
+    ceiling = evidence.ceiling_gib(margin_gb=margin_gb)
+    reason = ("unified_gpu_memory_unknown" if evidence.unknown else
+              "unified_gpu_memory_budget" if committed + requested > ceiling else None)
+    if reason is None:
+        return None
+    return CandidateDenial(reason, {"reservation_demand": dict(demand), "decision": {
+        "reason": reason, "sample_id": evidence.sample_id,
+        "sampled_unix": evidence.sampled_unix,
+        "foreign_gpu_bytes": evidence.foreign_bytes,
+        "foreign_gpu_unknown": evidence.unknown,
+        "host_total_bytes": evidence.host_total_bytes,
+        "host_available_bytes": evidence.host_available_bytes,
+        "pb_resident_bytes": evidence.resident_bytes,
+        "external_bytes": evidence.external_bytes,
+        "committed_gib": None if evidence.unknown else committed,
+        "candidate_charge_gib": requested,
+        "requested_mem_gb": requested, "mem_ceiling_gib": ceiling,
+    }}, order)
+
+
+def unified_memory_preemption_demand(
+    evidence: UnifiedMemoryEvidence | None, *, demand: Mapping[str, int],
+    capacity: Mapping[str, int], margin_gb: int,
+) -> dict[str, int] | None:
+    needed = dict(demand)
+    if evidence is None:
+        return needed
+    if (evidence.unknown or (demand.get("gpu", 0) > 0
+                            and evidence.foreign_residency is ForeignProcesses.PRESENT)):
+        return None
+    ceiling = evidence.ceiling_gib(margin_gb=margin_gb)
+    if demand.get("mem_gb", 0) > ceiling:
+        return None
+    needed["mem_gb"] = demand.get("mem_gb", 0) + max(
+        0, capacity.get("mem_gb", 0) - ceiling)
+    return needed
 
 
 @dataclass(frozen=True)
