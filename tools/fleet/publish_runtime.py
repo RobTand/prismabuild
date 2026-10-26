@@ -1154,8 +1154,17 @@ def _load_canary_module():
     return module
 
 
-def _load_canary_driver():
-    return _load_canary_module().run_canary
+def _load_canary_driver(*, preflight: bool = False):
+    module = _load_canary_module()
+    if preflight:
+        check = getattr(module, "preflight_publication", None)
+        if not callable(check):
+            raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
+        try:
+            check(fleet_root=MIRROR.parent)
+        except Exception as exc:
+            raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
+    return module.run_canary
 
 
 def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
@@ -2638,6 +2647,13 @@ def _run_publication(args) -> int:
             f"canary requested but no driver at {_canary_driver_path()}: "
             "nothing was published and the live runtime still points where it did."
         )
+    if canary_enabled and not args.stage_only:
+        try:
+            _load_canary_driver(preflight=True)
+        except _CanaryPrecondition as exc:
+            raise SystemExit(
+                f"{exc}; nothing was published and the live runtime still points where it did."
+            ) from exc
     # The last refusals before anything is written: the gates read the
     # fleet's records, and an earlier refusal is cheaper to hear first.
     shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)

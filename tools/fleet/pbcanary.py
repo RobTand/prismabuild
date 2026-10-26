@@ -259,7 +259,7 @@ def last_json_object(text: str) -> dict | None:
     return None
 
 
-def _publication_placement(spec: dict, host: str) -> dict:
+def _publication_placement(spec: dict, host: str, *, resources: dict) -> dict:
     from prismabuild import contracts as _contracts
     from prismabuild import publication_canary as _canary
     image = str(spec.get("container_image") or "").strip()
@@ -267,8 +267,27 @@ def _publication_placement(spec: dict, host: str) -> dict:
         "tags": [host, _canary.CAPABILITY, _contracts.CONTAINER_IMAGE_TAG],
         "container_images": [image],
         "needs_gpu": True,
-        "resources": {"gpu": 1},
+        "resources": dict(resources),
     }
+
+
+def preflight_publication(*, fleet_root: Path) -> None:
+    """Prove the publisher's GPU leg can fit before activation, without submitting."""
+    from pbcanary_legs import leg2
+    from prismabuild import pool, publication_canary, submission
+
+    host = socket.gethostname()
+    base = _publication_placement(leg2.build(), host, resources=publication_canary.RESOURCE_DEMAND)
+    queue = submission.bounded_offer_snapshot(pool.PoolQueue(fleet_root / "pb-queue"))
+    verdict = queue.placeable(base, max_age_s=submission.RECORDED_OFFER_MAX_AGE_S)
+    if verdict is not True:
+        reason = ("no worker offers are recorded" if verdict is None else
+                  "no recorded worker matches its GPU, image, capability and declared capacity")
+        raise PreconditionRefused(
+            f"precondition refused (canary): publication GPU leg is PINNED to {host}; "
+            f"{reason}. Publish from a GPU worker offering the configured image "
+            f"and {base['resources']}; a shared checkout does not remove this host pin."
+        )
 
 
 def generation_pending(paths: dict, spec: dict, generation: str | None,
@@ -291,7 +310,7 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     sys.path.insert(0, str(paths["published_src"]))
     from prismabuild import pool as _pool
     queue = _pool.PoolQueue(paths["queue_root"])
-    base = _publication_placement(spec, host)
+    base = _publication_placement(spec, host, resources={"gpu": 1})
     full = {**base, "tags": [*base["tags"],
                              f"runtime-generation:{generation}"]}
     # pbrun's placement verdict reads every recorded offer, not the live

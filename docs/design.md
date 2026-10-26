@@ -5230,6 +5230,21 @@ running quantum. An ineligible/unknown resource state is not permission to run;
 the slot gets the next free boundary at which its safety requirements hold.
 Ordinary standalone canaries retain ordinary admission and cannot mint slots.
 
+**Canary placement before publication (#2285).** Fresh publications with an
+enabled canary call the checkout driver's `preflight_publication(fleet_root=...)`
+before staging, arming a barrier, or activating the runtime. The hook builds the
+actual GPU leg and uses one bounded recorded-offer snapshot with PB's existing
+placement matcher. It requires the publisher host, publication-canary and image
+capabilities, the configured image, and CPU1/GPU1/mem16GiB. Only the candidate
+runtime-generation tag is omitted, because workers cannot offer it before
+activation. This is declared feasibility, not a reservation or a free-capacity
+check. Missing offers, an unsupported driver hook, and unplaceable legs refuse
+without publishing. Dry runs apply the same check. Stage-only publication and
+`--no-canary` do not check placement. A shared checkout does not remove the
+publication GPU host pin. Postactivation generation waiting and placement before
+grant still protect changes after preflight. Component test evidence does not
+establish deployment or a live canary result.
+
 **Verified-canary foreign-load exemption (#1239; approved 2026-09-27).**
 A row the scan has already validated as this host's verified publication
 canary — the #1213 grant, exact generation — and only that row crosses
