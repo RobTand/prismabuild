@@ -1,0 +1,49 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "observe_inventory_process",
+      "unresolved": "Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Existing origin/main policy in unchanged tools/maintenance/test_runtime_inventory.py; metadata was missing on the fetched baseline. This source policy is unchanged by #1589."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "reconcile_attempt",
+      "unresolved": "{shard['action_key'] for shard in progress.get('shards', []) if shard.get('action_key')}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Existing origin/main policy in unchanged tools/maintenance/test_runtime_inventory.py; metadata was missing on the fetched baseline. This source policy is unchanged by #1589."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._excluded_from_cpu_hosts",
+      "unresolved": "{str(tag) for tag in item.get('tags') or [] if isinstance(tag, str)}",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "Reviewed explicit user class-tag conjunction, excluding automatic capabilities, for approved #1589 scope."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._class_scoped_candidate",
+      "fields": [
+        "cpu",
+        "mem_gb",
+        "spool_gb"
+      ]
+    },
+    "count": 1,
+    "reason": "Reviewed bounded CPU/memory and optional host spool demand whitelist for approved #1589 scope."
+  }
+]
