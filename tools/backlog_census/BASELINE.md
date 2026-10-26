@@ -38,8 +38,8 @@ these counts do not establish the live candidate population. Duplicate clusters
 are connected components of matching titles, with no close inferred from
 similarity.
 
-Priority counts and title fallback counts match the planning report. Input
-files remain in the original planning workspace at
+Priority counts and title fallback counts match the planning report. The original
+input files were collected in the planning workspace at
 `/home/rob/.paperclip/instances/default/workspaces/12fb83a6-a28c-4820-9b89-777ff089369f/census/raw/`.
 
 | File | SHA-256 |
@@ -48,9 +48,17 @@ files remain in the original planning workspace at
 | prismabuild.json | 4376aedbf347db3b2ee9ce5f3fee3f04ffbc945fd0df6522332ec3730e6fc2a8 |
 | tessera.json | 07715601783bb3b11c046e6cc43a499c4bea8d6aaf71276fbafc0a7a0935cc7d |
 
+The planning workspace is mutable. Use the copies archived with PRI-2 and check
+the hashes above before a replay. The first archive preserves the original
+bytes. The review archive differs only in prismabuild#2243 `updatedAt`, from
+`2026-10-24T11:14:18Z` to `2026-10-25T19:27:48Z`. Its prismabuild input hash is
+`be0303925cb6d9efdc70f72f14203dc3fd082005f97f3dcef1ebbe3d30c7f1e8`.
+All membership, priority and relationship fields are identical. This timestamp
+change does not alter the ticket or work-unit reconciliation.
+
 Fleet action `da7bfe57cee58543654bc45a237a7912376e13ccce591f3462de87a17baa8b21`
 passed all 61 tests without skips, replayed the unchanged original scripts
-against these files, and ran the corrected graph and reports. Its
+against that review copy, and ran the corrected graph and reports. Its
 content-verified CAS receipt is
 `0f4995f71986187a3261526b14ac3bd3484b38384106767fec07aa00fdb7b54d`.
 Terminal success, immutable log hashes, scope cleanup and the result payload
