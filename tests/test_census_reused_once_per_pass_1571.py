@@ -26,7 +26,7 @@ CANDIDATES = 80
 SIDECARS = 600
 
 
-def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
+def test_an_unfenced_pass_needs_no_complete_publication_scans(
         fleet, tmpfs_state, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
@@ -60,6 +60,4 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     assert all(queue.passes(key) == 1 for key in keys), (
         "every candidate must reach its resource decision, not a census refusal")
 
-    assert len(scans) == 2, (
-        "one locked census is two scans (discovery plus refresh); "
-        f"a pass of {CANDIDATES} candidates must not rescan: {len(scans)} scans")
+    assert scans == [], "unfenced ordinary candidates need no complete census"

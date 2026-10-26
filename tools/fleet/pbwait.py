@@ -931,10 +931,12 @@ def main(argv=None) -> int:
                     help="action key, or a prefix of one already recorded")
     ap.add_argument("--reconcile-pool", action="store_true",
                     help="verify a failed broker-EOF action's receipt and append immutable recovery evidence")
+    ap.add_argument("--reconcile-cleanup", action="store_true",
+                    help="on the owning host, verify scope absence or release for one failed or pending attempt")
     ap.add_argument("--generation",
-                    help="exact pool attempt-generation digest; required with --reconcile-pool")
+                    help="exact pool attempt-generation digest; required with --reconcile-pool or --reconcile-cleanup")
     ap.add_argument("--attempt", type=int,
-                    help="final attempt number; required with --reconcile-pool")
+                    help="final attempt number; required with --reconcile-pool or --reconcile-cleanup")
     args = ap.parse_args(argv)
 
     if args.until is not None and not args.endings:
@@ -942,17 +944,27 @@ def main(argv=None) -> int:
     if args.endings and (not math.isfinite(args.wait_s) or args.wait_s < 0):
         ap.error("--wait-s must be finite and non-negative")
 
-    if args.reconcile_pool:
+    if args.reconcile_pool and args.reconcile_cleanup:
+        ap.error('--reconcile-pool and --reconcile-cleanup are mutually exclusive')
+    if args.reconcile_pool or args.reconcile_cleanup:
         if args.endings:
-            ap.error("--reconcile-pool cannot combine with --endings")
+            ap.error("reconciliation cannot combine with --endings")
         if len(args.keys) != 1 or args.generation is None or args.attempt is None:
-            ap.error("--reconcile-pool requires one KEY, --generation and --attempt")
+            ap.error("reconciliation requires one KEY, --generation and --attempt")
     elif args.generation is not None or args.attempt is not None:
-        ap.error("--generation and --attempt require --reconcile-pool")
+        ap.error("--generation and --attempt require --reconcile-pool or --reconcile-cleanup")
 
     queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
     cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     keys = [resolve_key(queue, name) for name in args.keys]
+    if args.reconcile_cleanup:
+        try:
+            result = queue.reconcile_cleanup(keys[0], args.generation, args.attempt)
+        except (OSError, ValueError) as exc:
+            print(f'pbwait: cleanup reconciliation refused: {exc}', file=sys.stderr)
+            return 1
+        print(pb.sorted_json(result))
+        return 0
     if args.reconcile_pool:
         from prismabuild.pool_reconcile import reconcile
         try:

@@ -1,4 +1,6 @@
 """A campaign must stop publishing when its declared window is full."""
+from types import SimpleNamespace
+
 import pytest
 
 from test_pbcampaign import fleet_paths, _manifest, _row
@@ -66,7 +68,9 @@ def _window_fakes(monkeypatch, statuses, *, submitted_status="submitted"):
 
     monkeypatch.setattr(pbcampaign, "submit_row", submit)
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", wait)
-    monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "sleep": lambda seconds: None,
+    }))
     return keys, events
 
 
@@ -96,7 +100,9 @@ def test_receipt_does_not_release_a_slot_while_claim_cleanup_remains(
     path = queue.records.item_path(pool.record_store.CLAIMED, keys[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
-    monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "sleep": lambda seconds: path.unlink(),
+    }))
     submissions, waited = pbcampaign.run_windowed(
         [{"index": i} for i in range(2)], transport="pool", max_inflight=1, wait_s=30,
     )
@@ -125,7 +131,9 @@ def test_an_ending_does_not_release_a_slot_while_its_finish_is_in_flight(
     path = queue.records.dir(pool.record_store.CLAIMED) / f"{keys[0]}.1.sparky.7.abcdef01{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{}')
-    monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: path.unlink())
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "sleep": lambda seconds: path.unlink(),
+    }))
     submissions, waited = pbcampaign.run_windowed(
         [{"index": i} for i in range(2)], transport="pool", max_inflight=1, wait_s=30,
     )
@@ -237,7 +245,9 @@ def test_duplicate_rows_share_one_slot_and_retain_all_table_rows(monkeypatch):
 def test_refill_does_not_renew_the_campaign_deadline(monkeypatch):
     keys, events = _window_fakes(monkeypatch, [{0: "executed"}])
     clock = [100.0]
-    monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "monotonic": lambda: clock[0],
+    }))
     poll = pbcampaign.pbwait.wait_for_keys
 
     def expired(*args, **kwargs):
@@ -255,7 +265,9 @@ def test_refill_does_not_renew_the_campaign_deadline(monkeypatch):
 
 def test_replacement_preparation_receives_the_campaign_deadline(monkeypatch):
     _window_fakes(monkeypatch, [{0: "executed"}, {1: "executed"}])
-    monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "monotonic": lambda: 100.0,
+    }))
     submit_row = pbcampaign.submit_row
     deadlines = []
 

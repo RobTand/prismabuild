@@ -1,0 +1,51 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "8e8d215e3fd47851dbf9f992288efb0d0d5b4066",
+  "scope": [
+    "LIVE-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1772-canary",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1772",
+    "validated_repairs": [
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "eab84b1ca7219a336fdd64a62d275296385ab1ec88ee8f2bd6a79083564bd85b",
+          "9f40440569cc695e364f871567ed3c2c621693ab89d6280fba0511c2d581e240",
+          "7f4b87f061790fa69297c549dd8ed7b8e7d93604772641a140f7427629626698",
+          "26c36a012790b961bb283acabc324312f27090ce97d4e67f6dee141992529859",
+          "1b8a824b2381143de886d6a937d94d653d9c2b5b3221bd02908f9d1c23a27890",
+          "98f2b3f385c50472f57de3ef8a1001d25e58b4ef8f206914fb3073ead962e36f",
+          "b9613a7f05299314cecb6bd834eb5cb414090dd87a3ae2b51cb5f837a6710a50",
+          "b7534079e6bee67f8534912fbdae016de8d3a5231336c8109f87b21bbd9a9056",
+          "d3b7a7ae6b9cd770cf98e171cd533ebe963fc2e8347577340f075f858e9557a1",
+          "ced1823aba71d6c2a613c241129ecc2ed531d59d31a460900bb2867a9feccc95",
+          "e42e4310a74f176f6ff70bb802d2a3334d39ab1922cc5e9d62c6793578f8f328",
+          "b969be1431aae36f24255ec73c76b640e16a34b217e6b8f2bde19b5b0d44eda6"
+        ],
+        "outcome": "Twelve executed actions, exit 0, complete cleanup, verified immutable logs and CAS receipts/payloads. Five fresh regression runs per architecture, two xdist each, plus the final integrated cohort on each architecture. All cover the 16 regression cases. Tested canary source bytes match the review branch. See fleet-validation.jsonl.",
+        "scope": "Canary observer continues only leg-3 rc75 on its original action. Explicit finite patience is one absolute budget. Scheduler priority and payload execution/progress limits are preserved."
+      }
+    ],
+    "remaining_gaps": [
+      "LIVE-01 remains a whole-policy target. Eventual qualification requires contention to drain, eligible workers and finite I/O. No unconditional completion guarantee or historical safe-backfill proof.",
+      "Final integrated cohorts on base 954e14171565 each report 368 passed and one inherited test_closed_field_sets_remain_pinned failure (#2296). The earlier unchanged-base run reproduced both #2296 and #2297; #2311 fixes #2297 in the new base. Historical failures remain in the evidence. No exemptions or baseline growth. Independent Principal disposition of #2296 is required before merge.",
+      "ACC-07, INV-03/INV-04 and ID-08: component tests establish no new strict-reader, live canary, both-Spark workload or deployed-generation support.",
+      "Release-owner approval of unlimited default observation and its potentially indefinite publication-lock hold remains required in PR review."
+    ],
+    "note": "Scoped merge evidence submitted for independent review, not an approval or waiver. No publication, new runtime generation, service restart, admission exception, request mutation or action retry. Base ledger commit is identified above; the accompanying ledger records this scoped component repair without changing whole-requirement axes. Receipts establish re-readable records, not power-loss durability."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

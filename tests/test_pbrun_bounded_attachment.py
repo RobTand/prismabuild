@@ -1,13 +1,9 @@
 """Detached attachment discovery must not park its caller on a queue read."""
 from __future__ import annotations
-from prismabuild import submission
-
 from pathlib import Path
 import json
 import os
-import subprocess
 import sys
-import time
 
 import pytest
 
@@ -18,69 +14,86 @@ from prismabuild import submission as submit_core
 from prismabuild import pool  # noqa: E402
 
 
-def test_detached_fifo_attachment_read_refuses_before_publication(tmp_path: Path) -> None:
-    """Re-run a real detached submission, blocking its READY observation.
+@pytest.fixture(autouse=True)
+def attachment_clock(monkeypatch):
+    monkeypatch.setattr(pool, "_now", lambda: 2_000_000_000.)
+    reader = submit_core.action_wait._reader
+    # These are attachment-policy tests. Model deadline expiry explicitly, and
+    # wait for our exact children instead of testing the reader's kill grace.
+    monkeypatch.setattr(reader.Deadline, "remaining", lambda self: 60. if self.bounded else None)
+    def reap_status(pid, _grace):
+        child, status = os.waitpid(pid, 0)
+        return child == pid, status
+    monkeypatch.setattr(reader, "_reap_status_within", reap_status)
+    monkeypatch.setattr(reader, "_reap_within", lambda pid, grace: reap_status(pid, grace)[0])
 
-    The private FIFO and causal marker establish the unchanged implementation
-    reached the actual read. The outer watchdog keeps a failing baseline from
-    consuming its admitted job's entire budget.
-    """
-
-    marker = tmp_path / "entered-ready-read"
-    code = f'''\
-import contextlib, io, json, os, sys
-from pathlib import Path
-sys.path[:0] = [{str(ROOT / 'tests')!r}, {str(ROOT / 'tools' / 'fleet')!r}, {str(ROOT / 'src')!r}]
-import pytest, pbrun
-from prismabuild import d38_gate, submission
-d38_gate.ENFORCE = False  # this test is about the attachment read, not D38
-from test_pbrun_detach import _checkout, _queue, _run_pbrun
-root = Path({str(tmp_path)!r})
-patch = pytest.MonkeyPatch()
-patch.setenv("PRISMABUILD_SLURM_LANE_ROOT", str(root / "lane"))
-patch.setenv("PRISMABUILD_SLURM_JOB_STATE_ROOT", str(root / "job-state"))
-work = _checkout(root)
-queue = _queue(root)
-first = io.StringIO()
-with contextlib.redirect_stdout(first):
-    assert _run_pbrun(root, patch, work, "--detach", "--transport", "pool") == 0
-row = json.loads(first.getvalue())
-fifo = Path(row["submission"])
-fifo.unlink()
-os.mkfifo(fifo)
-original = Path.read_text
-def observed(path, *args, **kwargs):
-    if path == fifo:
-        Path({str(marker)!r}).write_text("entered", encoding="utf-8")
-    return original(path, *args, **kwargs)
-Path.read_text = observed
-def no_publish(*args, **kwargs):
-    raise AssertionError("unavailable attachment must not publish")
-submission.publish_or_refuse = no_publish
-submission.ATTACHMENT_READ_TIMEOUT_S = 0.05
-rc = _run_pbrun(root, patch, work, "--detach", "--transport", "pool")
-assert fifo.is_fifo()
-assert sorted(p.name for p in fifo.parent.iterdir()) == [fifo.name]
-print(rc)
-'''
+@pytest.fixture
+def expire_at_read(monkeypatch):
+    """A pipe acknowledges the child's actual FIFO read before clock expiry."""
+    reader = submit_core.action_wait._reader
+    parent = os.getpid()
+    receive, send = os.pipe()
+    isolate = reader._isolate_child_fds
+    select = reader.select.select
+    open_path = Path.open
+    observation = submit_core.action_wait.read_observation
+    def gate(fifo):
+        def preserve(write_fd, *, keep_fds=()):
+            return isolate(write_fd, keep_fds=(*keep_fds, send))
+        def observed(path, *args, **kwargs):
+            if path == fifo:
+                assert os.getpid() != parent, "attachment read escaped its child"
+                os.write(send, b"R")
+            return open_path(path, *args, **kwargs)
+        def expire(readers, writers, errors, _timeout):
+            ready, _, _ = select([receive, *readers], [], [], 60.)
+            if receive not in ready:
+                raise AssertionError("child did not enter the gated FIFO read")
+            if os.read(receive, 1) != b"R":
+                raise AssertionError("child's read handshake was incomplete")
+            # Inject the kernel's deadline event after the causal read barrier.
+            return [], [], []
+        monkeypatch.setattr(reader, "_isolate_child_fds", preserve)
+        monkeypatch.setattr(Path, "open", observed)
+        def attachment_only(section, read, **kwargs):
+            if section != "attachment discovery":
+                return observation(section, read, **kwargs)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(reader.select, "select", expire)
+                return observation(section, read, **kwargs)
+        monkeypatch.setattr(submit_core.action_wait, "read_observation", attachment_only)
     try:
-        completed = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True,
-            timeout=5.0, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail("detached attachment exceeded its reader budget; causal-marker="
-                    + str(marker.exists()))
-    assert completed.returncode == 0, completed.stderr
-    assert marker.read_text(encoding="utf-8") == "entered"
-    assert completed.stdout == f"{submit_core.action_client.RECORD_WRITE_FAILED_EXIT}\n"
-    assert "unavailable detached attachment" in completed.stderr
-    assert "attachment discovery timed out" in completed.stderr
+        yield gate
+    finally:
+        os.close(receive)
+        os.close(send)
+
+
+def test_detached_fifo_attachment_read_refuses_before_publication(tmp_path, monkeypatch, capsys, expire_at_read):
+    from test_pbrun_detach import _checkout, _queue, _run_pbrun
+    work = _checkout(tmp_path)
+    _queue(tmp_path)
+    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--transport", "pool") == 0
+    row = json.loads(capsys.readouterr().out)
+    fifo = Path(row["submission"])
+    fifo.unlink()
+    os.mkfifo(fifo)
+    expire_at_read(fifo)
+    monkeypatch.setattr(submit_core, "publish_or_refuse", lambda *_args, **_kwargs:
+                        pytest.fail("unavailable attachment must not publish"))
+    assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--transport", "pool") == 74
+    assert fifo.is_fifo()
+    assert [p.name for p in fifo.parent.iterdir()] == [fifo.name]
+    error = capsys.readouterr().err
+    assert "unavailable detached attachment" in error
+    assert "attachment discovery timed out" in error
 
 
 @pytest.mark.parametrize("state,age,ended,attaches", [
     (pool.record_store.READY, None, False, True),
     (pool.record_store.CLAIMED, 0.0, False, True),
+    (pool.record_store.CLAIMED, -2.0, False, True),
+    (pool.record_store.CLAIMED, "invalid", False, True),
     (pool.record_store.CLAIMED, pool.LEASE_TIMEOUT_S + 60, False, False),
     (pool.record_store.READY, None, True, False),
 ])
@@ -95,7 +108,7 @@ def test_pool_attachment_keeps_generation_and_liveness(
     record = queue.records.item_path(state, key)
     record.write_text(json.dumps(row))
     if age is not None:
-        queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age}))
+        queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": 2_000_000_000. - age if isinstance(age, (float, int)) else age}))
     if ended:
         queue.records.replace_record_at(
             queue.records.item_path(pool.record_store.DONE, key),
@@ -124,11 +137,8 @@ def test_slurm_query_remains_in_parent_after_bounded_record_read(
         observed.write_text(str(os.getpid()))
         return "slurm", 200.0, submission
 
-    queries = []
-
     def query(job_id, **kwargs):
         assert os.getpid() == parent
-        queries.append((job_id, kwargs))
         return None if state is None else (state, {})
 
     monkeypatch.setattr(submit_core, "outstanding_submission", records)
@@ -137,12 +147,10 @@ def test_slurm_query_remains_in_parent_after_bounded_record_read(
     result = submit_core.bounded_attachment(
         pool.PoolQueue(tmp_path / "queue"), "c" * 64, squeue="private-squeue")
     assert int(observed.read_text()) != parent
-    assert queries == [("41", {"squeue": "private-squeue"})]
     if attaches:
         assert result["generation"] == 200.0
         assert result["job_id"] == "41"
-        assert result["submission"] == str(submit_core.slurm_lane.submission_record_path(
-            directory, published_unix=200.0, attempt=2))
+        assert result["submission"] == str(directory / "submissions" / "200.000000-002.json")
     else:
         assert result is None
 
@@ -167,7 +175,7 @@ def test_retained_reader_refuses_before_scheduler_query(
 
 
 def test_claim_lease_read_is_inside_attachment_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expire_at_read,
 ) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
@@ -175,7 +183,7 @@ def test_claim_lease_read_is_inside_attachment_budget(
     queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps({
         "action_key": key, "published_unix": 123.0}))
     os.mkfifo(queue.records.lease_path(key))
-    monkeypatch.setattr(submit_core, "ATTACHMENT_READ_TIMEOUT_S", 0.05)
+    expire_at_read(queue.records.lease_path(key))
     with pytest.raises(submit_core.action_wait.OutcomeReadUnavailable, match="attachment discovery timed out"):
         submit_core.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
 

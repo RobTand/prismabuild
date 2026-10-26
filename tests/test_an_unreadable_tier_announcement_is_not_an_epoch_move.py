@@ -20,7 +20,7 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -129,7 +129,9 @@ def _fail_announcement_opens(monkeypatch, code: int, times: int | None):
 
 def _record_sleeps(monkeypatch) -> list[float]:
     slept: list[float] = []
-    monkeypatch.setattr(time, "sleep", slept.append)
+    monkeypatch.setattr(reader_lease, "time", SimpleNamespace(**{
+        **vars(reader_lease.time), "sleep": slept.append,
+    }))
     return slept
 
 
