@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import json
 import math
 
 from .denial_records import diagnostic_stamp
+from .digest_primitives import sorted_json
 from .queue_bell_topics import TOPICS
 
 
@@ -42,8 +42,7 @@ class InputChanges:
         key = topic, identity
         # Detach mutable reader results so an in-place change cannot also edit
         # the comparison baseline. Unknown schema fields remain significant.
-        meaning = json.dumps([observation.state, observation.meaning],
-                             sort_keys=True, allow_nan=False)
+        meaning = sorted_json([observation.state, observation.meaning], allow_nan=False)
         changed = self._observed.get(key) != meaning
         self._observed[key] = meaning
         self._deadlines[key] = observation.deadlines

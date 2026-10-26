@@ -146,10 +146,10 @@ def publish(local: Path, shared: Path):
 
 def _previous_snapshot(path: Path, value: dict, *, stamped: bool):
     from prismabuild import immutable_files
+    from prismabuild.digest_primitives import _canonical_bytes
     # The writer adds only source and a finite copied_unix timestamp. Its
     # canonical stamp fits 128 bytes; source profiles retain their own size.
-    limit = len(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                           ensure_ascii=False, allow_nan=False).encode('utf-8'))
+    limit = len(_canonical_bytes(value))
     if stamped:
         limit += 128
     try:
