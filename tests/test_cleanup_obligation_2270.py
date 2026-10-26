@@ -133,6 +133,38 @@ def test_operator_recovers_terminal_with_released_tokens_and_preserves_history(r
     assert pool.record_store.read_document(supplement)['owner_record'] == before
 
 
+def test_operator_recovers_lease_lost_cleanup_pending_after_reboot(refused, monkeypatch):
+    queue, item, connected = refused
+    key = item['action_key']
+    claim = queue.records.item_path(pool.CLAIMED, key)
+    abandoned = pool.record_store.read_document(claim)
+    abandoned.pop('finish_pending')
+    abandoned.pop('cleanup_obligation')
+    queue.records.replace_record_at(claim, abandoned)
+    with monkeypatch.context() as patch:
+        patch.setattr(queue, 'cleanup_action_containers',
+                      lambda *a, **kw: {'complete': True, 'used': False})
+        queue.reap_stale(timeout_s=-1)
+    path = queue.records.item_path(pool.FAILED, key)
+    before = pool.record_store.read_document(path)
+    assert before['status'] == 'lease_lost_max_attempts'
+    # Retain the refusal written by pre-fix runtimes, even after prevention lands.
+    before['container_cleanup_pending'] = abandoned['container_cleanup_pending']
+    queue.records.replace_record_at(path, before)
+    archived_path = queue.records.attempt_path(before, 1)
+    archived = archived_path.read_bytes()
+    generation = queue.records.attempt_generation(before)
+    with connected():
+        result = queue.reconcile_cleanup(key, generation, 1)
+        assert queue.reconcile_cleanup(key, generation, 1) == result
+    after = pool.record_store.read_document(path)
+    assert 'container_cleanup_pending' not in after
+    for field in ('status', 'detail', 'attempts', 'attempt_history', 'finished_unix', 'finished_host'):
+        assert after[field] == before[field]
+    assert archived_path.read_bytes() == archived
+    assert queue.ledger().held() == {}
+
+
 @pytest.mark.parametrize('fault', ['nonce', 'attempt', 'host', 'scope', 'stale', 'unknown_scope', 'tickets'])
 def test_reconciliation_refuses_wrong_or_unproved_identity(refused, monkeypatch, fault):
     queue, item, connected = refused
