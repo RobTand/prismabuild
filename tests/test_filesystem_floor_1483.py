@@ -299,7 +299,7 @@ def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforc
     assert ledger.acquire("a" * 64, {"spool_gb": 1})
 
 
-def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce, ample_space):
+def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce, ample_space, monkeypatch):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -307,11 +307,15 @@ def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce,
                       and ff.identify(p)["key"] != binding["key"]), None)
     if elsewhere is None:
         pytest.skip("no second filesystem to move the root onto")
-    moved = ff.refresh_binding(queue.root, {**binding, "root": elsewhere})
+    identify = ff.identify
+    with monkeypatch.context() as changed:
+        changed.setattr(ff, "identify", lambda path: identify(elsewhere)
+                        if str(path) == binding["root"] else identify(path))
+        moved = ff.refresh_binding(queue.root, binding)
     assert moved["reason"] == "binding_moved"
     ledger = queue.ledger(HOST)
     assert not ledger.acquire("a" * 64, {"spool_gb": 1})
-    assert ledger.last_token_shortage["reason"] == "mapping_unknown"
+    assert ledger.last_token_shortage["reason"] == "binding_moved"
     # Registering again at the real root reactivates the same stable key.
     _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))
     assert ledger.acquire("a" * 64, {"spool_gb": 1})

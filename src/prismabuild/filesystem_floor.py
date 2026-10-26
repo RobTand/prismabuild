@@ -768,17 +768,6 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
     key = str(binding["key"])
     directory = fs_dir(queue_root, key)
     identified_binding = coverage_identity(binding)
-    found = identify(binding["root"])
-    if (found["key"] != key or binding.get("source") != found.get("source")
-            or binding.get("machine_id") != _machine_id()
-            or binding.get("boot_id") != _floor_boot_id()
-            or binding.get("mount_namespace") != os.stat("/proc/self/ns/mnt").st_ino):
-        record = {**binding, "status": "moved",
-                  "status_detail": f"{binding['root']} is now {found['key']}"}
-        _floor_write(directory / "binding.json", record)
-        # No sample, so every gate refuses at once, whatever it has cached.
-        (directory / "sample.json").unlink(missing_ok=True)
-        return floor_refusal(key, "binding_moved", detail=record["status_detail"])
     with floor_locked(directory) as acquired:
         if not acquired:
             return floor_refusal(key, "floor_lock_busy")
@@ -802,6 +791,24 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
 
     identity = coverage_identity(binding)
     coverage_hash = canonical_sha256(coverage)
+    try:
+        found = identify(binding["root"])
+    except (FloorError, OSError) as exc:
+        return floor_refusal(key, "mapping_unknown", detail=str(exc))
+    if (found["key"] != key or binding.get("source") != found.get("source")
+            or binding.get("machine_id") != _machine_id()
+            or binding.get("boot_id") != _floor_boot_id()
+            or binding.get("mount_namespace") != os.stat("/proc/self/ns/mnt").st_ino):
+        detail = f"{binding['root']} is now {found['key']}"
+        with floor_locked(directory) as acquired:
+            current = _floor_read(directory / "binding.json") if acquired else None
+            if (current is not None and coverage_identity(current) == identity
+                    and _floor_read(directory / "sample.json") == pending):
+                _floor_write(directory / "binding.json",
+                             {**binding, "status": "moved", "status_detail": detail})
+                _floor_write(directory / "sample.json",
+                             {**pending, "refusal": "binding_moved", "detail": detail})
+        return floor_refusal(key, "binding_moved", detail=detail)
     try:
         counted = census(queue_root, binding)
     except FloorError as exc:
@@ -995,7 +1002,8 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
 
 def _local_mapping_matches(found, binding) -> bool:
     return found["key"] == binding["key"] and any(
-        found.get("source") == destination["source"]
+        all(found.get(field) == destination.get(field)
+            for field in ("source", "device", "mount_id"))
         for destination in binding.get("destinations", []))
 
 
@@ -1008,7 +1016,7 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
     except FloorError as exc:
         return [floor_refusal("bindings", "unreadable", detail=str(exc))]
     by_key = {b["key"]: b for b in known}
-    seen: set[str] = set()
+    seen = set()
     verdicts: list[dict[str, object]] = []
     for path in paths:
         try:
@@ -1018,7 +1026,7 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
             continue
         name = (f"nfs:{found['server']}:{found.get('source')}" if found["key"] is None
                 else str(found["key"]))
-        destination = f"{name}:{found.get('source')}"
+        destination = (name, found.get("source"), found.get("device"), found.get("mount_id"))
         if destination in seen:
             continue
         seen.add(destination)
