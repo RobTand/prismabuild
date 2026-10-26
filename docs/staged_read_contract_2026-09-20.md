@@ -231,6 +231,27 @@ row above.
   memory, GPU, and tier tokens fit the box and tier ledgers simultaneously;
   a claim that reserved on a tier is concluded on both ledger sides via one
   release helper.
+
+  Newcomer movement feasibility (#1772) is separate from publication
+  accounting. `ConsumerWindow.remaining_movement_minimum_gib` examines
+  every remaining current-plus-next movement frontier on each leg using
+  the existing chunk units (never whole-phase sums for chunked plans).
+  Declared prefixes retain their existing prelaunch peak owner. If any
+  required indivisible movement or adjacent overlap exceeds that tier's
+  authoritative minted capacity, the unadmitted newcomer remains gated
+  and cannot establish the feasible-wait priority barrier or spend relief
+  on its impossible plan. `read_footprint()` remains capacity-bounded
+  publication accounting, not a remaining-plan feasibility certificate.
+  This is a positive impossibility witness only: fitting does not authorize
+  admission, and unknown supply or incomplete evidence grants no bypass.
+  READY-only priority, commitment, joint-fit, prelaunch/output accounting,
+  sharing, funding and fences still govern the lower window normally.
+  Re-evaluation each cycle restores ordinary leader consideration when
+  capacity grows; no exclusion state or sealed-plan rewrite is introduced.
+  Admitted consumers keep their continuity protections and all live
+  holdings remain charged. The synthetic evidence and explicit historical
+  qualification limits are in
+  `measurements/2060-stalled-leader-contract.md` (W2 #2061 addendum).
 - INV-02 claim requires the declared initial working set ready: every lead
   movement node has a `done/` `executed` record for the same manifest the
   consumer names, still token-pinned (adoption counts; no-byte `cache_hit`
