@@ -1324,6 +1324,19 @@ def _sealed_action_request(
     action_key: str,
     *, max_bytes: int | None = None,
 ) -> Mapping[str, object] | None:
+    try:
+        return _validated_action_request(cas_root, action_key, max_bytes=max_bytes)
+    except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
+            ValueError, OSError) as exc:
+        raise PoolContractError(
+            f"pool action request unreadable: {exc}") from exc
+
+
+def _validated_action_request(
+    cas_root: str | Path,
+    action_key: str,
+    *, max_bytes: int | None = None,
+) -> Mapping[str, object] | None:
     """Read one validated sealed request for all publication policies.
 
     An absent request permits only the legacy direct-publish path. Corrupt,
@@ -1341,14 +1354,9 @@ def _sealed_action_request(
         )
     except FileNotFoundError:
         return None
-    try:
-        action = pb.validate_action(
-            pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-        )
-    except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
-            ValueError, OSError) as exc:
-        raise PoolContractError(
-            f"pool action request unreadable: {exc}") from exc
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     params = action.get("params")
