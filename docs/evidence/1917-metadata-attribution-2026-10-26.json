@@ -1,0 +1,2061 @@
+{
+  "schema": "pb.nfs_metadata_attribution.v1",
+  "acceptance": "incomplete: syscall producers named; exact per-process RPC shares and polling removal remain open",
+  "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+  "source_base": "bd73d5c8c0f032649c2400ae1b7401e9c613497d",
+  "action_key": "8e732643f7c6cd74000157b293642b326cded7067d911544bc1c06a25ea2a16a",
+  "claim_check": {
+    "abandoned_readers": [],
+    "attestation_verified": null,
+    "cas_root": "/mnt/shared/prismabuild-fleet/cas",
+    "checks": {
+      "claim_addressed_correctly": true,
+      "claim_digest_matches_body": true,
+      "claim_present": true,
+      "payload_bytes_match": true,
+      "payload_present": true,
+      "payload_sha256_match": true,
+      "receipt_binds_the_claims_manifest": true,
+      "receipt_present": true,
+      "receipt_self_consistent": true
+    },
+    "checks_passed": true,
+    "claim": {
+      "action_key": "8e732643f7c6cd74000157b293642b326cded7067d911544bc1c06a25ea2a16a",
+      "action_manifest_sha256": "01aa44e5e3f3b924c6161c976841216096ad305905b8daa5382a412440eb1b1e",
+      "checkout_root": "/home/rob/tmp/prismabuild-checkouts/8e732643f7c6.y63z0fgf/checkout",
+      "claim_sha256": "879137563cbdce0dd4f04624baf7211f696e4e1737e8e0e73b5b6b4d1ff056fb",
+      "result_path": "pbrun_result.3b818a930ac6892c.txt",
+      "schema": "prismaquant.prismabuild.local_result_claim.v1",
+      "working_directory": "."
+    },
+    "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/87/879137563cbdce0dd4f04624baf7211f696e4e1737e8e0e73b5b6b4d1ff056fb.json",
+    "complete": true,
+    "deadline_s": 5.0,
+    "generated_unix": 1792993184.4144316,
+    "generation": "9dce28460e76-1792959923-b5904f02524e",
+    "generation_stale": false,
+    "not_checked": [
+      "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+    ],
+    "payload": {
+      "bytes": 29979,
+      "present": true,
+      "sha256": "05f5f8bd00ef7c9801fe1298dc462fbaccf4f7c1b59280de227d9b9999171cca"
+    },
+    "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/05/05f5f8bd00ef7c9801fe1298dc462fbaccf4f7c1b59280de227d9b9999171cca",
+    "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/8e/8e732643f7c6cd74000157b293642b326cded7067d911544bc1c06a25ea2a16a.json",
+    "schema": "prismaquant.prismabuild.pbmcp.v1",
+    "sha256": "879137563cbdce0dd4f04624baf7211f696e4e1737e8e0e73b5b6b4d1ff056fb",
+    "started_from_generation": true,
+    "timed_out": [],
+    "tool": "pb_verify_claim",
+    "unavailable": []
+  },
+  "input_manifest": [
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparklina-trace-paired.txt.gz",
+      "sha256": "7277336b4bd21b4fbea49c4c355313c7ab7d10fa9eff80b20db7252d2e2cce8d"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparky-trace-paired.txt.gz",
+      "sha256": "7b9598441d06f13bb6daccc8302484e543a28c525f52fb113f31f38b0b15e818"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparky-paired-mountstats.json",
+      "sha256": "f5f047076f12fd418d7888e36b7a09fccce5ca6bfd1730cbe221155a21542849"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparklina-initial.json",
+      "sha256": "ddce15b6fa0e1f5bf323398f47259556f7db352e07dfd82f86e6a1f51a0a85ee"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparklina-roles.json",
+      "sha256": "b6aee83a9deecd4c02487a93bda7f3aaf3d4a0af82b98e6a7c1df0cf23ec1be5"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparky-roles.json",
+      "sha256": "bfe8bad620c21ca722083effed766fe08a930db274bdf1497e89537ea77fde1e"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparky-initial.json",
+      "sha256": "da72439cb587d77fd7620f58e422f72fb39a08d2d79166deab671a216c6b9af2"
+    },
+    {
+      "path": "/mnt/shared/paperclip-runs/PRI-167/metadata-inputs/sparklina-paired-mountstats.json",
+      "sha256": "64fa4ee9ec0d7210125d5680a6b146d65e1be6671c27aa7fcc69b448dac39ba4"
+    }
+  ],
+  "analysis": {
+    "fixture_checks_passed": true,
+    "reports": [
+      {
+        "host": "sparky",
+        "mounts": [
+          {
+            "mount": "/mnt/shared",
+            "device": "10.100.98.3:/storage_pool/shared",
+            "started_unix": 1792992618.4056475,
+            "ended_unix": 1792992660.405757,
+            "seconds": 42.000109153974336,
+            "operations": {
+              "NULL": 0,
+              "READ": 0,
+              "WRITE": 210,
+              "COMMIT": 0,
+              "OPEN": 210,
+              "OPEN_CONFIRM": 0,
+              "OPEN_NOATTR": 751,
+              "OPEN_DOWNGRADE": 0,
+              "CLOSE": 961,
+              "SETATTR": 0,
+              "FSINFO": 0,
+              "RENEW": 0,
+              "SETCLIENTID": 0,
+              "SETCLIENTID_CONFIRM": 0,
+              "LOCK": 0,
+              "LOCKT": 0,
+              "LOCKU": 0,
+              "ACCESS": 11,
+              "GETATTR": 1066,
+              "LOOKUP": 2,
+              "LOOKUP_ROOT": 0,
+              "REMOVE": 210,
+              "RENAME": 210,
+              "LINK": 0,
+              "SYMLINK": 0,
+              "CREATE": 128,
+              "PATHCONF": 0,
+              "STATFS": 87,
+              "READLINK": 0,
+              "READDIR": 126,
+              "SERVER_CAPS": 0,
+              "DELEGRETURN": 0,
+              "GETACL": 0,
+              "SETACL": 0,
+              "FS_LOCATIONS": 0,
+              "RELEASE_LOCKOWNER": 0,
+              "SECINFO": 0,
+              "FSID_PRESENT": 0,
+              "EXCHANGE_ID": 0,
+              "CREATE_SESSION": 0,
+              "DESTROY_SESSION": 0,
+              "SEQUENCE": 0,
+              "GET_LEASE_TIME": 0,
+              "RECLAIM_COMPLETE": 0,
+              "LAYOUTGET": 0,
+              "GETDEVICEINFO": 0,
+              "LAYOUTCOMMIT": 0,
+              "LAYOUTRETURN": 0,
+              "SECINFO_NO_NAME": 0,
+              "TEST_STATEID": 0,
+              "FREE_STATEID": 0,
+              "GETDEVICELIST": 0,
+              "BIND_CONN_TO_SESSION": 0,
+              "DESTROY_CLIENTID": 0,
+              "SEEK": 0,
+              "ALLOCATE": 0,
+              "DEALLOCATE": 0,
+              "ZERO_RANGE": 0,
+              "LAYOUTSTATS": 0,
+              "CLONE": 0,
+              "COPY": 0,
+              "OFFLOAD_CANCEL": 0,
+              "LOOKUPP": 0,
+              "LAYOUTERROR": 0,
+              "COPY_NOTIFY": 0,
+              "GETXATTR": 0,
+              "SETXATTR": 0,
+              "LISTXATTRS": 0,
+              "REMOVEXATTR": 0,
+              "READ_PLUS": 0,
+              "OFFLOAD_STATUS": 0
+            },
+            "rates_per_s": {
+              "NULL": 0.0,
+              "READ": 0.0,
+              "WRITE": 4.999987005513018,
+              "COMMIT": 0.0,
+              "OPEN": 4.999987005513018,
+              "OPEN_CONFIRM": 0.0,
+              "OPEN_NOATTR": 17.88090591019179,
+              "OPEN_DOWNGRADE": 0.0,
+              "CLOSE": 22.880892915704806,
+              "SETATTR": 0.0,
+              "FSINFO": 0.0,
+              "RENEW": 0.0,
+              "SETCLIENTID": 0.0,
+              "SETCLIENTID_CONFIRM": 0.0,
+              "LOCK": 0.0,
+              "LOCKT": 0.0,
+              "LOCKU": 0.0,
+              "ACCESS": 0.26190408124115805,
+              "GETATTR": 25.380886418461316,
+              "LOOKUP": 0.047618923862028734,
+              "LOOKUP_ROOT": 0.0,
+              "REMOVE": 4.999987005513018,
+              "RENAME": 4.999987005513018,
+              "LINK": 0.0,
+              "SYMLINK": 0.0,
+              "CREATE": 3.047611127169839,
+              "PATHCONF": 0.0,
+              "STATFS": 2.07142318799825,
+              "READLINK": 0.0,
+              "READDIR": 2.9999922033078104,
+              "SERVER_CAPS": 0.0,
+              "DELEGRETURN": 0.0,
+              "GETACL": 0.0,
+              "SETACL": 0.0,
+              "FS_LOCATIONS": 0.0,
+              "RELEASE_LOCKOWNER": 0.0,
+              "SECINFO": 0.0,
+              "FSID_PRESENT": 0.0,
+              "EXCHANGE_ID": 0.0,
+              "CREATE_SESSION": 0.0,
+              "DESTROY_SESSION": 0.0,
+              "SEQUENCE": 0.0,
+              "GET_LEASE_TIME": 0.0,
+              "RECLAIM_COMPLETE": 0.0,
+              "LAYOUTGET": 0.0,
+              "GETDEVICEINFO": 0.0,
+              "LAYOUTCOMMIT": 0.0,
+              "LAYOUTRETURN": 0.0,
+              "SECINFO_NO_NAME": 0.0,
+              "TEST_STATEID": 0.0,
+              "FREE_STATEID": 0.0,
+              "GETDEVICELIST": 0.0,
+              "BIND_CONN_TO_SESSION": 0.0,
+              "DESTROY_CLIENTID": 0.0,
+              "SEEK": 0.0,
+              "ALLOCATE": 0.0,
+              "DEALLOCATE": 0.0,
+              "ZERO_RANGE": 0.0,
+              "LAYOUTSTATS": 0.0,
+              "CLONE": 0.0,
+              "COPY": 0.0,
+              "OFFLOAD_CANCEL": 0.0,
+              "LOOKUPP": 0.0,
+              "LAYOUTERROR": 0.0,
+              "COPY_NOTIFY": 0.0,
+              "GETXATTR": 0.0,
+              "SETXATTR": 0.0,
+              "LISTXATTRS": 0.0,
+              "REMOVEXATTR": 0.0,
+              "READ_PLUS": 0.0,
+              "OFFLOAD_STATUS": 0.0
+            },
+            "total_per_s": 94.57118278998907
+          },
+          {
+            "mount": "/mnt/shared/prismabuild-fleet/pb-queue",
+            "device": "10.100.98.3:/storage_pool/shared/prismabuild-fleet/pb-queue",
+            "started_unix": 1792992618.4056475,
+            "ended_unix": 1792992660.405757,
+            "seconds": 42.000109153974336,
+            "operations": {
+              "NULL": 0,
+              "READ": 356,
+              "WRITE": 346,
+              "COMMIT": 0,
+              "OPEN": 413,
+              "OPEN_CONFIRM": 0,
+              "OPEN_NOATTR": 7420,
+              "OPEN_DOWNGRADE": 0,
+              "CLOSE": 7762,
+              "SETATTR": 354,
+              "FSINFO": 0,
+              "RENEW": 0,
+              "SETCLIENTID": 0,
+              "SETCLIENTID_CONFIRM": 0,
+              "LOCK": 513,
+              "LOCKT": 0,
+              "LOCKU": 484,
+              "ACCESS": 370,
+              "GETATTR": 7605,
+              "LOOKUP": 1716,
+              "LOOKUP_ROOT": 0,
+              "REMOVE": 12,
+              "RENAME": 348,
+              "LINK": 0,
+              "SYMLINK": 0,
+              "CREATE": 0,
+              "PATHCONF": 0,
+              "STATFS": 0,
+              "READLINK": 0,
+              "READDIR": 182,
+              "SERVER_CAPS": 0,
+              "DELEGRETURN": 0,
+              "GETACL": 0,
+              "SETACL": 0,
+              "FS_LOCATIONS": 0,
+              "RELEASE_LOCKOWNER": 0,
+              "SECINFO": 0,
+              "FSID_PRESENT": 0,
+              "EXCHANGE_ID": 0,
+              "CREATE_SESSION": 0,
+              "DESTROY_SESSION": 0,
+              "SEQUENCE": 0,
+              "GET_LEASE_TIME": 0,
+              "RECLAIM_COMPLETE": 0,
+              "LAYOUTGET": 0,
+              "GETDEVICEINFO": 0,
+              "LAYOUTCOMMIT": 0,
+              "LAYOUTRETURN": 0,
+              "SECINFO_NO_NAME": 0,
+              "TEST_STATEID": 0,
+              "FREE_STATEID": 484,
+              "GETDEVICELIST": 0,
+              "BIND_CONN_TO_SESSION": 0,
+              "DESTROY_CLIENTID": 0,
+              "SEEK": 0,
+              "ALLOCATE": 0,
+              "DEALLOCATE": 0,
+              "ZERO_RANGE": 0,
+              "LAYOUTSTATS": 0,
+              "CLONE": 0,
+              "COPY": 0,
+              "OFFLOAD_CANCEL": 0,
+              "LOOKUPP": 0,
+              "LAYOUTERROR": 0,
+              "COPY_NOTIFY": 0,
+              "GETXATTR": 0,
+              "SETXATTR": 0,
+              "LISTXATTRS": 0,
+              "REMOVEXATTR": 0,
+              "READ_PLUS": 0,
+              "OFFLOAD_STATUS": 0
+            },
+            "rates_per_s": {
+              "NULL": 0.0,
+              "READ": 8.476168447441115,
+              "WRITE": 8.238073828130972,
+              "COMMIT": 0.0,
+              "OPEN": 9.833307777508933,
+              "OPEN_CONFIRM": 0.0,
+              "OPEN_NOATTR": 176.66620752812662,
+              "OPEN_DOWNGRADE": 0.0,
+              "CLOSE": 184.80904350853353,
+              "SETATTR": 8.428549523579086,
+              "FSINFO": 0.0,
+              "RENEW": 0.0,
+              "SETCLIENTID": 0.0,
+              "SETCLIENTID_CONFIRM": 0.0,
+              "LOCK": 12.21425397061037,
+              "LOCKT": 0.0,
+              "LOCKU": 11.523779574610954,
+              "ACCESS": 8.809500914475317,
+              "GETATTR": 181.07095798536426,
+              "LOOKUP": 40.857036673620655,
+              "LOOKUP_ROOT": 0.0,
+              "REMOVE": 0.2857135431721724,
+              "RENAME": 8.285692751993,
+              "LINK": 0.0,
+              "SYMLINK": 0.0,
+              "CREATE": 0.0,
+              "PATHCONF": 0.0,
+              "STATFS": 0.0,
+              "READLINK": 0.0,
+              "READDIR": 4.333322071444615,
+              "SERVER_CAPS": 0.0,
+              "DELEGRETURN": 0.0,
+              "GETACL": 0.0,
+              "SETACL": 0.0,
+              "FS_LOCATIONS": 0.0,
+              "RELEASE_LOCKOWNER": 0.0,
+              "SECINFO": 0.0,
+              "FSID_PRESENT": 0.0,
+              "EXCHANGE_ID": 0.0,
+              "CREATE_SESSION": 0.0,
+              "DESTROY_SESSION": 0.0,
+              "SEQUENCE": 0.0,
+              "GET_LEASE_TIME": 0.0,
+              "RECLAIM_COMPLETE": 0.0,
+              "LAYOUTGET": 0.0,
+              "GETDEVICEINFO": 0.0,
+              "LAYOUTCOMMIT": 0.0,
+              "LAYOUTRETURN": 0.0,
+              "SECINFO_NO_NAME": 0.0,
+              "TEST_STATEID": 0.0,
+              "FREE_STATEID": 11.523779574610954,
+              "GETDEVICELIST": 0.0,
+              "BIND_CONN_TO_SESSION": 0.0,
+              "DESTROY_CLIENTID": 0.0,
+              "SEEK": 0.0,
+              "ALLOCATE": 0.0,
+              "DEALLOCATE": 0.0,
+              "ZERO_RANGE": 0.0,
+              "LAYOUTSTATS": 0.0,
+              "CLONE": 0.0,
+              "COPY": 0.0,
+              "OFFLOAD_CANCEL": 0.0,
+              "LOOKUPP": 0.0,
+              "LAYOUTERROR": 0.0,
+              "COPY_NOTIFY": 0.0,
+              "GETXATTR": 0.0,
+              "SETXATTR": 0.0,
+              "LISTXATTRS": 0.0,
+              "REMOVEXATTR": 0.0,
+              "READ_PLUS": 0.0,
+              "OFFLOAD_STATUS": 0.0
+            },
+            "total_per_s": 675.3553876732225
+          }
+        ],
+        "analysis_path": "/mnt/shared/paperclip-runs/PRI-167/sparky-analysis.json",
+        "analysis_sha256": "1eaa6d1f46a89edd73cac16a7954ff8358151eccf49d8f7244331babb4a7ff36",
+        "summary": [
+          {
+            "role": "apps.plugin",
+            "category": "generation-discovery",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 1,
+            "calls_per_s": 0.023809461931014367
+          },
+          {
+            "role": "apps.plugin",
+            "category": "helper-module",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 2,
+            "calls_per_s": 0.047618923862028734
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.999961016539052
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 420,
+            "calls_per_s": 9.999974011026035
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.999961016539052
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 420,
+            "calls_per_s": 9.999974011026035
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999987005513018
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.999961016539052
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "renameat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999987005513018
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "unlinkat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999987005513018
+          },
+          {
+            "role": "supervise.py",
+            "category": "ancestor",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 4592,
+            "calls_per_s": 109.33304918721798
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 8,
+            "calls_per_s": 0.19047569544811493
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 8,
+            "calls_per_s": 0.19047569544811493
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 24,
+            "calls_per_s": 0.5714270863443448
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 4624,
+            "calls_per_s": 110.09495196901044
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 8,
+            "calls_per_s": 0.19047569544811493
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 8,
+            "calls_per_s": 0.19047569544811493
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 16,
+            "calls_per_s": 0.38095139089622987
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 16,
+            "calls_per_s": 0.38095139089622987
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 736,
+            "calls_per_s": 17.523763981226576
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 2216,
+            "calls_per_s": 52.76176763912784
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 8,
+            "calls_per_s": 0.19047569544811493
+          },
+          {
+            "role": "supervise.py",
+            "category": "other",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 16,
+            "calls_per_s": 0.38095139089622987
+          },
+          {
+            "role": "supervise.py",
+            "category": "other",
+            "syscall": "readlinkat",
+            "outcome": "success",
+            "count": 16,
+            "calls_per_s": 0.38095139089622987
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 24,
+            "calls_per_s": 0.5714270863443448
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 48,
+            "calls_per_s": 1.1428541726886896
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 48,
+            "calls_per_s": 1.1428541726886896
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 24,
+            "calls_per_s": 0.5714270863443448
+          },
+          {
+            "role": "unidentified",
+            "category": "ancestor",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 84,
+            "calls_per_s": 1.999994802205207
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 220,
+            "calls_per_s": 5.2380816248231605
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 4778,
+            "calls_per_s": 113.76160910638664
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 220,
+            "calls_per_s": 5.2380816248231605
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 64,
+            "calls_per_s": 1.5238055635849195
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 32,
+            "calls_per_s": 0.7619027817924597
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 32,
+            "calls_per_s": 0.7619027817924597
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 64,
+            "calls_per_s": 1.5238055635849195
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 960,
+            "calls_per_s": 22.857083453773793
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 32,
+            "calls_per_s": 0.7619027817924597
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 96,
+            "calls_per_s": 2.285708345377379
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 224,
+            "calls_per_s": 5.333319472547219
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 416,
+            "calls_per_s": 9.904736163301976
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 96,
+            "calls_per_s": 2.285708345377379
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 608,
+            "calls_per_s": 14.476152854056735
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "mkdirat",
+            "outcome": "failure",
+            "count": 128,
+            "calls_per_s": 3.047611127169839
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 224,
+            "calls_per_s": 5.333319472547219
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 2464,
+            "calls_per_s": 58.6665141980194
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "failure",
+            "count": 128,
+            "calls_per_s": 3.047611127169839
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 224,
+            "calls_per_s": 5.333319472547219
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 96,
+            "calls_per_s": 2.285708345377379
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 308,
+            "calls_per_s": 7.333314274752425
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 616,
+            "calls_per_s": 14.66662854950485
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 616,
+            "calls_per_s": 14.66662854950485
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 308,
+            "calls_per_s": 7.333314274752425
+          }
+        ]
+      },
+      {
+        "host": "sparklina",
+        "mounts": [
+          {
+            "mount": "/mnt/shared",
+            "device": "10.100.99.3:/storage_pool/shared",
+            "started_unix": 1792992618.4570372,
+            "ended_unix": 1792992660.4570448,
+            "seconds": 42.0000071170507,
+            "operations": {
+              "NULL": 0,
+              "READ": 0,
+              "WRITE": 210,
+              "COMMIT": 0,
+              "OPEN": 210,
+              "OPEN_CONFIRM": 0,
+              "OPEN_NOATTR": 791,
+              "OPEN_DOWNGRADE": 0,
+              "CLOSE": 1000,
+              "SETATTR": 0,
+              "FSINFO": 0,
+              "RENEW": 0,
+              "SETCLIENTID": 0,
+              "SETCLIENTID_CONFIRM": 0,
+              "LOCK": 0,
+              "LOCKT": 0,
+              "LOCKU": 0,
+              "ACCESS": 11,
+              "GETATTR": 1080,
+              "LOOKUP": 0,
+              "LOOKUP_ROOT": 0,
+              "REMOVE": 210,
+              "RENAME": 210,
+              "LINK": 0,
+              "SYMLINK": 0,
+              "CREATE": 241,
+              "PATHCONF": 0,
+              "STATFS": 89,
+              "READLINK": 0,
+              "READDIR": 168,
+              "SERVER_CAPS": 0,
+              "DELEGRETURN": 0,
+              "GETACL": 0,
+              "SETACL": 0,
+              "FS_LOCATIONS": 0,
+              "RELEASE_LOCKOWNER": 0,
+              "SECINFO": 0,
+              "FSID_PRESENT": 0,
+              "EXCHANGE_ID": 0,
+              "CREATE_SESSION": 0,
+              "DESTROY_SESSION": 0,
+              "SEQUENCE": 0,
+              "GET_LEASE_TIME": 0,
+              "RECLAIM_COMPLETE": 0,
+              "LAYOUTGET": 0,
+              "GETDEVICEINFO": 0,
+              "LAYOUTCOMMIT": 0,
+              "LAYOUTRETURN": 0,
+              "SECINFO_NO_NAME": 0,
+              "TEST_STATEID": 0,
+              "FREE_STATEID": 0,
+              "GETDEVICELIST": 0,
+              "BIND_CONN_TO_SESSION": 0,
+              "DESTROY_CLIENTID": 0,
+              "SEEK": 0,
+              "ALLOCATE": 0,
+              "DEALLOCATE": 0,
+              "ZERO_RANGE": 0,
+              "LAYOUTSTATS": 0,
+              "CLONE": 0,
+              "COPY": 0,
+              "OFFLOAD_CANCEL": 0,
+              "LOOKUPP": 0,
+              "LAYOUTERROR": 0,
+              "COPY_NOTIFY": 0,
+              "GETXATTR": 0,
+              "SETXATTR": 0,
+              "LISTXATTRS": 0,
+              "REMOVEXATTR": 0,
+              "READ_PLUS": 0,
+              "OFFLOAD_STATUS": 0
+            },
+            "rates_per_s": {
+              "NULL": 0.0,
+              "READ": 0.0,
+              "WRITE": 4.999999152732203,
+              "COMMIT": 0.0,
+              "OPEN": 4.999999152732203,
+              "OPEN_CONFIRM": 0.0,
+              "OPEN_NOATTR": 18.833330141957966,
+              "OPEN_DOWNGRADE": 0.0,
+              "CLOSE": 23.809519774915252,
+              "SETATTR": 0.0,
+              "FSINFO": 0.0,
+              "RENEW": 0.0,
+              "SETCLIENTID": 0.0,
+              "SETCLIENTID_CONFIRM": 0.0,
+              "LOCK": 0.0,
+              "LOCKT": 0.0,
+              "LOCKU": 0.0,
+              "ACCESS": 0.2619047175240678,
+              "GETATTR": 25.714281356908472,
+              "LOOKUP": 0.0,
+              "LOOKUP_ROOT": 0.0,
+              "REMOVE": 4.999999152732203,
+              "RENAME": 4.999999152732203,
+              "LINK": 0.0,
+              "SYMLINK": 0.0,
+              "CREATE": 5.738094265754576,
+              "PATHCONF": 0.0,
+              "STATFS": 2.1190472599674575,
+              "READLINK": 0.0,
+              "READDIR": 3.9999993221857624,
+              "SERVER_CAPS": 0.0,
+              "DELEGRETURN": 0.0,
+              "GETACL": 0.0,
+              "SETACL": 0.0,
+              "FS_LOCATIONS": 0.0,
+              "RELEASE_LOCKOWNER": 0.0,
+              "SECINFO": 0.0,
+              "FSID_PRESENT": 0.0,
+              "EXCHANGE_ID": 0.0,
+              "CREATE_SESSION": 0.0,
+              "DESTROY_SESSION": 0.0,
+              "SEQUENCE": 0.0,
+              "GET_LEASE_TIME": 0.0,
+              "RECLAIM_COMPLETE": 0.0,
+              "LAYOUTGET": 0.0,
+              "GETDEVICEINFO": 0.0,
+              "LAYOUTCOMMIT": 0.0,
+              "LAYOUTRETURN": 0.0,
+              "SECINFO_NO_NAME": 0.0,
+              "TEST_STATEID": 0.0,
+              "FREE_STATEID": 0.0,
+              "GETDEVICELIST": 0.0,
+              "BIND_CONN_TO_SESSION": 0.0,
+              "DESTROY_CLIENTID": 0.0,
+              "SEEK": 0.0,
+              "ALLOCATE": 0.0,
+              "DEALLOCATE": 0.0,
+              "ZERO_RANGE": 0.0,
+              "LAYOUTSTATS": 0.0,
+              "CLONE": 0.0,
+              "COPY": 0.0,
+              "OFFLOAD_CANCEL": 0.0,
+              "LOOKUPP": 0.0,
+              "LAYOUTERROR": 0.0,
+              "COPY_NOTIFY": 0.0,
+              "GETXATTR": 0.0,
+              "SETXATTR": 0.0,
+              "LISTXATTRS": 0.0,
+              "REMOVEXATTR": 0.0,
+              "READ_PLUS": 0.0,
+              "OFFLOAD_STATUS": 0.0
+            },
+            "total_per_s": 100.47617345014237
+          },
+          {
+            "mount": "/mnt/shared/prismabuild-fleet/pb-queue",
+            "device": "10.100.99.3:/storage_pool/shared/prismabuild-fleet/pb-queue",
+            "started_unix": 1792992618.4570372,
+            "ended_unix": 1792992660.4570448,
+            "seconds": 42.0000071170507,
+            "operations": {
+              "NULL": 0,
+              "READ": 277,
+              "WRITE": 332,
+              "COMMIT": 0,
+              "OPEN": 386,
+              "OPEN_CONFIRM": 0,
+              "OPEN_NOATTR": 11247,
+              "OPEN_DOWNGRADE": 0,
+              "CLOSE": 11571,
+              "SETATTR": 334,
+              "FSINFO": 0,
+              "RENEW": 0,
+              "SETCLIENTID": 0,
+              "SETCLIENTID_CONFIRM": 0,
+              "LOCK": 375,
+              "LOCKT": 0,
+              "LOCKU": 354,
+              "ACCESS": 210,
+              "GETATTR": 11298,
+              "LOOKUP": 1328,
+              "LOOKUP_ROOT": 0,
+              "REMOVE": 4,
+              "RENAME": 332,
+              "LINK": 0,
+              "SYMLINK": 0,
+              "CREATE": 0,
+              "PATHCONF": 0,
+              "STATFS": 0,
+              "READLINK": 0,
+              "READDIR": 113,
+              "SERVER_CAPS": 0,
+              "DELEGRETURN": 0,
+              "GETACL": 0,
+              "SETACL": 0,
+              "FS_LOCATIONS": 0,
+              "RELEASE_LOCKOWNER": 0,
+              "SECINFO": 0,
+              "FSID_PRESENT": 0,
+              "EXCHANGE_ID": 0,
+              "CREATE_SESSION": 0,
+              "DESTROY_SESSION": 0,
+              "SEQUENCE": 0,
+              "GET_LEASE_TIME": 0,
+              "RECLAIM_COMPLETE": 0,
+              "LAYOUTGET": 0,
+              "GETDEVICEINFO": 0,
+              "LAYOUTCOMMIT": 0,
+              "LAYOUTRETURN": 0,
+              "SECINFO_NO_NAME": 0,
+              "TEST_STATEID": 0,
+              "FREE_STATEID": 354,
+              "GETDEVICELIST": 0,
+              "BIND_CONN_TO_SESSION": 0,
+              "DESTROY_CLIENTID": 0,
+              "SEEK": 0,
+              "ALLOCATE": 0,
+              "DEALLOCATE": 0,
+              "ZERO_RANGE": 0,
+              "LAYOUTSTATS": 0,
+              "CLONE": 0,
+              "COPY": 0,
+              "OFFLOAD_CANCEL": 0,
+              "LOOKUPP": 0,
+              "LAYOUTERROR": 0,
+              "COPY_NOTIFY": 0,
+              "GETXATTR": 0,
+              "SETXATTR": 0,
+              "LISTXATTRS": 0,
+              "REMOVEXATTR": 0,
+              "READ_PLUS": 0,
+              "OFFLOAD_STATUS": 0
+            },
+            "rates_per_s": {
+              "NULL": 0.0,
+              "READ": 6.595236977651525,
+              "WRITE": 7.9047605652718635,
+              "COMMIT": 0.0,
+              "OPEN": 9.190474633117288,
+              "OPEN_CONFIRM": 0.0,
+              "OPEN_NOATTR": 267.78566890847185,
+              "OPEN_DOWNGRADE": 0.0,
+              "CLOSE": 275.4999533155444,
+              "SETATTR": 7.952379604821695,
+              "FSINFO": 0.0,
+              "RENEW": 0.0,
+              "SETCLIENTID": 0.0,
+              "SETCLIENTID_CONFIRM": 0.0,
+              "LOCK": 8.92856991559322,
+              "LOCKT": 0.0,
+              "LOCKU": 8.428570000319999,
+              "ACCESS": 4.999999152732203,
+              "GETATTR": 268.9999544169925,
+              "LOOKUP": 31.619042261087454,
+              "LOOKUP_ROOT": 0.0,
+              "REMOVE": 0.095238079099661,
+              "RENAME": 7.9047605652718635,
+              "LINK": 0.0,
+              "SYMLINK": 0.0,
+              "CREATE": 0.0,
+              "PATHCONF": 0.0,
+              "STATFS": 0.0,
+              "READLINK": 0.0,
+              "READDIR": 2.6904757345654238,
+              "SERVER_CAPS": 0.0,
+              "DELEGRETURN": 0.0,
+              "GETACL": 0.0,
+              "SETACL": 0.0,
+              "FS_LOCATIONS": 0.0,
+              "RELEASE_LOCKOWNER": 0.0,
+              "SECINFO": 0.0,
+              "FSID_PRESENT": 0.0,
+              "EXCHANGE_ID": 0.0,
+              "CREATE_SESSION": 0.0,
+              "DESTROY_SESSION": 0.0,
+              "SEQUENCE": 0.0,
+              "GET_LEASE_TIME": 0.0,
+              "RECLAIM_COMPLETE": 0.0,
+              "LAYOUTGET": 0.0,
+              "GETDEVICEINFO": 0.0,
+              "LAYOUTCOMMIT": 0.0,
+              "LAYOUTRETURN": 0.0,
+              "SECINFO_NO_NAME": 0.0,
+              "TEST_STATEID": 0.0,
+              "FREE_STATEID": 8.428570000319999,
+              "GETDEVICELIST": 0.0,
+              "BIND_CONN_TO_SESSION": 0.0,
+              "DESTROY_CLIENTID": 0.0,
+              "SEEK": 0.0,
+              "ALLOCATE": 0.0,
+              "DEALLOCATE": 0.0,
+              "ZERO_RANGE": 0.0,
+              "LAYOUTSTATS": 0.0,
+              "CLONE": 0.0,
+              "COPY": 0.0,
+              "OFFLOAD_CANCEL": 0.0,
+              "LOOKUPP": 0.0,
+              "LAYOUTERROR": 0.0,
+              "COPY_NOTIFY": 0.0,
+              "GETXATTR": 0.0,
+              "SETXATTR": 0.0,
+              "LISTXATTRS": 0.0,
+              "REMOVEXATTR": 0.0,
+              "READ_PLUS": 0.0,
+              "OFFLOAD_STATUS": 0.0
+            },
+            "total_per_s": 917.023654130861
+          }
+        ],
+        "analysis_path": "/mnt/shared/paperclip-runs/PRI-167/sparklina-analysis.json",
+        "analysis_sha256": "0e42dedf7d4f93ed543f7a7ae238a8ce75df164d41f741c530a13ba7b62a9020",
+        "summary": [
+          {
+            "role": "apps.plugin",
+            "category": "generation-discovery",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 3,
+            "calls_per_s": 0.07142855932474576
+          },
+          {
+            "role": "apps.plugin",
+            "category": "helper-module",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 2,
+            "calls_per_s": 0.0476190395498305
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.99999745819661
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 420,
+            "calls_per_s": 9.999998305464405
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.99999745819661
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 420,
+            "calls_per_s": 9.999998305464405
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999999152732203
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 630,
+            "calls_per_s": 14.99999745819661
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "renameat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999999152732203
+          },
+          {
+            "role": "mount_latency.plugin",
+            "category": "probe",
+            "syscall": "unlinkat",
+            "outcome": "success",
+            "count": 210,
+            "calls_per_s": 4.999999152732203
+          },
+          {
+            "role": "supervise.py",
+            "category": "ancestor",
+            "syscall": "chdir",
+            "outcome": "success",
+            "count": 1,
+            "calls_per_s": 0.02380951977491525
+          },
+          {
+            "role": "supervise.py",
+            "category": "ancestor",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 5188,
+            "calls_per_s": 123.52378859226033
+          },
+          {
+            "role": "supervise.py",
+            "category": "ancestor",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 2,
+            "calls_per_s": 0.0476190395498305
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 15,
+            "calls_per_s": 0.3571427966237288
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 19,
+            "calls_per_s": 0.4523808757233898
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 32,
+            "calls_per_s": 0.761904632797288
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 15,
+            "calls_per_s": 0.3571427966237288
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "mkdirat",
+            "outcome": "failure",
+            "count": 2,
+            "calls_per_s": 0.0476190395498305
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 2,
+            "calls_per_s": 0.0476190395498305
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 5489,
+            "calls_per_s": 130.69045404450983
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "openat",
+            "outcome": "failure",
+            "count": 2,
+            "calls_per_s": 0.0476190395498305
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 15,
+            "calls_per_s": 0.3571427966237288
+          },
+          {
+            "role": "supervise.py",
+            "category": "generation-discovery",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 5,
+            "calls_per_s": 0.11904759887457626
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 88,
+            "calls_per_s": 2.0952377401925424
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 175,
+            "calls_per_s": 4.166665960610169
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 3,
+            "calls_per_s": 0.07142855932474576
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 168,
+            "calls_per_s": 3.9999993221857624
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "mkdirat",
+            "outcome": "failure",
+            "count": 84,
+            "calls_per_s": 1.9999996610928812
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 87,
+            "calls_per_s": 2.071428220417627
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 456,
+            "calls_per_s": 10.857141017361355
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "failure",
+            "count": 84,
+            "calls_per_s": 1.9999996610928812
+          },
+          {
+            "role": "supervise.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 88,
+            "calls_per_s": 2.0952377401925424
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 11,
+            "calls_per_s": 0.2619047175240678
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 22,
+            "calls_per_s": 0.5238094350481356
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 22,
+            "calls_per_s": 0.5238094350481356
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 828,
+            "calls_per_s": 19.71428237362983
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 2493,
+            "calls_per_s": 59.357132798863724
+          },
+          {
+            "role": "supervise.py",
+            "category": "manifest",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 11,
+            "calls_per_s": 0.2619047175240678
+          },
+          {
+            "role": "supervise.py",
+            "category": "other",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 18,
+            "calls_per_s": 0.42857135594847456
+          },
+          {
+            "role": "supervise.py",
+            "category": "other",
+            "syscall": "readlinkat",
+            "outcome": "success",
+            "count": 18,
+            "calls_per_s": 0.42857135594847456
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 24,
+            "calls_per_s": 0.5714284745979661
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 48,
+            "calls_per_s": 1.1428569491959322
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 48,
+            "calls_per_s": 1.1428569491959322
+          },
+          {
+            "role": "supervise.py",
+            "category": "roster",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 24,
+            "calls_per_s": 0.5714284745979661
+          },
+          {
+            "role": "unidentified",
+            "category": "ancestor",
+            "syscall": "statfs",
+            "outcome": "success",
+            "count": 84,
+            "calls_per_s": 1.9999996610928812
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 2164,
+            "calls_per_s": 51.52380079291661
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "ancestor",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 22,
+            "calls_per_s": 0.5238094350481356
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 11,
+            "calls_per_s": 0.2619047175240678
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 11,
+            "calls_per_s": 0.2619047175240678
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 22,
+            "calls_per_s": 0.5238094350481356
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 330,
+            "calls_per_s": 7.857141525722033
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 11,
+            "calls_per_s": 0.2619047175240678
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "generation-discovery",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 33,
+            "calls_per_s": 0.7857141525722033
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 77,
+            "calls_per_s": 1.8333330226684745
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 143,
+            "calls_per_s": 3.404761327812881
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "getdents64",
+            "outcome": "success",
+            "count": 33,
+            "calls_per_s": 0.7857141525722033
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 209,
+            "calls_per_s": 4.976189632957288
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "mkdirat",
+            "outcome": "failure",
+            "count": 44,
+            "calls_per_s": 1.0476188700962712
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "failure",
+            "count": 77,
+            "calls_per_s": 1.8333330226684745
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "newfstatat",
+            "outcome": "success",
+            "count": 847,
+            "calls_per_s": 20.16666324935322
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "failure",
+            "count": 44,
+            "calls_per_s": 1.0476188700962712
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 77,
+            "calls_per_s": 1.8333330226684745
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "helper-module",
+            "syscall": "readlinkat",
+            "outcome": "failure",
+            "count": 33,
+            "calls_per_s": 0.7857141525722033
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "close",
+            "outcome": "success",
+            "count": 146,
+            "calls_per_s": 3.476189887137627
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "fstat",
+            "outcome": "success",
+            "count": 292,
+            "calls_per_s": 6.952379774275254
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "lseek",
+            "outcome": "success",
+            "count": 292,
+            "calls_per_s": 6.952379774275254
+          },
+          {
+            "role": "worker_loop.py",
+            "category": "manifest",
+            "syscall": "openat",
+            "outcome": "success",
+            "count": 146,
+            "calls_per_s": 3.476189887137627
+          }
+        ]
+      }
+    ]
+  },
+  "terminal": {
+    "status": "executed",
+    "returncode": 0,
+    "claimed_host": "dl380g10",
+    "claimed_unix": 1792993122.6909199,
+    "finished_unix": 1792993151.4809334
+  },
+  "sealed_source": {
+    "commit": "097547d00e444aab64a126c71723111436b09ecc",
+    "input": {
+      "bytes": 45240812,
+      "id": "pbrun.checkout-snapshot",
+      "sha256": "4c434602d3f3bafe686650b21a6d9315303ba49037390f84c494a1bc852e4118"
+    },
+    "parent": "bd73d5c8c0f032649c2400ae1b7401e9c613497d",
+    "refs": {},
+    "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+    "subdirectory": "."
+  },
+  "resources": {
+    "cpu": 1,
+    "mem_gb": 1
+  },
+  "log": {
+    "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8e732643f7c6cd74000157b293642b326cded7067d911544bc1c06a25ea2a16a/2738980bc4bf3eaaf0f7033bad09d0fcd058543e268f50a1aaaac32923e0ccee/00000001.stdout.cfaafd65a8c1b1ec96eeba089602462b489a93ac7b9263dfe3e52aa8aac65eb2.log",
+    "recorded_bytes": 32857,
+    "recorded_sha256": "cfaafd65a8c1b1ec96eeba089602462b489a93ac7b9263dfe3e52aa8aac65eb2",
+    "bytes_match": true
+  },
+  "census": {
+    "sparky": {
+      "seconds": 30.00017451395979,
+      "processes_per_snapshot": [
+        508,
+        509,
+        511,
+        509,
+        509,
+        510,
+        510
+      ],
+      "errors": [
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 1
+        },
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 1
+        },
+        {
+          "fd_vanished": 1
+        },
+        {
+          "fd_vanished": 2
+        },
+        {
+          "fd_vanished": 1
+        },
+        {
+          "fd_vanished": 1
+        },
+        {
+          "fd_vanished": 1
+        }
+      ],
+      "shared_fd_observations": 1,
+      "identities": [
+        {
+          "pid": 2025,
+          "start_ticks": 1137,
+          "identity": [
+            "/opt/nvidia/dgx-dashboard/dashboard-admin"
+          ]
+        },
+        {
+          "pid": 341727,
+          "start_ticks": 12347637,
+          "identity": [
+            "/usr/sbin/netdata"
+          ]
+        },
+        {
+          "pid": 342637,
+          "start_ticks": 12348227,
+          "identity": [
+            "python3"
+          ]
+        },
+        {
+          "pid": 1809333,
+          "start_ticks": 27141667,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 1908416,
+          "start_ticks": 27280944,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 1908972,
+          "start_ticks": 27282464,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 1911960,
+          "start_ticks": 27290031,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 1933559,
+          "start_ticks": 27343055,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 3854722,
+          "start_ticks": 6183692,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/supervise.py"
+          ]
+        },
+        {
+          "pid": 4085902,
+          "start_ticks": 25026265,
+          "identity": [
+            "/usr/libexec/netdata/plugins.d/apps.plugin"
+          ]
+        },
+        {
+          "pid": 4134875,
+          "start_ticks": 25149565,
+          "identity": [
+            "btop"
+          ]
+        }
+      ],
+      "btop_threads": [
+        4134875,
+        4134876,
+        4134884
+      ]
+    },
+    "sparklina": {
+      "seconds": 30.000082496087998,
+      "processes_per_snapshot": [
+        504,
+        505,
+        505,
+        505,
+        505,
+        506,
+        504
+      ],
+      "errors": [
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 1
+        },
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 3
+        },
+        {
+          "fd_vanished": 2,
+          "process_unreadable_or_vanished": 2
+        },
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 2
+        },
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 1
+        },
+        {
+          "fd_vanished": 1
+        },
+        {
+          "fd_vanished": 1,
+          "process_unreadable_or_vanished": 2
+        }
+      ],
+      "shared_fd_observations": 3,
+      "identities": [
+        {
+          "pid": 65417,
+          "start_ticks": 34507961,
+          "identity": [
+            "/usr/sbin/netdata"
+          ]
+        },
+        {
+          "pid": 66477,
+          "start_ticks": 34508316,
+          "identity": [
+            "python3"
+          ]
+        },
+        {
+          "pid": 242047,
+          "start_ticks": 57451275,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 252215,
+          "start_ticks": 57480560,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 287886,
+          "start_ticks": 57572024,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/worker_loop.py"
+          ]
+        },
+        {
+          "pid": 1308192,
+          "start_ticks": 17627245,
+          "identity": [
+            "/opt/nvidia/dgx-dashboard/dashboard-admin"
+          ]
+        },
+        {
+          "pid": 2223414,
+          "start_ticks": 55337312,
+          "identity": [
+            "/usr/libexec/netdata/plugins.d/apps.plugin"
+          ]
+        },
+        {
+          "pid": 2224173,
+          "start_ticks": 55340851,
+          "identity": [
+            "btop"
+          ]
+        },
+        {
+          "pid": 4193865,
+          "start_ticks": 36448544,
+          "identity": [
+            "/usr/bin/python3",
+            "/mnt/shared/prismabuild-fleet/runtime-generations/9dce28460e76-1792959923-b5904f02524e/tools/supervise.py"
+          ]
+        }
+      ],
+      "btop_threads": [
+        2224173,
+        2224174,
+        2224182
+      ]
+    }
+  },
+  "repository_checks": {
+    "action_key": "f7811be74fac268e6cad29d5da07fec65ba4378d7983be4e93564381c3e6fefa",
+    "scope": [
+      "tests/test_duplication_baseline.py",
+      "tests/test_wire_inventory.py",
+      "tests/test_sorted_json_byte_profile.py"
+    ],
+    "counts": {
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0
+    },
+    "terminal": {
+      "status": "executed",
+      "returncode": 0,
+      "claimed_host": "dl380g10",
+      "finished_unix": 1792993695.0416355
+    },
+    "source": {
+      "commit": "7c969bbbb8cee33779de76bf1a7fdfa40f0758dd",
+      "input": {
+        "bytes": 45251603,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "b3738a43e9e2abd05a984cd0345cddada4ec4b22d3353e4392678c4a99c375c9"
+      },
+      "parent": "bd73d5c8c0f032649c2400ae1b7401e9c613497d",
+      "refs": {},
+      "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+      "subdirectory": "."
+    },
+    "claim_check": {
+      "abandoned_readers": [],
+      "attestation_verified": null,
+      "cas_root": "/mnt/shared/prismabuild-fleet/cas",
+      "checks": {
+        "claim_addressed_correctly": true,
+        "claim_digest_matches_body": true,
+        "claim_present": true,
+        "payload_bytes_match": true,
+        "payload_present": true,
+        "payload_sha256_match": true,
+        "receipt_binds_the_claims_manifest": true,
+        "receipt_present": true,
+        "receipt_self_consistent": true
+      },
+      "checks_passed": true,
+      "claim": {
+        "action_key": "f7811be74fac268e6cad29d5da07fec65ba4378d7983be4e93564381c3e6fefa",
+        "action_manifest_sha256": "4dec8383152af062dbf609b6b365592a2ad1e8ebce27820e37a3cf91289994d7",
+        "checkout_root": "/home/rob/tmp/prismabuild-checkouts/f7811be74fac.s1_2jsd_/checkout",
+        "claim_sha256": "5523183f2d8cbd17e73dab216fda97ea6923ca642ed9c4dccd070f21217712e8",
+        "result_path": "pbrun_result.20e1442baa2ad495.txt",
+        "schema": "prismaquant.prismabuild.local_result_claim.v1",
+        "working_directory": "."
+      },
+      "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/55/5523183f2d8cbd17e73dab216fda97ea6923ca642ed9c4dccd070f21217712e8.json",
+      "complete": true,
+      "deadline_s": 5.0,
+      "generated_unix": 1792993763.55352,
+      "generation": "9dce28460e76-1792959923-b5904f02524e",
+      "generation_stale": false,
+      "not_checked": [
+        "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+      ],
+      "payload": {
+        "bytes": 1495,
+        "present": true,
+        "sha256": "f058b0f31359473889faf8500475055910d2386b5d12b6b86264391996350b33"
+      },
+      "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/f0/f058b0f31359473889faf8500475055910d2386b5d12b6b86264391996350b33",
+      "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f7/f7811be74fac268e6cad29d5da07fec65ba4378d7983be4e93564381c3e6fefa.json",
+      "schema": "prismaquant.prismabuild.pbmcp.v1",
+      "sha256": "5523183f2d8cbd17e73dab216fda97ea6923ca642ed9c4dccd070f21217712e8",
+      "started_from_generation": true,
+      "timed_out": [],
+      "tool": "pb_verify_claim",
+      "unavailable": []
+    },
+    "log": {
+      "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/f7811be74fac268e6cad29d5da07fec65ba4378d7983be4e93564381c3e6fefa/dec4bcff598981172dcdbb6f59ab354ef968daa4397b370917ff9c25921fd6af/00000001.stdout.995b0ffebcabfb8029c5911e1ce49de236e1458ef27e2549d898300a3fe8046f.log",
+      "recorded_bytes": 4372,
+      "recorded_sha256": "995b0ffebcabfb8029c5911e1ce49de236e1458ef27e2549d898300a3fe8046f",
+      "bytes_match": true
+    }
+  },
+  "attachment": {
+    "attachment_id": "4f0f3976-4b60-48c4-82d3-9ca16569b14b",
+    "sha256": "add6fee0f56379cce7e0e3fceff1feefb1f0bbb92e0892cdbd60cefe9910d831",
+    "bytes": 1476453,
+    "scope": "census, mountstats, pathname counts, analysis; full compressed traces exceed the 10 MB attachment limit and remain at sealed shared paths"
+  },
+  "refusals": [
+    "Initial pbrun --json option is withdrawal-only; no work published.",
+    "Initial target interpreter absent on submitter and no explicit portable assertion; no work published.",
+    "Default local placement had no dependency-digest-capable eligible worker; no work published. Explicit anywhere placement then admitted the portable standard-library analysis.",
+    "An initial guard submission detected a concurrent evidence edit during sealing and published no work. The stable retry is the verified 22-pass action.",
+    "The 66,780,744-byte full capture upload was refused by the 10 MB attachment limit. The 1,476,453-byte review bundle was uploaded instead."
+  ]
+}
