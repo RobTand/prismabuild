@@ -754,6 +754,18 @@ on its host still keep protection. Other hosts and legitimate equal/higher
 priority work keep existing admission, placement and resource gates. No token,
 probe, borrow, CPU/GPU/foreign/PSI isolation or physical cleanup is waived.
 
+A current `measurement_foreign_ambient` CPU refusal suspends an elected
+measurement's fence for the rest of that claim pass (#2267). `PassCensus`
+keeps the exact selection and sample timestamp as pass-local evidence. Reuse
+requires the same selection in the refreshed sidecar, a fresh sample, an
+available measurement transition key, and no tokens held by the measurement.
+Each elected measurement must supply its own evidence. Lower-priority rows
+then face ordinary admission, while the measurement remains READY with its
+visible `adaptive_cpu_refused_starved` denial. The durable selection and
+original opportunity stay unchanged. A new pass, restart, stale evidence,
+or changed selection requires a new affirmative refusal before suspension.
+This component repair establishes no runtime deployment or campaign completion.
+
 Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
 reuses Controller's permanent inode/nonblocking flock; Controller delegates and
 retains its advisory diagnostic publication outside the gate. Capacity-backed
@@ -1786,6 +1798,26 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The fleet roster's optional `action_tmpdir` names one canonical absolute scratch
+directory present on every eligible worker. `pbrun` and `pbtest` capture it from
+the same runtime's roster and seal its literal value as `TMPDIR`. The current
+declaration is `/home/rob/pbt17`, backed by enterprise NVMe on dl380g10 and local
+NVMe on both Sparks. Old rosters without the field retain `/home/rob/tmp`.
+An explicit `pbrun --env TMPDIR=...` or `pbtest --tmpdir` takes precedence;
+`--no-default-env` supplies no default. Workers never reinterpret that sealed
+path. New configured pbtest defaults use the existing directory/inode preflight;
+legacy defaults retain their existing fallback behavior. Restricted scratch
+recorders accept both reviewed fleet paths so retained legacy requests still
+validate independently of the current roster.
+
+Checkouts retain the existing `PRISMABUILD_LOCAL_CHECKOUT_ROOT` environment
+override and default `/home/rob/tmp/prismabuild-checkouts`. On dl380g10 that
+default path already mounts `prismabuild-stage/checkouts` on enterprise NVMe.
+The separate `/tmp/pbscratch` spool offer is unchanged. Roster publication
+installs no dataset or mount. Host storage readback and release evidence are
+recorded in
+[the fleet storage record](fleet_storage.md#action-scratch-and-checkouts).
+
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
 profiles cannot rewrite the sealed PATH or select a different executable.
 CUDA tooling outside the default PATH must be named explicitly or supplied
@@ -2250,6 +2282,20 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
+The report monitor reads the report from its own return callback arguments.
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
+An xdist synthetic failed report with phase `???` retains that phase and
+failure in the outcome rows. Missing teardown for exactly those failed tests
+does not make file coverage unknown. Completion evidence still reports their
+missing teardown; other unfinished tests keep coverage unknown.
+Replacement workers may add collections beyond the initial worker count;
+every observed worker collection must still match the selected population.
 Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
 final-teardown completion still survives blocked exit hooks, including xdist
 workers that prevent the controller's test loop from returning.
@@ -2520,13 +2566,15 @@ pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
-sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+sealed child `TMPDIR` assignment. The default comes from the loaded roster's
+`action_tmpdir`, or `/home/rob/tmp` for a legacy roster. The path
 is passed as one argv element, with no shell evaluation or coordinator-side
 existence check. The caller supplies a directory usable on every eligible worker;
 this flag adds no direct-I/O qualification or placement capability. An explicitly
 selected parent is preflighted on the worker by creating and closing an anonymous
 temporary file before pytest; an absent or unusable directory refuses instead of
-silently falling back. The default retains its legacy behavior. This startup
+silently falling back. A configured default receives the same preflight; only
+the legacy default retains its fallback behavior. This startup
 check does not reserve capacity or guarantee availability throughout the test.
 Changing the selected parent changes the child command and its action identity.
 
@@ -3643,6 +3691,65 @@ without the member or the ordinary package import boundary.
   (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
+  Submission sealing caches those exact bundle bytes on the submitting host
+  (#2171). The default root is `prismabuild-sealed-bundles` under the client's
+  `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
+  under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
+  digest-record bytes, including active fill reservations. Before staging a
+  fill, `statvfs` available bytes minus the bundle and digest-record size must
+  leave at least the greater of 2 GiB and 10% of the filesystem's total bytes.
+  `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  another absolute root; `off` disables the cache. The opened directory must
+  be private to its owner and on a positively identified local disk filesystem
+  accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
+  The cache key binds the object format, ordered ref names and tip IDs, exact
+  header and tip stream, pack configuration and options, Git version, and the
+  effective Git configuration including inherited settings not explicitly pinned.
+  Sorted `GIT_*` variables also participate, except the private index and object
+  storage paths whose contents are already bound. External graft and shallow
+  history overrides bypass caching rather than trusting mutable path contents.
+  It also binds the private index and contents of Git's global, system and
+  repository attribute files. A configured attribute path alone is insufficient:
+  changing its `delta` rules can change pack bytes without changing any object.
+  Cache reuse requires the canonical bare repository and private index used by
+  snapshot sealing. Other attribute contexts, unsupported Git attribute-path
+  discovery and unreadable or changing inputs fall back to the original sealer.
+  A cold seal rechecks these mutable inputs' contents and
+  `(dev, ino, size, mtime_ns, ctime_ns)` before publication; a changed input
+  leaves the fresh bundle usable but prevents filling under the earlier key.
+  The snapshot tip transitively binds the injected stamp or closure, tree,
+  parent and reachable objects. Storage layout and temporary paths do not
+  participate. A Git-version or configuration probe failure bypasses the cache.
+  A per-address flock coalesces identical misses without holding up unrelated
+  addresses. A shared pin keeps its lock inode stable for owners and waiters;
+  the last user removes idle lock files. Dead owners are reaped using only
+  cache-owned nonblocking locks. Warm hits need no per-address lock.
+  Deadline callers bypass a contended miss lock.
+  Hits open metadata and payload descriptors under a nonblocking shared
+  inventory flock, then release it before copying and verification. Open
+  descriptors survive eviction. Four warm deadline readers can all hit.
+  Exclusive inventory locking covers only bookkeeping, space reservations,
+  trimming and publication; contention falls back to fresh sealing.
+  Each hit copies to a private destination-side file, computing one SHA-256
+  over the chunks read from the pinned cache descriptor. It compares the copied
+  length and digest with the record before atomically installing that same file.
+  A miss runs the original sealer. A fallback preserves an already valid cache
+  entry. Fills reserve space and mark their staging owner under inventory
+  protection, copy outside it, then rename the complete entry under it. Entries
+  are disposable and digest-verified, so cache writes require no fsync. Failed staging is removed
+  under the inventory lock; abandoned staging is reaped on a subsequent miss
+  or fill, with live reservations counted against the caps. Cache I/O errors,
+  partial records and digest mismatches fall back
+  to sealing; oversized bundles bypass storage. A hit is byte-identical to
+  a fresh seal and changes neither snapshot records nor action keys.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated checkout
+  snapshots with caching disabled and enabled, including private-index and
+  closure preparation as for multiple shards of one checkout. Run it through
+  PB. It interleaves uncached snapshots and warm bundle hits, measures process
+  and child CPU, records observed load, counts pack executions, and checks
+  every snapshot record and bundle digest against the warmup and fresh seals.
+  An ordinary portable action suffices for this CPU accounting comparison;
+  it reports no wall-time speedup or idle-host qualification.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
@@ -6961,40 +7068,6 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
-A broker refusal before scope creation leaves an exact cleanup obligation
-(#2270). `cleanup_obligation` binds action key, publication generation, attempt,
-claimant, claiming host and scope nonce. The pending claim keeps its saved
-command outcome and capacity until cleanup is proved. A connection refusal
-cannot establish whether a delayed create reached the broker, so releasing
-capacity at that boundary would permit overlapping unproved work. The existing
-owning-host finish recovery retries the obligation after connectivity returns.
-
-`pbwait --reconcile-cleanup --generation <digest> --attempt <number> <key>`
-provides explicit recovery on the claiming host, including historical failed
-attempts whose tokens were already released. Its public authority accepts only
-identity. It derives claim, immutable attempt/logs, intent and broker address
-from durable state. A fresh random challenge binds the broker response to this
-verification. The broker fences an absent nonce against delayed creation before
-attesting absence, or confirms that its exact recorded scope is released and
-absent. An existing kernel scope, unknown authority, conflicting identity,
-foreign host or stale reply refuses recovery. Container cleanup must also
-succeed. Verification mints a queue-bound single-use capability; the final writer
-checks that capability and rereads the same durable owner before publication.
-Plain, forged, copied, subclassed and serialized values grant no authority.
-
-The immutable `<number>.cleanup-recovery.json` supplement preserves the original
-owner record, its canonical digest and verified scope/container evidence. The
-mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
-obligation. Original command status, immutable attempts, logs, generation and
-publication endings remain intact. A crash between supplement and summary is
-replayable only after another fresh verification. Replay binds the saved claim
-identity and scope intent while allowing cleanup counters and recovered control
-to advance after a partial summary write. `pb_action` exposes pending
-obligations independently of the command outcome. This operation neither
-creates success receipts nor changes an already released reservation. This is
-source support; deployment and reconciliation of the two live actions require
-the lead's separate runtime publication and operator execution.
-
 Pool receipt reconciliation is an explicit evidence operation, exposed by
 `pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
 It requires the current failed submission generation and its final immutable
@@ -7357,6 +7430,47 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+Unified-memory foreign residency also bounds new host-memory commitments
+(#1661, #2088, #2089). `gpu_sample_facts.unified_memory_evidence` classifies
+one fresh, complete, attributed broker inventory as clear, known foreign
+bytes, or unknown foreign residency. The classified value retains the
+sample ID and timestamp. Discrete-device residency supplies no host-memory
+credit or unified-memory fence.
+
+The ordinary `MemAvailable` plus held-token bound remains in force. The second
+bound subtracts external usage and the existing operating margin from physical
+host memory. External usage is `host_total - host_available - PB_resident`,
+clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
+scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
+are credited per complete attributed scope as
+`min(valid host bytes + valid shared-system GPU lower bound, budget_bytes)`.
+A missing or invalid scope budget earns no credit; invalid residency components
+contribute zero. Residency above the reservation stays in external usage, so
+held tokens plus external usage charge `max(reservation, residency)` per scope.
+Host and CUDA charges are near-disjoint: #450 measured their sum 4.4% above
+the host-usage increase, absorbed by the existing margin in that workload.
+Per-process GPU sums may overlap and supply no residency credit.
+Foreign GPU bytes are already inside host usage and are never added again.
+Observation applies the physical bound after held-token add-back, and the
+observer applies it again after memory smoothing. The two bounds take their
+minimum. No external baseline credit is inferred from an older offer.
+
+Unknown foreign residency defers new CPU and GPU memory commitments with
+`unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
+election. READY rows, held reservations, and existing gang elections remain
+in place. A fresh clear sample removes this fence. When a claim pass has
+identified shared-system memory, a later partial, stale, missing or untrusted
+sample retains unknown context with no resident credit until trusted evidence
+recovers. It cannot reuse the earlier clear classification. Claim-time checks also
+bound aggregate held memory plus the candidate's incremental memory demand
+by the current physical ceiling. Producer export allowances count once;
+funded dependents consume their existing funding before the incremental fit
+check. Denial evidence retains sample identity, foreign bytes, committed
+memory, candidate demand, host usage, PB residency, and the physical ceiling.
+A later successful claim
+retires its earlier unknown-residency status projection.
+
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -7517,6 +7631,14 @@ producer whose reads are not visible in the declaration can still require them
 to be declared.
 
 ## Whole-directory local resident sets (#1545)
+
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
@@ -16810,6 +16932,16 @@ references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
 
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
+
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
 entire bounded root remains protected while independently proven copies outside
@@ -19566,10 +19698,12 @@ uses the original generation-aware idempotent readback. Canonical election
 sidecars survive unstarted retries. Persistence failures retain the original
 fence-first recovery and never replace a newer READY publication.
 
-`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
-ledger totals, placement/capability views, existing read memo and canonical
-census. It captures no new per-candidate host sample, availability or holder
-state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+`_ClaimScan` retains the ordered rows, worker inputs, ledger totals,
+placement/capability views, existing read memo, and canonical census.
+Its `_ClaimMemory` reference owns the current broker sample and classified
+unified-memory evidence. That owner refreshes evidence at candidate and
+mutation boundaries; the other pass views capture no new availability or
+holder state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
 dead-input handling, carried room and the existing ready-GPU policy in their
 original positions. A winning rename invalidates claimed names, reader plans
 and census even when the moved record later refuses.
@@ -20221,9 +20355,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old
