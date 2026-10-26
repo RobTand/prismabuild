@@ -21,12 +21,15 @@ from prismabuild import submission as submit_core
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 
+from contextlib import contextmanager
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import socket
 import sys
+import tempfile
 import textwrap
 import time
 import types
@@ -590,50 +593,76 @@ def _brief(outcome: dict) -> str:
         "stall", "stderr")})
 
 
-def _registered_resume(base: Path, source: str, monkeypatch):
-    """Observe the real resume holder before judging a zero-wait workload."""
+@contextmanager
+def _registered_resume(source: str, monkeypatch):
+    """Force grant-before-registration, then observe the real self-holder."""
 
-    entered = base / "holder-writer-entered"
-    release = base / "holder-writer-released"
-    observed = base / "holder-record-observed"
-    unknown = base / "holder-before-registration.json"
-    registration_window = (
-        "real_holder_writer = pool.PoolQueue.write_stage_ownership_holder\n"
-        "def wait_for_observer(path):\n"
-        "    deadline = time.monotonic() + 10.0\n"
-        "    while not os.path.exists(path):\n"
-        "        assert time.monotonic() < deadline, 'holder observer did not acknowledge'\n"
-        "        time.sleep(0.005)\n"
-        "def registered_holder_writer(self, *args, **kwargs):\n"
-        f"    open({str(entered)!r}, 'w').close()\n"
-        f"    wait_for_observer({str(release)!r})\n"
-        "    record = real_holder_writer(self, *args, **kwargs)\n"
-        f"    wait_for_observer({str(observed)!r})\n"
-        "    return record\n"
-        "pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer\n")
-    source = source.replace("code = stage_move.main(", registration_window + "code = stage_move.main(", 1)
+    with tempfile.TemporaryDirectory(prefix="pb-mover-") as scratch, socket.socket(
+            socket.AF_UNIX) as listener:
+        address = str(Path(scratch) / "holder")
+        listener.bind(address)
+        listener.listen(1)
+        listener.settimeout(10.0)
+        observed = []
+        peers = []
+        registration_window = textwrap.dedent(f'''
+            import socket
+            startup = socket.socket(socket.AF_UNIX)
+            startup.settimeout(10.0)
+            startup.connect({address!r})
+            real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
+            def registered_holder_writer(self, *args, **kwargs):
+                pool.PoolQueue.write_stage_ownership_holder = real_holder_writer
+                startup.sendall(b"L")
+                assert startup.recv(1) == b"R"
+                record = real_holder_writer(self, *args, **kwargs)
+                startup.sendall(b"H")
+                assert startup.recv(1) == b"A"
+                return record
+            pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
+            real_reporter_start = stage_move._ProgressReporter.start
+            def registered_copy(self):
+                real_reporter_start(self)
+                assert self.reported_phase == "copy"
+                startup.sendall(b"C")
+                startup.close()
+            stage_move._ProgressReporter.start = registered_copy
+        ''')
+        source = source.replace("code = stage_move.main(",
+                                registration_window + "code = stage_move.main(", 1)
 
-    def observe_registration_window(queue):
-        read_holder = queue.stage_ownership_holder
+        def before(queue):
+            read_holder = queue.stage_ownership_holder
 
-        def holder_at_registration(stage_root):
-            holder = read_holder(stage_root)
-            if not release.exists():
-                assert entered.exists(), "observed a different unregistered lock"
-                assert holder["recorded"] is False
-                unknown.write_text(json.dumps(holder))
-                release.touch()
-            deadline = time.monotonic() + 5.0
-            while not holder["recorded"]:
-                assert time.monotonic() < deadline, "mover did not record its actual lock ownership"
-                time.sleep(0.005)
+            def holder_at_registration(stage_root):
+                if observed:
+                    return read_holder(stage_root)
+                peer, _ = listener.accept()
+                peers.append(peer)
+                peer.settimeout(10.0)
+                assert peer.recv(1) == b"L"
+                unknown = read_holder(stage_root)
+                assert unknown["recorded"] is False
+                peer.sendall(b"R")
+                assert peer.recv(1) == b"H"
                 holder = read_holder(stage_root)
-            observed.touch()
-            return holder
+                assert holder["recorded"] is True and holder["live"] is True
+                assert queue.records.claimed_names().blocks(str(holder["action_key"]))
+                assert holder["host"] == socket.gethostname()
+                assert holder["role"] == "mover-resume"
+                observed.extend((unknown, holder))
+                peer.sendall(b"A")
+                assert peer.recv(1) == b"C"
+                return holder
 
-        monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
+            monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
 
-    return source, observe_registration_window
+        try:
+            yield source, before
+            assert len(observed) == 2, "resume ownership was never observed"
+        finally:
+            for peer in peers:
+                peer.close()
 
 
 def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
@@ -654,12 +683,11 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
 
-    source, before = _registered_resume(
-        base, _mover_source(argv, hold_on=2, hold=hold), monkeypatch)
-
-    outcome, receipt = _run_mover(
-        base, source, _policy(grace),
-        contention=_contention(base), ceiling=60.0, before=before)
+    with _registered_resume(
+            _mover_source(argv, hold_on=2, hold=hold), monkeypatch) as (source, before):
+        outcome, receipt = _run_mover(
+            base, source, _policy(grace),
+            contention=_contention(base), ceiling=60.0, before=before)
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert outcome["elapsed_s"] > hold
@@ -683,7 +711,8 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
 def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
                ) -> tuple[dict, dict, int]:
     """Every entry in flight at once, delivered at a tenth of the rate the
-    grace was priced at, and no pacer hold: an unadmitted reader."""
+    grace was priced at, after observing its own registered startup hold:
+    an unadmitted reader with no pacer hold."""
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(await_ms), raising=False)
@@ -691,9 +720,12 @@ def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
     base = tmp_path / "run"
     argv = _mover_argv(base, digest=digest, total=total, readers=3,
                        manifest=tmp_path / "manifest.json")
-    outcome, receipt = _run_mover(
-        base, _mover_source(argv, read="share", rate=MB / 10.0), _policy(grace),
-        contention=_contention(base), ceiling=90.0)
+    with _registered_resume(
+            _mover_source(argv, read="share", rate=MB / 10.0), monkeypatch
+            ) as (source, before):
+        outcome, receipt = _run_mover(
+            base, source, _policy(grace),
+            contention=_contention(base), ceiling=90.0, before=before)
     return outcome, receipt, grace
 
 
