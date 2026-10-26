@@ -6,6 +6,7 @@ from pathlib import Path
 import select
 import subprocess
 import sys
+from threading import Barrier
 
 import pytest
 
@@ -71,12 +72,14 @@ def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):
     stamp = f"{submit_core.STAMP_PREFIX}{'b' * 16}.json"
     identity = movement_actions.checkout_identity(checkout)
     payload = json.dumps({"cwd": ".", **identity}, indent=1, sort_keys=True)
+    at_snapshot = Barrier(2, timeout=60)
     def seal(_):
+        at_snapshot.wait()
         return submit_core.snapshot_checkout(
             checkout, stamp_name=stamp, stamp_payload=payload, cas=cas,
             expected_identity=identity)
-    with ThreadPoolExecutor(max_workers=8) as workers:
-        snapshots = list(workers.map(seal, range(16)))
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        snapshots = list(workers.map(seal, range(2)))
     assert all(snapshot == snapshots[0] for snapshot in snapshots)
     assert not list(checkout.glob(f"{submit_core.STAMP_PREFIX}*"))
     assert movement_actions.checkout_identity(checkout) == identity
