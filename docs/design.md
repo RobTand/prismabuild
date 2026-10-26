@@ -13478,8 +13478,12 @@ current) only when it permits the window this pass, and a window gated on
 its own fence reserves nothing, so it cannot hold every newcomer out (#881).
 Both the pressure probe and
 the publication gate use that identity and the next still-unpublished legs,
-with conservative obligations (full queued demand and a minimum next-step term
-from progressing windows). The relief is stated as the free the sweep must reach
+with the same obligations (queued demand not fully covered by funding and a
+minimum next-step term from progressing windows). A fully funded ready row
+spends its existing fence, already counted in held tokens; declared and
+streaming newcomers both exclude that row from new queued demand (#1759).
+Partial or unverified funding still counts the row's full demand. The relief
+is stated as the free the sweep must reach
 (`free + shortfall`) and is bounded to what the tier can give back: its
 orphans, and since #903 the landed ranges past their readers' refill
 horizons. A window that cannot fit even after all of that returns —
@@ -13593,9 +13597,8 @@ are unchanged. A READY retry remains eligible regardless of historical attempts.
 Admission relief applies to both stage and RAM. RAM asks only when its normal
 bounded window has a promotion whose stage source is resident, preserving
 the existing rule against eviction for an unavailable source or a declined
-run-ahead phase. Its full queued-demand estimate can defer
-additional relief when some ready rows are already funded. It is not a
-complete liveness proof. Earlier acceptance is recorded in
+run-ahead phase. Funding-aware relief does not establish a complete liveness
+proof. Earlier acceptance is recorded in
 `orphan_pressure_acceptance_2026-09-20.json`; #829's repair has its own scoped
 acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`.
 

@@ -5667,7 +5667,6 @@ def window_pressure(
         if not waiting_newcomers:
             continue
         try:
-            ready_total_gib = 0
             ready_new_money = 0
             for item in queue.ready_items():
                 if not isinstance(item, Mapping):
@@ -5680,10 +5679,9 @@ def window_pressure(
                 tier_needs = demands.get(tier_id)
                 if isinstance(tier_needs, Mapping):
                     row_gib = int(tier_needs.get(kind, 0) or 0)
-                    ready_total_gib += row_gib
-                    # A declared unit is asked what its gate asks: a row its
-                    # funding record fully covers consumes its fence rather
-                    # than free, so it commits no new capacity (#1594).
+                    # Both publication paths consume a fully funded row's
+                    # fence, already in held_total, instead of free capacity
+                    # (#1594, #1759). Anything else counts in full.
                     try:
                         covered, _generation = queue.funding.cover_window(
                             tier_id, item, kind, row_gib).credit
@@ -5693,7 +5691,6 @@ def window_pressure(
                     if not (row_gib and covered >= row_gib):
                         ready_new_money += row_gib
         except (OSError, pool.PoolContractError, ValueError):
-            ready_total_gib = 0
             ready_new_money = 0
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
@@ -5701,7 +5698,7 @@ def window_pressure(
             nxt = needs.get("next_min_gib")
             relief, why, facts = _relief_verdict(
                 held_gib=held_total + int(needs.get("extra_held_gib") or 0),
-                ready_gib=ready_new_money if needs.get("declared") else ready_total_gib,
+                ready_gib=ready_new_money,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
