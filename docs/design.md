@@ -5994,7 +5994,10 @@ Per member host, inside the ordinary claim pass:
    cancellation. Each pass reads at most `ORPHAN_PASSES_SWEEP_LIMIT` READY rows. A
    host-local cursor advances past ordinary, kept and busy rows and survives
    worker replacement. This registration grace never expires a filed gang's
-   pre-claim fence.
+   pre-claim fence. New group registration takes every member transition lock
+   in action-key order and verifies the exact READY publications before filing
+   the record. A stale publisher cannot register withdrawn rows. Replaying an
+   identical existing group remains valid after its members advance or end.
 
    Malformed group, election and teardown records refuse only their own gang.
    Both full and refreshed reservation censuses discard that gang's whole
