@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import socket
 import subprocess
 import sys
 
@@ -19,6 +20,7 @@ from test_pbtest_reconciles_outcomes import pbtest
 BLOCKER = '''\
 import faulthandler
 import os
+import socket
 import threading
 import pytest
 
@@ -43,6 +45,8 @@ def pytest_sessionfinish(session, exitstatus):
         if hasattr(session.config, "workerinput"):
             with open(os.environ["PBTEST_STACK_ROOT"] + str(os.getpid()), "w") as stream:
                 faulthandler.dump_traceback(file=stream)
+            with socket.create_connection(("127.0.0.1", int(os.environ["PBTEST_BLOCK_PORT"])), timeout=60):
+                pass
             threading.Event().wait()
     elif not hasattr(session.config, "workerinput"):
         block()
@@ -67,7 +71,12 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
         "def test_one():\n    assert " + ("False" if stop_early else "True") +
         "\n\ndef test_two():\n    assert True\n")
     read_fd, write_fd = os.pipe()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(workers)
+    listener.settimeout(60)
     environment = dict(os.environ, PBTEST_BLOCK_FD=str(write_fd),
+                       PBTEST_BLOCK_PORT=str(listener.getsockname()[1]),
                        PBTEST_INCOMPLETE=str(int(incomplete)),
                        PBTEST_WORKER_EXIT=str(int(worker_exit)),
                        PBTEST_STACK_ROOT=str(checkout / "worker-stack-"),
@@ -84,18 +93,30 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
         stderr=subprocess.STDOUT, text=True, start_new_session=True,
         pass_fds=(write_fd,))
     os.close(write_fd)
+    prefix = b""
     try:
         if worker_exit:
-            with pytest.raises(subprocess.TimeoutExpired):
-                process.communicate(timeout=10)
+            for _ in range(workers):
+                connection, _ = listener.accept()
+                connection.close()
+            while not any(line.startswith(b"pbtest-completion: ")
+                          for line in prefix.split(b"\n")[:-1]):
+                ready, _, _ = select.select([process.stdout], [], [], 60)
+                assert ready, "The controller did not report test completion."
+                chunk = os.read(process.stdout.fileno(), 65536)
+                assert chunk, "The shard exited before reporting test completion."
+                prefix += chunk
+            assert process.poll() is None
         else:
-            ready, _, _ = select.select([read_fd], [], [], 30)
+            ready, _, _ = select.select([read_fd], [], [], 60)
             assert ready, "The shard did not reach the controlled blocker."
             assert os.read(read_fd, 64) == b"blocked\n"
     finally:
+        listener.close()
         os.close(read_fd)
         os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate(timeout=10)
+        output, _ = process.communicate(timeout=60)
+    output = prefix.decode() + output
     if worker_exit:
         stacks = [path.read_text() for path in checkout.glob("worker-stack-*")]
         assert len(stacks) == workers
