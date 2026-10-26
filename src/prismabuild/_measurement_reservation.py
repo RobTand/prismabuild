@@ -1328,6 +1328,8 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if chosen is not None:
                         pass_census.ordinary_elections.setdefault(
                             (chosen["action_key"], chosen["generation"]), chosen)
+                if pass_census.census is not None:
+                    pass_census.store(pass_census.census)
                 if saved is not None and census_reader.shared_is_current(saved):
                     current = dict(saved["census"])
                     current["selections"] = dict(current["selections"])

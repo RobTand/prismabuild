@@ -168,3 +168,31 @@ def test_a_foreign_predecessor_cannot_hide_its_local_successor(
                 current, row, host=ledger.base.name, funded_by=None) == successor
     assert ledger.held_keys() == []
 
+
+def test_reused_complete_census_keeps_a_later_ordinary_observation(fleet, monkeypatch):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    candidate = publish("ordinary-reused-follower", gpu=0)
+    row = pool.record_store.value_or_raise(queue.records.item(pool.READY, candidate))
+    ledger = queue.ledger()
+    gate = adaptive_cpu.AdmissionGate(ledger)
+    saved = reservation.PassCensus(queue, ledger, gate)
+    with reservation.locked_census(queue, ledger, gate) as empty:
+        saved.store(empty)
+    selected = publish("ordinary-reused-election", measurement=True, priority=10, gpu=0)
+    chosen = _fixture_selection(queue, selected)
+    monkeypatch.setattr(reservation.CensusReader, "shared_census", lambda self: None)
+    original = reservation.pass_admission_census
+
+    @contextmanager
+    def lose_sidecar_before_reuse(*args, **kwargs):
+        queue.records.passes_path(selected).unlink()
+        with original(*args, **kwargs) as current:
+            yield current
+
+    monkeypatch.setattr(reservation, "pass_admission_census", lose_sidecar_before_reuse)
+    with reservation.candidate_admission_census(
+            saved, queue, ledger, gate, row, dependent_owner=None) as current:
+        assert reservation.blocking_selection(
+            current, row, host=ledger.base.name, funded_by=None) == chosen
+    assert ledger.held_keys() == []
+
