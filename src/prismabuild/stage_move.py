@@ -563,6 +563,7 @@ class _Copier:
         # prewarm loop gives: the manifest is submitter-supplied and a symlink
         # swapped in after validation must fail here rather than send this copy
         # reading something outside the mount the manifest declared.
+        temporary_handle = None
         fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
             if not statmod.S_ISREG(os.fstat(fd).st_mode):
