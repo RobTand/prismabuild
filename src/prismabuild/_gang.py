@@ -493,8 +493,8 @@ def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
             row = pool.record_store.value_or_raise(observation.result)
             name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
-                    and float(row.get("published_unix", math.nan))
-                    == float(other["published_unix"])):
+                    and _finite_number(row.get("published_unix"))
+                    and row["published_unix"] == other["published_unix"]):
                 state = name
                 break
         states[int(other["index"])] = state

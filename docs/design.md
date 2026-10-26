@@ -5985,7 +5985,10 @@ Per member host, inside the ordinary claim pass:
    lock. A covered claim is never retargeted to a queued successor. Running
    members retain their tokens until the ordinary worker containment and ending
    path completes. Pruning requires positive terminal evidence for every exact
-   member publication; another generation's ending is not sufficient.
+   member publication; another generation's ending is not sufficient. Missing
+   or malformed terminal publication timestamps supply no ending evidence.
+   Group cleanup rotates its own host-local cursor through bounded batches;
+   retained or corrupt groups cannot indefinitely hide later teardown retries.
 
    A READY gang member whose group record was never filed is withdrawn after
    `GANG_REGISTRATION_GRACE_S` (600 seconds). The sweep rechecks the same row,

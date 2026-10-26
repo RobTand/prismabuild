@@ -9582,42 +9582,44 @@ class PoolQueue:
                                if entry.name.endswith(".json") and not entry.name.startswith("."))
         except OSError:
             return pruned
-        for name in names[:limit]:
-            group = name[: -len(".json")]
-            try:
-                record = _gang.read_group(self, group)
-                if record is None:
+        paths = [_gang.root(self) / name for name in names]
+        with self._gang_sweep_batch(paths, limit=limit, kind="groups") as selected:
+            for path in selected:
+                group = path.stem
+                try:
+                    record = _gang.read_group(self, group)
+                    if record is None:
+                        continue
+                    torn = _gang.teardown(self, group)
+                    if torn is None:
+                        # Every terminal path, including the reaper failing a
+                        # member whose lease was lost, ends the gang here: a
+                        # sibling already running is withdrawn (#1519 review).
+                        ended = {index: state for index, state in _gang.member_states(self, record).items()
+                                 if state in _gang.UNSUCCESSFUL}
+                        if ended:
+                            index = min(ended)
+                            member = record["members"][index]
+                            self._gang_teardown(
+                                {"gang": {"group": group, "size": record["size"], "index": index}},
+                                by=str(member["action_key"]),
+                                reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                            torn = _gang.teardown(self, group)
+                    if torn is not None:
+                        for member in record["members"]:
+                            try:
+                                self._withdraw_gang_member(
+                                    record, member, reason=str(torn.get("reason")))
+                            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
+                                continue
+                    states = _gang.member_states(self, record)
+                    if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
+                        continue
+                    shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
+                    _gang.group_path(self, group).unlink(missing_ok=True)
+                except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
                     continue
-                torn = _gang.teardown(self, group)
-                if torn is None:
-                    # Every terminal path, including the reaper failing a
-                    # member whose lease was lost, ends the gang here: a
-                    # sibling already running is withdrawn (#1519 review).
-                    ended = {index: state for index, state in _gang.member_states(self, record).items()
-                             if state in _gang.UNSUCCESSFUL}
-                    if ended:
-                        index = min(ended)
-                        member = record["members"][index]
-                        self._gang_teardown(
-                            {"gang": {"group": group, "size": record["size"], "index": index}},
-                            by=str(member["action_key"]),
-                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
-                        torn = _gang.teardown(self, group)
-                if torn is not None:
-                    for member in record["members"]:
-                        try:
-                            self._withdraw_gang_member(
-                                record, member, reason=str(torn.get("reason")))
-                        except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
-                            continue
-                states = _gang.member_states(self, record)
-                if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
-                    continue
-                shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
-                _gang.group_path(self, group).unlink(missing_ok=True)
-            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
-                continue
-            pruned.append(group)
+                pruned.append(group)
         return pruned
 
     def sweep_consumer_events(
