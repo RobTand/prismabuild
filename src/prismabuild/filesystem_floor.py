@@ -142,7 +142,7 @@ def _floor_boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
-def _descriptor_mount_id(fd: int) -> int:
+def _statx_mount_id(fd: int) -> int:
     import ctypes
 
     # Linux statx UAPI: stx_mask at 0x00, stx_mnt_id at 0x90, 256 bytes.
@@ -170,7 +170,7 @@ def _mount_row(fd: int, *, mount_id: int | None = None) -> tuple[str, str, str]:
     """``(type, source, super options)`` of the mount the descriptor is on."""
 
     if mount_id is None:
-        mount_id = _descriptor_mount_id(fd)
+        mount_id = _statx_mount_id(fd)
     rows = [line.split(" - ", 1) for line in
             Path("/proc/self/mountinfo").read_text().splitlines()
             if line.split(" ", 1)[0] == str(mount_id)]
@@ -249,7 +249,7 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
     except OSError as exc:
         raise FloorError(f"{path}: {exc}") from exc
     try:
-        mount_id = _descriptor_mount_id(fd)
+        mount_id = _statx_mount_id(fd)
         fstype, source, options = _mount_row(fd, mount_id=mount_id)
         stat = os.fstat(fd)
         space = os.fstatvfs(fd)
