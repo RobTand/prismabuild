@@ -1,0 +1,27 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._excluded_from_cpu_hosts",
+      "unresolved": "{str(tag) for tag in item.get('tags') or [] if isinstance(tag, str)}",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "Reviewed explicit user class-tag conjunction, excluding automatic capabilities, for approved #1589 scope."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/pool.py",
+      "owner": "PoolQueue._class_scoped_candidate",
+      "fields": [
+        "cpu",
+        "mem_gb",
+        "spool_gb"
+      ]
+    },
+    "count": 1,
+    "reason": "Reviewed bounded CPU/memory and optional host spool demand whitelist for approved #1589 scope."
+  }
+]

@@ -6521,11 +6521,56 @@ lock or timeout, and grants no GPU or CPU admission credit.
 A CPU row whose sealed tags include this host's hostname is pinned, whether
 by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
 a GPU are also unchanged. The rule is evaluated once from the existing READY
-snapshot before candidate transition locks, and a deferred CPU row records
+snapshot before candidate transition locks, and a deferred portable CPU row records
 `deferred_for_ready_gpu` without a pass or reservation. It adds no census,
 transition, or host-admission lock and does not change GPU admission, GPU row
 order, measurement election, or running claims. The READY snapshot remains
 advisory; the existing per-key transition and claim rename still decide ownership.
+
+Rob approved the following limits on 2026-10-25 through PRI-31 confirmation
+`7c2a2fb9-0d6a-444b-b9f0-9963002ab7ab`, bound to policy-decision revision
+`3d0d1914-ce34-4afa-887e-6a65efd5db21`. This approves source policy; independent
+review, merge, and release remain separate gates.
+
+Class-bound CPU work whose complete explicit tag conjunction excludes every recorded CPU-only host
+can pass this READY-GPU guard (#1721, #1589). Stale offers still establish
+class membership; an absent interpreter answer never makes portable work
+class-bound. Both a known CPU-only offer and a matching GPU class tag are
+required. Unknown GPU presence on any recorded host, or missing or malformed
+tags on a recorded CPU-only host, keeps the guard in place. Automatic capability
+tags cannot establish class exclusion. Unknown
+interpreter evidence on a CPU-only offer cannot promote portable work to this
+exception. The candidate must have a readable non-measurement contract, bounded
+CPU and memory demand, optional bounded host `spool_gb`, no gang, and no tier or
+fill demand. Each offer must satisfy the complete required tag set. The eligible GPU
+row must have a readable sealed contract, bounded CPU and memory, and be neither
+a measurement nor a gang member. Its existing room calculation retains image, residency, GPU
+sample and export-allowance checks, outside host admission.
+
+At reservation, under the existing host admission lock, free tokens after the
+CPU candidate must still fit that GPU room. Adaptive placement also keeps
+projected CPU headroom beside every current holder and the new candidate,
+using the same `adaptive_cpu.projected_cpu_fits` calculation as CPU admission.
+The candidate pays its future busy-holder cost: complete admission CPU demand
+times the adaptive owner's 1.25 margin, including accepted export allowances
+before funding deductions. Funding reduces only its free-token remainder.
+Current holder costs are calculated once by `adaptive_cpu` and reused for
+room protection, including funded candidates; the pool does not rescan or
+reprice holders. Host spool tokens use the same remaining-room check as CPU
+and memory. Missing holder costs or stale samples grant no exemption. Refusal
+records `deferred_for_ready_gpu_row` without aging or taking a reservation.
+Ordinary CPU/GPU admission, host memory checks, preemption and #1929 guest
+marking still apply. Explicit class tags do not make these rows portable guests.
+
+This source repair removes #1589's READY-GPU starvation when the bounded
+arm64 prerequisite, including the original row's `spool_gb`, fits beside the
+GPU row. It also prevents repeated class replacements from starving a GPU
+whose future adaptive headroom they would consume.
+Runtime publication and live qualification, including gang behavior across a
+runtime roll, remain separate.
+These checks guarantee current reservation and projected CPU-cost headroom.
+Later telemetry, host pressure, and the GPU row's other gates can still delay
+its claim. No staged-read requirement's deployment or workload-proof status changes.
 
 Idle GPU hosts now take restartable portable CPU work first (#1929, Rob,
 2026-10-21). Idle means no PB GPU reservation, fresh trusted GPU capacity
