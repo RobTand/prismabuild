@@ -9554,8 +9554,10 @@ class PoolQueue:
                             record_store.value_or_raise(self.records.item_presence(READY, key)),
                         ):
                             try:
-                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
-                                              by=f"gang:{group}")
+                                member = next(member for member in record["members"]
+                                              if member["action_key"] == key)
+                                self._withdraw_gang_member(
+                                    record, member, reason=str(torn.get("reason")))
                             except (PoolContractError, OSError, pb.PrismaBuildError):
                                 continue
                 if any(bool(
@@ -21018,6 +21020,12 @@ class PoolQueue:
             return False
         return True
 
+    def _withdraw_gang_member(self, record: Mapping[str, object],
+                              member: Mapping[str, object], *, reason: str) -> None:
+        """Withdraw one member selected by a gang cleanup owner."""
+        self.withdraw(str(member["action_key"]), reason=f"gang teardown: {reason}",
+                      by=f"gang:{record['group']}")
+
     def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
                                 reason: str, by: str,
                                 exclude: Container[str] = ()) -> None:
@@ -21044,8 +21052,7 @@ class PoolQueue:
             if member["action_key"] == by or member["action_key"] in exclude:
                 continue
             try:
-                self.withdraw(member["action_key"], reason=f"gang teardown: {reason}",
-                              by=f"gang:{record['group']}")
+                self._withdraw_gang_member(record, member, reason=reason)
             except (PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
 
