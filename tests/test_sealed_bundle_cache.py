@@ -76,6 +76,7 @@ def test_every_seal_input_invalidates_the_cache(sealing, monkeypatch, component)
     kwargs = {"stamp_name": "closure", "stamp_payload": "first"}
     seal(**kwargs)
     if component == "ref-name":
+        # pb-history-ok: Adds a ref to the temporary repository created by the sealing fixture.
         subprocess.run(["git", "-C", str(checkout), "branch", "extra"], check=True)
         kwargs["snapshot_refs"] = ["extra"]
     elif component == "tip":
@@ -160,6 +161,7 @@ def test_ordered_refs_and_object_format_are_bound(tmp_path, monkeypatch):
                         "-c", "user.email=test@example.invalid", "commit", "-qm", "initial"], check=True)
         oid = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
         bare = tmp_path / f"{algorithm}.git"
+        # pb-history-ok: Clones only the temporary repository initialized and committed above.
         subprocess.run(["git", "clone", "-q", "--bare", str(root), str(bare)], check=True)
         environment = dict(os.environ, GIT_INDEX_FILE=str(root / ".git" / "index"))
         refs = [("refs/heads/a", oid), ("refs/heads/b", oid)]
@@ -175,6 +177,7 @@ def test_ordered_refs_and_object_format_are_bound(tmp_path, monkeypatch):
 def test_external_attribute_contents_invalidate_cached_bytes(sealing, tmp_path, monkeypatch, source):
     root, _, packs, _ = sealing
     bare = tmp_path / "bare.git"
+    # pb-history-ok: Clones only the temporary repository created by the sealing fixture.
     subprocess.run(["git", "clone", "-q", "--bare", str(root), str(bare)], check=True)
     attrs = (tmp_path / "global-attributes" if source == "global" else
              root / ".gitattributes" if source == "index" else bare / "info" / "attributes")

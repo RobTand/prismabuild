@@ -90,6 +90,9 @@ def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=Fal
         def ledger(self) -> _Ledger:
             return _Ledger()
 
+        def claim_hold(self):
+            return None
+
         def announce(self, **kwargs) -> None:
             calls.append(kwargs)
 

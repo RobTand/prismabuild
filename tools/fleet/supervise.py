@@ -84,7 +84,7 @@ from prismabuild import role_log_identity  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
-from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, filesystem_floor, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
 from prismabuild import owned_tree, pbtest_scratch_roots  # noqa: E402
 from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 
@@ -639,6 +639,13 @@ def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
         return ("refuse", f"{LOCAL_DISK_FIELD} {path} is not a usable local "
                 f"disk: {exc}")
     ledger = pool.PoolQueue(_queue_root()).ledger(host)
+    try:
+        verdicts = filesystem_floor.enforce_paths(
+            ledger.root.parent, [path], label=f"supervisor {host} spool offer")
+        filesystem_floor.enforce_paths(
+            ledger.root.parent, [LOG_DIR], label=f"supervisor {host} log destination")
+    except filesystem_floor.FloorRefused as exc:
+        return ("wait", str(exc))
 
     def holders_wait() -> tuple[str, str] | None:
         try:
@@ -667,6 +674,11 @@ def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
     if room["inode_refusal"] is not None:
         return ("refuse", room["inode_refusal"])
     gib = max(0, room["room_bytes"]) // GIB
+    if filesystem_floor.mode(ledger.root.parent) == "enforce":
+        for verdict in verdicts:
+            if "required_bytes" in verdict:
+                gib = min(gib, max(0, int(verdict["free_bytes"])
+                                   - int(verdict["required_bytes"])) // GIB)
     if ceiling is not None:
         gib = min(ceiling, gib)
     detail = (f"{room['free_bytes']} B free - {room['floor_bytes']} B "

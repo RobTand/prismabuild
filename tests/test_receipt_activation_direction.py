@@ -107,14 +107,16 @@ def publication_args(*, dry_run, stage_only=False):
     return SimpleNamespace(rollout="rolling", rollout_reason="private direction control",
                            resume_barrier=None, rollback_barrier=None, rollback_reason=None,
                            dry_run=dry_run, stage_only=stage_only, activate_generation=None,
-                           canary=False, no_canary=True, allow_dirty=False, default_transport=None,
+                           canary=False, no_canary=True, allow_dirty=True, default_transport=None,
                            migrate_directory=False, barrier_wait_s=0,
                            shape_gate_action=None, shape_gate_waiver="private source qualification",
                            drop_roster_option_by=None, drop_roster_option_reason=None)
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_fresh_publication_refuses_unaware_installed_reader_before_writes(private_store, dry_run):
+def test_fresh_publication_refuses_unaware_installed_reader_before_writes(private_store, dry_run, monkeypatch):
+    # Direction refusal must also precede writes when the candidate is dirty.
+    monkeypatch.setattr(publisher, "_working_tree_dirty", lambda: True)
     previous = generation(private_store, "previous", "old", ())
     publisher._seal_generation(previous)
     publisher.MIRROR.symlink_to(previous)

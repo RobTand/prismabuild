@@ -33,6 +33,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from contextlib import ExitStack
 
@@ -152,7 +153,6 @@ def _launcher_pidfd(pid: int, victim: str) -> int:
 
 def _launcher_killer(args, key: str, result: dict) -> int:
     import signal
-    import time
     victim = args.victim_key
     if not victim or len(victim) != 64:
         raise SystemExit("killer needs the victim action key")

@@ -99,3 +99,44 @@ def test_one_host_event_must_not_scan_every_unrelated_watch(tmp_path):
     finally:
         os.close(descriptor)
         watch.close()
+
+
+def test_dropping_a_host_tree_uses_no_per_watch_path_arithmetic(tmp_path, monkeypatch):
+    root = make_queue(tmp_path)
+    watch = events.InotifyQueue(root)
+    try:
+        def path_arithmetic(*_args):
+            raise AssertionError('subtree removal repeated pathlib arithmetic')
+
+        monkeypatch.setattr(Path, 'is_relative_to', path_arithmetic)
+        watch._drop_host_tree(Path('reservations/absent'))
+    finally:
+        watch.close()
+
+
+@pytest.mark.parametrize('subtree', [
+    'reservations/worker.lab', 'reservations/worker', 'reservations/./worker.lab/',
+    'workers', 'workers/absent', '.', '/', '//', '../outside',
+])
+def test_string_subtrees_remove_exactly_the_pathlib_watch_set(tmp_path, subtree):
+    root = make_queue(tmp_path)
+    (root / 'workers' / 'worker.lab.json').write_text('{}')
+    (root / 'reservations' / 'worker.lab-other' / 'held').mkdir(parents=True)
+    watch = events.InotifyQueue(root)
+    try:
+        relative = Path(subtree)
+        expected = {wd: path for wd, path in watch.directories.items()
+                    if path is not None and path.is_relative_to(relative)}
+        before = dict(watch.directories)
+        root_before = dict(watch.root_watches)
+        files_before = dict(watch.file_watches)
+        watch._drop_host_tree(relative)
+        assert watch.directories == {wd: path for wd, path in before.items()
+                                     if wd not in expected}
+        removed = set(expected.values())
+        assert watch.root_watches == {path: wd for path, wd in root_before.items()
+                                      if path not in removed}
+        assert watch.file_watches == {path: wd for path, wd in files_before.items()
+                                      if path not in removed}
+    finally:
+        watch.close()

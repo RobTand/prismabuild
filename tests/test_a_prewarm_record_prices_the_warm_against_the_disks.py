@@ -307,7 +307,6 @@ def test_the_storage_role_refuses_a_later_topology_discovery_gap(
         prewarm_loop, "cycle",
         lambda args, queue, mounts, stop, pacer=None: cycles.append(pacer) or {},
     )
-    monkeypatch.setattr(prewarm_loop.time, "sleep", lambda seconds: None)
 
     with pytest.raises(SystemExit, match="#499"):
         prewarm_loop.main([
