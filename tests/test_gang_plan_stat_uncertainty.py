@@ -81,10 +81,12 @@ def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
     _released(gang_fleet, group, first, second, lead, refill)
 
 
-@pytest.mark.parametrize("fresh", [False, True], ids=["initial-verdict", "fresh-verdict"])
+@pytest.mark.parametrize("observation", [
+    "initial-verdict", "fresh-verdict", "before-fresh", "after-fresh",
+])
 @pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
-        gang_fleet, monkeypatch, tmp_path, fresh, error_type):
+        gang_fleet, monkeypatch, tmp_path, observation, error_type):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = _gang_pair(
         gang_fleet, tmp_path, "verdict-stat", declare_manifest=True, declare_plan=True)
     first, second = keys
@@ -95,6 +97,8 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
     assert mark.exists()
     clock.now += _gang.TERMINAL_CONFIRM_S + 1
     original_verdict = pool.PoolQueue.residency_verdict
+    original_lead_proof = pool.PoolQueue._gang_lead_terminal_confirmed
+    original_incarnation = residency_plan.incarnation
     original_stat = Path.stat
     path = queue.records.residency_plan_path(first)
     faults = []
@@ -106,15 +110,33 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
         return original_stat(candidate, *args, **kwargs)
 
     def verdict(owner, item, *, fresh=False):
-        if item["action_key"] == first and fresh == target_fresh:
+        if item["action_key"] == first and observation == (
+                "fresh-verdict" if fresh else "initial-verdict"):
             with monkeypatch.context() as fault:
                 fault.setattr(Path, "stat", unavailable)
                 return original_verdict(owner, item, fresh=fresh)
         return original_verdict(owner, item, fresh=fresh)
 
-    target_fresh = fresh
+    def lead_proof(owner, item, key, residency):
+        calls = []
+
+        def incarnation(candidate):
+            calls.append(True)
+            target = 1 if observation == "before-fresh" else 2
+            if candidate == path and len(calls) == target:
+                with monkeypatch.context() as fault:
+                    fault.setattr(Path, "stat", unavailable)
+                    return original_incarnation(candidate)
+            return original_incarnation(candidate)
+
+        with monkeypatch.context() as fault:
+            if observation in ("before-fresh", "after-fresh"):
+                fault.setattr(residency_plan, "incarnation", incarnation)
+            return original_lead_proof(owner, item, key, residency)
+
     with monkeypatch.context() as fault:
         fault.setattr(pool.PoolQueue, "residency_verdict", verdict)
+        fault.setattr(pool.PoolQueue, "_gang_lead_terminal_confirmed", lead_proof)
         assert gclaim("sparklina") is None
         assert faults == [True]
         assert _gang.teardown(queue, group) is None
