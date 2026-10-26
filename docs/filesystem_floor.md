@@ -12,11 +12,15 @@ The [existing-owner identity and allowance contract](filesystem_identity_allowan
 is a parent-review packet for #1483, not a runtime registry, ledger or second
 validator. It reconciles existing source capabilities and destination variants,
 conservative accounting obligations, and exact existing suppliers/unblock
-conditions. Current authenticated mappings, closed allowance populations,
-complete deployment growth bounds and explicit parent acceptance of whole
-reservation bounds were not supplied. Dependent repair waits; no deployment,
-activation or physical Rob action is authorized. Structure tests do not prove
-these facts, accounting semantics or review approval.
+conditions. The Principal Engineer, as parent, has accepted conservative
+whole-reservation bounds with zero unproven materialization credit (the packet's
+`accounting.parent_acceptance`). That is a safe upper bound, not verified exact
+accounting. Current authenticated mappings, closed allowance populations and
+complete deployment growth bounds are still missing. They gate activation of
+enforce mode, not the #1483 source repair, which proceeds default-off and must
+HOLD on each of those unknowns. No deployment, activation or physical Rob action
+is authorized; the packet lists the decisions reserved to Rob. Structure tests do
+not prove these facts, accounting semantics or review approval.
 
 The coverage and audit notes below describe source capabilities and historical
 limits, not an all-writers certificate. Binding members and tolerant

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 import fcntl
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -216,7 +215,7 @@ def _reuse_bundle_cache(root: Path, address: str, destination: Path) -> bool:
             source, record = opened
             fd, name = tempfile.mkstemp(prefix=".bundle-hit-", dir=destination.parent)
             temporary = Path(name)
-            digest = hashlib.sha256()
+            digest = digests.new_sha256()
             copied_bytes = 0
             with os.fdopen(fd, "wb") as output:
                 while chunk := source.read(1 << 20):
