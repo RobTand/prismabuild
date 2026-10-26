@@ -76,6 +76,22 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_2323": {
+    "target": "PB keeps admission and withdrawal in PoolQueue; no producer placement control.",
+    "implemented_source": {
+     "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+     "state": "component-implemented"
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+     "evidence": "docs/evidence/issue2323/qualification.json",
+     "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+    },
+    "deployment": "not deployed by this task; no publication, activation or restart",
+    "workload_proof": "not established; no live gang or staged-only campaign proof",
+    "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
    }
   },
   {
@@ -765,6 +781,22 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_2323": {
+    "target": "Normal gang teardown and member withdrawal require stable positive terminal plan evidence; uncertainty resets confirmation.",
+    "implemented_source": {
+     "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+     "state": "component-implemented"
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+     "evidence": "docs/evidence/issue2323/qualification.json",
+     "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+    },
+    "deployment": "not deployed by this task; no publication, activation or restart",
+    "workload_proof": "not established; no live gang or staged-only campaign proof",
+    "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
    }
   },
   {
@@ -1000,6 +1032,22 @@
    "workload_proof": {
     "detail": "2026-09-23 update (snapshot 13:50Z): Partial. R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was claimed on sparky with residency verdict resident on one lead (275a4ef3...) at tier prismabuild-stage:dl380g10. That is one admission on a real campaign, not conformance.",
     "state": "partial"
+   },
+   "scoped_repair_2323": {
+    "target": "A resident verdict cannot claim a retired filing after unavailable stat; genuine no-plan lead-only proof remains supported.",
+    "implemented_source": {
+     "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+     "state": "component-implemented"
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+     "evidence": "docs/evidence/issue2323/qualification.json",
+     "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+    },
+    "deployment": "not deployed by this task; no publication, activation or restart",
+    "workload_proof": "not established; no live gang or staged-only campaign proof",
+    "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
    }
   },
   {
@@ -1729,6 +1777,22 @@
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no staged-only campaign or live-host reproduction",
     "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_2323": {
+    "target": "Stable terminal plan evidence confirms after 120 seconds and the next successful eligible scan; ordinary waits and unavailable evidence have no unconditional wall-clock bound.",
+    "implemented_source": {
+     "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+     "state": "component-implemented"
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+     "evidence": "docs/evidence/issue2323/qualification.json",
+     "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+    },
+    "deployment": "not deployed by this task; no publication, activation or restart",
+    "workload_proof": "not established; no live gang or staged-only campaign proof",
+    "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
    }
   },
   {
@@ -2091,6 +2155,22 @@
     "deployment": "not deployed; no publication, activation or service restart in this task",
     "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
     "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+   },
+   "scoped_repair_2323": {
+    "target": "Deterministic stat/read/absence faults cover initial observation, confirmation reproof, final locked lead verdict and filing brackets, plus existing gang and retirement controls.",
+    "implemented_source": {
+     "commit": "ef29f71e2e1352be45b5c5d78e9ca97d7b83809c",
+     "state": "component-implemented"
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2323/merge-acceptance.json",
+     "evidence": "docs/evidence/issue2323/qualification.json",
+     "detail": "443 passes per architecture in 17 files; four more 44-pass rounds per architecture. All 50 actions executed with zero failures/skips, native completion, cleanup, logs, receipts/results and source trees verified."
+    },
+    "deployment": "not deployed by this task; no publication, activation or restart",
+    "workload_proof": "not established; no live gang or staged-only campaign proof",
+    "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
    }
   },
   {

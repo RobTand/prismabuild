@@ -106,3 +106,39 @@ release or deployment claim.
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"0f323f3a5712f615c4d4179fecf23d0c211816a3c87d26b50852742e7e250887","size":120747}},"operation":"d6132ad3a14b8911c389091f8d48eb886f3e8b53d8d7cc5d08c2854f9199d9d8","receipt":"db72d492b8270cdc43a788dbce5c50eeb6a94879c946826a88ba38b7ad6585e6"}]
 
 [Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"b12b512c1aae481aa081c3c2907165a41573b908b6dc5bd2ac72c19e83e82fa2","size":121109}},"operation":"11c7ee28efce4cfb7bdd78ad53adb5c2b31c88eea358344cf41d52a29ec12e98","receipt":"9aace63e2285d0e7a9955a186fc6a930555f0887ad0014294b3a6bbde1a26fff"}]
+
+## Stat uncertainty repair, #2323, 2026-10-26
+
+Independent review reproduced a retired gang member claiming after an actual
+plan-stat fault. Action `0cdf3a5c872326cf91d0a9be7760bef4b5addc09602924f5eef37c4b1ce98470`
+failed one of two tests. A second deterministic control, action
+`19c8fb5e9724a14b7f7fd1665d7879efe4a06b248c4c73918432a6a453905412`,
+failed one of 18 tests when fresh verdict uncertainty reused aged confirmation.
+Neither failed action has a successful receipt.
+
+`incarnation` now returns `None` only for genuine absence and propagates other
+stat errors. Its four existing best-effort callers retain their own deferral
+contracts. Admission, terminal-plan reproof and the final locked lead-verdict
+refresh defer on unavailable or changed filing observations and clear the
+confirmation window. A genuine no-plan lead-only consumer retains its separate
+locked proof. The original acceptance overlay is unchanged.
+
+Source `ef29f71e2e1352be45b5c5d78e9ca97d7b83809c` passed 443 tests in 17 files
+on x86 with Python 3.14 and ARM with Python 3.12. Four further rounds of the two
+new regression files passed 44 tests each on each architecture. Both files
+therefore have five executed runs per architecture, all with two xdist workers.
+There were zero failures or skips in these 50 actions.
+
+[Qualification](../evidence/issue2323/qualification.json) records every action,
+receipt and log digest. The retained verifier read terminal records, native
+call and teardown coverage, cleanup, both immutable logs, CAS receipts/results
+and the actual source bundles. The tested `src`, `tests` and `tools` trees match
+the qualified commit. Each shard reserved two CPUs, 4 GiB memory and zero GPUs,
+with one native thread per worker, priority -10 and an 1800-second deadline.
+Exact published pbtest commands and reports are retained under
+`/mnt/shared/paperclip-runs/PRI-150` and in the Paperclip evidence attachment.
+
+The [merge acceptance record](../evidence/issue2323/merge-acceptance.json) and
+scoped ledger entries cover this component only. The historical compatibility
+release prerequisite above remains separate. This task publishes no runtime,
+changes no generation, restarts no service and proves no campaign completion.
