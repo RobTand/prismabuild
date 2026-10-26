@@ -88,14 +88,36 @@ def test_pbtest_lanes_use_published_fanout_with_declared_demand(lane):
 
 def test_root_lane_is_the_documented_container_action():
     required = json.loads((ROOT / 'tests/proof_execution.json').read_text())['root']
+    profile_path = '_proof_runtime_profiles/standard3144.json'
+    profile = json.loads((ROOT / profile_path).read_text())
     cmd = verify.root_command(ROOT, '/worker/bin/python')
     assert cmd[1] == '/mnt/shared/prismabuild-fleet/repo/tools/pbrun.py'
-    assert cmd[cmd.index('--container-image') + 1] == required['image']
+    assert cmd[cmd.index('--container-image') + 1] == profile['image']
     assert cmd[cmd.index('--cpus') + 1] == str(required['cpus'])
     assert cmd[cmd.index('--demand') + 1] == f"mem_gb={required['memory_gib']}"
     assert '--detach' in cmd
-    assert cmd[cmd.index('--') + 1:] == ['/worker/bin/python', 'tests/run_root_population.py']
+    assert cmd[cmd.index('--') + 1:] == [profile['primary']['executable']['path'],
+        'tests/run_root_population.py', '--runtime-profile', profile_path,
+        *verify.populations(ROOT)['root']]
     assert (ROOT / 'tests/run_root_population.py').is_file()
+
+
+def test_root_helper_forwards_native_runtime_to_the_actual_adapter(monkeypatch):
+    from types import SimpleNamespace
+
+    root_spec = importlib.util.spec_from_file_location(
+        'root_population_runner', ROOT / 'tests/run_root_population.py')
+    runner = importlib.util.module_from_spec(root_spec)
+    root_spec.loader.exec_module(runner)
+    calls = []
+    monkeypatch.setattr(runner.subprocess, 'run', lambda cmd, **kwargs:
+                        calls.append(cmd) or SimpleNamespace(returncode=0))
+    args = ['--runtime-profile', '_proof_runtime_profiles/standard3144.json',
+            'tests/test_client_bootstrap_root.py']
+    assert runner.main(args) == 0
+    assert calls[0][1].endswith('tests/prepare_proof_execution.py')
+    assert calls[1][1].endswith('tests/run_proof_container.py')
+    assert calls[1][2:] == args
 
 
 def row(files, *, green=True, skipped=None):

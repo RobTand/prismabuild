@@ -10,10 +10,16 @@ from pathlib import Path
 import subprocess
 import sys
 
-root = Path.cwd().resolve()
-prepared = subprocess.run([sys.executable, str(root / 'tests/prepare_proof_execution.py'),
-                           '--checkout', str(root), '--prepare'], check=False)
-if prepared.returncode:
-    raise SystemExit(f'root lane: input preparation failed with {prepared.returncode}')
-raise SystemExit(subprocess.run([sys.executable, str(root / 'tests/run_proof_container.py')],
-                                check=False).returncode)
+def main(argv=None):
+    root = Path.cwd().resolve()
+    prepared = subprocess.run([sys.executable, str(root / 'tests/prepare_proof_execution.py'),
+                               '--checkout', str(root), '--prepare'], check=False)
+    if prepared.returncode:
+        raise SystemExit(f'root lane: input preparation failed with {prepared.returncode}')
+    return subprocess.run([sys.executable, str(root / 'tests/run_proof_container.py'),
+                           *(sys.argv[1:] if argv is None else argv)],
+                          check=False).returncode
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
