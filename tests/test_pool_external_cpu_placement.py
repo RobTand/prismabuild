@@ -10,6 +10,8 @@ from prismabuild import pool
 def _placement(tmp_path, monkeypatch, *, tags=()):
     monkeypatch.setattr(pool, '_now', lambda: 1000.0)
     monkeypatch.setattr(pool.time, 'monotonic', lambda: 10.0)
+    snapshots = pool.cpu_admission.adaptive_snapshot
+    monkeypatch.setattr(snapshots, 'publish', snapshots.copy_snapshot)
     queue = pool.PoolQueue(tmp_path / 'queue')
     local = socket.gethostname()
 
@@ -52,7 +54,7 @@ def test_portable_cpu_row_uses_spare_host_when_external_load_fills_cpu_host(plac
     assert claim(local, cpus=80) is None
     assert not queue.ledger(local).held_keys()
     claimed = claim('spare', cpus=20, gpu=True)
-    assert claimed is not None
+    assert claimed is not None, queue.latest_denials({key})
     assert claimed['action_key'] == key
 
 
