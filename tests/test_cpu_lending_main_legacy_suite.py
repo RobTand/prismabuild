@@ -16,23 +16,44 @@ MANIFEST_PIN = 'b5d5919010b58a4cd38892063f984242c9b3f87f1d4f72e8a37c7dec2d0eeddc
 MANIFEST = json.loads((REFERENCE / 'manifest.json').read_bytes())
 
 
-@pytest.mark.parametrize('filename', MANIFEST['selected'])
-def test_main_cpu_tests_run_unchanged_at_cap_zero(tmp_path, filename):
+def _prepare_legacy_checkout(source, checkout):
     assert hashlib.sha256((REFERENCE / 'manifest.json').read_bytes()).hexdigest() == MANIFEST_PIN
     assert MANIFEST['main_commit'] == '43234d0fbd42d6ed76da38658cb9f447ed19a606'
-    checkout = tmp_path / 'snapshot'
     tests = checkout / 'tests'
-    shutil.copytree(ROOT / 'tests', tests,
+    shutil.copytree(source / 'tests', tests,
                     ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache'))
     for name, pin in MANIFEST['files'].items():
         raw = (REFERENCE / (name + '.fixture')).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == pin['sha256']
         (tests / name).write_bytes(raw)
     for name in ('src', 'tools'):
-        shutil.copytree(ROOT / name, checkout / name)
+        shutil.copytree(source / name, checkout / name)
     for name in ('pyproject.toml', 'pytest.ini'):
-        if (ROOT / name).is_file():
-            shutil.copyfile(ROOT / name, checkout / name)
+        if (source / name).is_file():
+            shutil.copyfile(source / name, checkout / name)
+
+
+def test_archived_host_review_collects_without_production_host_reads(tmp_path):
+    source = tmp_path / 'relocated'
+    shutil.copytree(ROOT / 'src', source / 'src',
+                    ignore=shutil.ignore_patterns('queue_bell_host_reads.py', '__pycache__'))
+    for name in ('tests', 'tools'):
+        (source / name).symlink_to(ROOT / name, target_is_directory=True)
+    checkout = tmp_path / 'snapshot'
+    _prepare_legacy_checkout(source, checkout)
+    result = subprocess.run([sys.executable, '-m', 'pytest', '--collect-only', '-q',
+        'tests/test_queue_bell_host_review_edges.py'], cwd=checkout,
+        env=dict(os.environ, PYTHONPATH=str(checkout / 'src') + os.pathsep + str(checkout / 'tools/fleet'),
+                 PRISMABUILD_BOX_STATE_ROOT=str(tmp_path / 'box-state')),
+        text=True, capture_output=True, timeout=1200)
+    assert result.returncode == 0, result.stdout[-10000:] + result.stderr[-4000:]
+
+
+@pytest.mark.parametrize('filename', MANIFEST['selected'])
+def test_main_cpu_tests_run_unchanged_at_cap_zero(tmp_path, filename):
+    checkout = tmp_path / 'snapshot'
+    _prepare_legacy_checkout(ROOT, checkout)
+    tests = checkout / 'tests'
     report = tmp_path / 'results.xml'
     result = subprocess.run([sys.executable, '-m', 'pytest', '-q', str(tests / filename),
         '--junitxml', str(report)], cwd=checkout,
