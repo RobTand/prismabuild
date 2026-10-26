@@ -143,7 +143,8 @@ def test_complete_tmpfs_coverage_allows_ram_promotion(monkeypatch, tmpfs_root):
         "--tier-id", fixture.RAM_TIER, "--ram-root", str(ram),
         "--source-stage-root", str(stage), "--manifest-sha256", manifest_sha,
         "--range-start-bytes", "0", "--range-end-bytes", str(fixture.SIZE),
-        "--manifest", str(manifest)])
+        "--manifest", str(manifest), "--residency-root", str(queue.root / "residency"),
+        "--readers", "1", "--max-readers", "1"])
 
     receipt = ram_promote.promote(args)
 
