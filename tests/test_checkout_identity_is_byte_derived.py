@@ -65,6 +65,7 @@ def _legacy_dirty_sha256(root: Path) -> str:
     """Derive the key the way the unfixed code did, for comparison."""
 
     return hashlib.sha256(
+        # pb-history-ok: Replays the legacy dirty diff only against the generated fixture repository.
         _git(root, *LEGACY_DIFF).encode("utf-8", "surrogateescape")
     ).hexdigest()
 
@@ -204,7 +205,7 @@ def test_presentation_config_does_not_move_the_key(
 
     root = _dirty_tree(tmp_path / "checkout")
     expected = pb.git_checkout_identity(root)["dirty_sha256"]
-    _git(root, "config", name, value)
+    _git(root, "config", "--", name, value)
 
     identity = pb.git_checkout_identity(root)
 
@@ -222,7 +223,7 @@ def test_personal_excludes_do_not_hide_untracked_bytes(
     expected = pb.git_checkout_identity(root)
     personal = tmp_path / "personal-ignore"
     personal.write_text(ignored_path + "\n")
-    _git(root, "config", "core.excludesFile", str(personal))
+    _git(root, "config", "--", "core.excludesFile", str(personal))
     assert pb.git_checkout_identity(root) == expected
 
 
@@ -246,7 +247,7 @@ def test_personal_excludes_cannot_hide_unsupported_inodes(
     os.mkfifo(root / ("nested/pipe" if ignored_path.endswith("/") else "pipe"))
     personal = tmp_path / "personal-ignore"
     personal.write_text(ignored_path + "\n")
-    _git(root, "config", "core.excludesFile", str(personal))
+    _git(root, "config", "--", "core.excludesFile", str(personal))
     with pytest.raises(pb.ActionContractError, match="unsupported file type"):
         pb.git_checkout_identity(root)
 
@@ -264,7 +265,7 @@ def test_local_diff_driver_configuration_does_not_move_key(
         (root / "doc.dat").write_text(original.replace("before", "after"))
     expected = pb.git_checkout_identity(root)
     (root / ".git/info/attributes").write_text("*.dat diff=personal\n")
-    _git(root, "config", f"diff.personal.{driver_setting}",
+    _git(root, "config", "--", f"diff.personal.{driver_setting}",
          "true" if driver_setting == "binary" else "^aaa$")
     assert pb.git_checkout_identity(root) == expected
 
@@ -274,7 +275,7 @@ def test_global_attributes_do_not_move_key(tmp_path: Path) -> None:
     expected = pb.git_checkout_identity(root)
     attributes = tmp_path / "personal-attributes"
     attributes.write_text("*.dat -diff\n")
-    _git(root, "config", "core.attributesFile", str(attributes))
+    _git(root, "config", "--", "core.attributesFile", str(attributes))
     assert pb.git_checkout_identity(root) == expected
 
 
@@ -288,9 +289,11 @@ def test_diff_environment_does_not_move_key(tmp_path: Path, monkeypatch) -> None
 def test_identity_uses_worktree_index_without_modifying_it(tmp_path: Path) -> None:
     root = _dirty_tree(tmp_path / "checkout")
     worktree = tmp_path / "linked"
+    # pb-history-ok: Inspects the generated fixture repository to compare byte-derived checkout identities.
     _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
     (worktree / "a.txt").write_text("staged modification\n")
     _git(worktree, "add", "a.txt")
+    # pb-history-ok: Inspects the generated fixture repository to compare byte-derived checkout identities.
     index = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
     index_bytes = index.read_bytes()
     assert pb.git_checkout_identity(worktree)["dirty_sha256"] == _legacy_dirty_sha256(worktree)

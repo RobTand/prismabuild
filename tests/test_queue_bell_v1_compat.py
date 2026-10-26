@@ -17,6 +17,9 @@ from prismabuild.digest_primitives import raw_sha256
 BASE_BELL_REVISION = "8b2d47ff824e89aa60f83126d397bbd4207fe3d2"
 V1_EPOCH = "a" * 32
 V1_KEY = "b" * 64
+# These exchanges compare bodies, not latency (#2057). Only a hang can exhaust
+# this budget, and the harness's per-test bound ends a hang first.
+BODY_BUDGET_S = 300.0
 
 
 @pytest.fixture(scope="module")
@@ -87,7 +90,7 @@ def _v1_exchange(client_module, server_module, case, root):
         elif case == "wrong-queue":
             client.queue_root = root / "other"
 
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=BODY_BUDGET_S)
         try:
             connection.request("GET", path,
                 headers={"X-PrismaBuild-Queue": str(client.queue_root.absolute())})
@@ -98,12 +101,19 @@ def _v1_exchange(client_module, server_module, case, root):
         if case in ("bad-query", "unknown-endpoint", "wrong-queue"):
             assert status == {"bad-query": 400, "unknown-endpoint": 404, "wrong-queue": 503}[case]
             with pytest.raises(client_module.Unavailable, match=str(status)):
-                client._request(path, deadline=time.monotonic() + 1)
+                client._request(path, deadline=time.monotonic() + BODY_BUDGET_S)
         elif case == "now":
             actual = client.now()
             assert (actual.epoch, actual.seq) == (V1_EPOCH, 0)
+        elif case == "empty":
+            # The service holds an empty wait until its own timeout, and wait()
+            # leaves only a tenth of its budget for delivery (5 ms of 0.05 s),
+            # which gate load exceeds (#2057). Send the raw exchange's own path,
+            # with its 0.01 s service wait, under a generous delivery budget.
+            assert client._request(path, deadline=time.monotonic() + BODY_BUDGET_S) == json.loads(raw)
         else:
-            assert client.wait(cursor, ("done",), (V1_KEY,), 0.05) == json.loads(raw)
+            # Events and resets answer at once, so a generous budget costs no time.
+            assert client.wait(cursor, ("done",), (V1_KEY,), 5.0) == json.loads(raw)
         return status, raw
 
 

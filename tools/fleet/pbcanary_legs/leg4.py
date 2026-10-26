@@ -55,6 +55,7 @@ try:
         canonical_json,
         deterministic_bytes,
         extract_envelope,
+        receipt_returncode,
         sha256_hex,
     )
 except ImportError:  # Worker runs the file directly: sibling import.
@@ -62,6 +63,7 @@ except ImportError:  # Worker runs the file directly: sibling import.
         canonical_json,
         deterministic_bytes,
         extract_envelope,
+        receipt_returncode,
         sha256_hex,
     )
 
@@ -214,27 +216,6 @@ def run_action() -> int:
     return 0
 
 
-def _extract_envelope(receipt: object) -> tuple[str | None, dict | None, str]:
-    """Bind ``common.extract_envelope`` to the leg-4 schema marker.
-
-    The accepted locations and return shape are documented there once.
-    Leg 4 requires the raw bytes (``raw`` not None) for its bitwise check.
-    """
-    return extract_envelope(receipt, schema=LEG4_SCHEMA)
-
-
-def _returncode(receipt: dict) -> int | None:
-    for where in ("returncode", "detail.returncode", "action_returncode"):
-        node: object = receipt
-        for key in where.split("."):
-            node = node.get(key) if isinstance(node, dict) else None
-        if isinstance(node, bool):
-            continue
-        if isinstance(node, int):
-            return node
-    return None
-
-
 def verify(receipt_a: object, receipt_b: object, expected: object) -> tuple[bool, str]:
     """Verify both leg-4 receipts: bitwise-equal envelopes, pinned digest.
 
@@ -254,11 +235,11 @@ def verify(receipt_a: object, receipt_b: object, expected: object) -> tuple[bool
     if not isinstance(expected, dict):
         return False, "leg4: expected spec is not an object"
     for side, name, receipt in (("a", names[0], receipt_a), ("b", names[1], receipt_b)):
-        rc = _returncode(receipt)
+        rc = receipt_returncode(receipt)
         if rc is not None and rc != 0:
             return False, f"leg4: {name} action returncode {rc} != 0"
-    raw_a, parsed_a, where_a = _extract_envelope(receipt_a)
-    raw_b, parsed_b, where_b = _extract_envelope(receipt_b)
+    raw_a, parsed_a, where_a = extract_envelope(receipt_a, schema=LEG4_SCHEMA)
+    raw_b, parsed_b, where_b = extract_envelope(receipt_b, schema=LEG4_SCHEMA)
     if raw_a is None or parsed_a is None:
         return False, f"leg4: {names[0]} envelope bytes absent ({where_a or 'nowhere'})"
     if raw_b is None or parsed_b is None:

@@ -27,8 +27,8 @@ def profile(store, scratch):
     root = store / "scratch"
     root.mkdir(exist_ok=True)
     observed = {"device": "1", "filesystem": "2", "root_inode": "3", "filesystem_type": "zfs"}
-    before = scratch._descriptor_identity, scratch.root_identity, os.fstat, os.fstatvfs, time.perf_counter
-    scratch._descriptor_identity = lambda fd: dict(observed)
+    before = scratch.descriptor_identity, scratch.root_identity, os.fstat, os.fstatvfs, time.perf_counter
+    scratch.descriptor_identity = lambda fd: dict(observed)
     scratch.root_identity = lambda root: dict(observed)
     os.fstat = lambda fd: SimpleNamespace(st_dev=1, st_size=8)
     os.fstatvfs = lambda fd: SimpleNamespace(f_fsid=2)
@@ -43,7 +43,7 @@ def profile(store, scratch):
             os.environ.pop("PRISMABUILD_ACTION_KEY", None)
         else:
             os.environ["PRISMABUILD_ACTION_KEY"] = producer
-        scratch._descriptor_identity, scratch.root_identity, os.fstat, os.fstatvfs, time.perf_counter = before
+        scratch.descriptor_identity, scratch.root_identity, os.fstat, os.fstatvfs, time.perf_counter = before
 
 
 def operate(request, store, load):

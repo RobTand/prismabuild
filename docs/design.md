@@ -754,6 +754,18 @@ on its host still keep protection. Other hosts and legitimate equal/higher
 priority work keep existing admission, placement and resource gates. No token,
 probe, borrow, CPU/GPU/foreign/PSI isolation or physical cleanup is waived.
 
+A current `measurement_foreign_ambient` CPU refusal suspends an elected
+measurement's fence for the rest of that claim pass (#2267). `PassCensus`
+keeps the exact selection and sample timestamp as pass-local evidence. Reuse
+requires the same selection in the refreshed sidecar, a fresh sample, an
+available measurement transition key, and no tokens held by the measurement.
+Each elected measurement must supply its own evidence. Lower-priority rows
+then face ordinary admission, while the measurement remains READY with its
+visible `adaptive_cpu_refused_starved` denial. The durable selection and
+original opportunity stay unchanged. A new pass, restart, stale evidence,
+or changed selection requires a new affirmative refusal before suspension.
+This component repair establishes no runtime deployment or campaign completion.
+
 Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
 reuses Controller's permanent inode/nonblocking flock; Controller delegates and
 retains its advisory diagnostic publication outside the gate. Capacity-backed
@@ -1786,6 +1798,26 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The fleet roster's optional `action_tmpdir` names one canonical absolute scratch
+directory present on every eligible worker. `pbrun` and `pbtest` capture it from
+the same runtime's roster and seal its literal value as `TMPDIR`. The current
+declaration is `/home/rob/pbt17`, backed by enterprise NVMe on dl380g10 and local
+NVMe on both Sparks. Old rosters without the field retain `/home/rob/tmp`.
+An explicit `pbrun --env TMPDIR=...` or `pbtest --tmpdir` takes precedence;
+`--no-default-env` supplies no default. Workers never reinterpret that sealed
+path. New configured pbtest defaults use the existing directory/inode preflight;
+legacy defaults retain their existing fallback behavior. Restricted scratch
+recorders accept both reviewed fleet paths so retained legacy requests still
+validate independently of the current roster.
+
+Checkouts retain the existing `PRISMABUILD_LOCAL_CHECKOUT_ROOT` environment
+override and default `/home/rob/tmp/prismabuild-checkouts`. On dl380g10 that
+default path already mounts `prismabuild-stage/checkouts` on enterprise NVMe.
+The separate `/tmp/pbscratch` spool offer is unchanged. Roster publication
+installs no dataset or mount. Host storage readback and release evidence are
+recorded in
+[the fleet storage record](fleet_storage.md#action-scratch-and-checkouts).
+
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
 profiles cannot rewrite the sealed PATH or select a different executable.
 CUDA tooling outside the default PATH must be named explicitly or supplied
@@ -2250,6 +2282,20 @@ monitor also records each completed test-report dispatch, so abandoning a
 direct adapter generator cannot suppress a real failure. Other report and
 worker-population adapters accept the matching dispatched argument objects only
 once per dispatch, so direct calls cannot fabricate or duplicate them.
+xdist's execnet receiver thread dispatches report deserialization hooks while
+its controller's main thread dispatches test reports and lifecycle hooks.
+Each dispatching thread owns its hook-entry stack through `threading.local`,
+so one thread cannot consume another thread's entry or reject its adapters.
+The report monitor reads the report from its own return callback arguments.
+Within that thread's stack, it matches hook names from the end, discards
+intervening unmatched entries, and leaves the stack unchanged when no entry
+matches. Only a matched entry can advance a lifecycle phase (#2243).
+An xdist synthetic failed report with phase `???` retains that phase and
+failure in the outcome rows. Missing teardown for exactly those failed tests
+does not make file coverage unknown. Completion evidence still reports their
+missing teardown; other unfinished tests keep coverage unknown.
+Replacement workers may add collections beyond the initial worker count;
+every observed worker collection must still match the selected population.
 Final outcomes precede exit cleanup, including KeyboardInterrupt; authenticated
 final-teardown completion still survives blocked exit hooks, including xdist
 workers that prevent the controller's test loop from returning.
@@ -2520,13 +2566,15 @@ pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
-sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+sealed child `TMPDIR` assignment. The default comes from the loaded roster's
+`action_tmpdir`, or `/home/rob/tmp` for a legacy roster. The path
 is passed as one argv element, with no shell evaluation or coordinator-side
 existence check. The caller supplies a directory usable on every eligible worker;
 this flag adds no direct-I/O qualification or placement capability. An explicitly
 selected parent is preflighted on the worker by creating and closing an anonymous
 temporary file before pytest; an absent or unusable directory refuses instead of
-silently falling back. The default retains its legacy behavior. This startup
+silently falling back. A configured default receives the same preflight; only
+the legacy default retains its fallback behavior. This startup
 check does not reserve capacity or guarantee availability throughout the test.
 Changing the selected parent changes the child command and its action identity.
 
@@ -2642,7 +2690,7 @@ the owner lock `pb-owner.lock` beside `pytest`, and the plugin roster that
 `pbtest_outcomes` writes for xdist workers, so a killed shard leaves nothing
 directly in `TMPDIR`. Exit 0 removes the attempt directory, read-only test
 directories included. Any other ending keeps it for diagnosis and starts its
-24-hour retention clock; a later attempt in the same `TMPDIR` then removes it.
+24-hour retention clock; a later attempt or owning worker supervisor then removes it.
 A sealed `--basetemp` attempt `<root>/<key>/<attempt>` follows the same rule
 under its root, and exit 0 also removes the key directory it empties. The
 sealed root and `TMPDIR` themselves are never removed or changed.
@@ -2836,6 +2884,26 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 `pbtest_owned_temp` owns the carried worker programs, and
 `worker_log_retention` owns the supervisor's bounded log pruning.
 
+`pbtest_scratch_roots` registers the worker's opened pbtest root before its
+attempt directory becomes visible (#1710). The executing uid's passwd home,
+independent of sealed `HOME`, holds the private mode-0700 registry
+`.local/state/prismabuild/pbtest-roots-v1`. Each atomic symlink entry is named
+`<layout>-<device>-<inode>`, where layout is `tmpdir` or `basetemp`, and points
+to the root's real absolute path. Registration refuses an unsafe registry or
+changed root before creating scratch. Both layouts keep the existing owner
+locks and namespace shapes; registration adds no second attempt custody.
+
+The supervisor holding the box claim sweeps at startup and hourly on its
+existing supervision cycles. `--once`, one-shot stale cycling, and a competing
+supervisor do not sweep. A pass selects at most 64 registered roots in random
+order, verifies their device and inode, refuses symlinked or missing roots,
+and delegates each layout to `owned_tree.reap_dead_trees` with its existing
+per-call bounds. Failures are reported and leave supervision running. The
+supervisor can therefore expire idle scratch without another pbtest run.
+Unregistered roots and unmarked legacy attempts remain outside automatic
+expiry. This source contract does not establish deployment or a first-pass
+space-freed measurement on real scratch.
+
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
   or `<tree>.lock` beside a checkout, whose tree actions hash and inspect.
@@ -2853,7 +2921,8 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
   retried a window later.
 - **Trees are reaped where they are made, and the work is bounded.** Each new
   pbtest attempt reaps its `TMPDIR` (or the `<key>/<attempt>` leaves of its
-  sealed root), each new checkout reaps its checkout root, and each pbrun
+  sealed root), as does the owning supervisor for registered pbtest roots.
+  Each new checkout reaps its checkout root, and each pbrun
   snapshot reaps its `TMPDIR`. One call inspects at most 256 candidates and
   removes at most 4, in random order, so a crowded directory never holds up an
   attempt or a claim, and nothing starves. Reaping never fails the work that
@@ -3622,6 +3691,65 @@ without the member or the ordinary package import boundary.
   (`stdout=file`, UTF-8 tip bytes on stdin); it shares the caller deadline. Its
   refusals name the pinned pack operation without text-capturing pack bytes
   and preserve explicit OSError/TimeoutExpired causes.
+  Submission sealing caches those exact bundle bytes on the submitting host
+  (#2171). The default root is `prismabuild-sealed-bundles` under the client's
+  `tempfile.gettempdir()` when that directory is qualified local disk, otherwise
+  under `~/tmp`. It is limited to 128 entries and 2 GiB of bundle and
+  digest-record bytes, including active fill reservations. Before staging a
+  fill, `statvfs` available bytes minus the bundle and digest-record size must
+  leave at least the greater of 2 GiB and 10% of the filesystem's total bytes.
+  `PRISMABUILD_BUNDLE_CACHE_ROOT` selects
+  another absolute root; `off` disables the cache. The opened directory must
+  be private to its owner and on a positively identified local disk filesystem
+  accepted by `local_scratch`; tmpfs, shared and unknown filesystems bypass it.
+  The cache key binds the object format, ordered ref names and tip IDs, exact
+  header and tip stream, pack configuration and options, Git version, and the
+  effective Git configuration including inherited settings not explicitly pinned.
+  Sorted `GIT_*` variables also participate, except the private index and object
+  storage paths whose contents are already bound. External graft and shallow
+  history overrides bypass caching rather than trusting mutable path contents.
+  It also binds the private index and contents of Git's global, system and
+  repository attribute files. A configured attribute path alone is insufficient:
+  changing its `delta` rules can change pack bytes without changing any object.
+  Cache reuse requires the canonical bare repository and private index used by
+  snapshot sealing. Other attribute contexts, unsupported Git attribute-path
+  discovery and unreadable or changing inputs fall back to the original sealer.
+  A cold seal rechecks these mutable inputs' contents and
+  `(dev, ino, size, mtime_ns, ctime_ns)` before publication; a changed input
+  leaves the fresh bundle usable but prevents filling under the earlier key.
+  The snapshot tip transitively binds the injected stamp or closure, tree,
+  parent and reachable objects. Storage layout and temporary paths do not
+  participate. A Git-version or configuration probe failure bypasses the cache.
+  A per-address flock coalesces identical misses without holding up unrelated
+  addresses. A shared pin keeps its lock inode stable for owners and waiters;
+  the last user removes idle lock files. Dead owners are reaped using only
+  cache-owned nonblocking locks. Warm hits need no per-address lock.
+  Deadline callers bypass a contended miss lock.
+  Hits open metadata and payload descriptors under a nonblocking shared
+  inventory flock, then release it before copying and verification. Open
+  descriptors survive eviction. Four warm deadline readers can all hit.
+  Exclusive inventory locking covers only bookkeeping, space reservations,
+  trimming and publication; contention falls back to fresh sealing.
+  Each hit copies to a private destination-side file, computing one SHA-256
+  over the chunks read from the pinned cache descriptor. It compares the copied
+  length and digest with the record before atomically installing that same file.
+  A miss runs the original sealer. A fallback preserves an already valid cache
+  entry. Fills reserve space and mark their staging owner under inventory
+  protection, copy outside it, then rename the complete entry under it. Entries
+  are disposable and digest-verified, so cache writes require no fsync. Failed staging is removed
+  under the inventory lock; abandoned staging is reaped on a subsequent miss
+  or fill, with live reservations counted against the caps. Cache I/O errors,
+  partial records and digest mismatches fall back
+  to sealing; oversized bundles bypass storage. A hit is byte-identical to
+  a fresh seal and changes neither snapshot records nor action keys.
+  `tools/maintenance/measure_bundle_cache.py` compares repeated checkout
+  snapshots with caching disabled and enabled, including private-index and
+  closure preparation as for multiple shards of one checkout. Run it through
+  PB. It interleaves uncached snapshots and warm bundle hits, measures process
+  and child CPU, records observed load, counts pack executions, and checks
+  every snapshot record and bundle digest against the warmup and fresh seals.
+  An ordinary portable action suffices for this CPU accounting comparison;
+  it reports no wall-time speedup or idle-host qualification.
   The [#1888 wait inventory](submission_git_waits_1888.md) records removed
   caps and retained non-Git waits. This establishes no storage-stall recovery,
   deployed support, staged-read requirement satisfaction or release-gate verdict.
@@ -7137,7 +7265,16 @@ probe instead of accumulating one blocked process per scrape. Completed pipe
 output, including an error payload, is not proof of child exit. Both completed
 and timed-out probes retain the original PID/start time when bounded reaping
 does not prove exit; later samples suppress another fork until nonblocking
-`waitpid` or `ECHILD` proves that child is gone. Completed measurements retain
+`waitpid` or `ECHILD` proves that child is gone. A `timed_out` sample whose
+child is still outstanding and every following `wedged` sample carry
+`probe.outstanding_pid`, `probe.child_state` and `probe.child_wchan`. State
+and wchan come from that child's `/proc` entry at each sample's own time;
+if it has disappeared before the read, both diagnostics are `?` (unknown).
+The log's `child=state:wchan` and Netdata's `stuck_child` label expose the
+pair for attribution (#1398), not health. Older records lacking diagnostics
+remain unhealthy when their status is `timed_out` or `wedged`; statuses,
+health decisions, chart dimensions and numeric values are unchanged.
+Completed measurements retain
 their existing status and values. This lifecycle guarantee does not establish
 the cause of a mount timeout or certify recovery. The third
 reading is not about the mount: admission is gated by a local `flock` whose
@@ -7293,6 +7430,47 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+Unified-memory foreign residency also bounds new host-memory commitments
+(#1661, #2088, #2089). `gpu_sample_facts.unified_memory_evidence` classifies
+one fresh, complete, attributed broker inventory as clear, known foreign
+bytes, or unknown foreign residency. The classified value retains the
+sample ID and timestamp. Discrete-device residency supplies no host-memory
+credit or unified-memory fence.
+
+The ordinary `MemAvailable` plus held-token bound remains in force. The second
+bound subtracts external usage and the existing operating margin from physical
+host memory. External usage is `host_total - host_available - PB_resident`,
+clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
+scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
+are credited per complete attributed scope as
+`min(valid host bytes + valid shared-system GPU lower bound, budget_bytes)`.
+A missing or invalid scope budget earns no credit; invalid residency components
+contribute zero. Residency above the reservation stays in external usage, so
+held tokens plus external usage charge `max(reservation, residency)` per scope.
+Host and CUDA charges are near-disjoint: #450 measured their sum 4.4% above
+the host-usage increase, absorbed by the existing margin in that workload.
+Per-process GPU sums may overlap and supply no residency credit.
+Foreign GPU bytes are already inside host usage and are never added again.
+Observation applies the physical bound after held-token add-back, and the
+observer applies it again after memory smoothing. The two bounds take their
+minimum. No external baseline credit is inferred from an older offer.
+
+Unknown foreign residency defers new CPU and GPU memory commitments with
+`unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
+election. READY rows, held reservations, and existing gang elections remain
+in place. A fresh clear sample removes this fence. When a claim pass has
+identified shared-system memory, a later partial, stale, missing or untrusted
+sample retains unknown context with no resident credit until trusted evidence
+recovers. It cannot reuse the earlier clear classification. Claim-time checks also
+bound aggregate held memory plus the candidate's incremental memory demand
+by the current physical ceiling. Producer export allowances count once;
+funded dependents consume their existing funding before the incremental fit
+check. Denial evidence retains sample identity, foreign bytes, committed
+memory, candidate demand, host usage, PB residency, and the physical ceiling.
+A later successful claim
+retires its earlier unknown-residency status projection.
+
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -7453,6 +7631,14 @@ producer whose reads are not visible in the declaration can still require them
 to be declared.
 
 ## Whole-directory local resident sets (#1545)
+
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
@@ -16752,6 +16938,16 @@ references are found, the receipt includes `reference_refusals`, naming each
 unresolved record, digest, protected scope and reason. The field is omitted
 when empty to preserve existing receipt bytes.
 
+The residency census accepts schema-less batch commitments only at
+`produced-output-scopes/<owner>/<template_id>.<attempt_nonce>/commitments.json`
+below the selected residency root. Owner keys and attempt nonces follow the
+produced-output identity rules. The ledger's decoded-document validator is
+shared with `BatchLedger.capture`: `batches` must be a mapping, and `admission`
+may be absent, null or a mapping. The census keeps its 128 MiB document limit
+and collects direct stage references from the entire decoded document,
+including admission, retired batches, history and later materializations.
+Malformed commitments and unrelated schema-less records refuse the pass (#2072).
+
 A recognized input-mover receipt's authoritative top-level `stage_root` can
 bound its own staged destinations even without a usable manifest layout. The
 entire bounded root remains protected while independently proven copies outside
@@ -18937,6 +19133,18 @@ tag (derived host pins included) is `gb10`, `sparky` or `sparklina`, or `--host-
 `gb10`.  A `--preflight` token, an environment variable or `--gpu` with zero demand exempts
 nothing.
 
+The shared submission gate checks sealed intent even when a compiled producer
+supplies different queue resources or tags. Under enforcement, a row that adds
+GPU intent through demand, required tags or `needs_gpu` to a sealed CPU job is
+refused before evidence authorization or runnable publication: no receipt or
+exception for that CPU identity can bind the added GPU placement. This compares
+GPU intent, not exact resource counts or tag lists. Record-only permission and
+the enforcement setting are unchanged.
+
+Decomposed `common` accepts `d38_namespace` as shared key material. It rejects
+`d38_receipt` and `d38_exception`, since each binds one child identity. Ordinary
+campaign rows retain both evidence options.
+
 **Evidence.**  `--d38-namespace PATH` seals the digest of a namespace descriptor into the
 job's params before the key is computed, so a changed namespace is a changed job; absent,
 keys are byte-identical to before.  `--d38-receipt KEY` names a preflight action.  Its
@@ -19496,10 +19704,12 @@ uses the original generation-aware idempotent readback. Canonical election
 sidecars survive unstarted retries. Persistence failures retain the original
 fence-first recovery and never replace a newer READY publication.
 
-`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
-ledger totals, placement/capability views, existing read memo and canonical
-census. It captures no new per-candidate host sample, availability or holder
-state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+`_ClaimScan` retains the ordered rows, worker inputs, ledger totals,
+placement/capability views, existing read memo, and canonical census.
+Its `_ClaimMemory` reference owns the current broker sample and classified
+unified-memory evidence. That owner refreshes evidence at candidate and
+mutation boundaries; the other pass views capture no new availability or
+holder state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
 dead-input handling, carried room and the existing ready-GPU policy in their
 original positions. A winning rename invalidates claimed names, reader plans
 and census even when the moved record later refuses.
@@ -20151,9 +20361,9 @@ with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before
-publication. The archive allowance is20,000 plus the exact41 named published
+publication. The archive allowance is20,000 plus the exact42 named published
 owner/dependency source files and the actual producer shell and image executable,
-at most20,043 unique content members. File/archive I/O streams bounded chunks.
+at most20,044 unique content members. File/archive I/O streams bounded chunks.
 The named published sources and standard executable are exact PB file-digest
 dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old
@@ -20745,3 +20955,195 @@ values are unavailable measurements, never evidence of no contention. Gate
 and hold chart samples remain suppressed for incomplete identity; mount, RPC
 and probe reporting continue. Deployment and executed qualification remain
 the release master's responsibility.
+
+## Host GPU container-runtime fence (#1895)
+
+The first #1895 slice leaves attempt accounting unchanged. A failed action still
+ends failed and consumes its attempt. An authenticated broker observation adds
+`host_fault` and `termination_reason` equal to
+`host_fault: gpu_container_runtime_unready/<subtype>` to the ending. Requeue
+without charging an attempt remains proposed work for #1895.
+
+The fence is **default off**. Every new worker and the root-installed broker and
+shim read the same host-local `/etc/prismabuild/gpu-container-runtime.enabled`
+file through `gpu_capacity.runtime_fence_enabled`. The reader walks from `/` with
+`O_DIRECTORY|O_NOFOLLOW`, validates each directory descriptor, and opens the
+final file with `openat` and `O_NOFOLLOW` relative to the verified parent. Only the exact bytes
+`enabled\n` in a root-owned regular file with no group/other write access enable
+it. All ancestors must also be root-owned and not group/other writable. Symlinks,
+absence, invalid bytes and read errors mean off. Environment variables cannot
+enable it. This persistent host policy sits outside both the runtime generation
+and the fence evidence, so an ordinary runtime publish cannot enable it.
+
+Off means no fence reads at claim/offer time, no readiness exception, no broker
+runtime object or CDI watcher on startup, no typed-protocol advertisement and no
+extra status RPC at action ending. The shim keeps main's label nonce, Docker
+argv, inherited stderr, native AutoRemove and cleanup path. A stale fence record
+cannot deny work while off and is retained as evidence. The shim checks the same
+switch before typed negotiation, including against a broker started while on.
+Operators change the file only with host admission closed and attempts settled,
+then restart the broker and converge all sibling workers before reopening.
+Turning off immediately bypasses new readers; turning on needs that restart to
+initialize the broker authority. A partial rollout preserves execution but does
+not provide host protection. Live qualification remains required before opt-in.
+
+The Docker shim and broker negotiate `launch_outcome_protocol: 2`. The
+container intent ticket is also this launch's reserved `prismabuild.shim` label.
+The broker verifies the immutable ID, that label, scope label and cgroup parent.
+An old caller cidfile cannot identify a second launch. The active socket is
+checked before authority initialization, including when an older broker has no
+lifetime lock. Native Docker AutoRemove
+stays enabled, including foreground name reuse and detached removal. Scope
+cleanup uses main's `docker rm -f`, preserving anonymous volumes. The shim's
+stop cleanup uses the same arguments, whether the opt-in is on or off.
+Readiness containers use ordinary cleanup and do not grant volume-deletion authority.
+
+Retained containers use daemon inspect state. A nonzero `StartedAt` proves that
+the payload started. For native AutoRemove, the broker opens a launch-filtered
+live daemon event stream before the shim launches Docker. This launch's unique
+ticket and scope label bind the create event to the broker intent. The destroy
+event must arrive with no start or die event. That complete daemon stream proves
+only that the payload did not start. It cannot authenticate the caller's error
+text or prove why creation failed. The same independent host checks below apply
+to retained and auto-removed containers. An inspect snapshot, when available,
+also verifies the actual labels, parent and injection. Without a snapshot, the
+watch's parsed NVIDIA injection candidate must also pass the broker's host
+vendor check. A caller-supplied intent bit alone never verifies a vendor.
+Intent includes runtime `nvidia`, CDI `nvidia.com/gpu` devices, and Docker
+`--gpus` DeviceRequests with driver `nvidia`. An unspecified driver with `gpu`
+capabilities is a candidate, not NVIDIA identity. Before a driver query can
+classify that candidate, the broker verifies `/dev/nvidiactl` as a root-owned
+character device with major 195 and minor 255. It walks trusted root-owned
+directory descriptors and stats the final node without following symlinks or
+opening the driver. Mode 0666 on the device itself is normal and accepted, as
+[NVIDIA's device-node instructions describe](https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification).
+This existing kernel device is a small independent signal; an installed binary
+or failed NVIDIA query cannot identify an NVIDIA host. Without that node,
+default-driver candidates and removed launches without inspect remain unverified.
+Explicit other-vendor runtimes do not qualify, even with NVIDIA device hints.
+Other device-request drivers supply no NVIDIA intent. The shim parses `--gpus`
+CSV fields, including `device=` IDs and quoted device lists, before the image
+boundary and carries candidate intent through AutoRemove, following
+[Docker's GPU option parser](https://github.com/docker/cli/blob/master/opts/gpus.go).
+The fence retains the stream basis, ID, ticket and the relevant identity, state
+and device fields of the optional snapshot. It does not publish container
+environment variables, arbitrary caller labels or payload arguments.
+Payload stdout and stderr after a start are never classification evidence.
+Missing create, interrupted streams, mismatched scope or IDs, duplicate create
+or an excessive event count return unknown. The initial `since` replay bridges
+Docker's HTTP-header/subscription boundary; its bounded history cannot establish
+no start if create itself was lost.
+
+For a proven never-started launch requesting NVIDIA injection, daemon or client
+error text can select a host check. Quoted payload fields are removed before
+check selection. The text itself never proves a host fault:
+
+- `cdi_mount_missing`: at verification time, the broker reads root-owned regular
+  CDI specs through trusted directory descriptors and proves that the error's
+  named `hostPath` is a mount source in those specs and is missing on the host.
+  Only ENOENT proves absence. Unreadable specs or lookup errors grant no fault.
+- `nvidia_initialization_failed`: after an NVIDIA initialization diagnostic, the
+  broker runs its own two-second `/usr/bin/nvidia-smi --query-gpu=uuid
+  --format=csv,noheader` driver/NVML check. Positive evidence is restricted to
+  [NVIDIA's documented hardware and driver fault codes](https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value):
+  8, 9, 10, 12, 14 and 15. Permission failure 4, unsupported function 13,
+  invalid arguments, signals, unknown codes and ambiguous code 255 leave
+  `launch_error`. A successful, unavailable, untrusted or timed-out check also
+  leaves `launch_error`, even if the diagnostic claims a driver failure.
+
+The outcome and durable fence retain `host_check` separately from the diagnostic
+`daemon_error`. Removed-launch `error_hint` is explicitly caller-supplied.
+Completed query status is retained in `host_check`, including non-fault results.
+
+An unmatched requested GPU UUID, generic device error, invalid configuration,
+arbitrary bind mount and payload exit remain ordinary failures or unknown.
+There is no replacement auto-removal thread or removal authority in the outcome
+RPC. Older brokers and shims retain their existing behavior, without typed
+outcomes. Protection requires converged shim, worker and installed broker bytes.
+
+Before reading or publishing authority, the broker holds a lifetime lock at
+`/var/lib/prismabuild-resource-broker/broker.lock`. A second broker cannot overwrite the active
+process's fence or its probe token. The root broker owns
+`/var/lib/prismabuild-resource-broker/gpu-container-runtime.json`. Atomic writes
+sync the file and parent directory. The record retains subtype, action key,
+attempt nonce, scope, daemon error excerpt, Unix time and boot ID. A root-owned
+mode-0644 mirror at `/run/prismabuild/gpu-container-runtime.json` lets every
+sibling worker read the same host decision. This state is host-local, independent
+of a worker PID, hostname alias, shared-store listing, GPU power sample or offer
+expiry. Restart retains a latched durable record. Malformed state means unknown
+and keeps GPU admission closed.
+
+The configured offer keeps the physical GPU bound so queued work remains
+placeable. Its observed GPU capacity becomes zero immediately with
+`gpu_container_runtime_unready` and the fence evidence in `observed_detail`.
+Every GPU claim checks that local fence before preparation and again at host
+reservation. Named denials use the existing denial records and `pbstatus` paths.
+CPU claims and CPU/memory offers continue. The resource ledger retains its
+physical bounds, so ordinary admission can reserve a readiness probe without
+inventing GPU capacity or dropping other resource checks.
+
+While fenced, claim arbitration and measurement election use a temporary view
+that suspends pending GPU measurement and gang elections targeting this host.
+Those rows cannot block the priority-zero readiness probe or CPU-only work,
+regardless of election age. The view requires positive GPU demand and matching
+pending publication evidence. Running holders, claimed members, unknown demand,
+missing publications and unreadable holder evidence keep their authority.
+No durable election is changed. Clearing the fence restores blocking authority
+on the next arbitration, including a reused census in the same claim pass.
+
+A broker thread starts on every enabled host and blocks on inotify on local
+`/run/cdi`, resolving `/var/run/cdi`
+to that path. It watches the directory and its parent, so atomic replacement of
+`nvidia.yaml`, directory removal/recreation, and watch overflow are events.
+The parent watch is installed even when CDI and the NVIDIA control device are
+absent at startup, so their later creation can authorize recovery after a fault.
+Restart revalidates once only when a durable fence is latched or unknown. A
+healthy startup does not latch or submit a probe. Overflow means unknown and
+requests one revalidation. The authority lock serializes the watcher's latch
+predicate with the complete host observation and latching decision. A CDI repair consumed during the first
+observation therefore requests one bounded readiness probe after that latch.
+An event completed before observation begins does not authorize recovery from
+a later fault. An independent blocking event consumer submits probes through
+the published `pbrun.py` as the worker UID, using a dedicated tiny Git checkout
+under the user's PB scratch.
+Queued superseded events coalesce. There is no cooldown or periodic readiness
+launch. PB never writes CDI or runs its generator; the NVIDIA package hook owns
+regeneration.
+
+The proposed pinned readiness image is the image declared by the two failed
+#1895 actions:
+`localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a`.
+The exact recipe is `docker run --pull=never --network=none
+--device=nvidia.com/gpu=all --entrypoint=/bin/true IMAGE`. It starts no vLLM or
+CUDA workload. It declares 1 CPU, 16 GiB host memory, 1 GiB GPU memory, exclusive
+GPU admission, native threads at one and a 30-second payload deadline. Existing
+image inventory must report the pinned local image; nothing pulls it. Client
+preparation/submission has a separate 120-second termination bound. A refused or
+failed probe retains the fence. A worker offer-content transition can retry a
+refused submission, including startup with no live offers. Repeated timestamps
+and utilization samples are not transitions. There is no timer retry. The
+submitter and claim exception read one authoritative probe request recipe in
+`gpu_capacity.runtime_probe_request`; the 16 GiB host memory matches pbrun's
+exclusive floor. The probe retains its container for daemon inspection and
+ordinary scope cleanup.
+
+Only the exact sealed, host-pinned captured-command recipe with those resources,
+image and deadline may pass the runtime fence. It still undergoes ordinary
+CPU/GPU pressure, attribution, image and resource admission. A queued old probe
+can finish after a newer event, but only the current event token can clear the
+fence. The broker also verifies the daemon's actual pinned image, `/bin/true`,
+empty command, CDI device request and successful terminal state before clearing.
+Docker's CLI represents CDI devices as `HostConfig.DeviceRequests` with driver
+`cdi`, as defined by the [Docker CLI source](https://github.com/docker/cli/blob/master/cli/command/container/opts.go).
+The durable clear record binds its event, action, attempt, boot and time. A new
+proven host fault invalidates any outstanding clear token.
+
+Source/fixture qualification is distinct from live daemon/CDI qualification,
+installed-client convergence and deployment. The round-2 admitted Spark preflight
+cannot start a root scratch broker: the payload has `NoNewPrivileges`, and sudo
+refuses elevation. The live scratch-CDI launch/recovery proof therefore remains
+blocked. No production CDI, broker authority or fleet pointer is changed.
+Staged-read targets SC-01, ID-02, ID-08 and ID-09 remain as written in the staged
+contract. This slice keeps PB admission ownership and charged attempt identity,
+adds a bounded host-fault observation, and makes no staged-read or campaign
+completion claim. It does not promote any ledger deployment or workload axis.

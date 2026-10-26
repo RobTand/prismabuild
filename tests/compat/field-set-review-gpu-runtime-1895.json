@@ -1,0 +1,80 @@
+[
+  {
+    "change": "removed",
+    "row": {
+      "binding": "fields",
+      "owner": "Authority.container",
+      "path": "tools/fleet/resource_broker.py",
+      "unresolved": "{'op', 'scope_id'} if op == 'container_begin' else {'op', 'scope_id', 'ticket'}"
+    },
+    "count": 1,
+    "reason": "Replace the legacy container-intent conditional field inventory with the complete operation-specific request guards. Legacy container_begin/container_end fields remain unchanged."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/fleet/resource_broker.py",
+      "owner": "Authority.container",
+      "unresolved": "{'op', 'scope_id'} if op == 'container_begin' else {'op', 'scope_id', 'ticket', 'container_id', 'daemon_stderr'} if op == 'container_outcome' else {'op', 'scope_id', 'ticket', 'nvidia_injection'} if op == 'container_watch' else {'op', 'scope_id', 'ticket'}",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "The enabled typed launch protocol accepts container_outcome with ticket, container_id and caller-supplied daemon_stderr, and container_watch with ticket and NVIDIA intent. These closed local broker RPC field sets preserve the legacy begin/end operation fields; host checks independently verify faults and do not trust the diagnostic."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/fleet/docker",
+      "owner": "_nvidia_injection_intent",
+      "unresolved": "next(csv.reader([value], strict=True))",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "This symbolic fields binding is a CSV row of Docker --gpus options, not a closed record schema. The shim extracts only driver intent and reuses container_requests_nvidia; it neither changes forwarded argv nor grants host-fault authority."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/fleet/resource_broker.py",
+      "owner": "Authority.handle",
+      "fields": [
+        "identity",
+        "op"
+      ]
+    },
+    "count": 1,
+    "reason": "runtime_offer accepts exactly op and identity. The identity is a validated SHA-256 content-transition hint for event-driven retry of a refused readiness submission, not authority to clear the fence or a durable wire migration."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/gpu_runtime_gate.py",
+      "owner": "runtime_probe_identity",
+      "unresolved": "allowed_env"
+    },
+    "count": 1,
+    "reason": "The exact sealed readiness recipe permits only the bounded allowed_env set in addition to its fixed native-thread and token variables. Retain the symbolic subset-check witness used to reject caller environment overrides at the GPU fence exception."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "observe_inventory_process",
+      "unresolved": "Path(f\"/proc/{pid}/stat\").read_text().rpartition(\")\")[2].split()",
+      "binding": "fields"
+    },
+    "count": 1,
+    "reason": "Inherited from current main PR #2284. This fields binding is the positional /proc/<pid>/stat row used to identify the collector process, not a closed serialized record. Record the scanner witness without changing the process-identity contract."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/test_runtime_inventory.py",
+      "owner": "reconcile_attempt",
+      "unresolved": "{shard['action_key'] for shard in progress.get('shards', []) if shard.get('action_key')}",
+      "binding": "keys"
+    },
+    "count": 1,
+    "reason": "Inherited from current main PR #2284. This keys binding is the set of action identities observed in a PB progress report, not a closed field whitelist. Record the scanner witness without changing PB publication or recovery policy."
+  }
+]

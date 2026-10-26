@@ -76,8 +76,8 @@ from prismabuild.submission_types import (
 
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
-from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pool  # noqa: E402
-from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
+from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pbtest_scratch_roots, pool  # noqa: E402
+from prismabuild import dependency_digest, fleet_roster, pbtest_collection  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
@@ -160,8 +160,8 @@ def start_shard(index: int, command: list[str], *, result: dict,
         inherited = environment.get('PYTHONPATH')
         environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
             os.pathsep + inherited if inherited else '')
-    return client_channel.ClientProcess.launch(command, queue_root=store_for(__file__).root / 'pb-queue',
-        cas_root=store_for(__file__).root / 'cas', env=environment, expected_identity=expected_identity,
+    return client_channel.ClientProcess.launch(command, queue_root=store_for(_PB_ENTRYPOINT).root / 'pb-queue',
+        cas_root=store_for(_PB_ENTRYPOINT).root / 'cas', env=environment, expected_identity=expected_identity,
         on_identity=submitted)
 
 
@@ -587,7 +587,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    return pool.PoolQueue(store_for(_PB_ENTRYPOINT).root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -673,7 +673,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(store_for(__file__).root / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(store_for(_PB_ENTRYPOINT).root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:
@@ -1122,7 +1122,7 @@ raise SystemExit(load("pbtest_outcomes").main(
 """
 
 from prismabuild.pbtest_owned_temp import (
-    OWNED_TREE_PROGRAM, BASETEMP_PROGRAM, ATTEMPT_TEMP_PROGRAM,
+    OWNED_TREE_PROGRAM, ROOTS_PROGRAM, BASETEMP_PROGRAM, ATTEMPT_TEMP_PROGRAM,
 )
 
 
@@ -1194,8 +1194,10 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
         # directory under TMPDIR.
         program = ATTEMPT_TEMP_PROGRAM + program
     # The loaded module's own bytes, as with the digest owner above.
-    program = OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
-        Path(owned_tree.__file__)))) + program
+    program = (OWNED_TREE_PROGRAM.replace("@SOURCE@", repr(packed_source(
+        Path(owned_tree.__file__)))) + ROOTS_PROGRAM.replace("@ROOT_SOURCE@", repr(
+            packed_source(Path(pbtest_scratch_roots.__file__))))
+        + program)
     if tmpdir is not None:
         # Explicit scratch placement must refuse on the worker rather than let
         # tempfile silently choose another filesystem. The default entry stays
@@ -1555,7 +1557,8 @@ def main() -> int:
                     help="absolute python* executable on eligible TARGET workers; required except with --plan-only")
     ap.add_argument("--tmpdir", default=None,
                     help="absolute scratch directory on eligible TARGET workers; "
-                         "default /home/rob/tmp (not checked on the coordinator)")
+                         "default from fleet action_tmpdir, else /home/rob/tmp "
+                         "(not checked on the coordinator)")
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                     help="literal addition to every shard's sealed environment "
                          "(repeatable); duplicate and pbtest-owned keys are refused")
@@ -1731,6 +1734,8 @@ def main() -> int:
                              "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
             raise ValueError("--tmpdir must be an absolute worker-visible path")
+        shard_tmpdir = (args.tmpdir if args.tmpdir is not None else
+                        fleet_roster.Roster.read(store_for(_PB_ENTRYPOINT).roster_path).action_tmpdir)
         if args.basetemp is not None:
             validate_basetemp(args.basetemp)
         if args.mem_gb < 1:
@@ -1742,7 +1747,7 @@ def main() -> int:
         pytest_args = (parse_pytest_args(args.pytest_args, gpu=args.gpu,
                                         workers=args.workers_per_shard)
                        if args.pytest_args is not None else [])
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         sys.stderr.write(f"pbtest: {exc}\n")
         return 2
     # A test's bound belongs to the suite and its submitter, not to the
@@ -1859,7 +1864,9 @@ def main() -> int:
     # an older receipt can silently omit the check. Unpinned projects retain
     # their existing commands and identities.
     try:
-        python_entry = shard_entry(args.python, checkout, tmpdir=args.tmpdir,
+        checked_tmpdir = (shard_tmpdir if args.tmpdir is not None or
+                         shard_tmpdir != fleet_roster.LEGACY_ACTION_TMPDIR else None)
+        python_entry = shard_entry(args.python, checkout, tmpdir=checked_tmpdir,
                                    basetemp=args.basetemp,
                                    trace=pbtest_outcomes.TRACE_OPTION in pytest_args,
                                    collection=True,
@@ -2103,7 +2110,7 @@ def main() -> int:
             progress.observe(index, kwargs["result"], completed=True)
     # Pool shards are published from here, each plan's checkout frozen once
     # (``_Templates``); the SLURM lane keeps one ``pbrun`` client per shard.
-    templates = _Templates(store_for(__file__)) if args.transport == "pool" else None
+    templates = _Templates(store_for(_PB_ENTRYPOINT)) if args.transport == "pool" else None
     owners: dict[int, SubmissionRequest] = {}
     # A shard that writes its own --surface-json outside the checkout names a
     # path only it has; its placement answer is its own, so it seals alone.
@@ -2138,7 +2145,7 @@ def main() -> int:
         # explicit forwarding request seals the empty addopts override.
         explicit_env = ["PYTEST_ADDOPTS="] if args.pytest_args is not None else []
         explicit_options = ["-o", "addopts="] if args.pytest_args is not None else []
-        environment = [f"TMPDIR={args.tmpdir if args.tmpdir is not None else '/home/rob/tmp'}",
+        environment = [f"TMPDIR={shard_tmpdir}",
                        f"{pbtest_outcomes.RECORD_BINDING_ENV}={pbtest_outcomes.RECORD_BINDING_VERSION}",
                        *threads, *plan["bound_env"], *explicit_env,
                        "PYTHONPATH=src:experiments", *args.env]

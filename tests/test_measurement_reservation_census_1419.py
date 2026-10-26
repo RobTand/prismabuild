@@ -137,7 +137,7 @@ def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
     assert queue.ledger().held_keys() == [holder]
 
 
-@pytest.mark.parametrize("fault", ["missing", "corrupt", "cpu_unknown", "foreign"])
+@pytest.mark.parametrize("fault", ["missing", "corrupt", "cpu_unknown"])
 def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, opportunity, snapshot = _bounded_measurement_wait(fleet)
@@ -153,9 +153,6 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
         queue.records.item_path(pool.record_store.READY, measurement).write_text("{")
     elif fault == "cpu_unknown":
         cpu_sampler = lambda: {}
-    else:
-        readings["foreign"]["2"] = 0.2
-        readings["busy_cpus"] = 2.0
     assert claim(q=pool.PoolQueue(queue.root), cpu_sampler=cpu_sampler) is None
     assert _chosen(queue, measurement) == chosen
     assert queue.ledger().held_keys() == [holder]

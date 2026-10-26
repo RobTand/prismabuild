@@ -55,10 +55,12 @@ def _sealed_roster(tmp_path: Path, snapshot: dict[str, object],
     materialized = tmp_path / "materialized"
     materialized.mkdir()
     assert _git(materialized, "init", "-q").returncode == 0
+    # pb-history-ok: Restores the generated fixture snapshot bundle to check staged ignored paths.
     assert _git(
         materialized, "fetch", "-q", str(cas.input_path(snapshot["input"])),
         "refs/heads/prismabuild-snapshot",
     ).returncode == 0
+    # pb-history-ok: Restores the generated fixture snapshot bundle to check staged ignored paths.
     assert _git(
         materialized, "checkout", "-q", "--detach", str(snapshot["commit"])
     ).returncode == 0

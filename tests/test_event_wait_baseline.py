@@ -1,4 +1,7 @@
-"""Slice 0 evidence cannot turn missing history into fast claim/drain latency."""
+"""Slice 0 evidence cannot turn missing history into fast claim/drain latency.
+
+#2067 also requires honest identity/coverage and bounded diagnostic evidence.
+"""
 import argparse
 import copy
 import json
@@ -372,4 +375,84 @@ def test_ewb_unavailable_ptrace_is_explicit(monkeypatch):
     monkeypatch.setattr(baseline.subprocess, "Popen", missing_strace)
     result = baseline.ewb_trace(1, .1)
     assert "not installed" in result["unavailable"]
+    assert result["syscalls_per_min"] is None
+
+
+def test_ewb_2067_reused_pid_cannot_become_the_original_role(ewb_evidence):
+    ewb_evidence["roles"] = {"worker": {"pid": 101, "argv": ["worker_loop.py"],
+                                             "initial": {"start_ticks": 7}}}
+    for stamp, start, value in [(1, 7, 0), (11, 7, 100), (21, 8, 0), (31, 8, 900)]:
+        ewb_evidence["samples"].append({"monotonic": stamp, "roles": {"worker": {
+            "start_ticks": start, "cpu_ticks": value, "read_bytes": value,
+            "rchar": value, "syscr": value, "syscw": value}}})
+    result = baseline.ewb_analyze(ewb_evidence)["roles"]["worker"]
+    assert result["covered_s"] == 10
+    assert result["deltas"]["read_bytes"] == 100
+    assert result["io_syscalls_per_min"] == 1200
+
+
+@pytest.mark.parametrize("unreadable", ["cmdline", "stat", "io"])
+def test_ewb_2067_initially_unavailable_role_retains_evidence(
+        ewb_capture_args, monkeypatch, unreadable):
+    capture = baseline.EventWaitCapture(ewb_capture_args)
+    original_read = capture.read
+    def unavailable_role_file(path, cap=262144):
+        if path == Path("/proc") / str(os.getpid()) / unreadable:
+            return None
+        return original_read(path, cap)
+    monkeypatch.setattr(capture, "read", unavailable_role_file)
+    try:
+        raw = capture.run()
+    finally:
+        # Old implementations abort before run() closes these descriptors.
+        capture.selector.close()
+        try:
+            os.close(capture.fd)
+        except OSError:
+            pass
+    assert raw["roles"]["tier"]["pid"] == os.getpid()
+    role = raw["roles"]["tier"]
+    assert role.get("error") or role.get("initial", {}).get("error") or raw["errors"]
+    assert raw["ended_unix"] >= raw["started_unix"]
+    result = baseline.ewb_analyze(raw)["roles"]["tier"]
+    assert result["total_syscalls_per_min"] is None
+    if unreadable != "cmdline":
+        assert result["covered_s"] == 0
+        assert result["io_syscalls_per_min"] is None
+
+
+def test_ewb_2067_counter_read_checks_identity_on_both_sides(ewb_capture_args, monkeypatch):
+    capture = baseline.EventWaitCapture(ewb_capture_args)
+    original_read = capture.read
+    starts = iter((7, 8))
+    def changing_identity(path, cap=262144):
+        if path == Path("/proc") / str(os.getpid()) / "stat":
+            fields = ["0"] * 30
+            fields[0], fields[11], fields[19] = "S", "100", str(next(starts, 8))
+            return (f"{os.getpid()} (synthetic role) " + " ".join(fields)).encode()
+        return original_read(path, cap)
+    monkeypatch.setattr(capture, "read", changing_identity)
+    try:
+        sample = capture.role_sample(os.getpid())
+    finally:
+        capture.selector.close()
+        os.close(capture.fd)
+    assert sample.get("error"), "counters spanning PID reuse have no valid start identity"
+
+
+def test_ewb_2067_trace_output_budget_is_not_a_complete_syscall_sample(tmp_path, monkeypatch):
+    # This is an executable synthetic tracer, not a ptrace attachment. Exercise
+    # real pipe/output handling with no live-host or tracing privileges.
+    tracer = tmp_path / "strace"
+    tracer.write_text(f"#!{sys.executable}\n"
+                      "import os\n"
+                      "os.write(1, b'x' * 131072)\n"
+                      "os.write(2, b'y' * 131072)\n"
+                      "os.write(2, b'\\n100.00 0.001 1 500 total\\n')\n")
+    tracer.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    result = baseline.ewb_trace(os.getpid(), 1)
+    retained = sum(len(result.get(stream, "").encode()) for stream in ("stdout", "stderr"))
+    assert retained <= 65536, "trace evidence needs a combined retained-output budget"
+    assert "trace_output_bytes" in result.get("limits_hit", [])
     assert result["syscalls_per_min"] is None

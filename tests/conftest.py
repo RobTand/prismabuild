@@ -411,6 +411,10 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
+    ("prismabuild.gpu_capacity", "RUNTIME_GATE", "gpu-container-runtime.json"),
+    ("prismabuild.sealed_bundle_cache", "CACHE_ROOT", "sealed-bundles"),
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
+    ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
@@ -484,6 +488,7 @@ LIVE_DEFAULTS = (
 
 #: Environment variables the lane and the pool read on use.
 LIVE_ENV = (
+    ("PRISMABUILD_BUNDLE_CACHE_ROOT", "sealed-bundles"),
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
     ("PRISMABUILD_POOL_ROOT", "pb-queue"),
@@ -497,6 +502,16 @@ LIVE_ENV = (
     ("PRISMABUILD_BOX_STATE_ROOT", "box-state"),
     ("PRISMABUILD_SPOOL_OFFER_ROOT", "spool-offer"),
 )
+
+
+def _isolate_pbtest_scratch_registry(module, root: Path, assign) -> None:
+    if (Path(getattr(module, "__file__", "") or "").name == "pbtest.py"
+            and hasattr(module, "ROOTS_PROGRAM")):
+        # Carried programs execute in another interpreter. Repoint their
+        # registry too, without adding an action-controlled runtime override.
+        assign(module, "ROOTS_PROGRAM", module.ROOTS_PROGRAM +
+               '\n_pb_temp_roots.update(REGISTRY=__import__("pathlib").Path(' +
+               repr(str(root / "pbtest-scratch-roots")) + '))\n')
 
 
 @pytest.fixture(autouse=True)
@@ -513,6 +528,7 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     load = importlib.machinery.SourceFileLoader.exec_module
     def isolated_import(loader, module):
         load(loader, module)
+        _isolate_pbtest_scratch_registry(module, root, setattr)
         stem = Path(getattr(module, "__file__", "") or "").stem
         if hasattr(module, "configured_store"):
             from prismabuild.submission_frontend import store_for
@@ -527,6 +543,8 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             setattr(module, attr, replacement)
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module",
                         isolated_import)
+    for module in tuple(sys.modules.values()):
+        _isolate_pbtest_scratch_registry(module, root, monkeypatch.setattr)
     for name, sub in LIVE_ENV:
         monkeypatch.setenv(name, str(root / sub))
     for module_name, attr, sub in LIVE_DEFAULTS:
