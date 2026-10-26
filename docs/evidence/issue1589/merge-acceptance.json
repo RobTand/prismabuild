@@ -278,13 +278,15 @@
       "receipt_sha256": "d859fa61c02c9ec38a80b9eea8b93e11ac31a5db626f8cc5a1affe6c644f2464",
       "snapshot": "1de08132f48f72c836037490d87a5e712badac75",
       "host": "dl380g10",
-      "verdict": "3 passed, 234 deselected, zero skips; all outcomes and final teardowns complete; pbtest client exited zero",
+      "verdict": "3 passed, 234 deselected, zero skips; action exit 0; all outcomes and final teardowns complete; pbtest final report 1/1 shards green; unit ended, explicit client process exit record not retained before collection",
       "verified": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-verified/verified.json",
       "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-reconciliation.json",
       "launch": "/mnt/shared/paperclip-runs/PRI-31/config-refresh-27f8b437d3-launch.json",
       "unit": "pb-pri31-config-refresh-27f8b437d3",
       "main_repair": "https://github.com/RobTand/prismabuild/pull/2329",
-      "reused_evidence": "Existing frozen matrix, cleanup integration and unaffected archival cases. No new whole-suite all-green archival replay is claimed."
+      "reused_evidence": "Existing frozen matrix, cleanup integration and unaffected archival cases. No new whole-suite all-green archival replay is claimed.",
+      "client_exit_code": null,
+      "client_exit_observation": "The --collect unit is unloaded. Its default systemctl status fields are not used as process exit proof. Full journal retained, including coordinator inotify-watch allocation warnings. Action execution and cleanup receipts remain verified."
     }
   }
 }

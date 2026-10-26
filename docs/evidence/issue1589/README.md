@@ -139,7 +139,9 @@ The existing matrix, cleanup integration and unaffected archival proof are reuse
 Action `2c45483225335363dc21676347a93c48e3485933add8a9a89d963097c35f2c85`
 on dl380g10 passed the repaired `config-fleet/source` case and both
 `config-fleet` controls: **3 passed, 234 deselected**, no skips. The pbtest
-client exited zero. Every selected test has an outcome and final teardown.
+client reported `1/1 shards green` and the unit ended. Its process exit
+record was not retained before systemd collected the unit. Every selected
+test has an outcome and final teardown.
 Exact logs, sealed source, runtime identity and scope cleanup are verified.
 Its exact execution receipt is
 `d859fa61c02c9ec38a80b9eea8b93e11ac31a5db626f8cc5a1affe6c644f2464`.
