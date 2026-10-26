@@ -132,6 +132,7 @@ def test_receipt_thaw_reuse_follows_native_invalidation_and_forgets_removed_name
     replacement = path.with_suffix('.tmp')
     replacement.write_text(json.dumps({**PAYLOAD, 'v': 2}))
     replacement.replace(path)
+    trust.directory_versions[str(path.parent)] = (1, 2, 3, 5)
     cache.refresh([path.parent], queue=queue)
     assert cache._records[0] is not first
     assert cache._records[0]['v'] == 2
