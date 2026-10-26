@@ -165,6 +165,20 @@ def test_operator_recovers_lease_lost_cleanup_pending_after_reboot(refused, monk
     assert queue.ledger().held() == {}
 
 
+@pytest.mark.parametrize('field', ['scratch_declaration_record', 'scratch_lifetime_record'])
+def test_scope_recovery_preserves_separate_scratch_cleanup(refused, monkeypatch, field):
+    queue, item, connected = refused
+    path = _terminal_without_proof(queue, item, monkeypatch)
+    record = pool.record_store.read_document(path)
+    record[field] = {'unavailable': True}
+    pending = {'complete': False, 'error': 'scratch cleanup evidence unavailable'}
+    record['container_cleanup_pending'] = pending
+    queue.records.replace_record_at(path, record)
+    with connected():
+        queue.reconcile_cleanup(item['action_key'], queue.records.attempt_generation(record), 1)
+    assert pool.record_store.read_document(path)['container_cleanup_pending'] == pending
+
+
 @pytest.mark.parametrize('fault', ['nonce', 'attempt', 'host', 'scope', 'stale', 'unknown_scope', 'tickets'])
 def test_reconciliation_refuses_wrong_or_unproved_identity(refused, monkeypatch, fault):
     queue, item, connected = refused

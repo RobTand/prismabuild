@@ -1581,6 +1581,13 @@ worker's normal finish recovery subsequently returns capacity. It preserves
 the command failure and immutable history, appends verified recovery evidence,
 and resolves the separate cleanup obligation shown by `pb_action`.
 
+After publishing a runtime with #1838, the same command repairs a historical
+`lease_lost_max_attempts` ending with stale `container_cleanup_pending`.
+It clears the marker only after fresh scope and container verification.
+Registered scratch retains its pending marker for the scratch lifecycle.
+The original lease-loss verdict, timestamps and immutable history stay intact.
+This is explicit recovery on the claiming host, with no background terminal scan.
+
 A withdrawal keeps its cancellation decision while the worker completes
 cleanup. A distinct READY successor can wait behind the original claim.
 Reconciliation leaves both intact; ordinary finish then returns the original
