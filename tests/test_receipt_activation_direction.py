@@ -114,7 +114,10 @@ def publication_args(*, dry_run, stage_only=False):
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_fresh_publication_refuses_unaware_installed_reader_before_writes(private_store, dry_run):
+def test_fresh_publication_refuses_unaware_installed_reader_before_writes(private_store, monkeypatch, dry_run):
+    # Qualification inputs may dirty ROOT; this test starts after source identity validation.
+    monkeypatch.setattr(publisher, "_commit_identity", lambda: "a" * 40)
+    monkeypatch.setattr(publisher, "_working_tree_dirty", lambda: False)
     previous = generation(private_store, "previous", "old", ())
     publisher._seal_generation(previous)
     publisher.MIRROR.symlink_to(previous)
