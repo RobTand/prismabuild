@@ -192,10 +192,10 @@ def test_unreadable_leaf_is_not_silently_an_absent_match(tmp_path, monkeypatch):
     reconcile(store)
     native = publication_index._read_leaf
 
-    def read(path):
+    def read(root, path):
         if path.parent.name == 'entries':
             raise PermissionError('fixture refused leaf')
-        return native(path)
+        return native(root, path)
 
     monkeypatch.setattr(publication_index, '_read_leaf', read)
     result = store.publication_candidates(facets={'checkout_root': '/task'})

@@ -87,7 +87,7 @@ def _buckets(root: Path, candidate: PublicationCandidate) -> tuple[Path, ...]:
             index / "days" / str(math.floor(candidate.published_unix / DAY_SECONDS)))
 
 
-def _read_leaf(path: Path) -> PublicationCandidate:
+def _read_leaf(root: Path, path: Path) -> PublicationCandidate:
     record = read_bounded_document(path, max_bytes=MAX_LEAF_BYTES)
     if record is None or record.get("schema") != SCHEMA:
         raise ValueError("missing or invalid publication leaf")
@@ -245,7 +245,7 @@ def publication_candidates(
                         break
                     entries += 1
                     try:
-                        candidate = _read_leaf(Path(entry.path))
+                        candidate = _read_leaf(root, Path(entry.path))
                     except (OSError, ValueError, digest_primitives.PrismaBuildError):
                         reasons.append("index-leaf-unreadable")
                         continue
