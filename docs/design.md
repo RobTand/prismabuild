@@ -13180,6 +13180,22 @@ action needs the producer's claimed row for its launch context, as publishing a
 mover does, so a call made after the owner's claim has ended can file an egress
 that already completed and cannot start one.
 
+The tier cycle calls `produced_output.output_scope_tick` after its residency
+window on every cycle, independently of output-window enforcement. The census
+reports staged logical payload bytes from validated composed entries and a
+complete active mover receipt. `residency_map.read_fragments_checked` returns
+best-effort fragments plus an unreadable flag; incomplete evidence is unknown,
+including a partially readable fragment set. `read_fragments` returns only
+the best-effort list.
+
+The tier loop keeps process-local observation history per queue and host,
+keyed by `(batch_id, namespace)`. It emits through stdout and host diagnostics
+only when `(event, generation, staged_logical_bytes, manifest_digest)` changes.
+A previously observed key absent from the next census emits one
+`output-batch-dropped` event and is forgotten. This means census absence,
+including unavailable scope evidence, and establishes no retirement, deletion,
+or capacity release. A reappearing key or process restart reports again.
+
 `produced_output.recover_batches` is the read-only census over the same
 evidence, and it may not turn unproven into a verdict. Fragments prove bytes
 landed, not that the batch landed, so `output-batch-staged` requires the
