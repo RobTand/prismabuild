@@ -269,7 +269,7 @@ def test_the_cache_is_bounded_and_answers_stay_exact(
 
 
 # --------------------------------------------------------------------------
-# Equivalence with the frozen pre-#893 lookup over generated document states
+# Equivalence with the frozen pre-#893 lookup over explicit document transitions
 # --------------------------------------------------------------------------
 
 STAGE_ROOT = "/stage/pb893"
@@ -543,83 +543,126 @@ def _assert_cache_matches_disk(root: Path) -> None:
                 continue
 
 
+@pytest.mark.parametrize("how", ["atomic", "in-place"])
 def test_covers_for_keys_answers_exactly_what_the_pre_893_lookup_answers(
-        tmp_path: Path) -> None:
-    compared = 0
+        tmp_path: Path, how: str) -> None:
     outcomes: set[str] = set()
-    for seed in (893, 823, 2026):
-        compared += _compare_sequence(tmp_path / str(seed), seed, outcomes)
-    # The generated states must actually reach every answer the lookup has,
-    # or the comparison proved less than it claims.
+    _compare_sequence(tmp_path, how, outcomes)
     assert outcomes >= {"ok", "unpublished", "source-coverage-gap",
                         "ownership-uncertain: contradictory covers",
                         "ownership-uncertain: sidecar/fragment disagree",
                         "ownership-uncertain: staged epoch set"}, outcomes
-    assert compared > 30_000, compared
 
 
 def _compare_query(root: Path, keys: list[str], arguments: dict, *,
-                   new_context: dict, old_context: dict) -> dict:
+                   new_context: dict, old_context: dict, case: str) -> dict:
     new = reader_lease.covers_for_keys(
         root, CONSUMER, keys, context=new_context, **arguments)
     with reference.old_hex_checks():
         old = reference.covers_for_keys(
             root, CONSUMER, keys, context=old_context, **arguments)
-    assert new == old, (keys, arguments, new, old)
+    assert new == old, (case, keys, arguments, new, old)
     return new
 
 
-def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
+def _cover_state(**changes) -> dict:
+    entries = changes.pop("entries", {
+        POOL[0]: (100, "1" * 64), POOL[1]: (200, "2" * 64)})
+    return {
+        "tier": TIER, "material_epoch": None, "fragment_epoch": None,
+        "manifest": MANIFEST, "fragment_manifest": MANIFEST,
+        "fragment_tier": TIER, "entries": entries,
+        "fragment_entries": dict(entries), "generation": "a" * 32,
+        "material": "ok", "fragment": "ok", **changes}
+
+
+def _cover_transitions(fleet: Fleet, how: str, *, omits: bool):
+    a, b, c = POOL[:3]
+    landed = {a: (100, "1" * 64), b: (200, "2" * 64),
+              c: (100, "3" * 64)}
+    changed = {**landed, c: (200, "3" * 64)}
+    states = [
+        ("initial", {}),
+        ("same-generation landing", {"entries": landed}),
+        ("fragment-only", {"entries": changed}),
+        ("sidecar catches up", {"entries": changed}),
+        ("retry generation", {"generation": "b" * 32}),
+        ("empty entries", {"entries": {}}),
+        ("staged epoch", {"material_epoch": "E1", "fragment_epoch": "E1"}),
+        ("RAM epoch E1", {"tier": RAM_TIER, "fragment_tier": RAM_TIER,
+                          "material_epoch": "E1", "fragment_epoch": "E1"}),
+        ("RAM epoch E0", {"tier": RAM_TIER, "fragment_tier": RAM_TIER,
+                          "material_epoch": "E0", "fragment_epoch": "E0"}),
+        ("RAM epoch mismatch", {"tier": RAM_TIER, "fragment_tier": RAM_TIER,
+                                "material_epoch": "E1", "fragment_epoch": "E0"}),
+        ("tier mismatch", {"fragment_tier": RAM_TIER, "fragment_epoch": "E1"}),
+        ("manifest mismatch", {"fragment_manifest": OTHER_MANIFEST}),
+        ("other manifest", {"manifest": OTHER_MANIFEST,
+                            "fragment_manifest": OTHER_MANIFEST}),
+        ("digest disagreement", {"fragment_entries": {
+            a: (100, "1" * 64), b: (200, "3" * 64)}}),
+        ("length disagreement", {"fragment_entries": {
+            a: (100, "1" * 64), b: (100, "2" * 64)}}),
+    ]
+    for document in ("material", "fragment"):
+        for damage in ("missing", "json", "invalid"):
+            states.extend([(f"{document} {damage}", {document: damage}),
+                           (f"repair {document} {damage}", {})])
+    if omits:
+        states.extend([
+            ("date without vouch", {"fragment_entries": {a: (100, "1" * 64)}}),
+            ("vouch catches up", {}),
+        ])
+    mover, other = _mover(1), _mover(2)
+    for label, changes in states:
+        fleet.movers[mover] = _cover_state(**changes)
+        fleet.publish(mover, how, sidecar=label != "fragment-only")
+        yield label
+    for label, entries in (
+            ("disjoint covers", {c: (100, "3" * 64)}),
+            ("matching covers", {a: (100, "1" * 64)}),
+            ("contradictory digests", {a: (100, "3" * 64)}),
+            ("contradictory lengths", {a: (200, "1" * 64)})):
+        fleet.movers[other] = _cover_state(entries=entries)
+        fleet.publish(other, how)
+        yield label
+    for path in (fleet.material_path(other), fleet.fragment_path(other)):
+        path.unlink()
+    yield "retired second mover"
+    directory = fleet.root / "material" / CONSUMER
+    parked = directory.with_name("parked")
+    directory.rename(parked)
+    yield "material directory absent"
+    parked.rename(directory)
+    yield "material directory restored"
+    (directory / "notes.txt").write_text("junk")
+    (directory / "ZZ.json").write_text("junk")
+    (directory / "dir.json").mkdir()
+    yield "unrelated directory entries"
+    for path in (fleet.material_path(mover), fleet.fragment_path(mover)):
+        path.unlink()
+    yield "all movers retired"
+
+
+def _compare_sequence(base: Path, how: str, outcomes: set[str], *,
                       omits: bool = False,
-                      differed: list[object] | None = None) -> int:
-    """One seeded sequence of republishes, each followed by every query.
-
-    Each query runs four ways: the new and the frozen lookup with a fresh
-    context per call (PQ's pattern), and each again with its own context
-    kept across the whole sequence.  Returns the number of comparisons.
-
-    ``omits`` lays down fragments that omit keys their sidecars date and
-    runs the fresh-context pair only, against a frozen lookup the caller
-    made read each sidecar without the dates its fragment does not vouch
-    (:func:`_vouched_dates_only`).  Each such query the untrimmed frozen
-    lookup answers differently is appended to ``differed``.
-    """
-
-    rng = random.Random(seed)
+                      differed: list[object] | None = None) -> None:
     root = base / "residency"
-    fleet = Fleet(root, rng, omits=omits)
+    fleet = Fleet(root, random.Random(893))
     persistent_new: dict = {}
     persistent_old: dict = {}
-    compared = 0
-    for step in range(45):
-        event = fleet.step()
-        if step % 15 == 14:
-            # The whole material directory vanishes, then comes back.
-            directory = root / "material" / CONSUMER
-            parked = root / "material" / "parked"
-            if directory.exists():
-                directory.rename(parked)
-                for tier_id, epoch in QUERY_TIERS[:2]:
-                    for keys in _queries(rng)[:3]:
-                        new = reader_lease.covers_for_keys(
-                            root, CONSUMER, keys, tier_id=tier_id,
-                            manifest_sha256=MANIFEST, epoch=epoch,
-                            context={})
-                        with reference.old_hex_checks():
-                            old = reference.covers_for_keys(
-                                root, CONSUMER, keys, tier_id=tier_id,
-                                manifest_sha256=MANIFEST, epoch=epoch,
-                                context={})
-                        assert new == old == {"ok": False,
-                                              "refusal": "unpublished"}
-                parked.rename(directory)
+    a, b, c = POOL[:3]
+    queries = [[a], [c], [a, b, c], [a, a], [],
+               ["0:/mnt/shared/pb893/nobody.bin"], [a, "0:/mnt/shared/pb893/nobody.bin"], [a, b, a]]
+    for event in _cover_transitions(fleet, how, omits=omits):
         for tier_id, epoch in QUERY_TIERS:
             for manifest in (MANIFEST, OTHER_MANIFEST):
-                for keys in _queries(rng):
+                for keys in queries:
                     arguments = dict(tier_id=tier_id,
                                      manifest_sha256=manifest, epoch=epoch)
                     new = _compare_query(root, keys, arguments,
-                                         new_context={}, old_context={})
+                                         new_context={}, old_context={}, case=event)
+                    outcomes.add(str(new.get("refusal") or "ok"))
                     if omits:
                         if differed is not None:
                             with reference.old_hex_checks(), _untrimmed():
@@ -628,16 +671,11 @@ def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
                                     **arguments)
                             if frozen != new:
                                 differed.append((frozen, new))
-                        compared += 1
-                        outcomes.add(str(new.get("refusal") or "ok"))
-                        continue
-                    new = _compare_query(
-                        root, keys, arguments, new_context=persistent_new,
-                        old_context=persistent_old)
-                    compared += 2
-                    outcomes.add(str(new.get("refusal") or "ok"))
+                    else:
+                        _compare_query(
+                            root, keys, arguments, new_context=persistent_new,
+                            old_context=persistent_old, case=event)
         _assert_cache_matches_disk(root)
-    return compared
 
 
 _FROZEN_READ_MATERIAL = reference.read_material
@@ -680,11 +718,12 @@ def _untrimmed():
         reference.read_material = trimmed
 
 
-def test_a_date_no_vouch_cites_changes_no_answer(tmp_path: Path,
-                                                  monkeypatch) -> None:
+@pytest.mark.parametrize("how", ["atomic", "in-place"])
+def test_a_date_no_vouch_cites_changes_no_answer(
+        tmp_path: Path, monkeypatch, how: str) -> None:
     """#1087: a date the fragment does not vouch is inert.
 
-    Over fleets whose fragments omit keys their sidecars date -- what a
+    Over fragments that omit keys their sidecars date -- what a
     mover's publication leaves between its two writes, or after a kill
     there, since the sidecar goes first -- the lookup answers what the
     frozen lookup answers once those dates are removed.  The frozen lookup
@@ -696,12 +735,9 @@ def test_a_date_no_vouch_cites_changes_no_answer(tmp_path: Path,
     """
 
     monkeypatch.setattr(reference, "read_material", _vouched_dates_only)
-    compared = 0
     outcomes: set[str] = set()
     differed: list[object] = []
-    for seed in (1087, 893, 2026):
-        compared += _compare_sequence(tmp_path / str(seed), seed, outcomes,
-                                      omits=True, differed=differed)
+    _compare_sequence(tmp_path, how, outcomes, omits=True, differed=differed)
     assert outcomes >= {"ok", "unpublished", "source-coverage-gap",
                         "ownership-uncertain: contradictory covers",
                         "ownership-uncertain: sidecar/fragment disagree",
@@ -711,8 +747,7 @@ def test_a_date_no_vouch_cites_changes_no_answer(tmp_path: Path,
                and new.get("refusal")
                != "ownership-uncertain: sidecar/fragment disagree"
                for frozen, new in differed), (
-        "no generated state left a date without a vouch")
-    assert compared > 15_000, compared
+        "the omitted date did not distinguish the frozen lookup")
 
 
 def test_concurrent_lookups_agree_with_serial_answers(tmp_path: Path) -> None:
