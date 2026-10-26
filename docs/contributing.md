@@ -68,6 +68,47 @@ contain risk at the highest displayed tier. Do not retrospectively reprioritize
 historical issues, including solely to adopt this taxonomy, and do not mass relabel
 them.
 
+## Test quality — Rob, 2026-10-24 (#2249)
+
+TrustLadder's release gates excused 40 PrismaBuild tests as flaky (#2246,
+#2247, #2248). A flaky test fails unrelated work and teaches everyone to
+ignore a red result. These rules apply to every new or changed test.
+
+Make it deterministic:
+- Assert order and state, never durations. Patch the module clock the code
+  reads, for example `pool._now`, instead of waiting for real time to pass.
+- Synchronize on explicit events: `threading.Event` or `Condition`, a pipe or
+  socket handshake, a pidfd, an inotify watch, or PrismaBuild's bell.
+- Make a deliberate stall a gate that the test releases, not a sleep of a
+  guessed length.
+- Use a timeout only as a generous failure bound, never as the subject.
+- Make file identity explicit. Set mtimes with `os.utime`, and keep an old
+  file open when a test needs a distinct inode. Never sleep past a timestamp
+  granule.
+- Sort or key anything read from a directory listing, a set or a process table.
+- Seed randomness, use `tmp_path`, make no network calls, and fit the shard's
+  declared CPU and memory under xdist.
+
+Make it able to fail:
+- Make each new assertion fail against the pre-fix code or against a mutant of
+  the code under test, and name that check in the pull request.
+- Don't assert self-comparisons, constants, a mock's own configured return, an
+  expectation recomputed by the code under test, or "called with what I
+  passed". Remove such tests when you find them, and list them in the pull
+  request.
+
+To fix a flaky test:
+- Reproduce it deterministically first. Force the interleaving or the delay on
+  demand rather than relying on host load.
+- Fix the root. If the flake exposes a product race, fix the product.
+  Retries, quarantine, deselection, xfail, skips, rerun plugins and widened
+  timeouts are not fixes.
+- Before handoff, run each touched test file at least five times per
+  architecture through `pbtest`, at least twice under xdist
+  (`--workers-per-shard 2`). Vary `--pytest-args`, for example
+  `--durations=N`, so that no run is served from the result cache. A single
+  failure counts.
+
 ## Pool regression fixtures
 
 Keep fixture inputs valid for the reviewed admission contract. Executable

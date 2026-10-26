@@ -1,0 +1,528 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+  "ledger_commit": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+  "scope": [
+    "ID-01",
+    "SC-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2171",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2171",
+    "validated_repairs": [
+      {
+        "id": "ID-01",
+        "actions": [
+          "2a2772dc45c8f793a7aedba8249fed38a184a705af669fc23c44f70bdee3f99d"
+        ],
+        "outcome": "60 passed; unchanged snapshot records, bundle bytes and action keys; terminal/log/CAS receipt verified"
+      }
+    ],
+    "remaining_gaps": [
+      "Whole staged-read requirement satisfaction remains outside this source optimization. Ledger unknown/proposed axes remain unknown/proposed.",
+      "Principal Engineer standards/spec review and merge pending; historical archival compatibility replay was not run in this task."
+    ],
+    "note": "Candidate source validation only. Source/runtime publication, role restart, deployment, staged-only campaign and workload acceptance are not claimed."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "target_vs_implemented": {
+    "ID-01": {
+      "target": "Action identity is the content hash of the sealed action.",
+      "implemented": "Existing content hashing unchanged; verified bundle reuse preserves snapshot records and action keys.",
+      "deployed": "not deployed by this task"
+    },
+    "SC-03": {
+      "target": "Keep target, validation, deployment and workload proof distinct.",
+      "implemented": "This scoped candidate record retains unresolved ledger axes.",
+      "deployed": "not claimed"
+    }
+  },
+  "base_commit": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+  "validated_src_tree": "0c162c312763c6aa00300a15a1b5fbf6b5363a79",
+  "prior_implementation_commit": "ce825a0354055c92bf3913f1646befed66aee99b",
+  "regression_before": {
+    "action_key": "b95f540fee627943b322cb2fdac9792bc6c496936dff30210b39f2fde98b4b4a",
+    "status": "failed",
+    "exit_code": 1,
+    "assertion": "assert len(packs) == 1; observed 2; byte and action equality already passed",
+    "receipt": "absent, expected for a failed test"
+  },
+  "tests": {
+    "collected": 459,
+    "passed": 459,
+    "failed": 0,
+    "skipped": 0,
+    "shards": [
+      {
+        "files": [
+          "tests/test_sealed_bundle_cache.py"
+        ],
+        "summary": "60 passed in 16.51s",
+        "action_key": "2a2772dc45c8f793a7aedba8249fed38a184a705af669fc23c44f70bdee3f99d",
+        "receipt": {
+          "action_key": "2a2772dc45c8f793a7aedba8249fed38a184a705af669fc23c44f70bdee3f99d",
+          "receipt_sha256": "c8d959245b2a14e0749773e9dff3c1570def48413f2b56d29b2681457280291b",
+          "payload": {
+            "sha256": "439bf5f37428eb678956959e231a64ab2eb776b7c32a4358cc05ae1af3c5d704",
+            "bytes": 33699
+          },
+          "producer_host": "dl380g10",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "13bb125177b1b1ffc1be4324d1f6e2e88a7b49db06bbe0d7a809104db10d641f",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_pbrun_bundle_determinism.py"
+        ],
+        "summary": "4 passed in 2.36s",
+        "action_key": "4842444a2bd37c248cd69cb2dc8189408ac120be50bbb050aea80d9e069ee873",
+        "receipt": {
+          "action_key": "4842444a2bd37c248cd69cb2dc8189408ac120be50bbb050aea80d9e069ee873",
+          "receipt_sha256": "d8d24445a34d27f53f6ab8a1f839b1ab81037d4942c7252270676317c0ca1fd6",
+          "payload": {
+            "sha256": "399aa2d02f1a3c044a91a00fb1d87f0eae7f6bff032cc10666a9a561b9921ce1",
+            "bytes": 4255
+          },
+          "producer_host": "sparky",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "e4b3e0c770851ea1acf40fbb601419abf8035fcb173e91e7b92cac405eebb230",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_snapshot_git_refusal_1430.py"
+        ],
+        "summary": "29 passed in 0.47s",
+        "action_key": "bd248f8664a4e27af15abb62b61e30acf643587f53a0b9a0119028d8c2d2d951",
+        "receipt": {
+          "action_key": "bd248f8664a4e27af15abb62b61e30acf643587f53a0b9a0119028d8c2d2d951",
+          "receipt_sha256": "0e615ffeedcbb93954b28a04d0122ac8ab4e212714ff9cf3ad14716686e2f17d",
+          "payload": {
+            "sha256": "7ae5cda320cb80c18014a7886d952bf6515352b7030fc8e7c606e3428b6e9661",
+            "bytes": 19591
+          },
+          "producer_host": "dl380g10",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "0d86f0f1107cd5b9a1fc9bfaba07df6e76c8e195857864fb7444d5c7ac50c9bd",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_compat_bundle_cache_isolation.py"
+        ],
+        "summary": "3 passed in 8.10s",
+        "action_key": "0705e663f849b175941bb64203661b9f3cae4d2f51498d32df0706986233c110",
+        "receipt": {
+          "action_key": "0705e663f849b175941bb64203661b9f3cae4d2f51498d32df0706986233c110",
+          "receipt_sha256": "9a7056ede930492dc5dc9e8cdd2a58c5e249a37f65a4dc9e89d7a0cd2257853c",
+          "payload": {
+            "sha256": "141b3fb6fc59641ccc322133aef8d8b25b76695e3ac6dd0fbae095d7df2b7a11",
+            "bytes": 4057
+          },
+          "producer_host": "dl380g10",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "79f4655a24d83fd4690363ab990d1e704f46c9c38ca4630cda8f653987ef302a",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_live_store_constants_are_repointed.py"
+        ],
+        "summary": "203 passed in 8.39s",
+        "action_key": "ceea11f3d26bd3544e1385914838bd2e5bff0af12ec7393d684274dab3b7708a",
+        "receipt": {
+          "action_key": "ceea11f3d26bd3544e1385914838bd2e5bff0af12ec7393d684274dab3b7708a",
+          "receipt_sha256": "4c8a19798e488d904d50cf497984bfe157b449116fd08906cfb9ae31e209d7f3",
+          "payload": {
+            "sha256": "50241cd0f0e8912a508643e24d1c2fde8f8b925293a23fa23d0b5b5b6e10a590",
+            "bytes": 134466
+          },
+          "producer_host": "dl380g10",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "3e58c9bfb645d5af77207f350a8730c47b2950e45d98e13abb5b42fe03766dcc",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_live_store_guard.py"
+        ],
+        "summary": "64 passed in 7.67s",
+        "action_key": "419a41e70dd388f653892be309f3165a2945a9d2624f2276940360976613cb29",
+        "receipt": {
+          "action_key": "419a41e70dd388f653892be309f3165a2945a9d2624f2276940360976613cb29",
+          "receipt_sha256": "4def7fb84e82302161536c7580de22e3cbe9dcfd7573e4e9f595eeb3d928134d",
+          "payload": {
+            "sha256": "27fd671479ce60531f24d69359b2b19cb7b8e28635a00e1b04d3115e79615470",
+            "bytes": 35556
+          },
+          "producer_host": "sparky",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "c4539d75863b0a75ecb2e40987bcf2da6d509e666f717bd2b56bad7946c44df9",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "8 passed in 18.98s",
+        "action_key": "4d5c0355a4efe31634bc3e4a212332070e233113a821a01937ae4e05cae73abb",
+        "receipt": {
+          "action_key": "4d5c0355a4efe31634bc3e4a212332070e233113a821a01937ae4e05cae73abb",
+          "receipt_sha256": "002f6a0b26bd59eb019465fd3e8b2a1c87ad8ae9ded665a0f41e4378b3f468e0",
+          "payload": {
+            "sha256": "cf3f795d5ef2e007e2bcb52e0eb9c5fc9233d2290884ea4864568c057520d93c",
+            "bytes": 6123
+          },
+          "producer_host": "sparky",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "43e02469ebbb1d0fc853b89c7f3a8a08aba06bcce4180e976db6eb6fb989c2a1",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_core_recipes.py"
+        ],
+        "summary": "45 passed in 2.56s",
+        "action_key": "24a26dc39776a09392aa96fb0d045b6f865e14717bc14056d31c05816e1055c9",
+        "receipt": {
+          "action_key": "24a26dc39776a09392aa96fb0d045b6f865e14717bc14056d31c05816e1055c9",
+          "receipt_sha256": "e477f2bed06f067ec5af2e867d7ed3abf900798e55a9b61ce148ab68eed29fd0",
+          "payload": {
+            "sha256": "11a6ce8fd702909ae7e1d391de7e953659205385075280bfa21df91c362142fc",
+            "bytes": 31389
+          },
+          "producer_host": "sparky",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "51134309aeb0fd76f876d683eed2504e7b7ac1eeddde315c87428f137b7bbfaa",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_census_tmpfs_state_1451.py"
+        ],
+        "summary": "19 passed in 2.23s",
+        "action_key": "b9881a2d70ff792cc3491efa983bbda93dc82e681ff0708388e405f6e1e34f55",
+        "receipt": {
+          "action_key": "b9881a2d70ff792cc3491efa983bbda93dc82e681ff0708388e405f6e1e34f55",
+          "receipt_sha256": "c5a12ba4eb3a673b2b389992e4ed28cab708e458d063ca2a008c54335e008ba0",
+          "payload": {
+            "sha256": "1f1445cd86cdf0f25c9cb09ed911ed095104ec1d2e2ee0a39e8510f1b082d315",
+            "bytes": 11593
+          },
+          "producer_host": "sparky",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "f07053a4d0db4e9e4b8a814262bc1545481003d777fde33cfabe72da525b70e8",
+          "log_bytes_match": true
+        }
+      },
+      {
+        "files": [
+          "tests/test_scratch_lifetime_directory.py"
+        ],
+        "summary": "24 passed in 0.64s",
+        "action_key": "da6d3c6a4cedcf2008d7e15c0862c69c08e6732e6f63173a583a4593b1820cd1",
+        "receipt": {
+          "action_key": "da6d3c6a4cedcf2008d7e15c0862c69c08e6732e6f63173a583a4593b1820cd1",
+          "receipt_sha256": "1e14d4d5c9a1efd7e0b7f0dba342cc002f82c3191386dd0707b08f3d6f4df5bb",
+          "payload": {
+            "sha256": "9f58a7f8fb4bb44f3ecacba2d6c9cfa809a6282c334cee4d1ade53ce7a6b7f47",
+            "bytes": 15480
+          },
+          "producer_host": "sparklina",
+          "request_attestation_payload_verified": true,
+          "log_sha256": "805e641bf2b776eb0c0342efb5ef63256421537164e1fa323e1c85841c6cf4be",
+          "log_bytes_match": true
+        }
+      }
+    ]
+  },
+  "measurement": {
+    "action_key": "d44bad3d62731cd667050488e1ebed6fad84fbf1f200a8c950ca50ee749a2ee7",
+    "host": "dl380g10",
+    "receipt": {
+      "action_key": "d44bad3d62731cd667050488e1ebed6fad84fbf1f200a8c950ca50ee749a2ee7",
+      "receipt_sha256": "fcb9ca64462bd8d4270019dd63472976369abc8553ca3ca3867187ba44f801d0",
+      "payload": {
+        "sha256": "e530d610115236828457630d490f907277b47b37eb1a01c15de0fdad7428f214",
+        "bytes": 6255
+      },
+      "producer_host": "dl380g10",
+      "request_attestation_payload_verified": true,
+      "log_sha256": "3c158d034f0e99c5efce2a97f231669023eb8a8a0b365951623bda044d847388",
+      "log_bytes_match": true
+    },
+    "results": {
+      "repeats": 8,
+      "fixture_files": 2000,
+      "arms": {
+        "before": {
+          "samples": [
+            {
+              "pair": 1,
+              "cpu_seconds": 0.788611,
+              "load_start": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ],
+              "load_end": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ]
+            },
+            {
+              "pair": 2,
+              "cpu_seconds": 0.771407,
+              "load_start": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ],
+              "load_end": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ]
+            },
+            {
+              "pair": 3,
+              "cpu_seconds": 0.6610930000000002,
+              "load_start": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 4,
+              "cpu_seconds": 0.6757539999999995,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 5,
+              "cpu_seconds": 0.6449729999999994,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 6,
+              "cpu_seconds": 0.6577499999999983,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 7,
+              "cpu_seconds": 0.6363149999999997,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 8,
+              "cpu_seconds": 0.6585929999999998,
+              "load_start": [
+                13.74951171875,
+                12.28955078125,
+                11.2392578125
+              ],
+              "load_end": [
+                13.74951171875,
+                12.28955078125,
+                11.2392578125
+              ]
+            }
+          ],
+          "pack_executions": 8,
+          "cpu_seconds": 5.494495999999996
+        },
+        "after": {
+          "samples": [
+            {
+              "pair": 1,
+              "cpu_seconds": 0.4554009999999997,
+              "load_start": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ],
+              "load_end": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ]
+            },
+            {
+              "pair": 2,
+              "cpu_seconds": 0.5442610000000005,
+              "load_start": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ],
+              "load_end": [
+                14.52587890625,
+                12.38525390625,
+                11.25830078125
+              ]
+            },
+            {
+              "pair": 3,
+              "cpu_seconds": 0.4302899999999994,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 4,
+              "cpu_seconds": 0.42213299999999965,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 5,
+              "cpu_seconds": 0.41077600000000025,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 6,
+              "cpu_seconds": 0.39639300000000155,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ]
+            },
+            {
+              "pair": 7,
+              "cpu_seconds": 0.42142899999999983,
+              "load_start": [
+                14.1630859375,
+                12.34521484375,
+                11.25146484375
+              ],
+              "load_end": [
+                13.74951171875,
+                12.28955078125,
+                11.2392578125
+              ]
+            },
+            {
+              "pair": 8,
+              "cpu_seconds": 0.3941119999999998,
+              "load_start": [
+                13.74951171875,
+                12.28955078125,
+                11.2392578125
+              ],
+              "load_end": [
+                13.74951171875,
+                12.28955078125,
+                11.2392578125
+              ]
+            }
+          ],
+          "pack_executions": 0,
+          "cpu_seconds": 3.4747950000000007
+        }
+      },
+      "scope": "full snapshot_checkout; cache disabled versus warm bundle hits",
+      "snapshot_records_identical": true,
+      "cpu_seconds_saved": 2.0197009999999955,
+      "cpu_percent_saved": 36.758621718898276,
+      "warmup_pack_executions": 1,
+      "bundle_sha256": "cdff759f719501ec9c9cd22d777286aeec171398da054b9743dd76bf3756dba3"
+    }
+  },
+  "limits": [
+    "CPU counters cover self plus reaped children, not wall-time speedup.",
+    "Comparison uses 2000 similar files, eight repeated snapshots and one excluded warmup. It does not estimate fleet-wide cores saved.",
+    "Before arm uses the unchanged pack writer with caching disabled, not a separate legacy runtime.",
+    "Focused current-source validation only; the full suite and archival compatibility were not run."
+  ]
+}

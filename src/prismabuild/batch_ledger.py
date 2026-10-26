@@ -2526,6 +2526,16 @@ class PrewriteFacts:
         return planned_omitted_absent(self._record, sealed)
 
 
+def validate_commitments_document(raw: object) -> dict[str, object]:
+    """Validate decoded commitments without reading or interpreting entries."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("batches"), Mapping):
+        raise oc.ProducedOutputError("commitments record is corrupt")
+    admission = raw.get("admission")
+    if admission is not None and not isinstance(admission, Mapping):
+        raise oc.ProducedOutputError("commitments admission record is corrupt")
+    return {"batches": dict(raw["batches"]), "admission": admission}
+
+
 class BatchLedger:
     """The explicit record boundary for one scope; construction performs no I/O.
 
@@ -2680,12 +2690,7 @@ class BatchLedger:
             # scope: every caller retains charge and names the record.
             raise oc.ProducedOutputError(
                 f"commitments record corrupt or unreadable: {exc}") from None
-        if not isinstance(raw, Mapping) or not isinstance(raw.get("batches"), Mapping):
-            raise oc.ProducedOutputError("commitments record is corrupt")
-        admission = raw.get("admission")
-        if admission is not None and not isinstance(admission, Mapping):
-            raise oc.ProducedOutputError("commitments admission record is corrupt")
-        return {"batches": dict(raw["batches"]), "admission": admission}
+        return validate_commitments_document(raw)
 
 
     def file(self, record: Mapping[str, object]) -> None:

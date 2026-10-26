@@ -411,6 +411,8 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
+    ("prismabuild.sealed_bundle_cache", "CACHE_ROOT", "sealed-bundles"),
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH", "gpu-capacity.json"),
     ("prismabuild.pbtest_scratch_roots", "REGISTRY", "pbtest-scratch-roots"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
     ("prismabuild.census", "SHARED_ROOT", "fleet"),
@@ -485,6 +487,7 @@ LIVE_DEFAULTS = (
 
 #: Environment variables the lane and the pool read on use.
 LIVE_ENV = (
+    ("PRISMABUILD_BUNDLE_CACHE_ROOT", "sealed-bundles"),
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
     ("PRISMABUILD_POOL_ROOT", "pb-queue"),
