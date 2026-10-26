@@ -9,10 +9,12 @@ analysis and tests require Python 3.10 or later and the standard library.
 
 Choose a new evidence directory for each collection. Keep evidence outside the
 source checkout so later results do not change a fleet action's source identity.
+PRI-2 publishes prismabuild only. Repeat `--repo` to select other assigned
+repositories, or omit it to collect all three.
 
 ```bash
 python3 tools/backlog_census/fetch_open_issues.py \
-  --since 2026-10-18T00:00:00Z --output /path/to/evidence/snapshot.json
+  --repo RobTand/prismabuild --since 2026-10-18T00:00:00Z --output /path/to/evidence/snapshot.json
 python3 tools/backlog_census/census.py \
   --snapshot /path/to/evidence/snapshot.json \
   --since 2026-10-18T00:00:00Z --until 2026-10-25T00:00:00Z \
@@ -24,7 +26,8 @@ It fetches all open issues, issues updated since the window start, referenced
 parents, and dependencies. Missing access, API errors, and incomplete pagination
 stop collection. It records that a multi-request collection is not atomic.
 External repositories outside the three assigned repositories remain explicit
-relationship gaps. An unsupported dependency API stops collection.
+relationship gaps. Unavailable dependency reads leave blocker coverage incomplete
+and add a limitation while collection continues.
 
 The reporter writes `census.md`, `census.json`, `phase1-write-list.md`,
 `phase1-write-list.json`, and a copy of `snapshot.json`. Rerun it offline against
@@ -113,7 +116,8 @@ portable command requires only the worker's Python standard library.
 
 ```bash
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
-  --cwd /path/to/task-worktree --anywhere --cpus 1 --demand mem_gb=1,gpu=0 \
+  --cwd /path/to/task-worktree --anywhere --priority -10 \
+  --cpus 1 --demand mem_gb=1,gpu=0 \
   --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 \
   --env OPENBLAS_NUM_THREADS=1 --env PYTHONDONTWRITEBYTECODE=1 \
   --timeout-s 180 --wait-s 600 -- \
