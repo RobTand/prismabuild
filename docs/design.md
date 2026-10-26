@@ -13600,7 +13600,10 @@ the existing rule against eviction for an unavailable source or a declined
 run-ahead phase. Funding-aware relief does not establish a complete liveness
 proof. Earlier acceptance is recorded in
 `orphan_pressure_acceptance_2026-09-20.json`; #829's repair has its own scoped
-acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`.
+acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`. The #1759
+funded-row accounting repair is component-qualified in
+[`evidence/issue1759/merge-acceptance.json`](evidence/issue1759/merge-acceptance.json);
+that record makes no deployment claim.
 
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on
