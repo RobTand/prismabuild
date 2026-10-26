@@ -119,6 +119,7 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     queue.withdraw(retired)
     # Exercise owned-reader reuse, including its timeout, with shared reuse expired.
     monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", -1)
+    monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     keys = [publish(f"slow-refresh-{index}", priority=-10, timeout_s=600,
                     cpu=2, gpu=0, mem_gb=16) for index in range(3)]
     rows = [pool.record_store.value_or_raise(
