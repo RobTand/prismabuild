@@ -22,6 +22,7 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 from __future__ import annotations
 
 from . import immutable_files
+from . import claim_wait
 
 
 from collections.abc import Mapping
@@ -256,6 +257,9 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
                      and ready.get("action_key") == other["action_key"]
                      and isinstance(ready.get("ready_unix"), (int, float))
                      and 0 <= now - float(ready["ready_unix"]) <= READY_FRESH_S)
+            if fresh:
+                claim_wait.unix_deadline(queue, "gang_ready_freshness",
+                                         float(ready["ready_unix"]) + READY_FRESH_S)
             other_host = ready.get("host") if fresh else None  # type: ignore[union-attr]
             state = "ready" if fresh else "waiting"
         if state == "waiting" and reclaimable:
@@ -306,6 +310,7 @@ def resident_hold(queue, record: Mapping[str, object], entry: Mapping[str, objec
     preferred = [name for name in preferred if name not in busy]
     if not preferred:
         return None
+    claim_wait.unix_deadline(queue, "resident_copy_preference", float(published) + prefer_s)
     return {"group": str(record["group"]), "index": int(entry["index"]),
             "set_id": set_id, "resident_hosts": preferred,
             "wait_remaining_s": prefer_s - age}
@@ -355,10 +360,14 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
             and mark.get("signature") == signature
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
+        if now - float(stamp) < confirm_s:
+            claim_wait.unix_deadline(queue, "gang_terminal_confirmation", float(stamp) + confirm_s)
         return now - float(stamp) >= confirm_s
     immutable_files.write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
                                    "member": key, "signature": signature,
                                    "first_seen_unix": float(now)})
+    if signature:
+        claim_wait.unix_deadline(queue, "gang_terminal_confirmation", now + confirm_s)
     return False
 
 
@@ -523,6 +532,7 @@ def backfill_allowed(queue, election: Mapping[str, object], now: float) -> bool:
             or type(ready.get("ready_unix")) not in (int, float)
             or not 0 <= now - ready["ready_unix"] <= READY_FRESH_S):
         return False
+    claim_wait.unix_deadline(queue, "gang_ready_freshness", ready["ready_unix"] + READY_FRESH_S)
     return not sibling_readiness(queue, record, entry, str(election["host"]), now,
                                  reclaimable=True)["complete"]
 

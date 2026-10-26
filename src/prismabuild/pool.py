@@ -144,6 +144,7 @@ from . import endings, lifecycle, tier_holdings
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
+from . import claim_wait
 from . import host_hold
 from . import drain_policy
 from .drain_policy import (DRAIN_HELD_CPUS, MEASUREMENT_UNMEASURED_CEILING_S,
@@ -5542,12 +5543,15 @@ class _ClaimMemory:
     sampler: Callable[[], Mapping[str, object] | None]
     evidence: UnifiedMemoryEvidence | None = None
     cached_sample: Mapping[str, object] | None = None
+    on_sample: Callable[[Mapping[str, object] | None], None] | None = None
 
     def gpu_sample(self):
         return self.cached_sample if self.cached_sample is not None else self.sampler()
 
     def observe(self):
         sample = self.sampler()
+        if self.on_sample is not None:
+            self.on_sample(sample)
         self.cached_sample = sample
         now = _now()
         current = unified_memory_evidence(
@@ -6082,6 +6086,8 @@ class PoolQueue:
         """Every worker offer still fresh enough to believe, allowing bounded skew."""
 
         records = self._offer_records()
+        claim_wait.observe(self, claim_wait.SourceKind.PEER, "workers:*",
+                           claim_wait.EvidenceState.PRESENT if records else claim_wait.EvidenceState.ABSENT)
         # Directory enumeration or any later read can stall on the shared
         # filesystem. All offers must still be fresh after the complete scan;
         # checking against its start would extend their lifetimes by the stall.
@@ -6091,6 +6097,10 @@ class PoolQueue:
             age = offer_timing(record.get("announced_unix"), now=now).age_s
             if age is not None and age <= max_age_s:
                 live.append(record)
+                host = str(record.get("host", "?"))
+                claim_wait.observe(self, claim_wait.SourceKind.PEER, host)
+                claim_wait.unix_deadline(self, f"offer_expiry:{host}",
+                                         record["announced_unix"] + max_age_s)
         return live
 
     def offer_clock_skews(self) -> dict[str, float]:
@@ -9139,6 +9149,10 @@ class PoolQueue:
         A steady reason costs the claim pass one dictionary lookup here; see
         :meth:`_record_denial_transition`.
         """
+        claim_wait.refusal(self, item, reason, evidence)
+        carried = evidence.get("withhold_carried") if isinstance(evidence, Mapping) else None
+        if isinstance(carried, Mapping):
+            self._observe_withhold(carried)
         if not isinstance(item.get("published_unix"), (int, float)):
             return
         host = socket.gethostname()
@@ -11873,10 +11887,41 @@ class PoolQueue:
             measurement, measurement_generation, measurement_foreign_clear,
             measurement_unmeasured)
         progress = drain_policy.prepare_drain(question, prior, now=now, host=ledger.base.name)
+        prepared = progress
+
+        def observed(answer):
+            if not claim_wait.is_observing(self):
+                return answer
+            if isinstance(answer, drain_policy.DrainAssessment):
+                verdict = answer.verdict
+                clocks = dict(prepared.clocks)
+                if answer.notes is not None:
+                    clocks.update(answer.notes.changes)
+                if verdict.get("drain_until_unix") is not None or verdict.get("refills"):
+                    self._observe_withhold({**clocks, **{
+                        field: verdict[field] for field in ("drain_until_unix", "unmeasured_until_unix")
+                        if field in verdict}})
+                if verdict.get("why") == "in_flight":
+                    first = prior.get("first_unix")
+                    if type(first) in (int, float) and first + WITHHOLD_CEILING_S > now:
+                        claim_wait.unix_deadline(self, "withhold_first_denial_ceiling",
+                                                 first + WITHHOLD_CEILING_S)
+                if verdict.get("why") == "holder_tail":
+                    blocked = prepared.stamp("blocked_unix")
+                    if blocked is not None:
+                        claim_wait.unix_deadline(self, "withhold_holder_tail",
+                            blocked + cpu_admission.MAX_INTERVAL_S + cpu_admission.MAX_SAMPLE_AGE_S)
+                if verdict.get("why") == "foreign_load":
+                    foreign_at = clocks.get("foreign_unix")
+                    if type(foreign_at) in (int, float) and foreign_at + WITHHOLD_CEILING_S > now:
+                        claim_wait.unix_deadline(self, "withhold_foreign_ceiling",
+                                                 foreign_at + WITHHOLD_CEILING_S)
+            return answer
+
         try:
             progress = drain_policy.begin_drain(progress, ledger.available(), gpu_sample)
             if not isinstance(progress, drain_policy.PendingDrain):
-                return progress
+                return observed(progress)
             for identity in ledger.holder_census().non_private_holders:
                 holder = identity.name
                 counts: dict[str, int] = {}
@@ -11895,10 +11940,10 @@ class PoolQueue:
                 bound = self.holder_bound(holder, now=now)
                 progress = drain_policy.add_holder(progress, holder=holder, bound=bound, counts=counts)
                 if not isinstance(progress, drain_policy.PendingDrain):
-                    return progress
-            return drain_policy.finish_drain(progress)
+                    return observed(progress)
+            return observed(drain_policy.finish_drain(progress))
         except BaseException as exc:
-            return drain_policy.failed_drain(progress, exc)
+            return observed(drain_policy.failed_drain(progress, exc))
 
     def _canonical_measurement_verdict(self, item, verdict, *, ledger, controller,
                                        cpu_decision, gpu_sample, authority=False,
@@ -16001,8 +16046,12 @@ class PoolQueue:
         Peer I/O stays outside host admission (#351).
         """
         remote = self.ledger(host)
+        claim_wait.observe(self, claim_wait.SourceKind.HOST_LEDGER, host)
+        claim_wait.observe(self, claim_wait.SourceKind.PEER, f"denials:{host}")
         tiers = offer.get("cpu_tiers") or {}
         if record_store.read_document(remote.base / "cpu-map.json") != tiers:
+            claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY, f"cpu-map:{host}",
+                               claim_wait.EvidenceState.UNKNOWN)
             return None
         denials = cpu_admission.read_json(
             self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
@@ -16515,6 +16564,16 @@ class PoolQueue:
         """The shared hold check for every claim route and the parked offer."""
         host = socket.gethostname()
         hold = host_hold.read_host_hold(self.root, host)
+        claim_wait.observe(self, claim_wait.SourceKind.CONTROL, f"hold:{host}",
+                           claim_wait.EvidenceState.ABSENT if hold is None else
+                           claim_wait.EvidenceState.UNREADABLE if hold.error else
+                           claim_wait.EvidenceState.PRESENT)
+        if hold is not None and not hold.expired:
+            claim_wait.refusal(self, {}, "operator_held", hold.fields())
+            if hold.error:
+                claim_wait.recovery(self, "operator_hold_unreadable")
+            elif not hold.expired:
+                claim_wait.unix_deadline(self, "operator_hold_expiry", hold.expires_unix)
         if hold is None:
             self._expired_host_holds.pop(host, None)
             return None
@@ -16526,6 +16585,80 @@ class PoolQueue:
                   "new claims may resume when maintenance is open", flush=True)
             self._expired_host_holds[host] = identity
         return None
+
+    def _observe_claim_call(self, call, kwargs) -> claim_wait.ClaimObservation:
+        with claim_wait.capture(self, wall_clock=lambda: _now(),
+                                monotonic_clock=lambda: time.monotonic()) as observed:
+            return observed.observation(call(**kwargs))
+
+    def _observe_claim_row(self, item: Mapping[str, object]) -> None:
+        if not claim_wait.is_observing(self):
+            return
+        identity = claim_wait.action_identity(item)
+        claim_wait.observe(self, claim_wait.SourceKind.ACTION, identity)
+        for kind in (claim_wait.SourceKind.OWNERSHIP, claim_wait.SourceKind.RECEIPT,
+                     claim_wait.SourceKind.PROGRESS):
+            claim_wait.observe(self, kind, identity)
+        group = item.get("gang")
+        if isinstance(group, Mapping):
+            claim_wait.observe(self, claim_wait.SourceKind.GROUP, str(group.get("group", "*")))
+        for field in ("resident_set", "residency_plan"):
+            if item.get(field):
+                claim_wait.observe(self, claim_wait.SourceKind.RESIDENCY, str(item[field]))
+        for field in ("interpreter", "local_dependencies", "requires_files", "container_images"):
+            if item.get(field):
+                claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY,
+                                   f"{field}:{item[field]!r}")
+
+    def _observe_resource_sample(self, source: str, sample: Mapping[str, object] | None,
+                                 max_age_s: float) -> None:
+        if not claim_wait.is_observing(self):
+            return
+        stamp = sample.get("sampled_unix") if isinstance(sample, Mapping) else None
+        known = type(stamp) in (int, float) and math.isfinite(stamp)
+        claim_wait.observe(self, claim_wait.SourceKind.RESOURCE, source,
+                           claim_wait.EvidenceState.PRESENT if known else claim_wait.EvidenceState.UNKNOWN)
+        # Numeric CPU/GPU load has no complete callback. One counter sample
+        # within 1 s cancels on a new observation or when the claim interest ends.
+        claim_wait.deadline(self, f"{source}_next_sample", time.monotonic() + 1.0)
+        if known and stamp + max_age_s > _now():
+            claim_wait.unix_deadline(self, f"{source}_freshness", stamp + max_age_s)
+
+    def _observe_cpu_sample(self, controller: cpu_admission.Controller) -> None:
+        if not claim_wait.is_observing(self):
+            return
+        decision = getattr(controller, "last_decision", None)
+        sample = decision.get("sample") if isinstance(decision, Mapping) else None
+        self._observe_resource_sample("cpu", sample, cpu_admission.MAX_SAMPLE_AGE_S)
+        next_sample = getattr(controller, "next_sample_unix", None)
+        if next_sample is not None:
+            claim_wait.unix_deadline(self, "cpu_baseline_next_sample", next_sample)
+
+    def _observe_withhold(self, clocks: Mapping[str, object]) -> None:
+        if not claim_wait.is_observing(self):
+            return
+        for field, reason in (("drain_until_unix", "measurement_drain_expiry"),
+                              ("unmeasured_until_unix", "unmeasured_drain_expiry")):
+            until = clocks.get(field)
+            if type(until) in (int, float) and math.isfinite(until) and until > _now():
+                claim_wait.unix_deadline(self, reason, until)
+        epoch = clocks.get("epoch_unix")
+        if clocks.get("drain_until_unix") is None and type(epoch) in (int, float):
+            if math.isfinite(epoch) and epoch + WITHHOLD_CEILING_S > _now():
+                claim_wait.unix_deadline(self, "withhold_ceiling", epoch + WITHHOLD_CEILING_S)
+        sampled = clocks.get("measurement_cpu_sampled_unix")
+        if type(sampled) in (int, float) and math.isfinite(sampled):
+            if sampled + cpu_admission.MAX_SAMPLE_AGE_S > _now():
+                claim_wait.unix_deadline(self, "withhold_cpu_freshness",
+                                         sampled + cpu_admission.MAX_SAMPLE_AGE_S)
+
+    def claim_or_observe(self, **kwargs) -> claim_wait.ClaimObservation:
+        """Claim with immutable wake inputs; the report never grants admission."""
+        return self._observe_claim_call(self.claim, kwargs)
+
+    def serve_or_observe_once(self, **kwargs) -> claim_wait.ClaimObservation:
+        """Run the existing serve path with the same observation adapter."""
+        return self._observe_claim_call(self.serve_once, kwargs)
 
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
@@ -16553,6 +16686,9 @@ class PoolQueue:
         ledger = self.ledger()
         memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
                   if has_gpu else None)
+        if memory is not None:
+            memory.on_sample = lambda sample: self._observe_resource_sample(
+                "gpu", sample, gpu_admission.MAX_SAMPLE_AGE_S)
         tiers = cpu_tiers or record_store.read_document(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
             controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler)
@@ -16619,6 +16755,7 @@ class PoolQueue:
                 # it is while a sibling is slow, instead of going silent and
                 # letting its offer expire.
                 self._report_admission_busy(exc, evaluating=evaluating)
+                claim_wait.refusal(self, {}, "admission_busy")
                 return None
         try:
             return self._claim(tags=tags, has_gpu=has_gpu, owner=owner,
@@ -16629,8 +16766,10 @@ class PoolQueue:
                                admission_open=admission_open, memory=memory)
         except cpu_admission.AdmissionBusy as exc:
             self._report_admission_busy(exc, evaluating=True)
+            claim_wait.refusal(self, {}, "admission_busy")
             return None
         except cpu_admission.AdmissionUnavailable as exc:
+            claim_wait.refusal(self, {}, "host_admission_unavailable")
             for item in ready if ready is not None else self.ready_items():
                 self.record_denial(item, "host_admission_unavailable", {"error": str(exc)})
             return None
@@ -17381,6 +17520,14 @@ class PoolQueue:
         declared_images = item.get("container_images")
         image_check = capability_eligibility.LiveCapabilities(
             interpreter_host, dependency_host, image_host).check(item, clock=_now)
+        image_verdict = (image_check.evidence.get("container_class_verdict")
+                         if isinstance(image_check, capability_eligibility.CapabilityRefusal)
+                         else image_check.class_verdict)
+        image_stamp = image_verdict.get("observed_unix") if isinstance(image_verdict, Mapping) else None
+        if type(image_stamp) in (int, float) and math.isfinite(image_stamp):
+            if image_stamp + image_inventory.CLAIM_FRESHNESS_S > _now():
+                claim_wait.unix_deadline(self, "image_inventory_freshness",
+                                         image_stamp + image_inventory.CLAIM_FRESHNESS_S)
         if isinstance(image_check, capability_eligibility.CapabilityRefusal):
             evidence = dict(image_check.evidence)
             if image_check.reason == "container_image_presence_unknown":
@@ -18011,6 +18158,7 @@ class PoolQueue:
                 foreign_load_exempt=canary_exempt,
                 include_holder_costs=request.class_room is not None)
             cpu_decision = getattr(controller, "last_decision", None)
+            self._observe_cpu_sample(controller)
             refused = adaptive is None
             if refused:
                 refusal_source = "adaptive_cpu_refused"
@@ -18086,6 +18234,8 @@ class PoolQueue:
         if not refused and gpu_controller is not None and demand.get("gpu"):
             adaptive_gpu = gpu_controller.decision(item, sealed_host_demand, contract=contract)
             gpu_decision = getattr(gpu_controller, "last_decision", None)
+            sample = gpu_decision.get("sample") if isinstance(gpu_decision, Mapping) else None
+            self._observe_resource_sample("gpu", sample, gpu_admission.MAX_SAMPLE_AGE_S)
             refused = adaptive_gpu is None
             if refused:
                 refusal_source = "adaptive_gpu_refused"
@@ -18365,6 +18515,8 @@ class PoolQueue:
             })
             return _ClaimHandled.REFUSED
         if tier_demand:
+            for tier in tier_demand:
+                claim_wait.observe(self, claim_wait.SourceKind.TIER, str(tier))
             # The tier's reader plan first (#1091): a copy a
             # claimed consumer is blocked on goes first and alone,
             # and no more copies read the pool than its measured
@@ -19123,7 +19275,9 @@ class PoolQueue:
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         if memory is None and has_gpu:
             memory = _ClaimMemory(
-                gpu_controller.sample if gpu_controller is not None else gpu_admission.trusted_sample)
+                gpu_controller.sample if gpu_controller is not None else gpu_admission.trusted_sample,
+                on_sample=lambda sample: self._observe_resource_sample(
+                    "gpu", sample, gpu_admission.MAX_SAMPLE_AGE_S))
         tagset = frozenset(str(t) for t in tags)
         self.records.ensure_layout()
         # The load-bearing half of ``withdraw``.  A withdrawal that lands while
@@ -19140,7 +19294,9 @@ class PoolQueue:
         released = self.released_origin_consumer_keys()
         placement = _peer_placement.PlacementPass(
             self.offers, self._read_peer_observation, history=self._placement_history,
-            wall_clock=lambda: _now())
+            wall_clock=lambda: _now(),
+            on_deadline=lambda preference, generation, at: claim_wait.deadline(
+                self, f"{preference.value}_preference", at))
 
         ledger = None
         host_gate = controller
@@ -19266,6 +19422,7 @@ class PoolQueue:
         )
 
     def _opening_claim_row(self, item, scan, scan_pass: _ClaimScan, *, holds):
+        self._observe_claim_row(item)
         tagset = scan_pass.tags
         has_gpu = scan_pass.has_gpu
         released = scan_pass.released
@@ -23032,6 +23189,8 @@ class PoolQueue:
             # Only create emits this typed maintenance refusal: no payload or
             # scope has been created, so capacity returns without an attempt.
             self._defer_unstarted_claim(item)
+            claim_wait.observe(self, claim_wait.SourceKind.CONTROL, "maintenance")
+            claim_wait.recovery(self, "resource_scope_unavailable", 1.0)
             return None
         except BaseException as exc:                      # noqa: BLE001
             # Never leave a claim dangling: an unexpected failure is recorded as

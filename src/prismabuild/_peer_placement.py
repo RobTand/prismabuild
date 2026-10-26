@@ -73,6 +73,7 @@ class PlacementPass:
         self, offers: Callable[[], Sequence[Mapping]],
         peer: Callable[[str, Mapping], PeerObservation | None],
         *, history: PlacementHistory, wall_clock: Callable[[], float],
+        on_deadline: Callable[[TimedPreference, tuple[str, str], float], None] | None = None,
     ) -> None:
         self._read_offers = offers
         self._read_peer = peer
@@ -80,10 +81,15 @@ class PlacementPass:
         self._peers: dict[str, PeerObservation | Exception | None] = {}
         self._history = history
         self._wall_clock = wall_clock
+        self._on_deadline = on_deadline
 
     def timer_expired(self, preference: TimedPreference, generation: tuple[str, str]) -> bool:
         started = self._history._deferrals.setdefault((preference, generation), time.monotonic())
-        return time.monotonic() - started >= 20.0
+        expires = started + 20.0
+        expired = time.monotonic() >= expires
+        if not expired and self._on_deadline is not None:
+            self._on_deadline(preference, generation, expires)
+        return expired
 
     def cpu_host_evidence(
         self, generation: tuple[str, str], host: str, capacity: PeerCapacity,
