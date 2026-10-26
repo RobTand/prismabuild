@@ -144,3 +144,45 @@ def test_repeated_teardown_does_not_retarget_a_covered_claims_successor(gang_fle
     assert _row(queue, pool.READY, first) == successor
     assert queue.withdrawal_covers(successor) is None
     assert queue.ledger('sparklina').held_keys() == [first]
+
+
+def test_busy_orphan_does_not_starve_later_rows_across_sweeps(gang_fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    group, keys = members('busy-orphan', file_group=False)
+    blocked, available = sorted(keys)
+    clock.now += 601
+    original = queue.action_transition_lock
+
+    @contextmanager
+    def busy_first(key, **kwargs):
+        if key == blocked:
+            yield False
+        else:
+            with original(key, **kwargs) as acquired:
+                yield acquired
+
+    monkeypatch.setattr(queue, 'action_transition_lock', busy_first)
+    queue.sweep_gangs(limit=1)
+    queue.sweep_gangs(limit=1)
+    assert _row(queue, pool.WITHDRAWN, available) is not None
+    assert _row(queue, pool.READY, blocked) is not None
+
+
+def test_orphan_sweep_bounds_row_reads_and_remembers_progress(gang_fleet, monkeypatch):
+    queue, clock, publish, finish, claim, denial, members = gang_fleet
+    for index in range(5):
+        publish(f'ordinary-{index}', gpu=0, mem_gb=1)
+    paths = queue.records.json_slot_paths(pool.READY)
+    original = pool.record_store.read_document
+    inspected = []
+
+    def observe(path, *args, **kwargs):
+        if path in paths:
+            inspected.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pool.record_store, 'read_document', observe)
+    queue.sweep_gangs(limit=1)
+    queue.sweep_gangs(limit=1)
+    assert len(inspected) == 2
+    assert len(set(inspected)) == 2
