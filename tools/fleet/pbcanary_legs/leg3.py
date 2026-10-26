@@ -69,6 +69,7 @@ try:
         deterministic_bytes,
         deterministic_stream,
         extract_envelope,
+        receipt_returncode,
         sha256_hex,
         sha256_stream_hex,
     )
@@ -78,6 +79,7 @@ except ImportError:  # Worker runs the file directly: sibling import.
         deterministic_bytes,
         deterministic_stream,
         extract_envelope,
+        receipt_returncode,
         sha256_hex,
         sha256_stream_hex,
     )
@@ -723,26 +725,6 @@ def run_action() -> int:
     return 0 if envelope.get("ok") else 1
 
 
-def _extract_envelope(receipt: object) -> tuple[str | None, dict | None, str]:
-    """Bind ``common.extract_envelope`` to the leg-3 schema marker.
-
-    The accepted locations and return shape are documented there once.
-    """
-    return extract_envelope(receipt, schema=LEG3_SCHEMA)
-
-
-def _returncode(receipt: dict) -> int | None:
-    for where in ("returncode", "detail.returncode", "action_returncode"):
-        node: object = receipt
-        for key in where.split("."):
-            node = node.get(key) if isinstance(node, dict) else None
-        if isinstance(node, bool):
-            continue
-        if isinstance(node, int):
-            return node
-    return None
-
-
 def _serving_refusal(chunk: dict) -> str | None:
     """Why this chunk's serving evidence does not prove a staged read."""
     offset = chunk.get("offset")
@@ -821,10 +803,10 @@ def verify(receipt: object, expected: object) -> tuple[bool, str]:
         return False, "leg3: receipt is not an object"
     if not isinstance(expected, dict):
         return False, "leg3: expected spec is not an object"
-    rc = _returncode(receipt)
+    rc = receipt_returncode(receipt)
     if rc is not None and rc != 0:
         return False, f"leg3: action returncode {rc} != 0"
-    _, parsed, where = _extract_envelope(receipt)
+    _, parsed, where = extract_envelope(receipt, schema=LEG3_SCHEMA)
     if parsed is None:
         return False, "leg3: no leg3 envelope in receipt"
     want_chunks = expected.get("chunks")

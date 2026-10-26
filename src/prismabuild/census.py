@@ -13,7 +13,7 @@ import shlex
 import time
 from typing import Generic, Literal, TypeVar
 
-from . import (core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
+from . import (box_capacity, core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
 from . import host_hold
@@ -431,7 +431,35 @@ def _pool_claim_denials(queue: pool.PoolQueue, *, reader=None) -> tuple[list[dic
                 notes.append(f"pool claim denial {directory.name}: invalid record")
     return denials, notes
 
-def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> list[dict]:
+def _unknown_gpu_denial_is_current(record, denial, *, now, host_observation):
+    claimed = nonnegative_number(record.get('claimed_unix'))
+    if claimed is not None and claimed >= denial['denied_unix']:
+        return False
+    decision = denial['evidence'].get('decision')
+    if not isinstance(decision, Mapping):
+        return False
+    sampled = nonnegative_number(decision.get('sampled_unix'))
+    sample_id = decision.get('sample_id')
+    max_age = box_capacity.GPU_SAMPLE_MAX_AGE_S
+    if (sampled is None or not isinstance(sample_id, str) or not sample_id
+            or not 0 <= now - sampled <= max_age):
+        return False
+    if not isinstance(host_observation, Mapping):
+        return True
+    current = nonnegative_number(host_observation.get('unified_memory_sampled_unix'))
+    current_id = host_observation.get('unified_memory_sample_id')
+    recovered = (host_observation.get('external_unified_gpu_unknown') is False
+                 and current is not None and 0 <= now - current <= max_age
+                 and isinstance(current_id, str) and bool(current_id)
+                 and current >= sampled
+                 and (current > sampled or current_id != sample_id))
+    return not recovered
+
+
+def _claim_denials_for(
+    record: dict, denials: Sequence[dict], *, now: float,
+    host_observations: Mapping[str, object] | None = None,
+) -> list[dict]:
     """Keep each host's latest observation for this exact submission generation."""
     by_host = {}
     published = record.get('published_unix')
@@ -444,11 +472,21 @@ def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> 
         host = denial['host']
         if host in by_host and by_host[host]['denied_unix'] >= denial['denied_unix']:
             continue
+        by_host[host] = denial
+    projected = []
+    for host in sorted(by_host):
+        denial = by_host[host]
+        if (denial['reason'] == 'unified_gpu_memory_unknown'
+                and not _unknown_gpu_denial_is_current(
+                    record, denial, now=now,
+                    host_observation=(host_observations or {}).get(host))):
+            continue
         decision = denial['evidence'].get('decision')
         subreason = decision.get('reason') if isinstance(decision, dict) else None
-        by_host[host] = {**denial, 'age_s': now - denial['denied_unix'],
-                         'decision_reason': subreason if isinstance(subreason, str) else None}
-    return [by_host[host] for host in sorted(by_host)]
+        projected.append({**denial, 'age_s': now - denial['denied_unix'],
+                          'decision_reason': subreason if isinstance(subreason, str) else None})
+    return projected
+
 
 def offers(queue_root: str | Path, *, reader=None,
            captured: OfferCapture | None = None,
@@ -604,6 +642,7 @@ def action_rows(queue_root: str | Path, *, reader=None,
                       captured=OfferCapture(workers, worker_notes, admission, now),
                       authoritative_holds=authoritative_holds)
     nodes, live = observed.value["nodes"], observed.value["live"]
+    host_observations = {offer['host']: offer.get('observed_detail') for offer in live}
     notes.extend(observed.value["notes"][len(worker_notes):])
     unreadable.extend(observed.value["unreadable"][len(worker_notes):])
     jobs: list[dict] = []
@@ -629,7 +668,8 @@ def action_rows(queue_root: str | Path, *, reader=None,
                                'claimed_unix',
                            ) if state == pool.record_store.CLAIMED
                                       else record.get('published_unix'), now))
-                row['admission_denials'] = _claim_denials_for(record, denial_records, now=now)
+                row['admission_denials'] = _claim_denials_for(
+                    record, denial_records, now=now, host_observations=host_observations)
                 if state == pool.record_store.READY:
                     denial = sidecar or {}
                     count, first = denial.get('passes', 0), denial.get('first_unix')
