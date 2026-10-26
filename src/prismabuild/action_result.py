@@ -27,6 +27,10 @@ carry no hard NFS deadline.
 from __future__ import annotations
 
 from . import immutable_files
+from .attempt_archive import (
+    resolve_attempt_log, _stream_verified_attempt_log, InvalidLogDescriptor, AttemptLogMissing,
+    AttemptLogIntegrityError, AttemptArchiveUnavailable,
+)
 
 import ast
 import codecs
@@ -575,9 +579,11 @@ def _verified_attempt_log(queue, record, attempt_record, number, stream, log_cap
     descriptor = _attempt_log_descriptor(queue, record, attempt_record, number, stream)
     if descriptor["bytes"] > log_cap:
         raise ActionResultError(f"the selected attempt {stream} exceeds the evidence cap")
-    raw = _read_bounded(
-        Path(descriptor["path"]), where=f"pool attempt {stream}", max_bytes=log_cap,
-        require_readonly=True)
+    try:
+        raw = resolve_attempt_log(queue.root, attempt_record["logs"][stream])
+    except (InvalidLogDescriptor, AttemptLogMissing,
+            AttemptLogIntegrityError, AttemptArchiveUnavailable) as exc:
+        raise ActionResultError(f"the selected attempt {stream} could not be verified: {exc}") from exc
     if len(raw) != descriptor["bytes"] or pb.raw_sha256(raw) != descriptor["sha256"]:
         raise ActionResultError(f"the selected attempt {stream} differs from its address")
     return descriptor, raw
@@ -659,11 +665,9 @@ def _stream_ending_log(queue, record, selected, number, stream, cap, evidence_ca
         raise ActionResultError(f"the selected attempt {stream} evidence cap cannot cover its terminal summary")
     observer = _EndingLogObserver(cap, evidence_cap, deadline, scan=stream == "stdout")
     try:
-        immutable_files.file_identity_nofollow(
-            Path(descriptor["path"]), where=f"pool attempt {stream}",
-            expected_sha256=descriptor["sha256"], expected_bytes=descriptor["bytes"],
-            require_readonly=True, observer_factory=observer.start)
-    except (pb.PrismaBuildError, OSError) as exc:
+        _stream_verified_attempt_log(queue.root, selected["logs"][stream], observer.start())
+    except (InvalidLogDescriptor, AttemptLogMissing,
+            AttemptLogIntegrityError, AttemptArchiveUnavailable) as exc:
         raise ActionResultError(f"pool attempt {stream} refused: {exc}") from exc
     observer.check_budget()
     observer.finish()

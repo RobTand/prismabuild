@@ -275,7 +275,9 @@ def test_installed_public_exports_keep_real_objects_and_progress_bytes(installed
     _child(installed, "complete", tmp_path / "exports", """
         import importlib, os
         import prismabuild
-        names = ['core', 'progress', 'residency_map', 'commit', 'report_action_progress']
+        names = ['core', 'progress', 'residency_map', 'commit', 'report_action_progress',
+                 'resolve_attempt_log', 'InvalidLogDescriptor', 'AttemptLogMissing',
+                 'AttemptLogIntegrityError', 'AttemptArchiveUnavailable']
         assert prismabuild.__all__ == names
         assert prismabuild.__version__ == '0.1.0'
         assert set(names) <= set(dir(prismabuild))
@@ -289,6 +291,8 @@ def test_installed_public_exports_keep_real_objects_and_progress_bytes(installed
         assert report_action_progress is prismabuild.report_action_progress is progress.report_action_progress
         assert core.report_action_progress is not report_action_progress
         assert all(namespace[name] is getattr(prismabuild, name) for name in names)
+        from prismabuild import attempt_archive
+        assert all(namespace[name] is getattr(attempt_archive, name) for name in names[5:])
         try:
             prismabuild.missing_public_export
         except AttributeError:

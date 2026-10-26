@@ -19773,6 +19773,12 @@ class PoolQueue:
 
     # -- attempt evidence and terminal states ----------------------------
 
+    def attempt_log_retention_eligibility(self, key: str, *, cutoff: float):
+        """Exact immutable-log retirement proof; caller holds the key lock at unlink."""
+        from .attempt_retention import _attempt_retention_snapshot
+        return _attempt_retention_snapshot(self, key, cutoff=cutoff)
+
+
     @classmethod
     def _validate_output_retry_stop(cls, evidence: object,
                                     attempt: Mapping[str, object]) -> None:
@@ -20168,8 +20174,17 @@ class PoolQueue:
                     raise PoolContractError(
                         f"pool attempt {stream} link is not its canonical path"
                     )
-                log = self.records.attempt_bytes(
-                    log_path, where=f"pool attempt {stream}")
+                from .attempt_archive import (
+                    resolve_attempt_log, InvalidLogDescriptor, AttemptLogMissing,
+                    AttemptLogIntegrityError, AttemptArchiveUnavailable,
+                )
+                try:
+                    log = resolve_attempt_log(self.root, metadata)
+                except (InvalidLogDescriptor, AttemptLogMissing,
+                        AttemptLogIntegrityError, AttemptArchiveUnavailable) as exc:
+                    raise PoolContractError(
+                        f"pool attempt {stream} differs from its recorded address: {exc}"
+                    ) from exc
                 if (
                     byte_count != len(log)
                     or metadata.get("sha256") != hashlib.sha256(log).hexdigest()
