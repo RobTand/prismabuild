@@ -756,8 +756,12 @@ class CensusReader:
 
     def shared_is_current(self, saved: dict) -> bool:
         """Verify optional shared authority under the caller's M/H locks."""
-        return (self.source_generation(saved["census"]) == saved["generation"]
-                and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S)
+        try:
+            return (self.source_generation(saved["census"]) == saved["generation"]
+                    and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S)
+        except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
+                core.PrismaBuildError, local_scratch.LocalScratchError):
+            return False
 
     @contextmanager
     def held(self, *, blocking: bool = True):
@@ -987,6 +991,7 @@ class PassCensus:
         self._busy: set[str] = set()
         self._foreign_refusals: dict[str, tuple[dict, int | float]] = {}
         self.ordinary_sources: dict = {}
+        self.ordinary_elections: dict[tuple[str, str], dict] = {}
 
     @property
     def census(self) -> dict | None:
@@ -1003,6 +1008,18 @@ class PassCensus:
 
     def store(self, census: dict) -> None:
         """Keep one successful locked census for the rest of the pass."""
+        if self.ordinary_elections:
+            census = dict(census, selections=dict(census["selections"]),
+                          elections=dict(census["elections"]))
+            for chosen in self.ordinary_elections.values():
+                key = chosen["action_key"]
+                prior = census["elections"].get(key)
+                if (prior is None or (chosen["host"] == self._ledger.base.name
+                        and (prior["host"] != self._ledger.base.name
+                             or chosen["priority"] > prior["priority"]))):
+                    census["selections"][key] = chosen
+                    census["elections"][key] = chosen
+            census["keys"] = sorted(set(census["keys"]) | set(census["selections"]))
         self._census = census
         self._selections = dict(census.get("selections") or {})
         self._gang_elections = dict(census.get("gang_elections") or {})
@@ -1244,7 +1261,7 @@ def pass_admission_census(pass_census: PassCensus, queue: PoolQueue,
             yield census
             return
         pass_census.store(census)
-        yield census
+        yield pass_census.census
 
 
 @contextmanager
@@ -1299,10 +1316,18 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if prior is not None:
                         local_keys.update(key for key, chosen in prior["selections"].items()
                                           if chosen["host"] == ledger.base.name)
+                local_keys.update(chosen["action_key"]
+                                  for chosen in pass_census.ordinary_elections.values()
+                                  if chosen["host"] == ledger.base.name)
                 for key in sorted(local_keys):
                     if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                         busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
+                _ordinary_selection_sources(queue, sources, recheck=True)
+                for _, chosen in sources.values():
+                    if chosen is not None:
+                        pass_census.ordinary_elections.setdefault(
+                            (chosen["action_key"], chosen["generation"]), chosen)
                 if saved is not None and census_reader.shared_is_current(saved):
                     current = dict(saved["census"])
                     current["selections"] = dict(current["selections"])
@@ -1326,6 +1351,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     # census, including the conservative merge above. A later
                     # candidate's negative proof must not forget this election.
                     pass_census.store(current)
+                    current = pass_census.census
                 if current is None:
                     prior = pass_census.census
                     remembered = (prior is not None and (
@@ -1337,10 +1363,9 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                and item.get("priority", 0) <= chosen["priority"]
                                for chosen in prior["gang_elections"].values())))
                     if not remembered:
-                        _ordinary_selection_sources(queue, sources, recheck=True)
                         current = _ordinary_election_census(
                             queue, item, ledger.base.name, dependent_owner,
-                            (chosen for _, chosen in sources.values() if chosen is not None),
+                            pass_census.ordinary_elections.values(),
                             ledger, busy)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
                     core.PrismaBuildError, _gang.GangContractError, local_scratch.LocalScratchError):

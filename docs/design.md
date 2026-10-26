@@ -767,6 +767,14 @@ selections and keys as well as its live elections, so later candidates retain
 its M lock and fence even when the sidecar vanished before refresh.
 Both owned and accepted shared censuses update pass memory before candidate
 evaluation; candidate-relative ordinary negative proofs never replace it.
+Ordinary source parsing and election memory are separate. After the under-H
+metadata recheck, each observed measurement publication remains in pass memory
+even if its sidecar disappears or the current candidate outranks it. Later
+ordinary proofs apply the same exact retirement rule to those observations,
+taking their local M keys before H. Complete and shared fallback retain the
+strongest observed local fence per key, including across publication generations.
+An advisory source-verification refusal permits an independent ordinary proof;
+unsafe local rendezvous storage still refuses before either shortcut.
 Missing, stale or unverifiable results fall back. Shared reuse never supplies a
 new retirement proof. The ordinary proof uses exactly the complete census's
 per-key retirement rule. Optional source-generation preparation and verification
