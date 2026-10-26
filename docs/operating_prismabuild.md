@@ -4220,6 +4220,15 @@ nonzero; it never rolls back and never touches admission. This source
 default reaches the fleet only when a generation carrying it is published.
 See the [canary runbook](canary_runbook_2026-09-19.md).
 
+Leg 3 observes its original action in 900-second intervals until a terminal
+outcome, unless the operator cancels or sets `pbcanary --leg3-wait-s SECONDS`.
+That option sets one total observation budget; expiry is NOT VERIFIED and
+retains the action key. It does not withdraw or retry the action. The
+600-second payload execution deadline still applies after launch. Higher-priority
+work may keep qualification pending, and the publishing process may retain its
+publication lock throughout that wait. See the runbook's
+[observation contract](canary_runbook_2026-09-19.md#leg-3-observation-patience).
+
 ## Smoke-test a transport
 
 `tools/fleet/seal_and_publish.py --transport pool|slurm` seals one trivial

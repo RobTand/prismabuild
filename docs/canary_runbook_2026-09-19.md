@@ -91,8 +91,8 @@ so the sidecar is never mistaken for a generation.
 
 *   Fresh publication, `--rollout rolling`: the canary runs after the
     inline activation. The canary hold extends the publication lock
-    for the canary's duration (bounded ~15 min by the driver's wait
-    budgets); plan publications accordingly.
+    for the canary's duration. Leg 3 has no default total observation limit,
+    so higher-priority work can extend this hold indefinitely.
 *   Fresh publication, `--rollout barrier` (the default): the canary runs
     only after the barrier completes. A rolled-back or still-pending
     barrier writes no rollout record; the resume path owns that ending.
@@ -126,6 +126,35 @@ so the sidecar is never mistaken for a generation.
 3.  Rolling back to the previous generation with `--activate-generation`
     is a separate operator decision, never automatic. It leaves the
     failed record in place as history.
+
+## Leg 3 observation patience
+
+The same-tier priority barrier protects feasible higher-priority work while
+existing obligations drain. Leg 3 remains at priority -10 and cannot assume
+that admission takes less than 900 seconds. Its driver observes the same
+submitted action in bounded 900-second intervals, recording each result in
+the leg's `pbwait.json` before another interval begins. A queue-wait expiry
+continues observation by default; it never resubmits, retags or retries work.
+
+For a standalone canary with an operator deadline, pass
+`pbcanary --leg3-wait-s SECONDS`. The positive finite budget starts at the
+first observation and is never renewed. Expiry returns 2, NOT VERIFIED, with
+the action key retained. An unreadable outcome, observation-process timeout
+or real terminal failure stops through its existing verdict path. No elapsed
+wait supplies a passing verdict. The action's 600-second execution deadline
+and staged-read progress allowances remain separate.
+
+Cancellation ends the observer and leaves the submitted action under PB's
+ordinary lifecycle. Read its saved `detach.json` and use published `pbwait`
+to inspect that key; cancellation and observation expiry do not prove
+withdrawal or cleanup. Keep the run's verified siblings and original key.
+Do not resubmit or change priorities to defeat admission. The publisher's
+programmatic canary uses the default unlimited observation patience, so its
+publication lock can remain held until qualification ends or the operator
+cancels. The release owner must account for this hold when scheduling work.
+
+This is a source contract. It does not establish deployment or completion of
+the historical October 11 canary.
 
 ## Leg 3's staged-read gate (issue #784)
 
