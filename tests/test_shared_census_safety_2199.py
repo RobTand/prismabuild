@@ -80,6 +80,58 @@ def test_one_claim_pass_remembers_an_election_first_seen_in_shared_reuse(
     assert queue.ledger().held_keys() == []
 
 
+@pytest.mark.parametrize("sibling_cache", [False, True])
+def test_busy_discovery_keeps_its_election_across_later_candidates(
+        fleet, monkeypatch, shared_age_clock, sibling_cache):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    selected = publish("busy-discovery-election", measurement=True, priority=10, gpu=0)
+    chosen = _fixture_selection(queue, selected)
+    candidates = [publish(f"busy-discovery-follower-{i}", priority=-10, gpu=0)
+                  for i in range(2)]
+    rows = [pool.record_store.value_or_raise(queue.records.item(pool.READY, key))
+            for key in candidates]
+    ledger = queue.ledger()
+    gate = adaptive_cpu.AdmissionGate(ledger)
+    original_capture = reservation.CensusReader.capture
+    original_candidate = reservation.candidate_admission_census
+    captures = []
+    seen = []
+
+    def lose_sidecar_after_discovery(reader):
+        current = original_capture(reader)
+        captures.append(current)
+        if len(captures) == 1:
+            assert current["elections"][selected] == chosen
+            queue.records.passes_path(selected).unlink()
+        return current
+
+    @contextmanager
+    def observe_candidate(*args, **kwargs):
+        with original_candidate(*args, **kwargs) as current:
+            seen.append(current.get("elections", {}).get(selected))
+            yield current
+        if len(seen) == 1 and sibling_cache:
+            with reservation.locked_census(queue, ledger, gate) as sibling:
+                assert sibling["selections"] == {}
+
+    monkeypatch.setattr(reservation.CensusReader, "capture", lose_sidecar_after_discovery)
+    monkeypatch.setattr(reservation, "candidate_admission_census", observe_candidate)
+    with queue.action_transition_lock(selected, blocking=False) as acquired:
+        assert acquired
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(
+                queue.claim, capacity={"cpu": 20, "mem_gb": 120}, ready=rows).result(timeout=10)
+
+    assert result is None, "a later candidate undercut the busy-discovery election"
+    assert seen == [chosen, chosen]
+    for key in candidates:
+        refusal = denial(key)
+        assert refusal["reason"] == "deferred_for_measurement_reservation"
+        assert refusal["evidence"]["withheld_for"] == selected
+    assert queue.records.item_path(pool.READY, selected).is_file()
+    assert ledger.held_keys() == []
+
+
 def test_an_ordinary_negative_proof_keeps_elections_learned_from_shared_reuse(
         fleet, shared_age_clock):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
