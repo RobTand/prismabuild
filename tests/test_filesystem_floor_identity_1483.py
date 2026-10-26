@@ -96,6 +96,17 @@ def test_existing_leaf_uses_its_own_mount_descriptor(tmp_path, monkeypatch):
 def test_tmpfs_requires_explicit_complete_coverage(tmp_path, monkeypatch):
     monkeypatch.setenv(ff.MODE_ENV, "enforce")
     with tempfile.TemporaryDirectory(prefix="pb-floor-", dir="/dev/shm") as scratch:
+        read_room = ff.filesystem_capacity.local_disk_room
+        sample = os.statvfs_result((4096, 4096, 100 * ff.GIB // 4096,
+                                   10 * ff.GIB // 4096, 10 * ff.GIB // 4096,
+                                   1000, 900, 900, 0, 255))
+
+        def room(path, floor_percent, *, statvfs=None):
+            if Path(path).is_relative_to(scratch):
+                return read_room(path, floor_percent, statvfs=lambda _: sample)
+            return read_room(path, floor_percent, statvfs=statvfs)
+
+        monkeypatch.setattr(ff.filesystem_capacity, "local_disk_room", room)
         found = ff.identify(scratch)
         assert found["fstype"] == "tmpfs"
         assert not all(v["allowed"] for v in ff.check_paths(tmp_path, [scratch]))
