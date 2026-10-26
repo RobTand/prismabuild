@@ -52,6 +52,24 @@ def test_main_reference_is_pinned_to_adopted_source_and_fixtures():
         assert hashlib.sha256((ROOT / 'tests/compat/support' / name).read_bytes()).hexdigest() == expected
 
 
+def test_capture_reference_works_without_git_history_or_executable(tmp_path):
+    checkout = tmp_path / 'snapshot'
+    shutil.copytree(ROOT / 'src', checkout / 'src')
+    for name in ('compat/support', 'fixtures'):
+        shutil.copytree(ROOT / 'tests' / name, checkout / 'tests' / name)
+    shutil.copyfile(ROOT / 'tests/history_inputs.py', checkout / 'tests/history_inputs.py')
+    empty = tmp_path / 'empty-path'
+    empty.mkdir()
+    result = subprocess.run([sys.executable,
+        str(checkout / 'tests/compat/support/capture_cpu_lending_main.py')], cwd=checkout,
+        env=dict(os.environ, PATH=str(empty), PYTHONPATH=str(checkout / 'src'),
+                 PRISMABUILD_BOX_STATE_ROOT=str(tmp_path / 'box-state')),
+        text=True, capture_output=True, timeout=600)
+    assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
+    captured = json.loads(result.stdout.removeprefix('CPU_MAIN_REFERENCE '))
+    assert captured == {key: value for key, value in BASE.items() if key != 'capture'}
+
+
 @pytest.mark.parametrize('scenario', SCENARIOS)
 def test_cap_zero_matches_main(tmp_path, scenario):
     assert run_trace(tmp_path, scenario) == BASE['outcomes'][scenario]
