@@ -8,6 +8,23 @@ import pytest
 from prismabuild import adaptive_mirrors, adaptive_snapshot, immutable_files
 
 
+@pytest.mark.parametrize('stamped', [False, True])
+def test_previous_mirror_read_keeps_the_compact_utf8_bound(tmp_path, monkeypatch, stamped):
+    previous = tmp_path / 'previous.json'
+    previous.write_bytes(b'{"label":"caf\xc3\xa9"}')
+    read = immutable_files.read_replaced_record
+    limits = []
+
+    def capture_bound(path, *, where, max_bytes):
+        limits.append(max_bytes)
+        return read(path, where=where, max_bytes=max_bytes)
+
+    monkeypatch.setattr(immutable_files, 'read_replaced_record', capture_bound)
+    assert adaptive_snapshot._previous_snapshot(
+        previous, {'label': 'café'}, stamped=stamped) == {'label': 'café'}
+    assert limits == [17 + (128 if stamped else 0)]
+
+
 def test_overflow_rebuilds_watches_after_a_hidden_source_directory_replacement(tmp_path, monkeypatch):
     local = tmp_path / 'local'
     local.mkdir()

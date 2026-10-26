@@ -1,4 +1,6 @@
 """Meaningful input changes and real evidence expiry do not become a poll tick."""
+import pytest
+
 from prismabuild.queue_bell_input_changes import (
     InputChanges, InputObservation, claim_denial_meaning, pass_meaning,
     peer_evidence_deadlines,
@@ -66,6 +68,28 @@ def test_mutable_observation_cannot_rewrite_the_baseline():
     assert changes.observe("adaptive", "peer", InputObservation(body, "fresh"))
     body["low_samples"] = 2
     assert changes.observe("adaptive", "peer", InputObservation(body, "fresh"))
+
+
+def test_observation_comparison_retains_json_ordering_and_number_spelling():
+    changes = InputChanges()
+    assert changes.observe("adaptive", "peer",
+        InputObservation({"label": "café", "capacity": 1}, "fresh"))
+    assert not changes.observe("adaptive", "peer",
+        InputObservation({"capacity": 1, "label": "café"}, "fresh"))
+    assert changes.observe("adaptive", "peer",
+        InputObservation({"capacity": 1.0, "label": "café"}, "fresh"))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_observation_cannot_replace_a_confirmed_baseline(value):
+    changes = InputChanges()
+    confirmed = InputObservation({"capacity": 1}, "fresh", (105.,))
+    assert changes.observe("adaptive", "peer", confirmed)
+    with pytest.raises(ValueError):
+        changes.observe("adaptive", "peer",
+            InputObservation({"capacity": value}, "fresh", (110.,)))
+    assert changes.next_deadline == 105.
+    assert not changes.observe("adaptive", "peer", confirmed)
 
 
 def test_deadlines_use_actual_offer_cpu_and_gpu_horizons():
