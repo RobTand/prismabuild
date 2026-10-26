@@ -6,7 +6,6 @@ import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 import hashlib
 import json
 from pathlib import Path
@@ -16,7 +15,7 @@ PRIORITIES = ("P0", "P1", "P2+", "P2", "P3", "P4")
 SCOPE = PRIORITIES[:3]
 REPOS = tuple(f"RobTand/{name}" for name in ("prismaquant", "prismabuild", "tessera"))
 BLOCKED = {"tl:blocked", "ig:blocked"}
-PREFIX = re.compile(r"^\s*\[(P0|P1|P2\+|P2|P3|P4)\]")
+from duplicates import PREFIX, likely_duplicate
 REFERENCE = r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)"
 PARENT = re.compile(r"^\s*(?:[-*]\s+)?(?:part of|sub-issue of|parent)\s*:?\s*" + REFERENCE, re.I | re.M)
 BLOCKER = re.compile(r"^(?:[-*][ \t]+)?(?:blocked by|depends on|blockers?|dependencies)\b[ \t]*:?[ \t]*(.*)$", re.I)
@@ -246,7 +245,6 @@ def candidate(kind: str, tickets: list[str], proof: list[str], **details) -> dic
 
 
 def duplicate_clusters(scope: list[Issue]) -> list[list[str]]:
-    titles = {i.key: re.sub(r"\W+", " ", PREFIX.sub("", i.title).casefold()).strip() for i in scope}
     roots = {i.key: i.key for i in scope}
 
     def root(k):
@@ -257,9 +255,7 @@ def duplicate_clusters(scope: list[Issue]) -> list[list[str]]:
 
     for n, issue in enumerate(scope):
         for other in scope[n + 1:]:
-            left, right = titles[issue.key], titles[other.key]
-            if left and right and (left == right or (len(left) >= 30 and len(right) >= 30 and
-                                                       SequenceMatcher(None, left, right).ratio() >= .92)):
+            if likely_duplicate(issue.title, other.title):
                 a, b = sorted((root(issue.key), root(other.key)))
                 roots[b] = a
     groups = defaultdict(list)
