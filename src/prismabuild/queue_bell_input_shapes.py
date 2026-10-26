@@ -51,6 +51,14 @@ class HostInputShapes:
             return "entry"
         return None
 
+
+class InputShapes:
+    """Coverage predicates for the declared names-only input families."""
+
+    @staticmethod
+    def kind(relative: Path) -> str | None:
+        return HostInputShapes.kind(relative)
+
     @staticmethod
     def watchable(kind: str, info) -> bool:
         if kind == "unknown" or stat.S_ISLNK(info.st_mode):

@@ -207,6 +207,22 @@ class ClaimDenials:
         return None
 
 
+class NamespaceInputs:
+    """Per-namespace census rules used by the common watch installer."""
+
+    adapters = (HostReservations,)
+
+    @classmethod
+    def hidden_input(cls, relative: Path) -> bool:
+        return any(adapter.hidden_input(relative) for adapter in cls.adapters)
+
+    @classmethod
+    def reconstruction_inputs(cls, relative: Path, entries):
+        for adapter in cls.adapters:
+            entries = adapter.reconstruction_inputs(relative, entries)
+        return entries
+
+
 class TopicFilters:
     """Parse bounded query filters without interpreting IDs as filesystem paths."""
 
