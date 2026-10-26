@@ -6,12 +6,22 @@ import fcntl
 import multiprocessing
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
+from fleet_world import Clock
 from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
+
+
+@pytest.fixture
+def cache_clock(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(reservation, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
+    return clock
 
 
 @contextmanager
@@ -256,7 +266,7 @@ def test_a_live_or_garbled_measurement_election_never_grants_refill(
 
 @pytest.mark.parametrize("election_state", ["none", "live", "retired", "garbled"])
 def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
-        fleet, monkeypatch, election_state):
+        fleet, monkeypatch, cache_clock, election_state):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     if election_state != "none":
         selected = publish("slow-election", measurement=True, gpu=0, priority=10)
@@ -268,7 +278,6 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
     candidates = [publish(f"loop-{i}", gpu=0, cpu=1) for i in range(4)]
     rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
             for key in candidates]
-    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60)
     if election_state in {"live", "retired"}:
         with reservation.locked_census(
                 queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())):
@@ -316,7 +325,8 @@ def test_independent_loops_admit_ordinary_rows_while_a_census_child_is_slow(
     assert observer.exitcode == 0
 
 
-def test_a_complete_retirement_census_is_shared_across_independent_loops(fleet, monkeypatch):
+def test_a_complete_retirement_census_is_shared_across_independent_loops(
+        fleet, monkeypatch, cache_clock):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     selected = publish("retired-election", measurement=True, gpu=0, priority=10)
     _fixture_selection(queue, selected)
@@ -333,7 +343,7 @@ def test_a_complete_retirement_census_is_shared_across_independent_loops(fleet, 
     assert result is not None and result["action_key"] == candidate
 
 
-def test_a_new_election_invalidates_a_siblings_shared_census(fleet, monkeypatch):
+def test_a_new_election_invalidates_a_siblings_shared_census(fleet, monkeypatch, cache_clock):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     selected = publish("late-election", measurement=True, gpu=0, priority=10)
     candidate = publish("late-follower", gpu=0)
@@ -367,13 +377,13 @@ def test_a_census_denial_does_not_spread_to_an_unfenced_priority_band(fleet, mon
 
 @pytest.mark.parametrize("priority", [0, 10])
 def test_gang_elections_keep_lower_and_equal_priority_on_the_reader_path(
-        gang_fleet, monkeypatch, priority):
+        gang_fleet, monkeypatch, cache_clock, priority):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, keys = members("reader-gang", priority=10, mem_gb=8)
     assert gclaim("sparklina") is None
     candidate = publish("gang-follower", priority=priority, gpu=0)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
-    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", -1)
+    cache_clock.advance(reservation.SHARED_CENSUS_MAX_AGE_S + 1)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
         result = queue.claim(capacity={"cpu": 20, "mem_gb": 120, "gpu": 1},
@@ -382,13 +392,12 @@ def test_gang_elections_keep_lower_and_equal_priority_on_the_reader_path(
     assert denial(candidate, "sparklina")["reason"] == "measurement_census_unavailable"
 
 
-def test_a_live_census_is_shared_without_another_reader_fence(fleet, monkeypatch):
+def test_a_live_census_is_shared_without_another_reader_fence(fleet, monkeypatch, cache_clock):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     selected = publish("shared-live-election", measurement=True, gpu=0, priority=10)
     _fixture_selection(queue, selected)
     candidate = publish("shared-live-follower", gpu=0)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
-    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60)
     with reservation.locked_census(
             queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())) as census:
         assert selected in census["elections"]
@@ -402,7 +411,7 @@ def test_a_live_census_is_shared_without_another_reader_fence(fleet, monkeypatch
 
 @pytest.mark.parametrize("damage", ["expired", "garbled", "other_pool", "other_boot", "boot_unknown"])
 def test_a_retirement_cache_must_be_verifiable_before_ordinary_admission(
-        fleet, monkeypatch, damage):
+        fleet, monkeypatch, cache_clock, damage):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     selected = publish("cache-retired", measurement=True, gpu=0, priority=10)
     _fixture_selection(queue, selected)
@@ -415,7 +424,7 @@ def test_a_retirement_cache_must_be_verifiable_before_ordinary_admission(
     cache = reservation.CensusReader(queue, queue.ledger()).shared_path
     saved = reservation._read(cache)
     if damage == "expired":
-        saved["created"] -= 60
+        cache_clock.advance(reservation.SHARED_CENSUS_MAX_AGE_S + 1)
     elif damage == "other_pool":
         saved["pool"] += "-other"
     elif damage == "other_boot":
@@ -458,12 +467,12 @@ def test_mutation_skipping_election_sources_is_caught_at_the_reservation(fleet, 
         must_stay_fenced()
 
 
-def test_mutation_skipping_shared_generation_verification_is_caught(fleet, monkeypatch):
+def test_mutation_skipping_shared_generation_verification_is_caught(
+        fleet, monkeypatch, cache_clock):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     selected = publish("generation-mutation-election", measurement=True, gpu=0, priority=10)
     candidate = publish("generation-mutation-follower", gpu=0)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
-    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60)
     with reservation.locked_census(
             queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger())):
         pass
@@ -583,7 +592,8 @@ def test_an_elected_measurement_owner_is_not_reclassified_as_an_incumbent(
 
 
 @pytest.mark.parametrize("state", ["retired", "garbled"])
-def test_gang_retirement_is_shared_but_garbled_authority_is_not(gang_fleet, monkeypatch, state):
+def test_gang_retirement_is_shared_but_garbled_authority_is_not(
+        gang_fleet, monkeypatch, cache_clock, state):
     from prismabuild import _gang
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, keys = members("shared-gang", priority=10, mem_gb=8)
@@ -595,7 +605,6 @@ def test_gang_retirement_is_shared_but_garbled_authority_is_not(gang_fleet, monk
     candidates = [publish(f"shared-gang-follower-{i}", priority=0, gpu=0) for i in range(4)]
     rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
             for key in candidates]
-    monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     if state == "retired":
         with reservation.locked_census(
