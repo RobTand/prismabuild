@@ -1,0 +1,827 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "ID-08",
+    "ID-09",
+    "TIER-02",
+    "LIVE-01",
+    "SAFE-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1942-pri64",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1942",
+    "validated_repairs": [
+      {
+        "id": "LIVE-01",
+        "scope": "Tier bell adapters only",
+        "actions": [
+          "a32e543591d17f502b5eb111b793f814a956153f6bb3f9f93a7cff4d1c03128d",
+          "e91f4d8dff41e2f33dd52135d63823c4d5ec227f9779c259128af74e9921352b",
+          "f39afbcc17bea0e3f914988b3d6a3887248831032829f99032bbf3c6c4e8062f",
+          "4a89c2678a03e55b2752e8a5cca544233a547c3814c33c994cd5b776b3ce5780",
+          "9329b5dcc40f24617dc413fc483b42adf95f3ddcd7727d633e2c42e01b5dac20",
+          "bdfa5804f1e31f89542f02d46178542d99514575b1d450d594abe9ef2979d6a9",
+          "f08c86f5bd44698f878052a7a9a0e22b92755c4df79d5ad8b1e7521f24fa27c9",
+          "f23b40538426b88f6a5273b7d849f169ca3819f99ef436347a7d3cb320fb21b7",
+          "a225352f18ee6d9708d99e50034447ce42ac5068d00c05c1ac3f55bc34eed443",
+          "2fa0a5b70a309abbcc6f533beb221e9ef65ec96cd3c5176eadc7c8e7b214bbe4",
+          "d7b5a5c11932755fd900908a107ddb6f3f872d63322b4f0f66b981cacb43a33f",
+          "32568662e68e337a95b6973dfb286cc2eab15d75d064bdce206725f9967c8207",
+          "47e00034fe7b768ad473608ad71dbed63ac66c88dc6b54371728e39ee1690415",
+          "4c5b9782db0880aa88f6d64aafef2eb136994484f96ef0bc6258e40cd9e2345c",
+          "bb3548dbd0043987fa9faef6670501fc35837b45c1ef81179228d16abd57a2c2",
+          "cdcbf095d82eeb1ae8a24ddfd7fe5060760902d2ec02d73dfbb5a8a00398ad3c",
+          "946625b7ad64c19ac24f1d14162276975a4b4bddcc2d335f729cf37fdf4561cd",
+          "b5cc035bf0805101887460409ee67abd630b7ce8b3bc2a985e9a7988704a2cd8",
+          "a0f21645b859c2bdc6fcd854d6b0ed739b35ad5cd94a7ac35b5532d6b0f56502",
+          "792a70bb3b01e78ea15538c9e94aa9bd2b038595139d3bcae644da074ff19fd9",
+          "7671d9f27c0cbdae56ca575ae441b192f4951aa30aae2c3530307cbf27f0715c",
+          "07f56f552ce34321ebcfa6fd65fd761b2266a8128c28ddfb70163115b900f689",
+          "0907cd53980017d03caacf6ed6b994343ad1f5ab81f50f22e7d2896984b68e36",
+          "e7bf7347b03dca40c7a5f1f58b72555607963001b9e62ce7dda0c383ac1006d8",
+          "1c3619b854c44095ae58d25fa9dd028d7240344e35d370465311cf25b56d8bc7",
+          "d9e4cf8ffcb61b580dfe96714fe3323b9738cf6264fc02f2f1212bc603cdbcfc",
+          "fd389490a42b92f82f182bf8584111d88203fca1c19117be316070bb716ca061",
+          "83084c13ca5ffac56ce2e0f92b9712c496450705c019c0ba02f0a6429160af96",
+          "d9fba8330babbd7681408a0be7d159fea77d8bc5f76a39e591dac13be4f157c9",
+          "96959a193c952dd507e3fcfd2e737f7ecc5d94b2f3b1c542f9ea6825321816ea",
+          "38be0355a0a7bfaa2b25ce2f27ef3dedd38722dcc8924ac627cc376433419977",
+          "fcb1337145a6898fc09b60a754d293122af8d3b48159c4c4a93e8bcea878a8e6",
+          "9c979ec1ea5b76c1262074b15ddd50d413963173ce1e504c0a95eb486b2660b9",
+          "0232a27ccaa0e8cef58f47e6cdb29acda3bb7ab7a4bad66ce5aefe4c4856ce79",
+          "e0a7d4ebbbce423f96ca1abac9f18b60be81812e5a603f68642c225ee06c2783",
+          "04b03fcf4f67f7cc78a960e6df885281d33bddaaeec18dbafcc9b4f06c982bf7",
+          "e476ed29f68b334b9f3d72000ffce143952e6c758bea48e647a4de8e0feb519f",
+          "5e72e3076f9aa531be88c9db3b10487470007b1aa8745d21cf4a2f702b904297",
+          "e057a93684bf87bbddde025062d1672edf8360ce086f5c3eaa2f8aa245843cb1",
+          "73e0bbcd5ba31e487f03b9a684d5cc20914ea2c3edb8d258c6f97bdbea34890e",
+          "eee38fab15ce4fda04c226b415d425f856f18cb37dc68cd0cc34ea738c5161ce",
+          "5016c74c008a28781d42523fb41952e4cecc4b218164c27a4768091f6e646abe",
+          "649ffb6a4bc402a808f9d9ce547e4921dd5a711f140e55d2a3ec73620dda4749",
+          "acce0086695d167b40d56522f3dd8d9cd7e05a0fc797aafc66837943ed4e03be",
+          "a94e739ed3e13785d5e2370b5732fb7f1f96ef5f0504efde392b76f0b12aa969",
+          "4d63f6ab16695e9447100ea08c658769dc7c41498cf0efe461d099d22ca42f5a",
+          "7e2027b21180918ba2ac5163d2a1db0c9fa0d1625da0c4f503743c2f8d9758d3",
+          "10e9fad040baa04b5d2028a041f264d436aa19515fe7af41a645fcff31313c1a",
+          "ca527cbac9c1b243d5bc974355f0c398fbe60faf862f9897fdb25a3698fc108c",
+          "dc6c828302cdf7a622e38e0f9caea5759c7b877265f2af4e69abe122142a89ad",
+          "34e3e7d96008ee6a18535c26c5b0755ae01ec371662447d667b0ba712f6c1b41",
+          "8e44b529c23ede07bd913c196c487c0deeb02aa93367114c56cbaf997d2bd76a",
+          "13f49d2e95aad303481ab78a7dd3a1d7562cefcdcb1bc5e6adc9d4d45c1eb2ca",
+          "4e1353c017ad6473e6919e617cff0140d86090e65348b1e91532d00e2fe70b7b",
+          "cf644eaed4ad16a6ebba23676953589f116a394be83ef8c2f7c723bf98434211",
+          "ff6c4ada4207c552fee79fde3271eeae7d3633c3d1675c86c16b7dd02a368765",
+          "0b2f4ff8e5ce553552b29438507ca39402eca8e5d92f8387deff1c70e2e6e266",
+          "353391c66782a086cfe94e3de95b291b18e02f83ee15dd54c3b8da25b9e04a0e",
+          "54a17419fa82ab49b1f2cda82504e7ff28fa68aaa9e2e0a4ef1c79fbbe5a5374",
+          "2741fdec19e2fca134aaf78ccd43cf6017da850470feb4d8a43484527e889b79",
+          "7d7ab63852c4b7196a754e815b3f6973dca7e31e1c4360e0a0c56da68024c6a6",
+          "4a41118793a506377798ba70bd4e1613c7b876c97495385b1d41beae02cc6936",
+          "2abfe58f0f132aae2ab0c0e52034157a8eab3a695060a6d95924156d3c9e8d29",
+          "1fe49f12e7ade4bee3d35de1c6e7cbdfa2cbc73d4106213ed2eddac74aac7a50",
+          "b4252b5d089997de8cd4751c3de31320c7f465e9fa68b8c95ce5dab5229d64b1"
+        ],
+        "outcome": "65 executed actions: 386 integrated passes and 1580 qualification passes; zero skips. Canonical receipts and bindings in evidence.json."
+      }
+    ],
+    "remaining_gaps": [
+      "LIVE-01: consumer arming belongs to later integration slices; no end-to-end wait latency or outage recovery is qualified.",
+      "ID-08: no runtime publication, generation creation, role convergence or activation in this lane.",
+      "Whole staged-read requirements and application acceptance remain unchanged. Existing ledger axes are retained, not upgraded."
+    ],
+    "note": "Prepared scoped source-merge record, pending independent external review and batch landing. Seven unchanged-base fixture tests are separate baseline evidence. No live tier, funding, claim, placement or fairness behavior changed."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "source_head": "6cef1e12efbb2610c8186fd2ab304bcfc1f55726",
+  "base": "88b1a5108799040c4dbd87bfd628a82e44bf739b",
+  "requirement_status": [
+    {
+      "id": "SC-01",
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": "PB:ca0f5555",
+          "path": "src/prismabuild/pool.py claim/admission paths",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "PB retains all admission and placement decisions; adapters emit names only.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "SC-03",
+      "target": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": null,
+          "path": null,
+          "state": "no"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "This scoped record keeps source, component validation, deployment and workload claims separate.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "ID-08",
+      "target": "Behavior attributed per (runtime_commit, generation_id).",
+      "ledger_axes": {
+        "implementation": {
+          "commit": "PB:e9f0ec176b8c63e462150fdcda2b37123424ed5b",
+          "path": "runtime generation link; worker attestations; core._reader_identity_environment and explicit retained runtime carry through resource_scope.wrap_argv (PR750)",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "PR750 source component:247 integrated CPU passes plus80 overlapping final passes, zero skips. Root package-import RED eda2cd41f25a fails2 on old source+tests only; GREEN d12ef15ec8fb/ea5a7219920e/c9c09df393f6 source-bound via actual CAS bundles. Real pool affinity seam uses controlled broker/Popen fixtures; live cross-generation/both-Spark strict-reader qualification remains owed. See reader_launch_acceptance_2026-09-20.json.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): Offers from sparky, sparklina and dl380g10 announced runtime_commit 81d95cba8d91 at 1790169703 and a0fdcd2f7482 from 1790171012 to 1790171023 (13:43Z); the dl380g10 tier role runs the a0fdcd2f7482-1790170897-121d887b4732 tree; DESKTOP-P5UOGNJ is offline (PB#900) and stale on a80eea97.",
+          "state": "partial"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "All 66 successful actions bind sealed source bundles; this change is not deployed.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "ID-09",
+      "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:cd7e1b97e5dc (#831) reads a generation's ending from its immutable attempts; 44098612105d (#887) counts a claim whose finish is in flight as outstanding.",
+          "path": "src/prismabuild/pool.py terminal records + CAS receipts (a-c); (d) application-side, referenced",
+          "state": "partial"
+        },
+        "validation": {
+          "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 attests a-c for its own record 2026-09-23 update (snapshot 13:50Z): #831 fail-before 6a8645b2e7f4 (9 failed), green 79adabbb74f9 (11 passed), 838c1c51a36d (185 passed).",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs).",
+          "state": "yes"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "Auditor checks distinct terminal, log, receipt and payload evidence plus test outcomes.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "TIER-02",
+      "target": "Metadata allowance is bounded header/index/control bytes; get_slice and any payload-materializing call are data readers.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": null,
+          "path": null,
+          "state": "no"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "Adapters inspect bounded control namespaces and file metadata; no payload or record-body read is added.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "LIVE-01",
+      "target": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": null,
+          "path": null,
+          "state": "no"
+        },
+        "validation": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "deployment": {
+          "detail": "unknown",
+          "state": "unknown"
+        },
+        "workload_proof": {
+          "detail": "2026-09-23 update (snapshot 13:50Z): No. Three R13 launch attempts on 81d95cba8d91-1790160372-5d100532e024 stalled: PB#944, PB#965 and PB#966. PQ#1080 ended a fourth attempt with a refusal, not a stall.",
+          "state": "no"
+        }
+      },
+      "implemented_and_validated_scope": "Bounded tier invalidations and coverage withdrawal are component-qualified; consumer arming and live liveness remain owed.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    },
+    {
+      "id": "SAFE-03",
+      "target": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
+      "ledger_axes": {
+        "implementation": {
+          "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:d1e217607942 (#957) records every skip's node ID and reason; d3c6b4241e86 (#967) reconciles each shard's outcomes with its collection by node ID.",
+          "path": "src/prismabuild/pool.py terminal + CAS receipt publication rules",
+          "state": "yes"
+        },
+        "validation": {
+          "detail": "single admitted CPU repro attests PB-side rule only 2026-09-23 update (snapshot 13:50Z): #957 c749c91fcae9, cfb88c896310 (20 passed), 37-file set 35bedc758b9c (549 passed); #967 b31c34b551fd (567 passed), PQ full suite 63ebbe7e42cf and 39 more shards.",
+          "state": "partial"
+        },
+        "deployment": {
+          "detail": "PB720 repro 0f54fe1348fe6f2ce775abe811c7cd1077d6874bc72ee749f7d23bc4e18e9a4a executed sparky rc 0 2026-09-23 update (snapshot 13:50Z): #957 and #967 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+          "state": "yes"
+        },
+        "workload_proof": {
+          "detail": "unknown",
+          "state": "unknown"
+        }
+      },
+      "implemented_and_validated_scope": "No result or campaign acceptance derives from the wrapper exit; no application validity is claimed.",
+      "deployed_scope": "not deployed in this lane",
+      "workload_proof": "not established by this component change"
+    }
+  ],
+  "evidence": {
+    "path": "evidence.json",
+    "integrated_unique_passed": 386,
+    "qualification_test_executions": 1580,
+    "baseline_passed": 7,
+    "successful_actions": 66,
+    "skips": 0,
+    "warnings": "Two existing fork deprecation warnings in tests/test_queue_bell.py::test_real_requeue_supersession_wakes_exact_publication_waiter; no qualification warnings.",
+    "actions": [
+      {
+        "action_key": "a32e543591d17f502b5eb111b793f814a956153f6bb3f9f93a7cff4d1c03128d",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/a3/a32e543591d17f502b5eb111b793f814a956153f6bb3f9f93a7cff4d1c03128d.json",
+        "receipt_sha256": "24efce2efa9932eb0cb8d146f8702253dc43aab8f32cbded0e24aa081aa10aad",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "e91f4d8dff41e2f33dd52135d63823c4d5ec227f9779c259128af74e9921352b",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e9/e91f4d8dff41e2f33dd52135d63823c4d5ec227f9779c259128af74e9921352b.json",
+        "receipt_sha256": "1b38b932c959cf2f211935c602287cb57e727c0fc4e642c2339b4d1884fe23bc",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "f39afbcc17bea0e3f914988b3d6a3887248831032829f99032bbf3c6c4e8062f",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f3/f39afbcc17bea0e3f914988b3d6a3887248831032829f99032bbf3c6c4e8062f.json",
+        "receipt_sha256": "211a1664140ef8a81dd39300b4f278ae0f20755de02484cc0a7f8fe61cb0bc75",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "4a89c2678a03e55b2752e8a5cca544233a547c3814c33c994cd5b776b3ce5780",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4a/4a89c2678a03e55b2752e8a5cca544233a547c3814c33c994cd5b776b3ce5780.json",
+        "receipt_sha256": "a8ecca24c880d81f8bb3df628fb341c2943c88dd0a645335d3003cf9ad4a7f87",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "9329b5dcc40f24617dc413fc483b42adf95f3ddcd7727d633e2c42e01b5dac20",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/93/9329b5dcc40f24617dc413fc483b42adf95f3ddcd7727d633e2c42e01b5dac20.json",
+        "receipt_sha256": "627cb1d06916f2302b91b96e155ded5e114c99265f79fc9f09bc05b9d0ff50ee",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "bdfa5804f1e31f89542f02d46178542d99514575b1d450d594abe9ef2979d6a9",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/bd/bdfa5804f1e31f89542f02d46178542d99514575b1d450d594abe9ef2979d6a9.json",
+        "receipt_sha256": "24e15d4df382ac2c619b32ce8ea20bcbdc54ab6ddca0a04ab05458433555e5b8",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "f08c86f5bd44698f878052a7a9a0e22b92755c4df79d5ad8b1e7521f24fa27c9",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f0/f08c86f5bd44698f878052a7a9a0e22b92755c4df79d5ad8b1e7521f24fa27c9.json",
+        "receipt_sha256": "e964d09c3636430237d1b027fffafc5f9259140777376bf4b2741aa220f4d5a2",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "f23b40538426b88f6a5273b7d849f169ca3819f99ef436347a7d3cb320fb21b7",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/f2/f23b40538426b88f6a5273b7d849f169ca3819f99ef436347a7d3cb320fb21b7.json",
+        "receipt_sha256": "6f09b4ceae17dfb7bfbe30e6aff4fec1cfdea935e4355afd91cd38257dc1175f",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "a225352f18ee6d9708d99e50034447ce42ac5068d00c05c1ac3f55bc34eed443",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/a2/a225352f18ee6d9708d99e50034447ce42ac5068d00c05c1ac3f55bc34eed443.json",
+        "receipt_sha256": "e9a5a4f4e4e31d11f000230659d55451d937c3f63a8ae9571922a7b5be48502d",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "2fa0a5b70a309abbcc6f533beb221e9ef65ec96cd3c5176eadc7c8e7b214bbe4",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/2f/2fa0a5b70a309abbcc6f533beb221e9ef65ec96cd3c5176eadc7c8e7b214bbe4.json",
+        "receipt_sha256": "a0e6ffe385e3f1e2087525a892e6830d37cc362d0795ebc91316a198fda3dff4",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "d7b5a5c11932755fd900908a107ddb6f3f872d63322b4f0f66b981cacb43a33f",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d7/d7b5a5c11932755fd900908a107ddb6f3f872d63322b4f0f66b981cacb43a33f.json",
+        "receipt_sha256": "5b96b25e03a63310d35edca1274cf6902bdd007ff7e7be07538430d24222ad6c",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "32568662e68e337a95b6973dfb286cc2eab15d75d064bdce206725f9967c8207",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/32/32568662e68e337a95b6973dfb286cc2eab15d75d064bdce206725f9967c8207.json",
+        "receipt_sha256": "7692b5a2ccdf35910476cf3d7d3a5fe48f3748521c6b5b7344c8b7ffce52c728",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "47e00034fe7b768ad473608ad71dbed63ac66c88dc6b54371728e39ee1690415",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/47/47e00034fe7b768ad473608ad71dbed63ac66c88dc6b54371728e39ee1690415.json",
+        "receipt_sha256": "d3209a031efd4b8ede7a184c61f04d34094de1a6643e5da68e7159ab5c3d6292",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "4c5b9782db0880aa88f6d64aafef2eb136994484f96ef0bc6258e40cd9e2345c",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4c/4c5b9782db0880aa88f6d64aafef2eb136994484f96ef0bc6258e40cd9e2345c.json",
+        "receipt_sha256": "61ce40aa119b235e8429cd7484eb2993c34499c55654a4c6c48b04567cc8316d",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "bb3548dbd0043987fa9faef6670501fc35837b45c1ef81179228d16abd57a2c2",
+        "run": "integrated-final",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/bb/bb3548dbd0043987fa9faef6670501fc35837b45c1ef81179228d16abd57a2c2.json",
+        "receipt_sha256": "e901bb54c96ca66f443782b04b78abea04c6352bd34a7905587c327abd34d593",
+        "source_snapshot": "b8a3a484b587706cbc2ca63cb6cd941ed387685b"
+      },
+      {
+        "action_key": "cdcbf095d82eeb1ae8a24ddfd7fe5060760902d2ec02d73dfbb5a8a00398ad3c",
+        "run": "qual-x86-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cd/cdcbf095d82eeb1ae8a24ddfd7fe5060760902d2ec02d73dfbb5a8a00398ad3c.json",
+        "receipt_sha256": "9316009424e5d3fe331c28089e8e50821ee3d10910caad584797bb29ad47bb5d",
+        "source_snapshot": "5651ef6346f0e9cd1209c5c6a9220a965f7a77c7"
+      },
+      {
+        "action_key": "946625b7ad64c19ac24f1d14162276975a4b4bddcc2d335f729cf37fdf4561cd",
+        "run": "qual-x86-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/94/946625b7ad64c19ac24f1d14162276975a4b4bddcc2d335f729cf37fdf4561cd.json",
+        "receipt_sha256": "4de887a2ff8ab44142893baa37f9964d1134ab1eb45297cf54e21acf6ae562cb",
+        "source_snapshot": "5651ef6346f0e9cd1209c5c6a9220a965f7a77c7"
+      },
+      {
+        "action_key": "b5cc035bf0805101887460409ee67abd630b7ce8b3bc2a985e9a7988704a2cd8",
+        "run": "qual-x86-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/b5/b5cc035bf0805101887460409ee67abd630b7ce8b3bc2a985e9a7988704a2cd8.json",
+        "receipt_sha256": "5f7ae9e1b66f1305ce924efaf82b60ca144992382f6d2939be1c07209201b14b",
+        "source_snapshot": "5651ef6346f0e9cd1209c5c6a9220a965f7a77c7"
+      },
+      {
+        "action_key": "a0f21645b859c2bdc6fcd854d6b0ed739b35ad5cd94a7ac35b5532d6b0f56502",
+        "run": "qual-x86-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/a0/a0f21645b859c2bdc6fcd854d6b0ed739b35ad5cd94a7ac35b5532d6b0f56502.json",
+        "receipt_sha256": "d1b258ab399d881d049c19fc62372be1d9359d989c6eb5b109fb84ab7a7dc08e",
+        "source_snapshot": "5651ef6346f0e9cd1209c5c6a9220a965f7a77c7"
+      },
+      {
+        "action_key": "792a70bb3b01e78ea15538c9e94aa9bd2b038595139d3bcae644da074ff19fd9",
+        "run": "qual-x86-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/79/792a70bb3b01e78ea15538c9e94aa9bd2b038595139d3bcae644da074ff19fd9.json",
+        "receipt_sha256": "418667b34ad347cbd4cf748724b5a792134aa3f04bcee0a8271a882e773e40d0",
+        "source_snapshot": "5651ef6346f0e9cd1209c5c6a9220a965f7a77c7"
+      },
+      {
+        "action_key": "7671d9f27c0cbdae56ca575ae441b192f4951aa30aae2c3530307cbf27f0715c",
+        "run": "qual-x86-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/76/7671d9f27c0cbdae56ca575ae441b192f4951aa30aae2c3530307cbf27f0715c.json",
+        "receipt_sha256": "2582cbe0d22e9db138d1a530d81b2e2285201e69968aa46f23b0637b2de1075d",
+        "source_snapshot": "709b471dd4c0fdb7d341052ee6f65ad74cd90778"
+      },
+      {
+        "action_key": "07f56f552ce34321ebcfa6fd65fd761b2266a8128c28ddfb70163115b900f689",
+        "run": "qual-x86-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/07/07f56f552ce34321ebcfa6fd65fd761b2266a8128c28ddfb70163115b900f689.json",
+        "receipt_sha256": "1d873ac844582716f73723972c1af0a921d4e5f3a95f192003ce8f81816356be",
+        "source_snapshot": "709b471dd4c0fdb7d341052ee6f65ad74cd90778"
+      },
+      {
+        "action_key": "0907cd53980017d03caacf6ed6b994343ad1f5ab81f50f22e7d2896984b68e36",
+        "run": "qual-x86-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/09/0907cd53980017d03caacf6ed6b994343ad1f5ab81f50f22e7d2896984b68e36.json",
+        "receipt_sha256": "a589ae17aa51f76f8ceb7eb26240aace746d6c7c62909c179cc7d1eb2e30d287",
+        "source_snapshot": "709b471dd4c0fdb7d341052ee6f65ad74cd90778"
+      },
+      {
+        "action_key": "e7bf7347b03dca40c7a5f1f58b72555607963001b9e62ce7dda0c383ac1006d8",
+        "run": "qual-x86-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e7/e7bf7347b03dca40c7a5f1f58b72555607963001b9e62ce7dda0c383ac1006d8.json",
+        "receipt_sha256": "86e9454e698c082162a94fdb386286f8df4606f28e92f0981ea9de373fcbe34a",
+        "source_snapshot": "709b471dd4c0fdb7d341052ee6f65ad74cd90778"
+      },
+      {
+        "action_key": "1c3619b854c44095ae58d25fa9dd028d7240344e35d370465311cf25b56d8bc7",
+        "run": "qual-x86-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1c/1c3619b854c44095ae58d25fa9dd028d7240344e35d370465311cf25b56d8bc7.json",
+        "receipt_sha256": "2a426df1f049300532bd0052eb8e20d6b7574bd1303451a1455f590321d23b47",
+        "source_snapshot": "709b471dd4c0fdb7d341052ee6f65ad74cd90778"
+      },
+      {
+        "action_key": "d9e4cf8ffcb61b580dfe96714fe3323b9738cf6264fc02f2f1212bc603cdbcfc",
+        "run": "qual-x86-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d9/d9e4cf8ffcb61b580dfe96714fe3323b9738cf6264fc02f2f1212bc603cdbcfc.json",
+        "receipt_sha256": "4dd800d639dca821ea9b5fc4891286dc26da04fdf1a12c9cb3590b9d962b6fb4",
+        "source_snapshot": "e8cbeb21cdf81f80643c36437d24699cf055d92a"
+      },
+      {
+        "action_key": "fd389490a42b92f82f182bf8584111d88203fca1c19117be316070bb716ca061",
+        "run": "qual-x86-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/fd/fd389490a42b92f82f182bf8584111d88203fca1c19117be316070bb716ca061.json",
+        "receipt_sha256": "e3b669d33bfe38aae13c51388c63a66eec8b2241a5d937804b7dc3ecc2b52b97",
+        "source_snapshot": "e8cbeb21cdf81f80643c36437d24699cf055d92a"
+      },
+      {
+        "action_key": "83084c13ca5ffac56ce2e0f92b9712c496450705c019c0ba02f0a6429160af96",
+        "run": "qual-x86-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/83/83084c13ca5ffac56ce2e0f92b9712c496450705c019c0ba02f0a6429160af96.json",
+        "receipt_sha256": "29d1bc19860e78e7513a4c035664ea2969cc851c72f7f3658db92b1d9d4b6629",
+        "source_snapshot": "e8cbeb21cdf81f80643c36437d24699cf055d92a"
+      },
+      {
+        "action_key": "d9fba8330babbd7681408a0be7d159fea77d8bc5f76a39e591dac13be4f157c9",
+        "run": "qual-x86-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/d9/d9fba8330babbd7681408a0be7d159fea77d8bc5f76a39e591dac13be4f157c9.json",
+        "receipt_sha256": "2609ab5e453c60e5e50b341e77e7983d6065a191ff34b489afa288b77c34e201",
+        "source_snapshot": "e8cbeb21cdf81f80643c36437d24699cf055d92a"
+      },
+      {
+        "action_key": "96959a193c952dd507e3fcfd2e737f7ecc5d94b2f3b1c542f9ea6825321816ea",
+        "run": "qual-x86-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/96/96959a193c952dd507e3fcfd2e737f7ecc5d94b2f3b1c542f9ea6825321816ea.json",
+        "receipt_sha256": "2d6dc4070ce7be7f8367da8c8340d358c0fdcd46341659f90000f0f64e74776c",
+        "source_snapshot": "e8cbeb21cdf81f80643c36437d24699cf055d92a"
+      },
+      {
+        "action_key": "38be0355a0a7bfaa2b25ce2f27ef3dedd38722dcc8924ac627cc376433419977",
+        "run": "qual-x86-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/38/38be0355a0a7bfaa2b25ce2f27ef3dedd38722dcc8924ac627cc376433419977.json",
+        "receipt_sha256": "b0fe282d6e867394a946b946496925ad51d36796c86a32cbd3763266f52bbf10",
+        "source_snapshot": "af6201d285216c1c43b3b5214aa9bf8935c12e57"
+      },
+      {
+        "action_key": "fcb1337145a6898fc09b60a754d293122af8d3b48159c4c4a93e8bcea878a8e6",
+        "run": "qual-x86-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/fc/fcb1337145a6898fc09b60a754d293122af8d3b48159c4c4a93e8bcea878a8e6.json",
+        "receipt_sha256": "c15116894f2d422397e3a0bc014c254e98ba5880afe3ef03347287f83776c206",
+        "source_snapshot": "af6201d285216c1c43b3b5214aa9bf8935c12e57"
+      },
+      {
+        "action_key": "9c979ec1ea5b76c1262074b15ddd50d413963173ce1e504c0a95eb486b2660b9",
+        "run": "qual-x86-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/9c/9c979ec1ea5b76c1262074b15ddd50d413963173ce1e504c0a95eb486b2660b9.json",
+        "receipt_sha256": "6c311615c7f43e465e6affdaf9e6a8771a9149f09c08d0564982c1f8229e460d",
+        "source_snapshot": "af6201d285216c1c43b3b5214aa9bf8935c12e57"
+      },
+      {
+        "action_key": "0232a27ccaa0e8cef58f47e6cdb29acda3bb7ab7a4bad66ce5aefe4c4856ce79",
+        "run": "qual-x86-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/02/0232a27ccaa0e8cef58f47e6cdb29acda3bb7ab7a4bad66ce5aefe4c4856ce79.json",
+        "receipt_sha256": "3b4d63ba8459b73559dea8f5994146ebf27faa43e987fa1a17b347b9802bfc85",
+        "source_snapshot": "af6201d285216c1c43b3b5214aa9bf8935c12e57"
+      },
+      {
+        "action_key": "e0a7d4ebbbce423f96ca1abac9f18b60be81812e5a603f68642c225ee06c2783",
+        "run": "qual-x86-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e0/e0a7d4ebbbce423f96ca1abac9f18b60be81812e5a603f68642c225ee06c2783.json",
+        "receipt_sha256": "624c2f1f4ac8091ed834059cfa95c67acb7b9c394401295554a2b6d72f62ef59",
+        "source_snapshot": "af6201d285216c1c43b3b5214aa9bf8935c12e57"
+      },
+      {
+        "action_key": "04b03fcf4f67f7cc78a960e6df885281d33bddaaeec18dbafcc9b4f06c982bf7",
+        "run": "qual-x86-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/04/04b03fcf4f67f7cc78a960e6df885281d33bddaaeec18dbafcc9b4f06c982bf7.json",
+        "receipt_sha256": "49a92f980d6958f809e3ad5f14ad353006103e57c0e3805684a48def94aff897",
+        "source_snapshot": "6c6af921d5d86f8c76563df2189a384a0ef5b20d"
+      },
+      {
+        "action_key": "e476ed29f68b334b9f3d72000ffce143952e6c758bea48e647a4de8e0feb519f",
+        "run": "qual-x86-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e4/e476ed29f68b334b9f3d72000ffce143952e6c758bea48e647a4de8e0feb519f.json",
+        "receipt_sha256": "e4f0ec89834debb914490625ce51023e0cad15160d219ad9338793d37b0002f7",
+        "source_snapshot": "6c6af921d5d86f8c76563df2189a384a0ef5b20d"
+      },
+      {
+        "action_key": "5e72e3076f9aa531be88c9db3b10487470007b1aa8745d21cf4a2f702b904297",
+        "run": "qual-x86-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/5e/5e72e3076f9aa531be88c9db3b10487470007b1aa8745d21cf4a2f702b904297.json",
+        "receipt_sha256": "14f72cbecb5fd25ca43eb24ef423b4b03872558ef38f2800f41e6c5ca84975c5",
+        "source_snapshot": "6c6af921d5d86f8c76563df2189a384a0ef5b20d"
+      },
+      {
+        "action_key": "e057a93684bf87bbddde025062d1672edf8360ce086f5c3eaa2f8aa245843cb1",
+        "run": "qual-x86-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e0/e057a93684bf87bbddde025062d1672edf8360ce086f5c3eaa2f8aa245843cb1.json",
+        "receipt_sha256": "775c800e564a698de910d9f1c5da46a87a19032df060795cbbec9139e6f392b5",
+        "source_snapshot": "6c6af921d5d86f8c76563df2189a384a0ef5b20d"
+      },
+      {
+        "action_key": "73e0bbcd5ba31e487f03b9a684d5cc20914ea2c3edb8d258c6f97bdbea34890e",
+        "run": "qual-x86-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/73/73e0bbcd5ba31e487f03b9a684d5cc20914ea2c3edb8d258c6f97bdbea34890e.json",
+        "receipt_sha256": "0bb3179f5c48e0e367810ba9a69cbc17c49b935365f428a41aeb1d41e15f808e",
+        "source_snapshot": "6c6af921d5d86f8c76563df2189a384a0ef5b20d"
+      },
+      {
+        "action_key": "eee38fab15ce4fda04c226b415d425f856f18cb37dc68cd0cc34ea738c5161ce",
+        "run": "qual-gb10-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ee/eee38fab15ce4fda04c226b415d425f856f18cb37dc68cd0cc34ea738c5161ce.json",
+        "receipt_sha256": "62d78ee82db078b33d4adf0cc29c71c690d5d4950d603646e20789caa9fcac96",
+        "source_snapshot": "085fbe132fe51fcce5abdb786a3e8a4e06a6fd14"
+      },
+      {
+        "action_key": "5016c74c008a28781d42523fb41952e4cecc4b218164c27a4768091f6e646abe",
+        "run": "qual-gb10-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/50/5016c74c008a28781d42523fb41952e4cecc4b218164c27a4768091f6e646abe.json",
+        "receipt_sha256": "5f1295573985d80737333cbc0cb2bb890ae59ad6a271156e25394bd547e31e04",
+        "source_snapshot": "085fbe132fe51fcce5abdb786a3e8a4e06a6fd14"
+      },
+      {
+        "action_key": "649ffb6a4bc402a808f9d9ce547e4921dd5a711f140e55d2a3ec73620dda4749",
+        "run": "qual-gb10-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/64/649ffb6a4bc402a808f9d9ce547e4921dd5a711f140e55d2a3ec73620dda4749.json",
+        "receipt_sha256": "8710a413225d794c495c1d79611be13b1c397bf05aa3c6659e46285b245393ce",
+        "source_snapshot": "085fbe132fe51fcce5abdb786a3e8a4e06a6fd14"
+      },
+      {
+        "action_key": "acce0086695d167b40d56522f3dd8d9cd7e05a0fc797aafc66837943ed4e03be",
+        "run": "qual-gb10-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ac/acce0086695d167b40d56522f3dd8d9cd7e05a0fc797aafc66837943ed4e03be.json",
+        "receipt_sha256": "7a1bf9f49d9ceee493d27b2a0566c18181a542acbf55543aef3f629ba0ab7064",
+        "source_snapshot": "085fbe132fe51fcce5abdb786a3e8a4e06a6fd14"
+      },
+      {
+        "action_key": "a94e739ed3e13785d5e2370b5732fb7f1f96ef5f0504efde392b76f0b12aa969",
+        "run": "qual-gb10-1",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/a9/a94e739ed3e13785d5e2370b5732fb7f1f96ef5f0504efde392b76f0b12aa969.json",
+        "receipt_sha256": "42525600c75c3049a7d4a44bdbe3a7ee15db6820fe1b4d067d976f99ea4ede89",
+        "source_snapshot": "085fbe132fe51fcce5abdb786a3e8a4e06a6fd14"
+      },
+      {
+        "action_key": "4d63f6ab16695e9447100ea08c658769dc7c41498cf0efe461d099d22ca42f5a",
+        "run": "qual-gb10-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4d/4d63f6ab16695e9447100ea08c658769dc7c41498cf0efe461d099d22ca42f5a.json",
+        "receipt_sha256": "2a89984fa8ea25c487c635647518343e4e2cab3d1c187b36fb36bc5e9b9b367c",
+        "source_snapshot": "b428d63a45768d73fce2d0661ad942c5be74ae58"
+      },
+      {
+        "action_key": "7e2027b21180918ba2ac5163d2a1db0c9fa0d1625da0c4f503743c2f8d9758d3",
+        "run": "qual-gb10-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/7e/7e2027b21180918ba2ac5163d2a1db0c9fa0d1625da0c4f503743c2f8d9758d3.json",
+        "receipt_sha256": "1250a12ef8adb25b3fb8ace60b92a8eb1b4982d4ad9c5e9020f9c0ce99238639",
+        "source_snapshot": "b428d63a45768d73fce2d0661ad942c5be74ae58"
+      },
+      {
+        "action_key": "10e9fad040baa04b5d2028a041f264d436aa19515fe7af41a645fcff31313c1a",
+        "run": "qual-gb10-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/10/10e9fad040baa04b5d2028a041f264d436aa19515fe7af41a645fcff31313c1a.json",
+        "receipt_sha256": "96b3f244f4c69164548ac02343bcc078f23c9bedb00b7498b6fc4fa8e7d34bfd",
+        "source_snapshot": "b428d63a45768d73fce2d0661ad942c5be74ae58"
+      },
+      {
+        "action_key": "ca527cbac9c1b243d5bc974355f0c398fbe60faf862f9897fdb25a3698fc108c",
+        "run": "qual-gb10-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ca/ca527cbac9c1b243d5bc974355f0c398fbe60faf862f9897fdb25a3698fc108c.json",
+        "receipt_sha256": "90fa84241c491210165f82fdc02483b4c8592916d95c0acebbf4b2b3bf5d1f71",
+        "source_snapshot": "b428d63a45768d73fce2d0661ad942c5be74ae58"
+      },
+      {
+        "action_key": "dc6c828302cdf7a622e38e0f9caea5759c7b877265f2af4e69abe122142a89ad",
+        "run": "qual-gb10-2",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/dc/dc6c828302cdf7a622e38e0f9caea5759c7b877265f2af4e69abe122142a89ad.json",
+        "receipt_sha256": "cac657550b99b78efa39c18e1b05ad7c8c51a26398f3a43ce151364812e6aef0",
+        "source_snapshot": "b428d63a45768d73fce2d0661ad942c5be74ae58"
+      },
+      {
+        "action_key": "34e3e7d96008ee6a18535c26c5b0755ae01ec371662447d667b0ba712f6c1b41",
+        "run": "qual-gb10-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/34/34e3e7d96008ee6a18535c26c5b0755ae01ec371662447d667b0ba712f6c1b41.json",
+        "receipt_sha256": "7b9dd010f772aaba9eddf9df33d545715e27374907c4fd4a925dcb5d10f96df6",
+        "source_snapshot": "972ebec6604d6e8ab43562c27ab6ce77d7e355f4"
+      },
+      {
+        "action_key": "8e44b529c23ede07bd913c196c487c0deeb02aa93367114c56cbaf997d2bd76a",
+        "run": "qual-gb10-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/8e/8e44b529c23ede07bd913c196c487c0deeb02aa93367114c56cbaf997d2bd76a.json",
+        "receipt_sha256": "17bf6f28eb02169516cdadea609bf5eb89ba63046085a16bea5ea5db6d85ce78",
+        "source_snapshot": "972ebec6604d6e8ab43562c27ab6ce77d7e355f4"
+      },
+      {
+        "action_key": "13f49d2e95aad303481ab78a7dd3a1d7562cefcdcb1bc5e6adc9d4d45c1eb2ca",
+        "run": "qual-gb10-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/13/13f49d2e95aad303481ab78a7dd3a1d7562cefcdcb1bc5e6adc9d4d45c1eb2ca.json",
+        "receipt_sha256": "c244ef67856de315e334d17192ad980a5bdb9763d8907b869f39fee941ba9251",
+        "source_snapshot": "972ebec6604d6e8ab43562c27ab6ce77d7e355f4"
+      },
+      {
+        "action_key": "4e1353c017ad6473e6919e617cff0140d86090e65348b1e91532d00e2fe70b7b",
+        "run": "qual-gb10-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4e/4e1353c017ad6473e6919e617cff0140d86090e65348b1e91532d00e2fe70b7b.json",
+        "receipt_sha256": "1efa2d57d46bc0410d106e1ecaef00ee64552737c568167b651769ae8adc25ba",
+        "source_snapshot": "972ebec6604d6e8ab43562c27ab6ce77d7e355f4"
+      },
+      {
+        "action_key": "cf644eaed4ad16a6ebba23676953589f116a394be83ef8c2f7c723bf98434211",
+        "run": "qual-gb10-3",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/cf/cf644eaed4ad16a6ebba23676953589f116a394be83ef8c2f7c723bf98434211.json",
+        "receipt_sha256": "eccc16581b3abd5cb87ccd994e9b652ee4904f69957991c2aca6ab830a683a8b",
+        "source_snapshot": "972ebec6604d6e8ab43562c27ab6ce77d7e355f4"
+      },
+      {
+        "action_key": "ff6c4ada4207c552fee79fde3271eeae7d3633c3d1675c86c16b7dd02a368765",
+        "run": "qual-gb10-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ff/ff6c4ada4207c552fee79fde3271eeae7d3633c3d1675c86c16b7dd02a368765.json",
+        "receipt_sha256": "212ec4c65fd004be04fc99361ae90c5e4d017916fab9cc6a1fd99b092d16dee2",
+        "source_snapshot": "c5ecf2e4416722956bfe8becc66b75bc455b02b4"
+      },
+      {
+        "action_key": "0b2f4ff8e5ce553552b29438507ca39402eca8e5d92f8387deff1c70e2e6e266",
+        "run": "qual-gb10-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/0b/0b2f4ff8e5ce553552b29438507ca39402eca8e5d92f8387deff1c70e2e6e266.json",
+        "receipt_sha256": "db8b9689a807f0c2f4dadeddef13ac300c553f2e75a19617b8c292dde543b36a",
+        "source_snapshot": "c5ecf2e4416722956bfe8becc66b75bc455b02b4"
+      },
+      {
+        "action_key": "353391c66782a086cfe94e3de95b291b18e02f83ee15dd54c3b8da25b9e04a0e",
+        "run": "qual-gb10-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/35/353391c66782a086cfe94e3de95b291b18e02f83ee15dd54c3b8da25b9e04a0e.json",
+        "receipt_sha256": "b09a9c77177fab0cdfacb523802bdfa6f69e82fcb173368f657224ffa6847542",
+        "source_snapshot": "c5ecf2e4416722956bfe8becc66b75bc455b02b4"
+      },
+      {
+        "action_key": "54a17419fa82ab49b1f2cda82504e7ff28fa68aaa9e2e0a4ef1c79fbbe5a5374",
+        "run": "qual-gb10-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/54/54a17419fa82ab49b1f2cda82504e7ff28fa68aaa9e2e0a4ef1c79fbbe5a5374.json",
+        "receipt_sha256": "9bebcff77be4247ab21521fd28b766283cf1dc4ea0a86cd3fad48161ec21ee1d",
+        "source_snapshot": "c5ecf2e4416722956bfe8becc66b75bc455b02b4"
+      },
+      {
+        "action_key": "2741fdec19e2fca134aaf78ccd43cf6017da850470feb4d8a43484527e889b79",
+        "run": "qual-gb10-4",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/27/2741fdec19e2fca134aaf78ccd43cf6017da850470feb4d8a43484527e889b79.json",
+        "receipt_sha256": "1885e3560fcf384c8f489c43a1926c759e73dd7a6b7e6988175c24515b9a0988",
+        "source_snapshot": "c5ecf2e4416722956bfe8becc66b75bc455b02b4"
+      },
+      {
+        "action_key": "7d7ab63852c4b7196a754e815b3f6973dca7e31e1c4360e0a0c56da68024c6a6",
+        "run": "qual-gb10-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/7d/7d7ab63852c4b7196a754e815b3f6973dca7e31e1c4360e0a0c56da68024c6a6.json",
+        "receipt_sha256": "835e5ddb0e197f4f273b825274f2b16ee2226ab00e84e8978cd7113901c4b4c9",
+        "source_snapshot": "01a945489ca3f1c901b4b95b59fc6bc69eca7c85"
+      },
+      {
+        "action_key": "4a41118793a506377798ba70bd4e1613c7b876c97495385b1d41beae02cc6936",
+        "run": "qual-gb10-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/4a/4a41118793a506377798ba70bd4e1613c7b876c97495385b1d41beae02cc6936.json",
+        "receipt_sha256": "debb4019cc06af9837a74d01dfc7278c62ac16b51e5ed96eaeb004d254e082ef",
+        "source_snapshot": "01a945489ca3f1c901b4b95b59fc6bc69eca7c85"
+      },
+      {
+        "action_key": "2abfe58f0f132aae2ab0c0e52034157a8eab3a695060a6d95924156d3c9e8d29",
+        "run": "qual-gb10-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/2a/2abfe58f0f132aae2ab0c0e52034157a8eab3a695060a6d95924156d3c9e8d29.json",
+        "receipt_sha256": "6f107ada898a7b493bb7cd1d9e3d379d6e74a71a5f87f0a86ea76b6b69a615ac",
+        "source_snapshot": "01a945489ca3f1c901b4b95b59fc6bc69eca7c85"
+      },
+      {
+        "action_key": "1fe49f12e7ade4bee3d35de1c6e7cbdfa2cbc73d4106213ed2eddac74aac7a50",
+        "run": "qual-gb10-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/1f/1fe49f12e7ade4bee3d35de1c6e7cbdfa2cbc73d4106213ed2eddac74aac7a50.json",
+        "receipt_sha256": "60ea484152a9a30f36dbfab109d0200bd67ed9fbe0791c918b8a219d9cbe5f47",
+        "source_snapshot": "01a945489ca3f1c901b4b95b59fc6bc69eca7c85"
+      },
+      {
+        "action_key": "b4252b5d089997de8cd4751c3de31320c7f465e9fa68b8c95ce5dab5229d64b1",
+        "run": "qual-gb10-5",
+        "status": "executed",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/b4/b4252b5d089997de8cd4751c3de31320c7f465e9fa68b8c95ce5dab5229d64b1.json",
+        "receipt_sha256": "34d9ba16d447baa493942cc910a52503aa354784a714154f56d8dcc41f354ed0",
+        "source_snapshot": "01a945489ca3f1c901b4b95b59fc6bc69eca7c85"
+      }
+    ]
+  },
+  "persistence": "Read-back proves retained record and content availability only. No physical or power-loss durability is inferred; no storage policy changed."
+}
