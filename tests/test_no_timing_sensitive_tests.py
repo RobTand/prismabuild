@@ -99,6 +99,24 @@ _TIMEOUT_ARITHMETIC = {
 }
 
 
+def _queue_annotation_name(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value, mode="eval").body
+        except SyntaxError:
+            return None
+    while isinstance(node, ast.Subscript):
+        node = node.value
+    return ast.unparse(node) if node is not None else None
+
+
+def _queue_boolean_expression(node, known_boolean):
+    return (node is not None and known_boolean(node)
+            or isinstance(node, ast.Constant) and type(node.value) is bool
+            or isinstance(node, ast.Compare)
+            or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not))
+
+
 def _queue_get_calls(tree):
     nodes = list(ast.walk(tree))
     queue_types, receivers, booleans = set(), set(), set()
@@ -112,26 +130,13 @@ def _queue_get_calls(tree):
             queue_types.update(alias.asname or alias.name for alias in node.names
                                if alias.name in type_names)
 
-    def annotation_name(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            try:
-                node = ast.parse(node.value, mode="eval").body
-            except SyntaxError:
-                return None
-        while isinstance(node, ast.Subscript):
-            node = node.value
-        return ast.unparse(node) if node is not None else None
-
     def is_boolean(node):
-        return (node is not None and ast.unparse(node) in booleans
-                or isinstance(node, ast.Constant) and type(node.value) is bool
-                or isinstance(node, ast.Compare)
-                or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not))
+        return _queue_boolean_expression(node, lambda value: ast.unparse(value) in booleans)
 
     for node in nodes:
         if isinstance(node, (ast.arg, ast.AnnAssign)):
             name = node.arg if isinstance(node, ast.arg) else ast.unparse(node.target)
-            annotation = annotation_name(node.annotation)
+            annotation = _queue_annotation_name(node.annotation)
             if annotation in queue_types:
                 receivers.add(name)
             if annotation == "bool":
@@ -140,7 +145,7 @@ def _queue_get_calls(tree):
             value = node.value
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names = {ast.unparse(target) for target in targets}
-            if isinstance(value, ast.Call) and annotation_name(value.func) in queue_types:
+            if isinstance(value, ast.Call) and _queue_annotation_name(value.func) in queue_types:
                 receivers.update(names)
             if is_boolean(value):
                 booleans.update(names)
@@ -148,7 +153,7 @@ def _queue_get_calls(tree):
             and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
             and (ast.unparse(node.func.value) in receivers
                  or isinstance(node.func.value, ast.Call)
-                 and annotation_name(node.func.value.func) in queue_types
+                 and _queue_annotation_name(node.func.value.func) in queue_types
                  or node.args and is_boolean(node.args[0]))}
 
 
