@@ -1,0 +1,60 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "ce2a3be4915c024fdc1677d973cc8a77d8bef95c",
+  "scope": [
+    "SC-03",
+    "ID-05",
+    "ID-08"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1485-arm-install",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1485",
+    "validated_repairs": [],
+    "evidence_actions": [
+      "3ed46d1d6b6d50c0f73df935834610e8a3e813b24e3479e043f3d7e2bcbc7dc8",
+      "edf0d6e0ac156ffb7f6602e9df493528b128301a7d81682032dc917f74fb96a0",
+      "0012609a5ddb952abb2b22b8b7df8e6a724ac8f35ae96904609c4e8f9d56b314"
+    ],
+    "remaining_gaps": [
+      "SC-03: diagnostic recipe and evidence only, no new contract enforcement.",
+      "ID-05: exact Git027 SDK5 scratch provenance and RECORD integrity were checked, not application certification or pack portability.",
+      "ID-08: execution attributed to 9dce28460e76-1792959923-b5904f02524e separately from candidate Git027; no candidate activation or role convergence.",
+      "#2113: all-write production route missing; no complete ARM/b40/CUDA interpreter pack.",
+      "#2114: current delivered-interpreter guard and guarded GPU tests unqualified; accepted consumer test absent and PQ held.",
+      "INV-03/INV-04/ACC-07: no staged bulk-read, produced-output or application acceptance."
+    ],
+    "requirement_status": [
+      {
+        "id": "SC-03",
+        "target": "Unknown evidence axes remain owed work.",
+        "implemented_here": "Evidence explicitly retains pack, consumer and adoption gaps. No enforcement added.",
+        "deployed_here": "No change."
+      },
+      {
+        "id": "ID-05",
+        "target": "Separate provenance, certification, integrity and location.",
+        "implemented_here": "Scratch install provenance and 48 RECORD files checked with historical guard outside checkout; no certification. Scratch removed.",
+        "deployed_here": "No installation or adoption."
+      },
+      {
+        "id": "ID-08",
+        "target": "Attribute execution to exact runtime commit/generation.",
+        "implemented_here": "Retained action/receipt identities distinguish deployed worker generation from installed Git027 candidate.",
+        "deployed_here": "Observed execution on existing generation only; no new generation."
+      }
+    ],
+    "note": "Independent review required. This scoped evidence merge cannot complete #1485 or its three sub-issues and requests no deployment decision."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

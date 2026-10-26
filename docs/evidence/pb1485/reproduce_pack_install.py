@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Replay only the failed pack's install in disposable admitted-action scratch."""
+"""Check the pack install repair in disposable admitted-action scratch."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -28,6 +29,10 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.Comple
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy-requirement", action="store_true",
+                        help="reproduce the original pip 24 rejection")
+    args = parser.parse_args()
     if sys.version_info[:2] != (3, 12) or platform.machine() != "aarch64":
         raise SystemExit("reproduction requires Python 3.12 aarch64")
     if hashlib.sha256(BUNDLE.read_bytes()).hexdigest() != BUNDLE_SHA256:
@@ -59,15 +64,37 @@ def main() -> int:
         run([python, "-m", "pip", "install", "--no-index", "--no-deps",
              "--find-links", str(wheels), "setuptools"], cwd=scratch,
             env=env).check_returncode()
-        url = f"prismabuild @ git+file://{urllib.parse.quote(str(checkout))}@{SOURCE}"
+        vcs_url = f"git+file://{urllib.parse.quote(str(checkout))}@{SOURCE}"
+        url = (f"prismabuild @ {vcs_url}" if args.legacy_requirement
+               else f"{vcs_url}#egg=prismabuild")
         result = run([python, "-m", "pip", "install", "--no-cache-dir",
                       "--no-build-isolation", "--no-deps", url],
                      cwd=scratch, env=env)
-        print(json.dumps({"scope": "install reproduction only; no pack produced",
+        if result.returncode:
+            return result.returncode
+        verification = r'''
+import json, pathlib, runpy, sys
+import prismabuild, prismabuild.client
+evidence = runpy.run_path(sys.argv[1])["verify_install"]("prismabuild", sys.argv[2])
+path = pathlib.Path(prismabuild.__file__).resolve()
+if not path.is_relative_to(pathlib.Path(sys.prefix)):
+    raise SystemExit("installed package escaped disposable interpreter")
+if prismabuild.client.SDK_VERSION != 5:
+    raise SystemExit("installed package is not SDK5")
+evidence.update(sdk=prismabuild.client.SDK_VERSION, imported_file=str(path))
+print(json.dumps(evidence, sort_keys=True))
+'''
+        verified = run([python, "-I", "-c", verification,
+                        str(checkout / "tools" / "fleet" / "pbtest_pins.py"), SOURCE],
+                       cwd=scratch, env=env)
+        verified.check_returncode()
+        print(json.dumps({"scope": "scratch install only; no pack produced",
                           "python": sys.version, "machine": platform.machine(),
                           "source": SOURCE, "snapshot": SNAPSHOT,
-                          "install_returncode": result.returncode}), flush=True)
-        return result.returncode
+                          "install_returncode": result.returncode,
+                          "guard": "historical snapshot verify_install; not both-host pack qualification"}),
+              flush=True)
+        return 0
 
 
 if __name__ == "__main__":
