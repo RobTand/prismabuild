@@ -993,6 +993,12 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
 
 # -- used paths ----------------------------------------------------------------
 
+def _local_mapping_matches(found, binding) -> bool:
+    return found["key"] == binding["key"] and any(
+        found.get("source") == destination["source"]
+        for destination in binding.get("destinations", []))
+
+
 def check_paths(queue_root, paths: Iterable, *, now: float | None = None
                 ) -> list[dict[str, object]]:
     """One verdict per distinct filesystem under ``paths``; never raises."""
@@ -1021,7 +1027,7 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
                 verdicts.extend(_nfs_verdicts(queue_root, found, name, known, now))
             elif found["key"] in by_key:
                 binding = by_key[found["key"]]
-                if found.get("source") not in {d["source"] for d in binding.get("destinations", [])}:
+                if not _local_mapping_matches(found, binding):
                     verdicts.append(floor_refusal(name, "mapping_unknown", path=str(path)))
                     continue
                 published = published_verdict(queue_root, binding, now=now)
@@ -1116,8 +1122,7 @@ def _growth_ledger(queue_root, path):
     if found["key"] is None:
         candidates = _nfs_bindings(found, known)
     else:
-        candidates = [b for b in known if b["key"] == found["key"] and any(
-            found.get("source") == d["source"] for d in b.get("destinations", []))]
+        candidates = [b for b in known if _local_mapping_matches(found, b)]
     if len(candidates) != 1:
         raise FloorError(f"{path}: no unique authenticated filesystem mapping",
                          reason="mapping_unknown")
