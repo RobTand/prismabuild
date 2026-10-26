@@ -18,6 +18,10 @@ MUTANTS = {
     'stale': 'test_reconciliation_refuses_wrong_or_unproved_identity[stale]',
     'permit-bypass': 'test_permits_are_single_use_and_refuse_forgery_and_changed_owners',
     'retry-metadata': 'test_recovery_replays_after_summary_write_failure_advances_retry_metadata',
+    'reject-withdrawal': 'test_withdrawn_refused_create_resolves_cleanup_after_broker_returns',
+    'reject-successor': 'test_refused_create_preserves_successor_during_cleanup[neither]',
+    'chronological-successor': 'test_refused_create_preserves_successor_during_cleanup[rollback]',
+    'companion-bypass': 'test_cleanup_refuses_contradictory_companion_records[ready-generation]',
 }
 
 
@@ -30,7 +34,9 @@ def check_cleanup_mutants():
             env={**os.environ, 'PB2270_MUTANT': mutant},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (destination / (mutant + '.log')).write_text(result.stdout)
-        expected = ('cleanup did not recover after pending metadata advanced' if mutant == 'retry-metadata'
+        expected = ('restored broker could not conclude' if mutant == 'reject-withdrawal'
+                    else 'restored broker did not conclude' if mutant in ('reject-successor', 'chronological-successor')
+                    else 'cleanup did not recover after pending metadata advanced' if mutant == 'retry-metadata'
                     else 'KeyError' if mutant in ('no-debt', 'missing-evidence') else 'DID NOT RAISE')
         if (result.returncode != 1 or '1 failed' not in result.stdout or expected not in result.stdout):
             print(f'mutant {mutant}: NOT KILLED, exit={result.returncode}', flush=True)

@@ -293,6 +293,24 @@ def _named_cleanup_mutant(monkeypatch):
         original = pool.PoolQueue.reconcile_cleanup
         monkeypatch.setattr(pool.PoolQueue, 'reconcile_cleanup',
             lambda self, key, generation, attempt: original(self, key, generation, 1))
+    elif mutant == 'companion-bypass':
+        monkeypatch.setattr(debt, '_check_companion_records', lambda *a, **kw: None)
+    elif mutant == 'chronological-successor':
+        original = debt._check_companion_records
+        def require_chronology(queue, key, record, **kw):
+            ready = pool.record_store.read_document(queue.records.item_path(pool.READY, key))
+            if ready is not None:
+                queue._successor_generation(record, ready)
+            return original(queue, key, record, **kw)
+        monkeypatch.setattr(debt, '_check_companion_records', require_chronology)
+    elif mutant in ('reject-withdrawal', 'reject-successor'):
+        original = debt._check_companion_records
+        state = pool.WITHDRAWN if mutant == 'reject-withdrawal' else pool.READY
+        def reject_companion(queue, key, record, **kw):
+            if pool.record_store.read_document(queue.records.item_path(state, key)) is not None:
+                raise ValueError('injected blanket companion refusal')
+            return original(queue, key, record, **kw)
+        monkeypatch.setattr(debt, '_check_companion_records', reject_companion)
     elif mutant == 'permit-bypass':
         monkeypatch.setattr(debt, '_publish_cleanup_permit', lambda queue, permit: {})
     else:
@@ -461,3 +479,127 @@ def test_recovery_replays_after_summary_write_failure_advances_retry_metadata(re
     assert failed is not None, 'cleanup did not recover after pending metadata advanced'
     assert failed['resource_scope_cleanup']['complete'] is True
     assert queue.ledger().held() == {}
+
+
+def test_withdrawn_refused_create_resolves_cleanup_after_broker_returns(refused):
+    queue, item, connected = refused
+    key = item['action_key']
+    claim_path = queue.records.item_path(pool.CLAIMED, key)
+    withdrawal_path = queue.records.item_path(pool.WITHDRAWN, key)
+    before = pool.record_store.read_document(claim_path)
+    nonce = before['resource_scope_intent']['nonce']
+
+    # The public operation persists its generation-scoped decision without
+    # taking cleanup ownership from the claiming worker.
+    decision = queue.withdraw(key, reason='review regression', by='review', signal_child=False)
+    assert decision['status'] == 'withdrawn'
+    assert decision['container_cleanup']['deferred'] is True
+    assert pool.record_store.read_document(withdrawal_path)['status'] == 'withdrawn'
+    decision_path = queue.records.withdrawal_decision_path(before)
+    decision_bytes = decision_path.read_bytes()
+    assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}
+
+    with connected() as (authority, kernel):
+        queue.reap_stale()
+        with pytest.raises(ValueError, match='released|budget'):
+            authority.handle(os.getuid(), os.getpid(), {
+                'op': 'create', 'action_key': key, 'nonce': nonce,
+                'memory_max_bytes': 2 * 1024**3})
+        assert kernel.groups == {}
+
+    remaining = pool.record_store.read_document(claim_path)
+    assert remaining is None, (
+        'restored broker could not conclude withdrawn refused-create claim: '
+        + repr((remaining or {}).get('container_cleanup_pending'))
+    )
+    withdrawn = pool.record_store.read_document(withdrawal_path)
+    assert withdrawn['status'] == 'withdrawn'
+    assert withdrawn['withdrawn_attempt']['resource_scope_cleanup']['complete'] is True
+    assert withdrawn['withdrawn_attempt']['resource_scope_cleanup']['nonce'] == nonce
+    assert withdrawn['withdrawn_attempt']['container_cleanup']['complete'] is True
+    assert withdrawn['withdrawn_attempt']['cleanup_obligation']['state'] == 'resolved'
+    assert decision_path.read_bytes() == decision_bytes
+    assert not queue.records.lease_path(key).exists()
+    assert queue.ledger().held() == {}
+
+
+@pytest.mark.parametrize('cancel,publication_offset', [
+    pytest.param('neither', 100, id='neither'),
+    pytest.param('original', 100, id='original'),
+    pytest.param('both', 100, id='both'),
+    pytest.param('neither', -100, id='rollback'),
+    pytest.param('original', -100, id='rollback-cancelled'),
+    pytest.param('both', -100, id='rollback-both')])
+def test_refused_create_preserves_successor_during_cleanup(refused, monkeypatch, cancel, publication_offset):
+    queue, item, connected = refused
+    key = item['action_key']
+    claim_path = queue.records.item_path(pool.CLAIMED, key)
+    original = pool.record_store.read_document(claim_path)
+    if cancel != 'neither':
+        queue.withdraw(key, signal_child=False)
+    monkeypatch.setattr(pool, '_now', lambda: item['published_unix'] + publication_offset)
+    queue.publish(action_key=key, cas_root=item['cas_root'],
+                  checkout_root=item['checkout_root'], worker_script=item['worker_script'],
+                  resources=item['resources'], max_attempts=1, retry_safe=True)
+    successor_path = queue.records.item_path(pool.READY, key)
+    if cancel == 'both':
+        queue.withdraw(key, signal_child=False)
+        successor_path = queue.records.item_path(pool.WITHDRAWN, key)
+    successor = successor_path.read_bytes()
+    with connected():
+        queue.reap_stale()
+    assert not claim_path.exists(), 'restored broker did not conclude the old claim'
+    assert not queue.records.lease_path(key).exists()
+    assert successor_path.read_bytes() == successor
+    if cancel == 'neither':
+        ending_path = queue.records.item_path(pool.FAILED, key)
+        retained = pool.record_store.read_document(ending_path)
+        assert retained['status'] == 'failed'
+    else:
+        ending_path = queue.records.withdrawn_finish_path(key, original)
+        retained = pool.record_store.read_document(ending_path)['withdrawn_attempt']
+        assert retained['status'] == 'withdrawn'
+        assert queue.withdrawal_covers(original) is not None
+    assert retained['resource_scope_cleanup']['nonce'] == original['resource_scope_intent']['nonce']
+    assert retained['cleanup_obligation']['state'] == 'resolved'
+    assert queue.ledger().held() == {}
+
+
+@pytest.mark.parametrize('fault', ['ready-generation', 'ready-key', 'ready-schema',
+    'withdrawn-key', 'withdrawn-status', 'withdrawn-generation', 'done', 'failed'])
+def test_cleanup_refuses_contradictory_companion_records(refused, monkeypatch, fault):
+    queue, item, connected = refused
+    key = item['action_key']
+    claim_path = queue.records.item_path(pool.CLAIMED, key)
+    original = pool.record_store.read_document(claim_path)
+    if fault.startswith('withdrawn'):
+        queue.withdraw(key, signal_child=False)
+        state = pool.WITHDRAWN
+        companion = pool.record_store.read_document(queue.records.item_path(state, key))
+    else:
+        state = {'done': pool.DONE, 'failed': pool.FAILED}.get(fault, pool.READY)
+        companion = {**item, 'published_unix': item['published_unix'] + 100}
+    if fault.endswith('-key'):
+        companion['action_key'] = 'f' * 64 if key != 'f' * 64 else 'e' * 64
+    elif fault == 'ready-generation':
+        companion['published_unix'] = item['published_unix']
+    elif fault == 'ready-schema':
+        companion['schema'] = 'invalid'
+    elif fault == 'withdrawn-status':
+        companion['status'] = 'executed'
+    elif fault == 'withdrawn-generation':
+        companion['published_unix'] = None
+    companion_path = queue.records.item_path(state, key)
+    queue.records.replace_record_at(companion_path, companion)
+    claim_bytes, lease_bytes = claim_path.read_bytes(), queue.records.lease_path(key).read_bytes()
+    companion_bytes = companion_path.read_bytes()
+    with connected() as (authority, kernel):
+        with pytest.raises(ValueError):
+            queue.reconcile_cleanup(key, queue.records.attempt_generation(original), 1)
+        assert authority.records == {}
+        assert kernel.groups == {}
+    assert claim_path.read_bytes() == claim_bytes
+    assert queue.records.lease_path(key).read_bytes() == lease_bytes
+    assert companion_path.read_bytes() == companion_bytes
+    assert not queue.records.attempt_path(original, 1).with_suffix('.cleanup-recovery.json').exists()
+    assert queue.ledger().held() == {'cpu': 1, 'mem_gb': 2}

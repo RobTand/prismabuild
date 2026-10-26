@@ -58,6 +58,23 @@
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no staged-only campaign or live-host reproduction",
     "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_2270": {
+    "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "PB owns obligation verification and reconciliation; the operator supplies identity only."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -242,6 +259,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Exact action/publication/attempt/claimant/host/nonce checks preserve immutable attempt and log evidence."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -417,6 +451,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Behavior attributed per (runtime_commit, generation_id).",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Source validation is attributed to a checkout snapshot; no runtime activation of this repair is claimed."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -451,6 +502,23 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_2270": {
+    "target": "Submit-ack, terminal-exit, CAS-publication, application-validity are distinct facts; PB never inspects PQ semantics.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Cleanup resolution remains separate from command failure and creates no command-success receipt."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -675,6 +743,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Refused create retains an obligation and capacity until owning-host cleanup proof allows normal conclusion."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -869,6 +954,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Pending claims retain capacity; historical already-released reservations are not fabricated or credited again."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -1090,6 +1192,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Fresh identity verification permits adoption of immutable cleanup proof after summary-write interruption."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -1947,6 +2066,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Private-queue lifecycle tests cover broker refusal, restored connectivity and contradictory identities."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {
@@ -2082,6 +2218,23 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2270": {
+    "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
+    "implemented_source": {
+     "commit": "38f133ae1515c74775004a91980dd408716d38ab",
+     "state": "component-implemented",
+     "scope": "Recovery tests cover replay after summary-write failure and retry bookkeeping advancement."
+    },
+    "validation": {
+     "state": "scoped-component-qualified-with-main-baselines",
+     "acceptance_record": "docs/evidence/issue2270_cleanup_acceptance_2026-10-26.json",
+     "evidence": "docs/evidence/issue2270_cleanup_validation_2026-10-26.json",
+     "detail": "Ten source-identical repair repeats passed40 tests each:five per architecture,two xdist runs each. Rebased source passed40 tests per architecture. Nearby300 passed/1 wire-inventory failure identical to frozen main954e141715;14 mutation controls killed. Terminals,canonical logs,result-claim/receipt bindings and CAS payload hashes checked. No full worker-attestation or deployed behavior claim."
+    },
+    "deployment": "not deployed; no publication, activation or service restart in this task",
+    "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
+    "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
    }
   },
   {

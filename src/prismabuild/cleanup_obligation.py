@@ -41,6 +41,25 @@ def _obligation_for(queue, record, nonce):
             'claimed_unix': record['claimed_unix'], 'nonce': nonce}
 
 
+def _check_companion_records(queue, key, record, *, claimed):
+    if record_store.value_or_raise(queue.records.item(record_store.DONE, key)) is not None:
+        raise record_store.PoolContractError('cleanup recovery conflicts with another owner')
+    ready = record_store.value_or_raise(queue.records.item(record_store.READY, key))
+    if ready is not None:
+        if not claimed or queue.records.attempt_generation(ready) == queue.records.attempt_generation(record):
+            raise record_store.PoolContractError('cleanup recovery conflicts with another owner')
+        queue._validated_ready_generation(key, ready)
+    withdrawn = record_store.value_or_raise(queue.records.item(record_store.WITHDRAWN, key))
+    if withdrawn is not None:
+        if withdrawn.get('action_key') != key or withdrawn.get('status') != record_store.WITHDRAWN:
+            raise record_store.PoolContractError('cleanup recovery has an invalid cancellation decision')
+        generation = queue.records.attempt_generation(withdrawn)
+        decision = queue.withdrawal_covers(withdrawn, action_key=key)
+        if (decision is None or decision.get('status') != record_store.WITHDRAWN
+                or queue.records.attempt_generation(decision) != generation):
+            raise record_store.PoolContractError('cleanup recovery has a conflicting cancellation decision')
+
+
 def _cleanup_owner(queue, key, generation, attempt):
     if not record_store.key_shaped(key) or not record_store.key_shaped(generation):
         raise record_store.PoolContractError('cleanup recovery requires full key and generation')
@@ -63,9 +82,7 @@ def _cleanup_owner(queue, key, generation, attempt):
     if (queue.records.attempt_generation(record) != generation or number != attempt
             or record.get('claimed_host') != socket.gethostname()):
         raise record_store.PoolContractError('cleanup recovery identity or owning host differs')
-    for state in (record_store.READY, record_store.DONE, record_store.WITHDRAWN):
-        if record_store.value_or_raise(queue.records.item(state, key)) is not None:
-            raise record_store.PoolContractError('cleanup recovery conflicts with another owner')
+    _check_companion_records(queue, key, record, claimed=claimed is not None)
     claim_identity.check_lease_identity(key, record,
         record_store.read_document(queue.records.lease_path(key)),
         invalid=record_store.PoolContractError)
