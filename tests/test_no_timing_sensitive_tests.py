@@ -3,13 +3,16 @@
 Sleep sites are purely syntactic. Every `from time import sleep`, under any
 alias, and `from time import *` is a finding, even when unused or followed
 only by sleep(0). Every <m>.sleep attribute whose name <m> occurs in
-`import time [as <m>]` in the
-file is a finding, except as the func of a Call with one literal numeric zero
-argument and no keywords. Use time.sleep(0) or t.sleep(0) for cooperative
-yields. Module names are collected across the file, conservatively including
-shadowed names. There is no alias-use, binding-order or deferred-call resolver.
-Imports and attribute sites guard lambdas, closures, generators, walrus
-bindings, functools.partial and passing the sleep object as a value.
+`import time [as <m>]` in the file is a finding, except as the func of a Call
+with one literal numeric zero argument and no keywords. Use time.sleep(0)
+for cooperative yields. Imported module names are collected across the file,
+conservatively including shadowed names. Static name assignments, annotated
+assignments and walrus bindings also propagate module provenance through
+lexical bindings, transitively and without binding-order evaluation. These
+inferred aliases do not leak into sibling scopes or shadowing parameters.
+Imports and attribute sites guard lambdas, closures, generators,
+functools.partial and passing the sleep object as a value. No deferred code
+or dynamic module value is evaluated.
 
 Constant timeouts below 60 seconds are findings on .wait, .join, Queue-shaped
 .get/.put, subprocess.run and imported run aliases, .communicate and
@@ -273,6 +276,35 @@ def _queue_get_calls(scopes):
                  or node.args and is_boolean(node.args[0]))}
 
 
+def _time_module_binding(scopes, node):
+    while isinstance(node, ast.NamedExpr):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return scopes.binding(scopes.owners[node], node.id)
+    return None
+
+
+def _assigned_time_modules(scopes):
+    modules, aliases = set(), {}
+    for node, scope in scopes.owners.items():
+        if isinstance(node, ast.Import):
+            modules.update(scopes.binding(scope, alias.asname or alias.name)
+                           for alias in node.names if alias.name == "time")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            source = _time_module_binding(scopes, node.value)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if source is not None:
+                aliases.setdefault(source, set()).update(
+                    scopes.binding(scopes.owners[target], target.id)
+                    for target in targets if isinstance(target, ast.Name))
+    pending = list(modules)
+    while pending:
+        for target in aliases.get(pending.pop(), set()) - modules:
+            modules.add(target)
+            pending.append(target)
+    return modules
+
+
 def _timing_call_kind(call, subprocess_modules, subprocess_runs, queue_get_calls):
     callee = call.func
     if isinstance(callee, ast.Name) and callee.id in subprocess_runs:
@@ -314,6 +346,7 @@ class _TimingReferences(ast.NodeVisitor):
         self.zero_callees = set()
         self.scopes = _BindingScopes(tree)
         self.queue_get_calls = _queue_get_calls(self.scopes)
+        self.time_aliases = _assigned_time_modules(self.scopes)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 self.time_modules.update(alias.asname or alias.name for alias in node.names
@@ -335,8 +368,9 @@ class _TimingReferences(ast.NodeVisitor):
                     self.references.append((self.qualname, node.lineno, "sleep"))
 
     def visit_Attribute(self, node):
-        if (node.attr == "sleep" and isinstance(node.value, ast.Name)
-                and node.value.id in self.time_modules and node not in self.zero_callees):
+        if (node.attr == "sleep" and node not in self.zero_callees
+                and (isinstance(node.value, ast.Name) and node.value.id in self.time_modules
+                     or _time_module_binding(self.scopes, node.value) in self.time_aliases)):
             self.references.append((self.qualname, node.lineno, "sleep"))
         self.generic_visit(node)
 
@@ -936,6 +970,18 @@ def test_assigned_module_aliases_preserve_zero_and_fake_clock_controls():
         "import time; clock = fake_clock; clock.sleep(1)",
         "import time; clock = getattr(holder, 'time'); clock.sleep(1)",
         "def real():\n import time; clock = time\ndef fake(clock):\n clock.sleep(1)",
+        "def real():\n import time; clock = time\ndef fake():\n clock = fake_clock; clock.sleep(1)",
         "import time; clock = time\ndef fake(clock):\n clock.sleep(1)",
     ):
         assert not scan_timing_source(source), source
+
+
+def test_assigned_module_alias_provenance_remains_visible_to_closures():
+    source = """import time
+def outer():
+    clock = time
+    def inner():
+        callback = clock.sleep
+"""
+    assert scan_timing_source(source) == {
+        TimingIdentity("tests/snippet.py", "outer.inner", "sleep"): 1}

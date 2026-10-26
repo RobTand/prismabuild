@@ -76,7 +76,11 @@ It flags every `from time import sleep`, `from time import *`, and every
 imported time module's `.sleep` attribute, except a direct call with one literal zero argument and
 no keywords. Use `import time; time.sleep(0)` for cooperative yields; importing
 `sleep` separately is always a finding. Import names are collected syntactically
-across each file, including shadowed names, without resolving deferred uses.
+across each file, including shadowed names. Static name assignments, annotated
+assignments, and walrus bindings preserve module provenance through lexical
+bindings, including alias chains and closures. These assigned aliases do not
+leak into sibling scopes or shadowing parameters. The guard does not evaluate
+binding order or deferred code.
 
 The guard also flags constant timeout expressions below 60 s on wait, join,
 Queue-shaped get/put, subprocess wait/communicate/run, and socket settimeout.
