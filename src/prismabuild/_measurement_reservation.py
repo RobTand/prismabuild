@@ -33,6 +33,7 @@ SCHEMA = "prismabuild.measurement_reservation.v1"
 READ_SECTION = "measurement-publications-v1"
 READ_BUDGET_S = 5.0
 REFRESH_SECTION = "measurement-election-refresh-v1"
+SOURCE_SECTION = "measurement-shared-sources-v1"
 #: The reuse refresh reads far fewer, much smaller records than a full
 #: census, so it runs on a smaller share of the same bounded-reader
 #: contract: an abandonable owned child with durable reader ownership,
@@ -681,6 +682,8 @@ class CensusReader:
     persistence is used by the owned-reader grant.
     """
 
+    _sections = (READ_SECTION, REFRESH_SECTION)
+
     def __init__(self, queue: PoolQueue, ledger: ResourceLedger):
         self.queue = queue
         directory, digest = adaptive_cpu.box_state(ledger.base)
@@ -732,8 +735,27 @@ class CensusReader:
                 reader.ReaderOwnershipUnavailable):
             return None
 
+    def source_generation(self, census: dict) -> str:
+        """Bound optional shared-source I/O without taking the census fence.
+
+        A separate durable owner prevents a timed-out helper from being replaced
+        across loop restarts. The owned child drops inherited M/H descriptors
+        before any shared I/O. Only local rendezvous operations run in the parent.
+        """
+        sources = _SourceGenerationReader(self)
+        with sources.held(blocking=False):
+            value = sources._spawn_owned(
+                sources._held[0], SOURCE_SECTION,
+                lambda: {"generation": _admission_source_generation(self.queue, census)},
+                REFRESH_BUDGET_S)
+        generation = value.get("generation")
+        if (not isinstance(generation, str) or len(generation) != 64
+                or any(c not in "0123456789abcdef" for c in generation)):
+            raise CensusUnavailable("incomplete shared source generation")
+        return generation
+
     @contextmanager
-    def held(self):
+    def held(self, *, blocking: bool = True):
         """Own the restart fence across a whole two-phase census (#1498).
 
         ``locked_census`` reads outside H for discovery and again under H for
@@ -784,6 +806,8 @@ class CensusReader:
                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                         break
                     except BlockingIOError:
+                        if not blocking:
+                            raise CensusUnavailable("shared census source reader busy") from None
                         remaining = waited.remaining()
                         if remaining is None or remaining <= 0:
                             raise CensusUnavailable("measurement census reader busy") from None
@@ -808,7 +832,7 @@ class CensusReader:
         if previous is None:
             return
         ownership = reader.ReaderOwnership.from_record(previous)
-        if (ownership.section not in (READ_SECTION, REFRESH_SECTION)
+        if (ownership.section not in self._sections
                 or reader.reader_liveness(
                     ownership, pool_identity=self.pool_identity,
                     section=ownership.section) != "settled"):
@@ -909,6 +933,24 @@ class CensusReader:
                     or not isinstance(chosen.get("group"), str)):
                 raise CensusUnavailable("census gang election identity mismatch")
         return value
+
+
+class _SourceGenerationReader(CensusReader):
+    """Independent optional reader, with the same local custody as the census.
+
+    Stay under the measurement-reader prefix so box-state maintenance preserves
+    this owner too. Copy already resolved local rendezvous identity: constructing
+    this helper under H must not resolve the shared pool path in the parent.
+    """
+
+    _sections = (SOURCE_SECTION,)
+
+    def __init__(self, census_reader: CensusReader):
+        self.queue = census_reader.queue
+        self.directory = census_reader.directory
+        self.name = census_reader.name + ".sources"
+        self.pool_identity = census_reader.pool_identity
+        self._held = None
 
 
 class PassCensus:
@@ -1135,9 +1177,10 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
                     busy.add(key)
             held.enter_context(queue._admission_lock(controller))
             try:
-                generation = (_admission_source_generation(queue, discovered)
+                generation = (census_reader.source_generation(discovered)
                               if controller is not None else None)
-            except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError):
+            except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError,
+                    reader.ReaderOwnershipUnavailable):
                 generation = None
             current = census_reader.capture()
             for key in busy:
@@ -1153,7 +1196,7 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
                     current["elections"][key] = chosen
             try:
                 if (generation is not None
-                        and _admission_source_generation(queue, current) == generation):
+                        and census_reader.source_generation(current) == generation):
                     census_reader.publish_shared(current, generation)
             except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError,
                     reader.ReaderOwnershipUnavailable):
@@ -1238,6 +1281,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                 sources = _ordinary_selection_sources(queue, pass_census.ordinary_sources)
                 pass_census.ordinary_sources = sources
                 busy = set()
+                prior = pass_census.census
                 local_keys = {chosen["action_key"] for _, chosen in sources.values()
                               if chosen is not None and chosen["host"] == ledger.base.name
                               and (chosen["action_key"] == dependent_owner
@@ -1245,14 +1289,29 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                 if saved is not None:
                     local_keys.update(key for key, chosen in saved["census"]["selections"].items()
                                       if chosen["host"] == ledger.base.name)
+                    if prior is not None:
+                        local_keys.update(key for key, chosen in prior["selections"].items()
+                                          if chosen["host"] == ledger.base.name)
                 for key in sorted(local_keys):
                     if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                         busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
                 if (saved is not None
-                        and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S
-                        and _admission_source_generation(queue, saved["census"]) == saved["generation"]):
-                    current = saved["census"]
+                        and census_reader.source_generation(saved["census"]) == saved["generation"]
+                        and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S):
+                    current = dict(saved["census"])
+                    current["selections"] = dict(current["selections"])
+                    current["elections"] = dict(current["elections"])
+                    # A sibling's complete read cannot retire an election it
+                    # never saw. Preserve this pass's missing selections just
+                    # as the owned refresh does; their M keys precede H above.
+                    if prior is not None:
+                        for key, chosen in prior["selections"].items():
+                            if key not in current["selections"]:
+                                current["selections"][key] = chosen
+                                if key in prior["elections"]:
+                                    current["elections"][key] = chosen
+                    current["keys"] = sorted(set(current["keys"]) | set(current["selections"]))
                     retained = {holder.name for holder in ledger.holder_census().non_private_holders}
                     for key in busy | retained:
                         chosen = current["selections"].get(key)
