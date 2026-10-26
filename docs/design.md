@@ -7379,8 +7379,11 @@ sample but cannot refresh its numeric timestamp or restore completeness.
 Numeric telemetry retains its independent one-second default sampling interval,
 vendor collection bounds, GPU confirmation rules and successful-sample health
 limit of 15 seconds. Continuous notifications cannot postpone the numeric
-deadline. Persisted stop failures retry on a numeric tick or their named retry
-deadline without another notification. Shutdown wakes the descriptor wait and
+deadline. A failed stop invalidates observation coverage and keeps its error
+visible through the one-second recovery backoff. Fresh enrollment and counters
+recover an observed local OOM even when the failure preceded persisted stop
+intent. Persisted stop failures also retry on a numeric tick or their named
+retry deadline without another notification. Shutdown wakes the descriptor wait and
 joins the existing sampler. Collection already in progress finishes before
 queued events or shutdown are handled. These are source contracts, not evidence
 of deployment, live cgroup qualification or a production syscall-rate reduction.

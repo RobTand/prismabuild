@@ -1909,7 +1909,7 @@ class ResourceMonitor:
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
             except (OSError,ValueError,KeyError) as exc:
                 self.stop_retry_at[scope]=self.clock()+self.stop_retry_interval_s
-                errors.append({'scope_id':scope,'error':str(exc)[:1500]})
+                self._lose_coverage(scope,exc)
         for scope,entry in self.observations.items():
             if entry.error:errors.append({'scope_id':scope,'error':entry.error})
         self.event_coverage_complete=self._event_status()['complete']
