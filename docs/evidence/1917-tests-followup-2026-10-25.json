@@ -1,0 +1,403 @@
+{
+  "schema": "pb.nfs_probe_tests_followup.v1",
+  "baseline_failure": "test_closed_field_sets_remain_pinned also fails unchanged main; no waiver or passing full-suite claim",
+  "actions": {
+    "probe-refactor-baseline": {
+      "action_key": "0bc3620219b1993359bda5071e0b1a338c9121c8810b39bbadc1287bc58910f5",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "8097e657a46b66ee9fa843f5ba16921cb9055d34",
+        "input": {
+          "bytes": 44822539,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "13b6ff9c0a71ecb89cce670d4e1460662785f25c7212b2800a960831808e52d6"
+        },
+        "parent": "c4c17cb81eb8e466d29f34457cb728098d9fc316",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963256.7699728,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963276.5147345
+      },
+      "stdout": {
+        "sha256": "2123958f673f7d5dbe6b7dab5fe1a66edd3e06e71c8d7393b2c461a493acf22b",
+        "bytes": 3998
+      },
+      "checks_passed": true,
+      "claim_sha256": "2dc82286fd61248822f974e42f1bf3b6d506ae2f2dc76ac3909397a8ae6124e1",
+      "payload": {
+        "bytes": 1121,
+        "present": true,
+        "sha256": "9e04eded19d18b99cac576c937d8416ae23dd0bef854bbc4572d95bbce0f4a8a"
+      },
+      "summary": [
+        "48 passed, 1 deselected in 11.05s"
+      ]
+    },
+    "probe-regression-red": {
+      "action_key": "1573328ea1fb11ff0831777c5b6a67331730e1c2f18bea0a88440a0e71f657a1",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "dad0602c49c382c20eb7dd3c677a5be0b0a191c8",
+        "input": {
+          "bytes": 44822538,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "8ba5a3b1027ec9ca05f0c622e7458b7f3db2ae2f309fe34250bfea728cd2633d"
+        },
+        "parent": "c4c17cb81eb8e466d29f34457cb728098d9fc316",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963271.2009256,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963278.7885964
+      },
+      "stdout": {
+        "sha256": "8187432e800c19ce6170d8427f617b4ba5542319f41d3ae290937da5095c0931",
+        "bytes": 4425
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_mount_latency.py::test_claim_probe_renames_only_closed_empty_files"
+      ]
+    },
+    "wire-main-baseline": {
+      "action_key": "49b5b9da071712b222b12e2d68abb3075495f95289c76dfa7263a9a02f156f1c",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "86444869100af5b8c1d393dc00a7e7a712b83707",
+        "input": {
+          "bytes": 44839313,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "a1c8affb4cd5e15b3ba3ee1a51df7bf7cbadf98c44278b734afb5a1135b09d50"
+        },
+        "parent": "0f71df91645689a5aeb6cf38add07c71bd3ec47b",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963555.192849,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963612.426524
+      },
+      "stdout": {
+        "sha256": "9f31abf1c5ac28af1b4a45eef4fc9e7b463bf199a04e3748179567f33e52f4ff",
+        "bytes": 2447
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned - a...",
+        "1 failed in 47.58s"
+      ]
+    },
+    "probe-green-x86": {
+      "action_key": "1bf65f8b322c632ff602ad2002bbef267f95e23d823e848dc7ced018f0e44eb6",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "15b3ef0e88639ce4c03e1c61f656d804817b5f56",
+        "input": {
+          "bytes": 44823692,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "bde8efc381dc44b0306ab6f8ec42040a50599fa367d248694f46af550ab2a6a1"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963342.2420115,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963436.0948038
+      },
+      "stdout": {
+        "sha256": "e27ff296d2c2d370be25eadd3122c5a9c34d360d2b3f4c66ebb1badbc9086d13",
+        "bytes": 6503
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned - a...",
+        "FAILED tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+        "FAILED tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+        "3 failed, 155 passed in 86.25s (0:01:26)"
+      ]
+    },
+    "probe-green-final-x86": {
+      "action_key": "48a2f7367cf151a24779211a2458e10372e79e517da4782592ac24b7acbab27a",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "4915dce043c678f5d4b80f21d4cd9c2400fafcd4",
+        "input": {
+          "bytes": 44824270,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "26de830f235e6353e93e678d36e3c198e84fc58107e712722109edb6a2325ff6"
+        },
+        "parent": "2783850d85d131f85b76b8b5888fa851d5519256",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963569.3307498,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963667.5731328
+      },
+      "stdout": {
+        "sha256": "0008f81a2e00c692792fa0186ab9fe4107f3f97b6aa2f34a97547a61ace8c3fb",
+        "bytes": 3334
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned - a...",
+        "1 failed, 157 passed in 90.11s (0:01:30)"
+      ]
+    },
+    "probe-rebased-x86": {
+      "action_key": "33a6cea72299718edc12c4c1da9f56e659cc8ef1c2fb1571d653668b8d94843b",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "20c4cdf8aa8ef4eb666c2b74c18222055aa7d095",
+        "input": {
+          "bytes": 44854721,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "688cbd325151c6d2858811d22d8eed4559ca17b9cb12324cd4f7b391deca8e18"
+        },
+        "parent": "44eaf686c54de0e0df8c7f8600aa5dd922864869",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963668.1556728,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963765.456816
+      },
+      "stdout": {
+        "sha256": "97e34b89d9522d616ba43772287936915f99a1d2bd4a7d8b1062ba091a79a021",
+        "bytes": 3334
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned - a...",
+        "1 failed, 162 passed in 88.85s (0:01:28)"
+      ]
+    },
+    "probe-rebased-gb10": {
+      "action_key": "43e15de39d5777c567e68197df043cf33a48f121b2b044ce08864e9850f0151d",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "3f8fab3fe27e7bcab59ab7248e7823f643bf3e2c",
+        "input": {
+          "bytes": 44854721,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "40f5859a374a8fcb5c7d5f19c3f7e9297caef848a3abd9c2f6b0b3a61da77f9f"
+        },
+        "parent": "44eaf686c54de0e0df8c7f8600aa5dd922864869",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "gb10",
+        "interpreter-path-v1"
+      ],
+      "outcome": {
+        "status": "failed",
+        "returncode": 1,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963681.3605494,
+        "finished_host": "sparky",
+        "finished_unix": 1792963716.4724057
+      },
+      "stdout": {
+        "sha256": "6876cd294c2174245ca77853bb3c6dd9c4f05cf299c99dd1a4fea082614fa384",
+        "bytes": 3335
+      },
+      "checks_passed": null,
+      "claim_sha256": null,
+      "payload": null,
+      "summary": [
+        "FAILED tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned - a...",
+        "1 failed, 162 passed in 31.92s"
+      ]
+    },
+    "probe-focused-x86": {
+      "action_key": "bf1abbdba7e61e601ad95d2e66ace8d299b56e9591c0e4bb9932e59c1411cdf4",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "ab0a24eef9217e7ec42118a589bf93e2afdc8b7d",
+        "input": {
+          "bytes": 44854721,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "b323a32981ab18210d254659719918775636f3997ce84d9dbad3bcbf4d725100"
+        },
+        "parent": "44eaf686c54de0e0df8c7f8600aa5dd922864869",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "interpreter-path-v1",
+        "x86"
+      ],
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "dl380g10",
+        "claimed_unix": 1792963756.5070562,
+        "finished_host": "dl380g10",
+        "finished_unix": 1792963765.516704
+      },
+      "stdout": {
+        "sha256": "b1fdb8261845e2e5ed19431fd4d4c3b4669d378ec2abb10899b92be6ed876f8e",
+        "bytes": 4222
+      },
+      "checks_passed": true,
+      "claim_sha256": "d2257e08365fdd8ffb8b4dd4cc41def208aede4d55692a2712a03f1e2350c34d",
+      "payload": {
+        "bytes": 1345,
+        "present": true,
+        "sha256": "8ace67127f48efb84b37ff8303c51e114136b942fa90686ce7d9a4ce5cd0b1b4"
+      },
+      "summary": [
+        "3 passed in 0.45s"
+      ]
+    },
+    "probe-focused-gb10": {
+      "action_key": "13251e6434b329f392f4028c957cf64bf46af2af5dcaef2ebf11152d96eba3a4",
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "checkout_snapshot": {
+        "commit": "b7fa417163914a2ca6a8c73f6a70cde26af8bd19",
+        "input": {
+          "bytes": 44854722,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "e4b3e89c965d0a886aafc2ee2337856456eb74d05db978ad2b19013af10ea195"
+        },
+        "parent": "44eaf686c54de0e0df8c7f8600aa5dd922864869",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "tags": [
+        "gb10",
+        "interpreter-path-v1"
+      ],
+      "outcome": {
+        "status": "executed",
+        "returncode": 0,
+        "claimed_host": "sparky",
+        "claimed_unix": 1792963770.3521068,
+        "finished_host": "sparky",
+        "finished_unix": 1792963774.3293476
+      },
+      "stdout": {
+        "sha256": "c4cd27bf159e9d491de8de30e43ad7d8df9eb92399da9fb31823154139bae527",
+        "bytes": 4316
+      },
+      "checks_passed": true,
+      "claim_sha256": "0923e99cfaac914dda93ff2f3053275c507153e1941039801c396509158e0ac3",
+      "payload": {
+        "bytes": 1356,
+        "present": true,
+        "sha256": "d2a7b2f7c016515de805be665f22af88ee1f1265581f2b47f57de9e84f8d0862"
+      },
+      "summary": [
+        "3 passed in 0.18s"
+      ]
+    }
+  }
+}

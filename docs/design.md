@@ -7370,7 +7370,12 @@ things that answer different questions: NFS per-operation queue time and
 round-trip time differenced from `/proc/self/mountstats`, which costs the mount
 no operation and therefore keeps reporting when the mount does not, and a
 bounded set of timed syscalls including the create/rename/unlink the claim path
-performs. The queue/rtt split is the attribution -- time at the server against
+performs. Claim scratch is created empty and closed before rename and unlink:
+the dirty-file cycle retained NFS server open states in #1917, while the empty
+cycle preserved the RENAME diagnostic without retention in the bounded private
+reproduction. This is a source repair, not evidence that the deployed collector
+has changed or that already-retained states have been reclaimed.
+The queue/rtt split is the attribution -- time at the server against
 time this client could not send -- and it separates a healthy mount from a
 client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
