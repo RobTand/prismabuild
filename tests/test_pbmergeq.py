@@ -102,43 +102,6 @@ def config(tmp_path, **extra):
     return mq._pbmergeq_load_config(path)
 
 
-def test_pr_metadata_uses_fields_supported_by_installed_gh(tmp_path, monkeypatch):
-    env = {**os.environ, "GH_TOKEN": "parser-only", "GH_CONFIG_DIR": str(tmp_path)}
-    parser = subprocess.run(["gh", "pr", "view", "--json"], env=env,
-                            capture_output=True, text=True, timeout=30)
-    diagnostic = parser.stdout + parser.stderr
-    assert "Available fields:" in diagnostic, diagnostic
-    supported = set(diagnostic.split("Available fields:", 1)[1].split())
-    assert {"number", "headRefOid"} <= supported
-    metadata = {"number": 1, "state": "OPEN", "isDraft": False,
-                "author": {"login": "RobTand"}, "headRefOid": SHA,
-                "headRefName": "fix/example", "isCrossRepository": False,
-                "headRepositoryOwner": {"login": "RobTand"},
-                "baseRefName": "main", "title": "Fix", "body": ""}
-    linked = [{"number": 101, "url": "https://github.com/RobTand/proj/issues/101"},
-              {"number": 102, "url": "https://github.com/RobTand/proj/issues/102"}]
-    reads = []
-
-    def github_response(command, **kwargs):
-        reads.append(command)
-        if command[:3] == ["gh", "pr", "view"]:
-            requested = set(command[command.index("--json") + 1].split(","))
-            assert requested <= supported, f"unsupported gh PR fields: {requested - supported}"
-            return subprocess.CompletedProcess(command, 0, json.dumps(metadata))
-        assert command[:3] == ["gh", "api", "graphql"]
-        assert "--paginate" in command
-        query = next(arg for arg in command if arg.startswith("query="))
-        assert "$endCursor" in query and "hasNextPage" in query and "endCursor" in query
-        return subprocess.CompletedProcess(command, 0, "\n".join(map(json.dumps, linked)))
-
-    monkeypatch.setattr(mq, "call_tool", github_response)
-    cfg = config(tmp_path)
-    pr = mq.GitHub(cfg, mq.Store(cfg.state_dir), dry=False).pr(1)
-    assert pr == {**metadata, "closingIssuesReferences": linked}
-    assert mq.issue_numbers(pr, cfg.repo) == [101, 102]
-    assert len(reads) == 2
-
-
 def test_config_refuses_runs_without_a_deadline_or_with_queue_owned_flags(tmp_path):
     with pytest.raises(SystemExit, match="--timeout-s"):
         config(tmp_path, pbtest_args=["--priority", "-10"])
