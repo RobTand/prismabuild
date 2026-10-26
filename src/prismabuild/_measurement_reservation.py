@@ -136,13 +136,63 @@ def _admission_source_generation(queue: PoolQueue, census: dict) -> str:
     return core.canonical_sha256(observed)
 
 
-def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
-                              dependent_owner: object) -> dict | None:
-    """Prove no source election can fence this ordinary row, without retirement.
+def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False) -> dict:
+    """Reuse parsed sidecars only while every file's metadata is unchanged.
 
-    Caller holds H through acquisition. Retired entries remain potential fences;
-    only the complete census may remove them. Even an equal-priority gang may
-    reserve demand after maturation, so it always takes the full path.
+    Discovery precedes M/H. Under H, recheck lists and stats without reading new
+    records; a changed source falls back rather than acquiring a new M after H.
+    """
+    from . import pool
+    directory = queue.root / pool.record_store.PASSES
+    deadline = reader.Deadline(REFRESH_BUDGET_S)
+    try:
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries)
+    except FileNotFoundError:
+        names = []
+    if len(names) > MAX_RECORDS:
+        raise CensusUnavailable("ordinary election source cap exceeded")
+    current = {}
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        key = name[:-5]
+        if not pool.record_store.key_shaped(key):
+            raise CensusUnavailable("unaddressable election source")
+        path = directory / name
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise CensusUnavailable("nonregular ordinary election source")
+        version = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                   info.st_mtime_ns, info.st_ctime_ns)
+        prior = cached.get(name)
+        if prior is not None and prior[0] == version:
+            current[name] = prior
+        else:
+            if recheck:
+                raise CensusUnavailable("ordinary election source changed")
+            record = _read(path)
+            if record.get("action_key") != key:
+                raise CensusUnavailable("ordinary election source identity mismatch")
+            chosen = selection(record)
+            if chosen is not None and chosen["action_key"] != key:
+                raise CensusUnavailable("ordinary selection sidecar key mismatch")
+            current[name] = (version, chosen)
+        if deadline.remaining() <= 0:
+            raise CensusUnavailable("ordinary election proof budget exceeded")
+    if recheck and current != cached:
+        raise CensusUnavailable("ordinary election source disappeared")
+    return current
+
+
+def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
+                              dependent_owner: object, sources: dict,
+                              ledger: ResourceLedger, busy: set[str]) -> dict | None:
+    """Apply the full per-key retirement rule to potential measurement fences.
+
+    Caller holds the local selections' nonblocking M keys before H, and keeps
+    H through acquisition. Busy keys and retained tokens remain fences. Even
+    an equal-priority gang may reserve demand after maturation.
     """
     from . import _gang, pool
     count = 0
@@ -160,23 +210,33 @@ def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
             raise CensusUnavailable("ordinary election proof budget exceeded")
         return names
 
-    for name in entries(queue.root / pool.record_store.PASSES):
-        if not name.endswith(".json"):
-            continue
-        if not pool.record_store.key_shaped(name[:-5]):
-            raise CensusUnavailable("unaddressable election source")
-        record = _read(queue.root / pool.record_store.PASSES / name)
-        if record.get("action_key") != name[:-5]:
-            raise CensusUnavailable("ordinary election source identity mismatch")
-        chosen = selection(record)
-        if chosen is not None:
-            if chosen["action_key"] != name[:-5]:
-                raise CensusUnavailable("ordinary selection sidecar key mismatch")
-            if (chosen["action_key"] == dependent_owner
-                    or (chosen["host"] == host and item.get("priority", 0) < chosen["priority"])):
+    relevant = [chosen for _, chosen in sources.values() if chosen is not None
+                and (chosen["action_key"] == dependent_owner
+                     or (chosen["host"] == host and item.get("priority", 0) < chosen["priority"]))]
+    if relevant:
+        retained = {holder.name for holder in ledger.holder_census().non_private_holders}
+        marks = entries(queue.root / pool.record_store.CLAIMED)
+        for chosen in relevant:
+            key = chosen["action_key"]
+            if chosen["host"] == host and key in busy | retained:
                 return None
-        if deadline.remaining() <= 0:
-            raise CensusUnavailable("ordinary election proof budget exceeded")
+            paths = [queue.records.item_path(state, key)
+                     for state in (pool.record_store.READY, pool.record_store.CLAIMED)]
+            paths.extend(queue.root / pool.record_store.CLAIMED / name for name in marks
+                         if name[:64] == key and name.endswith(
+                             (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX)))
+            versions = []
+            for path in paths:
+                row = _read(path, optional=True)
+                if row is not None:
+                    if row.get("action_key") != key or type(row.get("priority", 0)) is not int:
+                        raise CensusUnavailable("unreadable elected publication")
+                    queue.records.attempt_generation(row)
+                    versions.append(row)
+                if deadline.remaining() <= 0:
+                    raise CensusUnavailable("ordinary election proof budget exceeded")
+            if not _election_retired(queue, key, chosen, versions):
+                return None
     for name in entries(_gang.root(queue)):
         if not name.endswith(".json") or name.startswith("."):
             continue
@@ -253,6 +313,33 @@ def _capture(queue: PoolQueue) -> dict:
             if attempt + 1 == CAPTURE_RESCANS:
                 raise
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _election_retired(queue: PoolQueue, key: str, chosen: dict, versions: list[dict]) -> bool:
+    """Exact full-census retirement rule, with old claims/marks taking precedence."""
+    from . import pool
+    if any(queue.records.attempt_generation(row) == chosen["generation"] for row in versions):
+        return False
+    endings = []
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+        row = _read(queue.records.item_path(state, key), optional=True)
+        if row is None:
+            continue
+        stamp = row.get(
+            "withdrawn_unix" if state == pool.record_store.WITHDRAWN else "finished_unix",
+        )
+        if (row.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1 or row.get("action_key") != key
+                or not isinstance(row.get("status"), str) or not row["status"]
+                or (state == pool.record_store.WITHDRAWN and row["status"] != "withdrawn")
+                or not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
+                or not math.isfinite(stamp)):
+            raise CensusUnavailable("incomplete measurement retirement proof")
+        endings.append(row)
+    if any(queue.records.attempt_generation(row) == chosen["generation"] for row in endings):
+        return True
+    if versions and all(float(row["published_unix"]) > chosen["published_unix"] for row in versions):
+        return True
+    return False
 
 
 def _scan_publications(queue: PoolQueue) -> dict:
@@ -378,29 +465,8 @@ def _scan_publications(queue: PoolQueue) -> dict:
                 raise CensusUnavailable("elected measurement sealed identity unavailable")
             elections[key] = chosen
             continue
-        # Absence is not retirement. Exact ending or a strictly newer live
-        # publication under this key may retire it, but marks/claims of the
-        # old generation above take precedence over any success/cancellation.
-        endings = []
-        for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
-            row = _read(queue.records.item_path(state, key), optional=True)
-            if row is None:
-                continue
-            stamp = row.get(
-                "withdrawn_unix" if state == pool.record_store.WITHDRAWN else "finished_unix",
-            )
-            if (row.get("schema") != pool.POOL_OUTCOME_SCHEMA_V1 or row.get("action_key") != key
-                    or not isinstance(row.get("status"), str) or not row["status"]
-                    or (state == pool.record_store.WITHDRAWN and row["status"] != "withdrawn")
-                    or not isinstance(stamp, (int, float)) or isinstance(stamp, bool)
-                    or not math.isfinite(stamp)):
-                raise CensusUnavailable("incomplete measurement retirement proof")
-            endings.append(row)
-        if any(queue.records.attempt_generation(row) == chosen["generation"] for row in endings):
-            continue
-        if versions and all(float(row["published_unix"]) > chosen["published_unix"] for row in versions):
-            continue
-        elections[key] = chosen  # missing authority stays fenced, indefinitely
+        if not _election_retired(queue, key, chosen, versions):
+            elections[key] = chosen  # missing authority stays fenced, indefinitely
     return {"measurements": measurements, "elections": elections, "selections": selected,
             "movements": movements,
             "opportunities": opportunities, "keys": sorted(set(measurements) | set(selected)),
@@ -626,6 +692,15 @@ class CensusReader:
     @property
     def shared_path(self) -> Path:
         return self.directory / (self.name + ".shared")
+
+    def publish_shared(self, census: dict, generation: str) -> None:
+        """Persist a complete census after its caller verified sources under M/H."""
+        saved = {"schema": SHARED_CENSUS_SCHEMA, "pool": self.pool_identity,
+                 "boot": reader._boot_id(Path("/proc")), "created": time.monotonic(),
+                 "generation": generation, "census": census,
+                 "digest": core.canonical_sha256(census)}
+        if len(core._canonical_bytes(saved)) <= MAX_RECORD_BYTES:
+            immutable_files.write_json_atomic(self.shared_path, saved)
 
     def shared_census(self) -> dict | None:
         """Read advisory bytes only; the caller must check generation under M/H."""
@@ -864,6 +939,7 @@ class PassCensus:
         self._gang_elections: dict | None = None
         self._busy: set[str] = set()
         self._foreign_refusals: dict[str, tuple[dict, int | float]] = {}
+        self.ordinary_sources: dict = {}
 
     @property
     def census(self) -> dict | None:
@@ -1078,13 +1154,7 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
             try:
                 if (generation is not None
                         and _admission_source_generation(queue, current) == generation):
-                    saved = {"schema": SHARED_CENSUS_SCHEMA, "pool": census_reader.pool_identity,
-                             "boot": reader._boot_id(Path("/proc")), "created": time.monotonic(),
-                             "generation": generation, "census": current,
-                             "digest": core.canonical_sha256(current)}
-                    if len(core._canonical_bytes(saved)) <= MAX_RECORD_BYTES:
-                        immutable_files.write_json_atomic(
-                            census_reader.shared_path, saved)
+                    census_reader.publish_shared(current, generation)
             except (OSError, ValueError, CensusUnavailable, core.PrismaBuildError,
                     reader.ReaderOwnershipUnavailable):
                 pass  # Optional reuse cannot change a successful complete census.
@@ -1165,12 +1235,19 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
             try:
                 census_reader = CensusReader(queue, ledger)
                 saved = census_reader.shared_census()
+                sources = _ordinary_selection_sources(queue, pass_census.ordinary_sources)
+                pass_census.ordinary_sources = sources
                 busy = set()
+                local_keys = {chosen["action_key"] for _, chosen in sources.values()
+                              if chosen is not None and chosen["host"] == ledger.base.name
+                              and (chosen["action_key"] == dependent_owner
+                                   or item.get("priority", 0) < chosen["priority"])}
                 if saved is not None:
-                    for key, chosen in sorted(saved["census"]["selections"].items()):
-                        if chosen["host"] == ledger.base.name and not held.enter_context(
-                                queue.action_transition_lock(key, blocking=False)):
-                            busy.add(key)
+                    local_keys.update(key for key, chosen in saved["census"]["selections"].items()
+                                      if chosen["host"] == ledger.base.name)
+                for key in sorted(local_keys):
+                    if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
+                        busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
                 if (saved is not None
                         and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S
@@ -1192,8 +1269,9 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                and item.get("priority", 0) <= chosen["priority"]
                                for chosen in prior["gang_elections"].values())))
                     if not remembered:
+                        _ordinary_selection_sources(queue, sources, recheck=True)
                         current = _ordinary_election_census(
-                            queue, item, ledger.base.name, dependent_owner)
+                            queue, item, ledger.base.name, dependent_owner, sources, ledger, busy)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
                     core.PrismaBuildError, _gang.GangContractError, local_scratch.LocalScratchError):
                 current = None

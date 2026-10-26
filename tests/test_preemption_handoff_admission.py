@@ -259,13 +259,10 @@ def test_handoff_error_releases_exclusion_without_returning_live_tokens(rig, mon
     assert len(decisions) == 1
 
 
-def test_preemption_handoff_uses_a_separate_inode_and_keeps_admission_free(rig):
+def test_preemption_handoff_is_not_reported_as_host_admission(rig):
     with rig._preemption_locked(rig.ledger()) as acquired:
         assert acquired
         census = mount_latency.lock_contention(lock_dir=adaptive_cpu.BOX_STATE_ROOT)
         assert census["present"] and not census["identity_complete"]
         assert census["files"] == 1, "handoff inode entered the admission census"
-        # Partial holder metadata cannot prove exclusion: reading a stale
-        # same-process record can itself reuse its recorded descriptor.
-        with adaptive_cpu.AdmissionGate(rig.ledger()).locked():
-            pass
+        assert census["holders"] == 0
