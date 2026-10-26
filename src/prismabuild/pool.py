@@ -11986,7 +11986,7 @@ class PoolQueue:
                 raise PoolContractError("claim changed before heartbeat publication")
             for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                           "claimed_unix", "published_unix",
-                          "scratch_declaration_record",
+                          "cleanup_obligation", "scratch_declaration_record",
                           scratch_lifetime.SCRATCH_LIFETIME_FIELD):
                 if field in claim:
                     lease[field] = claim[field]
