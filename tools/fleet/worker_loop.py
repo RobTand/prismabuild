@@ -1645,6 +1645,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 timeout_s=args.timeout_s, capacity=capacity, cpu_tiers=cpu_tiers,
                 adaptive_cpu=not args.assume_idle, containment=True,
                 ready=discovery.snapshot, observed_images=claim_images,
+                unified_memory=(observer.last.unified_memory
+                                if observer is not None and observer.last is not None else None),
                 **({"container_class_policy": class_policy,
                     "container_inventory": claim_snapshot} if class_policy is not None else {}),
                 # Re-checked under the per-key transition lock just before
