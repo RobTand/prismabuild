@@ -20767,8 +20767,23 @@ class PoolQueue:
         and are ignored, exactly as the other terminal readers ignore them.
         """
 
+        found = self.archived_generation_summaries(action_key, generation=generation)
+        for _path, record in found:
+            adopted = self.attempt_ending(record)
+            if adopted["disposition"] != record.get("disposition"):
+                raise PoolContractError(
+                    "archived generation outcome has conflicting disposition")
+            for field in ("status", "finished_unix", "finished_host", "detail"):
+                record[field] = adopted[field]
+        return found
+
+    def archived_generation_summaries(
+        self, action_key: str, *, generation: float, max_bytes: int | None = None,
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Reconstruct exact-generation metadata without expanding attempt logs."""
         key = str(action_key)
-        present = self.records.archived_generation_records(key, generation=generation)
+        present = self.records.archived_generation_records(
+            key, generation=generation, max_bytes=max_bytes)
         if not present:
             return []
         terminal = [
@@ -20782,7 +20797,7 @@ class PoolQueue:
         attempt = max(terminal)
         if (
             max(present) != attempt
-            or sorted(present) != list(range(min(present), attempt + 1))
+            or len(present) != attempt - min(present) + 1
         ):
             raise PoolContractError(
                 f"archived attempts for {key[:12]} are not a contiguous run "
@@ -20819,6 +20834,8 @@ class PoolQueue:
                     f"archived attempts for {key[:12]} begin at attempt "
                     f"{min(present)} with no handoff context proving the prefix")
             missing = 0
+        if min(present) != missing + 1:
+            raise PoolContractError("archived attempts do not match their handoff prefix")
         record["attempts"] = attempt
         record["attempt_history_missing_before"] = missing
         record["attempt_history"] = [
@@ -20826,12 +20843,11 @@ class PoolQueue:
              "outcome": str(self.records.attempt_path(record, number).relative_to(self.root))}
             for number in range(missing + 1, attempt + 1)
         ]
-        adopted = self.attempt_ending(record)
-        if adopted["disposition"] != value.get("disposition"):
-            raise PoolContractError(
-                "archived generation outcome has conflicting disposition")
-        for field in ("status", "finished_unix", "finished_host", "detail"):
-            record[field] = adopted[field]
+        for number, (source, archived) in present.items():
+            self._bind_linked_attempt(record, archived, attempt=number, where=str(source))
+        endings.resolve_attempt(
+            [value], invalid=PoolContractError,
+            validate_output_retry_stop=self._validate_output_retry_stop)
         return [(path, record)]
 
     def archived_preemption_outcomes(

@@ -2556,6 +2556,25 @@ stdout line is scanned for receipt announcements during that same pass. The
 consumer projection bypasses the legacy renderer's complete log expansion;
 legacy JSON and human rendering keep their existing verification path.
 
+A consumer pinned to an overwritten or missing mutable terminal selects capped
+archive metadata through `archived_generation_summaries`. The complete selected
+generation's attempt documents share a 4 MiB accepted-byte budget. Canonical
+identities, contiguous history, retry bounds and handoff prefixes retain their
+existing checks. Selection reads no logs. Legacy readers retain
+`archived_generation_outcomes` and its full-log verification.
+
+The consumer carries the selected source path and reconstructed record into
+verification. An archived source must be the canonical immutable terminal
+attempt for that exact key, generation and attempt. Its reconstruction must
+still equal the captured record before and after streaming. Archive detail
+comes directly from that immutable source and has no mutable inline stream
+summary to compare. Full log digests and byte counts, receipt announcements,
+execution receipt and payload still verify normally. Archives do not retain a
+CAS locator, so the consumer supplies its configured CAS; the sealed request
+must match the action key and the exact announced execution receipt. A changed,
+missing or noncanonical archive refuses. SDK result reads continue to require
+the current mutable terminal. These are source contracts, not deployed claims.
+
 The 16 MiB per-stream cap bounds retained evidence, independently of total log
 size. Oversized descriptors retain `path`, `bytes` and `sha256` for the fully
 hashed log and add `truncated: true` and `evidence: {offset, bytes, sha256}`
