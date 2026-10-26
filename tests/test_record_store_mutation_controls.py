@@ -125,6 +125,7 @@ def test_receipt_thaw_reuse_follows_native_invalidation_and_forgets_removed_name
     path = queue.records.move_path(KEY)
     path.write_text(json.dumps(PAYLOAD))
     trust = ObservedTrust()
+    trust.directory_versions[str(path.parent)] = (1, 2, 3, 4)
     cache = tier_loop.ReceiptCache(trust=trust)
     cache.refresh([path.parent], queue=queue)
     first = cache._records[0]
