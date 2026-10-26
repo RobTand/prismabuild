@@ -324,6 +324,13 @@ def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
 def _gated_mover_source(argv, control, *, read="real", readers=1, hold_on=0):
     gates = textwrap.dedent(f'''
         reporter = None
+        reports = threading.Condition()
+        native_report = stage_move._ProgressReporter.report
+        def observed_report(self):
+            native_report(self)
+            with reports:
+                reports.notify_all()
+        stage_move._ProgressReporter.report = observed_report
         native_reporter_start = stage_move._ProgressReporter.start
         def remember_reporter(self):
             global reporter
@@ -332,7 +339,10 @@ def _gated_mover_source(argv, control, *, read="real", readers=1, hold_on=0):
         stage_move._ProgressReporter.start = remember_reporter
         def mover_gate():
             if reporter is not None:
-                reporter.report()
+                landed = reporter.units()
+                with reports:
+                    assert reports.wait_for(
+                        lambda: reporter.reported_units >= landed, timeout=60)
             _pb_gate()
         read_gate = threading.Barrier({readers!r}, action=mover_gate)
     ''')
