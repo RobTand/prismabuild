@@ -754,6 +754,18 @@ on its host still keep protection. Other hosts and legitimate equal/higher
 priority work keep existing admission, placement and resource gates. No token,
 probe, borrow, CPU/GPU/foreign/PSI isolation or physical cleanup is waived.
 
+A current `measurement_foreign_ambient` CPU refusal suspends an elected
+measurement's fence for the rest of that claim pass (#2267). `PassCensus`
+keeps the exact selection and sample timestamp as pass-local evidence. Reuse
+requires the same selection in the refreshed sidecar, a fresh sample, an
+available measurement transition key, and no tokens held by the measurement.
+Each elected measurement must supply its own evidence. Lower-priority rows
+then face ordinary admission, while the measurement remains READY with its
+visible `adaptive_cpu_refused_starved` denial. The durable selection and
+original opportunity stay unchanged. A new pass, restart, stale evidence,
+or changed selection requires a new affirmative refusal before suspension.
+This component repair establishes no runtime deployment or campaign completion.
+
 Host exclusion is now separate from adaptive CPU policy: `AdmissionGate`
 reuses Controller's permanent inode/nonblocking flock; Controller delegates and
 retains its advisory diagnostic publication outside the gate. Capacity-backed
@@ -1786,6 +1798,26 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The fleet roster's optional `action_tmpdir` names one canonical absolute scratch
+directory present on every eligible worker. `pbrun` and `pbtest` capture it from
+the same runtime's roster and seal its literal value as `TMPDIR`. The current
+declaration is `/home/rob/pbt17`, backed by enterprise NVMe on dl380g10 and local
+NVMe on both Sparks. Old rosters without the field retain `/home/rob/tmp`.
+An explicit `pbrun --env TMPDIR=...` or `pbtest --tmpdir` takes precedence;
+`--no-default-env` supplies no default. Workers never reinterpret that sealed
+path. New configured pbtest defaults use the existing directory/inode preflight;
+legacy defaults retain their existing fallback behavior. Restricted scratch
+recorders accept both reviewed fleet paths so retained legacy requests still
+validate independently of the current roster.
+
+Checkouts retain the existing `PRISMABUILD_LOCAL_CHECKOUT_ROOT` environment
+override and default `/home/rob/tmp/prismabuild-checkouts`. On dl380g10 that
+default path already mounts `prismabuild-stage/checkouts` on enterprise NVMe.
+The separate `/tmp/pbscratch` spool offer is unchanged. Roster publication
+installs no dataset or mount. Host storage readback and release evidence are
+recorded in
+[the fleet storage record](fleet_storage.md#action-scratch-and-checkouts).
+
 `pbrun` executes its wrapper with `bash --noprofile --norc -c`. Host login
 profiles cannot rewrite the sealed PATH or select a different executable.
 CUDA tooling outside the default PATH must be named explicitly or supplied
@@ -2534,13 +2566,15 @@ pbtest's resource, deadline or pytest configuration through the environment.
 
 Each shard retains its own pytest temporary-directory and outcome ownership.
 `--tmpdir PATH` supplies an absolute worker-visible parent through the existing
-sealed child `TMPDIR` assignment; its default remains `/home/rob/tmp`. The path
+sealed child `TMPDIR` assignment. The default comes from the loaded roster's
+`action_tmpdir`, or `/home/rob/tmp` for a legacy roster. The path
 is passed as one argv element, with no shell evaluation or coordinator-side
 existence check. The caller supplies a directory usable on every eligible worker;
 this flag adds no direct-I/O qualification or placement capability. An explicitly
 selected parent is preflighted on the worker by creating and closing an anonymous
 temporary file before pytest; an absent or unusable directory refuses instead of
-silently falling back. The default retains its legacy behavior. This startup
+silently falling back. A configured default receives the same preflight; only
+the legacy default retains its fallback behavior. This startup
 check does not reserve capacity or guarantee availability throughout the test.
 Changing the selected parent changes the child command and its action identity.
 
@@ -7396,6 +7430,47 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+Unified-memory foreign residency also bounds new host-memory commitments
+(#1661, #2088, #2089). `gpu_sample_facts.unified_memory_evidence` classifies
+one fresh, complete, attributed broker inventory as clear, known foreign
+bytes, or unknown foreign residency. The classified value retains the
+sample ID and timestamp. Discrete-device residency supplies no host-memory
+credit or unified-memory fence.
+
+The ordinary `MemAvailable` plus held-token bound remains in force. The second
+bound subtracts external usage and the existing operating margin from physical
+host memory. External usage is `host_total - host_available - PB_resident`,
+clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
+scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
+are credited per complete attributed scope as
+`min(valid host bytes + valid shared-system GPU lower bound, budget_bytes)`.
+A missing or invalid scope budget earns no credit; invalid residency components
+contribute zero. Residency above the reservation stays in external usage, so
+held tokens plus external usage charge `max(reservation, residency)` per scope.
+Host and CUDA charges are near-disjoint: #450 measured their sum 4.4% above
+the host-usage increase, absorbed by the existing margin in that workload.
+Per-process GPU sums may overlap and supply no residency credit.
+Foreign GPU bytes are already inside host usage and are never added again.
+Observation applies the physical bound after held-token add-back, and the
+observer applies it again after memory smoothing. The two bounds take their
+minimum. No external baseline credit is inferred from an older offer.
+
+Unknown foreign residency defers new CPU and GPU memory commitments with
+`unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
+election. READY rows, held reservations, and existing gang elections remain
+in place. A fresh clear sample removes this fence. When a claim pass has
+identified shared-system memory, a later partial, stale, missing or untrusted
+sample retains unknown context with no resident credit until trusted evidence
+recovers. It cannot reuse the earlier clear classification. Claim-time checks also
+bound aggregate held memory plus the candidate's incremental memory demand
+by the current physical ceiling. Producer export allowances count once;
+funded dependents consume their existing funding before the incremental fit
+check. Denial evidence retains sample identity, foreign bytes, committed
+memory, candidate demand, host usage, PB residency, and the physical ceiling.
+A later successful claim
+retires its earlier unknown-residency status projection.
+
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -7556,6 +7631,14 @@ producer whose reads are not visible in the declaration can still require them
 to be declared.
 
 ## Whole-directory local resident sets (#1545)
+
+The [2026-10-25 design review](local_resident_sets_review_2026-10-25.md)
+describes the proposed container integration and its measurement gate. It
+does not implement that integration. In particular, optional local residency
+does not authorize an HDD fallback under the staged-read contract. The
+existing canonical fallback described below is an implementation fact,
+not proof of staged-only compliance. Mount selection also does not establish
+the serving tier at a payload read. Those remain separate requirements.
 
 Resident sets are optional accelerators, not rolling residency windows or admission gates. Phase 1 does not inject container mounts.
 Rows with a nonempty `resident_set` prefer eligible hosts with valid recorded resident copies (#1733).
@@ -19615,10 +19698,12 @@ uses the original generation-aware idempotent readback. Canonical election
 sidecars survive unstarted retries. Persistence failures retain the original
 fence-first recovery and never replace a newer READY publication.
 
-`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
-ledger totals, placement/capability views, existing read memo and canonical
-census. It captures no new per-candidate host sample, availability or holder
-state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+`_ClaimScan` retains the ordered rows, worker inputs, ledger totals,
+placement/capability views, existing read memo, and canonical census.
+Its `_ClaimMemory` reference owns the current broker sample and classified
+unified-memory evidence. That owner refreshes evidence at candidate and
+mutation boundaries; the other pass views capture no new availability or
+holder state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
 dead-input handling, carried room and the existing ready-GPU policy in their
 original positions. A winning rename invalidates claimed names, reader plans
 and census even when the moved record later refuses.

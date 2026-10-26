@@ -1,7 +1,7 @@
-"""Shared deterministic bytes + digest + envelope helpers for pbcanary legs 3-4.
+"""Shared deterministic bytes, digests and receipt readers for canary legs 3-4.
 
 This module is deliberately small: the deterministic byte generator, the
-digest helpers, and the envelope extractor, nothing else. No PrismaBuild imports, stdlib only, so both
+digest helpers, and receipt readers. No PrismaBuild imports, stdlib only, so both
 the canary driver (submit side) and the sealed worker actions (execute side,
 ``python3 tools/fleet/pbcanary_legs/legN.py --run-action``) can use it without a
 configured environment. See PB #688.
@@ -129,6 +129,19 @@ def sha256_file_hex(path: str, *, offset: int = 0, size: int | None = None) -> s
 def canonical_json(obj: object) -> str:
     """Encode ``obj`` as canonical JSON: sorted keys, compact separators."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def receipt_returncode(receipt: dict) -> int | None:
+    """Read the first integer exit code; boolean fields are not exit codes."""
+    for where in ("returncode", "detail.returncode", "action_returncode"):
+        node: object = receipt
+        for key in where.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        if isinstance(node, bool):
+            continue
+        if isinstance(node, int):
+            return node
+    return None
 
 
 def extract_envelope(receipt: object, *, schema: str) -> tuple[str | None, dict | None, str]:
