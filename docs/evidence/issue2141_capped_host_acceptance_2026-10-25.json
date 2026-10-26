@@ -278,7 +278,7 @@
       }
     ],
     "remaining_gaps": [
-      "Revised installer and current-main integration: focused GREEN outcome, repeated touched-file runs, integrated x86/ARM qualification and refreshed actual-root proof are pending. Historical qualification does not establish this revised source.",
+      "Revised installer and current-main integration: five touched-file repeats per architecture, integrated x86/ARM qualification and refreshed actual-root proof are pending. Focused x86 RED/GREEN is verified. Historical qualification does not establish this revised source.",
       "The selected suite is not fully green. Both architectures have the same two duplication guard failures as clean main: tools/maintenance/measure_default_scratch_1914.py::load and src/prismabuild/sealed_bundle_cache.py::_reuse_bundle_cache. Principal review must assess the exact baseline evidence; required merge checks remain mandatory.",
       "INV-01 and SM-01: bounded cap/claim component proofs do not satisfy complete tier accounting, lease, release, recovery or lifecycle targets.",
       "INV-11: enrolling/active and explicit-host eligibility controls do not establish every class-tag conjunction or bad-pair dispatch target.",
@@ -3267,7 +3267,7 @@
       "red_action": "05e0cb858623897a338a95aeaee533c2addd9c2c24126b3831f7fca45b371b60",
       "red_outcome": "20 failed, 7 passed; failed service-state cases returned zero before the fix; terminal/log/cleanup verified",
       "green_action": "9bb8c98b5b5503050ed4090e031271e94b210ca8bb02444960e14b2f14627a80",
-      "green_outcome": "pending; submission is not success",
+      "green_outcome": "27 passed on x86_64; terminal, both log digests, request/source bundle, immutable executions/v1 receipt, payload and cleanup independently verified",
       "qualification_plan": {
         "architectures": [
           "x86_64",
@@ -3278,7 +3278,8 @@
         "xdist_repeats_per_architecture": 2,
         "actual_root_bootstrap": "fresh qualification owed because conftest changed during main integration"
       },
-      "deployment": "not performed; no runtime publication or service changes"
+      "deployment": "not performed; no runtime publication or service changes",
+      "green_receipt_sha256": "acb2488904749f31ad064d9c18686f8882912e75148d786418c15931b17bd194"
     }
   },
   "requirement_status": {
