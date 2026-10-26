@@ -54,14 +54,14 @@ def interpreter_case(tmp_path, monkeypatch, answer, *, reserved=False, max_attem
     demand = item["resources"]
     candidate = SimpleNamespace(item=item,
         demand=pool._CandidateDemand(demand, demand, demand, demand, {}),
-        scratch_intent=None, dependent_owner=adaptive_cpu._UNREAD)
+        scratch_intent=None, dependent_owner=adaptive_cpu._UNREAD, runtime_probe=None)
     return queue, item, candidate, placement, peer
 
 
 def prepare_interpreter_claim(queue, item, candidate, placement, *, ready_gpu=None):
     return queue._prepare_host_claim(candidate, candidate_policy.ScanOrder(),
         total=CAPACITY, has_gpu=True, controller=None, gpu_controller=None,
-        placement=placement, ready=[item], ready_gpu=ready_gpu)
+        placement=placement, ready=[item], ready_gpu=ready_gpu, memory=None)
 
 
 @pytest.mark.parametrize("answer", ["present", "absent", "unknown"])
