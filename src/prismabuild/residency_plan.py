@@ -797,12 +797,10 @@ def read(queue, consumer_action_key: str, *,
 def _stat_incarnation(path: Path) -> tuple[tuple[int, int, int] | None, OSError | None]:
     """One filing's incarnation, keeping absence apart from unavailable.
 
-    ``incarnation`` answers ``None`` for both because a caller that only asks
-    "is a plan there" may treat them alike.  A caller deciding against a
-    filing may not: a stat that failed is unknown state, not evidence the
-    file is gone, and a fresh seal over unknown state is a guess (#708
-    review).  Returns ``(incarnation, None)``, ``(None, None)`` for an absent
-    file, or ``(None, error)`` for a stat that failed.
+    A stat that failed is unknown state, not evidence the file is gone.
+    A fresh seal over unknown state is a guess (#708 review). Returns
+    ``(incarnation, None)``, ``(None, None)`` for an absent file, or
+    ``(None, error)`` for a stat that failed.
     """
 
     try:
@@ -823,12 +821,14 @@ def incarnation(path: Path) -> tuple[int, int, int] | None:
     one body are two files with different inodes, which is exactly what tells
     a deliberate same-body resubmission from the filing a marker was written
     for (#708 review); a content digest cannot.  ``None`` means the file is
-    not there (or not statable), never "unchanged"; a caller that must tell
-    those apart reads through :func:`read_filed`, which retains the
-    diagnostic.
+    not there, never "unchanged". Other stat errors propagate so admission
+    and retirement cannot treat unavailable evidence as absence.
     """
 
-    return _stat_incarnation(path)[0]
+    filing, error = _stat_incarnation(path)
+    if error is not None:
+        raise error
+    return filing
 
 
 def read_filed(queue, consumer_action_key: str, *,

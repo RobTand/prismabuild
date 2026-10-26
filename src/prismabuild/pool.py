@@ -17044,6 +17044,10 @@ class PoolQueue:
             return scan
         reason = candidate_policy.residency_denial(residency)
         if reason is None and item.get("gang") is not None:
+            if any(plan_uncertainty):
+                self._gang_clear_terminal(item, key)
+                return candidate_policy.CandidateDenial(
+                    "residency_plan_unreadable", {'residency': residency}, scan)
             # A resident map does not make a retired filing usable. Inspect
             # plan retirement independently of the host's residency verdict,
             # including while resources keep this member READY. Keep the
@@ -17090,7 +17094,8 @@ class PoolQueue:
                     # Preserve their separate proof, but never bridge a
                     # missing observation into a now-readable plan proof.
                     try:
-                        interrupted = self._terminal_plan_signature(key) is not None
+                        interrupted = residency_plan.incarnation(
+                            self.records.residency_plan_path(key)) is not None
                     except (OSError, ValueError, pb.PrismaBuildError):
                         pass
                 if interrupted:
@@ -20516,7 +20521,7 @@ class PoolQueue:
                 refused = True
         raw = path.read_bytes()
         if residency_plan.incarnation(path) != filing:
-            return None
+            raise ValueError("residency plan filing changed during terminal proof")
         if refused:
             return pb.canonical_sha256(["plan-refused", filing, pb.raw_sha256(raw)])
         marker = residency_plan.superseded(self, plan)
@@ -20525,7 +20530,7 @@ class PoolQueue:
         if marker.get("unreadable"):
             raise ValueError("unverified residency supersession")
         if residency_plan.incarnation(path) != filing:
-            return None
+            raise ValueError("residency plan filing changed during terminal proof")
         return pb.canonical_sha256(
             ["plan-superseded", filing, pb.raw_sha256(raw), marker])
 
@@ -20576,7 +20581,7 @@ class PoolQueue:
         and never sleeps; the leads' locks are released before the caller
         withdraws any sibling.
         """
-        from . import _gang
+        from . import _gang, residency_plan
         group: str | None = None
         try:
             group = self._gang_member_group(item)
@@ -20607,8 +20612,13 @@ class PoolQueue:
                         ) is not None:
                             self._gang_clear_terminal(item, key)
                             return False
-                fresh = self.residency_verdict(item, fresh=True)
-                if (fresh["state"] not in ("lead_not_resident", "lead_unpinned")
+                path = self.records.residency_plan_path(key)
+                filing = residency_plan.incarnation(path)
+                with residency_plan._observe_read_uncertainty() as uncertainty:
+                    fresh = self.residency_verdict(item, fresh=True)
+                if (any(uncertainty) or (uncertainty and filing is not None)
+                        or residency_plan.incarnation(path) != filing
+                        or fresh["state"] not in ("lead_not_resident", "lead_unpinned")
                         or fresh.get("plan_superseded") is not None
                         or self._terminal_signature(fresh) != signature):
                     self._gang_clear_terminal(item, key)

@@ -5715,8 +5715,13 @@ not proof. Existing public denial names are unchanged, including supersession
 that is discovered without an ended lead in the verdict. A resident map does
 not override verified supersession: the member still defers admission and
 confirms teardown while READY, even if no other resource blocks its launch.
-A failed plan read anywhere in that scan resets confirmation even when another
-read succeeds later in the same scan; it cannot reuse the aged observation.
+An unavailable plan stat or failed plan read anywhere in that scan resets
+confirmation even when another observation succeeds later in the same scan;
+it cannot reuse the aged observation. Filing observations distinguish genuine
+absence from stat failure. Only genuine initial absence permits the separate
+lead-only proof. A disappeared or replaced filing during revalidation defers
+admission and teardown. The final locked lead-verdict refresh also retains
+swallowed plan-read uncertainty and rechecks the filing identity before commit.
 After the same terminal evidence has been observed for 120 seconds, the next
 successful eligible claim scan must freshly confirm it and record teardown.
 Plan proof and commit hold the consumer's transition lock; the distinct

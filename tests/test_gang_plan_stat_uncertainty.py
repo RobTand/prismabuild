@@ -1,5 +1,6 @@
 """Unavailable filing observations cannot admit or confirm a gang (#2323)."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,10 +15,14 @@ from test_prelaunch_admission_1594 import TIER, _consumer_sha, _gang_pair
 
 @pytest.mark.parametrize("signature_number", [None, 1, 2, 3],
                          ids=["sustained", "admission", "confirmation", "commit"])
-@pytest.mark.parametrize("stat_number", [1, 2, 3, 4],
-                         ids=["initial", "after-bytes", "marker-owner", "after-marker"])
+@pytest.mark.parametrize("stat_number,failure", [
+    (1, "unavailable"), (2, "unavailable"), (3, "unavailable"), (4, "unavailable"),
+    (2, "absent"), (4, "absent"), (2, "replaced"), (4, "replaced"),
+], ids=["initial", "after-bytes", "marker-owner", "after-marker",
+        "absent-after-bytes", "absent-after-marker",
+        "replaced-after-bytes", "replaced-after-marker"])
 def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
-        gang_fleet, monkeypatch, tmp_path, signature_number, stat_number):
+        gang_fleet, monkeypatch, tmp_path, signature_number, stat_number, failure):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second, lead, refill, plan = _waiting_plan(
         gang_fleet, monkeypatch, tmp_path, "stat-boundary")
@@ -39,6 +44,13 @@ def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
             stats.append(True)
             if len(stats) == stat_number:
                 faults.append(True)
+                if failure == "absent":
+                    raise FileNotFoundError("plan temporarily absent during revalidation")
+                if failure == "replaced":
+                    info = original_stat(candidate, *args, **kwargs)
+                    return SimpleNamespace(st_ino=info.st_ino + 1,
+                                           st_mtime_ns=info.st_mtime_ns,
+                                           st_size=info.st_size)
                 raise OSError("injected terminal-plan stat failure")
         return original_stat(candidate, *args, **kwargs)
 
@@ -70,8 +82,9 @@ def test_stat_fault_at_each_plan_proof_boundary_resets_confirmation(
 
 
 @pytest.mark.parametrize("fresh", [False, True], ids=["initial-verdict", "fresh-verdict"])
+@pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
-        gang_fleet, monkeypatch, tmp_path, fresh):
+        gang_fleet, monkeypatch, tmp_path, fresh, error_type):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = _gang_pair(
         gang_fleet, tmp_path, "verdict-stat", declare_manifest=True, declare_plan=True)
     first, second = keys
@@ -89,7 +102,7 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
     def unavailable(candidate, *args, **kwargs):
         if candidate == path and not faults:
             faults.append(True)
-            raise OSError("one-shot verdict plan stat failure")
+            raise error_type("one-shot verdict plan stat failure")
         return original_stat(candidate, *args, **kwargs)
 
     def verdict(owner, item, *, fresh=False):
@@ -113,3 +126,28 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
     clock.now += 2
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
+
+
+def test_resident_verdict_cannot_hide_an_earlier_stat_failure(
+        gang_fleet, monkeypatch, tmp_path):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, first, second, lead, refill, plan = _waiting_plan(
+        gang_fleet, monkeypatch, tmp_path, "resident-stat")
+    _compose_map(monkeypatch, queue, first, [lead])
+    path = queue.records.residency_plan_path(first)
+    original_stat = Path.stat
+    faults = []
+
+    def unavailable(candidate, *args, **kwargs):
+        if candidate == path and not faults:
+            faults.append(True)
+            raise OSError("one-shot resident verdict stat failure")
+        return original_stat(candidate, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "stat", unavailable)
+        assert gclaim("sparklina") is None
+        assert faults == [True]
+        assert first not in queue.ledger("sparklina").held_keys()
+        assert denial(first, "sparklina")["reason"] == "residency_plan_unreadable"
+    assert gclaim("sparklina") == first
