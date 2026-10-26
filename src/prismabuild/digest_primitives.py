@@ -39,10 +39,9 @@ def _canonical_bytes(value: object) -> bytes:
         raise ActionContractError("value is not finite canonical JSON data") from exc
 
 
-def sorted_json(value: object, *, allow_nan: bool = True,
-                indent: int | None = None) -> str:
-    """Sorted JSON text with optional indentation and existing non-finite spelling."""
-    return json.dumps(value, sort_keys=True, allow_nan=allow_nan, indent=indent)
+def sorted_json(value: object, *, allow_nan: bool = True) -> str:
+    """Sorted default JSON text, including the existing non-finite spelling."""
+    return json.dumps(value, sort_keys=True, allow_nan=allow_nan)
 
 
 def sorted_diagnostic_json(value: object) -> str:

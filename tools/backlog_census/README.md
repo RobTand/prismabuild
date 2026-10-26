@@ -109,6 +109,11 @@ but their ancestry remains unknown. The old native-parent records omitted the
 repository, so import assumes the issue's repository. See [the baseline
 reconciliation](BASELINE.md) for the reproduced counts and each root change.
 
+Pretty receipt and snapshot bytes use `census_json_bytes`. The existing digest
+owner establishes recursive key order; the census formatter applies indentation,
+ASCII escaping and one LF without changing attested runtime source. Raw hashes
+remain with `raw_sha256`.
+
 ## Verify through PrismaBuild
 
 Submit the complete stdlib suite as one small execution unit. It uses one CPU,
