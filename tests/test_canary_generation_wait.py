@@ -12,6 +12,7 @@ from fleet_world import Clock as FleetClock
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import prismabuild.core as pb
 import prismabuild.pool as pool
@@ -106,9 +107,10 @@ def test_the_submission_retries_within_its_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(pbcanary, "submit_leg", submit_leg)
     monkeypatch.setattr(pbcanary, "generation_pending",
                         lambda *args, **kwargs: True)
-    monkeypatch.setattr(pbcanary.time, "sleep", lambda s: None)
-    monkeypatch.setattr(pbcanary.time, "monotonic",
-                        lambda: 0.0)  # never past the deadline
+    monkeypatch.setattr(pbcanary, "time", SimpleNamespace(**{
+        **vars(pbcanary.time), "sleep": lambda s: None,
+        "monotonic": lambda: 0.0,
+    }))  # never past the deadline
 
     def unobserved(paths, leg, action_key, wait_s):
         # The retry is what this test proves; the wait beyond it is another
@@ -166,8 +168,9 @@ MINTING_PATHS = {"published_src": "", "publication_canary_authorizer": object()}
 def _run_minting_side(tmp_path, monkeypatch, *, pending, submit_leg, clock):
     monkeypatch.setattr(pbcanary, "submit_leg", submit_leg)
     monkeypatch.setattr(pbcanary, "generation_pending", pending)
-    monkeypatch.setattr(pbcanary.time, "sleep", lambda s: None)
-    monkeypatch.setattr(pbcanary.time, "monotonic", clock)
+    monkeypatch.setattr(pbcanary, "time", SimpleNamespace(**{
+        **vars(pbcanary.time), "sleep": lambda s: None, "monotonic": clock,
+    }))
 
     def unobserved(paths, leg, action_key, wait_s):
         raise pbcanary.subprocess.TimeoutExpired(cmd="pbwait", timeout=wait_s)

@@ -20,6 +20,7 @@ import os
 import signal
 import stat
 import sys
+from types import SimpleNamespace
 import textwrap
 import time
 from contextlib import contextmanager, suppress
@@ -176,7 +177,9 @@ def box(tmp_path, monkeypatch):
     def run_cycle():
         before = len(cycles)
         monkeypatch.setattr(sys, "argv", ["supervise", "--loops", "1"])
-        monkeypatch.setattr(supervise.time, "sleep", boundary)
+        monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+            **vars(supervise.time), "sleep": boundary,
+        }))
         with suppress(CycleComplete):
             supervise._run_supervisor(lambda: False)
         assert len(cycles) == before + 1, "the actual owner cycle must finish"

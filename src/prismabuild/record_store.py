@@ -1631,12 +1631,12 @@ class RecordStore:
         return Absent()
 
     def gang_member_slots(self, key: str) -> Iterator[RecordObservation]:
-        """Stable strict 64 KiB slots in gang membership's original priority."""
+        """Replaceable strict 64 KiB slots in gang membership's original priority."""
         for state in (CLAIMED, DONE, FAILED, WITHDRAWN, READY):
             path = self.item_path(state, key)
             address = QueueAddress(path, state, key)
             try:
-                raw = immutable_files.read_stable_file(
+                raw = immutable_files.read_replaced_record(
                     path, where="gang record", max_bytes=64 * 1024)
             except FileNotFoundError:
                 yield RecordObservation(address, Absent())
