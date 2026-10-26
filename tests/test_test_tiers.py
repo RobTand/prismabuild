@@ -185,6 +185,7 @@ def test_failed_shards_name_their_lane_and_files():
 def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case):
     sample = tmp_path / 'sample'
     (sample / 'tests').mkdir(parents=True)
+    (sample / 'pytest.ini').write_text('[pytest]\n')
     selected = ['tests/test_root_sample.py']
     first = ("pytest.exit('controlled early exit', returncode=0)" if case == 'early_exit'
              else "pytest.skip('recorded root skip')" if case == 'skip' else 'assert True')
@@ -195,7 +196,7 @@ def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case)
         'import runpy; from pathlib import Path; '
         f"owner=runpy.run_path({str(ROOT / 'tools/fleet/pbtest_outcomes.py')!r}); "
         "raise SystemExit(owner['main']("
-        f"['-q', '-rA', '-o', 'addopts=', '-p', 'no:cacheprovider', *{selected!r}], "
+        f"['-q', '-rA', '-c', 'pytest.ini', '-o', 'addopts=', '-p', 'no:cacheprovider', *{selected!r}], "
         f"collection_spec={{'files': {selected!r}, 'roots': [[{selected[0]!r}, 'file']]}}, "
         f"collection_source=Path({str(ROOT / 'src/prismabuild/pbtest_collection.py')!r}).read_text()))"
     )
@@ -227,7 +228,8 @@ def test_root_lane_reconciles_real_pytest_execution(tmp_path, monkeypatch, case)
     report.mkdir()
     result = verify.run_root_lane(report)
     verdict = verify.tier_verdict([result], selected, 1, 'integration')
-    assert verdict['verdict'] == ('PASS' if case in ('complete', 'skip') else 'FAIL')
+    assert verdict['verdict'] == ('PASS' if case in ('complete', 'skip') else 'FAIL'), json.dumps(
+        {'root': result['verdict'], 'stdout': observed.stdout}, indent=2)
     if case in ('complete', 'skip'):
         assert result['verdict']['completion']['status'] == 'complete'
         assert verdict['counts'] == ({'passed': 1, 'skipped': 1} if case == 'skip'
