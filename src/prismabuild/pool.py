@@ -144,6 +144,7 @@ from . import endings, lifecycle, tier_holdings
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
+from . import host_hold
 from . import drain_policy
 from .drain_policy import (DRAIN_HELD_CPUS, MEASUREMENT_UNMEASURED_CEILING_S,
                            STARVATION_FLOOR, WITHHOLD_CEILING_S)
@@ -5684,6 +5685,7 @@ class PoolQueue:
         # (#924); never read as admission authority on their own.
         self._drain_accounting = _DrainAccounting()
         self._admission_busy_logged_at: float | None = None
+        self._expired_host_holds: dict[str, tuple[object, ...]] = {}
         # Queue directories are created once per process (see
         # ``ensure_layout``): nothing in the pool ever removes them.
         if not self.root.is_absolute():
@@ -5892,6 +5894,7 @@ class PoolQueue:
         drain_owner: str | None = None,
         drain_reason: str | None = None,
         drain_changed_unix: float | None = None,
+        hold: Mapping[str, object] | None = None,
     ) -> None:
         """Record what this worker offers, so a submitter can be told the truth.
 
@@ -6030,6 +6033,8 @@ class PoolQueue:
             record["drain_reason"] = str(drain_reason)
         if drain_changed_unix is not None:
             record["drain_changed_unix"] = float(drain_changed_unix)
+        if hold is not None:
+            record["hold"] = dict(hold)
         directory = self.records.worker_directory()
         directory.mkdir(parents=True, exist_ok=True)
         self.records.replace_record_at(self.records.worker_offer_path(host), record)
@@ -16384,6 +16389,22 @@ class PoolQueue:
         return None
 
 
+    def claim_hold(self) -> host_hold.HostHold | None:
+        """The shared hold check for every claim route and the parked offer."""
+        host = socket.gethostname()
+        hold = host_hold.read_host_hold(self.root, host)
+        if hold is None:
+            self._expired_host_holds.pop(host, None)
+            return None
+        if not hold.expired:
+            return hold
+        identity = (hold.owner, hold.created_unix, hold.expires_unix)
+        if self._expired_host_holds.get(host) != identity:
+            print(f"[{host}] operator hold expired at {hold.expires_unix}; "
+                  "new claims may resume when maintenance is open", flush=True)
+            self._expired_host_holds[host] = identity
+        return None
+
     def claim(
         self, *, tags: Iterable[str] = (), has_gpu: bool = False,
         owner: str | None = None, capacity: Mapping[str, int] | None = None,
@@ -16405,6 +16426,8 @@ class PoolQueue:
         immediately before the intent write, so a fence that closed after the
         poll check is still observed. ``None`` preserves current behavior.
         """
+        if self.claim_hold() is not None:
+            return None
         ledger = self.ledger()
         memory = (_ClaimMemory(gpu_sampler or gpu_admission.trusted_sample, unified_memory)
                   if has_gpu else None)
@@ -18321,6 +18344,11 @@ class PoolQueue:
         # empty scopes) accounts for it before SUCCESS. ``None``
         # preserves current behavior for fenceless callers. The
         # unwind mirrors the tier-shortage path above it.
+        hold = self.claim_hold()
+        if hold is not None:
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "operator_held", hold.fields())
+            return _ClaimHandled.REFUSED
         if admission_open is not None and not admission_open():
             reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
             self.record_denial(item, "resign_fenced", {
@@ -21804,8 +21832,16 @@ class PoolQueue:
             if host is None and isinstance(lease.get("host"), str):
                 host = str(lease["host"])
 
-        if (existing is not None and record is not None
-                and self.withdrawal_covers(record, action_key=key) is None):
+        supersede_existing = (existing is not None and record is not None
+                              and self.withdrawal_covers(record, action_key=key) is None)
+        # Admission can reach withdrawal through a refusal without reaching the
+        # final claim check. Recheck after ownership reads, before retiring an
+        # old marker or filing new cancellation authority. A committed handoff
+        # and explicit operator withdrawals must still be able to complete.
+        if (preempted_by is not None and (existing is None or supersede_existing)
+                and self.claim_hold() is not None):
+            raise PoolContractError("operator hold prevents admission preemption")
+        if supersede_existing:
             self._supersede_withdrawal(key)
             existing = None
 

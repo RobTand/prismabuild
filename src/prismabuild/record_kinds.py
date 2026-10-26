@@ -36,6 +36,11 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("q-host-hold", "prismabuild.host_hold.v1", "holds/<host>.json", "additive",
+               "prismabuild.host_hold:read_host_hold", ("prismabuild.host_hold:change_host_hold",),
+               ("active", "expired"),
+               ("absent permits claims; invalid holds fail closed; expiry does not delete the record",),
+               stable_paths=True, older_participant_absence=True),
     RecordKind("host-spool-offer", None, "host-private <box>.spool-offer.json", "additive",
                "prismabuild.local_scratch:read_spool_offer", ("prismabuild.local_scratch:write_spool_offer",),
                ("zero", "measured", "replay"), ("a missing or invalid counter means unknown, never zero",),
