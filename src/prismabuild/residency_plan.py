@@ -1033,7 +1033,10 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
             "error": ("the marker's plan_incarnation is not three whole "
                       f"integers: {marker.get('plan_incarnation')!r}"),
         }
-    current = incarnation(queue.records.residency_plan_path(key))
+    try:
+        current = incarnation(queue.records.residency_plan_path(key))
+    except OSError:
+        current = None
     if current is None:
         # The marker names a filing this reader cannot stat.  Only a
         # successfully read current identity may prove the marker covers a
@@ -1087,7 +1090,10 @@ def mark_superseded(queue, consumer_action_key: str, *,
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
     with queue.action_transition_lock(key):
-        current = incarnation(queue.records.residency_plan_path(key))
+        try:
+            current = incarnation(queue.records.residency_plan_path(key))
+        except OSError:
+            return None
         if current is None:
             return None
         if filing is not None and tuple(filing) != current:
@@ -1303,7 +1309,10 @@ def window_owned(queue, consumer_action_key: str, *,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    current = incarnation(queue.records.residency_plan_path(key))
+    try:
+        current = incarnation(queue.records.residency_plan_path(key))
+    except OSError as error:
+        return False, f"its plan filing could not be stat-ed: {error}"
     if current is None:
         return False, "its plan filing is gone"
     if filing is not None and tuple(filing) != current:
@@ -1550,7 +1559,10 @@ def seal_window(queue, plan: Mapping[str, object], *,
             # handoff proof or the withdrawn listing would otherwise leave a
             # filed plan with no row and no ending, which the dead-consumer
             # pass reads as a live seal's interest in every mover it names.
-            filed = incarnation(path)
+            try:
+                filed = incarnation(path)
+            except OSError:
+                filed = None
             if before is None and filed is not None:
                 target = (path.parent / SUPERSEDED
                           / f"{path.stem}.{time.time():.6f}.seal-refused.json")
