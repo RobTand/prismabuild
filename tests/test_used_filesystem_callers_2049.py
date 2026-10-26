@@ -230,3 +230,44 @@ def test_resident_adoption_checks_nested_files_before_publication(tmp_path, monk
     with pytest.raises(floor.FloorRefused):
         local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
     assert target / "nested" in checked
+
+
+def test_stage_adoption_checks_existing_destination_leaf(tmp_path, monkeypatch):
+    source = tmp_path / "origin" / "payload"
+    entry = _write(source, b"payload")
+    args = _args(tmp_path, _manifest(source.parent, [entry]), start=0, end=7,
+                 max_readers=1, readers=1)
+    guard(monkeypatch)
+    assert stage_move.move(args)["complete"]
+    destination = next(p for p in Path(args.stage_root).rglob("*")
+                       if p.is_file() and p.read_bytes() == b"payload")
+    checked = guard(monkeypatch, destination)
+    with pytest.raises(floor.FloorRefused):
+        stage_move.move(args)
+    assert destination in checked
+    assert destination.read_bytes() == b"payload"
+
+
+@pytest.mark.parametrize("route", ["final", "partial", "adopt"])
+def test_resident_reuse_checks_actual_leaf(tmp_path, monkeypatch, route):
+    store, record, spec = nested_world(tmp_path)
+    final = Path(spec["root"]) / record["set_id"]
+    guard(monkeypatch)
+    if route == "final":
+        local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
+        target = final
+    else:
+        target = tmp_path / "manual" if route == "adopt" else final.with_name(final.name + ".partial")
+        (target / "nested").mkdir(parents=True)
+        (target / "nested" / "weights").write_bytes(b"weights")
+    leaf = target / "nested" / "weights"
+    previous = store.read_copy(record["set_id"], "test-host")
+    checked = guard(monkeypatch, leaf)
+    with pytest.raises(floor.FloorRefused):
+        if route == "adopt":
+            local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, target, now=120)
+        else:
+            local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
+    assert leaf in checked
+    assert leaf.read_bytes() == b"weights"
+    assert store.read_copy(record["set_id"], "test-host") == previous
