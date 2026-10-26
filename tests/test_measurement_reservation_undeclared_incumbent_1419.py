@@ -189,6 +189,86 @@ def test_a_dependent_of_hint_without_a_sealed_owner_stays_behind_the_election(fl
     ) is not None
 
 
+def test_a_raw_holder_beside_a_claimed_incumbent_does_not_elect_the_host(fleet):
+    """A valid incumbent cannot account for a different unclaimed holder.
+
+    Keep real adaptive holdings from a second claim, removing only its claim
+    record as in the orphan-only control. CPU-only holdings avoid making this
+    election test depend on a second GPU sharing probe.
+    """
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    incumbent = publish("mixed-claimed-incumbent", priority=-10, timeout_s=None,
+                        cpu=2, gpu=1, mem_gb=8)
+    assert claim() == incumbent
+    assert queue.holder_bound(incumbent).get("requested_timeout_s") is None
+    raw = publish("mixed-raw-holder", priority=-10, timeout_s=None,
+                  cpu=2, gpu=0, mem_gb=8, pinned=True)
+    assert claim() == raw
+    raw_claim = queue.records.item_path(pool.record_store.CLAIMED, raw)
+    raw_claim.unlink()
+    assert queue.holder_bound(raw)["bound"] == "unknown"
+    ledger = queue.ledger("sparklina")
+    assert set(ledger.held_keys()) == {incumbent, raw}
+    incumbent_snapshot = _holder_snapshot(queue, incumbent)
+    raw_tokens = ledger.holder_tokens(raw)
+    raw_metadata = ledger.held_dir / raw / adaptive_cpu.METADATA
+    raw_metadata_snapshot = raw_metadata.read_bytes()
+    assert raw_tokens and raw_metadata_snapshot
+
+    def assert_original_holdings_retained():
+        _assert_holder_unchanged(queue, incumbent, incumbent_snapshot)
+        # _holder_snapshot requires a claim, so check the raw holder separately.
+        assert not raw_claim.exists()
+        assert not queue.records.item_path(pool.record_store.READY, raw).exists()
+        assert raw in ledger.held_keys()
+        assert ledger.holder_tokens(raw) == raw_tokens
+        assert raw_metadata.read_bytes() == raw_metadata_snapshot
+
+    measurement = publish("mixed-priority-zero-measurement", measurement=True,
+                          priority=0, cpu=8, gpu=1, mem_gb=48)
+    assert claim() is None
+    evidence = denial(measurement)["evidence"]
+    assert evidence["decision"]["reason"] == "measurement_holder", evidence
+    assert evidence["decision"]["measurement_pool_drain"]["foreign_clear"] is True
+    assert evidence["withhold"]["why"] == "draining_for_measurement"
+    assert evidence["withhold"]["withhold"] is True
+    assert {entry["action_key"] for entry in evidence["withhold"]["holders"]} == {
+        incumbent, raw}
+    assert reservation.selection(
+        pool.record_store.read_document(queue.records.passes_path(measurement)) or {},
+    ) is None
+    assert_original_holdings_retained()
+
+    tick(pool.WITHHOLD_CEILING_S + 60)
+    assert claim() is None
+    evidence = denial(measurement)["evidence"]
+    assert evidence["decision"]["reason"] == "measurement_holder", evidence
+    assert evidence["withhold"]["why"] == "measurement_drain_expired"
+    assert evidence["withhold"]["withhold"] is False
+    assert reservation.selection(
+        pool.record_store.read_document(queue.records.passes_path(measurement)) or {},
+    ) is None
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert_original_holdings_retained()
+
+    refill = publish("mixed-lower-priority-consumer", priority=-10, timeout_s=None,
+                     cpu=1, gpu=0, mem_gb=1, pinned=True)
+    assert claim() == refill, denial(refill)
+    refill_claim = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.CLAIMED, refill),
+    )
+    assert refill_claim["claimed_host"] == "sparklina"
+    assert set(ledger.held_keys()) == {incumbent, raw, refill}
+    assert ledger.holder_tokens(refill)
+    assert_original_holdings_retained()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    lapsed = denial(measurement)["evidence"]["withhold"]
+    assert lapsed["why"] == "measurement_drain_expired" and lapsed["withhold"] is False
+    assert reservation.selection(
+        pool.record_store.read_document(queue.records.passes_path(measurement)) or {},
+    ) is None
+
+
 def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
     """A mem_gb shortage whose only holder is not a claimed action elects
     nothing: no action lifetime bounds that wait, and fencing the host could

@@ -1520,6 +1520,43 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+A heartbeat takes the transition lock non-blocking. If another thread or
+process holds it, the current worker publishes a liveness-only stamp under
+`lease-heartbeats/<action_key>/<claim-identity-digest>.json`. Its identity uses
+`claim_identity.CLAIM_IDENTITY_FIELDS`, plus the recorded host, PID and process
+start ticks. New leases carry those fields when the durable claim has the
+complete immutable identity. Partial legacy claims keep their existing lease
+wire format and cannot issue an incarnation stamp; a contended beat skips
+publication without failing the payload, retaining the ordinary lease-age
+recovery bound. The contended
+writer verifies the durable claim, lease and caller snapshot before writing;
+a delayed predecessor can replace only its own incarnation's stamp.
+
+`PoolQueue._effective_heartbeat` is the shared freshness observation for lease
+age, mover and consumer-order verdicts, widowed-lease sweeps, checkout recovery
+and the status census. Census stamp reads use its retained reader, preserving
+idle-scrape I/O reuse. It uses the later valid lease/stamp time only for an
+exact matching incarnation and process. A valid time is a finite number, not a
+boolean or string. It samples time after both reads, even when a caller has
+already sampled a clock. Every judge consumes the resulting nonnegative age;
+a future-dated lease is live at age zero. A malformed lease retains custody;
+the reaper records it and continues to other keys, and attachment treats it as
+possibly live. Census shows an invalid time as a stale claimed row. A matching
+stamp at most `OFFER_FUTURE_TOLERANCE_S` (60 seconds) ahead of the reader counts
+at age zero; its credited time is capped at the reader's post-read clock.
+Excessive future skew, malformed time or a foreign stamp adds no credit. After
+the last beat, a dead owner's stamp expires within `LEASE_TIMEOUT_S` plus the
+skew tolerance (360 seconds); the next recovery pass can act. This is a
+heartbeat-expiry bound, not proof of cleanup or a resource-release deadline.
+A stamp renews liveness, not progress
+or execution observations; progress quiet time ages from the lease write, not
+the stamp. A dead exact local PID/start-time identity or an old
+effective heartbeat can trigger detection; neither proves checkout cleanup.
+The certified recovery transition belongs to #2231. Stamp retention belongs
+to #2232. All worker hosts must run L2 before lock-contention protection is
+relied on; older reapers ignore stamps. This layer adds neither token-return
+authority nor checkout deletion.
+
 Before heartbeat publication or ordinary finish cleanup, available claim and
 lease identities must agree on owner, host, claim time and publication. A
 contradiction refuses the heartbeat before it overwrites the existing lease, preserving the evidence
@@ -1763,6 +1800,30 @@ changes, so a failed durable write leaves the scope active. A missing or
 malformed identity, unsettled tickets, malformed settlement, an unknown or
 reappearing group, or any inventory error retains the record as active, and
 no kernel stop, reclaim or release may act on a missing or replacement group.
+
+The broker's `maintenance_query` accepts only `{"op":"maintenance_query"}`
+from root or its configured execution UID, authenticated by Unix peer credentials.
+Its reply contains only `ok`, `draining`, `maintenance_owner` (null when open),
+`active_scopes`, `active_scopes_truncated`, `health`, `errors`,
+`errors_truncated` and `maintenance_protocol`, under the authority lock. It uses the root maintenance pass's scope
+classification, including empty frozen retired container tombstones and valid
+settled tombstones whose kernel group vanished. It performs no pending-creation
+cleanup, reclaim, stop, removal or durable record write. Pending setup remains
+active until root maintenance cleans it. Changed kernel identity, populated or
+unfrozen groups, unknown groups and unreadable observations retain the existing
+refusals. Zero active scopes is an observation, not proof of physical memory
+reclamation or permission to release an action's reservations. A failed root
+reap can leave root status unhealthy while a read-only query reports healthy
+with zero active scopes. Ending maintenance re-runs the root check and refuses
+while that failure persists.
+
+The locally installed root-owned broker entrypoint provides
+`--maintenance-begin OWNER` and `--maintenance-end OWNER` as bounded Unix RPC
+clients. Begin accepts `--reason TEXT`, defaulting to `operator maintenance`.
+An empty reason uses that default. These operations retain root-only authorization and exact gate-owner
+checks; the read-only query grants neither. The bridge is published and
+converged as its own generation through the normal updater before a later
+custody deployment relies on it. No privileged Python is executed from NFS.
 
 Unproven cleanup retains the late-finish record with its original result, exact
 scope authority, failure count and first/last failure times. A restart can retry
@@ -2038,7 +2099,7 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `7`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
@@ -2047,7 +2108,28 @@ selected immutable attempt and exact execution receipt (#1481). Version 6
 exposes the generation-bound scratch lifetime contract (Refs #1360): the
 `scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
 field, its sealed variable, and a builder for the sealed selection. Earlier
-exports and capability tags remain available.
+exports and capability tags remain available. Version 7 adds the direct
+`validate_logical_request` re-export (#2149), with no new capability tag.
+
+`validate_logical_request(value: object) -> dict[str, Any]` returns the existing
+validator's canonicalized, independently owned request, including detached nested
+declarations, without mutating the input or reordering tasks. It checks common
+shape, the task roster and estimates, batching policy, placeholder use, residency
+pricing and optional task-data projections. Refusals preserve the owner's
+`ActionContractError` type and diagnostics and are `ValueError`-compatible;
+there is no additional public error alias or public planning API.
+
+Validation does not plan, stage, submit or publish anything, and does not prove
+execution feasibility. Structurally valid requests with impossible batching
+budgets still validate. Declared cwd, argv and manifests do not establish that
+executable inputs or resources exist or are available.
+
+This is a source-only additive SDK release. Source availability does not establish
+availability in PQ's installed or sealed generation. Handoff must identify the
+reviewed PB revision and SDK7 contract for TrustLadder/the authorized publisher
+to publish before consumer adoption. This change neither requires a concurrent
+PQ change nor modifies PQ's pinned runtime, publishes fleet runtime or performs
+workflow transitions.
 
 The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
 SDK5 consumers must keep their existing behavior.
@@ -2078,10 +2160,11 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 6).**
+**The surface (version 7).**
 
 | Area | Names |
 |---|---|
+| Logical-request validation | `validate_logical_request` |
 | Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
 | The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
 | The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
@@ -2096,8 +2179,8 @@ names the generation root, never `src`; the client appends `src` itself.
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
 `prismabuild.data_manifest` owns manifest parsing, validation, format limits and
-the declared-input identifier. The SDK keeps its existing manifest names and
-version 6. The parser uses Core's existing validation helpers; Core does not
+the declared-input identifier. SDK7 keeps the existing manifest names and
+behavior. The parser uses Core's existing validation helpers; Core does not
 import the manifest module. Manifest changes therefore stay outside the
 attested run-local and profiling implementation. `manifest_layout` retains
 the pure read-order operations.
@@ -4772,6 +4855,59 @@ whereas a sweep only files an authoritative ending. Sweep before re-running a
 SLURM campaign to preserve its execution record. An unknown job without a CAS
 receipt remains unresolved; neither recovery path invents success.
 
+## Operator holds on new claims
+
+The published `pbhold.py` sets, lists and releases one atomic
+`holds/<host>.json` record under the queue root. Its `prismabuild.host_hold.v1`
+schema carries `owner`, `reason`,
+`created_unix` and `expires_unix`. The lifetime is positive and at most 12 hours.
+Operator mutations serialize on the host's adjacent permanent POSIX lock.
+A different owner cannot replace or release an active hold without `--force`
+and an explicit reason. An expired record may be replaced by a new owner.
+Releasing an expired record still requires its recorded owner or a forced override.
+Every `--force` override requires an explicit reason.
+An absent record leaves admission open. An unreadable, nonregular or malformed
+record holds the host, failing closed. A valid expired hold reopens admission,
+subject to the independent maintenance gate. Its expiry is logged once per
+record per queue instance. Admission readers do not remove records.
+
+Every claim route consults the host's hold record through `PoolQueue.claim_hold`.
+`claim` checks before admission side effects, and `_rename_and_commit_claim` checks
+again under the per-key transition lock, unwinding reservations if a hold
+arrived during the pass. Ordinary CPU, GPU and restartable CPU guest claims
+all cross that boundary. The last read and rename are not atomic with an
+operator write; a claim already past that boundary may finish normally.
+Admission-driven preemption also checks the hold in `withdraw`, after resolving
+ownership and before retiring a withdrawal marker or filing new cancellation
+authority. This covers refusal-driven CPU guest, ordinary background and gang
+backfill handoffs, which may never reach the final claim check. Explicit
+operator withdrawals and already-committed handoff publication/cleanup continue.
+The hold read and cancellation are not atomic with an operator write; a handoff
+already past its final hold check may complete.
+Running actions otherwise continue with their reservations and cleanup unchanged.
+
+The operator hold is independent of the upgrade maintenance drain. Either
+control parks the worker loop's new claims. The maintenance gate is checked
+before queue reads, including the hold record. A closed gate skips that hold
+read. Saved-finish retries continue,
+and the worker publishes fresh offers with declared capability intact and zero
+observed capacity. Holds add
+an optional `hold` object to the offer when the maintenance gate is open.
+Under a closed gate, the offer carries the maintenance drain fields.
+Census and metrics use the worker's published `hold` observation and report
+`held` with zero observed capacity when that observation is present. They do
+not read hold records, preserving the idle metrics contract of no record reads
+or directory listings on an unchanged queue. Their hold view changes when the
+worker republishes its offer. `pbstatus` explicitly requests
+`authoritative_holds=True` from `census.action_rows`, which passes it to
+`census.offers`. That path reads each host's current hold record and reports
+`state: held`, `held: true`, zero observed capacity and hold details, including
+read errors, even before the next worker poll or while maintenance is closed.
+An expired or released hold is absent from this authoritative view regardless
+of the last offer. A stale worker stays
+unhealthy while its hold remains visible. Releasing either control leaves the
+other intact; operator holds never read or write the host's maintenance gate.
+
 ## Automatic client convergence
 
 Worker membership uses this same broker maintenance gate and the existing
@@ -5044,12 +5180,34 @@ leg's typed wait. Historical free-text failures are not reclassified.
 The leg-3 classification requires the exact submitted generation's verified
 immutable attempt stdout and its explicit `staging_wait` marker. The driver
 retains per-leg action keys and reasons in its run summary; a supporting
-publisher carries that summary in rollout detail. Bounded waits, progress,
-admission and activation are unchanged. No wait or missing evidence passes.
+publisher carries that summary in rollout detail. Progress, admission and
+activation retain their existing gates. No wait or missing evidence passes.
 This change requires rollout-verdict/interface review before merge/publication;
 source/component validation establishes neither deployment nor a live canary.
 The running fleet adopts these semantics only when a carrying generation is
 published.
+
+**Leg-3 observation patience (#1772).** A feasible higher-priority window may
+retain the same tier for longer than any finite canary observation budget.
+The canary therefore keeps observing its original leg-3 action after `pbwait`
+returns 75, using bounded 900-second observation intervals with no default
+total wait limit. Each interval records its observation before another begins.
+This repeats observation only: the driver neither resubmits the action nor
+changes its priority, sealed request, residency plan, reservations or attempts.
+An outcome-read failure (74), process observation timeout or terminal failure
+ends observation through the existing non-verification or failure path.
+Receipt, staged-serving and accepted-progress verification still decide success.
+
+Standalone `pbcanary --leg3-wait-s SECONDS` supplies one positive finite total
+observation budget, measured from the first observation and never renewed.
+Expiry is NOT VERIFIED and retains the action key; it implies neither
+withdrawal nor containment. Other legs retain their fixed waits. Leg 3's
+600-second execution deadline and staged-read progress allowances remain
+independent of admission patience. Cancellation stops the observer, not the
+submitted action. Qualification completes only if contention eventually drains
+and the action executes and verifies. A publisher waiting on leg 3 can retain
+its publication lock indefinitely; this policy requires release-owner review.
+Source validation of this repair supplies no live-canary or deployment proof.
 
 **Publisher GPU boundary slot (#1213; approved 2026-09-27).** The publication
 canary's single GPU leg targets the publisher's GPU host and is submitted before
@@ -6254,9 +6412,22 @@ attributed job at a time. Absent power *without* the declaration remains
 invalid, so this narrows one declared class of device rather than weakening the
 contract for every sample.
 
-Attribution on such a host is a census of the GPU device node's open handles in
-`/proc`, routed through the same PID start-time and cgroup-identity checks as
-the NVML rows. It resolves ownership and reports no per-process bytes, which
+NVIDIA process attribution first runs a bounded compute-app discovery query,
+then captures start-time and cgroup membership only for those candidate PIDs.
+A separate compute-app query supplies measured bytes; fresh identities after
+measurement must match the pre-measurement identities. Discovery counters are
+never attributed. Empty discovery still requires measurement, and a PID first
+seen in measurement stays unknown/incomplete. Failed discovery performs no
+process-identity census, including with no active scopes; idle foreign inventory
+is still collected. Both queries and identity work share one collection deadline,
+with each query capped by the remaining budget and exhaustion incomplete even
+for empty rows. Scope inode fencing and Guard confirmations remain unchanged.
+
+Attribution on an AMD/WSL host is still a census of the GPU device node's open
+handles in `/proc`, bracketed by fresh PID start-time and cgroup-identity reads.
+The pre-measurement identities cover host PIDs because previously idle processes
+can open handles; pidfds do not announce those opens. This is not event-driven
+discovery, and mutable memberships, counters and capacity are not stably cached. It resolves ownership and reports no per-process bytes, which
 the sample declares as `gpu_process_bytes: false` and each scope as
 `gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
 violation it has no counter for. Ownership unknown still refuses; bytes unknown
@@ -6365,6 +6536,11 @@ and worker replacement; unchanged successful copies do not rewrite the mount.
 The child captures the local file signature before copying and records it only
 as successful after completion, so a concurrent state update stays pending.
 These file identities are diagnostic retry hints, never admission authority.
+
+Slice 2b also supplies an explicitly owned `LocalMirrorPublisher` session for
+future host-hub installation. Existing workers keep the one-shot publisher.
+The [queue-hint contract](#queue-change-hints-on-the-queue-host-1894) documents
+its watch ownership, completion marker, recovery bounds and shutdown behavior.
 
 The files under `reservations/<host>/adaptive/` are independent diagnostic
 copies. The CPU and GPU copies add `_snapshot.source=host-local` and a copy
@@ -7348,7 +7524,12 @@ things that answer different questions: NFS per-operation queue time and
 round-trip time differenced from `/proc/self/mountstats`, which costs the mount
 no operation and therefore keeps reporting when the mount does not, and a
 bounded set of timed syscalls including the create/rename/unlink the claim path
-performs. The queue/rtt split is the attribution -- time at the server against
+performs. Claim scratch is created empty and closed before rename and unlink:
+the dirty-file cycle retained NFS server open states in #1917, while the empty
+cycle preserved the RENAME diagnostic without retention in the bounded private
+reproduction. This is a source repair, not evidence that the deployed collector
+has changed or that already-retained states have been reclaimed.
+The queue/rtt split is the attribution -- time at the server against
 time this client could not send -- and it separates a healthy mount from a
 client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
@@ -9403,6 +9584,21 @@ The loop now keeps what it read from one cycle to the next, on its
   explicit `RecordStore.kept` questions for receipts, state records and
   withdrawal names. Helpers receive that Store directly. Residency's
   `EpochRecords` uses the same C11 reader for fragment headers.
+  Receipt thaws are retained by the exact frozen input returned by that
+  reader (#2172). Its six-field file identity, current filesystem trust and
+  coarse-clock fence qualify every reuse; an untrusted or same-tick parse
+  produces a new frozen input and invalidates the thaw. Removed names are
+  forgotten. The active/retired merge is reused only while the reader and
+  all participating directory generations and observed receipt names hold.
+  A receipt filed in the read's coarse clock tick, or on an untrusted
+  filesystem, can be returned without being kept. Removing that receipt
+  before the next read need not advance the kept-set generation, even while
+  other receipts remain. The observed names invalidate both `fill_supply`
+  and `mover_cap` in this case. Public receipt reads still
+  detach every JSON container. The cycle's native discovery and folds read
+  the private retained inputs; extension discovery callbacks receive copies.
+  This skips repeated thawing and merging of unchanged receipt inputs.
+  Clock-sensitive discovery, liveness, policy and ledger decisions stay fresh.
 - `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
@@ -10185,8 +10381,8 @@ each with a lowercase 64-hex action ID. The `Topic` declaration
 owns each topic's ID grammar and legacy projection. `OutcomeNamespaces` owns
 its bounded traversal and names-only mapping. Later mutation families must add
 a separate bounded adapter and an explicit topic declaration before advertising
-coverage. The host adapters below add `workers` and `reservations`. Tier,
-residency, adaptive mirrors, passes, denials and prewarm remain uncovered.
+coverage. The adapters below add `workers`, `reservations`, `adaptive`, `claim-denials`,
+`passes` and `denial-transitions`. Tier, residency and prewarm remain uncovered.
 Topic names are at most 64 characters; IDs are at most 128. A request admits at
 most 32 topic entries and 128 ID entries, including duplicates. Paths and
 noncanonical IDs are rejected with HTTP 400. Unknown syntactically valid topics
@@ -10210,6 +10406,14 @@ sequence behavior. It invalidates descendants observed and deleted before their
 watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
+
+Host-tree watch removal compares normalized path strings (#2173). The removed
+root and its slash-terminated prefix are computed once per removal. Each
+installed Path supplies its cached normalized string; the watch loop compares
+that string for equality or the descendant prefix, without constructing Paths
+or running per-watch pathlib ancestry checks. Exact component boundaries keep
+sibling host names distinct. Removal order, inode-watch retirement, coverage
+resets, event ordering and v1/v2 reply fields are unchanged.
 
 The v2 client methods perform one bounded request. They positively check requested
 topics before accepting a cursor or successful wait. They introduce no consumer
@@ -10296,6 +10500,82 @@ Callers must use their existing bounded reader outside admission and transition
 locks. This adapter helper does not activate any worker wait loop. Later consumer
 slices own the separate 0.25-to-five-second unavailable-bell recovery, cancelled
 by stop or recovered complete coverage. This slice adds no recurring timer.
+
+Slice 2b (#1941) adds `adaptive` and `claim-denials` with exact host IDs,
+plus `passes` and `denial-transitions` with action IDs. `AdaptiveInputs` bounds
+traversal to `reservations/<host>/adaptive` and the published mirror filenames.
+`ClaimDenials` shares those watches but emits a separate topic for
+`claim-denials.json`. A host or adaptive-directory removal invalidates both
+subscriptions. `passes/<key>.json` and `denial-transitions/<key>.json` are flat
+sidecars addressed by the existing record store. The shared
+`adaptive/publisher-result.json` completion marker also invalidates `adaptive`.
+The same watch-before-scan, inode checks, in-place mutation, populated move-in,
+coverage withdrawal and overflow reconstruction rules apply. The bell still
+reads no record bodies, and v1 receives no new topic events.
+
+`queue_bell_input_shapes` owns coverage checks separately from topic naming.
+`DirtyHostInputs` also retains `adaptive` and `claim-denials` invalidations
+through confirmed NFS reads within their original budget. Per-action sidecars
+continue to use the existing bounded action readers. No hint establishes an
+absence, refusal or capacity verdict.
+
+`adaptive_mirrors.LocalMirrorPublisher` supplies an explicitly owned local
+publication session. It watches the configured source directory and its parent
+before observing the fixed source files. Its observer flock permits one session
+per local state directory. Dirty source state survives the existing one-second
+start deadline and changes during a copy. The context manager owns and joins
+its observer thread; a host loop can instead use `reconcile()` and `descriptors`.
+Known older publishers are watched through verified PID/start ticks and pidfd.
+An already exited owner cannot be reused as a wake source. Kernel overflow
+replaces the local watch descriptor and installs fresh parent/source watches
+before reconciling the fixed source set. Closing the observer
+leaves an outstanding copy's independent flock intact until actual process exit.
+Existing workers retain their one-shot publication. The host hub owns session
+installation in slice 7.
+
+Copies retain source timestamps. Confirmed source removal removes its shared
+mirror; source-directory identity loss or unreadable evidence remains unknown.
+Shared deduplication uses the existing bounded no-follow regular-file reader,
+with the current canonical source size plus 128 bytes for snapshot metadata.
+A larger previous regular record is unequal and can be replaced, so a shrinking
+profile remains publishable. Byte-equivalent replacements acknowledge the local signature without another
+shared payload or completion write. Changed freshness and proof fields still
+copy. The shared completion marker follows payload changes, removals, initial
+publication, failure or recovery, and records `nonce`, `status`, `changed_files`
+and `finished_unix`. A marker failure cannot report local success. Counters
+report invalidations, coalescing, starts, completions, failures and source failures.
+A healthy clean observer has no timer. An empty local source is clean only
+when there is no prior result or the last publication successfully copied that
+empty source. A failed removal or completion-marker write retains its retry
+even with an empty or absent recorded signature. Dirty work arms the previous
+start plus one second. Copy or unavailable local-source recovery uses 0.25 seconds doubling
+to five seconds, no earlier than that start deadline, cancelled by source change,
+recovery or close. A successful copy resets the next copy-recovery delay to
+0.25 seconds. An unknown legacy lock owner uses nonblocking attempts after
+50 milliseconds doubling to one second until owner/result notification, clean
+state or close. This introduces no new blocking-operation or policy deadline.
+
+`queue_bell_input_changes.InputChanges` compares detached authoritative reader
+observations. Each observation carries semantic meaning, explicit evidence
+state and absolute deadlines. Unknown, absent, stale and fresh evidence remain
+distinct. A consumer records its own completed evaluation with `own_write=True`
+before consuming its resulting hints. That updates its comparison baseline
+without requesting another claim scan. Timestamp-only rewrites can move an
+evidence deadline without changing the meaning. The schema-specific projections
+omit diagnostic denial timestamps, pass-update timestamps and mirror-copy stamps.
+Adaptive projections retain counter histories and learned proof state; denial
+transitions retain history and changes to the latest reason, including a flap
+to an earlier reason. Consumers supply freshness and proof maturity even when
+rounded capacity is unchanged. Aggregate counters report changed, coalesced and
+expired inputs. Consumers discard observations when their interests retire.
+
+`peer_evidence_deadlines` uses the existing 5-second CPU and GPU freshness and
+120-second offer horizons. It returns only future evidence expiries in the wall
+clock, just past the inclusive policy horizon. Consumers convert those values
+to their wait clock when arming. Expiry is consumed once and is not a periodic
+claim tick. #1262 gains no policy timeout. This source slice supplies the
+comparison and publication components for the later host hub; it activates no
+worker wait loop and proves no deployed callback coverage.
 
 A selector blocks on inotify, listener sockets and a shutdown socket. Each
 request selects its filtered notification socket and client connection, so a

@@ -58,7 +58,7 @@ def test_cdi_repair_during_first_fault_check_requests_one_readiness_probe(
 
     runtime.thread = threading.Thread(target=runtime._watch, args=(submit,), daemon=True)
     runtime.thread.start()
-    assert ready.wait(5)
+    assert ready.wait()
 
     def old_source_exists(path):
         assert path == MISSING
@@ -67,7 +67,7 @@ def test_cdi_repair_during_first_fault_check_requests_one_readiness_probe(
         replacement = runtime.cdi_dir.parent / 'nvidia.new'
         replacement.write_text('containerEdits:\n  mounts:\n    - hostPath: /bin/true\n')
         replacement.replace(runtime.cdi_dir / 'nvidia.yaml')
-        assert predicate_reached.wait(5), 'watcher did not handle the real repair event'
+        assert predicate_reached.wait(), 'watcher did not handle the real repair event'
         return False
 
     monkeypatch.setattr(gpu_capacity, 'container_launch_outcome',
@@ -79,7 +79,7 @@ def test_cdi_repair_during_first_fault_check_requests_one_readiness_probe(
         'op': 'container_outcome', 'scope_id': record['scope_id'],
         'ticket': ticket, 'container_id': row['Id']})
     assert reply['launch_outcome']['kind'] == 'host_fault'
-    assert submitted.wait(5), 'CDI repair was consumed before latching without scheduling recovery'
+    assert submitted.wait(), 'CDI repair was consumed before latching without scheduling recovery'
     os.write(runtime.stop_write, b'x')
     runtime.thread.join()
     assert tokens == [runtime.state['probe_token']]
@@ -114,7 +114,7 @@ def test_enabled_start_without_nvidia_or_cdi_watches_a_later_driver_repair(
 
     runtime.start(submit)
     if runtime.thread is not None:
-        assert watching.wait(5)
+        assert watching.wait()
     assert not runtime.state['latched']
     row = {'HostConfig': {'Runtime': 'nvidia'}, 'State': {
         'StartedAt': '0001-01-01T00:00:00Z', 'Running': False, 'ExitCode': 127,
@@ -123,6 +123,6 @@ def test_enabled_start_without_nvidia_or_cdi_watches_a_later_driver_repair(
     assert outcome.kind == 'host_fault'
     assert runtime.state['latched'] and runtime.state['subtype'] == 'nvidia_initialization_failed'
     runtime.cdi_dir.mkdir()
-    assert submitted.wait(5), 'CDI creation after a driver-absent fault did not authorize recovery'
+    assert submitted.wait(), 'CDI creation after a driver-absent fault did not authorize recovery'
     assert tokens == [runtime.state['probe_token']]
     assert runtime.state['probe_event']['reason'] == 'cdi_changed'

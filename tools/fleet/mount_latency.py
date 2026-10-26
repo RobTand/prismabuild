@@ -406,7 +406,8 @@ def timed_probe(probe_dir: Path, repeats: int = PROBE_REPEATS,
 
     The rename is the reason this leg exists at all.  ``RENAME`` is how the
     pool takes a claim, it was the operation at 165 ms during the storm, and no
-    amount of read-side timing would have shown it.
+    amount of read-side timing would have shown it. Scratch stays empty:
+    dirty writes before deletion retained NFS server open states in #1917.
     """
 
     def median(values: list[float]) -> float:
@@ -456,8 +457,8 @@ def timed_probe(probe_dir: Path, repeats: int = PROBE_REPEATS,
     target = probe_dir / f"claim-{os.getpid()}.done"
 
     def claim_cycle() -> None:
-        with source.open("w", encoding="utf-8") as handle:
-            handle.write("probe\n")
+        # Dirty data before rename/unlink retains NFS open states (#1917).
+        source.write_text("", encoding="utf-8")
         os.rename(source, target)
         os.unlink(target)
 

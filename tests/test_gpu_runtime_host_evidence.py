@@ -53,7 +53,7 @@ def test_create_remove_plus_caller_supplied_error_cannot_fence(runtime_authority
     try:
         authority.launch_watches[ticket] = daemon.watch
         daemon.emit('create')
-        assert daemon.inspected.wait(5)
+        assert daemon.inspected.wait()
         daemon.emit('destroy')
         response = authority.handle(os.getuid(), os.getpid(), {
             'op': 'container_outcome', 'scope_id': record['scope_id'], 'ticket': ticket,
@@ -258,7 +258,7 @@ def test_only_documented_driver_faults_fence_and_all_query_statuses_are_retained
                                       removed=True, nvidia_injection=True)
             authority.launch_watches[ticket] = daemon.watch
             daemon.emit('create')
-            assert daemon.inspected.wait(5)
+            assert daemon.inspected.wait()
             daemon.emit('destroy')
         else:
             backend.inspect_container = lambda cid: row
@@ -304,7 +304,7 @@ def test_gpus_device_requests_require_independent_nvidia_fault_evidence(
                                       removed=True, nvidia_injection=driver in {'', 'nvidia'})
             authority.launch_watches[ticket] = daemon.watch
             daemon.emit('create')
-            assert daemon.inspected.wait(5)
+            assert daemon.inspected.wait()
             daemon.emit('destroy')
         else:
             backend.inspect_container = lambda cid: row

@@ -144,7 +144,100 @@ needed even for classification. Therefore W1 withholds a safe-backfill
 conclusion and a production patch. Only a fully evidenced failing reproducer
 and reviewed non-interference contract should accompany W2 #2061.
 
-## Verification
+## W2 #2061 addendum: positive remaining-movement witness for #1772
+
+The W1 statements above describe its original delivery, not the following
+production repair. W2 adopts W1's observations and protected feasible-wait
+control without changing its fixtures or closing its evidence dependency
+(#2125). `ConsumerWindow.remaining_movement_minimum_gib` now traverses the
+remaining movement legs, retaining the named accepted/reading phase and
+excluding declared prelaunch prefixes in the same way as the advance owner.
+It measures each indivisible leg plus its immediate successor, including
+chunk-to-chunk and cross-phase
+frontiers. It does not sum whole chunked phases, cap the result at capacity,
+or limit the traversal to the currently publishable horizon. Published legs
+still consume capacity. `read_footprint()` is unchanged: its bounded
+publication footprint can omit an impossible future transition.
+
+Before publication, relief, or setting the newcomer priority barrier, the
+cycle compares that minimum to authoritative minted tier capacity, not free
+space or capacity minus selected holdings. A strictly larger minimum is a
+positive progress-independent obstruction: draining other promises cannot
+make the required overlap fit that capacity. The newcomer stays gated using
+the existing oversize reason, and lower work still passes all its ordinary
+admission/funding gates. This is not general backfill authorization for
+joint-fit/commitment stalls. Unknown supply keeps its fail-closed gate;
+feasible draining waits retain priority protection. Admitted consumers and
+live tier holdings retain existing continuity and accounting. Exclusion is
+cycle-local, so increased capacity restores ordinary consideration without
+mutating plans or maintaining a blacklist.
+
+The new acceptance fixture uses a pinned incumbent2, capacity5, a priority0
+leader [1,1,4,6] (future indivisible6), or [1,1,4,4] (future overlap8), and a
+READY priority-10 final window1. The leader's initial minimum2 and bounded
+footprint4 conceal its future dead end. Tests exercise lower publication and
+normal funded claim accounting, capacity increase and range-scoped next
+funding, withdrawal, a live leader holding, unchanged sealed identity and
+pinned incumbent. These are synthetic CPU-only queue/cycle counterexamples,
+not reconstructions from GPU memory or manifest totals. The W1 20/5/18/3
+control remains a protected feasible wait. Smaller unit checks additionally
+cover chunk minima, accepted frontiers, absent movement roles and invalid
+role refusal.
+
+### Exact October 11 qualification disposition (unchanged)
+
+The original audit directory listing was permission-denied, not an individual
+object read or proof of evidence loss. W1 has no complete same-pass joint-fit
+reconstruction. Every missing contemporaneous fact in the table above remains
+unavailable: full held/fence/release ledger, queued funded/unfunded census,
+output obligations and scope, protected-next/running/same-pass extras,
+prelaunch groups and peaks, sharing identities and bindings, commitment
+terms/admitted growth/static occupancy, and bound leader plan geometry and
+lifecycle. Reported capacity138/held40/growth21 does not fill these gaps.
+No denied recovery is repeated here.
+
+Synthetic success does **not** prove the exact October 11 refusal cause or
+safe historical backfill, successful live canary qualification, completion
+of #2060/#2125 evidence work, or a causal link to October 8 stalls. The
+existing unclaimed canary and its three verified siblings are retained; no
+sibling replay, foreign work change, queue/priority/host workaround, sealed
+unit rewrite, admission override, or change to the original 600-second
+execution timeout is made. The 900-second observer expiry is not an execution
+timeout. Independent fixed-head review and normal publication gates remain
+with TrustLadder/the integrator; this package publishes no runtime.
+
+## W2 verification
+
+The unchanged #1772 acceptance file first reproduced all five intended
+publication failures on x86 with:
+
+```sh
+python -m pytest tests/test_infeasible_future_leader_does_not_starve_window_1772.py -q --basetemp="$TMPDIR/pytest"
+```
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"d92fcc4e31ada603c8c9effdd96028f80439e06217e65cd184eaf979f9fdf195","size":30658}},"operation":"620ea3c2c1b83c1b243f42f54933235ca110196674eb997b8a2bc61854754767","receipt":"d0ff2ef385badfc0e79a5c28cace46dd58129521748560b73d7033bc7a026d69"}]
+
+Final acceptance, regression, pressure, chunk/frontier and repository guards:
+**159 passed on x86 Python 3.14; 159 passed on ARM Python 3.12**. Each command
+ran inside the admitted test environment, with no nested submission:
+
+```sh
+python -m pytest tests/test_infeasible_future_leader_does_not_starve_window_1772.py tests/test_stalled_leader_2060_contract.py tests/test_higher_priority_window_waits_for_existing_promises.py tests/test_claimed_window_does_not_set_newcomer_priority_barrier.py tests/test_the_nonfinal_window_fences_its_advance.py tests/test_advance_needs_names_its_fence_target.py tests/test_a_ready_claim_is_tier_pressure.py tests/test_a_waiter_with_no_pressure_says_why_1627.py tests/test_wire_inventory.py tests/test_fleet_tool_flags_have_help.py tests/test_duplication_baseline.py tests/test_design_doc_line_references.py -q --basetemp="$TMPDIR/pytest"
+```
+
+x86:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"84b43109f2605be54cd7600605dc2dbf023eed85e58d175a775d04d7c6023daf","size":3822}},"operation":"df3a0aeab2e6970fc784b12ca0b4211d39de930f32670e96fb0e68975f4fb333","receipt":"7b76df475d133049870f7a3a97daea287e3551a5c6170a67ae0c0e54d0f07f0f"}]
+
+ARM:
+
+[Test evidence {"artifacts":{"stderr":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0},"stdout":{"digest":"ce0f3f98de7dbb33c841b90b2672be0176d7f133771aa99e73f49f073fe20fb7","size":3823}},"operation":"4ace190a8de9b51c87512f07e1023cbea91609fcd64a803c9483da7bfc2bc890","receipt":"a265fe26513f196ea06c0f769dde60155cf8978840d4d5e40d3bf8c224da1854"}]
+
+No record-field contract or compatibility golden was changed. The acceptance
+file was not modified. No full-suite, live canary, historical replay or
+publication qualification is claimed.
+
+## W1 verification (retained)
 
 Plain CPU-only command inside the supplied admitted actions, with no nested
 submission or fleet retrieval:

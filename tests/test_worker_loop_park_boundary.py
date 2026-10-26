@@ -106,6 +106,12 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
             # its own tests, and its sweep must not enter this poll count.
             return []
 
+        def claim_hold(self):
+            # The shared hold read must follow the host-local park proof.
+            if make_root and stamp != "unknown":
+                assert (parked / f"{os.getpid()}-{starttime}-{stamp}").is_file()
+            return None
+
         def __getattr__(self, name):
             pytest.fail(f"parked loop reached queue operation {name}")
 
@@ -145,7 +151,7 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
         if len(polls) >= 2:
             stop.set()
 
-    monkeypatch.setattr(loop.time, "sleep", sleeping)
+    monkeypatch.setattr(stop, "wait", sleeping)
     monkeypatch.setattr(sys, "argv", ["worker_loop.py", "--all-cores",
                                      "--cpu-slots", "1", "--poll-s", "0"])
     assert loop._run_loop(stop) == 0

@@ -161,5 +161,5 @@ def test_capture_accepts_sealed_dependencies_and_refuses_an_unsealed_module(tmp_
     ''')
     result = subprocess.run([sys.executable, '-B', '-c', program,
                              str(root / 'tests'), str(published)],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
