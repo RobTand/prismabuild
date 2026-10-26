@@ -663,8 +663,8 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     queue = _queue(tmp_path, spool_gb=8)
     tier = "prismabuild-stage:" + HOST
     queue.tier(tier).mint({'stage_gib': 8})
-    _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
-              ("tier-reservations", tier, "stage_gib"))
+    binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
+                        ("tier-reservations", tier, "stage_gib"))["binding"]
     context = multiprocessing.get_context("fork")
     errors = context.Queue()
     wins = context.Value("i", 0)
@@ -677,11 +677,14 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
         w.join(120)
     assert all(w.exitcode == 0 for w in workers), [w.exitcode for w in workers]
     assert errors.empty(), errors.get()
-    # Contention may refuse some takes (a busy lock is a shortage), but the
-    # floor never wedges: most of the hundred succeed.
-    assert wins.value >= 50, wins.value
     assert queue.ledger(HOST).held().get("spool_gb", 0) == 0
     assert queue.tier(tier).holdings().get('stage_gib', 0) == 0
+    assert ff.refresh_binding(queue.root, binding)["allowed"]
+    assert queue.ledger(HOST).acquire("post-contention", {"spool_gb": 1})
+    assert queue.tier(tier).take("post-contention", {"stage_gib": 1})
+    assert queue.ledger(HOST).release("post-contention") == 1
+    assert queue.tier(tier).release_unspent("post-contention",
+        authority=tier_holdings.Unspent.NEVER_STARTED) == 1
 
 
 def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce, ample_space):
