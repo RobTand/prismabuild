@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -181,6 +182,8 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
 def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, shared):
     """Elections without a live READY/CLAIMED member are not fences."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    monkeypatch.setattr(reservation, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
     monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60 if shared else -1)
     incumbents = {}
     for host in ("sparklina", "sparky"):
@@ -218,7 +221,13 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, share
     rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
             for key in (probe, follower)]
     refreshes = []
+    captures = []
     real_refresh = reservation.CensusReader.refresh_elections
+    real_capture = reservation.CensusReader.capture
+
+    def observed_capture(self):
+        captures.append(1)
+        return real_capture(self)
 
     def observed_refresh(self):
         refreshed = real_refresh(self)
@@ -226,12 +235,17 @@ def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, share
         return refreshed
 
     monkeypatch.setattr(reservation.CensusReader, "refresh_elections", observed_refresh)
+    monkeypatch.setattr(reservation.CensusReader, "capture", observed_capture)
     result = gclaim("sparklina", ready=rows, advance=None)
     if shared:
-        assert refreshes == [], "a verified complete census needs no refresh child"
+        assert captures == [], "the first candidate must reuse the verified shared census"
     else:
-        assert len(refreshes) == 1, "an expired shared result uses the owned refresh"
-        assert refreshes[0]["gang_elections"] == {}
+        assert len(captures) == 2, "the first candidate needs discovery and locked capture"
+    # The probe's resource denial writes a pass counter, changing the source
+    # generation. Both paths now remember a census and narrowly refresh it for
+    # the follower rather than performing another complete capture.
+    assert len(refreshes) == 1
+    assert refreshes[0]["gang_elections"] == {}
     assert queue.records.item_path(pool.record_store.READY, probe).exists()
     assert result is not None, denial(follower, "sparklina")
     assert result == follower
