@@ -168,6 +168,22 @@
  "same_name_distinct": [
   {
    "modules": [
+    "src/prismabuild/action_edges.py",
+    "src/prismabuild/tautology.py"
+   ],
+   "name": "_name",
+   "reason": "The unchanged upstream tautology scanner extracts AST identifier or attribute names and returns an empty string for other nodes. Action edges validate produced-output names and translate validation failures into ActionEdgeError; their inputs and refusal contracts differ."
+  },
+  {
+   "modules": [
+    "src/prismabuild/tautology.py",
+    "tools/duplication_inventory.py"
+   ],
+   "name": "scan",
+   "reason": "The unchanged upstream tautology scanner returns assertion findings from Python test files. The duplication inventory returns structural duplicate pairs, helper ownership groups and primitive digest sites from production and tool modules; their scanned populations and result contracts differ."
+  },
+  {
+   "modules": [
     "src/prismabuild/_measurement_reservation.py"
    ],
    "name": "_read",
