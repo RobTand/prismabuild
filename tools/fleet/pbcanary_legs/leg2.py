@@ -35,7 +35,6 @@ exact bytes, so the stamp stays evidence without becoming brittle.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -46,7 +45,18 @@ import sys
 
 if __package__:
     from . import LegBuildRefused
+    from prismabuild import digest_primitives as digests
 else:
+    import runpy
+    from types import SimpleNamespace
+    source_path = Path(__file__).resolve()
+    if source_path.parent == Path("/pb-canary"):
+        digest_path = source_path.with_name("digest_primitives.py")
+    else:
+        source_root = source_path.parents[3] if source_path.parents[1].name == "fleet" else source_path.parents[2]
+        digest_path = source_root / "src/prismabuild/digest_primitives.py"
+    digests = SimpleNamespace(**runpy.run_path(str(digest_path)))
+
     class LegBuildRefused(ValueError):
         """A standalone canary invocation cannot be built."""
 
@@ -60,7 +70,7 @@ IMAGE_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 PAYLOAD = b"pbcanary-leg2:v1"
 
-PAYLOAD_SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
+PAYLOAD_SHA256 = digests.raw_sha256(PAYLOAD)
 
 #: sum(i*i for i in range(16)) == 1240; the inner kernel asserts real
 #: device execution, not just a visible driver.
@@ -131,7 +141,7 @@ def _read_inputs(inputs: list[tuple[str, str, str]]) -> list[str]:
             raw = handle.read(MAX_INPUT_BYTES + 1)
         if len(raw) > MAX_INPUT_BYTES:
             raise ValueError(f"input {identity} exceeds the bounded canary read")
-        if hashlib.sha256(raw).hexdigest() != digest:
+        if digests.raw_sha256(raw) != digest:
             raise ValueError(f"input {identity} digest mismatch")
         read.append(identity)
     return read
@@ -140,10 +150,10 @@ def _read_inputs(inputs: list[tuple[str, str, str]]) -> list[str]:
 def _run_inside(args: argparse.Namespace) -> int:
     import torch
 
-    source_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    source_digest = digests.raw_sha256(Path(__file__).read_bytes())
     if source_digest != args.source_sha256:
         raise ValueError("payload source digest mismatch")
-    payload_digest = hashlib.sha256(PAYLOAD).hexdigest()
+    payload_digest = digests.raw_sha256(PAYLOAD)
     if payload_digest != args.payload_sha256:
         raise ValueError("payload digest mismatch")
     if os.environ.get("PBCANARY_VERIFIED_IMAGE") != args.image:
@@ -180,7 +190,7 @@ def _run_inside(args: argparse.Namespace) -> int:
     }
     output = Path(args.checks_path)
     temporary = output.with_name(output.name + ".tmp")
-    temporary.write_text(json.dumps(result, sort_keys=True) + "\n")
+    temporary.write_text(digests.sorted_json(result) + "\n")
     temporary.replace(output)
     print(f"IMAGE {args.image}")
     print(f"PAYLOAD {payload_digest}")
@@ -201,7 +211,8 @@ def container_argv(args: argparse.Namespace, source_digest: str) -> list[str]:
     for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         command.extend(["--env", variable + "=1"])
     command.extend(["--mount", f"type=bind,src={source},dst=/pb-canary/leg2.py,readonly",
-                    "--mount", f"type=bind,src={output.parent},dst=/pb-checks"])
+                    "--mount", f"type=bind,src={output.parent},dst=/pb-checks",
+                    "--mount", f"type=bind,src={Path(digests.__file__).resolve()},dst=/pb-canary/digest_primitives.py,readonly"])
     inside_inputs = []
     for index, (identity, filename, digest) in enumerate(args.inputs):
         path = Path(filename).resolve(strict=True)
@@ -229,10 +240,10 @@ def _run_container(args: argparse.Namespace) -> int:
     inspected = subprocess.run(
         [*_docker_command(), "image", "inspect", "--format", "{{json .RepoDigests}}", args.image],
         capture_output=True, text=True, check=True, timeout=30)
-    digests = json.loads(inspected.stdout)
-    if not isinstance(digests, list) or args.image not in digests:
+    images = json.loads(inspected.stdout)
+    if not isinstance(images, list) or args.image not in images:
         raise ValueError("Docker image inspection did not verify the pinned image digest")
-    source_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    source_digest = digests.raw_sha256(Path(__file__).read_bytes())
     output = Path(args.checks_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     command = container_argv(args, source_digest)
@@ -332,7 +343,7 @@ def verify(receipt: object, expected: object) -> tuple[bool, str]:
     result = inner.get("result") if isinstance(inner, dict) else None
     if not isinstance(result, dict):
         return False, f"{NAME} receipt-verified failed: receipt result absent"
-    if result.get("sha256") != hashlib.sha256(artifact.encode()).hexdigest():
+    if result.get("sha256") != digests.raw_sha256(artifact.encode()):
         return False, (
             f"{NAME} receipt-verified failed: CAS result sha256 "
             "covers different bytes than the artifact"

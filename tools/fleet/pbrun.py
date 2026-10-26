@@ -503,7 +503,7 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
 
         if args.d38_plan is not None:
             from prismabuild import d38_producer
-            record = d38_producer.write_plan(request_from_args(args), args.d38_plan,
+            record = d38_producer.write_d38_plan(request_from_args(args), args.d38_plan,
                 store=configured_store(), display=display)
             print(json.dumps(record), flush=True)
             report.finish(action_client.ClientCommand(0))

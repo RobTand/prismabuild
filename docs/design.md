@@ -19626,7 +19626,8 @@ reviewed descriptor, `script:/usr/bin/python3:tools/fleet/pbcanary_legs/leg2.py`
 need a reviewed descriptor or a scoped CEO exception. What the worker executes is `task.argv`,
 not the descriptive `params.command`. The source producer reconstructs its complete expected
 CPU action, including the separate result-file capture recipe, and compares it to the request.
-Its CAS driver input must match the installed reviewed driver bytes. Legacy consumer fixtures
+Its CAS driver and digest-owner inputs must match the installed reviewed source bytes,
+including each hash, byte count and actual CAS content. Legacy consumer fixtures
 retain the standard captured-log check in `action_result.bind_standard_capture_command`.
 A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
 change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
@@ -19682,7 +19683,11 @@ the approved production image is ARM64. Both GPU visibility variables are sealed
 Only the fully reconstructed CPU producer recipe with zero sealed and publication GPU demand
 is exempt from needing its own D38 receipt. A producer label alone grants no exemption.
 
-The standalone CAS-bound driver runs under `/usr/bin/python3 -I`. It verifies the source and
+The standalone CAS-bound driver runs under `/usr/bin/python3 -I` and loads the sealed
+`d38-digests` input from the shared `digest_primitives.py` owner. The reviewed descriptor
+also pins the checkout copy. The driver verifies that copy before leg 2 runs; both CPU and
+GPU modes mount it read-only at `/pb-canary/digest_primitives.py` beside the entry script.
+No digest recipe depends on an ambient installed package. It verifies the source and
 Docker shim hashes, an ARM64 execution host and disabled GPU visibility. The target cannot
 carry shell startup hooks, exported Bash functions, `LD_*` variables or the Docker testing
 override. The source launcher invokes the verified shim under isolated Python too.

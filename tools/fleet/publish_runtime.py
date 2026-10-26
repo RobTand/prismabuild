@@ -210,6 +210,9 @@ STANDALONE_PACKAGE_SOURCES = {
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("prove_d38_canary.py",
+     "the #1639 source-candidate CPU preflight proof seals or verifies a submitted "
+     "checkout; it is a qualification tool, not an installed operator command"),
     ("prove_queue_bell.py",
      "the #1894 scratch-queue NFS and private-link proof runs from a submitted "
      "checkout through pbrun, not from an installed runtime"),

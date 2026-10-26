@@ -42,6 +42,9 @@ def test_plan_cli_seals_without_publishing_target(tmp_path, monkeypatch, capsys)
     source = work / COMMAND[2]
     source.parent.mkdir(parents=True)
     source.write_bytes((REPOSITORY / COMMAND[2]).read_bytes())
+    owner = work / "src/prismabuild/digest_primitives.py"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.write_bytes((REPOSITORY / "src/prismabuild/digest_primitives.py").read_bytes())
     namespace = tmp_path / "namespace.json"
     namespace.write_text(json.dumps(d38_producer.namespace_for(COMMAND)))
     plan_path = tmp_path / "plan.json"
@@ -86,6 +89,9 @@ def planned(tmp_path, monkeypatch):
     source = work / COMMAND[2]
     source.parent.mkdir(parents=True)
     source.write_bytes((REPOSITORY / COMMAND[2]).read_bytes())
+    owner = work / "src/prismabuild/digest_primitives.py"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.write_bytes((REPOSITORY / "src/prismabuild/digest_primitives.py").read_bytes())
     data = work / "input.bin"
     data.write_bytes(b"D38 required input\n")
     command = [*COMMAND, "--input", f"fixture=input.bin={hashlib.sha256(data.read_bytes()).hexdigest()}"]
@@ -98,7 +104,7 @@ def planned(tmp_path, monkeypatch):
     _offers(tmp_path)
     request = SubmissionRequest(cwd=str(work), command=command, tag=["gb10"],
         demand="gpu=1,mem_gb=8", container_image=[IMAGE], d38_namespace=str(namespace))
-    d38_producer.write_plan(request, path, store=store)
+    d38_producer.write_d38_plan(request, path, store=store)
     action, template, effective = d38_producer.prepare_preflight(path, SubmissionRequest(), store=store)
     return json.loads(path.read_bytes()), action, template["cas"], effective, store
 
@@ -149,7 +155,7 @@ def _execute_checks(plan, action, cas, monkeypatch, *, corrupt=None):
     plan_input = next(item for item in action["inputs"] if item["id"] == "d38-plan")
     with pytest.MonkeyPatch.context() as boundary:
         boundary.setattr(driver.subprocess, "run", container_boundary)
-        return driver.run(str(cas.input_path(plan_input)), plan_input["sha256"], ".d38/receipt.json")
+        return driver.run_preflight(str(cas.input_path(plan_input)), plan_input["sha256"], ".d38/receipt.json")
 
 
 @pytest.fixture
@@ -270,7 +276,7 @@ def test_plan_refuses_execution_hooks(planned, name, value):
     plan["target_action"] = pb.seal_action({key: item for key, item in target.items() if key != "action_key"})
     plan["target"]["job_identity_hash"] = plan["target_action"]["action_key"]
     with pytest.raises(d38_gate.Refusal, match="execution overrides"):
-        d38_producer.validate_plan(plan)
+        d38_producer.validate_d38_plan(plan)
 
 
 def test_installed_flat_layout_resolves_owned_sources(tmp_path, monkeypatch):
@@ -295,7 +301,10 @@ def test_preflight_binds_the_shared_digest_owner(planned):
     owners = [entry for entry in action["inputs"] if entry["id"] == "d38-digests"]
     assert len(owners) == 1
     assert cas.input_path(owners[0]).read_bytes() == Path(digest_primitives.__file__).read_bytes()
-    assert d38_producer.validated_cpu_preflight(cas, action)
+    with pytest.MonkeyPatch.context() as read_only:
+        read_only.setattr(cas, "ingest_bytes", lambda *args, **kwargs:
+                          pytest.fail("evidence verification must not write the CAS"))
+        assert d38_producer.validated_cpu_preflight(cas, action)
     changed = copy.deepcopy({key: value for key, value in action.items() if key != "action_key"})
     replacement, _ = cas.ingest_bytes(b"raise RuntimeError('unreviewed digest owner')\n", input_id="d38-digests")
     changed["inputs"] = [replacement if entry["id"] == "d38-digests" else entry for entry in changed["inputs"]]

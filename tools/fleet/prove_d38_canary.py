@@ -8,21 +8,23 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import hashlib
 import json
 from pathlib import Path
 
-from prismabuild import core as pb, d38_gate, d38_producer, fleet_roster, immutable_files, sealed_submission
+from prismabuild import core as pb, d38_gate, d38_producer, digest_primitives, fleet_roster, immutable_files, sealed_submission
 from prismabuild.submission_types import FleetStore, SubmissionRequest
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--seal", action="store_true")
-    mode.add_argument("--verify", metavar="KEY")
-    parser.add_argument("--image")
-    parser.add_argument("--out", type=Path, required=True)
+    mode.add_argument("--seal", action="store_true",
+                      help="Seal a candidate CPU preflight and save its key without publishing runnable work.")
+    mode.add_argument("--verify", metavar="KEY",
+                      help="Verify the fleet CAS receipt for preflight action KEY against its frozen target plan.")
+    parser.add_argument("--image", help="Digest-pinned production canary image reference, required with --seal.")
+    parser.add_argument("--out", type=Path, required=True,
+                        help="Directory outside the checkout for the plan, sealed key and verification evidence.")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     runtime = Path("/mnt/shared/prismabuild-fleet/repo").resolve(strict=True)
@@ -32,7 +34,7 @@ def main() -> int:
     if args.seal:
         if not args.image:
             parser.error("--seal requires --image")
-        input_digest = hashlib.sha256(Path("AGENTS.md").read_bytes()).hexdigest()
+        input_digest = digest_primitives.raw_sha256(Path("AGENTS.md").read_bytes())
         command = ["/usr/bin/python3", "-I", d38_producer.SOURCE, "--image", args.image,
             "--device", "cuda", "--checks-path", d38_producer.CHECKS_PATH,
             "--input", f"instructions=AGENTS.md={input_digest}"]
@@ -43,12 +45,12 @@ def main() -> int:
             demand="gpu=1,mem_gb=8", container_image=[args.image], d38_namespace=str(namespace),
             timeout_s=120, priority=-10,
             env=["OMP_NUM_THREADS=1", "MKL_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1"])
-        d38_producer.write_plan(request, plan_path, store=store)
+        d38_producer.write_d38_plan(request, plan_path, store=store)
         action, template, effective = d38_producer.prepare_preflight(
             plan_path, SubmissionRequest(priority=-10), store=store)
         cas.publish_action_request(action)
         context = dict(schema=sealed_submission.CONTEXT_SCHEMA, action_key=action["action_key"],
-            request_sha256=hashlib.sha256(pb._canonical_file_bytes(action)).hexdigest(),
+            request_sha256=digest_primitives.raw_sha256(pb._canonical_file_bytes(action)),
             options={name: getattr(effective, name) for name in sealed_submission.PUBLICATION_OPTIONS},
             tested_repository=template["tested_repository"], checkout_identity=template["checkout_identity"])
         immutable_files.publish_immutable(sealed_submission.sealed_context_path(store, action["action_key"]),

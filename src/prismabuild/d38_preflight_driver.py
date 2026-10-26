@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import hashlib
 import json
+import runpy
+from types import SimpleNamespace
 import os
 from pathlib import Path
 import platform
@@ -37,13 +38,9 @@ def bounded_json(path: Path) -> tuple[object, bytes]:
     return strict_json(raw), raw
 
 
-def canonical_hash(value) -> str:
-    raw = json.dumps(value, sort_keys=True, ensure_ascii=False,
-                     separators=(",", ":"), allow_nan=False).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
-
-def run(plan_path: str, plan_sha256: str, result_path: str) -> dict:
+def run_preflight(plan_path: str, plan_sha256: str, result_path: str, *, digests=None) -> dict:
+    if digests is None:
+        from . import digest_primitives as digests
     output = Path(result_path)
     if result_path != ".d38/receipt.json":
         raise ValueError("the D38 receipt path is not the sealed producer path")
@@ -51,12 +48,12 @@ def run(plan_path: str, plan_sha256: str, result_path: str) -> dict:
         raise ValueError("the D38 receipt directory leaves the checkout")
     output.unlink(missing_ok=True)
     plan, raw = bounded_json(Path(plan_path))
-    if hashlib.sha256(raw).hexdigest() != plan_sha256:
+    if digests.raw_sha256(raw) != plan_sha256:
         raise ValueError("the D38 plan bytes differ from the sealed digest")
     if not isinstance(plan, dict) or plan.get("schema") != "fleet.d38.plan.v1":
         raise ValueError("the D38 plan schema is invalid")
     target = plan["target_action"]
-    if (target["action_key"] != canonical_hash({key: value for key, value in target.items() if key != "action_key"})
+    if (target["action_key"] != digests.canonical_sha256({key: value for key, value in target.items() if key != "action_key"})
             or plan["target"]["job_identity_hash"] != target["action_key"]):
         raise ValueError("the target identity does not cover the sealed target")
     descriptor = plan["descriptor"]
@@ -70,12 +67,16 @@ def run(plan_path: str, plan_sha256: str, result_path: str) -> dict:
         raise ValueError("the reviewed Docker shim is unavailable")
     docker = Path(docker_name).resolve(strict=True)
     if (not docker.is_file() or not os.access(docker, os.X_OK)
-            or hashlib.sha256(docker.read_bytes()).hexdigest() != descriptor["docker_sha256"]):
+            or digests.raw_sha256(docker.read_bytes()) != descriptor["docker_sha256"]):
         raise ValueError("the Docker executable differs from the reviewed shim")
     source = Path(descriptor["source"])
     if (source.is_symlink() or not source.is_file()
-            or hashlib.sha256(source.read_bytes()).hexdigest() != descriptor["source_sha256"]):
+            or digests.raw_sha256(source.read_bytes()) != descriptor["source_sha256"]):
         raise ValueError("the harness source differs from the reviewed source")
+    owner = Path(descriptor["digest_source"])
+    if (owner.is_symlink() or not owner.is_file()
+            or digests.raw_sha256(owner.read_bytes()) != descriptor["digests_sha256"]):
+        raise ValueError("the snapshot digest owner differs from the reviewed source")
     if os.environ.get("CUDA_VISIBLE_DEVICES") != "" or os.environ.get("NVIDIA_VISIBLE_DEVICES") != "none":
         raise ValueError("the CPU producer did not hide CUDA devices")
     machine = platform.machine().lower()
@@ -96,7 +97,7 @@ def run(plan_path: str, plan_sha256: str, result_path: str) -> dict:
                 "source_sha256": descriptor["source_sha256"]}
     if checks != expected:
         raise ValueError("the CPU canary did not complete every required source-owned check")
-    print(json.dumps({"d38_checks": checks}, sort_keys=True), flush=True)
+    print(digests.sorted_json({"d38_checks": checks}), flush=True)
     body = {"schema": "fleet.d38.preflight.v1", **plan["target"],
             "preflight_action_key": key, "host_class": "gb10", "result": "pass",
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "expires": None}
@@ -104,7 +105,7 @@ def run(plan_path: str, plan_sha256: str, result_path: str) -> dict:
     temporary = output.with_name(output.name + ".tmp")
     temporary.unlink(missing_ok=True)
     with temporary.open("x", encoding="utf-8") as handle:
-        handle.write(json.dumps(body, sort_keys=True, allow_nan=False) + "\n")
+        handle.write(digests.sorted_json(body, allow_nan=False) + "\n")
     temporary.replace(output)
     return body
 
@@ -114,9 +115,11 @@ def main(argv=None) -> int:
     parser.add_argument("--plan", required=True)
     parser.add_argument("--plan-sha256", required=True)
     parser.add_argument("--result", required=True)
+    parser.add_argument("--digests", required=True)
     args = parser.parse_args(argv)
     try:
-        run(args.plan, args.plan_sha256, args.result)
+        digests = SimpleNamespace(**runpy.run_path(args.digests))
+        run_preflight(args.plan, args.plan_sha256, args.result, digests=digests)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"D38 preflight refused: {exc}", file=sys.stderr)
         return 1

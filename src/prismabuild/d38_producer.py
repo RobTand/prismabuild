@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
-import hashlib
 from pathlib import Path, PurePosixPath
 from collections.abc import Mapping, Sequence
 
-from . import action_result, core as pb, d38_gate, pool, submission
+from . import action_result, core as pb, d38_gate, digest_primitives, pool, submission
 from .submission_types import DisplaySink, FleetStore, SubmissionRefused, SubmissionRequest, discard_display
 
 SOURCE = "tools/fleet/pbcanary_legs/leg2.py"
@@ -17,6 +16,8 @@ CHECKS_PATH = ".d38/leg2-checks.json"
 RESULT_PATH = ".d38/receipt.json"
 LOG_PATH = ".d38-preflight.log"
 DRIVER_INPUT = "d38-driver"
+DIGEST_INPUT = "d38-digests"
+DIGEST_SOURCE = "src/prismabuild/digest_primitives.py"
 DRIVER_PYTHON = "/usr/bin/python3"
 CHECKS = ("imports", "arguments", "payload_digest", "image_digest", "shape", "kernel_value", "input_reads", "device_visibility")
 CPU_CHANGE = {"flag": "--device", "from": "cuda", "to": "cpu"}
@@ -71,6 +72,7 @@ def namespace_for(command: Sequence[str]) -> dict:
     contract = invocation(command)
     mounts = [
         {"source": SOURCE, "target": "/pb-canary/leg2.py", "options": ["ro"]},
+        {"source": DIGEST_SOURCE, "target": "/pb-canary/digest_primitives.py", "options": ["ro"]},
         {"source": ".d38", "target": "/pb-checks", "options": ["rw"]},
     ]
     mounts.extend({"source": item["path"], "target": f"/pb-inputs/{index}", "options": ["ro"]}
@@ -82,17 +84,19 @@ def namespace_for(command: Sequence[str]) -> dict:
 
 def descriptor() -> dict:
     return {"source": SOURCE,
-            "source_sha256": hashlib.sha256(_owned_tool(SOURCE).read_bytes()).hexdigest(),
-            "docker_sha256": hashlib.sha256(_owned_tool("tools/fleet/docker").read_bytes()).hexdigest(),
+            "source_sha256": digest_primitives.raw_sha256(_owned_tool(SOURCE).read_bytes()),
+            "docker_sha256": digest_primitives.raw_sha256(_owned_tool("tools/fleet/docker").read_bytes()),
+            "digest_source": DIGEST_SOURCE,
+            "digests_sha256": digest_primitives.raw_sha256(Path(digest_primitives.__file__).read_bytes()),
             "cpu_changes": [dict(CPU_CHANGE)], "host_class": "gb10", "d29_reason": CPU_REASON,
             "checks_path": CHECKS_PATH,
             "completion": {"schema": "fleet.d38.leg2_checks.v1",
                 "checks": dict.fromkeys(CHECKS, "passed"), "device": "cpu",
-                "payload_sha256": hashlib.sha256(b"pbcanary-leg2:v1").hexdigest(),
+                "payload_sha256": digest_primitives.raw_sha256(b"pbcanary-leg2:v1"),
                 "shape": [16], "result_shape": [], "kernel_value": 1240}}
 
 
-def validate_plan(plan: Mapping) -> dict:
+def validate_d38_plan(plan: Mapping) -> dict:
     """Validate a complete target and its one reviewed CPU transformation."""
     try:
         if plan.get("schema") != d38_gate.PLAN_SCHEMA:
@@ -147,11 +151,11 @@ def read_plan(path: str | Path) -> tuple[dict, bytes]:
         raise d38_gate.Refusal(f"the D38 plan is not strict JSON: {exc}") from None
     if not isinstance(plan, dict):
         raise d38_gate.Refusal("the D38 plan is not an object")
-    validate_plan(plan)
+    validate_d38_plan(plan)
     return plan, raw
 
 
-def write_plan(request: SubmissionRequest, path: str | Path, *, store: FleetStore,
+def write_d38_plan(request: SubmissionRequest, path: str | Path, *, store: FleetStore,
                display: DisplaySink = discard_display) -> dict:
     """Seal a target plan without publishing an action request or runnable work."""
     if request.after or request.as_sealed_by or request.withdraw or request.release_origin_consumer:
@@ -174,7 +178,7 @@ def write_plan(request: SubmissionRequest, path: str | Path, *, store: FleetStor
                     "namespace_descriptor": namespace, "entry": dict(ENTRY),
                     "target_command": command, "cpu_command": cpu_command,
                     "changes": [dict(CPU_CHANGE)], "descriptor": descriptor()}
-            validate_plan(plan)
+            validate_d38_plan(plan)
             raw = pb._canonical_file_bytes(plan)
             if len(raw) > d38_gate.MAX_RECEIPT_BYTES:
                 raise d38_gate.Refusal("the D38 plan is larger than 64 KiB")
@@ -190,7 +194,7 @@ def write_plan(request: SubmissionRequest, path: str | Path, *, store: FleetStor
             finally:
                 temporary.unlink(missing_ok=True)
             return {"schema": d38_gate.PLAN_SCHEMA, "action_key": target["action_key"],
-                    "plan_sha256": hashlib.sha256(raw).hexdigest(), "plan_path": str(destination)}
+                    "plan_sha256": digest_primitives.raw_sha256(raw), "plan_path": str(destination)}
     except d38_gate.Refusal as exc:
         raise SubmissionRefused(f"pbrun: D38 plan refused: {exc}") from None
 
@@ -201,7 +205,7 @@ def _driver_input(cas) -> dict:
 
 
 def _cpu_template(plan, cas) -> dict:
-    target = validate_plan(plan)
+    target = validate_d38_plan(plan)
     template = copy.deepcopy({key: value for key, value in target.items() if key != "action_key"})
     params = template["params"]
     params["demand"]["gpu"] = 0
@@ -219,19 +223,19 @@ def _cpu_template(plan, cas) -> dict:
     return template
 
 
-def driver_command(cas, plan_input: Mapping, driver_input: Mapping) -> list[str]:
+def driver_command(cas, plan_input: Mapping, driver_input: Mapping, digest_input: Mapping) -> list[str]:
     return [DRIVER_PYTHON, "-I", str(cas.input_path(driver_input)),
             "--plan", str(cas.input_path(plan_input)), "--plan-sha256", str(plan_input["sha256"]),
-            "--result", RESULT_PATH]
+            "--result", RESULT_PATH, "--digests", str(cas.input_path(digest_input))]
 
 
-def seal_preflight(plan: Mapping, plan_input: Mapping, driver_input: Mapping, *, cas) -> tuple[dict, dict]:
+def seal_preflight(plan: Mapping, plan_input: Mapping, driver_input: Mapping, digest_input: Mapping, *, cas) -> tuple[dict, dict]:
     template = _cpu_template(plan, cas)
-    command = driver_command(cas, plan_input, driver_input)
+    command = driver_command(cas, plan_input, driver_input, digest_input)
     action = submission.seal(template, command=command, result_path=RESULT_PATH,
-        extra_inputs=[plan_input, driver_input], extra_params={d38_gate.PRODUCER_PARAM: {
+        extra_inputs=[plan_input, driver_input, digest_input], extra_params={d38_gate.PRODUCER_PARAM: {
             "producer": d38_gate.PRODUCER_ID, "plan_sha256": plan_input["sha256"],
-            "driver_sha256": driver_input["sha256"]}})
+            "driver_sha256": driver_input["sha256"], "digests_sha256": digest_input["sha256"]}})
     return action, template
 
 
@@ -242,7 +246,8 @@ def prepare_preflight(path: str | Path, request: SubmissionRequest, *, store: Fl
         plan, raw = read_plan(path)
         cas = pb.PrismaBuildCAS(store.cas_root)
         plan_input, _ = cas.ingest_bytes(raw, input_id=d38_gate.PLAN_INPUT_ID)
-        action, template = seal_preflight(plan, plan_input, _driver_input(cas), cas=cas)
+        digest_input, _ = cas.ingest_bytes(Path(digest_primitives.__file__).read_bytes(), input_id=DIGEST_INPUT)
+        action, template = seal_preflight(plan, plan_input, _driver_input(cas), digest_input, cas=cas)
         params = action["params"]
         effective = replace(request, cwd=str(store.root), command=params["command"],
                             demand=",".join(f"{key}={value}" for key, value in params["demand"].items()),
@@ -261,18 +266,24 @@ def prepare_preflight(path: str | Path, request: SubmissionRequest, *, store: Fl
 
 def bind_preflight(cas, action: Mapping, plan: Mapping) -> None:
     """Prove executed driver bytes and the complete CPU/target relationship."""
-    validate_plan(plan)
+    validate_d38_plan(plan)
     plans = [entry for entry in action.get("inputs", ()) if entry.get("id") == d38_gate.PLAN_INPUT_ID]
     drivers = [entry for entry in action.get("inputs", ()) if entry.get("id") == DRIVER_INPUT]
     if len(plans) != 1 or len(drivers) != 1:
         raise d38_gate.Refusal("the preflight needs exactly one source driver and one plan input")
     driver = drivers[0]
     expected_driver = driver_path().read_bytes()
-    if (driver.get("sha256") != hashlib.sha256(expected_driver).hexdigest()
+    if (driver.get("sha256") != digest_primitives.raw_sha256(expected_driver)
             or driver.get("bytes") != len(expected_driver)
             or cas.input_path(driver).read_bytes() != expected_driver):
         raise d38_gate.Refusal("the preflight driver is not the reviewed source driver")
-    expected, _ = seal_preflight(plan, plans[0], driver, cas=cas)
+    owners = [entry for entry in action.get("inputs", ()) if entry.get("id") == DIGEST_INPUT]
+    expected_owner = Path(digest_primitives.__file__).read_bytes()
+    if (len(owners) != 1 or owners[0].get("sha256") != digest_primitives.raw_sha256(expected_owner)
+            or owners[0].get("bytes") != len(expected_owner)
+            or cas.input_path(owners[0]).read_bytes() != expected_owner):
+        raise d38_gate.Refusal("the preflight digest owner is not the reviewed source owner")
+    expected, _ = seal_preflight(plan, plans[0], driver, owners[0], cas=cas)
     if dict(action) != expected:
         raise d38_gate.Refusal("the preflight task, inputs or execution context differ from the reviewed CPU recipe")
 

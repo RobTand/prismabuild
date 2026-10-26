@@ -74,8 +74,6 @@
   "hashlib:tools/fleet/pbcanary_legs/common.py::sha256_stream_hex",
   "hashlib:tools/fleet/pbcanary_legs/leg1.py::<module>",
   "hashlib:tools/fleet/pbcanary_legs/leg1.py::verify",
-  "hashlib:tools/fleet/pbcanary_legs/leg2.py::<module>",
-  "hashlib:tools/fleet/pbcanary_legs/leg2.py::verify",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::_hash_fd",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::run_action",
   "hashlib:tools/fleet/pbmcp.py::_blob_identity",
