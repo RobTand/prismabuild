@@ -1520,6 +1520,43 @@ while holding that lock. A late heartbeat refuses to overwrite a successor's
 lease. Legacy owner-only callers cannot distinguish attempts sharing an owner;
 internal claim, scope and execution writers always supply the snapshot.
 
+A heartbeat takes the transition lock non-blocking. If another thread or
+process holds it, the current worker publishes a liveness-only stamp under
+`lease-heartbeats/<action_key>/<claim-identity-digest>.json`. Its identity uses
+`claim_identity.CLAIM_IDENTITY_FIELDS`, plus the recorded host, PID and process
+start ticks. New leases carry those fields when the durable claim has the
+complete immutable identity. Partial legacy claims keep their existing lease
+wire format and cannot issue an incarnation stamp; a contended beat skips
+publication without failing the payload, retaining the ordinary lease-age
+recovery bound. The contended
+writer verifies the durable claim, lease and caller snapshot before writing;
+a delayed predecessor can replace only its own incarnation's stamp.
+
+`PoolQueue._effective_heartbeat` is the shared freshness observation for lease
+age, mover and consumer-order verdicts, widowed-lease sweeps, checkout recovery
+and the status census. Census stamp reads use its retained reader, preserving
+idle-scrape I/O reuse. It uses the later valid lease/stamp time only for an
+exact matching incarnation and process. A valid time is a finite number, not a
+boolean or string. It samples time after both reads, even when a caller has
+already sampled a clock. Every judge consumes the resulting nonnegative age;
+a future-dated lease is live at age zero. A malformed lease retains custody;
+the reaper records it and continues to other keys, and attachment treats it as
+possibly live. Census shows an invalid time as a stale claimed row. A matching
+stamp at most `OFFER_FUTURE_TOLERANCE_S` (60 seconds) ahead of the reader counts
+at age zero; its credited time is capped at the reader's post-read clock.
+Excessive future skew, malformed time or a foreign stamp adds no credit. After
+the last beat, a dead owner's stamp expires within `LEASE_TIMEOUT_S` plus the
+skew tolerance (360 seconds); the next recovery pass can act. This is a
+heartbeat-expiry bound, not proof of cleanup or a resource-release deadline.
+A stamp renews liveness, not progress
+or execution observations; progress quiet time ages from the lease write, not
+the stamp. A dead exact local PID/start-time identity or an old
+effective heartbeat can trigger detection; neither proves checkout cleanup.
+The certified recovery transition belongs to #2231. Stamp retention belongs
+to #2232. All worker hosts must run L2 before lock-contention protection is
+relied on; older reapers ignore stamps. This layer adds neither token-return
+authority nor checkout deletion.
+
 Before heartbeat publication or ordinary finish cleanup, available claim and
 lease identities must agree on owner, host, claim time and publication. A
 contradiction refuses the heartbeat before it overwrites the existing lease, preserving the evidence
