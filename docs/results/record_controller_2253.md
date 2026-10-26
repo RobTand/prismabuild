@@ -16,6 +16,35 @@ The fresh unsplit baseline passed all 237 cases in **1,727.21 seconds**, or 28 m
 
 All five split runs passed 237 cases with zero failures or skips. Their 95 distinct action keys have 95 distinct native execution nonces.
 
+Whole-suite elapsed wall time uses two explicit boundaries from the retained
+PB terminal records. Publication-to-ending starts at the first published
+action and ends at the final terminal ending. Execution-to-ending starts at
+the first claimed execution and ends at that same final ending. Neither
+includes coordinator preparation before publication or the final report write.
+Both include checkout and terminal processing. The publication boundary also
+includes admission waiting.
+
+| Suite | First publication to last ending, seconds | First execution to last ending, seconds |
+|---|---:|---:|
+| Unsplit baseline | 1,803.35 | 1,741.24 |
+| Split run 1 | 411.80 | 370.40 |
+| Split run 2 | 362.81 | 359.28 |
+| Split run 3 | 340.93 | 336.16 |
+| Split run 4, xdist | 198.33 | 197.39 |
+| Split run 5, xdist | 254.05 | 249.37 |
+
+These are observed validation intervals under fleet load. Baseline and split
+actions overlap in time, and the later runs use different concurrency. They
+establish the elapsed intervals and shard budget, not an isolated causal
+speedup. The baseline's 1,727.21 pytest seconds remain a separate boundary.
+[The extraction script](record_controller_2253_wall_times.py) derives both
+intervals from the controller action manifest and verified ending records:
+
+```bash
+python3 docs/results/record_controller_2253_wall_times.py \
+  CONTROLLER_ENDINGS_JSON BASELINE_ENDING_JSON
+```
+
 | Run | Workers per shard | Cases passed | Slowest shard, pytest seconds | Host CPU busy mean for slowest shard |
 |---|---:|---:|---:|---:|
 | 1 | 1 | 237 | 213.70 | 60.9% |
