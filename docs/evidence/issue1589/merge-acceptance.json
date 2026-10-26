@@ -1,0 +1,120 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "ce2a3be4915c024fdc1677d973cc8a77d8bef95c",
+  "scope": [
+    "SC-01",
+    "SC-03",
+    "INV-01",
+    "INV-11"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1589-pri31",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1589",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+        ],
+        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+        ],
+        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+      },
+      {
+        "id": "INV-11",
+        "actions": [
+          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+        ],
+        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+      }
+    ],
+    "remaining_gaps": [
+      "Final x86 and ARM preservation on the current scheduler bytes is pending.",
+      "Archival controller replay exhausted the earlier 900-second shard deadline; it also printed one failure before the deadline without a final trace. A bounded 3600-second replay with stop-on-first-failure is pending.",
+      "Independent Principal Engineer review and merge are pending.",
+      "Deployment, live runtime qualification and staged-only campaign completion are outside this source repair."
+    ],
+    "note": "Candidate merge record, not merge acceptance by the Principal. Approval authorizes only the class CPU source policy. Existing ledger axes remain unchanged."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "policy_authority": {
+    "interaction_id": "7c2a2fb9-0d6a-444b-b9f0-9963002ab7ab",
+    "accepted_at": "2026-10-25T23:43:12.170Z",
+    "document_revision": "3d0d1914-ce34-4afa-887e-6a65efd5db21",
+    "scope": "Source policy only; no merge, publication, restart or campaign acceptance."
+  },
+  "requirement_status": [
+    {
+      "id": "SC-01",
+      "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+      "ledger_axes_unchanged": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+    },
+    {
+      "id": "SC-03",
+      "target": "Contract is target plus ledger; unknown axes are owed work, never claims.",
+      "ledger_axes_unchanged": {
+        "implementation": "no",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      },
+      "this_repair": "Evidence claims remain scoped; no whole-requirement status change."
+    },
+    {
+      "id": "INV-01",
+      "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+      "ledger_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+    },
+    {
+      "id": "INV-11",
+      "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
+      "ledger_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      },
+      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+    }
+  ],
+  "source_commit": "8d7a74ebcfdecd75672be085e2c7ff8e3909e21a",
+  "verification": {
+    "ending": "/tmp/PRI-31-resume/final-focused-ending.json",
+    "verified": "/mnt/shared/paperclip-runs/PRI-31/focused-verified/verified.json",
+    "checks": [
+      "terminal and scope cleanup",
+      "attempt stdout/stderr bytes and SHA-256",
+      "CAS input bundle hash and size",
+      "sealed adaptive_cpu, candidate_policy and pool bytes match current source",
+      "exact execution receipt lookup"
+    ]
+  }
+}
