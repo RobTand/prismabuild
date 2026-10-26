@@ -19925,6 +19925,41 @@ deployment or workload-proof axes.
 
 ### Queue-key standing read owner
 
+#### Publication candidate discovery (#1897, #2167, #2168)
+
+RecordStore owns an advisory publication index separately from canonical
+queue state. PoolQueue publication records candidates after canonical READY
+publication. Index failure cannot undo or fail an already published action.
+Candidates bind the action key, publication timestamp and exact checkout,
+snapshot and publisher metadata. Retries keep that identity; republishing a
+key can retain candidates for multiple generations. Canonical records remain
+the authority for state, publication generation and every filter predicate.
+
+MCP metadata discovery addresses a hashed exact facet or UTC-day pages before
+opening canonical records. Its fixed budgets are 256 candidate entries,
+32 pages and 256 canonical slot reads. Output limits do not expand these
+budgets. Explicit full keys retain direct requested-slot reads. Incomplete
+coverage is visible through `discovery`, `truncated`, `unavailable` and the
+existing response `complete` field. No read-only call creates, backfills or
+repairs the index, and no filtered call silently returns to history scanning.
+
+Legacy queues require explicit reconciliation. The maintenance entrypoint
+`tools/maintenance/reconcile_publication_index.py --queue-root PATH` performs
+bounded steps with a retained iterator, then closes it on completion or stop.
+`--entries-per-step` defaults to 256 and `--max-steps` to 32. Exit 75 means the
+step budget ended before reconciliation finished; restarting replays safely.
+Run maintenance through an admitted action when operating on fleet state.
+Coverage can be sealed only after stable canonical namespace evidence and
+index-directory evidence. Concurrent publication, an interrupted index write,
+unknown filesystem trust, or an unsettled directory clock leaves coverage
+incomplete. Remote filesystem timestamps do not establish complete coverage.
+Index leaves may outlive canonical records; consumers verify canonical slots
+and reject candidates from another publication generation.
+
+This index changes inspection cost and diagnostics. It grants no lifecycle,
+admission, residency, cleanup or dev-certification authority. Source inclusion
+does not establish fleet deployment or staged-read requirement satisfaction.
+
 `record_store.RecordStore(root).standing(key)` owns the queue-key observation
 used by produced-output retirement, attempt checks, action edges, deferred
 release, and produced-holder classification. It returns `Present[QueueRow]`,

@@ -3327,15 +3327,31 @@ The tools:
     and nothing that names an agent -- so an agent identifies its own work by
     the checkout it submitted from, the box it submitted on, or the keys it
     already holds. Snapshot filters compare full Git identities exactly;
-    a parent can match several agents' work. All filters intersect inside
-    the newest-record scan window, and explicit keys bypass that window.
+    a parent can match several agents' work. All supplied filters intersect,
+    and explicit keys bypass discovery.
     The answer says so in its `identity` field. Full 64-hex keys use direct
     state-file reads with no namespace listing; missing exact keys are absent.
     Shorter prefixes retain bounded discovery. `states` restricts directories
-    before enumeration and restricts keyed reads. Other filters are record
-    fields with no index, so cannot bound enumeration beyond the existing
-    window. `max_age_s` uses publication time, not file mtime; the directories
-    have no cheap time ordering. No new scan or index is added (#1897).
+    before enumeration and restricts keyed reads. Exact checkout, snapshot,
+    publisher and age filters address advisory publication candidates first.
+    Discovery consumes at most 256 index entries and 32 time pages; canonical
+    verification opens at most 256 requested state slots, including misses.
+    These bounds are independent of the returned-row `limit`. Each returned
+    row is read from a canonical state slot and must match the indexed
+    publication generation and the supplied predicates. `max_age_s` uses
+    publication time, independently of file mtime. A facet plus age includes
+    future timestamps. Age-only discovery visits finite UTC-day pages through
+    today and reports `future-range-incomplete` because future publications
+    can also satisfy the predicate.
+
+    The additive `discovery` field reports work consumed and coverage reasons.
+    Missing, stale, corrupt, untrusted or budget-limited coverage sets
+    `complete=false`, `truncated=true` and names the reason in `unavailable`.
+    Verified partial candidates remain useful; an empty partial answer does
+    not prove absence. Metadata discovery never falls back to a global state
+    scan or repairs the index. Unfiltered, tag-only and priority-only calls
+    retain the existing recent-terminal window. Exact full-key calls need
+    no index and retain direct requested-slot reads.
 *   **`pb_receipts(keys)`** — one ending-and-receipt verdict per action
     key (at most 50 per call): the state, the return codes, and whether the
     CAS holds a receipt, with a count of each verdict. This is the set form
