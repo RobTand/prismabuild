@@ -20710,6 +20710,20 @@ class PoolQueue:
         and are ignored, exactly as the other terminal readers ignore them.
         """
 
+        found = self.archived_generation_summaries(action_key, generation=generation)
+        for _path, record in found:
+            adopted = self.attempt_ending(record)
+            if adopted["disposition"] != record.get("disposition"):
+                raise PoolContractError(
+                    "archived generation outcome has conflicting disposition")
+            for field in ("status", "finished_unix", "finished_host", "detail"):
+                record[field] = adopted[field]
+        return found
+
+    def archived_generation_summaries(
+        self, action_key: str, *, generation: float,
+    ) -> list[tuple[Path, dict[str, object]]]:
+        """Reconstruct exact-generation metadata without expanding attempt logs."""
         key = str(action_key)
         present = self.records.archived_generation_records(key, generation=generation)
         if not present:
@@ -20769,12 +20783,6 @@ class PoolQueue:
              "outcome": str(self.records.attempt_path(record, number).relative_to(self.root))}
             for number in range(missing + 1, attempt + 1)
         ]
-        adopted = self.attempt_ending(record)
-        if adopted["disposition"] != value.get("disposition"):
-            raise PoolContractError(
-                "archived generation outcome has conflicting disposition")
-        for field in ("status", "finished_unix", "finished_host", "detail"):
-            record[field] = adopted[field]
         return [(path, record)]
 
     def archived_preemption_outcomes(
