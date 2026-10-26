@@ -8,7 +8,7 @@ from fleet_world import ActionRows
 from prismabuild import adaptive_cpu, claim_wait, host_hold, pool, resource_scope, runtime_publication
 from prismabuild import _peer_placement as placement
 from prismabuild import _gang
-from prismabuild import local_scratch
+from prismabuild import local_scratch, storage_tiers
 
 
 def test_empty_claim_reports_ready_and_control_dependencies(tmp_path):
@@ -391,3 +391,79 @@ def test_scratch_reads_outside_the_peer_cache_preserve_unreadable_evidence(
     assert claim_wait.WakeInput(kind, identity, claim_wait.EvidenceState.UNREADABLE) in result.inputs
     assert not result.coverage.complete
     assert claim_wait.RetryDeadline("source_recovery", 45.0) in result.deadlines
+
+
+@pytest.mark.parametrize("reason", [
+    "deferred_for_declared_wait", "deferred_for_pool_readers"])
+def test_reader_plan_refusals_report_original_strict_expiry_from_cached_record(
+        tmp_path, monkeypatch, clocks, reason):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    tier = "prismabuild-stage:fixture"
+    stage_kind = f"stage_gib{storage_tiers.TIER_DEMAND_SEPARATOR}{tier}"
+    capacity = {"cpu": 2, "mem_gb": 2}
+    queue.tier(tier).mint({"stage_gib": 4})
+    for ordinal, key in enumerate(("a" * 64, "b" * 64)):
+        ActionRows(queue).publish(
+            key, cas_root=tmp_path / "cas",
+            resources={"cpu": 1, "mem_gb": 1, stage_kind: 2},
+            residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
+                       "manifest_sha256": "9" * 64,
+                       "manifest_bytes": 4 * storage_tiers.GIB,
+                       "range_start_bytes": ordinal * 2 * storage_tiers.GIB,
+                       "range_end_bytes": (ordinal + 1) * 2 * storage_tiers.GIB})
+        if ordinal == 0:
+            first = queue.claim(capacity=capacity)
+            assert first is not None and first["action_key"] == key
+    queue.announce_tier({
+        "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": tier,
+        "host": "fixture", "tier": "stage", "capacity_bytes": 4 * storage_tiers.GIB,
+        pool.READER_PLAN_FIELD: {
+            "declared_wait": ([{"mover_action_key": "a" * 64, "state": "claimed"}]
+                              if reason == "deferred_for_declared_wait" else []),
+            "cap": {"movers": 1, "basis": "measured"}}}, now=1000.0)
+    due = math.nextafter(1120.0, math.inf) - 1000.0 + 40.0
+    read_document = pool.record_store.read_document
+    tier_path = queue.records.tier_record_path(tier)
+
+    def retain_cached_record(path, *args, **kwargs):
+        if path == tier_path:
+            raise AssertionError("unchanged tier record should use its cached bytes")
+        return read_document(path, *args, **kwargs)
+
+    for unix, monotonic in ((1000.0, 40.0), (1010.0, 50.0), (1120.0, 160.0)):
+        clocks.update(unix=unix, monotonic=monotonic)
+        observed = queue.claim_or_observe(capacity=capacity)
+        assert observed.value is None
+        assert reason in observed.blocked_on.reasons
+        assert observed.blocked_on.coverage.complete
+        assert claim_wait.RetryDeadline("tier_reader_plan_expiry", due) in (
+            observed.blocked_on.deadlines)
+        monkeypatch.setattr(pool.record_store, "read_document", retain_cached_record)
+    clocks.update(unix=math.nextafter(1120.0, math.inf), monotonic=due)
+    admitted = queue.claim_or_observe(capacity=capacity)
+    assert admitted.value is not None and admitted.value["action_key"] == "b" * 64
+
+
+def test_nonadaptive_sealed_request_read_failure_reports_bounded_recovery(
+        tmp_path, monkeypatch, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    key = "a" * 64
+    ActionRows(queue).publish(key, cas_root=tmp_path / "cas",
+                              resources={"cpu": 1, "mem_gb": 1})
+    request_read = pool._sealed_action_request
+
+    def unreadable(*args, **kwargs):
+        raise OSError("sealed request temporarily unreadable")
+
+    monkeypatch.setattr(pool, "_sealed_action_request", unreadable)
+    observed = queue.claim_or_observe(capacity={"cpu": 1, "mem_gb": 1})
+    assert observed.value is None
+    assert "local_scratch_io_intent_invalid" in observed.blocked_on.reasons
+    assert not observed.blocked_on.coverage.complete
+    assert claim_wait.WakeInput(
+        claim_wait.SourceKind.ACTION, f"sealed-request:{key}",
+        claim_wait.EvidenceState.UNREADABLE) in observed.blocked_on.inputs
+    assert claim_wait.RetryDeadline("source_recovery", 45.0) in observed.blocked_on.deadlines
+    monkeypatch.setattr(pool, "_sealed_action_request", request_read)
+    admitted = queue.claim_or_observe(capacity={"cpu": 1, "mem_gb": 1})
+    assert admitted.value is not None and admitted.value["action_key"] == key
