@@ -648,3 +648,28 @@ def test_all_timeout_slots_and_subprocess_aliases():
         "event.wait(timeout=1 / 0)", "clock.sleep(1)",
     ):
         assert not scan_timing_source(source), source
+
+
+def test_queue_get_timeout_does_not_depend_on_block_expression():
+    for block in ("blocking", "settings.blocking", "should_block()", "True", "False"):
+        source = f"blocking = True\nqueue.get({block}, 5)"
+        assert scan_timing_source(source) == {
+            TimingIdentity("tests/snippet.py", "<module>", "get"): 1}, source
+        assert not scan_timing_source(f"queue.get({block}, 60)")
+    for source in ("mapping.get('key', 5)", "mapping.get(key, default)"):
+        assert not scan_timing_source(source), source
+
+
+def test_queue_put_timeout_does_not_depend_on_block_expression():
+    for block in ("blocking", "settings.blocking", "should_block()", "True", "False"):
+        source = f"blocking = True\nqueue.put(item, {block}, 5)"
+        assert scan_timing_source(source) == {
+            TimingIdentity("tests/snippet.py", "<module>", "put"): 1}, source
+        assert not scan_timing_source(f"queue.put(item, {block}, 60)")
+
+
+def test_wildcard_time_import_is_a_sleep_route():
+    for source in ("from time import *\nsleep(1)", "from time import *"):
+        assert timing_source_needs_ast(source), source
+        assert scan_timing_source(source) == {
+            TimingIdentity("tests/snippet.py", "<module>", "sleep"): 1}, source
