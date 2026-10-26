@@ -1,0 +1,46 @@
+[
+  {
+    "name": "strict-x86",
+    "action_key": "2d53c99526e9205630c40923e9c7000c1bdd2b277c73a9ae9229c6ca39c8ad63"
+  },
+  {
+    "name": "x86-r1",
+    "action_key": "76e6223cbfa48e2b49a58e76d3018ff1d66e942fe9ffc24df941d783aed9aae2"
+  },
+  {
+    "name": "x86-r2",
+    "action_key": "d80748bd7cf3270ca4f3d12bf0eb955badc894775fa06683769003b7648bbb48"
+  },
+  {
+    "name": "x86-r3",
+    "action_key": "03a1c870a091389bb2e8af0ec61a35cf9a77bcd6240d74ef00e5567e172bf0f3"
+  },
+  {
+    "name": "x86-r4",
+    "action_key": "76e327194f26039dc510caf7a6e63d49c57d454a5bf44d95187466fd8d2b3f04"
+  },
+  {
+    "name": "x86-r5",
+    "action_key": "ae4c3d4fe0074c0fcfd1561487fd296c07595e533342521b7ba925b26af0757f"
+  },
+  {
+    "name": "arm-r1",
+    "action_key": "ad0fa8267bca43b33a7b229e12587b6ace3bba346f117a8fd62645ce789f3230"
+  },
+  {
+    "name": "arm-r2",
+    "action_key": "364942ffcaeb65911f2183602a3d12e7b9fbb3dc41050996fc5c8106e44cb954"
+  },
+  {
+    "name": "arm-r3",
+    "action_key": "8395f729306ad2544659663c9a8cb9a53b3e1c65670840b43cb525077f52048b"
+  },
+  {
+    "name": "arm-r4",
+    "action_key": "41a27ecd2dd628c7d216a940a6c6bed94be944179471806a81fcb3d4db424467"
+  },
+  {
+    "name": "arm-r5",
+    "action_key": "2186646b2254fa7b404ffef1c6a16c9c77e3e3e3226b68d4f45139500b440bb1"
+  }
+]
