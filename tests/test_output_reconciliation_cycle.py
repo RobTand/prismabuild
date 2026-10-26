@@ -24,6 +24,7 @@ from test_produced_output_restage import (
 
 @pytest.fixture(autouse=True)
 def _isolated_output_runtime(monkeypatch):
+    monkeypatch.setattr(tc, "_OUTPUT_OBSERVATIONS", {})
     monkeypatch.setenv("PRISMABUILD_READER_LEASE", "1")
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT", "PRISMABUILD_ACTION_KEY"):
@@ -33,9 +34,19 @@ def _isolated_output_runtime(monkeypatch):
 def test_cycle_reconciles_once_after_residency_and_preserves_events(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:
-    queue = pool.PoolQueue(tmp_path / "queue")
+    world = _World(tmp_path)
+    descriptors = _descriptors(world.template, world.inst, "p1", b"logical payload")
+    _prewrite(world.q, world.inst, world.template, "b1", descriptors)
+    first = world.first_publish("b1", descriptors)
+    world.run_mover(str(first["mover_key"]), "cycle-observation")
+    queue = world.q
+    host = "reconciliation-host"
+    verdict = {"event": "stage-primarycache-refused", "tier_id": TIER,
+               "primarycache": "metadata", "reason": "fixture host verdict"}
+    tc._emit(queue, host, verdict)
     order = []
     observations = []
+    real_reconcile = po.output_scope_tick
 
     def residency(q, **kwargs):
         assert q is queue
@@ -46,36 +57,81 @@ def test_cycle_reconciles_once_after_residency_and_preserves_events(
         assert q is queue
         assert tiers == {}
         order.append("output")
-        event = {"event": "output-batch-staged", "batch_id": "fixture-batch",
-                 "namespace": "fixture-namespace", "staged_logical_bytes": 23}
-        observations.append(event)
-        return [event]
+        events = real_reconcile(q, tiers)
+        observations.extend(events)
+        return events
 
     monkeypatch.setattr(tc, "residency_window", residency)
     monkeypatch.setattr(po, "output_scope_tick", reconcile)
-    # Permit the owner's usual direct-import style as well.
-    monkeypatch.setattr(tc, "output_scope_tick", reconcile, raising=False)
     # Reconciliation is independent of #905's opt-in gate/relief policy.
     monkeypatch.delenv("PRISMABUILD_TIER_OUTPUT_WINDOWS", raising=False)
     for now in (1000.0, 1001.0):
-        tc.cycle(queue, host="reconciliation-host", source_pool="test-source",
+        tc.cycle(queue, host=host, source_pool="test-source",
                  receipts=tc.ReceiptCache(), now=now, discover=lambda **_kwargs: {})
     assert order == ["residency", "output", "residency", "output"]
     assert len(observations) == 2
+    assert observations[0] == observations[1]
     printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
                if line.startswith("{")]
-    for events in (printed, queue.host_events("reconciliation-host")):
+    for events in (printed, queue.host_events(host)):
         reconciled = [event for event in events
                       if event.get("event") == "output-batch-staged"]
-        assert len(reconciled) == 2, events
-        for event, expected in zip(reconciled, observations):
-            assert all(event.get(key) == value for key, value in expected.items())
+        assert len(reconciled) == 1, events
+        assert all(reconciled[0].get(key) == value
+                   for key, value in observations[0].items())
+        assert any(all(event.get(key) == value for key, value in verdict.items())
+                   for event in events), events
 
 
 def _batch_observation(events, batch_id="b1"):
     batches = [event for event in events if event.get("batch_id") == batch_id]
     assert len(batches) == 1, events
     return batches[0]
+
+
+@pytest.mark.parametrize("field, value", [
+    ("event", "output-recovery-unknown"), ("generation", 1),
+    ("staged_logical_bytes", 19), ("manifest_digest", "b" * 64),
+])
+def test_cycle_reports_output_changes_dropout_and_reappearance(
+    tmp_path: Path, monkeypatch, capsys, field, value,
+) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    host = "output-change-host"
+    first = {"event": "output-batch-staged", "batch_id": "b1", "namespace": "a" * 64,
+             "generation": 0, "staged_logical_bytes": 7, "manifest_digest": "a" * 64}
+    other = {**first, "namespace": "b" * 64}
+    changed = {**first, field: value}
+    snapshots = ([first, other], [first, other], [changed, other], [changed, other],
+                 [other], [other], [first, other])
+    for now, observations in enumerate(snapshots):
+        monkeypatch.setattr(po, "output_scope_tick", lambda *_args: observations)
+        tc.cycle(queue, host=host, source_pool="test-source",
+                 receipts=tc.ReceiptCache(), now=float(now), discover=lambda **_kwargs: {})
+    expected = [first, other, changed,
+                {"event": "output-batch-dropped", "batch_id": "b1",
+                 "namespace": first["namespace"]}, first]
+    printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+               if line.startswith("{")]
+    for events in (printed, queue.host_events(host)):
+        outputs = [{key: value for key, value in event.items()
+                    if key not in ("unix", "host", "verdict_since_unix", "waited_s")}
+                   for event in events if str(event.get("event")).startswith("output-")]
+        assert outputs == expected
+
+
+def test_output_observation_history_belongs_to_each_queue_and_host(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    queues = [pool.PoolQueue(tmp_path / name) for name in ("one", "two")]
+    observation = {"event": "output-batch-unstaged", "batch_id": "b1", "namespace": "a" * 64}
+    monkeypatch.setattr(po, "output_scope_tick", lambda *_args: [observation])
+    for queue, host in ((queues[0], "one"), (queues[0], "two"), (queues[1], "one")):
+        tc.cycle(queue, host=host, source_pool="test-source",
+                 receipts=tc.ReceiptCache(), now=1.0, discover=lambda **_kwargs: {})
+        outputs = [event for event in queue.host_events(host)
+                   if event.get("event") == "output-batch-unstaged"]
+        assert len(outputs) == 1
 
 
 @pytest.mark.parametrize("enforced", [False, True])
@@ -111,6 +167,7 @@ def test_staged_logical_bytes_require_valid_composition_and_complete_receipt(
     monkeypatch.setattr(rm, "compose", invalid)
     invalid_event = _batch_observation(po.output_scope_tick(world.q, {TIER: {}}))
     assert invalid_event["event"] == "output-batch-invalid"
+    assert invalid_event["namespace"] == live["namespace"]
     assert invalid_event.get("staged_logical_bytes") is None, invalid_event
     monkeypatch.setattr(rm, "compose", real_compose)
 
@@ -169,9 +226,9 @@ def test_unreadable_fragments_are_unknown_not_a_zero_or_missing_batch(
     world.run_mover(str(first["mover_key"]), "unreadable-observation")
 
     def unreadable(*args, **kwargs):
-        raise OSError("fixture unreadable residency evidence")
+        return [], True
 
-    monkeypatch.setattr(rm, "read_fragments", unreadable)
+    monkeypatch.setattr(rm, "read_fragments_checked", unreadable)
     unknown = _batch_observation(po.output_scope_tick(world.q, {TIER: {}}))
     assert unknown["event"] == "output-recovery-unknown"
     assert unknown.get("staged_logical_bytes") is None, unknown

@@ -573,43 +573,40 @@ def write_fragment(root: str | Path, fragment: Mapping[str, object]) -> Path:
         checked)
 
 
-class _FragmentRead(list[dict[str, object]]):
-    """Best-effort fragments with private availability evidence for reconciliation.
-
-    Ordinary consumers retain list semantics and every readable fragment;
-    observers must not mistake a partial read for complete staging evidence.
-    """
-
-    _unreadable: bool = False
-
-
 def read_fragments(root: str | Path, consumer_action_key: str) -> list[dict[str, object]]:
-    """Every fragment filed for one consumer, oldest name first.
+    """Every readable valid fragment for one consumer, oldest name first."""
+
+    return read_fragments_checked(root, consumer_action_key)[0]
+
+
+def read_fragments_checked(
+    root: str | Path, consumer_action_key: str,
+) -> tuple[list[dict[str, object]], bool]:
+    """Return best-effort fragments and whether any evidence was unreadable.
 
     A fragment that cannot be read or does not validate is skipped rather than
     raised on: a half-written or foreign file in this directory must not stop a
-    consumer reading the copies its other movers really did make. The returned
-    list privately retains read failures for output reconciliation, without
-    changing the best-effort contents seen by other consumers.
+    consumer reading the copies its other movers really did make. A missing or
+    readable empty directory returns an empty list with no read failure.
     """
 
     directory = Path(root) / _action_key(consumer_action_key, where="consumer_action_key")
-    out = _FragmentRead()
+    out: list[dict[str, object]] = []
+    unreadable = False
     try:
         names = sorted(entry.name for entry in os.scandir(directory)
                        if entry.is_file() and entry.name.endswith(".json"))
     except FileNotFoundError:
-        return out
+        return out, False
     except OSError:
-        out._unreadable = True
-        return out
+        return out, True
     for name in names:
         try:
             with open(directory / name) as stream:
                 out.append(validate_fragment(json.load(stream)))
         except (OSError, ValueError):
-            out._unreadable = True
-    return out
+            unreadable = True
+    return out, unreadable
 
 
 def landing_path(root: str | Path, consumer_action_key: str) -> Path:

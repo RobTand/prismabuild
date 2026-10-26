@@ -5679,8 +5679,8 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     each). Staged logical payload bytes come from the validated composed
     entries, not allocated filesystem space or an additional capacity debit.
     The tier-cycle owner calls this once after `residency_window`, independent
-    of output-window enforcement, and emits the observations through its
-    stdout and host-event diagnostics. No publishing (liveness), no deletion
+    of output-window enforcement, and emits changes through its stdout and
+    host-event diagnostics. No publishing (liveness), no deletion
     (lease), no placement or retirement authority.
     """
 
@@ -5713,6 +5713,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
             for batch_id, entry in batches.items():
                 if not isinstance(entry, bl.BatchFacets):
                     continue
+                ns = str(entry.namespace or '')
                 # The ACTIVE materialization owns the material: after a
                 # restage the entry flag describes a copy that is already
                 # gone, and reading it here would report a live successor as
@@ -5721,16 +5722,15 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     active = entry.active
                 except oc.ProducedOutputError:
                     events.append({"event": "output-recovery-unknown",
-                                   "batch_id": batch_id})
+                                   "batch_id": batch_id, "namespace": ns})
                     continue
                 if active.retired:
                     continue
-                ns = str(entry.namespace or '')
                 try:
-                    fragments = map_mod.read_fragments(out_base, ns)
-                    if getattr(fragments, "_unreadable", False):
-                        raise OSError("incomplete output residency evidence")
+                    fragments, unreadable = map_mod.read_fragments_checked(out_base, ns)
                 except Exception:
+                    unreadable = True
+                if unreadable:
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id, "namespace": ns})
                     continue
@@ -5742,7 +5742,8 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     composed = map_mod.compose(fragments)
                 except ValueError as exc:
                     events.append({"event": "output-batch-invalid",
-                                   "batch_id": batch_id, "error": repr(exc)})
+                                   "batch_id": batch_id, "namespace": ns,
+                                   "error": repr(exc)})
                     continue
                 # Same question, same answer as `recover_batches`: composing
                 # fragments prove bytes landed, not that the batch did, and
