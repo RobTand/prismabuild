@@ -1238,7 +1238,7 @@ class RecordStore:
 
 
     def archived_generation_records(
-        self, action_key: str, *, generation: float,
+        self, action_key: str, *, generation: float, max_bytes: int | None = None,
     ) -> dict[int, tuple[Path, JsonRecord]]:
         key = str(action_key)
         if (
@@ -1258,6 +1258,7 @@ class RecordStore:
             # that cannot see the directory must not answer "no ending".
             return {}
         present: dict[int, tuple[Path, dict[str, object]]] = {}
+        remaining = max_bytes
         for path in entries:
             name = path.name
             stem = name[:-5] if name.endswith(".json") else ""
@@ -1267,7 +1268,15 @@ class RecordStore:
                 # attempt is exactly ``<digits>.json`` and nothing else here
                 # is one.
                 continue
-            value = read_document(path)
+            if remaining is None:
+                value = read_document(path)
+            else:
+                raw = immutable_files.read_immutable_file(
+                    path, where="archived attempt", max_bytes=remaining)
+                remaining -= len(raw)
+                value = digest_primitives.decode_strict_json(raw, where="archived attempt")
+                if not isinstance(value, dict):
+                    raise PoolContractError(f"archived attempt is not an object: {path}")
             if value is None:
                 raise PoolContractError(f"archived attempt is unreadable: {path}")
             attempt = self.archived_attempt_identity(

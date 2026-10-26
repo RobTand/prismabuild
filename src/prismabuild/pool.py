@@ -20721,11 +20721,12 @@ class PoolQueue:
         return found
 
     def archived_generation_summaries(
-        self, action_key: str, *, generation: float,
+        self, action_key: str, *, generation: float, max_bytes: int | None = None,
     ) -> list[tuple[Path, dict[str, object]]]:
         """Reconstruct exact-generation metadata without expanding attempt logs."""
         key = str(action_key)
-        present = self.records.archived_generation_records(key, generation=generation)
+        present = self.records.archived_generation_records(
+            key, generation=generation, max_bytes=max_bytes)
         if not present:
             return []
         terminal = [
@@ -20783,6 +20784,11 @@ class PoolQueue:
              "outcome": str(self.records.attempt_path(record, number).relative_to(self.root))}
             for number in range(missing + 1, attempt + 1)
         ]
+        for number, (source, archived) in present.items():
+            self._bind_linked_attempt(record, archived, attempt=number, where=str(source))
+        endings.resolve_attempt(
+            [value], invalid=PoolContractError,
+            validate_output_retry_stop=self._validate_output_retry_stop)
         return [(path, record)]
 
     def archived_preemption_outcomes(
