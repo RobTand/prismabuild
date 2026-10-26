@@ -1603,6 +1603,22 @@
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no staged-only campaign or live-host reproduction",
     "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_1772": {
+    "target": "Observe the same canary action through feasible higher-priority waiting without weakening priority or treating elapsed wait as a pass.",
+    "implemented_source": {
+     "commit": "db21a2434d2",
+     "state": "component-implemented",
+     "scope": "Leg 3 continues bounded observations after rc75 by default; --leg3-wait-s caps one total observation budget. Execution remains 600 seconds at priority -10."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue1772/merge-acceptance.json",
+     "detail": "Deterministic red 19ba88324f0f; five fresh green regression runs per architecture, two xdist each, 16 cases and no skips. Full 26-file cohort per architecture: 367 passed, 2 inherited guard failures. Exact source bundles, terminal cleanup, logs and CAS receipts/payloads verified. Baseline independently reproduces both guard failures. Principal disposition of #2296/#2297 and contract approval remain required."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no recovered historical admission snapshot, live canary or staged-only campaign result",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states; conditional liveness and NFS limitations remain owed."
    }
   },
   {
