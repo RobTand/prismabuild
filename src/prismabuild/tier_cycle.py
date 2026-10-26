@@ -154,6 +154,10 @@ _FANOUT_FINGERPRINTS: dict[tuple[str, str, str], tuple[object, ...]] = {}
 _MOVER_KEPT_TOLD: set[tuple[str, str, str]] = set()
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
+#: Last output census per queue and host; a process restart reports it again.
+_OUTPUT_OBSERVATIONS: dict[
+    tuple[str, str], dict[tuple[str, str], tuple[object, ...]]
+] = {}
 
 
 def _begin_verdict_cycle() -> None:
@@ -5663,8 +5667,7 @@ def window_pressure(
         if not waiting_newcomers:
             continue
         try:
-            ready_full = 0
-            ready_new = 0
+            ready_new_money = 0
             for item in queue.ready_items():
                 if not isinstance(item, Mapping):
                     continue
@@ -5676,10 +5679,9 @@ def window_pressure(
                 tier_needs = demands.get(tier_id)
                 if isinstance(tier_needs, Mapping):
                     row_gib = int(tier_needs.get(kind, 0) or 0)
-                    ready_full += row_gib
-                    # A declared unit is asked what its gate asks: a row its
-                    # funding record fully covers consumes its fence rather
-                    # than free, so it commits no new capacity (#1594).
+                    # Both publication paths consume a fully funded row's
+                    # fence, already in held_total, instead of free capacity
+                    # (#1594, #1759). Anything else counts in full.
                     try:
                         covered, _generation = queue.funding.cover_window(
                             tier_id, item, kind, row_gib).credit
@@ -5687,17 +5689,16 @@ def window_pressure(
                             KeyError):
                         covered = 0
                     if not (row_gib and covered >= row_gib):
-                        ready_new += row_gib
+                        ready_new_money += row_gib
         except (OSError, pool.PoolContractError, ValueError):
-            ready_full = 0
-            ready_new = 0
+            ready_new_money = 0
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
             relief, why, facts = _relief_verdict(
                 held_gib=held_total + int(needs.get("extra_held_gib") or 0),
-                ready_gib=ready_new if needs.get("declared") else ready_full,
+                ready_gib=ready_new_money,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
@@ -10405,6 +10406,24 @@ def _cycle(
                                   census=commitments, consumers=planned, store=store):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("residency_window")
+    output_scope = (str(queue.root), host)
+    previous_outputs = _OUTPUT_OBSERVATIONS.get(output_scope, {})
+    current_outputs: dict[tuple[str, str], tuple[object, ...]] = {}
+    for event in produced_output.output_scope_tick(queue, tiers):
+        output_key = (str(event["batch_id"]), str(event["namespace"]))
+        signature = (event["event"], event.get("generation"),
+                     event.get("staged_logical_bytes"), event.get("manifest_digest"))
+        current_outputs[output_key] = signature
+        if previous_outputs.get(output_key) != signature:
+            _emit(queue, host, event, tier_consumers=tier_consumers)
+    for batch_id, namespace in sorted(previous_outputs.keys() - current_outputs.keys()):
+        _emit(queue, host, {"event": "output-batch-dropped", "batch_id": batch_id,
+                            "namespace": namespace}, tier_consumers=tier_consumers)
+    if current_outputs:
+        _OUTPUT_OBSERVATIONS[output_scope] = current_outputs
+    else:
+        _OUTPUT_OBSERVATIONS.pop(output_scope, None)
+    phases.lap("output_scope_tick")
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes

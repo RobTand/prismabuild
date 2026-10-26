@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import contracts
-from prismabuild import box_capacity, core  # noqa: E402
+from prismabuild import box_capacity, core, host_hold, pool  # noqa: E402
 
 
 WORKER = Path(__file__).resolve().parents[1] / "tools/fleet/worker_loop.py"
@@ -149,17 +149,14 @@ class _Ledger:
         return {}
 
 
-class _Queue:
-    #: The loop sweeps its own dead offer temporaries under ``queue.root``
-    #: (#1040).  A path that cannot exist makes that sweep a skip, so a double
-    #: never reads or removes anything on a real queue.
-    root = Path("/nonexistent/prismabuild-test-queue")
-
-    def __init__(self, *, ready):
+class _Queue(pool.PoolQueue):
+    def __init__(self, root, *, ready):
+        super().__init__(root)
         self.ready = ready
         self.census_calls = 0
         self.ledger_value = _Ledger()
         self.announcements = []
+        self.serve_calls = 0
 
     def ledger(self):
         return self.ledger_value
@@ -173,6 +170,7 @@ class _Queue:
         return []
 
     def serve_once(self, **_kwargs):
+        self.serve_calls += 1
         return None
 
     def placement_census(self):
@@ -205,10 +203,13 @@ def _worker():
     return module
 
 
-def _run_worker(tmp_path, argv, *, ready, sample=None):
+@mock.patch.object(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
+def _run_worker(tmp_path, argv, *, ready, sample=None, held=False):
     worker = _worker()
-    queue = _Queue(ready=ready)
-    queue.root = tmp_path / "pb-queue"
+    queue = _Queue(tmp_path / "pb-queue", ready=ready)
+    if held:
+        host_hold.change_host_hold(queue.root, "testbox", owner="operator",
+                                  reason="fixture hold", expires_unix=host_hold.time.time() + 60)
     sleeps = []
     for name in ("loaded.json", "published.json"):
         (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
@@ -236,6 +237,14 @@ def _run_worker(tmp_path, argv, *, ready, sample=None):
          mock.patch.object(sys, "argv", ["worker_loop.py", *argv]):
         assert worker.main() == 0
     return queue, sleeps
+
+
+def test_adaptive_fixture_honors_a_real_operator_hold(tmp_path):
+    queue, _ = _run_worker(
+        tmp_path, ["--once", "--assume-idle", "--all-cores"], ready=1, held=True)
+    assert queue.serve_calls == 0
+    assert queue.announcements[-1]["hold"]["owner"] == "operator"
+    assert all(value == 0 for value in queue.announcements[-1]["observed_capacity"].values())
 
 
 def test_worker_default_has_no_implicit_four_gpu_capacity(tmp_path):

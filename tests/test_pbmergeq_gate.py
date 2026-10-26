@@ -47,7 +47,9 @@ def gate_fixture(tmp_path, monkeypatch):
             pytest.fail("gate must block on child exit")
 
     monkeypatch.setattr(mq.subprocess, "Popen", Child)
-    monkeypatch.setattr(mq.time, "sleep", lambda seconds: pytest.fail("gate must not sleep"))
+    monkeypatch.setattr(mq, "time", SimpleNamespace(**{
+        **vars(mq.time), "sleep": lambda seconds: pytest.fail("gate must not sleep"),
+    }))
     output = tmp_path / "verdict.json"
 
     def invoke(extra=()):

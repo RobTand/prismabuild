@@ -1238,7 +1238,7 @@ class RecordStore:
 
 
     def archived_generation_records(
-        self, action_key: str, *, generation: float,
+        self, action_key: str, *, generation: float, max_bytes: int | None = None,
     ) -> dict[int, tuple[Path, JsonRecord]]:
         key = str(action_key)
         if (
@@ -1258,6 +1258,7 @@ class RecordStore:
             # that cannot see the directory must not answer "no ending".
             return {}
         present: dict[int, tuple[Path, dict[str, object]]] = {}
+        remaining = max_bytes
         for path in entries:
             name = path.name
             stem = name[:-5] if name.endswith(".json") else ""
@@ -1267,7 +1268,15 @@ class RecordStore:
                 # attempt is exactly ``<digits>.json`` and nothing else here
                 # is one.
                 continue
-            value = read_document(path)
+            if remaining is None:
+                value = read_document(path)
+            else:
+                raw = immutable_files.read_immutable_file(
+                    path, where="archived attempt", max_bytes=remaining)
+                remaining -= len(raw)
+                value = digest_primitives.decode_strict_json(raw, where="archived attempt")
+                if not isinstance(value, dict):
+                    raise PoolContractError(f"archived attempt is not an object: {path}")
             if value is None:
                 raise PoolContractError(f"archived attempt is unreadable: {path}")
             attempt = self.archived_attempt_identity(
@@ -1631,12 +1640,12 @@ class RecordStore:
         return Absent()
 
     def gang_member_slots(self, key: str) -> Iterator[RecordObservation]:
-        """Stable strict 64 KiB slots in gang membership's original priority."""
+        """Replaceable strict 64 KiB slots in gang membership's original priority."""
         for state in (CLAIMED, DONE, FAILED, WITHDRAWN, READY):
             path = self.item_path(state, key)
             address = QueueAddress(path, state, key)
             try:
-                raw = immutable_files.read_stable_file(
+                raw = immutable_files.read_replaced_record(
                     path, where="gang record", max_bytes=64 * 1024)
             except FileNotFoundError:
                 yield RecordObservation(address, Absent())

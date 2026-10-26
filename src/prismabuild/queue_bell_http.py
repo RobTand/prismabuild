@@ -2,7 +2,44 @@
 from __future__ import annotations
 
 import io
+import socket
+import threading
 import time
+
+
+class RequestCancellation:
+    """Own cancellation of one request, including attachment after cancellation."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._socket = None
+
+    def attach(self, connection):
+        with self._lock:
+            if self._cancelled:
+                connection.close()
+                raise OSError("bell request cancelled")
+            self._socket = connection
+
+    def detach(self):
+        with self._lock:
+            self._socket = None
+
+    @property
+    def cancelled(self):
+        with self._lock:
+            return self._cancelled
+
+    def cancel(self):
+        with self._lock:
+            self._cancelled = True
+            if self._socket is not None:
+                try:
+                    self._socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self._socket.close()
 
 
 class DeadlineInput(io.RawIOBase):
