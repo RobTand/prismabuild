@@ -101,14 +101,21 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
     released = False
 
     def record(*args, **kwargs):
-        nonlocal released
         original(*args, **kwargs)
         ticks.append(json.loads(queue.records.lease_path(key).read_text()))
-        if not released and ticks[-1]['execution_observation']['launcher_alive'] is False:
+
+    original_observe = pool._observe_execution
+
+    def observe(process, previous=None, **kwargs):
+        nonlocal released
+        observation = original_observe(process, previous, **kwargs)
+        if not released and observation['launcher_alive'] is False:
             with release.open('wb', buffering=0) as gate:
                 gate.write(b'1')
             released = True
+        return observation
 
+    monkeypatch.setattr(pool, '_observe_execution', observe)
     monkeypatch.setattr(queue, 'write_lease', record)
     result = queue.execute(item, heartbeat_s=0.05)
     assert result['status'] == 'executed'
