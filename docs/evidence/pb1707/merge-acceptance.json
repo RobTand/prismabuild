@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "a79f780f72cdf8183097cfd934dddb5758504c22",
+  "ledger_commit": "eca345a74ea4c7d5f83d6898d351e515d9cd31af",
   "scope": [
     "ID-08",
     "SM-01",
@@ -48,7 +48,7 @@
           "0b79e9a395f7d1037c7110c8311981510bbe4baed82753fad9e9755b1fbcfe8b",
           "ce101bc05cc1352d6678eab317bf72ff714d6164eee56caa16803f0eed69ef69"
         ],
-        "outcome": "Eight-file replacement at exact clean source 7a99877d: 160 passed and one baseline fixture failure, zero skips. All terminal/source/log/native completion/cleanup evidence audited; seven success receipts verified. See fresh-qualification.json. Current-main integration remains pending."
+        "outcome": "Eight-file replacement at exact clean source 7a99877d: 160 passed and one baseline fixture failure, zero skips. All terminal/source/log/native completion/cleanup evidence audited; seven success receipts verified. See fresh-qualification.json. Historical exact-source evidence; superseded for the final correction by counter-qualification.json."
       },
       {
         "id": "LIVE-01",
@@ -150,6 +150,66 @@
           "a79d6299a2b698362429818baafcefb397bfcdc8b20e15c4638082ba6c4c65f9"
         ],
         "outcome": "Source b530faad includes current main 58e9a4fa. Five executed rounds per architecture on nine touched test files, two xdist rounds per architecture: 2,150 passed, no failures or skips. Five integration files: 61 passed and the unchanged baseline wire-inventory fixture failure. All 95 terminal/request/source/log/native completion/cleanup records and 94 successful CAS receipts audited. repeated-qualification.json binds the primary audit and keys."
+      },
+      {
+        "id": "LIVE-01",
+        "actions": [
+          "7bb561b58f64501787f84651d7d3b3d808debcf8e9e960afd3e2ce45ffed315f",
+          "4252035d1973d6790ccde77234572880ef7503494cece71fd0ccbd596d4232c4",
+          "a6bd1e83d388ad0dc881132b2f889b14e9e0ba4bb304d488ac824ded708312bd",
+          "c1cbee6c1edb22b69d1b0827f833c3fc3e78912002fedecc6a3d01240faa08f9",
+          "8384511fac59ae8fba34a0b1a788dcdeef05cf3845759856041a5df8695e9d3d",
+          "eda9e8e361eaa25324f726665def319a5435bdabb4cadc8086ef5e0842bd6d9b",
+          "33360a5af4ad560bef8baf1d57f08872f7ea33cb31c4407fc1a9c319eac03420",
+          "74248bb1971ad3bc41e21da580f100d472c3d2c8b9109a57f704c950eb4d1006",
+          "6a5d7c7ba0c251ad6799bfd7b99c42225e2976128a07f9e72336f2fac6e463da",
+          "f9843fb48d371fa46c0cc07190c83c20eab5fb28deb2bede0b9a90c69acd5657",
+          "d014fbc1a11ab39861fd09a6d10c69d04921b7c6db5bd43f9de9e2efd1528d3d",
+          "b92669b27b19645562dbe325ac4022fca2c5715c48446a05fa3f4c0907d89950",
+          "6e5799bcd97948e2c4a1b7fd934e5f9274e8909cc5bf90dc70741240106d765f",
+          "5a7334350cfbc1ba666a41b2ba11c33e3ec48165b6aa2d9125e80bccbcbaf7b0",
+          "9eb47cd2d73c860b577120ddf07203fb71429a5bff330fb9bb53b347b2b1ae13",
+          "4aef501d123fc116840411eb812fec953900a6eb4eeddf0774e37f6e6a338675",
+          "b40845cfc318eaf772a265c35b506b284e7f69dbbf92969e82a22f97f483f898",
+          "62d15752f7005dd5238fcefeabf904cd4f1bf1e027cf439461a00cbe786ff1e5",
+          "3c215f5901409dfc056c55e283db9c6fa82c76be3efecccf3c8b0baa2a6a3099",
+          "e8e07c00175b58dffa1972c48a238f9c1bb98523cbb56087aecd24a5213672fd",
+          "34367c4b6b9e499e705ecfba161282e1a36f53ee8255c9c8aa9ffd550212466c",
+          "1ecbea8d7c0cdd54374616416727e10c2c1f596c502733ebfa4fe5802651dad4",
+          "8e63a42dcd7d0511221385bbed1ea88fdc4694a452a49967660aa75b5f436ec3",
+          "bf85011ff45b9b563c42da08f9a86a2aa6e46717edaf7f9ac83b4a0f6a19238c",
+          "10ccb06f96e5d7582092d54af846132d8b969a646c56ada47fa09fa0013aabd1",
+          "9af5ade65a496cb81876fc791af27368380600ece3580b5dbb8af7b2ba624686",
+          "1da4a256d773d703e2c3b6de5b06ea446e03ada55581b6b4cffdc479e4b3ea51",
+          "7e6691e54aca0843bddd8917c2e7e18bcd76b5a0595f7bf5df6771c7596ce23e",
+          "f8d6acd219f87195fd025a539b7a5d1c02562e84fb807e83cf636261eddb2755",
+          "520b6efaf494266f1135b2bdb8c8ebf4bbffc8f13ab11abafe65eb320b196afe",
+          "a1aa3175155ab45e8f04005e7bb1196a7e6dfe5df7745b090a20ea52bf87615b",
+          "4bd1a040f9ceff4bd73a7426c668da3d1a3c9d80e7f14b2e136fc428fee0c7e1",
+          "5e3f32d42580e1838db93f5da642ecdc787b12aeed5481835339f3e2248da29b",
+          "32865280ea22063f92d441dba63a4ab07bf2c9552cb008e5cbb114706762fb89",
+          "978b3421bf3159142ee34a206ab50879fa507c7ac0a4e75ea60ae32396ab8889",
+          "ea1421ac9fdccf38046a118e3f39476c416c519d8b1f815301fae57904da767b",
+          "eb85f4de8e3f67b5920d27372ac3ce179bd6e52bc7b9b3798be4debf31f6e050",
+          "0c45ad2f92afdd127daeab34017681cfcf0038338d3011bdf59c8ab2bc97f248",
+          "16d846cee7b152ad098358ea37fc8c481a5056eb0f1976c30a87aeba71702134",
+          "a460b0ce8adff499c2fd97e99a020c7f87ae546fefcbec1648d6a9ac7644598a",
+          "4f4b9f3d248082eb99eee8e4830f9d85538255b57f12015c1ac827c1107e6ac8",
+          "67b2079369150269f5e18ea6d56b5ba7f53829530f80cea9f5849c5cc9e7df22",
+          "abaad6ea62d6332e386b6d1459738e7ae79292d5aed1e64edcbedaf12779cfe3",
+          "265a15fc9c6d84dbd215bffc045b2166dd2c183fb1bd0c7fd847255adaef4eef",
+          "6555b10dfb0e4ba04184125431e8eafdfaccf76a5bbc74b4dfe31ec7868ced7b",
+          "94ef42df23463f19675163171fc234c5cbdb1feec04dfbeb38b8a863cbda9b9f",
+          "434fd63cda8a70a29cfeb535e9d18fdbe502731d902c8563d0f355d59366fd1b",
+          "c979ab9ff34391d2aaa08657ff3a45a4a3f439c7c875b61139ab6f38e1aa6c66",
+          "09e29ffe6c30286c433178e6b3ac9a48c35ca9610643788095011d81bf2c53e7",
+          "f6301a39906d1be9a3142f6300283f9276f9390e9b28e978e70ada6248cc873f",
+          "d80e554471d9aca33ae4885b01fd9f0fa1968515e65ae850745743d505fafcf6",
+          "3945fce59e699969db82a03253c5131d1feb221a8e6adf4a7ca421867cb5d72b",
+          "3af98c6813fdd0ed0ecb0ebbb8bebda1068931bbf69388e8bf63eae6b392a19e",
+          "374d134172cecb57cf494bee056bf148d7dca6b684e60fce8ce81a5a37579b76"
+        ],
+        "outcome": "Review 1 correction: 54 executed actions, 1,500 passed, zero failures/skips. Each changed test file passed five rounds per architecture, including two xdist rounds each; the final 12-file integration selection passed 270 cases per architecture. All source/request/terminal/log/native-completion/cleanup artifacts and 54 success CAS receipts authenticated. See counter-qualification.json for exact source pins, hashes, keys and receipts. Ordinary table and JSON display committed semantic units distinctly from activity samples."
       }
     ],
     "remaining_gaps": [
@@ -160,10 +220,10 @@
       "ID-08: the candidate has not been deployed. No new generation or service restart is authorized here.",
       "SM-01 and PRG-03: existing containment, cleanup, typed-wait and retry owners remain; component regressions do not establish the whole staged-read contract.",
       "INV-09: fallback activity counters do not certify durable work; semantic ProgressWatch remains unchanged. Whole-requirement validation and workload proof stay owed.",
-      "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. The candidate has the same failure; no fixture or assertion is weakened.",
-      "Main advanced after qualification through #2309, changing seven canary-only paths. All PR-owned product, test and compatibility bytes equal qualified b530faad. integration-comparison.json records exact blobs. No additional canary test execution is claimed."
+      "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. Historical candidate evidence has the same failure; no fixture or assertion is weakened. Owner #2296 is now closed by PR #2315. Current-main composition will include that separate repair.",
+      "Main observed at 6185a6ee60f32cea85e4c45144493767a7477998 has seven overlapping qualified paths. No additional rebase or main-composition proof is claimed. Under merge-via-batch-20261026, Principal Engineer 2 composes and validates approved heads; rebase only if requested for a conflict or attributable batch failure."
     ],
-    "note": "PROPOSED ONLY. Replacement, current-main integration and repeated-run evidence are audited. Independent Principal Engineer review and merge remain pending. Excluded crash-era actions confer no evidence. No deployment or campaign completion is claimed; CAS receipts do not establish power-loss durability.",
+    "note": "Proposed scoped source/component merge acceptance for independent Principal review 2. The status-counter gap from review 1 is corrected and qualified. Historical failures remain visible; the two stale display assertions pass after explicit updates. Retained 95-action evidence applies only to its authenticated source; 20 of 25 inspected blobs remain equal. Candidate deployment and workload proof remain absent. CAS receipts establish bytes and re-readability, not power-loss durability.",
     "source_delivery": {
       "record": "source-delivery.json",
       "validated_source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",

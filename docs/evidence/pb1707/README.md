@@ -71,4 +71,33 @@ The frozen plan and raw reports remain under `/mnt/shared/paperclip-runs/PRI-43/
 
 The known wire-inventory failure remains visible for Principal review. The fixture and assertion are unchanged. This qualification proves source components only. Deployment, production soak, real GPU behavior, Docker daemon loading, NFS faults and staged-read workload conformance remain unclaimed.
 
-Current main `defc5bd8467f009c9ea7935678e31e282e46d7a1` is now integrated and rebased. Its later #2309 merge changes seven canary-only paths. [Integration comparison](integration-comparison.json) verifies that every PR-owned product, test and compatibility blob equals qualified `b530faad`. No additional canary test execution is claimed here.
+The earlier review integrated main `defc5bd8467f009c9ea7935678e31e282e46d7a1`. Its later #2309 merge changes seven canary-only paths. [Integration comparison](integration-comparison.json) verifies that every PR-owned product, test and compatibility blob equals qualified `b530faad`. No additional canary test execution is claimed here.
+
+
+## Principal review 1 correction
+
+Ordinary table and JSON status now show the cumulative semantic counter and optional unit. Activity samples keep their output and CPU meaning. The deterministic regression failed all four variants before the formatter repair in `92fc54d3cc7bf42c9496f56a53c0f92775194ee266f7b48d69c6d3eede643a38`; the corrected status file passed 28 tests in `2094f84e60e309d2a890c06d336b383c7227a4ceaf63f24b7e5d8de2bd84fc06`. Both raw audits are retained in the review evidence bundle.
+
+[Counter qualification](counter-qualification.json) binds 54 successful actions and 1,500 passes, zero failures or skips. Each of the three changed test files passed five times per architecture, with two xdist rounds each. The final twelve-file integration scope passed 270 cases on x86 and 270 on ARM. The final frozen source is `5482fb5e2ee3887ca08eb0acded230a96361c3f8`, with complete tree equal to delivered `eca345a74ea4c7d5f83d6898d351e515d9cd31af`. The ordinary-status file and formatter equal the earlier ten-round source; the progress file equals its later ten-round source. The final integration uses the corrected census expectation.
+
+The first correction integration had two stale display assertions, retained as failed evidence with no success receipts. The progress test now requires the committed count and unit in both row and table. The historical census test asserts the exact old and current strings, then compares every other value and its original read schedule. The original census oracle passed unchanged main and failed the candidate solely on the display; the revised oracle failed unchanged main. No fixture or unrelated assertion was removed.
+
+The raw audits authenticate source bundles and Git parents, canonical requests, both logs, complete native outcome and teardown populations, cleanup, and CAS receipts and payloads. The three frozen plans declare two CPUs and four GiB per shard, one native thread per worker, zero GPUs, default eight clients, and 1200-second deadlines. Their documented aggregate upper bound during overlap was 20 CPUs and 44 GiB. No new tests were submitted during the final evidence continuation.
+
+The three plans and raw audits are preserved in the Paperclip review bundle. To regenerate the committed manifest from them:
+
+```bash
+python3 docs/evidence/pb1707/summarize_counter_qualification.py \
+  --evidence /mnt/shared/paperclip-runs/PRI-43 \
+  --delivered-head eca345a74ea4c7d5f83d6898d351e515d9cd31af \
+  --main 6185a6ee60f32cea85e4c45144493767a7477998 \
+  --out /tmp/pb1707-counter-qualification.json
+```
+
+The bundle includes `audit-qualification-plan.py` to repeat the raw artifact audit for either follow-up plan. It imports the repository's read-only compatibility auditor, then checks the plan's resource, thread and architecture declarations. These commands inspect retained evidence and run no payloads.
+
+Twenty of the 25 previously inspected blobs equal the Principal-authenticated qualification source. Census, pool, worker loop and the two corrected expectation files have fresh integrated component evidence. Earlier evidence retains its exact-source scope and all eight crash-era keys stay excluded. The historical wire-inventory failure remains separately recorded and was accepted by Principal review 1.
+
+The branch includes main `954e14171565e849198cd0287abe24ff1ea7d076`. Later main `6185a6ee60f32cea85e4c45144493767a7477998` overlaps seven qualified paths, listed in the manifest. The merge train owns composition with current main under `merge-via-batch-20261026`; this continuation performs no additional rebase. The proposed acceptance record awaits independent Principal review 2. #1707 stays open until merged proof exists; PRI-69 remains downstream. Candidate deployment and workload proof remain absent.
+
+The owner of the historical wire-inventory baseline, [#2296](https://github.com/RobTand/prismabuild/issues/2296), is now closed by [PR #2315](https://github.com/RobTand/prismabuild/pull/2315). Its earlier failure remains visible in retained source evidence. No new blocker or duplicate issue is created.

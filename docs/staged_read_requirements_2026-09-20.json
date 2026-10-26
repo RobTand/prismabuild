@@ -417,6 +417,18 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_1707_review2": {
+    "target": "Behavior attributed per (runtime_commit, generation_id).",
+    "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "validation": {
+     "state": "source-component-qualified",
+     "manifest": "docs/evidence/pb1707/counter-qualification.json",
+     "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+    },
+    "deployment": "not deployed; runtime publication and restart excluded",
+    "workload_proof": "not run; whole-requirement axes unchanged",
+    "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
    }
   },
   {
@@ -675,6 +687,18 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_1707_review2": {
+    "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+    "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "validation": {
+     "state": "source-component-qualified",
+     "manifest": "docs/evidence/pb1707/counter-qualification.json",
+     "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+    },
+    "deployment": "not deployed; runtime publication and restart excluded",
+    "workload_proof": "not run; whole-requirement axes unchanged",
+    "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
    }
   },
   {
@@ -1117,6 +1141,18 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_1707_review2": {
+    "target": "Durable units monotonic and once; replays idempotent.",
+    "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "validation": {
+     "state": "source-component-qualified",
+     "manifest": "docs/evidence/pb1707/counter-qualification.json",
+     "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+    },
+    "deployment": "not deployed; runtime publication and restart excluded",
+    "workload_proof": "not run; whole-requirement axes unchanged",
+    "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
    }
   },
   {
@@ -1477,7 +1513,19 @@
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "a deterministic refusal is not terminal"
     }
-   ]
+   ],
+   "scoped_repair_1707_review2": {
+    "target": "Typed waits (fit-lack vs oversize); initial-phase wait before GPU admission; mid-phase grace with terminal reason on stall.",
+    "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "validation": {
+     "state": "source-component-qualified",
+     "manifest": "docs/evidence/pb1707/counter-qualification.json",
+     "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+    },
+    "deployment": "not deployed; runtime publication and restart excluded",
+    "workload_proof": "not run; whole-requirement axes unchanged",
+    "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
+   }
   },
   {
    "acceptance": [
@@ -1603,6 +1651,18 @@
     "deployment": "not deployed; release train owns publication after independent review and merge",
     "workload_proof": "not run; no staged-only campaign or live-host reproduction",
     "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   },
+   "scoped_repair_1707_review2": {
+    "target": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+    "implemented_source": "eca345a74ea4c7d5f83d6898d351e515d9cd31af; same complete tree as 5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "validation": {
+     "state": "source-component-qualified",
+     "manifest": "docs/evidence/pb1707/counter-qualification.json",
+     "outcome": "54 executed actions, 1,500 passed, zero failures/skips, 54 verified success receipts. Five rounds per architecture for all three changed test files, two xdist rounds each; final 12-file integration passed on x86 and ARM."
+    },
+    "deployment": "not deployed; runtime publication and restart excluded",
+    "workload_proof": "not run; whole-requirement axes unchanged",
+    "remaining_target": "Whole staged-read contract, live GPU, daemon-load, NFS-fault and production-soak evidence remain outside this source/component correction. Current-main composition belongs to the merge train."
    }
   },
   {
