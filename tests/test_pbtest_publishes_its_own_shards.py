@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,7 +118,9 @@ def test_an_offer_timeout_at_publication_is_retried_off_the_same_snapshot(
         return real(queue)
 
     monkeypatch.setattr(submission, "bounded_offer_snapshot", bounded_offer_snapshot)
-    monkeypatch.setattr(pbtest.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(pbtest, "time", SimpleNamespace(**{
+        **vars(pbtest.time), "sleep": lambda seconds: None,
+    }))
     code, counts, root = _counted_run(tmp_path, monkeypatch, shards=3, wait_s=30)
     rows = _rows(tmp_path)
     assert sorted(row["attempts"] for row in rows) == [1, 1, 2]
