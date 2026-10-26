@@ -61,23 +61,45 @@ The scheduler bytes match source commit
 
 ## Preservation status
 
-The inherited source at `d3b5585846` passed 897 ARM preservation tests across
-20 shards. Those results predate the unknown-presence fix and do not qualify
-the final source. The x86 run had three failing shards. The import-boundary
-file passed all eight checks when run with one pytest worker, avoiding its
-shared wheel-build fixture race. The two archival files initially refused
-historical environment identity because TMPDIR differed from its qualified
-value. With `/home/rob/pbt17`, the host-record file passed all 65 checks.
-The controller-record file reached its 900-second hard deadline. It printed
-one earlier failure without a final trace, so its verdict remains unresolved.
+At source `50d08b423b`, both architecture runs passed 901 tests across 20
+shards, with complete collection, outcomes and teardown and no skips. The
+archival host replay passed all 65 checks. All 41 successful actions have
+verified cleanup, attempt log hashes, sealed scheduler bytes and exact CAS
+execution receipts. Reports and verification are retained in
+`final-{x86,arm,archival}-50d08b423b.json` and `final-verified/verified.json`.
 
-Final architecture preservation and the controller replay must finish before
-this unit goes to the Principal for review. The replay uses the recorded
-historical TMPDIR, one pytest worker and an explicit 3600-second deadline.
-Stop-on-first-failure preserves the first traceback if the earlier failure
-recurs. No test expectation or production timeout changes to make this pass.
-The published pbtest client has no action progress-phase submission option;
-its durable report records completed shards, with explicit action deadlines.
+Archival controller action
+`082d7e2c6f6aeda94a95cac147d125917dbe5d1ff8b1bc449f3908dde3b3d0c0`
+failed after 85 passes at `config-fleet/source`. Its golden lacks the
+`action_tmpdir` and `_action_tmpdir_why` fields added by #1914. This branch,
+its original base and main `954e141715` have identical fleet configuration
+bytes. Main-only action
+`ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2`
+reproduced that failure, with two related checks passing. Its terminal logs,
+scope cleanup and sealed bundle are verified. This is a baseline failure,
+not a compatibility pass. No golden or assertion was changed. Existing
+#2253 also records this case.
+
+The branch was rebased onto main `954e141715`. Published head `df02fa7bb5`
+has exactly the tree launched locally as `a70f06917f`, preserving commit
+order and the pricing refactor before behavior. Integrated validation is
+running in persistent user units:
+
+- `pb-pri31-integrated-x86-a70f06917f`
+- `pb-pri31-integrated-arm-a70f06917f`
+- `pb-pri31-integrated-archival-a70f06917f`
+
+Each architecture runs the 28-file preservation scope, then four additional
+repetitions of the four touched test files. Runs two and four use two pytest
+workers. Every action reserves 2 CPUs, 4 GiB and zero GPUs, with one native
+thread per worker and the default maximum of eight clients. The complete
+archival replay keeps the 3600-second deadline and runs every case after a
+failure. It uses the qualified `/home/rob/pbt17` TMPDIR. No timeout or test
+expectation was changed to obtain a pass. Integrated terminal verification
+and final compatibility disposition remain pending.
+
+The published pbtest client has no action progress-phase submission option.
+Its durable report records completed shards with explicit action deadlines.
 
 Reports and launch manifests live under
 `/mnt/shared/paperclip-runs/PRI-31`. The task records exact final unit names.

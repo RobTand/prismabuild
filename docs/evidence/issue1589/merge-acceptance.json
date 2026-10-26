@@ -39,8 +39,8 @@
       }
     ],
     "remaining_gaps": [
-      "Final x86 and ARM preservation on the current scheduler bytes is pending.",
-      "Archival controller replay exhausted the earlier 900-second shard deadline; it also printed one failure before the deadline without a final trace. A bounded 3600-second replay with stop-on-first-failure is pending.",
+      "Integrated validation after rebase onto main 954e141715 is pending; five executed repetitions per architecture include two xdist runs.",
+      "Archival controller config-fleet/source fails on unchanged main and the candidate because #1914 added action_tmpdir fields absent from the golden. Verified baseline action ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2. Full integrated replay remains pending; no golden or assertion was changed.",
       "Independent Principal Engineer review and merge are pending.",
       "Deployment, live runtime qualification and staged-only campaign completion are outside this source repair."
     ],
@@ -69,7 +69,7 @@
         "deployment": "unknown",
         "workload_proof": "unknown"
       },
-      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
     },
     {
       "id": "SC-03",
@@ -91,7 +91,7 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
     },
     {
       "id": "INV-11",
@@ -102,10 +102,10 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented; 131 focused fleet checks passed. Broader final preservation pending. Not merged, published or workload-proven."
+      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
     }
   ],
-  "source_commit": "8d7a74ebcfdecd75672be085e2c7ff8e3909e21a",
+  "source_commit": "4deb54300d65033d7340dd4717b583a616b1c1be",
   "verification": {
     "ending": "/tmp/PRI-31-resume/final-focused-ending.json",
     "verified": "/mnt/shared/paperclip-runs/PRI-31/focused-verified/verified.json",
@@ -115,6 +115,30 @@
       "CAS input bundle hash and size",
       "sealed adaptive_cpu, candidate_policy and pool bytes match current source",
       "exact execution receipt lookup"
-    ]
+    ],
+    "preservation": {
+      "source_head": "50d08b423b15224b419fdc7f8629a1352eb92c66",
+      "successful_actions": 41,
+      "x86_tests": 901,
+      "arm_tests": 901,
+      "archival_host_tests": 65,
+      "ending": "/mnt/shared/paperclip-runs/PRI-31/final-endings.json",
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/final-verified/verified.json",
+      "collection_outcome_teardown": "Complete for all successful shards; no skips."
+    },
+    "baseline_failure": {
+      "main_commit": "954e14171565e849198cd0287abe24ff1ea7d076",
+      "action": "ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2",
+      "verdict": "1 failed, 2 passed, 234 deselected; config-fleet/source golden mismatch",
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/baseline-config-verified/verified.json",
+      "production_config_blob": "fc953a49d95a2b3a874dbd133e417ad277c117ba",
+      "assertions_changed": false
+    },
+    "integrated_pending": {
+      "source_head": "df02fa7bb59a22efa9e5d87dfcb57a7112c56157",
+      "local_identical_tree_head": "a70f06917f",
+      "base": "954e14171565e849198cd0287abe24ff1ea7d076",
+      "launch_manifest": "/mnt/shared/paperclip-runs/PRI-31/integrated-a70f06917f-launch.json"
+    }
   }
 }
