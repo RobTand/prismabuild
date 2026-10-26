@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import immutable_files
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import fcntl
@@ -187,7 +187,7 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
 
 
 def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
-                              dependent_owner: object, sources: dict,
+                              dependent_owner: object, selections: Iterable[dict],
                               ledger: ResourceLedger, busy: set[str]) -> dict | None:
     """Apply the full per-key retirement rule to potential measurement fences.
 
@@ -211,8 +211,8 @@ def _ordinary_election_census(queue: PoolQueue, item: dict, host: str,
             raise CensusUnavailable("ordinary election proof budget exceeded")
         return names
 
-    relevant = [chosen for _, chosen in sources.values() if chosen is not None
-                and (chosen["action_key"] == dependent_owner
+    relevant = [chosen for chosen in selections
+                if (chosen["action_key"] == dependent_owner
                      or (chosen["host"] == host and item.get("priority", 0) < chosen["priority"]))]
     if relevant:
         retained = {holder.name for holder in ledger.holder_census().non_private_holders}
@@ -753,6 +753,11 @@ class CensusReader:
                 or any(c not in "0123456789abcdef" for c in generation)):
             raise CensusUnavailable("incomplete shared source generation")
         return generation
+
+    def shared_is_current(self, saved: dict) -> bool:
+        """Verify optional shared authority under the caller's M/H locks."""
+        return (self.source_generation(saved["census"]) == saved["generation"]
+                and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S)
 
     @contextmanager
     def held(self, *, blocking: bool = True):
@@ -1298,9 +1303,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                         busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
-                if (saved is not None
-                        and census_reader.source_generation(saved["census"]) == saved["generation"]
-                        and 0 <= time.monotonic() - saved["created"] <= SHARED_CENSUS_MAX_AGE_S):
+                if saved is not None and census_reader.shared_is_current(saved):
                     current = dict(saved["census"])
                     current["selections"] = dict(current["selections"])
                     current["elections"] = dict(current["elections"])
@@ -1336,7 +1339,9 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if not remembered:
                         _ordinary_selection_sources(queue, sources, recheck=True)
                         current = _ordinary_election_census(
-                            queue, item, ledger.base.name, dependent_owner, sources, ledger, busy)
+                            queue, item, ledger.base.name, dependent_owner,
+                            (chosen for _, chosen in sources.values() if chosen is not None),
+                            ledger, busy)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,
                     core.PrismaBuildError, _gang.GangContractError, local_scratch.LocalScratchError):
                 current = None
