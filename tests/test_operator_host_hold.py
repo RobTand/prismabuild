@@ -20,6 +20,12 @@ def fixed_hold_clock(monkeypatch):
     monkeypatch.setattr(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
 
 
+@pytest.fixture
+def fixed_offer_clock(fixed_hold_clock, monkeypatch):
+    monkeypatch.setattr(census, "time", host_hold.time)
+    monkeypatch.setattr(pool, "_now", lambda: host_hold.time.time())
+
+
 def put_hold(root, host=HOST, **kw):
     return host_hold.change_host_hold(root, host, owner="operator", reason="external load",
                                       expires_unix=host_hold.time.time() + 3600, **kw)
@@ -292,6 +298,7 @@ def test_expiry_must_be_finite_future_and_at_most_twelve_hours(tmp_path, seconds
                                   now=0, expires_unix=seconds)
 
 
+@pytest.mark.usefixtures("fixed_offer_clock")
 @pytest.mark.parametrize("drain", [False, True])
 def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_path, monkeypatch, capsys, drain):
     root = tmp_path / "pb-queue"
@@ -332,6 +339,7 @@ def test_worker_offer_and_pbstatus_show_hold_and_compose_with_upgrade_drain(tmp_
     assert node["held"] is False
 
 
+@pytest.mark.usefixtures("fixed_offer_clock")
 def test_census_uses_the_published_hold_without_reading_its_record(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     hold = put_hold(queue.root)
@@ -349,6 +357,7 @@ def test_census_uses_the_published_hold_without_reading_its_record(tmp_path, mon
         assert node["observed_capacity"] == {"cpu": 0}
 
 
+@pytest.mark.usefixtures("fixed_offer_clock")
 @pytest.mark.parametrize("record", ["active", "malformed", "expired", "released"])
 def test_pbstatus_refreshes_hold_authority_without_a_worker_poll(tmp_path, capsys, record):
     queue = pool.PoolQueue(tmp_path / "queue")
