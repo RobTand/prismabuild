@@ -42,8 +42,9 @@ workers neither offer the `interpreter-path-v1` capability nor answer path
 questions, so interpreter-naming rows wait out a rolling publish rather than
 running where they would exit 127.
 
-Placement has three bounded preferences: `deferred_for_preferred_cpu`,
-`deferred_for_cross_resource_placement`, and `deferred_for_idle_gpu_host`.
+Placement has four bounded preferences: `deferred_for_preferred_cpu`,
+`deferred_for_cross_resource_placement`, `deferred_for_idle_gpu_host`, and
+`deferred_for_cpu_load`.
 Each expires after at most 20 seconds; do not retag or resubmit to defeat it.
 Idle GPUs give restartable portable CPU rows first claim on the Sparks' CPUs
 (#1929). Idle requires no PB GPU reservation, a fresh trusted GPU sample with

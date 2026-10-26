@@ -15641,6 +15641,45 @@ class PoolQueue:
     CROSS_RESOURCE_BUSY = 0.60
     CROSS_RESOURCE_MARGIN = 0.20
 
+    def _defer_for_cpu_load(
+        self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
+    ) -> dict[str, object] | None:
+        """Give portable CPU work a bounded preference for runnable headroom."""
+        cpus = demand.get("cpu", 0)
+        if not self._portable_cpu_work(item) or not cpus or demand.get("gpu"):
+            return None
+        host = socket.gethostname()
+        live = placement.offers()
+        local_offer = next((offer for offer in live if offer.get("host") == host), {})
+        local = _peer_placement.cpu_load(
+            local_offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        if local is None or local.headroom >= cpus:
+            return None
+        generation = (str(item["action_key"]), repr(item.get("published_unix")))
+        if placement.timer_expired(_peer_placement.TimedPreference.CPU_LOAD, generation):
+            return None
+        for offer in self._matching_offers(item, live=live):
+            remote_host = str(offer.get("host") or "")
+            if not remote_host or remote_host == host:
+                continue
+            remote = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            if remote is None or remote.headroom < cpus:
+                continue
+            try:
+                peer = placement.peer(remote_host, offer)
+            except (OSError, ValueError, TypeError, PoolContractError):
+                continue
+            if peer is None or not peer.remaining.fits_measured(demand):
+                continue
+            return {"host": remote_host, "local_load1": local.load1,
+                    "local_headroom": local.headroom, "remote_load1": remote.load1,
+                    "remote_headroom": remote.headroom,
+                    "available": peer.remaining.available,
+                    "observed_capacity": peer.remaining.observed,
+                    "demand": dict(demand)}
+        return None
+
     def _defer_cross_resource_placement(
         self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
     ) -> dict[str, object] | None:
@@ -17662,6 +17701,13 @@ class PoolQueue:
             return candidate_policy.CandidateDenial("deferred_for_cross_resource_placement", {
                 "demand": demand, "reservation_demand": reservation_demand,
                 "remote_offer": cross_resource,
+            }, scan)
+        cpu_load = self._defer_for_cpu_load(
+            item, reservation_demand, placement=placement)
+        if cpu_load is not None:
+            return candidate_policy.CandidateDenial("deferred_for_cpu_load", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "remote_offer": cpu_load,
             }, scan)
         # Slow sealed-request I/O must not hold host admission (#351).
         identity = (cpu_admission.action_identity(item)
