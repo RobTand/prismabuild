@@ -73,7 +73,7 @@ MOVED = {"commit": "f" * 40, "generation": "gen-moved"}
 # -- the worker's claim-time handshake --------------------------------------
 
 
-from prismabuild import role_session
+from prismabuild import host_hold, pool, role_session
 
 
 def _worker_loop():
@@ -99,15 +99,11 @@ class _Ledger:
         return {}
 
 
-class _Queue:
+class _Queue(pool.PoolQueue):
     """Records the claim a stale worker must not take."""
 
-    #: The loop sweeps its own dead offer temporaries under ``queue.root``
-    #: (#1040).  A path that cannot exist makes that sweep a skip, so a double
-    #: never reads or removes anything on a real queue.
-    root = Path("/nonexistent/prismabuild-test-queue")
-
-    def __init__(self) -> None:
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
         self.claims: list[dict] = []
 
     def ledger(self) -> _Ledger:
@@ -137,7 +133,9 @@ def _drift_records(queue_root: Path) -> list[dict]:
             for path in sorted(directory.glob("*.json"))]
 
 
-def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool):
+@mock.patch.object(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
+def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool,
+                held: bool = False):
     """One worker start whose fleet moves at the worst moment, if asked.
 
     The loaded generation always starts out agreeing with the published one,
@@ -148,7 +146,10 @@ def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool):
     """
 
     wl = _worker_loop()
-    queue = _Queue()
+    queue = _Queue(tmp_path / "pb-queue")
+    if held:
+        host_hold.change_host_hold(queue.root, wl.socket.gethostname(), owner="operator",
+                                  reason="fixture hold", expires_unix=host_hold.time.time() + 60)
     loaded = _receipt(tmp_path / "gen-loaded" / "RUNTIME_VERSION.json", LOADED)
     live = _receipt(tmp_path / "repo" / "RUNTIME_VERSION.json", LOADED)
 
@@ -178,6 +179,13 @@ def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool):
               "--poll-s", "0"]):
         assert wl.main() == 0
     return wl, queue, capsys.readouterr().out
+
+
+def test_generation_fixture_honors_a_real_operator_hold(tmp_path, capsys):
+    _wl, queue, out = _run_worker(
+        tmp_path, capsys, move_during_publication=False, held=True)
+    assert queue.claims == []
+    assert "operator hold; admission paused" in out
 
 
 def test_a_worker_whose_fleet_moves_at_the_claim_refuses_it(

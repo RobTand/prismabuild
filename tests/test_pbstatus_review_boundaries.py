@@ -116,7 +116,8 @@ def test_abandoned_reader_does_not_retain_unrelated_flock(tmp_path, monkeypatch)
 
 def test_error_does_not_report_complete_census(monkeypatch, capsys):
     monkeypatch.setattr(pbstatus, 'wedged_peers', lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None})
-    def unavailable(root, *, reader=None):
+    def unavailable(root, *, reader=None, authoritative_holds=False):
+        assert authoritative_holds is True
         raise PermissionError('queue unavailable')
     monkeypatch.setattr(fleet_census, 'action_rows', unavailable)
     monkeypatch.setattr(fleet_census, 'endings', lambda root, limit, *, reader=None: [])
