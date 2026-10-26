@@ -73,3 +73,34 @@ def test_unreadable_gang_directory_keeps_census_closed(gang_fleet, monkeypatch, 
     monkeypatch.setattr(reservation.os, "scandir", cannot_list)
     with pytest.raises(PermissionError, match="gang directory unavailable"):
         scan(queue)
+
+
+def test_an_ending_without_publication_identity_is_not_a_gang_member_ending(gang_fleet):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, keys = members("ending-missing-identity")
+    record = _gang.read_group(queue, group)
+    for key in keys:
+        ready = queue.records.item_path(pool.record_store.READY, key)
+        row = json.loads(ready.read_text())
+        del row["published_unix"]
+        _gang.immutable_files.write_json_atomic(
+            queue.records.item_path(pool.record_store.DONE, key), row)
+        ready.unlink()
+
+    assert _gang.member_states(queue, record) == {0: "absent", 1: "absent"}
+
+
+@pytest.mark.parametrize("fault", ["group_json", "election_json", "teardown_json"])
+def test_bad_gang_claim_refuses_without_acquiring_tokens(gang_fleet, fault):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, keys = members("bad-claim", priority=20)
+    record = _gang.read_group(queue, group)
+    _gang.elect_gang_member(queue, record, record["members"][0], HOSTS[0], clock.now)
+    _damage(queue, group, fault)
+    row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, keys[0]))
+
+    assert gclaim(HOSTS[0], ready=[row]) is None
+    assert denial(keys[0], HOSTS[0])["reason"] == "gang_contract_invalid"
+    assert queue.ledger(HOSTS[0]).held_keys() == []
+    assert not queue.records.item_path(pool.record_store.CLAIMED, keys[0]).exists()
