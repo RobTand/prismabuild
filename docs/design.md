@@ -8150,6 +8150,9 @@ tmpfs registration uses its boot-scoped identity and full coverage accounting;
 other volatile disk identities remain unregistrable.
 Supervisor spool offers retain the aggregate headroom; movement and prewarm
 check resolved sources and created/reused destinations before publication.
+The shared stage/RAM copier checks its actual owner-keyed temporary before
+the initial write and the parent-prune retry. Refusal before opening preserves
+retained bytes; failure after acquiring the write handle cleans up that copy.
 See [filesystem_floor.md](filesystem_floor.md) for coverage fields and limits.
 These are source mechanisms. Activation, live diagnostic authority and fleet
 publication remain gated by the accepted #2045 packet.

@@ -124,6 +124,9 @@ warming or publishing a prewarm receipt. Movement checks actual sources and
 created destinations before copy or adoption, including existing final names and
 resumed partials. It propagates worker-thread floor refusals to the caller;
 command entrypoints return 75 before publishing a successful move receipt.
+Stage and RAM movement check the owner-keyed temporary before each initial or
+parent-prune retry open. A refusal preserves a retained temporary that was not
+opened; failures after acquiring its write handle still remove that copy.
 Local-resident copy checks stage sources while their reader pin is held.
 
 Coordinator `operation()` and submission `write_window` keep their existing
