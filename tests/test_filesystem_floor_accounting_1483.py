@@ -187,6 +187,21 @@ def test_local_remount_holds_before_the_next_owner_refresh(world, monkeypatch):
     assert verdicts and all(not v["allowed"] and v["reason"] == "mapping_unknown" for v in verdicts)
 
 
+def test_failed_identity_refresh_cannot_leave_an_admitting_sample(world, monkeypatch):
+    queue, _, _ = world
+    binding = bind(world, ("reservations", "test-host", "spool_gb"))
+
+    def unavailable(path):
+        raise ff.FloorError("injected inaccessible destination")
+
+    monkeypatch.setattr(ff, "identify", unavailable)
+    try:
+        ff.refresh_binding(queue.root, binding)
+    except ff.FloorError:
+        pass
+    assert not queue.ledger("test-host").acquire("a" * 64, {"spool_gb": 1})
+
+
 def test_native_mount_probe_uses_statx_and_never_fdinfo(tmp_path, monkeypatch):
     import os
 
