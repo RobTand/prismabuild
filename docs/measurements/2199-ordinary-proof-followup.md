@@ -59,7 +59,7 @@ The initial 21-file ARM sweep passed all behavioral files. Its field-set pin
 failed because the retained branch's generated inventory omitted two entries
 added to main. The repository inventory export restored the missing main entries and all mandatory ARM guards passed. This is inventory maintenance, not golden adoption or a new wire contract.
 
-The initial x86 sweep is pending behind the deployed #2199 refusal. Rows
+The initial x86 sweep waited behind the deployed #2199 refusal. Rows
 d477bfcd1901ffc008f9434c5b5c7dd1a6e3fd8522c2e4005a7eb5d7bdae50a2 and
 342f8f80df9d7046bb4d6b6d32e71930d711b1545d53927227e69b2e31ebb19a
 were READY with zero attempts. dl380g10's fresh worker offer coexisted with
@@ -114,3 +114,72 @@ The two optional source-generation helpers also add work under H on full
 censuses. They enable sibling reuse, but their hold cost is not assumed free.
 A separate fixture-only paired experiment records that cost. Its evidence
 cannot replace the admission or architecture guard results.
+
+## Review continuation results
+
+Fresh reports at published head `37b1597df1b8f230054c4bd8ed5eeee22c5d5757`
+completed on ARM and x86. Each 19-file selection reported 305 passed, one
+failed, and no skips. The sole failure on each architecture is
+`test_primitive_digest_sites_only_shrink`, the existing main defect
+[#2297](https://github.com/RobTand/prismabuild/issues/2297). Unchanged main
+`2ca082a002` reproduced the same unexpected raw digest site in
+`sealed_bundle_cache._reuse_bundle_cache`, action
+`d989f936d5248afbdcdce8e66a2fb3961bc7d2e64f1aa762f5d353d114539ae4`.
+Neither selection is green. This task does not weaken that guard or waive it.
+
+Reports are retained under `/mnt/shared/paperclip-runs/PRI-27/`:
+
+| Report | Result |
+| --- | --- |
+| review2-arm-37b1597df1.json | 305 passed, 1 failed |
+| review2-x86-37b1597df1.json | 305 passed, 1 failed |
+| review2-foreign-arm-37b1597df1.json | 5 passed |
+| review2-foreign-x86-37b1597df1.json | 5 passed |
+
+The separate foreign-load checks cover integration with merged #2267.
+Across these reports, 38 successful actions contain 298 passed tests per
+architecture. Read-only verification checked their exact checkout parent,
+terminal return code, canonical stdout and stderr lengths and SHA-256 hashes,
+CAS claim and receipt binding, and payload hash. Attestation signatures were
+not verified. No record, log, ending, receipt, or claim was repaired.
+Failed guard actions have no successful CAS receipt and remain failures:
+`8f9f0ad061ce98d50e65e643feca605e5ee4a21d49ffb0ef5c8f7c525a3cb362`
+on ARM and
+`e80efc9bcdd94b6664e78ca144eeed19df9c214a7e718dc6481b32894984027a`
+on x86.
+
+The current-main continuation rebases onto `58e9a4fa32`. Its new reports are
+`review3-arm.json` and `review3-x86.json` in the same directory. Those reports
+must establish the published head independently. Earlier results do not qualify
+a later head. Principal review and green required checks remain merge gates.
+
+## Full-census H-hold experiment
+
+Action `dfb468c0fe0a64331afa2efbe585c4fd1a5340c0f3a9ab8e90233a2c52fe1869`
+completed on sparklina as a PB measurement. It interleaved five before/after
+pairs over private NFS fixture queues with 250 legacy READY rows and no
+elections. Both arms used the same current `CensusReader`; the before arm used
+`locked_census` from `91df700880`. The probe measured the interval inside H,
+with no access to live queue records or kernel lock tables.
+
+| Pair | Before H hold, seconds | After H hold, seconds |
+| --- | ---: | ---: |
+| 0 | 0.647583432 | 0.673510729 |
+| 1 | 0.664075138 | 0.700007306 |
+| 2 | 0.646095603 | 0.626455925 |
+| 3 | 0.678177352 | 0.529363024 |
+| 4 | 0.541280952 | 0.759402126 |
+
+The effect is inconclusive. Paired changes range from -0.149 to +0.218 seconds,
+and within-arm spread exceeds the apparent shift. The recorded one-minute
+load average ranges from 0.957 to 1.121, with start/end load retained per arm.
+This fixture does not establish live contention performance or zero helper
+cost. The two source-generation helpers add owned child launches under H;
+that cost remains a limitation. The probe and historical baseline are retained
+with the evidence for rerun.
+
+The earlier hand-restored log set remains excluded in full. Existing
+[#2094](https://github.com/RobTand/prismabuild/issues/2094) tracks terminal
+results that reference unavailable canonical logs. The retained evidence does
+not identify which old action was repaired, so no action key is inferred.
+Bounded ordinary-proof I/O remains tracked by native sub-issue #2307.

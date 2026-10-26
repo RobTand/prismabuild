@@ -12,13 +12,60 @@
   "merge": {
     "branch": "prismabuild-2199",
     "issue": "https://github.com/RobTand/prismabuild/issues/2199",
-    "validated_repairs": [],
-    "remaining_gaps": [
-      "Fresh exact-head ARM and x86 admission/guard reports and unmodified canonical evidence are required",
-      "Principal Engineer independent review and merge pending",
-      "No deployed or staged-only campaign conformance claimed"
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "9c5e095686e27b87336bd7ddd8da8ee2a698711779c7548d00f89ed9072c2c12",
+          "6aa613fae878a466877c17132f27bbe482d1d53677c2dd1e3cc4ebe98c7d955e",
+          "f1e29e09a28ad2a28700e764d92cfb9c27ff920afe99dcfd386443fd80d24ee2",
+          "b85429275ed9a22872c5d5e7037b3ce6a35b3dbb7d2b6cad5cb42ff7d3241b08",
+          "e715f39ea495b8c04a77feb6280d688451a250d7fb713f63efbee136d5f43f04",
+          "50f72c222b63ed474045eebc163a8bb071ba4523eeeb409a81040fd0f1b097ba",
+          "049e96c1d91cf32b038c006348162e544d9b852505952e2a2ca6adb3f8097a74",
+          "119dff55baabdabcaf4f70180900752f680ce7436b608110d76cf13de22897cb",
+          "cb1c4b2c3e49a1bc83f256038c47b7fb659f11e78a549812af18462479767587",
+          "178480ab9472402bc20d57a6e8ea2b998a6829418fa11f741184e587107003be",
+          "8c0cfe240e4bf2a93fbde73f8cfd51e117efb9039eb8573e066ac2671565fecc",
+          "ee21e5eb11bee8413a2e74d03fb4b2693c341bcb33201d8e1f007ee42c772f30",
+          "8823befcd08e5c51dcddd4c506f7beb6f97c42fa342a22361f2ce20fd7b76df0",
+          "05ea8f0e51d2f182ee3e617023010ae2dc28feca45de03eaa0ae6c56bc5b98f9",
+          "ea9b8afa55882da89b60d6b20d46b71878a5725cb71f6bc2faa3c77420dde6f6",
+          "859397e345736c3dd75ac529606431291c03713f122bd8001f44e830a513be5e",
+          "c385fd7f979b4b26c6c105602beeb14fe062f06282e6888b8fc7761af8274e8f",
+          "888c8df73d177692ee6818fcee886570986f50ba2d17ab934928e4435c5a8a87",
+          "2e1a743478f56f998a99b5b1a66a6782639a150a47051d2d0fb8f5d91e71616c",
+          "19f658cdc1f9b45748209f2a0745807fa03effa89db33f53fd2cedbf99d46bb7",
+          "283efb684501e48d02c9403a0a64b41bf29d49c426a7f23b42911d749d41efe3",
+          "5239aae0c891cfc4f07e061ae960929711b47160955e5912baab02de5ffe0338",
+          "2f0ba7fba123993969ac145f0cb9dc1b137999ddbefb4db515f78daefefdb17f",
+          "fe22f55e60faaed7920a591ebe7ad20ab1525a8dd92e0f747e83a2f6ce0da73c",
+          "a84208cfc2365dcf465c512dcce99688d6b7f4b3f3b8b423da4badbf21999f87",
+          "1554bbe7ec289e85428c59ec80c3ceccf1ba320ab3e4a620b7d11cde00798fa1",
+          "4f33b50c98f66bc27674a21a1d7e95f9ea93102608c3e3102e9d2b5b23266ecb",
+          "c6b8b808db8be46b6884b9e548068db692df5725932be453105cbf0eb038d27b",
+          "a8acc4183e1805e9fae1f7533a8cb95e89ff58675a4d66218d2fda6c8710deca",
+          "ac60e209ed59bace1ed8d698802a8cb51b99ecb8c216b70a1262856eb5fe0129",
+          "cc006e1b5ab9de75ac7a636e55128b51fcb380864fd55e43abf998e920aaf3b8",
+          "13132e72aa2f98724fe26df50de73ca2e0f576bb7eb24599cb7bde621d7167f8",
+          "1cc1293258741b91444950b1936292ba641b21f4878be748d02094d9eb8a9926",
+          "08da56dbc67a8f541b121b875ffcb513bdb70df692b4990a2fe56abd3813a5cc",
+          "a522504c7b60f4f4c1af1f4a9b3c1c969e40ad9f40cf918b7ccf0f8142c9feba",
+          "2dc8a4219e6611e5dfa3eefcef39939305c18faaf4edd51a2def00e6a39f3d25",
+          "ddc9f7f2603f57f13eeb7f356c61d477acb9bdc684a0aa04bea21b94d9d2da2b",
+          "55783da49efcec4db0e9906852006f24faeb30635e97b67e663061d7f8eeb87c"
+        ],
+        "outcome": "38 successful ARM/x86 actions with untouched canonical log sizes/hashes, exact snapshot parent, CAS claim/receipt binding and payload hash verified. 298 tests per architecture in successful actions."
+      }
     ],
-    "note": "Prepared source record only; prior 193-test run excluded because canonical logs of one action were restored by the submitter. Fresh report paths and continuation evidence are linked in the follow-up and PR. No exception or deployment authority is claimed."
+    "remaining_gaps": [
+      "Current-main rebase onto 58e9a4fa32 requires fresh exact-published-head review3 ARM/x86 reports; historical evidence does not qualify that head.",
+      "Duplication guard fails on both architectures, matching unchanged main action d989f936d5248afbdcdce8e66a2fb3961bc7d2e64f1aa762f5d353d114539ae4 and existing #2297. Failed actions 8f9f0ad061ce98d50e65e643feca605e5ee4a21d49ffb0ef5c8f7c525a3cb362 and e80efc9bcdd94b6664e78ca144eeed19df9c214a7e718dc6481b32894984027a; no waiver.",
+      "Principal Engineer independent review and merge pending",
+      "No runtime publication, deployed conformance or campaign completion claimed"
+    ],
+    "note": "SC-01 target: PB owns admission and placement. Implemented in reviewed source; validated for scoped components only. Deployment and workload axes are not established. All ten old 193-test actions are excluded from merge acceptance. Attestation signatures were not verified.",
+    "evidence_head": "37b1597df1b8f230054c4bd8ed5eeee22c5d5757"
   },
   "deploy": {
     "status": "not-this-step"
