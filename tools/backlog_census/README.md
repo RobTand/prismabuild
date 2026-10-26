@@ -64,7 +64,8 @@ Review every candidate against GitHub sources. A duplicate cluster means title
 similarity, not an exact duplicate. The tool never closes on similarity. A fix
 row requires an explicit PR closing reference, its merge commit on the saved
 default branch, and matching default-head evidence. Review reopenings and the
-issue's current scope before proposing closure. Unknown blockers, empty blocker
+issue's current scope before proposing closure. Unavailable native blocker requests are recorded as limitations; collection
+continues with `blockers_complete: false`. Unknown blockers, empty blocker
 sets, unsupported declarations, and incomplete comments prevent label removal.
 All Phase 1 rows require the separate Chief of Staff audit before any write.
 
@@ -72,7 +73,7 @@ All Phase 1 rows require the separate Chief of Staff audit before any write.
 
 An exact priority label wins over the leading title prefix. Only P0, P1, and P2+
 are in scope. Native parents win over text. Text parents must begin a line with
-`Part of` or `Sub-issue of`, with an optional list marker. Follow known closed
+`Part of`, `Sub-issue of`, or `Parent:`, with an optional list marker. Follow known closed
 intermediate ancestors to the topmost open ancestor. Ambiguous links, cycles,
 conflicts, and missing ancestors appear in diagnostics. Cycles use a stable open
 representative. Each ticket appears once. A work unit takes its highest member
