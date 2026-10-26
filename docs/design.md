@@ -10326,6 +10326,39 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Shared waits before consumer integration (#1945)
+
+`host_wait.HostWaitHub` combines typed local invalidations, bell v2 hints,
+stop, and absolute monotonic deadlines. It is a source library with one
+observation/wait owner. Supervisor multiplexing and worker, prewarm, and tier
+consumer migrations remain separate slices. This library changes no live
+consumer default and does not establish deployed topic coverage.
+
+The caller captures `arm()` before reading authoritative records, then calls
+`wait_since(before, ClaimWait(...))`. Local generations stay latched across
+reads. Registration and generation comparison share the notification lock,
+so an event between a read and registration returns immediately. Wake inputs
+and deadline reasons are typed. Due deadlines retain their original absolute
+times across unrelated events and reconnects, including tied deadlines.
+The hub retains its remote cursor across ordinary arms and cancelled requests.
+It advances that cursor when delivering hints or processing a healthy empty
+renewal. A local wake therefore cannot skip an outstanding remote invalidation.
+
+The hub owns each remote request. A local event, stop, or deadline cancels
+the losing request through socket shutdown and joins its reader before the
+wait returns. A healthy empty long-poll renews transport internally without
+asking the caller to rescan. Reset and source failure degrade completeness.
+Reconnection alone cannot certify reconstructed records. The caller must
+acknowledge reconciliation against the captured generation after bounded
+authoritative reconstruction. Hints remain advisory throughout.
+
+Unavailable callbacks and repeated immediate resets or empty replies use
+named recovery deadlines, from 0.25 seconds up to five seconds. NFS visibility
+retry deadlines range from 50 milliseconds to one second and stay inside the
+original read budget. Stop and relevant notifications interrupt recovery.
+These timers do not grant extra policy time or authorize record observation
+under an admission lock. Wake results carry coverage and fallback diagnostics.
+
 ### Queue change hints on the queue host (#1894)
 
 `pbbell.py` is the supervised `bell` observer role on dl380g10 only. It watches
