@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import sys
 from urllib.request import Request, urlopen
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import raw_sha256, sorted_json
 
 ENDPOINT = "http://127.0.0.1:8888/v1/default/banks/omp-history/memories/recall"
 TOKEN_PATH = Path("/home/rob/.omp/agent/hindsight-api-token")
@@ -17,11 +20,7 @@ SCHEMA = "backlog-census-hindsight/v1"
 
 
 def json_bytes(value):
-    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
-
-
-def digest(payload):
-    return hashlib.sha256(payload).hexdigest()
+    return (sorted_json(value, indent=2) + "\n").encode("utf-8")
 
 
 def save(path, value):
@@ -41,7 +40,7 @@ def recall(query):
 
 def collect(census, snapshot, output, request=recall):
     output = Path(output)
-    identity = digest(json_bytes([census, snapshot]))
+    identity = raw_sha256(json_bytes([census, snapshot]))
     titles = {f"{issue['repo']}#{issue['number']}": issue["title"] for issue in snapshot["issues"]}
     planned = {}
     subjects = census["candidates"] + [
@@ -79,7 +78,7 @@ def collect(census, snapshot, output, request=recall):
             response = json.loads(payload)
             if not isinstance(response, dict) or not isinstance(response.get("results"), list):
                 raise ValueError(f"Saved recall omitted results for {key}")
-            observed = digest(payload)
+            observed = raw_sha256(payload)
             if record["sha256"] is not None and record["sha256"] != observed:
                 raise ValueError(f"Saved recall digest differs for {key}")
         else:
@@ -89,7 +88,7 @@ def collect(census, snapshot, output, request=recall):
             if not isinstance(response, dict) or not isinstance(response.get("results"), list):
                 raise ValueError(f"Recall omitted results for {key}")
             save(path, response)
-            observed = digest(path.read_bytes())
+            observed = raw_sha256(path.read_bytes())
         record["sha256"] = observed
         save(index_path, index)
     return index

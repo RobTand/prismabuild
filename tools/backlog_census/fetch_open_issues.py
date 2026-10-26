@@ -6,12 +6,15 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 import subprocess
 from urllib.parse import quote
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import raw_sha256, sorted_json
 
 from census import PARENT, REPOS, SCOPE, blocker_references, priority, reference
 
@@ -109,8 +112,8 @@ class GitHub:
                   "returncode": result.returncode, "response": response, "stderr": result.stderr}
         if response is None:
             record["unparsed_stdout"] = result.stdout
-        payload = json.dumps(record, sort_keys=True, indent=2) + "\n"
-        digest = hashlib.sha256(payload.encode()).hexdigest()
+        payload = sorted_json(record, indent=2) + "\n"
+        digest = raw_sha256(payload.encode("utf-8"))
         path = self.raw_dir / f"{len(self.receipts):06d}-{digest}.json"
         path.write_text(payload)
         self.receipts.append({"path": path.name, "sha256": digest})
@@ -320,7 +323,7 @@ def main():
         parser.error("Choose a new output path so existing evidence remains unchanged")
     api = GitHub(raw)
     snapshot = Collector(api, since, args.repo or REPOS).collect()
-    args.output.write_text(json.dumps(snapshot, sort_keys=True, indent=2) + "\n")
+    args.output.write_text(sorted_json(snapshot, indent=2) + "\n")
     print(f"Saved {len(snapshot['issues'])} issues and {len(api.receipts)} raw replies to {args.output}")
 
 

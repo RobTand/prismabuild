@@ -7,10 +7,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-import hashlib
 import json
 from pathlib import Path
 import re
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import raw_sha256
 
 PRIORITIES = ("P0", "P1", "P2+", "P2", "P3", "P4")
 SCOPE = PRIORITIES[:3]
@@ -241,7 +244,7 @@ def rollup(snapshot: Snapshot) -> dict:
 
 def candidate(kind: str, tickets: list[str], proof: list[str], **details) -> dict:
     identity = json.dumps([kind, sorted(tickets)], separators=(",", ":"))
-    return {"id": hashlib.sha256(identity.encode()).hexdigest()[:16], "kind": kind,
+    return {"id": raw_sha256(identity.encode("utf-8"))[:16], "kind": kind,
             "tickets": sorted(tickets), "proof": proof, **details}
 
 
@@ -343,7 +346,7 @@ def write_list(snapshot: Snapshot, found: list[dict], hindsight: dict | None = N
                          "preconditions": ["Recheck closing relationship and ancestry at the current default branch."]})
     for row in rows:
         identity = json.dumps([row["action"], row["issue"], row.get("target")])
-        row["id"] = hashlib.sha256(identity.encode()).hexdigest()[:16]
+        row["id"] = raw_sha256(identity.encode("utf-8"))[:16]
         receipt = (hindsight or {}).get(row.get("candidate_id", row["id"]))
         row["hindsight"] = receipt
         if row["status"] == "proposed":

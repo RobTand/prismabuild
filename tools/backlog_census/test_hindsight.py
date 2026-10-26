@@ -14,6 +14,18 @@ CENSUS = {"candidates": [{"id": "abc123", "kind": "duplicate_cluster", "tickets"
 SNAPSHOT = {"issues": [{"repo": "RobTand/prismabuild", "number": 1, "title": "A ticket"}]}
 
 
+class ByteIdentityTests(unittest.TestCase):
+    def test_pretty_json_retains_ascii_sorting_nonfinite_values_and_one_lf(self):
+        value = {"é": [float("nan"), float("inf"), -float("inf")], "a": 1}
+        expected = b'{\n  "a": 1,\n  "\\u00e9": [\n    NaN,\n    Infinity,\n    -Infinity\n  ]\n}\n'
+        self.assertEqual(hindsight.json_bytes(value), expected)
+
+    def test_default_sorted_profile_and_raw_digest_keep_existing_bytes(self):
+        self.assertEqual(hindsight.sorted_json({"é": 2, "a": 1}), '{"a": 1, "\\u00e9": 2}')
+        self.assertEqual(hindsight.raw_sha256(b"abc"),
+                         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+
 class RecallTests(unittest.TestCase):
     def test_parent_write_rows_get_their_own_recall(self):
         census = copy.deepcopy(CENSUS)
@@ -29,7 +41,7 @@ class RecallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = hindsight.collect(CENSUS, SNAPSHOT, directory, request)
             receipt = Path(directory, "abc123.json")
-            self.assertEqual(result["abc123"]["sha256"], hindsight.digest(receipt.read_bytes()))
+            self.assertEqual(result["abc123"]["sha256"], hindsight.raw_sha256(receipt.read_bytes()))
             self.assertEqual(result["abc123"]["input_hash"], result["_input_hash"])
             self.assertFalse(result["abc123"]["sources_reviewed"])
             self.assertIn("RobTand/prismabuild#1: A ticket", request.call_args.args[0])

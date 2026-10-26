@@ -3,7 +3,8 @@
 Use `fetch_open_issues.py` to save read-only GitHub evidence. Use `census.py` to
 produce the census and the Phase 1 dry-run list from that snapshot. Neither tool
 changes issues. The collector requires an authorized `gh` installation. The
-analysis and tests require Python 3.10 or later and the standard library.
+analysis and tests use the standard library and this checkout's digest owner.
+Run the scripts from a complete checkout with Python 3.12 or later.
 
 ## Collect and report
 
