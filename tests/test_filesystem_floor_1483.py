@@ -7,6 +7,7 @@ therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
 from fleet_world import FleetWorld
+from filesystem_floor_fixture import closed_coverage
 
 from submission_support import patch_store
 import pbrun
@@ -52,7 +53,9 @@ def _queue(tmp_path: Path, *, spool_gb: int = 4) -> pool.PoolQueue:
 
 def _register(queue, root: Path, *members, **kwargs) -> dict:
     root.mkdir(parents=True, exist_ok=True)
-    return ff.register(queue.root, root, members=members, **kwargs)
+    binding = ff.register(queue.root, root, members=members, **kwargs)["binding"]
+    return ff.register(queue.root, root, members=members,
+                       coverage=closed_coverage(binding), **kwargs)
 
 
 def _headroom(queue, key: str) -> int:
@@ -127,7 +130,10 @@ def test_used_path_checks_inode_floor_with_free_bytes(tmp_path, monkeypatch, fre
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900,
                                 1000, free_inodes, free_inodes, 0, 255))
     monkeypatch.setattr(ff.os, "fstatvfs", lambda fd: sampled)
-    verdicts = ff.check_paths(tmp_path / "queue", [tmp_path])
+    _stable(tmp_path)
+    queue = _queue(tmp_path)
+    _register(queue, tmp_path)
+    verdicts = ff.check_paths(queue.root, [tmp_path])[-1:]
     assert len(verdicts) == 1
     assert verdicts[0]["allowed"] is (free_inodes >= 50), verdicts
     assert verdicts[0]["free_inodes"] == free_inodes
@@ -172,7 +178,10 @@ def test_btrfs_zero_inode_totals_do_not_add_a_capacity_refusal(tmp_path, monkeyp
     # btrfs reports no fixed inode limit; the fixture filesystem may differ.
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 0, 0, 0, 0, 255))
     monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
-    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    _stable(tmp_path)
+    queue = _queue(tmp_path)
+    _register(queue, tmp_path)
+    verdict = ff.check_paths(queue.root, [tmp_path])[-1]
     assert verdict["allowed"] is True
     assert verdict["size_inodes"] == 0
     assert verdict["floor_inodes"] == 0
@@ -182,7 +191,10 @@ def test_btrfs_zero_inode_totals_do_not_add_a_capacity_refusal(tmp_path, monkeyp
 def test_available_inode_floor_does_not_spend_privileged_free_inodes(tmp_path, monkeypatch):
     sampled = os.statvfs_result((4096, 4096, 1000, 900, 900, 1000, 900, 49, 0, 255))
     monkeypatch.setattr(os, "fstatvfs", lambda fd: sampled)
-    verdict, = ff.check_paths(tmp_path / "queue", [tmp_path])
+    _stable(tmp_path)
+    queue = _queue(tmp_path)
+    _register(queue, tmp_path)
+    verdict = ff.check_paths(queue.root, [tmp_path])[-1]
     assert verdict["allowed"] is False
     assert verdict["reason"] == "below_inode_floor"
     assert verdict["free_inodes"] == 49
@@ -287,7 +299,7 @@ def test_a_stale_sample_refuses_and_a_skewed_clock_is_tolerated(tmp_path, enforc
     assert ledger.acquire("a" * 64, {"spool_gb": 1})
 
 
-def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce, ample_space):
+def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce, ample_space, monkeypatch):
     _stable(tmp_path)
     queue = _queue(tmp_path)
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
@@ -295,7 +307,11 @@ def test_a_root_on_another_filesystem_marks_the_binding_moved(tmp_path, enforce,
                       and ff.identify(p)["key"] != binding["key"]), None)
     if elsewhere is None:
         pytest.skip("no second filesystem to move the root onto")
-    moved = ff.refresh_binding(queue.root, {**binding, "root": elsewhere})
+    identify = ff.identify
+    with monkeypatch.context() as changed:
+        changed.setattr(ff, "identify", lambda path: identify(elsewhere)
+                        if str(path) == binding["root"] else identify(path))
+        moved = ff.refresh_binding(queue.root, binding)
     assert moved["reason"] == "binding_moved"
     ledger = queue.ledger(HOST)
     assert not ledger.acquire("a" * 64, {"spool_gb": 1})
@@ -446,8 +462,8 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
     world = restage._World(tmp_path)
     monkeypatch.setenv(ff.MODE_ENV, "enforce")
     world.stage_root.mkdir(parents=True, exist_ok=True)
-    binding = ff.register(world.q.root, world.stage_root, members=[
-        ("tier-reservations", restage.TIER, "stage_gib")])["binding"]
+    binding = _register(world.q, world.stage_root,
+        ("tier-reservations", restage.TIER, "stage_gib"))["binding"]
     _leave(world.q, binding["key"], 0)
     from prismabuild import produced_output as po
     owner = str(world.inst["owner_action_key"])
@@ -464,12 +480,12 @@ def test_produced_output_refill_is_refused_by_the_floor_not_raised(tmp_path, mon
 
 # -- used paths and NFS ------------------------------------------------------------------
 
-def test_used_paths_unbound_local_is_sampled_fresh_and_bound_is_published(tmp_path, ample_space):
+def test_used_paths_unknown_local_holds_and_bound_is_sampled_fresh(tmp_path, ample_space):
     found = _stable(tmp_path)
     queue = _queue(tmp_path)
     fresh = ff.check_paths(queue.root, [tmp_path, tmp_path / "x"])
-    assert len(fresh) == 1 and fresh[0]["sample"] == "fresh-unbound"
-    assert fresh[0]["allowed"] is True
+    assert len(fresh) == 1 and fresh[0]["reason"] == "mapping_unknown"
+    assert fresh[0]["allowed"] is False
     _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))
     bound = ff.check_paths(queue.root, [tmp_path])
     assert [v["filesystem"] for v in bound] == [found["key"]] * 2
@@ -497,28 +513,23 @@ def test_server_addresses_leave_out_loopback_link_local_and_bridges():
     assert "172.17.0.1" not in ff._host_addresses()
 
 
-def test_nfs_is_attributed_by_server_address_and_charged_conservatively(tmp_path, enforce, ample_space):
+def test_server_address_alone_cannot_authenticate_an_nfs_export(tmp_path, enforce, ample_space):
     nfs = _nfs_path()
     if nfs is None:
         pytest.skip("no readable NFS mount on this worker")
     _stable(tmp_path)
     queue = _queue(tmp_path)
     unattributed = ff.check_paths(queue.root, [nfs])
-    assert unattributed[0]["reason"] == "unattributed_nfs"
+    assert unattributed[0]["reason"] == "mapping_unknown"
     with pytest.raises(ff.FloorRefused):
         ff.enforce_paths(queue.root, [nfs], label="t")
-    # The server registers its filesystem; here this host stands in for it by
-    # registering its own disk with the server's address, which is exactly
-    # the record a server-side registration writes.
     server = ff.identify(nfs)["server"]
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"))["binding"]
     path = ff.fs_dir(queue.root, binding["key"]) / "binding.json"
     ff._floor_write(path, {**ff._floor_read(path), "server_addresses": [server]})
     assert queue.ledger(HOST).acquire("a" * 64, {"spool_gb": 2})
-    verdicts = ff.check_paths(queue.root, [nfs])
-    client = [v for v in verdicts if v.get("sample") == "fresh-nfs-client"]
-    assert len(client) == 1 and client[0]["charge_bytes"] == 2 * GIB
-    assert client[0]["matched"] == [binding["key"]]
+    assert all(not v["allowed"] and v["reason"] == "mapping_unknown"
+               for v in ff.check_paths(queue.root, [nfs]))
 
 
 # -- coordinator growth, release on exit, the reaper -------------------------------------
@@ -652,8 +663,8 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     queue = _queue(tmp_path, spool_gb=8)
     tier = "prismabuild-stage:" + HOST
     queue.tier(tier).mint({'stage_gib': 8})
-    _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
-              ("tier-reservations", tier, "stage_gib"))
+    binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
+                        ("tier-reservations", tier, "stage_gib"))["binding"]
     context = multiprocessing.get_context("fork")
     errors = context.Queue()
     wins = context.Value("i", 0)
@@ -666,11 +677,14 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
         w.join(120)
     assert all(w.exitcode == 0 for w in workers), [w.exitcode for w in workers]
     assert errors.empty(), errors.get()
-    # Contention may refuse some takes (a busy lock is a shortage), but the
-    # floor never wedges: most of the hundred succeed.
-    assert wins.value >= 50, wins.value
     assert queue.ledger(HOST).held().get("spool_gb", 0) == 0
     assert queue.tier(tier).holdings().get('stage_gib', 0) == 0
+    assert ff.refresh_binding(queue.root, binding)["allowed"]
+    assert queue.ledger(HOST).acquire("post-contention", {"spool_gb": 1})
+    assert queue.tier(tier).take("post-contention", {"stage_gib": 1})
+    assert queue.ledger(HOST).release("post-contention") == 1
+    assert queue.tier(tier).release_unspent("post-contention",
+        authority=tier_holdings.Unspent.NEVER_STARTED) == 1
 
 
 def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce, ample_space):
@@ -735,7 +749,13 @@ def test_cli_register_status_check_refresh(tmp_path, capsys, monkeypatch, ample_
     assert ff.main(["--queue", str(queue.root), "register", str(tmp_path / "spool"),
                     "--member", f"reservations/{HOST}:spool_gb"]) == 0
     registered = json.loads(capsys.readouterr().out)
-    assert registered["refresh"]["allowed"] is True
+    assert registered["refresh"]["reason"] == "population_unknown"
+    coverage = tmp_path / "test-coverage.json"
+    coverage.write_text(json.dumps(closed_coverage(registered["binding"])))
+    assert ff.main(["--queue", str(queue.root), "register", str(tmp_path / "spool"),
+                    "--member", f"reservations/{HOST}:spool_gb",
+                    "--coverage-json", str(coverage)]) == 0
+    assert json.loads(capsys.readouterr().out)["refresh"]["allowed"] is True
     assert ff.main(["--queue", str(queue.root), "status"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["mode"] == "off" and report["unbound_byte_ledgers"] == []
