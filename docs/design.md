@@ -5066,12 +5066,34 @@ leg's typed wait. Historical free-text failures are not reclassified.
 The leg-3 classification requires the exact submitted generation's verified
 immutable attempt stdout and its explicit `staging_wait` marker. The driver
 retains per-leg action keys and reasons in its run summary; a supporting
-publisher carries that summary in rollout detail. Bounded waits, progress,
-admission and activation are unchanged. No wait or missing evidence passes.
+publisher carries that summary in rollout detail. Progress, admission and
+activation retain their existing gates. No wait or missing evidence passes.
 This change requires rollout-verdict/interface review before merge/publication;
 source/component validation establishes neither deployment nor a live canary.
 The running fleet adopts these semantics only when a carrying generation is
 published.
+
+**Leg-3 observation patience (#1772).** A feasible higher-priority window may
+retain the same tier for longer than any finite canary observation budget.
+The canary therefore keeps observing its original leg-3 action after `pbwait`
+returns 75, using bounded 900-second observation intervals with no default
+total wait limit. Each interval records its observation before another begins.
+This repeats observation only: the driver neither resubmits the action nor
+changes its priority, sealed request, residency plan, reservations or attempts.
+An outcome-read failure (74), process observation timeout or terminal failure
+ends observation through the existing non-verification or failure path.
+Receipt, staged-serving and accepted-progress verification still decide success.
+
+Standalone `pbcanary --leg3-wait-s SECONDS` supplies one positive finite total
+observation budget, measured from the first observation and never renewed.
+Expiry is NOT VERIFIED and retains the action key; it implies neither
+withdrawal nor containment. Other legs retain their fixed waits. Leg 3's
+600-second execution deadline and staged-read progress allowances remain
+independent of admission patience. Cancellation stops the observer, not the
+submitted action. Qualification completes only if contention eventually drains
+and the action executes and verifies. A publisher waiting on leg 3 can retain
+its publication lock indefinitely; this policy requires release-owner review.
+Source validation of this repair supplies no live-canary or deployment proof.
 
 **Publisher GPU boundary slot (#1213; approved 2026-09-27).** The publication
 canary's single GPU leg targets the publisher's GPU host and is submitted before
@@ -6276,9 +6298,22 @@ attributed job at a time. Absent power *without* the declaration remains
 invalid, so this narrows one declared class of device rather than weakening the
 contract for every sample.
 
-Attribution on such a host is a census of the GPU device node's open handles in
-`/proc`, routed through the same PID start-time and cgroup-identity checks as
-the NVML rows. It resolves ownership and reports no per-process bytes, which
+NVIDIA process attribution first runs a bounded compute-app discovery query,
+then captures start-time and cgroup membership only for those candidate PIDs.
+A separate compute-app query supplies measured bytes; fresh identities after
+measurement must match the pre-measurement identities. Discovery counters are
+never attributed. Empty discovery still requires measurement, and a PID first
+seen in measurement stays unknown/incomplete. Failed discovery performs no
+process-identity census, including with no active scopes; idle foreign inventory
+is still collected. Both queries and identity work share one collection deadline,
+with each query capped by the remaining budget and exhaustion incomplete even
+for empty rows. Scope inode fencing and Guard confirmations remain unchanged.
+
+Attribution on an AMD/WSL host is still a census of the GPU device node's open
+handles in `/proc`, bracketed by fresh PID start-time and cgroup-identity reads.
+The pre-measurement identities cover host PIDs because previously idle processes
+can open handles; pidfds do not announce those opens. This is not event-driven
+discovery, and mutable memberships, counters and capacity are not stably cached. It resolves ownership and reports no per-process bytes, which
 the sample declares as `gpu_process_bytes: false` and each scope as
 `gpu_budget_enforceable: false`: the Guard does not confirm a GPU-allowance
 violation it has no counter for. Ownership unknown still refuses; bytes unknown
@@ -9430,6 +9465,21 @@ The loop now keeps what it read from one cycle to the next, on its
   explicit `RecordStore.kept` questions for receipts, state records and
   withdrawal names. Helpers receive that Store directly. Residency's
   `EpochRecords` uses the same C11 reader for fragment headers.
+  Receipt thaws are retained by the exact frozen input returned by that
+  reader (#2172). Its six-field file identity, current filesystem trust and
+  coarse-clock fence qualify every reuse; an untrusted or same-tick parse
+  produces a new frozen input and invalidates the thaw. Removed names are
+  forgotten. The active/retired merge is reused only while the reader and
+  all participating directory generations and observed receipt names hold.
+  A receipt filed in the read's coarse clock tick, or on an untrusted
+  filesystem, can be returned without being kept. Removing that receipt
+  before the next read need not advance the kept-set generation, even while
+  other receipts remain. The observed names invalidate both `fill_supply`
+  and `mover_cap` in this case. Public receipt reads still
+  detach every JSON container. The cycle's native discovery and folds read
+  the private retained inputs; extension discovery callbacks receive copies.
+  This skips repeated thawing and merging of unchanged receipt inputs.
+  Clock-sensitive discovery, liveness, policy and ledger decisions stay fresh.
 - `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
