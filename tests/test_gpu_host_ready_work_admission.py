@@ -118,20 +118,40 @@ def test_spark_pinned_cpu_is_unaffected(fleet, pin):
     assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
-def test_class_scoped_cpu_prerequisite_fits_beside_ready_gpu(fleet):
+def test_class_scoped_cpu_prerequisite_fits_beside_ready_gpu(fleet, tmp_path):
     queue, publish, claim, _host = fleet
     queue.announce(
         host="dl380g10", tags=["x86", contracts.INTERPRETER_TAG],
         has_gpu=False, capacity={"cpu": 8, "mem_gb": 32},
         observed_capacity={"cpu": 8, "mem_gb": 32},
     )
-    publish(CPU_KEY, tags=["gb10", contracts.INTERPRETER_TAG], priority=1)
-    publish(GPU_KEY, gpu=True)
+    cas = pb.PrismaBuildCAS(tmp_path / "cas")
+    (tmp_path / "task.py").write_text("print('fixture')\n")
+
+    def sealed_key(name):
+        action = pb.seal_action({
+            "schema": pb.ACTION_SCHEMA_V2,
+            "task": {"definition_id": f"tests/{name}", "definition_version": "v1",
+                     "task_class": "generation", "determinism": "deterministic",
+                     "artifact_family": "generic", "artifact_kind": "generic",
+                     "argv": ["/bin/true"], "working_directory": ".",
+                     "result_path": "result"},
+            "inputs": [], "code_closure": pb.build_code_closure(tmp_path, ["task.py"]),
+            "params": {}, "environment": {"variables": {}, "toolchain": {}},
+            "execution_scope": {"portability": "portable", "platform_key": None,
+                                "host_class": None},
+        })
+        cas.publish_action_request(action)
+        return action["action_key"]
+
+    cpu_key, gpu_key = sealed_key("class-prerequisite"), sealed_key("waiting-gpu")
+    publish(cpu_key, tags=["gb10", contracts.INTERPRETER_TAG], priority=1)
+    publish(gpu_key, gpu=True)
 
     claimed = claim()
 
-    assert claimed and claimed["action_key"] == CPU_KEY
-    assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
+    assert claimed and claimed["action_key"] == cpu_key
+    assert queue.records.item_path(pool.record_store.READY, gpu_key).exists()
 
 
 @pytest.mark.parametrize("ineligible", [
