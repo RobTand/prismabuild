@@ -37,6 +37,7 @@ SOURCES = {
     "59719c7db39862490268caa055df9926a52a90c4": ["src/prismabuild/core.py"],
     "578e54d0788c0f3b138f5dcf217e980322bb7726": ["src/prismabuild/pool.py"],
 }
+SOURCE_TREES = {"43234d0fbd42d6ed76da38658cb9f447ed19a606": "src"}
 CENSUS_REVISIONS = ("8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7",
                     "082f75ea50b2601c8681fe070a5a342e1b042702")
 CENSUS_PATHS = {
@@ -236,8 +237,12 @@ def generate_history_inputs(check):
     if history_git("rev-parse", "--is-shallow-repository").strip() != b"false":
         raise SystemExit("history inputs must be regenerated from a full clone")
     assert set(CENSUS_PATHS) == set(CENSUS_REVISIONS), "capture the census closure first"
+    sources = SOURCES | CENSUS_PATHS
+    for revision, directory in SOURCE_TREES.items():
+        sources[revision] = history_git("ls-tree", "-r", "--name-only", revision,
+                                       "--", directory).decode().splitlines()
     revisions, blobs = {}, {}
-    for revision, paths in sorted((SOURCES | CENSUS_PATHS).items()):
+    for revision, paths in sorted(sources.items()):
         commit = history_git("rev-parse", "--verify", revision + "^{commit}").decode().strip()
         files = {}
         for path in sorted(paths):
@@ -247,6 +252,10 @@ def generate_history_inputs(check):
             blobs[digest] = raw
             files[path] = {"bytes": len(raw), "sha256": digest}
         revisions[revision] = {"commit": commit, "files": files}
+        if revision in SOURCE_TREES:
+            directory = SOURCE_TREES[revision]
+            revisions[revision]["trees"] = {
+                directory: history_git("rev-parse", commit + ":" + directory).decode().strip()}
     manifest = {"version": 1, "revisions": revisions}
     packed = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=packed, mtime=0, compresslevel=9) as compressed:
