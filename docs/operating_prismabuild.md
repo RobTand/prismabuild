@@ -351,7 +351,7 @@ with `--d38-receipt KEY`. A changed source, command, environment, image or names
 a new plan and receipt. Supply `--input ID=PATH=SHA256` identically in both target commands
 for checkout-relative inputs of at most 64 KiB each.
 
-For a source candidate, `tools/fleet/prove_d38_canary.py --seal --image REF --out DIRECTORY`
+For a source candidate, `tools/maintenance/prove_d38_canary.py --seal --image REF --out DIRECTORY`
 retains a candidate CPU request in the normal CAS and prints its key. It executes no payload
 and publishes no runnable work. Submit that key using the published
 `pbrun.py --publish-sealed KEY --detach`. The sealed request reserves one CPU, 8 GiB RAM,

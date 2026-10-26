@@ -19707,6 +19707,12 @@ grant issuer, `pbgang` member flags and retiring old installed clients remain se
 These are source contracts; deployment and enforcement activation require separate evidence
 and authority. The shipped enforcement setting remains false, and activation remains Rob's decision.
 
+The source-candidate proof helper lives at `tools/maintenance/prove_d38_canary.py`,
+with the other checkout-only qualification tools. It seals and verifies candidate
+proofs without entering the runtime publisher catalogue. The rollout intent binds
+the executing publisher's exact source digest, so adding a qualification helper
+does not require changing that writer.
+
 
 ## Source ownership after the 2026-10-14 simplification
 
