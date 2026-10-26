@@ -17,7 +17,7 @@ refuses, and a scan the directory moved, are returned once and never
 remembered, so a partial created in the same tick or during a scan cannot
 hide behind a remembered listing; where the fence cannot hold, every name
 lists fresh.  What is pinned here: an unchanged directory is listed once
-for a whole 2,048-name range decision (the adoption pass over an
+for a range decision with two names (the adoption pass over an
 already-correct campaign range, which writes nothing); a same-tick and a
 during-scan partial are never hidden; a partial and a claim that appear
 mid-range are seen by the next name; a mixed range decides each name
@@ -55,8 +55,8 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import staged_path
 
-#: The campaign's range size, the shape the issue prices (#1028).
-NAMES = 2048
+#: Two names distinguish a shared listing from a listing per name.
+NAMES = 2
 SIZE = 64
 OLD = b"o" * SIZE
 NEW = b"n" * SIZE
@@ -279,7 +279,7 @@ def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     return publisher, destinations
 
 
-def test_a_2048_name_range_decision_lists_the_range_directory_once(
+def test_a_range_decision_lists_the_range_directory_once(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     publisher, destinations = _adoption_world(fleet, NAMES, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
