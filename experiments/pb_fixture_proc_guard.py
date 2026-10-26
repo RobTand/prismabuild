@@ -46,6 +46,12 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.get_closest_marker("live_store") is not None:
             item.add_marker(pytest.mark.skip(reason="fixture-only run forbids live-store access"))
-        elif item.nodeid.endswith(
-                "test_pbstatus_deadline.py::test_an_abandoned_child_owns_no_inherited_descriptor"):
+        elif (item.path.name, getattr(item, "originalname", item.name)) in {
+                ("test_pbstatus_deadline.py", "test_an_abandoned_child_owns_no_inherited_descriptor"),
+                ("test_sample_profile.py", "test_the_output_lock_still_reaches_the_child_through_the_profiler"),
+                ("test_checkout_recovery_1465.py", "test_real_closed_fd_mmap_is_a_live_checkout_reference"),
+                ("test_checkout_recovery_1465.py", "test_real_closed_fd_dlopen_is_a_live_checkout_reference"),
+                ("test_checkout_recovery_1465.py", "test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan"),
+                ("test_checkout_recovery_1465.py", "test_real_process_mapping_metadata_failure_is_not_proof_of_death"),
+        }:
             item.add_marker(pytest.mark.skip(reason="fixture policy forbids inspecting a peer fd table"))
