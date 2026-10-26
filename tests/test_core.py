@@ -1064,6 +1064,20 @@ def test_input_ingestion_race_reuses_one_verified_content_address(tmp_path: Path
     assert all(cas.input_path(entry).read_bytes() == payload for entry, _ in results)
 
 
+def _stat_with_ctime(observed: os.stat_result, ctime_ns: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        st_dev=observed.st_dev,
+        st_ino=observed.st_ino,
+        st_size=observed.st_size,
+        st_mode=observed.st_mode,
+        st_uid=observed.st_uid,
+        st_gid=observed.st_gid,
+        st_mtime_ns=observed.st_mtime_ns,
+        st_nlink=observed.st_nlink,
+        st_ctime_ns=ctime_ns,
+    )
+
+
 @pytest.mark.parametrize("transition", ["two-to-one", "one-to-one"])
 def test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd(
     tmp_path: Path,
@@ -1081,32 +1095,35 @@ def test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd(
 
     original_open = pb.immutable_files.open_regular_nofollow
     original_read = pb.os.read
+    original_fstat = pb.os.fstat
+    payload_descriptor: int | None = None
     open_count = 0
     mutated = False
 
     def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
-        nonlocal open_count
+        nonlocal open_count, payload_descriptor
         open_count += 1
-        return original_open(path, where=where)
+        payload_descriptor, parent_fd = original_open(path, where=where)
+        return payload_descriptor, parent_fd
 
-    def read_then_change_link_metadata(descriptor: int, count: int) -> bytes:
+    def read_then_change_metadata(descriptor: int, count: int) -> bytes:
         nonlocal mutated
         chunk = original_read(descriptor, count)
-        if chunk and not mutated:
+        if descriptor == payload_descriptor and chunk and not mutated:
             mutated = True
             if transition == "two-to-one":
                 extra_link.unlink()
-            else:
-                # Model a link/unlink ctime disturbance whose before/after
-                # link count remains one.  The first attempt must be thrown
-                # away rather than accepted under a ctime exception.
-                time.sleep(0.001)
-                os.link(payload, extra_link)
-                extra_link.unlink()
         return chunk
 
+    def fstat_with_ctime_churn(descriptor: int):
+        observed = original_fstat(descriptor)
+        if descriptor == payload_descriptor and transition == "one-to-one":
+            return _stat_with_ctime(observed, observed.st_ctime_ns + int(mutated))
+        return observed
+
+    monkeypatch.setattr(pb.os, "fstat", fstat_with_ctime_churn)
     monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
-    monkeypatch.setattr(pb.os, "read", read_then_change_link_metadata)
+    monkeypatch.setattr(pb.os, "read", read_then_change_metadata)
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
     assert pb.immutable_files.file_identity_nofollow(
@@ -1161,30 +1178,36 @@ def test_stable_file_identity_refuses_perpetual_one_link_ctime_churn(
     payload = tmp_path / "payload"
     payload.write_bytes(payload_bytes)
     payload.chmod(0o444)
-    transient_link = tmp_path / "transient-link"
 
     original_open = pb.immutable_files.open_regular_nofollow
     original_read = pb.os.read
+    original_fstat = pb.os.fstat
+    payload_descriptor: int | None = None
     open_count = 0
     mutation_count = 0
 
     def tracked_open(path: Path, *, where: str) -> tuple[int, int]:
-        nonlocal open_count
+        nonlocal open_count, payload_descriptor
         open_count += 1
-        return original_open(path, where=where)
+        payload_descriptor, parent_fd = original_open(path, where=where)
+        return payload_descriptor, parent_fd
 
-    def read_then_churn_link(descriptor: int, count: int) -> bytes:
+    def read_then_churn_ctime(descriptor: int, count: int) -> bytes:
         nonlocal mutation_count
         chunk = original_read(descriptor, count)
-        if chunk:
-            time.sleep(0.001)
-            os.link(payload, transient_link)
-            transient_link.unlink()
+        if descriptor == payload_descriptor and chunk:
             mutation_count += 1
         return chunk
 
+    def fstat_with_ctime_churn(descriptor: int):
+        observed = original_fstat(descriptor)
+        if descriptor == payload_descriptor:
+            return _stat_with_ctime(observed, observed.st_ctime_ns + mutation_count)
+        return observed
+
+    monkeypatch.setattr(pb.os, "fstat", fstat_with_ctime_churn)
     monkeypatch.setattr(pb.immutable_files, "open_regular_nofollow", tracked_open)
-    monkeypatch.setattr(pb.os, "read", read_then_churn_link)
+    monkeypatch.setattr(pb.os, "read", read_then_churn_ctime)
     digest = hashlib.sha256(payload_bytes).hexdigest()
 
     with pytest.raises(

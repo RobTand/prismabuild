@@ -21,6 +21,7 @@ CURRENT_PRIOR_ENTRIES = {'prismabuild.submission:snapshot_checkout': 'pbrun:buil
 
 
 CURRENT_PRIOR_ENTRIES.update({
+    "prismabuild.filesystem_floor:LedgerGate.reserve": "prismabuild.filesystem_floor:LedgerGate.granted",
     'prismabuild.pbtest_capabilities:load_config': 'pbtest_capabilities:load_config',
     'prismabuild.tier_cycle:_cycle': 'tier_loop:_cycle',
     'prismabuild.tier_cycle:publish_landing_expectations': 'tier_loop:publish_landing_expectations',
