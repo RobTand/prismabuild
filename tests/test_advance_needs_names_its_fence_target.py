@@ -174,8 +174,43 @@ def test_chunked_leg_targets_the_next_chunk() -> None:
     assert (following["phase"], following["chunk_index"]) == ("phase-0001", 0)
 
 
+@pytest.mark.parametrize("mover_role", ["mover_row", "ram_mover_row"])
+def test_remaining_movement_minimum_tracks_accepted_frontier(mover_role: str) -> None:
+    plan = _whole_plan()
+    window = residency_plan.ConsumerWindow(
+        plan, None, residency_plan.LegObservation(mover_role=mover_role))
+    assert window.remaining_movement_minimum_gib == 4
+    middle = residency_plan.ConsumerWindow(
+        plan, "phase-0001", residency_plan.LegObservation(mover_role=mover_role))
+    # remaining() retains the named reading phase, not just its successor.
+    assert middle.remaining_movement_minimum_gib == 4
+    last = residency_plan.ConsumerWindow(
+        plan, "phase-0002", residency_plan.LegObservation(mover_role=mover_role))
+    assert last.remaining_movement_minimum_gib == 2
+
+
+def test_remaining_movement_minimum_uses_chunks_not_phase_sums() -> None:
+    plan = _chunked_plan()
+    window = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation())
+    # Four chunks across two phases: neither a whole phase overlap (4)
+    # nor the manifest total (4) is a required movement minimum.
+    assert window.remaining_movement_minimum_gib == 2
+    assert not tier_loop._newcomer_movement_impossible(
+        {"plan": plan, "accepted": None}, mover_role="mover_row", capacity_gib=2)
+    assert tier_loop._newcomer_movement_impossible(
+        {"plan": plan, "accepted": None}, mover_role="mover_row", capacity_gib=1)
+    absent = residency_plan.ConsumerWindow(
+        plan, None, residency_plan.LegObservation(mover_role="ram_mover_row"))
+    assert absent.remaining_movement_minimum_gib == 0
+    invalid = residency_plan.ConsumerWindow(
+        plan, None, residency_plan.LegObservation(mover_role="unknown"))
+    with pytest.raises(residency_plan.ResidencyPlanError):
+        _ = invalid.remaining_movement_minimum_gib
+
+
+@pytest.mark.parametrize("capacity_gib", [3, 4])
 def test_protection_holds_the_named_advance_before_it_permits(
-        tmp_path: Path) -> None:
+        tmp_path: Path, capacity_gib: int) -> None:
     """End to end of the consuming gate: an admitted nonfinal window is
     permitted with its advance held on the ledger, once, before its current
     may publish. Without the named target this same window reads final and
@@ -193,16 +228,26 @@ def test_protection_holds_the_named_advance_before_it_permits(
                              "tier_id": STAGE_TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 4 * GIB,
                              "leads": residency_plan.leads_for(plan)})
-    queue.tier(STAGE_TIER).mint({'stage_gib': 4})
+    queue.tier(STAGE_TIER).mint({'stage_gib': capacity_gib})
+    tiers = {STAGE_TIER: {"tier_id": STAGE_TIER, "tier": "stage",
+                          "mountpoint": str(tmp_path / "stage")}}
+    if capacity_gib < 4:
+        # The initial leg alone is publishable, but relief cannot make
+        # its mandatory overlap fit. Do not evict on its behalf.
+        assert tier_loop.window_pressure(queue, tiers=tiers) == {}
 
     result = tier_loop._protect_tier_advances(
         queue,
-        {STAGE_TIER: {"tier_id": STAGE_TIER, "tier": "stage",
-                      "mountpoint": str(tmp_path / "stage")}},
+        tiers,
         mover_role="mover_row",
         tier_of=lambda plan: plan.get("tier_id"),
         state_of=tier_loop._mover_state)
 
+    if capacity_gib < 4:
+        assert result.gated[(CONSUMER, STAGE_TIER)]["reason"] == window_credit.REASON_OVERSIZE
+        assert result.permitted == {}
+        assert result.grants == {}
+        return
     assert result.gated == {}
     entry = result.permitted[(CONSUMER, STAGE_TIER)]
     assert entry["advance"] == "blind-held"

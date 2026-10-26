@@ -620,6 +620,7 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
     from prismabuild import submission
     from prismabuild import action_client, action_wait, endings
     from pbcanary_legs import leg3
+    from pbcanary_legs.common import extract_envelope
     try:
         q = submission.pool.PoolQueue(Path(paths["queue_root"]))
         landed, observed_generation = action_client.bounded_outcome_observation(
@@ -635,7 +636,7 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
         attempts = rendered["attempts"]
         stdout = (attempts[-1].get("stdout") if attempts
                   else summary["detail"].get("stdout"))
-        _, envelope, _ = leg3._extract_envelope({"stdout": stdout})
+        _, envelope, _ = extract_envelope({"stdout": stdout}, schema=leg3.LEG3_SCHEMA)
         return bool(envelope and envelope.get("ok") is False
                     and envelope.get("not_verified") == "staging_wait")
     except (OSError, ValueError, KeyError, action_wait.OutcomeReadUnavailable,

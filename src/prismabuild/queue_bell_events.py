@@ -343,8 +343,16 @@ class InotifyQueue:
     def _drop_host_tree(self, relative):
         # A parent rename/delete is the invalidation. Stop watching the old
         # inode before it can move outside the queue or retain an old host ID.
+        name = str(relative)
+        prefix = name if name.endswith('/') else name + '/'
+        all_relative = name == '.'
         for wd, path in list(self.directories.items()):
-            if path is not None and path.is_relative_to(relative):
+            if path is None:
+                continue
+            candidate = str(path)
+            if (candidate == name or (candidate.startswith(prefix)
+                                      and (name != '/' or not candidate.startswith('//')))
+                    or (all_relative and not candidate.startswith('/'))):
                 self.libc.inotify_rm_watch(self.fd, wd)
                 self.directories.pop(wd, None)
                 self.root_watches.pop(path, None)

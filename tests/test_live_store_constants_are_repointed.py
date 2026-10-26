@@ -97,6 +97,10 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
         "host-local sealed bundles; repointed so tests never populate or "
         "evict the submitter's persistent cache"
     ),
+    ("prismabuild.adaptive_gpu", "SAMPLE_PATH"): (
+        "root-owned broker GPU snapshot; repointed so implicit capacity reads "
+        "do not depend on the worker's live GPU load"
+    ),
     ("supervise", "SYSTEMD_UNIT"): (
         "user service file under the home directory; repointed so tests do not "
         "depend on or modify the installed supervisor service"
@@ -109,6 +113,11 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
     ("worker_loop", "PUBLICATION_LOCK_ROOT"): (
         "host-local publication fence owned by live workers; repointed so "
         "tests never contend on their lock inode"
+    ),
+    ("prismabuild.gpu_capacity", "RUNTIME_GATE"): (
+        "host-local GPU container-runtime fence state under /run/prismabuild, "
+        "owned by the live resource broker (#1895); repointed so tests never "
+        "read or write the real fence file"
     ),
     # Per-uid role singleton locks under /tmp (#709): not the live store, so
     # the mount scan rightly ignores it -- but live *state* owned by this

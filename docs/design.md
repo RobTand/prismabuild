@@ -2103,7 +2103,7 @@ through its public interfaces. Those are the fleet tools (`pbrun`, `pbtest`,
 internal. It can change in any release, and a client that imports it takes on
 that risk alone.
 
-**Versioning.** `client.SDK_VERSION` names the contract; it is `6`.
+**Versioning.** `client.SDK_VERSION` names the contract; it is `7`.
 Version 2 adds nondestructive ephemeral scratch naming; version 3 adds durable
 sealed declaration evidence before pool payload launch (Refs #1360); version 4
 adds the bounded verified action-result read and the standard-capture command
@@ -2112,7 +2112,28 @@ selected immutable attempt and exact execution receipt (#1481). Version 6
 exposes the generation-bound scratch lifetime contract (Refs #1360): the
 `scratch-lifetime-v1` capability tag, its selection/record schemas, its claim
 field, its sealed variable, and a builder for the sealed selection. Earlier
-exports and capability tags remain available.
+exports and capability tags remain available. Version 7 adds the direct
+`validate_logical_request` re-export (#2149), with no new capability tag.
+
+`validate_logical_request(value: object) -> dict[str, Any]` returns the existing
+validator's canonicalized, independently owned request, including detached nested
+declarations, without mutating the input or reordering tasks. It checks common
+shape, the task roster and estimates, batching policy, placeholder use, residency
+pricing and optional task-data projections. Refusals preserve the owner's
+`ActionContractError` type and diagnostics and are `ValueError`-compatible;
+there is no additional public error alias or public planning API.
+
+Validation does not plan, stage, submit or publish anything, and does not prove
+execution feasibility. Structurally valid requests with impossible batching
+budgets still validate. Declared cwd, argv and manifests do not establish that
+executable inputs or resources exist or are available.
+
+This is a source-only additive SDK release. Source availability does not establish
+availability in PQ's installed or sealed generation. Handoff must identify the
+reviewed PB revision and SDK7 contract for TrustLadder/the authorized publisher
+to publish before consumer adoption. This change neither requires a concurrent
+PQ change nor modifies PQ's pinned runtime, publishes fleet runtime or performs
+workflow transitions.
 
 The CEO approved additive SDK6 in decision `dec-1009-090451-62a1`.
 SDK5 consumers must keep their existing behavior.
@@ -2143,10 +2164,11 @@ generation. A client imports `prismabuild.client` from `<root>/src`, so the
 SDK and the runtime that launched the action are one generation. The variable
 names the generation root, never `src`; the client appends `src` itself.
 
-**The surface (version 6).**
+**The surface (version 7).**
 
 | Area | Names |
 |---|---|
+| Logical-request validation | `validate_logical_request` |
 | Reader leases (`reader-lease-v1`) | `injected_context`, `acquire_for`, `open_pinned`, `release`, `covers_for_keys`, `leases_root`, `live_for`, `containment_certificate_ok`, `READER_LEASE_TAG` |
 | The sealed data manifest | `read_data_manifest`, `DATA_MANIFEST_MAX_BYTES`, `manifest_read_entries` |
 | The queue | `PoolQueue`, `CLAIMED`, `RESIDENCY`, `POOL_OUTCOME_SCHEMA_V1`, `read_claimed_record` |
@@ -2161,8 +2183,8 @@ names the generation root, never `src`; the client appends `src` itself.
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
 `prismabuild.data_manifest` owns manifest parsing, validation, format limits and
-the declared-input identifier. The SDK keeps its existing manifest names and
-version 6. The parser uses Core's existing validation helpers; Core does not
+the declared-input identifier. SDK7 keeps the existing manifest names and
+behavior. The parser uses Core's existing validation helpers; Core does not
 import the manifest module. Manifest changes therefore stay outside the
 attested run-local and profiling implementation. `manifest_layout` retains
 the pure read-order operations.
@@ -6586,11 +6608,56 @@ lock or timeout, and grants no GPU or CPU admission credit.
 A CPU row whose sealed tags include this host's hostname is pinned, whether
 by `--tag sparky`, `--tag sparklina`, or `--here`, and is exempt. Hosts without
 a GPU are also unchanged. The rule is evaluated once from the existing READY
-snapshot before candidate transition locks, and a deferred CPU row records
+snapshot before candidate transition locks, and a deferred portable CPU row records
 `deferred_for_ready_gpu` without a pass or reservation. It adds no census,
 transition, or host-admission lock and does not change GPU admission, GPU row
 order, measurement election, or running claims. The READY snapshot remains
 advisory; the existing per-key transition and claim rename still decide ownership.
+
+Rob approved the following limits on 2026-10-25 through PRI-31 confirmation
+`7c2a2fb9-0d6a-444b-b9f0-9963002ab7ab`, bound to policy-decision revision
+`3d0d1914-ce34-4afa-887e-6a65efd5db21`. This approves source policy; independent
+review, merge, and release remain separate gates.
+
+Class-bound CPU work whose complete explicit tag conjunction excludes every recorded CPU-only host
+can pass this READY-GPU guard (#1721, #1589). Stale offers still establish
+class membership; an absent interpreter answer never makes portable work
+class-bound. Both a known CPU-only offer and a matching GPU class tag are
+required. Unknown GPU presence on any recorded host, or missing or malformed
+tags on a recorded CPU-only host, keeps the guard in place. Automatic capability
+tags cannot establish class exclusion. Unknown
+interpreter evidence on a CPU-only offer cannot promote portable work to this
+exception. The candidate must have a readable non-measurement contract, bounded
+CPU and memory demand, optional bounded host `spool_gb`, no gang, and no tier or
+fill demand. Each offer must satisfy the complete required tag set. The eligible GPU
+row must have a readable sealed contract, bounded CPU and memory, and be neither
+a measurement nor a gang member. Its existing room calculation retains image, residency, GPU
+sample and export-allowance checks, outside host admission.
+
+At reservation, under the existing host admission lock, free tokens after the
+CPU candidate must still fit that GPU room. Adaptive placement also keeps
+projected CPU headroom beside every current holder and the new candidate,
+using the same `adaptive_cpu.projected_cpu_fits` calculation as CPU admission.
+The candidate pays its future busy-holder cost: complete admission CPU demand
+times the adaptive owner's 1.25 margin, including accepted export allowances
+before funding deductions. Funding reduces only its free-token remainder.
+Current holder costs are calculated once by `adaptive_cpu` and reused for
+room protection, including funded candidates; the pool does not rescan or
+reprice holders. Host spool tokens use the same remaining-room check as CPU
+and memory. Missing holder costs or stale samples grant no exemption. Refusal
+records `deferred_for_ready_gpu_row` without aging or taking a reservation.
+Ordinary CPU/GPU admission, host memory checks, preemption and #1929 guest
+marking still apply. Explicit class tags do not make these rows portable guests.
+
+This source repair removes #1589's READY-GPU starvation when the bounded
+arm64 prerequisite, including the original row's `spool_gb`, fits beside the
+GPU row. It also prevents repeated class replacements from starving a GPU
+whose future adaptive headroom they would consume.
+Runtime publication and live qualification, including gang behavior across a
+runtime roll, remain separate.
+These checks guarantee current reservation and projected CPU-cost headroom.
+Later telemetry, host pressure, and the GPU row's other gates can still delay
+its claim. No staged-read requirement's deployment or workload-proof status changes.
 
 Idle GPU hosts now take restartable portable CPU work first (#1929, Rob,
 2026-10-21). Idle means no PB GPU reservation, fresh trusted GPU capacity
@@ -7133,6 +7200,54 @@ and grants no CPU lending credit. Creates carry a recovery protocol marker;
 older brokers refuse it before mutation, and workers defer without consuming an
 attempt until the installed authority has upgraded.
 
+A broker refusal before scope creation leaves an exact cleanup obligation
+(#2270). `cleanup_obligation` binds action key, publication generation, attempt,
+claimant, claiming host and scope nonce. The pending claim keeps its saved
+command outcome and capacity until cleanup is proved. A connection refusal
+cannot establish whether a delayed create reached the broker, so releasing
+capacity at that boundary would permit overlapping unproved work. The existing
+owning-host finish recovery retries the obligation after connectivity returns.
+
+Companion records retain their separate roles during verification. A withdrawal
+is a generation-scoped cancellation decision; the worker or reaper still owns
+its claim, lease and reservation. A valid distinct READY successor may wait
+behind that claim. Cleanup verifies only the saved owner's exact scope and
+leaves the successor and cancellation decisions intact. If a newer cancellation
+occupies the visible marker, ordinary conclusion archives the older cancelled
+attempt under its own generation. Same-generation READY, DONE, duplicate
+physical owners, malformed companions and contradictory claim or lease identity
+refuse recovery before cleanup effects or capacity release.
+READY coexistence compares generation identity without timestamp ordering,
+preserving public resubmission after a clock rollback. READY shape and demand
+validation share one validator with chronological publication-supersession
+checks; those other callers retain their existing ordering rule.
+
+`pbwait --reconcile-cleanup --generation <digest> --attempt <number> <key>`
+provides explicit recovery on the claiming host, including historical failed
+attempts whose tokens were already released. Its public authority accepts only
+identity. It derives claim, immutable attempt/logs, intent and broker address
+from durable state. A fresh random challenge binds the broker response to this
+verification. The broker fences an absent nonce against delayed creation before
+attesting absence, or confirms that its exact recorded scope is released and
+absent. An existing kernel scope, unknown authority, conflicting identity,
+foreign host or stale reply refuses recovery. Container cleanup must also
+succeed. Verification mints a queue-bound single-use capability; the final writer
+checks that capability and rereads the same durable owner before publication.
+Plain, forged, copied, subclassed and serialized values grant no authority.
+
+The immutable `<number>.cleanup-recovery.json` supplement preserves the original
+owner record, its canonical digest and verified scope/container evidence. The
+mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
+obligation. Original command status, immutable attempts, logs, generation and
+publication endings remain intact. A crash between supplement and summary is
+replayable only after another fresh verification. Replay binds the saved claim
+identity and scope intent while allowing cleanup counters and recovered control
+to advance after a partial summary write. `pb_action` exposes pending
+obligations independently of the command outcome. This operation neither
+creates success receipts nor changes an already released reservation. This is
+source support; deployment and reconciliation of the two live actions require
+the lead's separate runtime publication and operator execution.
+
 Pool receipt reconciliation is an explicit evidence operation, exposed by
 `pbwait --reconcile-pool --generation <digest> --attempt <number> <key>`.
 It requires the current failed submission generation and its final immutable
@@ -7320,7 +7435,12 @@ things that answer different questions: NFS per-operation queue time and
 round-trip time differenced from `/proc/self/mountstats`, which costs the mount
 no operation and therefore keeps reporting when the mount does not, and a
 bounded set of timed syscalls including the create/rename/unlink the claim path
-performs. The queue/rtt split is the attribution -- time at the server against
+performs. Claim scratch is created empty and closed before rename and unlink:
+the dirty-file cycle retained NFS server open states in #1917, while the empty
+cycle preserved the RENAME diagnostic without retention in the bounded private
+reproduction. This is a source repair, not evidence that the deployed collector
+has changed or that already-retained states have been reclaimed.
+The queue/rtt split is the attribution -- time at the server against
 time this client could not send -- and it separates a healthy mount from a
 client in a state-recovery storm by two orders of magnitude rather than by a
 chosen margin. The syscall leg runs in a forked child abandoned at a deadline,
@@ -7495,6 +7615,47 @@ VRAM budget. On shared-memory devices this explicit GPU cap is an additional
 subset cap, not a second reservation of the same physical DRAM. The exact
 GPU budget follows scope creation, durable recovery and release. SLURM refuses
 this option until its execution contract supports separate VRAM budgets.
+
+Unified-memory foreign residency also bounds new host-memory commitments
+(#1661, #2088, #2089). `gpu_sample_facts.unified_memory_evidence` classifies
+one fresh, complete, attributed broker inventory as clear, known foreign
+bytes, or unknown foreign residency. The classified value retains the
+sample ID and timestamp. Discrete-device residency supplies no host-memory
+credit or unified-memory fence.
+
+The ordinary `MemAvailable` plus held-token bound remains in force. The second
+bound subtracts external usage and the existing operating margin from physical
+host memory. External usage is `host_total - host_available - PB_resident`,
+clamped at zero. GB10 CUDA allocations lower `MemAvailable` but bypass the
+scope's memory cgroup, measured in Rob's commit `4b6cc60496`. PB resident bytes
+are credited per complete attributed scope as
+`min(valid host bytes + valid shared-system GPU lower bound, budget_bytes)`.
+A missing or invalid scope budget earns no credit; invalid residency components
+contribute zero. Residency above the reservation stays in external usage, so
+held tokens plus external usage charge `max(reservation, residency)` per scope.
+Host and CUDA charges are near-disjoint: #450 measured their sum 4.4% above
+the host-usage increase, absorbed by the existing margin in that workload.
+Per-process GPU sums may overlap and supply no residency credit.
+Foreign GPU bytes are already inside host usage and are never added again.
+Observation applies the physical bound after held-token add-back, and the
+observer applies it again after memory smoothing. The two bounds take their
+minimum. No external baseline credit is inferred from an older offer.
+
+Unknown foreign residency defers new CPU and GPU memory commitments with
+`unified_gpu_memory_unknown` before total-fit checks, gang preparation, or
+election. READY rows, held reservations, and existing gang elections remain
+in place. A fresh clear sample removes this fence. When a claim pass has
+identified shared-system memory, a later partial, stale, missing or untrusted
+sample retains unknown context with no resident credit until trusted evidence
+recovers. It cannot reuse the earlier clear classification. Claim-time checks also
+bound aggregate held memory plus the candidate's incremental memory demand
+by the current physical ceiling. Producer export allowances count once;
+funded dependents consume their existing funding before the incremental fit
+check. Denial evidence retains sample identity, foreign bytes, committed
+memory, candidate demand, host usage, PB residency, and the physical ceiling.
+A later successful claim
+retires its earlier unknown-residency status projection.
+
 Campaign rows expose the same budget as `gpu_memory_gb` and forward it through
 `pbrun`'s seal path, preserving action identity with an equivalent direct
 submission. Manifest preflight validates the bounded numeric conversion and
@@ -10141,6 +10302,14 @@ sequence behavior. It invalidates descendants observed and deleted before their
 watches existed, even when the scan finds an empty tree. Request diagnostics expose ring size,
 retained events, subscriptions, resets, coverage changes, connections and local
 watch count. These are read-only observations, without per-renewal log traffic.
+
+Host-tree watch removal compares normalized path strings (#2173). The removed
+root and its slash-terminated prefix are computed once per removal. Each
+installed Path supplies its cached normalized string; the watch loop compares
+that string for equality or the descendant prefix, without constructing Paths
+or running per-watch pathlib ancestry checks. Exact component boundaries keep
+sibling host names distinct. Removal order, inode-watch retirement, coverage
+resets, event ordering and v1/v2 reply fields are unchanged.
 
 The v2 client methods perform one bounded request. They positively check requested
 topics before accepting a cursor or successful wait. They introduce no consumer
@@ -19722,10 +19891,12 @@ uses the original generation-aware idempotent readback. Canonical election
 sidecars survive unstarted retries. Persistence failures retain the original
 fence-first recovery and never replace a newer READY publication.
 
-`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
-ledger totals, placement/capability views, existing read memo and canonical
-census. It captures no new per-candidate host sample, availability or holder
-state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+`_ClaimScan` retains the ordered rows, worker inputs, ledger totals,
+placement/capability views, existing read memo, and canonical census.
+Its `_ClaimMemory` reference owns the current broker sample and classified
+unified-memory evidence. That owner refreshes evidence at candidate and
+mutation boundaries; the other pass views capture no new availability or
+holder state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
 dead-input handling, carried room and the existing ready-GPU policy in their
 original positions. A winning rename invalidates claimed names, reader plans
 and census even when the moved record later refuses.
@@ -20971,3 +21142,195 @@ values are unavailable measurements, never evidence of no contention. Gate
 and hold chart samples remain suppressed for incomplete identity; mount, RPC
 and probe reporting continue. Deployment and executed qualification remain
 the release master's responsibility.
+
+## Host GPU container-runtime fence (#1895)
+
+The first #1895 slice leaves attempt accounting unchanged. A failed action still
+ends failed and consumes its attempt. An authenticated broker observation adds
+`host_fault` and `termination_reason` equal to
+`host_fault: gpu_container_runtime_unready/<subtype>` to the ending. Requeue
+without charging an attempt remains proposed work for #1895.
+
+The fence is **default off**. Every new worker and the root-installed broker and
+shim read the same host-local `/etc/prismabuild/gpu-container-runtime.enabled`
+file through `gpu_capacity.runtime_fence_enabled`. The reader walks from `/` with
+`O_DIRECTORY|O_NOFOLLOW`, validates each directory descriptor, and opens the
+final file with `openat` and `O_NOFOLLOW` relative to the verified parent. Only the exact bytes
+`enabled\n` in a root-owned regular file with no group/other write access enable
+it. All ancestors must also be root-owned and not group/other writable. Symlinks,
+absence, invalid bytes and read errors mean off. Environment variables cannot
+enable it. This persistent host policy sits outside both the runtime generation
+and the fence evidence, so an ordinary runtime publish cannot enable it.
+
+Off means no fence reads at claim/offer time, no readiness exception, no broker
+runtime object or CDI watcher on startup, no typed-protocol advertisement and no
+extra status RPC at action ending. The shim keeps main's label nonce, Docker
+argv, inherited stderr, native AutoRemove and cleanup path. A stale fence record
+cannot deny work while off and is retained as evidence. The shim checks the same
+switch before typed negotiation, including against a broker started while on.
+Operators change the file only with host admission closed and attempts settled,
+then restart the broker and converge all sibling workers before reopening.
+Turning off immediately bypasses new readers; turning on needs that restart to
+initialize the broker authority. A partial rollout preserves execution but does
+not provide host protection. Live qualification remains required before opt-in.
+
+The Docker shim and broker negotiate `launch_outcome_protocol: 2`. The
+container intent ticket is also this launch's reserved `prismabuild.shim` label.
+The broker verifies the immutable ID, that label, scope label and cgroup parent.
+An old caller cidfile cannot identify a second launch. The active socket is
+checked before authority initialization, including when an older broker has no
+lifetime lock. Native Docker AutoRemove
+stays enabled, including foreground name reuse and detached removal. Scope
+cleanup uses main's `docker rm -f`, preserving anonymous volumes. The shim's
+stop cleanup uses the same arguments, whether the opt-in is on or off.
+Readiness containers use ordinary cleanup and do not grant volume-deletion authority.
+
+Retained containers use daemon inspect state. A nonzero `StartedAt` proves that
+the payload started. For native AutoRemove, the broker opens a launch-filtered
+live daemon event stream before the shim launches Docker. This launch's unique
+ticket and scope label bind the create event to the broker intent. The destroy
+event must arrive with no start or die event. That complete daemon stream proves
+only that the payload did not start. It cannot authenticate the caller's error
+text or prove why creation failed. The same independent host checks below apply
+to retained and auto-removed containers. An inspect snapshot, when available,
+also verifies the actual labels, parent and injection. Without a snapshot, the
+watch's parsed NVIDIA injection candidate must also pass the broker's host
+vendor check. A caller-supplied intent bit alone never verifies a vendor.
+Intent includes runtime `nvidia`, CDI `nvidia.com/gpu` devices, and Docker
+`--gpus` DeviceRequests with driver `nvidia`. An unspecified driver with `gpu`
+capabilities is a candidate, not NVIDIA identity. Before a driver query can
+classify that candidate, the broker verifies `/dev/nvidiactl` as a root-owned
+character device with major 195 and minor 255. It walks trusted root-owned
+directory descriptors and stats the final node without following symlinks or
+opening the driver. Mode 0666 on the device itself is normal and accepted, as
+[NVIDIA's device-node instructions describe](https://docs.nvidia.com/cuda/archive/12.4.0/cuda-installation-guide-linux/#device-node-verification).
+This existing kernel device is a small independent signal; an installed binary
+or failed NVIDIA query cannot identify an NVIDIA host. Without that node,
+default-driver candidates and removed launches without inspect remain unverified.
+Explicit other-vendor runtimes do not qualify, even with NVIDIA device hints.
+Other device-request drivers supply no NVIDIA intent. The shim parses `--gpus`
+CSV fields, including `device=` IDs and quoted device lists, before the image
+boundary and carries candidate intent through AutoRemove, following
+[Docker's GPU option parser](https://github.com/docker/cli/blob/master/opts/gpus.go).
+The fence retains the stream basis, ID, ticket and the relevant identity, state
+and device fields of the optional snapshot. It does not publish container
+environment variables, arbitrary caller labels or payload arguments.
+Payload stdout and stderr after a start are never classification evidence.
+Missing create, interrupted streams, mismatched scope or IDs, duplicate create
+or an excessive event count return unknown. The initial `since` replay bridges
+Docker's HTTP-header/subscription boundary; its bounded history cannot establish
+no start if create itself was lost.
+
+For a proven never-started launch requesting NVIDIA injection, daemon or client
+error text can select a host check. Quoted payload fields are removed before
+check selection. The text itself never proves a host fault:
+
+- `cdi_mount_missing`: at verification time, the broker reads root-owned regular
+  CDI specs through trusted directory descriptors and proves that the error's
+  named `hostPath` is a mount source in those specs and is missing on the host.
+  Only ENOENT proves absence. Unreadable specs or lookup errors grant no fault.
+- `nvidia_initialization_failed`: after an NVIDIA initialization diagnostic, the
+  broker runs its own two-second `/usr/bin/nvidia-smi --query-gpu=uuid
+  --format=csv,noheader` driver/NVML check. Positive evidence is restricted to
+  [NVIDIA's documented hardware and driver fault codes](https://docs.nvidia.com/deploy/nvidia-smi/index.html#return-value):
+  8, 9, 10, 12, 14 and 15. Permission failure 4, unsupported function 13,
+  invalid arguments, signals, unknown codes and ambiguous code 255 leave
+  `launch_error`. A successful, unavailable, untrusted or timed-out check also
+  leaves `launch_error`, even if the diagnostic claims a driver failure.
+
+The outcome and durable fence retain `host_check` separately from the diagnostic
+`daemon_error`. Removed-launch `error_hint` is explicitly caller-supplied.
+Completed query status is retained in `host_check`, including non-fault results.
+
+An unmatched requested GPU UUID, generic device error, invalid configuration,
+arbitrary bind mount and payload exit remain ordinary failures or unknown.
+There is no replacement auto-removal thread or removal authority in the outcome
+RPC. Older brokers and shims retain their existing behavior, without typed
+outcomes. Protection requires converged shim, worker and installed broker bytes.
+
+Before reading or publishing authority, the broker holds a lifetime lock at
+`/var/lib/prismabuild-resource-broker/broker.lock`. A second broker cannot overwrite the active
+process's fence or its probe token. The root broker owns
+`/var/lib/prismabuild-resource-broker/gpu-container-runtime.json`. Atomic writes
+sync the file and parent directory. The record retains subtype, action key,
+attempt nonce, scope, daemon error excerpt, Unix time and boot ID. A root-owned
+mode-0644 mirror at `/run/prismabuild/gpu-container-runtime.json` lets every
+sibling worker read the same host decision. This state is host-local, independent
+of a worker PID, hostname alias, shared-store listing, GPU power sample or offer
+expiry. Restart retains a latched durable record. Malformed state means unknown
+and keeps GPU admission closed.
+
+The configured offer keeps the physical GPU bound so queued work remains
+placeable. Its observed GPU capacity becomes zero immediately with
+`gpu_container_runtime_unready` and the fence evidence in `observed_detail`.
+Every GPU claim checks that local fence before preparation and again at host
+reservation. Named denials use the existing denial records and `pbstatus` paths.
+CPU claims and CPU/memory offers continue. The resource ledger retains its
+physical bounds, so ordinary admission can reserve a readiness probe without
+inventing GPU capacity or dropping other resource checks.
+
+While fenced, claim arbitration and measurement election use a temporary view
+that suspends pending GPU measurement and gang elections targeting this host.
+Those rows cannot block the priority-zero readiness probe or CPU-only work,
+regardless of election age. The view requires positive GPU demand and matching
+pending publication evidence. Running holders, claimed members, unknown demand,
+missing publications and unreadable holder evidence keep their authority.
+No durable election is changed. Clearing the fence restores blocking authority
+on the next arbitration, including a reused census in the same claim pass.
+
+A broker thread starts on every enabled host and blocks on inotify on local
+`/run/cdi`, resolving `/var/run/cdi`
+to that path. It watches the directory and its parent, so atomic replacement of
+`nvidia.yaml`, directory removal/recreation, and watch overflow are events.
+The parent watch is installed even when CDI and the NVIDIA control device are
+absent at startup, so their later creation can authorize recovery after a fault.
+Restart revalidates once only when a durable fence is latched or unknown. A
+healthy startup does not latch or submit a probe. Overflow means unknown and
+requests one revalidation. The authority lock serializes the watcher's latch
+predicate with the complete host observation and latching decision. A CDI repair consumed during the first
+observation therefore requests one bounded readiness probe after that latch.
+An event completed before observation begins does not authorize recovery from
+a later fault. An independent blocking event consumer submits probes through
+the published `pbrun.py` as the worker UID, using a dedicated tiny Git checkout
+under the user's PB scratch.
+Queued superseded events coalesce. There is no cooldown or periodic readiness
+launch. PB never writes CDI or runs its generator; the NVIDIA package hook owns
+regeneration.
+
+The proposed pinned readiness image is the image declared by the two failed
+#1895 actions:
+`localhost/prismaquant/spark-vllm-nccl230@sha256:5be13705acaecc7b4aaf342a84f80d67844c9970ff8375bf9fbeecc9c98ce84a`.
+The exact recipe is `docker run --pull=never --network=none
+--device=nvidia.com/gpu=all --entrypoint=/bin/true IMAGE`. It starts no vLLM or
+CUDA workload. It declares 1 CPU, 16 GiB host memory, 1 GiB GPU memory, exclusive
+GPU admission, native threads at one and a 30-second payload deadline. Existing
+image inventory must report the pinned local image; nothing pulls it. Client
+preparation/submission has a separate 120-second termination bound. A refused or
+failed probe retains the fence. A worker offer-content transition can retry a
+refused submission, including startup with no live offers. Repeated timestamps
+and utilization samples are not transitions. There is no timer retry. The
+submitter and claim exception read one authoritative probe request recipe in
+`gpu_capacity.runtime_probe_request`; the 16 GiB host memory matches pbrun's
+exclusive floor. The probe retains its container for daemon inspection and
+ordinary scope cleanup.
+
+Only the exact sealed, host-pinned captured-command recipe with those resources,
+image and deadline may pass the runtime fence. It still undergoes ordinary
+CPU/GPU pressure, attribution, image and resource admission. A queued old probe
+can finish after a newer event, but only the current event token can clear the
+fence. The broker also verifies the daemon's actual pinned image, `/bin/true`,
+empty command, CDI device request and successful terminal state before clearing.
+Docker's CLI represents CDI devices as `HostConfig.DeviceRequests` with driver
+`cdi`, as defined by the [Docker CLI source](https://github.com/docker/cli/blob/master/cli/command/container/opts.go).
+The durable clear record binds its event, action, attempt, boot and time. A new
+proven host fault invalidates any outstanding clear token.
+
+Source/fixture qualification is distinct from live daemon/CDI qualification,
+installed-client convergence and deployment. The round-2 admitted Spark preflight
+cannot start a root scratch broker: the payload has `NoNewPrivileges`, and sudo
+refuses elevation. The live scratch-CDI launch/recovery proof therefore remains
+blocked. No production CDI, broker authority or fleet pointer is changed.
+Staged-read targets SC-01, ID-02, ID-08 and ID-09 remain as written in the staged
+contract. This slice keeps PB admission ownership and charged attempt identity,
+adds a bounded host-fault observation, and makes no staged-read or campaign
+completion claim. It does not promote any ledger deployment or workload axis.

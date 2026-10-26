@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 
-def load():
+def host_load_snapshot():
     return {"loadavg": pathlib.Path("/proc/loadavg").read_text().strip(),
             "cpu": pathlib.Path("/proc/stat").read_text().splitlines()[0],
             "cpu_pressure": pathlib.Path("/proc/pressure/cpu").read_text().strip(),
@@ -20,7 +20,7 @@ def load():
 payload = os.urandom(4096)
 for repeat in range(3):
     for arm, root in [("before", "/home/rob/tmp"), ("after", "/home/rob/pbt17")]:
-        start_load = load()
+        start_load = host_load_snapshot()
         start = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="pb1914-", dir=root) as directory:
             paths = [pathlib.Path(directory) / str(i) for i in range(256)]
@@ -36,4 +36,4 @@ for repeat in range(3):
             "host": socket.gethostname(), "files": 256, "bytes_per_file": len(payload),
             "seconds": time.monotonic() - start,
             "mount": subprocess.check_output(["findmnt", "-n", "-o", "SOURCE,FSTYPE,TARGET", "-T", root], text=True).strip(),
-            "start_load": start_load, "end_load": load()}), flush=True)
+            "start_load": start_load, "end_load": host_load_snapshot()}), flush=True)
