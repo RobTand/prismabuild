@@ -1083,3 +1083,53 @@ def test_unsupported_creation_protocol_never_creates_authority(authority,version
         a.handle(os.getuid(),os.getpid(),{'op':'create','action_key':'a'*64,'nonce':'b'*32,
                  'memory_max_bytes':64*1024**2,'recovery_protocol':version})
     assert not a.records and not b.groups
+
+
+def test_local_oom_retries_transient_fresh_identity_check_failure(event_monitored, monkeypatch):
+    import errno
+    a, b, rows, gpu, monitor, events, clock = event_monitored
+    monitor.poll_once()
+    _, record, path = rows[0]
+    scope = record['scope_id']
+    (path / 'memory.events.local').write_text('oom 1\n')
+    events.dirty.add(scope)
+    original_read = monitor._read_scope_events
+    path_type = type(path)
+    original_stat = path_type.stat
+    armed = False
+    failures = 0
+
+    def observe_then_arm(name, observed_record):
+        nonlocal armed
+        snapshot = original_read(name, observed_record)
+        if name == scope:
+            armed = True
+        return snapshot
+
+    def fail_fresh_identity_stat(candidate, *args, **kwargs):
+        nonlocal armed, failures
+        if candidate == path and armed:
+            armed = False
+            failures += 1
+            raise OSError(errno.EIO, 'injected fresh stop identity failure')
+        return original_stat(candidate, *args, **kwargs)
+
+    # The event snapshot and its before/after inode checks succeed first.
+    # Only the later fresh check in _stop fails, before pending intent is set.
+    with monkeypatch.context() as patch:
+        patch.setattr(monitor, '_read_scope_events', observe_then_arm)
+        patch.setattr(path_type, 'stat', fail_fresh_identity_stat)
+        failed = monitor.poll_events_once()
+    assert failures == 1
+    assert failed['errors']
+    assert b.stopped == []
+    assert not a.records[scope].get('monitor_stop_pending')
+
+    # No further file modification or event. The transient failure is gone.
+    clock.advance(max(monitor.recovery_interval_s, monitor.stop_retry_interval_s))
+    retried = monitor.poll_once()
+    assert retried['stopped'] == [scope], (
+        'observed local OOM must retry after a transient fresh identity check failure',
+        retried,
+    )
+    assert b.stopped == [scope]
