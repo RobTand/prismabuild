@@ -27,7 +27,8 @@ def test_queue_root_stat_permission_failure_remains_unavailable(
         (queue / 'done').symlink_to(terminal, target_is_directory=True)
     # Keep the test on the real queue-root helper: previous sections answered
     # before permissions changed, and this last read must report its own error.
-    monkeypatch.setattr(fleet_census, 'action_rows', lambda root, *, reader=None: fleet_census.Section({
+    monkeypatch.setattr(fleet_census, 'action_rows', lambda root, *, reader=None,
+                        authoritative_holds=False: fleet_census.Section({
         'nodes': [], 'jobs': [], 'notes': [], 'queue': {'complete': True}}, 'complete', {}, {}))
     monkeypatch.setattr(fleet_census, 'endings', lambda root, limit, *, reader=None: [])
     private.chmod(0)

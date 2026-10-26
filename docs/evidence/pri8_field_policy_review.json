@@ -1,0 +1,23 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/verify.py",
+      "owner": "root_command",
+      "unresolved": "json.loads((root / 'tests/proof_execution.json').read_text())['root']",
+      "binding": "required"
+    },
+    "count": 1,
+    "reason": "The root launcher loads execution resource requirements from the committed proof profile. The scanner pins its local required binding symbolically. This is resource configuration, not a new closed record or compatibility rule."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/verify.py",
+      "owner": "populations",
+      "unresolved": "all_tests"
+    },
+    "count": 1,
+    "reason": "The tier selector subtracts the discovered test-file population from declared file membership. This symbolic expression describes test selection, not durable record fields. Retain the scanner witness without changing its discovery rules."
+  }
+]

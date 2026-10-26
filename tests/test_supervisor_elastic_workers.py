@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,7 +46,9 @@ def _stop_after_cycle(monkeypatch, sleeps):
         sleeps.append(seconds)
         if seconds >= supervise.BUSY_INTERVAL_S:
             raise CycleComplete
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
 
 
 def test_growth_adds_one_reserve_on_top_of_the_claims_actually_held(
@@ -149,7 +152,9 @@ def test_once_keeps_the_configured_floor_for_deterministic_maintenance(
     spawned = []
     monkeypatch.setattr(supervise, "_spawn",
                         lambda _args, slot: spawned.append(slot) or 9000 + slot)
-    monkeypatch.setattr(supervise.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": lambda _seconds: None,
+    }))
 
     assert supervise.main() == 0
     assert spawned == [0, 1]

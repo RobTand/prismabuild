@@ -1,0 +1,95 @@
+{
+  "reports": [
+    {
+      "file": "red.json",
+      "failed": 19,
+      "source_head": "e57b7a3c160f95f9b8da90337b3ed93b021d96d7",
+      "source_paths": [
+        "src",
+        "tests/compat/support/compat_floor_adapters.py"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "d874a32e6f8941f280e156eca7ecaf786a1b255ac6d9bcb0d1cd02f54d9275ee"
+    },
+    {
+      "file": "regression-red.json",
+      "failed": 1,
+      "source_head": "a86ad16578",
+      "source_paths": [
+        "src",
+        "tests/compat/support/compat_floor_adapters.py"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "b328cc3c04c1ed15bab563f41e684d6c2d5739513bbb8a3a786d72b5a6d0dee1"
+    },
+    {
+      "file": "controller-green.json",
+      "failed": 0,
+      "source_head": "9dd0c63d1f",
+      "source_paths": [
+        "src",
+        "tests/record_compat_contract.py",
+        "tests/compat"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "170a7eb87df2a9ce634cd52aea9b46fd3d11586dec42fe0b4e48341cc8f3d4c5"
+    },
+    {
+      "file": "floor-integration-passing.json",
+      "failed": 0,
+      "source_head": "cf4a6782e9",
+      "source_paths": [
+        "src"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "6bc1f375e5d250bb097993ebb35f20951184ff299a8aff952a511d8c852789cb"
+    },
+    {
+      "file": "main-floor-baseline.json",
+      "failed": 0,
+      "source_head": "88b1a5108799",
+      "source_paths": [
+        "src"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "f8a9995a9a7b5239a01bcd1b4ad40d4870310917e304b983d89f2b546bb3c9cd"
+    },
+    {
+      "file": "floor-final.json",
+      "failed": 0,
+      "source_head": "cf4a6782e9",
+      "source_paths": [
+        "src"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "ed04e3fcab706beb9e69305d5bddba66dd653525fe81e2bfa23f77512e850974"
+    },
+    {
+      "file": "catalogue.json",
+      "failed": 0,
+      "source_head": "cf4a6782e9",
+      "source_paths": [
+        "src",
+        "tests/compat"
+      ],
+      "include": [
+        "tests"
+      ],
+      "sha256": "f332abee23e0dce548adbe61cda198f141fdc14bba2e48d087b86715bef43f38"
+    }
+  ],
+  "capture_key": "fd5b327e8b4fa36b4c4827cf093b19e6bc85152391b07d35041c3607f84143f4",
+  "capture_sha256": "eabab04e964e75643fad545b115061c12ca0a165c16e26f75d5db50f8b27a783"
+}

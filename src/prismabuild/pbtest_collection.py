@@ -145,7 +145,12 @@ def selection_plugin(spec):
         _relative_path(row[0])
     root = Path.cwd()
     assigned = {root / path: path for path in files}
-    ancestors = {parent for path in assigned for parent in path.parents}
+    # Index lexical containment once, including exact files. Ignore recording
+    # then visits only matching assigned names, never the entire assignment.
+    descendants = {}
+    for path, name in assigned.items():
+        for container in (path, *path.parents):
+            descendants.setdefault(container, []).append(name)
 
     class Selection:
         def __init__(self):
@@ -174,7 +179,7 @@ def selection_plugin(spec):
         def pytest_ignore_collect(self, collection_path, config):
             # File membership is PB's rule. For eligible paths, return None
             # so pytest/project ignore hooks remain the sole population rule.
-            if collection_path not in assigned and collection_path not in ancestors:
+            if collection_path not in descendants:
                 return True
             return None
 
@@ -182,8 +187,7 @@ def selection_plugin(spec):
         def pytest_record_ignore(self, collection_path, config):
             outcome = yield
             if outcome.get_result():
-                self.ignored.update(name for path, name in assigned.items()
-                                    if path == collection_path or collection_path in path.parents)
+                self.ignored.update(descendants.get(collection_path, ()))
 
         def pytest_collectreport(self, report):
             relative = os.path.relpath(

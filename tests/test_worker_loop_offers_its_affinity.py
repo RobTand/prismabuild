@@ -75,6 +75,9 @@ def _offer(module, argv: list[str], *, affinity, cpu_count: int = 80,
         def ledger(self) -> _Ledger:
             return _Ledger(seen)
 
+        def claim_hold(self):
+            return None
+
         def announce(self, **_kwargs) -> None:
             pass
 
