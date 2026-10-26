@@ -744,3 +744,49 @@ def test_wildcard_time_import_is_a_sleep_route():
         assert timing_source_needs_ast(source), source
         assert scan_timing_source(source) == {
             TimingIdentity("tests/snippet.py", "<module>", "sleep"): 1}, source
+
+
+def test_queue_receiver_evidence_does_not_leak_between_functions():
+    source = """from queue import Queue
+def test_queue():
+    q = Queue()
+def test_mapping(key):
+    q = {}
+    return q.get(key, 5)
+"""
+    assert not scan_timing_source(source)
+
+
+def test_boolean_evidence_does_not_leak_between_functions():
+    source = """def test_queue(q):
+    blocking = True
+    q.get(blocking, 5)
+def test_mapping(mapping, blocking):
+    return mapping.get(blocking, 5)
+"""
+    assert scan_timing_source(source) == {
+        TimingIdentity("tests/snippet.py", "test_queue", "get"): 1}
+
+
+def test_queue_evidence_respects_local_imports_and_shadowed_bindings():
+    for source in (
+        "def queue_scope():\n from queue import Queue\ndef mapping_scope(Queue, key):\n q = Queue()\n q.get(key, 5)",
+        "from queue import Queue\ndef mapping_scope(Queue, key):\n q = Queue()\n q.get(key, 5)",
+        "from queue import Queue\nq = Queue()\ndef mapping_scope(q, key):\n q.get(key, 5)",
+        "blocking = True\ndef mapping_scope(mapping, blocking):\n mapping.get(blocking, 5)",
+        "blocking = True\ndef outer():\n def inner(mapping, blocking):\n  mapping.get(blocking, 5)",
+    ):
+        assert not scan_timing_source(source), source
+
+
+def test_queue_evidence_remains_visible_to_closures():
+    source = """from queue import Queue as Q
+def outer():
+    q = Q()
+    blocking = True
+    def inner(mapping):
+        q.get(should_block(), 5)
+        mapping.get(blocking, 5)
+"""
+    assert scan_timing_source(source) == {
+        TimingIdentity("tests/snippet.py", "outer.inner", "get"): 2}
