@@ -12,10 +12,6 @@
   [
    "tools/fleet/fleet_membership.py::_membership_owner_parts",
    "tools/fleet/resource_broker.py::_supervisor_owner_parts"
-  ],
-  [
-   "tools/fleet/pbcanary_legs/leg3.py::_returncode",
-   "tools/fleet/pbcanary_legs/leg4.py::_returncode"
   ]
  ],
  "primitive_digest_sites": [
@@ -314,10 +310,6 @@
    "src/prismabuild/materialize.py",
    "src/prismabuild/pool.py"
   ],
-  "_extract_envelope": [
-   "tools/fleet/pbcanary_legs/leg3.py",
-   "tools/fleet/pbcanary_legs/leg4.py"
-  ],
   "_fail": [
    "src/prismabuild/core.py"
   ],
@@ -386,10 +378,6 @@
   "_require": [
    "src/prismabuild/pool_reconcile.py",
    "tools/fleet/pbsnapshot.py"
-  ],
-  "_returncode": [
-   "tools/fleet/pbcanary_legs/leg3.py",
-   "tools/fleet/pbcanary_legs/leg4.py"
   ],
   "_row": [
    "tools/fleet/bench_tier_cycle.py",
