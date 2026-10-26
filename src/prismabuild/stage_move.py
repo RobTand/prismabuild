@@ -528,7 +528,7 @@ class _Copier:
         source = str(source)
         if self.publisher is not None:
             filesystem_floor.enforce_paths(self.publisher.queue.root,
-                [source, self.stage_root, destination.parent, self.publisher.queue.root,
+                [source, self.stage_root, destination.parent, destination, self.publisher.queue.root,
                  self.publisher.residency_root, self.publisher.cas_root], label="stage copy")
         offset = int(source_offset
                      if source_offset is not None else entry["offset"])

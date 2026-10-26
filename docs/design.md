@@ -8141,6 +8141,13 @@ Used-path checks refuse unknown local mappings and require an exact,
 authority-supplied NFS export alias bound to client boot, mount namespace,
 device and mount incarnation. A server address alone supplies no authority.
 Native identity uses descriptor `statx`, never `fdinfo` or kernel lock tables.
+Existing regular files retain their own mount identity, including files reused
+or adopted at a destination; absent files use their nearest existing ancestor.
+Locally owned bindings require the current machine, boot and mount namespace
+at path and published admission boundaries, before any refresh. Remote owners
+retain their own incarnation and exact client NFS alias authority. Explicit
+tmpfs registration uses its boot-scoped identity and full coverage accounting;
+other volatile disk identities remain unregistrable.
 Supervisor spool offers retain the aggregate headroom; movement and prewarm
 check resolved sources and created/reused destinations before publication.
 See [filesystem_floor.md](filesystem_floor.md) for coverage fields and limits.

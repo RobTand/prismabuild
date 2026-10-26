@@ -164,9 +164,11 @@ def _paths(set_id, spec):
 
 
 def _verify_tree(queue_root, root, record):
-    filesystem_floor.enforce_paths(queue_root,
-        [(root / Path(entry["path"]).relative_to(record["canonical_root"])).parent
-         for entry in record["manifest"]["entries"]], label="resident tree files")
+    paths = []
+    for entry in record["manifest"]["entries"]:
+        leaf = root / Path(entry["path"]).relative_to(record["canonical_root"])
+        paths.extend((leaf.parent, leaf))
+    filesystem_floor.enforce_paths(queue_root, paths, label="resident tree files")
     expected = {str(Path(entry["path"]).relative_to(record["canonical_root"])): entry["bytes"]
                 for entry in record["manifest"]["entries"]}
     if resident_sets.directory_files(root) != expected:
@@ -222,7 +224,7 @@ def copy(store, set_id, host, spec, *, reader_context=None, now=None):
                     relative = Path(entry["path"]).relative_to(record["canonical_root"])
                     destination = partial / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    filesystem_floor.enforce_paths(queue.root, [destination.parent],
+                    filesystem_floor.enforce_paths(queue.root, [destination.parent, destination],
                                                    label="resident copy file")
                     if destination.exists():
                         size, digest = hash_file(destination)

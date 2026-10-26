@@ -26,6 +26,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+from stat import S_ISDIR, S_ISREG
 import subprocess
 import sys
 import time
@@ -232,9 +233,9 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
     """The filesystem ``path`` is on, its stable key and a fresh sample.
 
     Symlinks are resolved first (an interpreter path is usually one).  A
-    path that is not a directory is identified by its directory, and one
-    that does not exist yet by its nearest existing ancestor, where it would
-    be created.  Every error is a :class:`FloorError`: an unreadable
+    existing file is identified by its own descriptor. A path that does not
+    exist yet uses its nearest existing ancestor, where it would be created.
+    Every error is a :class:`FloorError`: an unreadable
     identity is never a pass.
     """
 
@@ -248,15 +249,15 @@ def identify(path: str | os.PathLike) -> dict[str, object]:
                 if real == real.parent:
                     raise
                 real = real.parent
-        if not real.is_dir():
-            real = real.parent
-        fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
         raise FloorError(f"{path}: {exc}") from exc
     try:
+        stat = os.fstat(fd)
+        if not (S_ISDIR(stat.st_mode) or S_ISREG(stat.st_mode)):
+            raise FloorError(f"{real}: not a regular file or directory")
         mount_id = _statx_mount_id(fd)
         fstype, source, options = _mount_row(fd, mount_id=mount_id)
-        stat = os.fstat(fd)
         space = os.fstatvfs(fd)
         room = filesystem_capacity.local_disk_room(real, 5, statvfs=lambda path: space)
         size, free = room["size_bytes"], room["free_bytes"]
@@ -614,9 +615,13 @@ def published_verdict(queue_root, binding: Mapping, *, demand_bytes: int = 0,
         return floor_refusal(key, "mapping_unknown")
     binding = current
     try:
+        owner = _owner_incarnation()
+        if binding.get("machine_id") == owner["machine_id"] and any(
+                binding.get(field) != value for field, value in owner.items()):
+            return floor_refusal(key, "mapping_unknown", detail="local owner incarnation changed")
         coverage = _coverage(binding, now=now)
-    except FloorError as exc:
-        return floor_refusal(key, exc.reason, detail=str(exc))
+    except (FloorError, OSError) as exc:
+        return floor_refusal(key, getattr(exc, "reason", "mapping_unknown"), detail=str(exc))
     sample = _floor_read(directory / "sample.json")
     if sample is None or sample.get("key") != key:
         return floor_refusal(key, "no_sample")
@@ -686,7 +691,7 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
     found = identify(root)
     if found["key"] is None:
         raise FloorError(f"{root}: register on the NFS server, where it is local")
-    if str(found["key"]).startswith("volatile:"):
+    if str(found["key"]).startswith("volatile:") and found["fstype"] != "tmpfs":
         raise FloorError(f"{root}: {found['fstype']} has no stable identity to bind")
     members = [tuple(m) for m in members]
     for ledger_root, _ledger, kind in members:
@@ -1004,10 +1009,11 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
 # -- used paths ----------------------------------------------------------------
 
 def _local_mapping_matches(found, binding) -> bool:
-    return found["key"] == binding["key"] and any(
+    return (all(binding.get(field) == value for field, value in _owner_incarnation().items())
+        and found["key"] == binding["key"] and any(
         all(found.get(field) == destination.get(field)
             for field in ("source", "device", "mount_id"))
-        for destination in binding.get("destinations", []))
+        for destination in binding.get("destinations", [])))
 
 
 def check_paths(queue_root, paths: Iterable, *, now: float | None = None

@@ -147,3 +147,22 @@ The #1483 merge record names actual fleet actions, logs and receipts. A source
 merge is distinct from runtime publication, activation and workload acceptance.
 No scoped unit test, documentation packet or issue condensation closes those
 remaining gates. The live native diagnostic needs Rob's separate authority.
+
+### Existing files and RAM filesystems
+
+Identity checks open existing regular files themselves, so a mounted leaf does
+not inherit its parent filesystem. Missing output names use the nearest
+existing ancestor. Movement and resident adoption check destination leaves as
+well as directories used for creation. Special files refuse.
+
+A local binding requires the current machine, boot and mount namespace at
+admission and used-path checks, without waiting for refresh. Remote ledger
+owners retain their server incarnation; their authenticated NFS aliases name
+the client incarnation.
+
+Explicit tmpfs registration accepts its existing machine/boot/device identity.
+It still requires complete expiring coverage and whole-reservation growth
+bounds. Registration alone HOLDs, and conservative additional growth is
+charged. Other volatile filesystem identities remain refused. RAM tokens remain
+memory accounting; physical tmpfs coverage is supplied through the existing
+filesystem growth ledger or authority-bounded additional bytes.
