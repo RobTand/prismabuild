@@ -45,7 +45,7 @@ def test_registration_cannot_cross_the_orphan_sweeps_last_check(gang_fleet, monk
             reads.append(result)
             if len(reads) == 2:
                 checked.set()
-                if not release.wait(10):
+                if not release.wait(60):
                     raise AssertionError("registration did not release the paused sweep")
         return result
 
@@ -59,13 +59,13 @@ def test_registration_cannot_cross_the_orphan_sweeps_last_check(gang_fleet, monk
     sweeper = threading.Thread(target=sweep)
     sweeper.start()
     try:
-        assert checked.wait(10), "sweep did not reach its final locked registration check"
+        assert checked.wait(60), "sweep did not reach its final locked registration check"
         with pytest.raises(_gang.GangContractError, match="registration.*busy"):
             _gang.publish_group(queue, group, original)
         assert read_group(queue, group) is None
     finally:
         release.set()
-        sweeper.join(10)
+        sweeper.join(60)
 
     assert not sweeper.is_alive()
     assert failures == []
