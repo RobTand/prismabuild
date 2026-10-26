@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import hashlib
 import math
 import os
 from pathlib import Path
@@ -48,7 +47,7 @@ def _root(root: Path) -> Path:
 
 
 def _hash(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
+    return digest_primitives.raw_sha256(value.encode())
 
 
 def _candidate(record: Mapping[str, object]) -> PublicationCandidate:
