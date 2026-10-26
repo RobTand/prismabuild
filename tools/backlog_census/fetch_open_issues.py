@@ -14,7 +14,8 @@ import subprocess
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild.digest_primitives import raw_sha256, sorted_json
+from prismabuild.digest_primitives import raw_sha256
+from census_json import census_json_bytes
 
 from census import PARENT, REPOS, SCOPE, blocker_references, priority, reference
 
@@ -112,10 +113,10 @@ class GitHub:
                   "returncode": result.returncode, "response": response, "stderr": result.stderr}
         if response is None:
             record["unparsed_stdout"] = result.stdout
-        payload = sorted_json(record, indent=2) + "\n"
-        digest = raw_sha256(payload.encode("utf-8"))
+        payload = census_json_bytes(record)
+        digest = raw_sha256(payload)
         path = self.raw_dir / f"{len(self.receipts):06d}-{digest}.json"
-        path.write_text(payload)
+        path.write_bytes(payload)
         self.receipts.append({"path": path.name, "sha256": digest})
         if result.returncode or response is None:
             raise GitHubError(f"GitHub request failed; see {path}")
@@ -323,7 +324,7 @@ def main():
         parser.error("Choose a new output path so existing evidence remains unchanged")
     api = GitHub(raw)
     snapshot = Collector(api, since, args.repo or REPOS).collect()
-    args.output.write_text(sorted_json(snapshot, indent=2) + "\n")
+    args.output.write_bytes(census_json_bytes(snapshot))
     print(f"Saved {len(snapshot['issues'])} issues and {len(api.receipts)} raw replies to {args.output}")
 
 

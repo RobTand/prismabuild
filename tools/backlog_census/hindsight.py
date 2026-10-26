@@ -12,15 +12,12 @@ import sys
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild.digest_primitives import raw_sha256, sorted_json
+from prismabuild.digest_primitives import raw_sha256
+from census_json import census_json_bytes as json_bytes
 
 ENDPOINT = "http://127.0.0.1:8888/v1/default/banks/omp-history/memories/recall"
 TOKEN_PATH = Path("/home/rob/.omp/agent/hindsight-api-token")
 SCHEMA = "backlog-census-hindsight/v1"
-
-
-def json_bytes(value):
-    return (sorted_json(value, indent=2) + "\n").encode("utf-8")
 
 
 def save(path, value):

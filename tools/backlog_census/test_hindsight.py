@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import hindsight
+from prismabuild.digest_primitives import sorted_json
 
 
 CENSUS = {"candidates": [{"id": "abc123", "kind": "duplicate_cluster", "tickets": ["RobTand/prismabuild#1"]}]}
@@ -21,9 +22,19 @@ class ByteIdentityTests(unittest.TestCase):
         self.assertEqual(hindsight.json_bytes(value), expected)
 
     def test_default_sorted_profile_and_raw_digest_keep_existing_bytes(self):
-        self.assertEqual(hindsight.sorted_json({"é": 2, "a": 1}), '{"a": 1, "\\u00e9": 2}')
+        self.assertEqual(sorted_json({"é": 2, "a": 1}), '{"a": 1, "\\u00e9": 2}')
         self.assertEqual(hindsight.raw_sha256(b"abc"),
                          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+    def test_pretty_json_sorts_nested_objects_and_preserves_json_values(self):
+        value = {"z": [{"z": [], "a": {"z": "é\n", "a": -0.0}}],
+                 "a": [None, True, False, 1.25, 1e-12, {}, []]}
+        expected = (b'{\n  "a": [\n    null,\n    true,\n    false,\n'
+                    b'    1.25,\n    1e-12,\n    {},\n    []\n  ],\n'
+                    b'  "z": [\n    {\n      "a": {\n        "a": -0.0,\n'
+                    b'        "z": "\\u00e9\\n"\n      },\n      "z": []\n'
+                    b'    }\n  ]\n}\n')
+        self.assertEqual(hindsight.json_bytes(value), expected)
 
 
 class RecallTests(unittest.TestCase):
