@@ -54,8 +54,13 @@ def _hash(value: str) -> str:
 def _candidate(record: Mapping[str, object]) -> PublicationCandidate:
     key, published = record.get("action_key"), record.get("published_unix")
     if (not key_shaped(key) or isinstance(published, bool)
-            or not isinstance(published, (int, float))
-            or not math.isfinite(published) or published < 0):
+            or not isinstance(published, (int, float))):
+        raise ValueError("invalid publication identity")
+    try:
+        published = float(published)
+    except OverflowError as error:
+        raise ValueError("unrepresentable publication time") from error
+    if not math.isfinite(published) or published < 0:
         raise ValueError("invalid publication identity")
     snapshot = record.get("checkout_snapshot")
     snapshot = snapshot if isinstance(snapshot, Mapping) else {}
@@ -63,7 +68,7 @@ def _candidate(record: Mapping[str, object]) -> PublicationCandidate:
               "published_by": record.get("published_by"),
               "snapshot_parent": snapshot.get("parent"),
               "snapshot_commit": snapshot.get("commit")}
-    return PublicationCandidate(key, float(published), {
+    return PublicationCandidate(key, published, {
         field: value for field, value in values.items() if isinstance(value, str)})
 
 

@@ -60,8 +60,9 @@ def test_each_facet_addresses_only_its_own_candidates(tmp_path, monkeypatch, fie
         assert Path(path) not in {store.dir(s) for s in ('ready','claimed','done','failed','withdrawn')}
         return native(path)
 
-    monkeypatch.setattr(os, 'scandir', scan)
-    result = store.publication_candidates(facets={field:value})
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'scandir', scan)
+        result = store.publication_candidates(facets={field:value})
     assert [(c.action_key,c.published_unix) for c in result.candidates] == [(wanted['action_key'],100.0)]
     assert result.entries_consumed == 1
     assert not result.complete and 'coverage-missing' in result.reasons
@@ -293,3 +294,21 @@ def test_pool_publication_indexes_after_canonical_write_and_survives_sidecar_fai
     result = queue.records.publication_candidates(facets={'checkout_root': '/task'})
     assert not result.complete and 'coverage-changed' in result.reasons
     assert [row.action_key for row in result.candidates] == [f'{1:064x}']
+
+
+def test_unrepresentable_publication_time_refuses_advisory_write(tmp_path):
+    store = RecordStore(tmp_path)
+    assert not store.index_publication(record(1, published=10**400))
+
+
+def test_unrepresentable_leaf_time_returns_incomplete_capture(tmp_path):
+    store = RecordStore(tmp_path)
+    file_record(store, record(1))
+    leaf = next((store.root / 'publication-index' / 'v1' / 'facets'
+                 / 'checkout_root').glob('*/entries/*.json'))
+    body = json.loads(leaf.read_text())
+    body['published_unix'] = 10**400
+    leaf.write_text(json.dumps(body))
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert result.candidates == () and not result.complete
+    assert 'index-leaf-unreadable' in result.reasons
