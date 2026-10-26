@@ -90,6 +90,12 @@ def ample_space(tmp_path, monkeypatch):
             return read_room(path, floor_percent, statvfs=lambda _: sampled)
         return read_room(path, floor_percent, statvfs=statvfs)
 
+    found = ff.identify(tmp_path)
+    if found["fstype"] == "zfs":
+        read_zfs = ff._zfs_space
+        controlled = {found["pool"], found["source"]}
+        monkeypatch.setattr(ff, "_zfs_space", lambda name:
+                            (64 * GIB, 48 * GIB) if name in controlled else read_zfs(name))
     monkeypatch.setattr(ff.filesystem_capacity, "local_disk_room", room)
 
 
