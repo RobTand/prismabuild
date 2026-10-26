@@ -3,17 +3,19 @@
   "issue": 1707,
   "pull_request": "https://github.com/RobTand/prismabuild/pull/2069",
   "branch": "prismabuild-1707-v2",
-  "source_commit": "93a10d8f4b3d99edc4789a336d3c20e51c57b2a1",
-  "source_tree": "7929f5c151fa965179f09191740281c243c9e565",
-  "base_commit": "2ca082a0025ce1f0032eb13ed6f16f52b30efaf1",
+  "source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
+  "source_tree": "aac49fca3e448af5078a3428bca3ef97617686e5",
+  "base_commit": "58e9a4fa327fa15aeaf21a734baf0c23a191e32c",
   "base_is_ancestor": true,
   "compatibility_conflicts_resolved": 3,
   "core": {
     "bytes": 306962,
     "sha256": "e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e"
   },
-  "delivery": "GitHub connector base-branch update; no force push",
-  "qualification": "Core recovered and audited; eight excluded final actions require fresh qualification",
+  "delivery": "GitHub connector base update integrated current main. Remaining differences from the qualified checkpoint are evidence documents only. Final delivery SHA and full tree equality are recorded on the task after upload.",
+  "qualification": "95 distinct current-main actions audited: 2,211 passed, one known baseline wire-inventory failure, zero skips; five rounds per architecture including two xdist rounds each. No behavior or test code changes follow qualification.",
   "runtime_publication": false,
-  "service_restart": false
+  "service_restart": false,
+  "remote_integrated_source_commit": "13c026a1e1dc541c62777cda69a5db98adc059c3",
+  "rebase": "git rebase --rebase-merges origin/main; source commit and full tree unchanged"
 }

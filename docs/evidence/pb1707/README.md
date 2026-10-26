@@ -1,6 +1,6 @@
 # Progress supervision, #1707
 
-[PR #2069](https://github.com/RobTand/prismabuild/pull/2069) contains the source repair. It remains draft pending fresh final fleet qualification. No runtime was published or service restarted.
+[PR #2069](https://github.com/RobTand/prismabuild/pull/2069) contains the source repair. Source qualification is complete. Independent Principal Engineer review and merge remain pending. No runtime was published or service restarted.
 
 An ordinary payload now has no implicit total-duration deadline. Output growth or aggregate containment CPU renews a quiet allowance. Its default is 7200 seconds, the former worker ceiling, clamped by the executing worker. This preserves the former allowance for quiet daemon image loading. `--stall-s` seals an override and requires a worker offering `activity-stall-v1`. GPU activity, I/O counters and arbitrary progress-file changes do not renew this watch.
 
@@ -30,13 +30,13 @@ Core is 306962 bytes with SHA-256 `e6b9e79b40c45863d78c437237ea7388371a27842087f
 
 ## Recovery and current source
 
-The existing PR includes main `2ca082a0025ce1f0032eb13ed6f16f52b30efaf1` at source commit `93a10d8f4b3d99edc4789a336d3c20e51c57b2a1`. Its current Core bytes still match the verified capture. The original task worktree and its untracked helpers remain preserved; qualification uses `/home/rob/paperclip-worktrees/prismabuild/PRI-43-qualification`.
+The earlier PR checkpoint included main `2ca082a0025ce1f0032eb13ed6f16f52b30efaf1` at source commit `93a10d8f4b3d99edc4789a336d3c20e51c57b2a1`. Its current Core bytes still match the verified capture. The original task worktree and its untracked helpers remain preserved; qualification uses `/home/rob/paperclip-worktrees/prismabuild/PRI-43-qualification`.
 
 The fleet recovered. Core action `8eed6890445ed3285378ad45c79c01723aed77c5cb8dfb2eb549c80138f4cbbf` completed 73 cases after recovery on attempt 2. Attempt 1 lost its lease and was requeued under the immutable request. Both attempts' logs, the final terminal record, source bundle, native completion, CAS receipt and scope cleanup were audited. [qualification-correction.json](qualification-correction.json) records those checks and source comparisons. This is Core compatibility evidence on its retained snapshot, not final integration qualification.
 
 All eight crash-era final-suite actions are excluded from merge and qualification evidence. They ran on dl380g10 within two minutes before its 2026-10-25 21:52Z panic. Their seven passes require replacement; the failure is a likely crash artifact. The correction supersedes evidence derived from those keys in the 22:00Z commit. [qualification-correction.json](qualification-correction.json) lists every excluded key, and [pending-actions.json](pending-actions.json) separates them from the recovered Core result.
 
-The replacement must use the same eight files in [prelaunch.json](prelaunch.json) on a new snapshot. It retains supervision, capability publication, semantic progress, budgets, ordinary sealing and the wire guard. Use the published `pbtest.py` in a transient user unit with an explicit deadline and the default eight clients. Do not reuse excluded cached receipts. Audit new terminal records, source bundles, both logs, native completion, retry lineage, cleanup and CAS receipts before updating the proposed merge acceptance.
+The replacement used the same eight files in [prelaunch.json](prelaunch.json) on a new snapshot. It retained supervision, capability publication, semantic progress, budgets, ordinary sealing and the wire guard. [Fresh qualification](fresh-qualification.json) records its audited results. No excluded cached receipt supports the replacement.
 
 ## Requirement scope and gates
 
@@ -48,4 +48,25 @@ The replacement must use the same eight files in [prelaunch.json](prelaunch.json
 | PRG-03 | Typed waits and named stalls; existing wait-credit owner retained. | No staged-reader campaign was run. |
 | LIVE-01 | Progress or bounded failure; source implementation and component checks are partial evidence. | No production, real GPU, daemon-load or NFS-fault qualification. |
 
-[merge-acceptance.json](merge-acceptance.json) is a proposed record, not merge authorization. Final fleet qualification and Principal Opus review remain required. The Principal owns merge, issue closure and release. #2023 stays separate; a later Core change requires fresh identity evidence. CAS records prove recorded bytes and re-readability, not power-loss durability.
+[merge-acceptance.json](merge-acceptance.json) is a proposed record, not merge authorization. Independent Principal Engineer review and merge remain required. The Principal owns merge, issue closure and release. #2023 stays separate; a later Core change requires fresh identity evidence. CAS records prove recorded bytes and re-readability, not power-loss durability.
+
+## Replacement qualification, 2026-10-26
+
+The initial replacement client refused forwarded `-q` before publishing a shard. Its earlier running claim is retracted. Corrected `--pytest-args '[]'` preserves the eight-file selection and lets pbtest supply quiet output and cache suppression.
+
+[Fresh qualification](fresh-qualification.json) records all eight current-head actions at `7a99877db04549daa7cd851e4ff44f2bb21c7c01`: 160 passed, one known wire-inventory fixture failure, zero skips. All eight terminal records, source bundles, both logs, native collected/finished/outcome populations and cleanup were audited. All seven successful actions have verified CAS receipts; the failing action has no success receipt. Each sealed snapshot has the exact declared source parent and no uncommitted path beyond PB's closure stamp. The excluded crash-era keys remain excluded.
+
+Current main `58e9a4fa327fa15aeaf21a734baf0c23a191e32c` is integrated at qualified source `b530faad8d8218fe7e9bb805cc94f399a81dfda1`. `git rebase --rebase-merges origin/main` completed with the same source commit and tree. The PR branch also includes current main. No behavior or test code changed after qualification.
+
+
+## Current-main qualification
+
+[Repeated qualification](repeated-qualification.json) records 95 distinct executed actions. All nine touched test files passed five times on x86 and five times on ARM. Rounds two and four used two pytest workers on each architecture. The repeated selection has 2,150 passes, no failures and no skips. Five integration files have 61 passes and the same unchanged wire-inventory fixture failure. The controller stopped on that integration failure and did not retry it.
+
+The primary audit verified every terminal record, sealed request, clean source parent, source bundle, both log hashes and sizes, native collection/outcome/teardown populations, and complete scope cleanup. All 94 successful actions have verified CAS receipts and payloads. Failed action `04e0dd88fd4ebbfc0eb24c820f7a9da4bfdd86032dcaea391aa45b59be6ff3b3` has no success receipt. The manifest binds the full audit and frozen plan by SHA-256 and lists every key and receipt.
+
+The launch used published `pbtest.py` from persistent user unit `pb-PRI-43-b530faad-repeats.service`, explicit 1200-second shard deadlines and default eight clients. Each shard declared two CPUs and four GiB, with one native thread per worker and no GPU. Maximum aggregate demand was 16 CPUs and 32 GiB. Architecture tags served the repository's repeated architecture gate.
+
+The frozen plan and raw reports remain under `/mnt/shared/paperclip-runs/PRI-43/`. The full read-only audit is `repeated-audit-b530faad.json`. To repeat the audit, pass the manifest's action keys to `tests/compat/support/audit_compat_actions.py` with `--expect-head b530faad8d8218fe7e9bb805cc94f399a81dfda1 --require-clean`, a fresh `--out` and task-owned `--git-store`. `summarize_qualification.py` checks coverage, architecture, xdist, resource declarations and distinct executed keys against the frozen plan and full audit.
+
+The known wire-inventory failure remains visible for Principal review. The fixture and assertion are unchanged. This qualification proves source components only. Deployment, production soak, real GPU behavior, Docker daemon loading, NFS faults and staged-read workload conformance remain unclaimed.
