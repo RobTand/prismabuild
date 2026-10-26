@@ -142,6 +142,11 @@ def _floor_boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
+def _owner_incarnation() -> dict[str, object]:
+    return {"machine_id": _machine_id(), "boot_id": _floor_boot_id(),
+            "mount_namespace": os.stat("/proc/self/ns/mnt").st_ino}
+
+
 def _statx_mount_id(fd: int) -> int:
     import ctypes
 
@@ -721,9 +726,8 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
         binding.update(
             status="active", status_detail=None, root=found["path"],
             fstype=found["fstype"], pool=found.get("pool"),
-            source=found.get("source"), boot_id=_floor_boot_id(),
-            mount_namespace=os.stat("/proc/self/ns/mnt").st_ino,
-            owner_host=socket.gethostname(), machine_id=_machine_id(),
+            source=found.get("source"), **_owner_incarnation(),
+            owner_host=socket.gethostname(),
             size_bytes=found["size_bytes"], server_addresses=_host_addresses())
         destination = {"root": found["path"], "source": found.get("source"),
                        "device": found["device"], "mount_id": found.get("mount_id")}
@@ -796,9 +800,8 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
     except (FloorError, OSError) as exc:
         return floor_refusal(key, "mapping_unknown", detail=str(exc))
     if (found["key"] != key or binding.get("source") != found.get("source")
-            or binding.get("machine_id") != _machine_id()
-            or binding.get("boot_id") != _floor_boot_id()
-            or binding.get("mount_namespace") != os.stat("/proc/self/ns/mnt").st_ino):
+            or any(binding.get(field) != value
+                   for field, value in _owner_incarnation().items())):
         detail = f"{binding['root']} is now {found['key']}"
         with floor_locked(directory) as acquired:
             current = _floor_read(directory / "binding.json") if acquired else None
@@ -1056,8 +1059,7 @@ def check_paths(queue_root, paths: Iterable, *, now: float | None = None
 def _nfs_bindings(found, known, now=None) -> list[dict]:
     """Resolve exact, effective export aliases from the binding authority."""
     identity = {"server": found["server"], "source": found.get("source"),
-                "machine_id": _machine_id(), "boot_id": _floor_boot_id(),
-                "mount_namespace": os.stat("/proc/self/ns/mnt").st_ino,
+                **_owner_incarnation(),
                 "device": found.get("device"), "mount_id": found.get("mount_id")}
     if not identity["mount_id"] or identity["device"] is None:
         return []
