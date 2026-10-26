@@ -5066,12 +5066,34 @@ leg's typed wait. Historical free-text failures are not reclassified.
 The leg-3 classification requires the exact submitted generation's verified
 immutable attempt stdout and its explicit `staging_wait` marker. The driver
 retains per-leg action keys and reasons in its run summary; a supporting
-publisher carries that summary in rollout detail. Bounded waits, progress,
-admission and activation are unchanged. No wait or missing evidence passes.
+publisher carries that summary in rollout detail. Progress, admission and
+activation retain their existing gates. No wait or missing evidence passes.
 This change requires rollout-verdict/interface review before merge/publication;
 source/component validation establishes neither deployment nor a live canary.
 The running fleet adopts these semantics only when a carrying generation is
 published.
+
+**Leg-3 observation patience (#1772).** A feasible higher-priority window may
+retain the same tier for longer than any finite canary observation budget.
+The canary therefore keeps observing its original leg-3 action after `pbwait`
+returns 75, using bounded 900-second observation intervals with no default
+total wait limit. Each interval records its observation before another begins.
+This repeats observation only: the driver neither resubmits the action nor
+changes its priority, sealed request, residency plan, reservations or attempts.
+An outcome-read failure (74), process observation timeout or terminal failure
+ends observation through the existing non-verification or failure path.
+Receipt, staged-serving and accepted-progress verification still decide success.
+
+Standalone `pbcanary --leg3-wait-s SECONDS` supplies one positive finite total
+observation budget, measured from the first observation and never renewed.
+Expiry is NOT VERIFIED and retains the action key; it implies neither
+withdrawal nor containment. Other legs retain their fixed waits. Leg 3's
+600-second execution deadline and staged-read progress allowances remain
+independent of admission patience. Cancellation stops the observer, not the
+submitted action. Qualification completes only if contention eventually drains
+and the action executes and verifies. A publisher waiting on leg 3 can retain
+its publication lock indefinitely; this policy requires release-owner review.
+Source validation of this repair supplies no live-canary or deployment proof.
 
 **Publisher GPU boundary slot (#1213; approved 2026-09-27).** The publication
 canary's single GPU leg targets the publisher's GPU host and is submitted before
