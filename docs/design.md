@@ -8109,26 +8109,43 @@ ledger owner. The exclusion does not span payload I/O. Private
 acquisitions stay charged throughout their separate begin/commit lifecycle.
 
 **The used-filesystem floor (#1483, default-off).** `begin_acquire` asks
-`filesystem_floor.ledger_gate` before taking byte-kind tokens (`spool_gb`,
-`stage_gib`, `filesystem_gib`). Inside the ledger's mutation section the
-gate takes the floor lock of each filesystem the demand is bound to --
-sorted, each with a bounded wait -- and admits only when the owner's
-published sample satisfies `free >= ceil(size/20) + census +
-grants-since-sample + demand`. Floor locks are innermost: a floor section
-acquires nothing else, and the owner's refresh holds only the floor lock,
-so the order `[AdmissionGate] -> ledger lock -> floor locks` has no cycle.
-Under the ledger lock the gate reads only the floor lock, the published
-sample and the grant counter; the mode and bindings come from a
-per-process cache the loop tick refreshes outside every lock, and no name
-resolution, `statvfs` or subprocess runs there. A refusal is the ledger's
-ordinary shortage (`None`, `last_token_shortage.resource ==
-"filesystem_floor"`), so every caller's existing shortage handling applies.
-Release, commit, abandon, transfer and sweep are unchanged and take no
-floor lock: they only lower the charge. With the mode `off` (the default)
-`begin_acquire` reads one cached mode value and is otherwise the old
-locked acquisition. Bindings, stable identity, refresh, used-path checks,
-coordinator growth and the bootstrap order are in
-[filesystem_floor.md](filesystem_floor.md).
+`filesystem_floor.ledger_gate` before taking `spool_gb`, `stage_gib`,
+`local_gib` or `filesystem_gib` tokens. The existing binding must carry an
+authority-supplied, expiring coverage snapshot for its exact mapping,
+closed writer/member population and complete growth bounds. Missing or
+changed coverage HOLDs. A declaration or an empty directory is no closure
+proof. The source adds no fleet mappings or second ledger.
+
+`ResourceLedger.floor_snapshot` counts private, committed, transferred and
+orphan holdings under the existing owner lock. It requires fresh, complete,
+disjoint minted/free/held/dead custody. `TierLedger` supplies its existing
+mint lock. Refresh first records the binding/coverage identity and grant
+position under the floor lock, publishing an incomplete-census HOLD. It then
+releases that lock and snapshots each owner separately. Its final floor
+section first fences out superseded refreshes, rechecks identities, samples
+capacity, and publishes whole snapshot
+charges plus every intervening grant and authority-bounded additional growth.
+A grant seen by both sources is conservatively counted twice. A failed or
+interrupted census never turns unknown holdings into zero.
+
+Admission checks `free >= ceil(size/20) + census + grants-since-sample + demand`
+and every registered subordinate dataset constraint. It persists each grant
+counter, including file and parent-directory fsync, before token mutation.
+Partial writes can overcharge until refresh; they cannot admit uncharged
+tokens. No materialization credit is accepted. The order remains
+`[AdmissionGate] -> ledger lock -> floor locks`; refresh never takes an owner
+lock under a floor lock. Release and transfer retain their existing owners.
+With mode `off`, this path performs the existing acquisition.
+
+Used-path checks refuse unknown local mappings and require an exact,
+authority-supplied NFS export alias bound to client boot, mount namespace,
+device and mount incarnation. A server address alone supplies no authority.
+Native identity uses descriptor `statx`, never `fdinfo` or kernel lock tables.
+Supervisor spool offers retain the aggregate headroom; movement and prewarm
+check resolved sources and created/reused destinations before publication.
+See [filesystem_floor.md](filesystem_floor.md) for coverage fields and limits.
+These are source mechanisms. Activation, live diagnostic authority and fleet
+publication remain gated by the accepted #2045 packet.
 
 The inode term (#1535) also requires `f_favail >= ceil(f_files / 20)`,
 with no fixed inode floor when the filesystem reports `f_files == 0`.
