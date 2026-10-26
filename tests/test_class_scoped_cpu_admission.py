@@ -103,6 +103,14 @@ def test_no_evidence_without_both_sides_on_file():
     assert pool.PoolQueue._excluded_from_cpu_hosts({"tags": ["gb10"]}, []) is False
 
 
+@pytest.mark.parametrize("fields", [{}, {"tags": None}, {"tags": "x86"},
+                                   {"tags": ["x86", None]}])
+def test_unknown_cpu_host_tags_cannot_establish_class_exclusion(fields):
+    cpu_offer = {"host": "cpu", "has_gpu": False, **fields}
+    assert not pool.PoolQueue._excluded_from_cpu_hosts(
+        {"tags": ["gb10"]}, [cpu_offer, _offers()[1]])
+
+
 def test_a_stale_cpu_offer_keeps_portable_work_portable():
     stale = {"host": "dl380g10", "has_gpu": False, "tags": ["x86"],
              "announced_unix": FIRST - 10000.0}
