@@ -50,4 +50,3 @@ def test_unsafe_local_rendezvous_still_refuses_ordinary_admission(
         result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=[row])
     assert result is None
     assert ledger.held_keys() == []
-

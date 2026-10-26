@@ -991,7 +991,7 @@ class PassCensus:
         self._busy: set[str] = set()
         self._foreign_refusals: dict[str, tuple[dict, int | float]] = {}
         self.ordinary_sources: dict = {}
-        self.ordinary_elections: dict[tuple[str, str], dict] = {}
+        self.ordinary_elections: dict[str, dict] = {}
 
     @property
     def census(self) -> dict | None:
@@ -1013,6 +1013,9 @@ class PassCensus:
                           elections=dict(census["elections"]))
             for chosen in self.ordinary_elections.values():
                 key = chosen["action_key"]
+                if (key not in census["elections"]
+                        and census["selections"].get(key) == chosen):
+                    continue
                 prior = census["elections"].get(key)
                 if (prior is None or (chosen["host"] == self._ledger.base.name
                         and (prior["host"] != self._ledger.base.name
@@ -1327,7 +1330,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                 for _, chosen in sources.values():
                     if chosen is not None:
                         pass_census.ordinary_elections.setdefault(
-                            (chosen["action_key"], chosen["generation"]), chosen)
+                            core.canonical_sha256(chosen), chosen)
                 if pass_census.census is not None:
                     pass_census.store(pass_census.census)
                 if saved is not None and census_reader.shared_is_current(saved):

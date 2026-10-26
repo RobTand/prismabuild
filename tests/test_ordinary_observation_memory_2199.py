@@ -195,4 +195,3 @@ def test_reused_complete_census_keeps_a_later_ordinary_observation(fleet, monkey
         assert reservation.blocking_selection(
             current, row, host=ledger.base.name, funded_by=None) == chosen
     assert ledger.held_keys() == []
-
