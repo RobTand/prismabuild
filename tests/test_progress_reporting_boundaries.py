@@ -1,14 +1,14 @@
 """Progress reports are untrusted input, and zero completed work is not work."""
+import builtins
+import io
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-from test_progress_keeps_a_working_action_alive import _policy, _run, pool, pb
+from test_progress_keeps_a_working_action_alive import _policy, pool, pb, _virtual_execution
 from prismabuild import contracts
 
 
@@ -48,26 +48,34 @@ def test_symlink_report_is_not_followed(tmp_path):
     assert watch.stall_deadline() == 10
 
 
-def test_fifo_report_cannot_block_the_watchdog(tmp_path):
+def test_fifo_report_cannot_block_the_watchdog(tmp_path, monkeypatch):
     watch = _watch(tmp_path)
     os.mkfifo(watch.path)
-    # The pre-fix read blocks on open; isolate only that read so this regression
-    # fails promptly and cleans up the exact child it created.
-    code = '''
-import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[2])
-from prismabuild import pool
-policy = pool.ProgressPolicy((pool.ProgressPhase("startup", 10, None),), None)
-watch = pool.ProgressWatch(Path(sys.argv[1]), "launch", policy, started=0)
-assert watch.sample(now=5) is False
-'''
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(watch.path),
-         str(Path(pool.__file__).resolve().parents[1])],
-        capture_output=True, text=True, timeout=3,
-    )
-    assert result.returncode == 0, result.stderr
+    # Refuse a blocking open at the syscall boundary before it can hang.
+    # Keep the real FIFO: safe inspection must reject it as non-regular.
+    native_open = os.open
+
+    def is_report(path):
+        return (isinstance(path, (str, bytes, os.PathLike))
+                and Path(os.fsdecode(path)).name == watch.path.name)
+
+    def guarded_open(path, flags, *args, **kwargs):
+        if is_report(path) and not flags & os.O_NONBLOCK:
+            raise AssertionError("watchdog attempted a blocking FIFO open")
+        return native_open(path, flags, *args, **kwargs)
+
+    def guard_stream(native):
+        def open_stream(path, *args, **kwargs):
+            if is_report(path):
+                raise AssertionError("watchdog attempted a blocking FIFO stream")
+            return native(path, *args, **kwargs)
+        return open_stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", guarded_open)
+        patch.setattr(builtins, "open", guard_stream(builtins.open))
+        patch.setattr(io, "open", guard_stream(io.open))
+        assert watch.sample(now=5) is False
 
 
 def test_first_zero_count_does_not_grant_a_second_startup_allowance(tmp_path):
@@ -99,34 +107,40 @@ def test_large_integer_report_does_not_crash_numeric_validation(tmp_path):
     assert watch.last_accepted["units_completed"] == 10**400
 
 
-def test_corrupt_report_ends_as_a_stall_with_terminal_evidence(tmp_path, monkeypatch):
-    import test_progress_keeps_a_working_action_alive as fixtures
+def test_corrupt_report_ends_as_a_stall_with_terminal_evidence(tmp_path):
+    def script(child):
+        Path(child.env[pb.ACTION_PROGRESS_PATH_ENV]).write_bytes(b"\xff")
+        yield 0.4
+        raise AssertionError("corrupt report renewed the allowance")
 
-    reporter = '''
-import os, time
-open(os.environ["PRISMABUILD_ACTION_PROGRESS_PATH"], "wb").write(b"\\xff")
-time.sleep(30)
-'''
-    monkeypatch.setattr(fixtures, "REPORTER", reporter)
-    outcome = _run(tmp_path, mode="unused", seconds=30, ceiling=5,
-                   policy=_policy(0.4))
+    with _virtual_execution(tmp_path, script, ceiling=5,
+                            policy=_policy(0.4)) as child:
+        outcome = child.execute()
+        assert child.stopped_at == 0.4
     assert outcome["status"] == "timeout"
     assert outcome["termination_reason"] == "no_progress"
     assert outcome["action_survived_kill"] is False
     assert outcome["progress_observation"]["accepted_count"] == 0
     assert outcome["progress_observation"]["rejected_count"] > 0
+    assert outcome["progress_observation"]["last_rejection"] == "unparsable"
 
 
-def test_completion_samples_the_final_report_before_removing_it(tmp_path):
-    from test_progress_keeps_a_working_action_alive import _claimed
+@pytest.mark.parametrize("earlier_sample", [False, True])
+def test_completion_samples_the_final_report_before_removing_it(tmp_path, earlier_sample):
+    def script(child):
+        if earlier_sample:
+            child.publish(1)
+            yield 0.1
+        child.publish(3)
 
-    queue, item = _claimed(tmp_path, mode="report", seconds=0.2,
-                           policy=_policy(60, 60, 60))
-    outcome = queue.execute(item, timeout_s=60, heartbeat_s=30,
-                            timeout_grace_s=0.2)
+    with _virtual_execution(tmp_path, script,
+                            policy=_policy(60, 60, 60)) as child:
+        outcome = child.execute()
+        path = Path(child.env[pb.ACTION_PROGRESS_PATH_ENV])
     assert outcome["status"] == "executed"
-    assert outcome["progress_observation"]["accepted_count"] == 1
-    assert outcome["progress_observation"]["last_accepted"]["units_completed"] >= 3
+    assert outcome["progress_observation"]["accepted_count"] == 1 + int(earlier_sample)
+    assert outcome["progress_observation"]["last_accepted"]["units_completed"] == 3
+    assert not path.exists()
 
 
 def test_unrepresentable_grace_is_a_contract_refusal():

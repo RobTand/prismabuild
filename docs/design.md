@@ -5777,6 +5777,12 @@ fail with `movement_refused` and `residency_overran_reservation`.
 
 ## Gang reservation (#1517, default off)
 
+Gang claim readers use the bounded replaceable-record reader. Scope preparation
+may atomically replace a claimed row while a sibling checks readiness or its
+start barrier. That replacement is an ordinary whole-record update. No-follow,
+regular-file, strict JSON, size and substantive-identity checks still apply;
+immutable group records keep the stable-file reader (#2247).
+
 A gang is N sealed actions (2..16), one per target host or host class, admitted
 together or not at all. Each member seals `params.gang = {group, size, index}`.
 Its row requires the worker tag `gang-v1`, which a worker offers only with
