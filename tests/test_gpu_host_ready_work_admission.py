@@ -118,6 +118,22 @@ def test_spark_pinned_cpu_is_unaffected(fleet, pin):
     assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
+def test_class_scoped_cpu_prerequisite_fits_beside_ready_gpu(fleet):
+    queue, publish, claim, _host = fleet
+    queue.announce(
+        host="dl380g10", tags=["x86", contracts.INTERPRETER_TAG],
+        has_gpu=False, capacity={"cpu": 8, "mem_gb": 32},
+        observed_capacity={"cpu": 8, "mem_gb": 32},
+    )
+    publish(CPU_KEY, tags=["gb10", contracts.INTERPRETER_TAG], priority=1)
+    publish(GPU_KEY, gpu=True)
+
+    claimed = claim()
+
+    assert claimed and claimed["action_key"] == CPU_KEY
+    assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
+
+
 @pytest.mark.parametrize("ineligible", [
     "wrong-tag", "wrong-class", "cpu", "memory", "gpu", "interpreter", "image",
 ])
