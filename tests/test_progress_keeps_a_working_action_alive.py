@@ -905,10 +905,10 @@ def test_status_says_how_quiet_a_progress_action_is_against_its_allowance(
     row = _claim_with(queue, "d" * 64, watch.as_record(now=53.0),
                       tmp_path=tmp_path)
 
-    assert row["progress_observation"] == "pricing quiet 41/900s (12 accepted)"
+    assert row["progress_observation"] == "pricing committed 12 anchor quiet 41/900s (12 accepted)"
     rendered = "\n".join(pbstatus.pool_job_lines([row], {"empty": False}))
     assert "PROGRESS" in rendered
-    assert "pricing quiet 41/900s (12 accepted)" in rendered
+    assert "pricing committed 12 anchor quiet 41/900s (12 accepted)" in rendered
 
 
 @pytest.mark.parametrize("field", ["owner", "host", "claimed_unix",
