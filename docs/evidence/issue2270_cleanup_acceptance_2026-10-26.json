@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "38f133ae1515c74775004a91980dd408716d38ab",
+  "ledger_commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
   "scope": [
     "SC-01",
     "ID-02",
@@ -20,107 +20,106 @@
   "merge": {
     "branch": "prismabuild-2270",
     "issue": "https://github.com/RobTand/prismabuild/issues/2270",
-    "source_commit": "38f133ae1515c74775004a91980dd408716d38ab",
+    "source_commit": "29909c8ff251f17d0edeac63baeb4a80e470e33a",
     "validated_repairs": [
       {
         "id": "SC-01",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "ID-02",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "ID-08",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "ID-09",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "SM-01",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "INV-01",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "INV-08",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "ACC-02",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       },
       {
         "id": "ACC-04",
         "actions": [
-          "5f440858fc11216ea40dc33bb8b7ba2bae2af8c76d6a624112bf6d1ff6e2e1ec",
-          "aab137ad5773ca778f08cf2477da2ef7c58c8889597b9962e625a1f9d8a69548",
-          "abcd21393a97fd12e82b6ebac7212bf7c06981053387c43e397eded59544c253",
-          "ae0b2569c17c6be9378388ce39ae4598cf7915adbbc6b67849905168a9bc5969"
+          "a401f8873e8e3efed314774174df382cf21573a8e923e2373699d3d0cceabc42",
+          "09045acffe5c52e2ff807ac4c937f49a64460835d022272b8b907b64f867148c",
+          "d2b8c33a489057c8fbe2f084a3949bfc486e86a56a6045bec0c343f6753d4a20",
+          "8564fc4f669dca014bd8c2490b4c7ff63b7efc921c07e7b91657d7188cd18ab2"
         ],
-        "outcome": "Rebased source:40 collected/executed tests per architecture across two shards; terminal/log/result-claim/receipt/payload checks passed. Source-identical repair also passed ten repeats and14 mutation controls; see validation record."
+        "outcome": "Current-main source29909c8ff2:40 collected/executed tests per architecture,301 nearby passes,zero failures/skips. All18 terminal/log/result-claim/receipt/payload checks passed. Earlier repair:ten40-pass repeats and14 mutation controls. See validation record."
       }
     ],
     "remaining_gaps": [
-      "Wire-inventory guard fails identically on candidate and frozen current main954e141715: two unpinned maintenance inventory entries. The nearby suite is300 passed/1 failed; it is not wholly green. Both earlier duplication guard failures are fixed on current main.",
       "External computation-adapter consumption of the cleanup supplement is untested in this repository.",
       "Reconciliation of the two historical live actions awaits Principal-reviewed runtime release and operator execution. This task forbids runtime publication and service restart.",
       "No end-to-end staged-read campaign,whole-requirement conformance or full worker-attestation verification is claimed.",
       "Immutable records and CAS receipts establish the observed commit/recovery boundaries; no power-loss durability experiment was run."
     ],
-    "note": "Scoped source merge candidate only; Principal Engineer standards/spec review and merge remain required. The code and tests of ten repair repetitions at b4e685681c are byte-identical to rebased38f133ae15. Native GitHub transport aligns shared files, merges current main, then replays the candidate; final remote tree equality must be verified. Whole-requirement axes remain unchanged; no staged-policy exception."
+    "note": "Scoped source merge candidate only; Principal standards/spec review and merge remain required. Earlier scratch and main-baseline failures are preserved as historical evidence, not current-source failures. Native GitHub publication must preserve pbmcp.py mode100755: file-blob equality alone does not pass the publication gate. Whole-requirement axes remain unchanged; no staged-policy exception."
   },
   "deploy": {
     "status": "not-this-step"
