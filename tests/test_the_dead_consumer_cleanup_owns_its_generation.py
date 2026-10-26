@@ -71,11 +71,14 @@ def test_a_stale_cleanup_cannot_cancel_the_resubmitted_generation(
     results: dict[str, object] = {}
     started: list[threading.Thread] = []
 
-    def resubmit() -> None:
+    def publish_resubmission() -> None:
         results["returncode"] = pbrun.main()
         # The submitter publishes the consumer alone; the loop publishes the
         # resubmitted generation's lead, the same cycle the fleet runs.
         submission._tier_cycle(queue, tmp_path / "stage")
+
+    def resubmit() -> None:
+        publish_resubmission()
         published.set()
 
     def observe_then_resubmit(q, consumer, **kwargs):
