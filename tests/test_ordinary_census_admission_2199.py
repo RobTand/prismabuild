@@ -23,13 +23,19 @@ def cache_clock(monkeypatch):
 
     class FenceDeadline:
         def __init__(self, seconds):
+            self.timeout_s = seconds
             self.expires = fence_clock.now + seconds
 
         def remaining(self):
             return self.expires - fence_clock.now
 
+    def bounded_with_reader_deadline(section, read, *, deadline, **kwargs):
+        return reader.bounded(section, read, deadline=reader.Deadline(deadline.timeout_s),
+                              **kwargs)
+
     monkeypatch.setattr(reservation, "reader", SimpleNamespace(
-        **{**vars(reader), "Deadline": FenceDeadline}))
+        **{**vars(reader), "Deadline": FenceDeadline,
+           "bounded": bounded_with_reader_deadline}))
     monkeypatch.setattr(reservation, "time", SimpleNamespace(
         monotonic=lambda: clock.now, time=time.time, sleep=fence_clock.advance))
     return clock
