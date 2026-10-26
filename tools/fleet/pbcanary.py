@@ -695,6 +695,22 @@ def _await_generation(label: str, generation: str | None, wait_s: int,
     time.sleep(min(15.0, max(1.0, deadline - time.monotonic())))
 
 
+def _wait_for_side(paths: dict, *, leg: str, label: str, action_key: str,
+                   wait_s: int, leg_dir: Path, file_tag: str) -> dict:
+    """Observe one submitted side and retain its wait record."""
+    try:
+        waited = wait_leg(paths, leg, action_key, int(wait_s))
+    except subprocess.TimeoutExpired as exc:
+        raise _SideUnverified(
+            f"{label} outcome observation timed out for {action_key}: {exc}",
+            action_key, "outcome_unobserved") from exc
+    write_json(leg_dir / f"pbwait{file_tag}.json",
+               {"returncode": waited["returncode"],
+                "record": waited["record"],
+                "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
+    return waited
+
+
 def _execute_side(
     paths: dict, *, leg: str, spec: dict, argv: list[str] | None,
     checkout: Path, run_id: str, generation: str | None, priority: int,
@@ -756,16 +772,9 @@ def _execute_side(
     write_json(leg_dir / f"detach{file_tag}.json", detach)
     short = action_key[:12]
 
-    try:
-        waited = wait_leg(paths, leg, action_key, int(wait_s))
-    except subprocess.TimeoutExpired as exc:
-        raise _SideUnverified(
-            f"{label} outcome observation timed out for {action_key}: {exc}",
-            action_key, "outcome_unobserved") from exc
-    write_json(leg_dir / f"pbwait{file_tag}.json",
-               {"returncode": waited["returncode"],
-                "record": waited["record"],
-                "stderr_tail": waited["stderr"].strip().splitlines()[-3:]})
+    waited = _wait_for_side(
+        paths, leg=leg, label=label, action_key=action_key, wait_s=wait_s,
+        leg_dir=leg_dir, file_tag=file_tag)
     if waited["returncode"] != 0:
         tail = (waited["stderr"].strip().splitlines() or ["no stderr"])[-1]
         if waited["returncode"] in (74, 75):
