@@ -211,6 +211,7 @@ from .materialize import (  # relocated verbatim; see materialize.py
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
 from . import adaptive_gpu as gpu_admission
+from . import gpu_runtime_gate
 from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, UnifiedMemoryEvidence,
                                device_identity, is_nonnegative_number, memory_counters,
                                unified_memory_evidence)
@@ -5425,6 +5426,7 @@ class _QualifiedClaim:
     scratch_intent: dict[str, object] | None
     dependent_owner: object
     reservation: _ClaimReservation
+    runtime_probe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -5436,6 +5438,7 @@ class _HostClaimRequest:
     contract: object
     scratch_evidence: dict[str, object] | None
     scratch_boundary: tuple[float, float, object, object] | None
+    runtime_probe: str | None = None
     cpu_guest: bool = False
 
 
@@ -5959,6 +5962,8 @@ class PoolQueue:
         fields: the loop's own gate check is what stops it claiming.
         """
 
+        observed_capacity, observed_detail = gpu_runtime_gate.runtime_fenced_offer(
+            dict(observed_capacity or {}), dict(observed_detail or {}))
         record = {
             "schema": POOL_OFFER_SCHEMA_V1,
             "host": host,
@@ -6014,6 +6019,7 @@ class PoolQueue:
         directory = self.records.worker_directory()
         directory.mkdir(parents=True, exist_ok=True)
         self.records.replace_record_at(self.records.worker_offer_path(host), record)
+        gpu_runtime_gate.runtime_offer_published(record)
 
     def _offer_records(self) -> list[dict[str, object]]:
         directory = self.records.worker_directory()
@@ -7473,6 +7479,8 @@ class PoolQueue:
         binds nothing.
         """
 
+        if gpu_runtime_gate.runtime_gate_state() is not None:
+            return None
         try:
             if gpu_controller is not None:
                 sample = _gpu_sample_for(gpu_controller, {"gpu": 1})  # type: ignore[arg-type]
@@ -16060,6 +16068,9 @@ class PoolQueue:
         overflow must not keep refilling a host while eligible GPU work waits.
         Ordinary GPU admission still decides whether the row can claim now.
         """
+        if gpu_runtime_gate.runtime_gate_state() is not None:
+            # A fenced GPU row cannot withhold CPU work for this host (#1895).
+            return None
         def local_capabilities():
             host = socket.gethostname()
             local = capability_eligibility.OfferCapabilities.from_offer(
@@ -17107,6 +17118,13 @@ class PoolQueue:
             self.record_denial(item, "malformed_tier_demand", {
                 "demand": sealed_demand, "error": str(exc)})
             return scan
+        runtime_probe = None
+        if demand.get("gpu") and gpu_runtime_gate.runtime_gate_state() is not None:
+            runtime_probe = gpu_runtime_gate.runtime_probe_identity(item)
+            fence = gpu_runtime_gate.runtime_claim_fence(runtime_probe)
+            if fence is not None:
+                return candidate_policy.CandidateDenial(
+                    gpu_runtime_gate.gpu_capacity.RUNTIME_REASON, fence, scan)
         admission_refusal = candidate_policy.admission_denial(
             demand, capacity_present=capacity is not None)
         if admission_refusal is not None:
@@ -17159,7 +17177,7 @@ class PoolQueue:
             residency=residency, declared_images=declared_images,
             class_verdict=class_verdict, canary_exempt=canary_exempt,
             scratch_intent=scratch_intent, dependent_owner=dependent_owner,
-            reservation=reservation)
+            reservation=reservation, runtime_probe=runtime_probe)
 
     def _prepare_host_claim(
         self, candidate: _QualifiedClaim, scan: candidate_policy.ScanOrder, *,
@@ -17179,6 +17197,7 @@ class PoolQueue:
         allowance = None
         dependent_owner = candidate.dependent_owner
         scratch_evidence = scratch_boundary = None
+        runtime_probe = candidate.runtime_probe
         if memory is not None:
             refusal = memory.denial(demand, scan, unknown_only=True)
             if refusal is not None:
@@ -17275,7 +17294,7 @@ class PoolQueue:
                 return refusal
         return _HostClaimRequest(
             candidate=candidate, identity=identity, allowance=allowance,
-            dependent_owner=dependent_owner, contract=contract,
+            dependent_owner=dependent_owner, contract=contract, runtime_probe=runtime_probe,
             scratch_evidence=scratch_evidence, scratch_boundary=scratch_boundary,
             cpu_guest=cpu_guest)
 
@@ -17348,6 +17367,7 @@ class PoolQueue:
         backfill_binding = None
         backfill_eligible = None
         from . import movement_actions, _measurement_reservation as measurement_reservation
+        census = measurement_reservation.runtime_reservation_census(census, ledger)
         reservation_now = _now()
         reservation_authority = (
             copy_authority and measurement_reservation.movement_drained(
@@ -17566,6 +17586,12 @@ class PoolQueue:
                 0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                 and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
             refused = scratch_expired or scratch_changed
+        if demand.get("gpu"):
+            fence = gpu_runtime_gate.runtime_claim_fence(request.runtime_probe)
+            if fence is not None:
+                refused = True
+                refusal_source = gpu_runtime_gate.gpu_capacity.RUNTIME_REASON
+                gpu_decision = fence
         if controller is not None and not refused:
             adaptive = controller.decision(
                 item, demand, identity=identity, owner=dependent_owner,
@@ -17738,6 +17764,9 @@ class PoolQueue:
             changed=scratch_changed, expired=scratch_expired)
         if scratch_refusal is not None:
             self.record_denial(item, scratch_refusal)
+            return _RefusalAccounting(scan, preempted)
+        if refused and refusal_source == gpu_runtime_gate.gpu_capacity.RUNTIME_REASON:
+            self.record_denial(item, refusal_source, gpu_decision)
             return _RefusalAccounting(scan, preempted)
         if refused:
             # Aging is shared diagnostic/fairness bookkeeping, not
@@ -18865,6 +18894,10 @@ class PoolQueue:
         return _OpenClaimRow(key, held_back)
 
     def _refuse_busy_row(self, item, opening: _OpenClaimRow, scan, scan_pass: _ClaimScan):
+        fence = gpu_runtime_gate.runtime_gate_state()
+        if fence is not None and self._demands_withheld_kind(item, frozenset({"gpu"})):
+            self.record_denial(item, gpu_runtime_gate.gpu_capacity.RUNTIME_REASON, fence)
+            return scan
         key = opening.key
         reads = scan_pass.reads
         gpu_first = scan_pass.gpu_first
@@ -22130,6 +22163,16 @@ class PoolQueue:
                                 else None)))
                     except Exception as exc:          # noqa: BLE001
                         outcome["dependents_error"] = repr(exc)
+                if scope is not None and gpu_runtime_gate.gpu_capacity.runtime_fence_enabled():
+                    try:
+                        fault = scope.container_host_fault()
+                        if fault is not None:
+                            outcome["host_fault"] = fault
+                            if outcome.get("status") == "failed" and not outcome.get("termination_reason"):
+                                outcome["termination_reason"] = (
+                                    f"host_fault: {fault['reason']}/{fault['subtype']}")
+                    except (OSError, ValueError) as exc:
+                        outcome["container_launch_outcome_error"] = str(exc)
                 framebuffer = getattr(scope, "_framebuffer_window", None)
                 if isinstance(framebuffer, box_window.DiscreteFramebufferWindow):
                     group = framebuffer.group()

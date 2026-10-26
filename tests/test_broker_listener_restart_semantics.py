@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Run the actual main, replacing only privileged startup and the sampler.
 BROKER_MAIN_PROBE = r'''
-import importlib.util, os, selectors, signal, subprocess, sys, threading
+import contextlib, importlib.util, os, selectors, signal, subprocess, sys, threading
 from pathlib import Path
+from types import SimpleNamespace
 spec = importlib.util.spec_from_file_location('probe_broker', sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -28,6 +29,7 @@ result = sys.argv[8]
 class Authority:
     def __init__(self, *args, **kwargs):
         self.installation_paths = {}; self.installed_sha256 = {}; self.child = None
+        self.runtime = None
     def run(self, uid, pid, request, stdio):
         code = "import os,pathlib,sys; os.read(int(sys.argv[1]),1); pathlib.Path(sys.argv[3]).write_text('completed'); os.write(int(sys.argv[2]),b'C')"
         self.child = subprocess.Popen([sys.executable, '-c', code, str(gate), str(completed), result],
@@ -69,7 +71,8 @@ class ObservedSelector(base_selector):
 selectors.DefaultSelector = ObservedSelector
 m.Authority = Authority
 m.ResourceMonitor = Monitor
-m._load_gpu_module = lambda *a, **k: None
+m._load_gpu_module = lambda *a, **k: SimpleNamespace(runtime_fence_enabled=lambda: False)
+m.broker_lifetime_lock = lambda path: contextlib.nullcontext()
 m._trusted_file = lambda path: Path(m.__file__)
 m.os.geteuid = lambda: 0
 m.os.chown = lambda *a: None
