@@ -3,9 +3,9 @@
   "issue": 1707,
   "pull_request": "https://github.com/RobTand/prismabuild/pull/2069",
   "branch": "prismabuild-1707-v2",
-  "source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
-  "source_tree": "aac49fca3e448af5078a3428bca3ef97617686e5",
-  "base_commit": "58e9a4fa327fa15aeaf21a734baf0c23a191e32c",
+  "source_commit": "c2d936953b1746cc0f2f0cf1df4ad8089aeaf293",
+  "source_tree": "76530683da5a7f3960435b519869b4e6d9993ea5",
+  "base_commit": "defc5bd8467f009c9ea7935678e31e282e46d7a1",
   "base_is_ancestor": true,
   "compatibility_conflicts_resolved": 3,
   "core": {
@@ -13,9 +13,11 @@
     "sha256": "e6b9e79b40c45863d78c437237ea7388371a27842087f88dc8e9272217a2749e"
   },
   "delivery": "GitHub connector base update integrated current main. Remaining differences from the qualified checkpoint are evidence documents only. Final delivery SHA and full tree equality are recorded on the task after upload.",
-  "qualification": "95 distinct current-main actions audited: 2,211 passed, one known baseline wire-inventory failure, zero skips; five rounds per architecture including two xdist rounds each. No behavior or test code changes follow qualification.",
+  "qualification": "95 distinct actions at b530faad audited: 2,211 passed, one known baseline wire-inventory failure, zero skips; five rounds per architecture including two xdist rounds each. Later upstream #2309 canary changes do not overlap PR-owned code, tests or compatibility bytes; no new canary test execution is claimed.",
   "runtime_publication": false,
   "service_restart": false,
-  "remote_integrated_source_commit": "13c026a1e1dc541c62777cda69a5db98adc059c3",
-  "rebase": "git rebase --rebase-merges origin/main; source commit and full tree unchanged"
+  "remote_integrated_source_commit": "21d1f0dbb964ed7a2ca64a1bd4ed0853ae591abc",
+  "rebase": "git rebase --rebase-merges origin/main; source commit and full tree unchanged",
+  "validated_source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
+  "integration_comparison": "integration-comparison.json"
 }

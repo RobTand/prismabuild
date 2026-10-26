@@ -56,7 +56,7 @@ The initial replacement client refused forwarded `-q` before publishing a shard.
 
 [Fresh qualification](fresh-qualification.json) records all eight current-head actions at `7a99877db04549daa7cd851e4ff44f2bb21c7c01`: 160 passed, one known wire-inventory fixture failure, zero skips. All eight terminal records, source bundles, both logs, native collected/finished/outcome populations and cleanup were audited. All seven successful actions have verified CAS receipts; the failing action has no success receipt. Each sealed snapshot has the exact declared source parent and no uncommitted path beyond PB's closure stamp. The excluded crash-era keys remain excluded.
 
-Current main `58e9a4fa327fa15aeaf21a734baf0c23a191e32c` is integrated at qualified source `b530faad8d8218fe7e9bb805cc94f399a81dfda1`. `git rebase --rebase-merges origin/main` completed with the same source commit and tree. The PR branch also includes current main. No behavior or test code changed after qualification.
+Qualification base `58e9a4fa327fa15aeaf21a734baf0c23a191e32c` is integrated at qualified source `b530faad8d8218fe7e9bb805cc94f399a81dfda1`. `git rebase --rebase-merges origin/main` completed with the same source commit and tree. The PR branch also includes current main. No PR-owned supervision code or test changed after qualification.
 
 
 ## Current-main qualification
@@ -70,3 +70,5 @@ The launch used published `pbtest.py` from persistent user unit `pb-PRI-43-b530f
 The frozen plan and raw reports remain under `/mnt/shared/paperclip-runs/PRI-43/`. The full read-only audit is `repeated-audit-b530faad.json`. To repeat the audit, pass the manifest's action keys to `tests/compat/support/audit_compat_actions.py` with `--expect-head b530faad8d8218fe7e9bb805cc94f399a81dfda1 --require-clean`, a fresh `--out` and task-owned `--git-store`. `summarize_qualification.py` checks coverage, architecture, xdist, resource declarations and distinct executed keys against the frozen plan and full audit.
 
 The known wire-inventory failure remains visible for Principal review. The fixture and assertion are unchanged. This qualification proves source components only. Deployment, production soak, real GPU behavior, Docker daemon loading, NFS faults and staged-read workload conformance remain unclaimed.
+
+Current main `defc5bd8467f009c9ea7935678e31e282e46d7a1` is now integrated and rebased. Its later #2309 merge changes seven canary-only paths. [Integration comparison](integration-comparison.json) verifies that every PR-owned product, test and compatibility blob equals qualified `b530faad`. No additional canary test execution is claimed here.

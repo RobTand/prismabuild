@@ -160,16 +160,18 @@
       "ID-08: the candidate has not been deployed. No new generation or service restart is authorized here.",
       "SM-01 and PRG-03: existing containment, cleanup, typed-wait and retry owners remain; component regressions do not establish the whole staged-read contract.",
       "INV-09: fallback activity counters do not certify durable work; semantic ProgressWatch remains unchanged. Whole-requirement validation and workload proof stay owed.",
-      "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. The candidate has the same failure; no fixture or assertion is weakened."
+      "Unchanged-main guard failure: test_wire_inventory.py::test_closed_field_sets_remain_pinned; baseline action e20895da5295c81770c8d1cca04dd19227a4e37441da191cd6e99c1e2f31d17c on 0f71df9164. The candidate has the same failure; no fixture or assertion is weakened.",
+      "Main advanced after qualification through #2309, changing seven canary-only paths. All PR-owned product, test and compatibility bytes equal qualified b530faad. integration-comparison.json records exact blobs. No additional canary test execution is claimed."
     ],
     "note": "PROPOSED ONLY. Replacement, current-main integration and repeated-run evidence are audited. Independent Principal Engineer review and merge remain pending. Excluded crash-era actions confer no evidence. No deployment or campaign completion is claimed; CAS receipts do not establish power-loss durability.",
     "source_delivery": {
       "record": "source-delivery.json",
       "validated_source_commit": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
-      "current_main": "58e9a4fa327fa15aeaf21a734baf0c23a191e32c",
+      "current_main": "defc5bd8467f009c9ea7935678e31e282e46d7a1",
       "base_is_ancestor": true,
       "rebase": "git rebase --rebase-merges origin/main completed with unchanged source tree",
-      "delivery": "GitHub connector integrated current main; evidence-only delivery is verified externally after committing this record"
+      "delivery": "GitHub connector integrated current main; evidence-only delivery is verified externally after committing this record",
+      "integration_comparison": "integration-comparison.json"
     }
   },
   "deploy": {
