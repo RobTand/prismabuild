@@ -1197,7 +1197,8 @@ epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
 503. An old bell's 404 or a partial topic set requires degraded recovery.
 
 V2 covers `ready`, `claimed`, `done`, `failed`, `withdrawn`, `deferred`, `intent`,
-`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940).
+`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940),
+and `adaptive`, `claim-denials`, `passes` and `denial-transitions` (#1941).
 Outcome IDs are lowercase 64-hex action keys. Host IDs preserve the exact store
 spelling, including dots, with at most 128 ASCII letters, digits, dots,
 underscores or hyphens and a leading letter or digit. Later adapters declare their own bounded ID
@@ -1229,7 +1230,7 @@ changes and removal. `reservations` observes each host root, `free`, `minted`,
 `.gpu.json` metadata. Private acquisitions, rollback and release can wake a
 host subscriber without any ready or terminal activity. Populated moved-in
 holders install watches before scanning. Traversal stops at holder contents;
-host adaptive mirrors, passes and denial topics require later slices.
+host adaptive mirrors are bounded separately as described below.
 Hidden and unknown holder directories use the `HolderCensus` enumeration and
 each add one watch. Reconstruction also retains all symlinks for rejection
 before checking directory membership. Every immediate holder entry invalidates
@@ -1268,6 +1269,44 @@ new generation dirty until another read confirms it within that same deadline.
 Run these reads outside admission and transition
 locks. The recorded offer expiry remains 120 seconds and is a separate consumer
 deadline. This source slice activates no consumer and adds no periodic discovery.
+
+Slice 2b adds fixed mirror filenames below `reservations/<host>/adaptive`.
+`adaptive` includes mirror changes and `publisher-result.json` completion;
+`claim-denials` isolates the latest-refusal file. Both use exact host IDs and
+observe parent removal. `passes` and `denial-transitions` use action IDs and
+flat `<key>.json` sidecars. In-place writes, replacement, removal and populated
+move-in are observed. Unsafe byte-read shapes withdraw coverage. These are
+source capabilities until the Principal Engineer publishes a reviewed runtime.
+Verify all required topics on the actual endpoint before enabling a consumer.
+
+`LocalMirrorPublisher` is available for explicit host-hub ownership in slice 7.
+It is not installed by existing worker loops. Its local observer singleton
+watches source changes and copy completion, and its context manager joins the
+observer at close. An active copy retains its original publication flock until
+process exit. Inspect its `invalidations`, `starts`, `completed`, `failed`,
+`source_failures`, `coalesced`, `dirty` and `retry_at` diagnostics. The fixed
+source set comes from `adaptive_snapshot.FILES` and the existing configured
+local/shared paths. Confirmed removals retire mirrors. Unreadable or replaced
+source roots remain unknown. Equal payloads create no shared rewrite.
+
+Dirty publication waits until the previous start plus one second. Copy failure
+and unavailable local-source recovery use 0.25 seconds doubling to five seconds,
+cancelled by source change, recovery or close. A verified older owner uses pidfd;
+an unknown legacy owner uses nonblocking 50-millisecond-to-one-second retry,
+cancelled by owner/result notification, clean state or close. A clean observer
+has no recurring deadline. These timers neither extend active-copy ownership
+nor change placement or drain maturity.
+
+Later consumers use `InputChanges` after authoritative reads to coalesce
+identical observations and their own evaluated writes. Keep evidence state and
+proof maturity in the observation, even if capacity rounds to the same value.
+Use the existing 5-second CPU and GPU and 120-second offer evidence horizons.
+`peer_evidence_deadlines` returns future wall-clock expiries, without a #1262
+policy timeout. Each expiry is consumed once. Healthy transport renewals do not
+request discovery. Inspect `changed`, `coalesced`, `expired`, `read_attempts`
+and `visibility_retries` alongside bell coverage diagnostics. Unconfirmed NFS
+visibility keeps its dirty ID and original 50-millisecond-to-one-second recovery
+budget. This slice adds no recurring consumer timer or live worker activation.
 
 The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
 one-second connect deadline and absolute five-second server I/O budget retain
@@ -4735,6 +4774,12 @@ publication flock. For an absent or stale copy, inspect `publisher-owner.json`
 `<digest>.adaptive-cpu-v1` directory. Compare nonces before attributing a result.
 No publication timeout establishes process exit or authorizes deleting locks.
 Other shared claim operations remain exposed to a degraded mount.
+
+The additive slice-2b `LocalMirrorPublisher` session is available for future
+host-hub installation. Existing worker loops retain the one-shot path above.
+The bell v2 operating section documents observer ownership, completion and
+recovery diagnostics, deadlines and cancellation. Source support does not
+establish that a live worker installed the session.
 
 A measurement with missing, stale, future-dated or incomplete CPU telemetry
 is refused as `measurement_sampler_unknown` (`fresh: false`,

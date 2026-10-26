@@ -6476,6 +6476,11 @@ The child captures the local file signature before copying and records it only
 as successful after completion, so a concurrent state update stays pending.
 These file identities are diagnostic retry hints, never admission authority.
 
+Slice 2b also supplies an explicitly owned `LocalMirrorPublisher` session for
+future host-hub installation. Existing workers keep the one-shot publisher.
+The [queue-hint contract](#queue-change-hints-on-the-queue-host-1894) documents
+its watch ownership, completion marker, recovery bounds and shutdown behavior.
+
 The files under `reservations/<host>/adaptive/` are independent diagnostic
 copies. The CPU and GPU copies add `_snapshot.source=host-local` and a copy
 timestamp, but retain the original `sampled_unix`. `pbstatus` and `pbmetrics` classify
@@ -10315,8 +10320,8 @@ each with a lowercase 64-hex action ID. The `Topic` declaration
 owns each topic's ID grammar and legacy projection. `OutcomeNamespaces` owns
 its bounded traversal and names-only mapping. Later mutation families must add
 a separate bounded adapter and an explicit topic declaration before advertising
-coverage. The host adapters below add `workers` and `reservations`. Tier,
-residency, adaptive mirrors, passes, denials and prewarm remain uncovered.
+coverage. The adapters below add `workers`, `reservations`, `adaptive`, `claim-denials`,
+`passes` and `denial-transitions`. Tier, residency and prewarm remain uncovered.
 Topic names are at most 64 characters; IDs are at most 128. A request admits at
 most 32 topic entries and 128 ID entries, including duplicates. Paths and
 noncanonical IDs are rejected with HTTP 400. Unknown syntactically valid topics
@@ -10434,6 +10439,82 @@ Callers must use their existing bounded reader outside admission and transition
 locks. This adapter helper does not activate any worker wait loop. Later consumer
 slices own the separate 0.25-to-five-second unavailable-bell recovery, cancelled
 by stop or recovered complete coverage. This slice adds no recurring timer.
+
+Slice 2b (#1941) adds `adaptive` and `claim-denials` with exact host IDs,
+plus `passes` and `denial-transitions` with action IDs. `AdaptiveInputs` bounds
+traversal to `reservations/<host>/adaptive` and the published mirror filenames.
+`ClaimDenials` shares those watches but emits a separate topic for
+`claim-denials.json`. A host or adaptive-directory removal invalidates both
+subscriptions. `passes/<key>.json` and `denial-transitions/<key>.json` are flat
+sidecars addressed by the existing record store. The shared
+`adaptive/publisher-result.json` completion marker also invalidates `adaptive`.
+The same watch-before-scan, inode checks, in-place mutation, populated move-in,
+coverage withdrawal and overflow reconstruction rules apply. The bell still
+reads no record bodies, and v1 receives no new topic events.
+
+`queue_bell_input_shapes` owns coverage checks separately from topic naming.
+`DirtyHostInputs` also retains `adaptive` and `claim-denials` invalidations
+through confirmed NFS reads within their original budget. Per-action sidecars
+continue to use the existing bounded action readers. No hint establishes an
+absence, refusal or capacity verdict.
+
+`adaptive_mirrors.LocalMirrorPublisher` supplies an explicitly owned local
+publication session. It watches the configured source directory and its parent
+before observing the fixed source files. Its observer flock permits one session
+per local state directory. Dirty source state survives the existing one-second
+start deadline and changes during a copy. The context manager owns and joins
+its observer thread; a host loop can instead use `reconcile()` and `descriptors`.
+Known older publishers are watched through verified PID/start ticks and pidfd.
+An already exited owner cannot be reused as a wake source. Kernel overflow
+replaces the local watch descriptor and installs fresh parent/source watches
+before reconciling the fixed source set. Closing the observer
+leaves an outstanding copy's independent flock intact until actual process exit.
+Existing workers retain their one-shot publication. The host hub owns session
+installation in slice 7.
+
+Copies retain source timestamps. Confirmed source removal removes its shared
+mirror; source-directory identity loss or unreadable evidence remains unknown.
+Shared deduplication uses the existing bounded no-follow regular-file reader,
+with the current canonical source size plus 128 bytes for snapshot metadata.
+A larger previous regular record is unequal and can be replaced, so a shrinking
+profile remains publishable. Byte-equivalent replacements acknowledge the local signature without another
+shared payload or completion write. Changed freshness and proof fields still
+copy. The shared completion marker follows payload changes, removals, initial
+publication, failure or recovery, and records `nonce`, `status`, `changed_files`
+and `finished_unix`. A marker failure cannot report local success. Counters
+report invalidations, coalescing, starts, completions, failures and source failures.
+A healthy clean observer has no timer. An empty local source is clean only
+when there is no prior result or the last publication successfully copied that
+empty source. A failed removal or completion-marker write retains its retry
+even with an empty or absent recorded signature. Dirty work arms the previous
+start plus one second. Copy or unavailable local-source recovery uses 0.25 seconds doubling
+to five seconds, no earlier than that start deadline, cancelled by source change,
+recovery or close. A successful copy resets the next copy-recovery delay to
+0.25 seconds. An unknown legacy lock owner uses nonblocking attempts after
+50 milliseconds doubling to one second until owner/result notification, clean
+state or close. This introduces no new blocking-operation or policy deadline.
+
+`queue_bell_input_changes.InputChanges` compares detached authoritative reader
+observations. Each observation carries semantic meaning, explicit evidence
+state and absolute deadlines. Unknown, absent, stale and fresh evidence remain
+distinct. A consumer records its own completed evaluation with `own_write=True`
+before consuming its resulting hints. That updates its comparison baseline
+without requesting another claim scan. Timestamp-only rewrites can move an
+evidence deadline without changing the meaning. The schema-specific projections
+omit diagnostic denial timestamps, pass-update timestamps and mirror-copy stamps.
+Adaptive projections retain counter histories and learned proof state; denial
+transitions retain history and changes to the latest reason, including a flap
+to an earlier reason. Consumers supply freshness and proof maturity even when
+rounded capacity is unchanged. Aggregate counters report changed, coalesced and
+expired inputs. Consumers discard observations when their interests retire.
+
+`peer_evidence_deadlines` uses the existing 5-second CPU and GPU freshness and
+120-second offer horizons. It returns only future evidence expiries in the wall
+clock, just past the inclusive policy horizon. Consumers convert those values
+to their wait clock when arming. Expiry is consumed once and is not a periodic
+claim tick. #1262 gains no policy timeout. This source slice supplies the
+comparison and publication components for the later host hub; it activates no
+worker wait loop and proves no deployed callback coverage.
 
 A selector blocks on inotify, listener sockets and a shutdown socket. Each
 request selects its filtered notification socket and client connection, so a

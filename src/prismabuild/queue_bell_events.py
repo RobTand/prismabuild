@@ -14,7 +14,9 @@ import time
 import uuid
 
 from .queue_bell import Cursor, MAX_WAIT_S, REQUIRED_STATE_DIRS
-from .queue_bell_topics import OutcomeNamespaces, WorkerOffers, HostReservations, HostInputShapes, TOPICS
+from .queue_bell_topics import (OutcomeNamespaces, WorkerOffers, HostReservations,
+                                AdaptiveInputs, ClaimDenials, TOPICS)
+from .queue_bell_input_shapes import HostInputShapes
 
 IN_MODIFY = 0x00000002
 IN_ATTRIB = 0x00000004
@@ -200,7 +202,8 @@ class InotifyQueue:
             raise OSError(ctypes.get_errno(), "inotify_init1")
         self.directories = {}
         self.root_watches = {}
-        self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations())
+        self.adapters = (OutcomeNamespaces(), WorkerOffers(), HostReservations(),
+                         AdaptiveInputs(), ClaimDenials())
         self.absent_roots = set()
         self.incomplete_topics = set()
         self.file_watches = {}
@@ -469,6 +472,8 @@ class InotifyQueue:
                 # coverage without retaining watches on those old inodes.
                 self._drop_host_tree(Path("workers"))
                 self._drop_host_tree(Path("reservations"))
+                for directory in AdaptiveInputs.action_directories:
+                    self._drop_host_tree(Path(directory))
                 self._tree(Path(), ring)  # Overflow may have hidden mkdir events.
                 ring.set_coverage(self.covered_topics)
                 continue
