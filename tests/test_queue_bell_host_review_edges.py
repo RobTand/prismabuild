@@ -10,7 +10,7 @@ import pytest
 
 from prismabuild import adaptive_cpu, holder_census, pool, queue_bell
 from prismabuild import queue_bell_events as events
-from prismabuild.queue_bell_host_reads import DirtyHostInputs
+from prismabuild.queue_bell_input_reads import DirtyInputs
 
 
 def make_root(tmp_path):
@@ -194,7 +194,7 @@ def test_rebound_descriptor_survives_old_self_events(tmp_path, stale_mask):
 
 @pytest.mark.parametrize("confirmed_first", [True, False])
 def test_generation_keeps_concurrent_hint_and_original_deadline(confirmed_first):
-    pending = DirtyHostInputs()
+    pending = DirtyInputs()
     deadline = time.monotonic() + 4
     pending.invalidate("workers", "worker.lab", deadline=deadline)
     entered, updated = threading.Event(), threading.Event()
