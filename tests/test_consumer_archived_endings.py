@@ -108,3 +108,36 @@ def test_archive_log_digest_is_verified(consumer_world, monkeypatch, stream):
     row = _wait(consumer_world, key, first)
     assert row["status"] == "unreadable"
     assert f"pool attempt {stream} refused" in row["reason"]
+
+
+def test_archive_cannot_verify_without_stderr_metadata(consumer_world, monkeypatch):
+    key, first, _ = _overwritten_success(consumer_world, monkeypatch)
+    source = consumer_world.queue.records.attempt_path(first, 1)
+    selected = json.loads(source.read_bytes())
+    del selected["logs"]["stderr"]
+    source.chmod(0o600)
+    source.write_bytes(pb._canonical_file_bytes(selected))
+    source.chmod(0o444)
+    row = _wait(consumer_world, key, first)
+    assert row["status"] == "unreadable"
+    assert "no stderr log" in row["reason"]
+
+
+def test_archive_handoff_prefix_does_not_authorize_a_missing_retry(tmp_path, monkeypatch):
+    from test_preemption_review_boundaries import setup_holder
+
+    monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("shape", False))
+    queue, background, foreground, holder = setup_holder(tmp_path)
+    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is None
+    queue.finish(background, status="withdrawn", claim_snapshot=holder)
+    claim = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    queue.finish(foreground, status="executed", claim_snapshot=claim)
+    retry = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    queue.finish(background, status="failed", detail={"returncode": 1}, claim_snapshot=retry)
+    final = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    queue.finish(background, status="executed", claim_snapshot=final)
+    record = json.loads(queue.records.item_path("done", background).read_bytes())
+    queue.records.attempt_path(record, 2).unlink()
+    with pytest.raises(pool.PoolContractError, match="prefix"):
+        queue.archived_generation_summaries(
+            background, generation=record["published_unix"], max_bytes=4 * 1024 * 1024)
