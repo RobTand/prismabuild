@@ -6,7 +6,13 @@ import time
 
 
 def after_paths(monkeypatch, *paths) -> dict[str, int]:
-    observations = [os.stat(path) for path in paths]
+    observations = []
+    for path in paths:
+        try:
+            observation = os.stat(path)
+        except FileNotFoundError:
+            observation = os.stat(os.path.dirname(os.fspath(path)) or os.curdir)
+        observations.append(observation)
     state = {"now": max(max(info.st_mtime_ns, info.st_ctime_ns)
                         for info in observations) + 1}
     real = time.clock_gettime_ns
