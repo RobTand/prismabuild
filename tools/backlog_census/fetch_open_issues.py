@@ -13,7 +13,7 @@ import re
 import subprocess
 from urllib.parse import quote
 
-from census import REPOS, SCOPE, blocker_references, priority
+from census import PARENT, REPOS, SCOPE, blocker_references, priority, reference
 
 
 ISSUE_FIELDS = """
@@ -42,7 +42,7 @@ PULL_QUERY = """query($owner:String!, $name:String!, $number:Int!, $cursor:Strin
  } }
 }"""
 RELATION_LINE = re.compile(
-    r"(?im)^\s*(?:[-*]\s*)?(?:part of|sub-?issue of|duplicate of|duplicates|blocked by|depends on)\b[^\n]*"
+    r"(?im)^\s*(?:[-*]\s*)?(?:duplicate of|duplicates|blocked by|depends on)\b[^\n]*"
 )
 REFERENCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)"
@@ -74,6 +74,7 @@ def in_scope(node):
 
 def relation_targets(body, repo):
     targets, _ = blocker_references(body or "", repo)
+    targets.update(reference(match, repo) for match in PARENT.finditer(body or ""))
     for line in RELATION_LINE.findall(body or ""):
         for match in REFERENCE.finditer(line):
             target_repo = match.group(1) or match.group(3) or repo
@@ -229,7 +230,11 @@ class Collector:
         return {key: value for key, value in found.items() if key != "closes"} | {"closes_issue": target in found["closes"]}
 
     def native_blockers(self, repo, number):
-        values = self.api.pages(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
+        try:
+            values = self.api.pages(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
+        except GitHubError as error:
+            self.limitations.append(f"Native blockers unavailable for {issue_key(repo, number)}: {error}")
+            return None
         return [issue_key(value["repository_url"].split("/repos/", 1)[1], value["number"])
                 for value in values]
 
@@ -253,9 +258,11 @@ class Collector:
             issue["comments"] = [{"url": comment["html_url"], "body": comment.get("body") or ""}
                                  for comment in self.api.pages(f"{base}/comments")]
             issue["comments_complete"] = True
-            issue["blockers"] = self.native_blockers(repo, number)
-            issue["blockers_complete"] = True
-            targets.update(issue["blockers"])
+            blockers = self.native_blockers(repo, number)
+            if blockers is not None:
+                issue["blockers"] = blockers
+                issue["blockers_complete"] = True
+                targets.update(blockers)
             for comment in issue["comments"]:
                 targets.update(relation_targets(comment["body"], repo))
         if in_scope(node) or node["updatedAt"] >= self.since:
