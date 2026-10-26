@@ -279,6 +279,12 @@ def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     return publisher, destinations
 
 
+def _write_range_partial(destination: Path, sibling: str) -> Path:
+    partial = destination.parent / f".{destination.name}.{sibling[:16]}.partial"
+    partial.write_bytes(b"half a copy")
+    return partial
+
+
 def test_a_2048_name_range_decision_lists_the_range_directory_once(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     publisher, destinations = _adoption_world(fleet, NAMES, monkeypatch)
@@ -317,8 +323,7 @@ def test_a_partial_that_appears_mid_range_is_seen_by_the_next_name(
 
     sibling = base._key()
     in_flight = destinations[1]
-    partial = in_flight.parent / f".{in_flight.name}.{sibling[:16]}.partial"
-    partial.write_bytes(b"half a copy")
+    _write_range_partial(in_flight, sibling)
 
     assert publisher.try_adopt(entry, in_flight) is None, (
         "a copy in flight that appeared after the census must still be "
@@ -452,8 +457,7 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     assert publisher.try_adopt(entry, destinations[0]) is not None
 
     sibling = base._key()
-    partial = destinations[1].parent / f".{destinations[1].name}.{sibling[:16]}.partial"
-    partial.write_bytes(b"half a copy")
+    _write_range_partial(destinations[1], sibling)
     assert publisher.try_adopt(entry, destinations[1]) is None, (
         "with the fence disabled the partial must still be seen")
 
