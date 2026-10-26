@@ -13,13 +13,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture
-def published_generation(tmp_path):
+@pytest.fixture(scope="module")
+def published_generation(tmp_path_factory):
     # Copy the real publisher members, without publishing or inventing a receipt.
     # Keep both physical spellings, just as a generation does.
     import publish_runtime
 
-    generation = tmp_path / "store" / "generation"
+    generation = tmp_path_factory.mktemp("physical-entry") / "store" / "generation"
     for member in publish_runtime._publication_manifest():
         if not member.startswith(("src/", "tools/")):
             continue
