@@ -5667,8 +5667,8 @@ def window_pressure(
         if not waiting_newcomers:
             continue
         try:
-            ready_full = 0
-            ready_new = 0
+            ready_total_gib = 0
+            ready_new_money = 0
             for item in queue.ready_items():
                 if not isinstance(item, Mapping):
                     continue
@@ -5680,7 +5680,7 @@ def window_pressure(
                 tier_needs = demands.get(tier_id)
                 if isinstance(tier_needs, Mapping):
                     row_gib = int(tier_needs.get(kind, 0) or 0)
-                    ready_full += row_gib
+                    ready_total_gib += row_gib
                     # A declared unit is asked what its gate asks: a row its
                     # funding record fully covers consumes its fence rather
                     # than free, so it commits no new capacity (#1594).
@@ -5691,17 +5691,17 @@ def window_pressure(
                             KeyError):
                         covered = 0
                     if not (row_gib and covered >= row_gib):
-                        ready_new += row_gib
+                        ready_new_money += row_gib
         except (OSError, pool.PoolContractError, ValueError):
-            ready_full = 0
-            ready_new = 0
+            ready_total_gib = 0
+            ready_new_money = 0
         output_gib, output_enforced = owed[tier_id]
         existing_next = landed_next.get(tier_id, 0)
         for needs in waiting_newcomers:
             nxt = needs.get("next_min_gib")
             relief, why, facts = _relief_verdict(
                 held_gib=held_total + int(needs.get("extra_held_gib") or 0),
-                ready_gib=ready_new if needs.get("declared") else ready_full,
+                ready_gib=ready_new_money if needs.get("declared") else ready_total_gib,
                 output_gib=output_gib, output_enforced=output_enforced,
                 capacity_gib=capacity_gib,
                 cur_min_gib=int(needs.get("current_min_gib") or 0),
