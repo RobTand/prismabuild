@@ -9512,10 +9512,17 @@ class PoolQueue:
     def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
         """Withdraw old member publications whose group was never filed."""
         from . import _gang
-        considered = 0
-        for path in self.records.json_slot_paths(READY):
-            if considered >= limit:
-                break
+        paths = self.records.json_slot_paths(READY)
+        if not paths or limit <= 0:
+            return
+        marker = self._sweep_marker().with_suffix(".gang-members")
+        try:
+            cursor = (record_store.read_document(marker) or {}).get("after", "")
+        except (OSError, PoolContractError):
+            cursor = ""
+        start = bisect_right([path.name for path in paths], str(cursor))
+        selected = (paths[start:] + paths[:start])[:limit]
+        for path in selected:
             try:
                 item = record_store.read_document(path)
                 if item is None:
@@ -9525,7 +9532,6 @@ class PoolQueue:
                         or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
                         or _gang.read_group(self, gang["group"]) is not None):
                     continue
-                considered += 1
                 key = str(item["action_key"])
                 with self.action_transition_lock(key, blocking=False) as acquired:
                     if not acquired:
@@ -9543,6 +9549,11 @@ class PoolQueue:
             except (_gang.GangContractError, PoolContractError, OSError,
                     pb.PrismaBuildError, KeyError, TypeError, ValueError):
                 continue
+
+        try:
+            immutable_files.write_json_atomic(marker, {"after": selected[-1].name})
+        except OSError:
+            pass
 
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
@@ -9589,7 +9600,7 @@ class PoolQueue:
                         try:
                             self._withdraw_gang_member(
                                 record, member, reason=str(torn.get("reason")))
-                        except (PoolContractError, OSError, pb.PrismaBuildError):
+                        except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                             continue
                 states = _gang.member_states(self, record)
                 if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
@@ -17769,21 +17780,21 @@ class PoolQueue:
                         self.record_denial(item, "gang_torn_down",
                                            {"group": gang["group"], "teardown": torn})
                         return _ClaimHandled.REFUSED
+                if gang_record is not None:
+                    pending_backfill = self._preempt_gang_backfill(
+                        ledger, gang_record, gang_entry, controller=host_gate,
+                        demand=request.candidate.demand.reservation, memory=memory)
+                    if isinstance(pending_backfill, candidate_policy.CandidateDenial):
+                        self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
+                        return _ClaimHandled.REFUSED
+                    if pending_backfill:
+                        self.record_denial(item, "gang_waiting_for_backfill_release", {
+                            "group": gang["group"], "holders": pending_backfill,
+                            "tokens_returned_unix": None})
+                        return _ClaimHandled.REFUSED
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                     KeyError, TypeError, ValueError) as exc:
                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
-                return _ClaimHandled.REFUSED
-        if gang_record is not None:
-            pending_backfill = self._preempt_gang_backfill(
-                ledger, gang_record, gang_entry, controller=host_gate,
-                demand=request.candidate.demand.reservation, memory=memory)
-            if isinstance(pending_backfill, candidate_policy.CandidateDenial):
-                self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
-                return _ClaimHandled.REFUSED
-            if pending_backfill:
-                self.record_denial(item, "gang_waiting_for_backfill_release", {
-                    "group": gang["group"], "holders": pending_backfill,
-                    "tokens_returned_unix": None})
                 return _ClaimHandled.REFUSED
         return _ClaimGang(gang, gang_record, gang_entry, _gang_api)
 
@@ -21091,7 +21102,7 @@ class PoolQueue:
                 continue
             try:
                 self._withdraw_gang_member(record, member, reason=reason)
-            except (PoolContractError, OSError, pb.PrismaBuildError):
+            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
 
     def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,

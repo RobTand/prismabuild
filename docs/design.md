@@ -5991,8 +5991,9 @@ Per member host, inside the ordinary claim pass:
    `GANG_REGISTRATION_GRACE_S` (600 seconds). The sweep rechecks the same row,
    its age and the absent group under the member transition lock. A filed group,
    unreadable record, busy lock or successor publication prevents this orphan
-   cancellation. Each pass considers at most `ORPHAN_PASSES_SWEEP_LIMIT` expired
-   unregistered members. This registration grace never expires a filed gang's
+   cancellation. Each pass reads at most `ORPHAN_PASSES_SWEEP_LIMIT` READY rows. A
+   host-local cursor advances past ordinary, kept and busy rows and survives
+   worker replacement. This registration grace never expires a filed gang's
    pre-claim fence.
 
    Malformed group, election and teardown records refuse only their own gang.
