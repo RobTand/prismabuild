@@ -402,6 +402,7 @@ class ControlledCgroupEvents:
         self.watched={};self.enrollments=[];self.removed=[]
         self.dirty=set();self.lost=set();self.fail=set()
         self.on_watch=None;self.on_wait=None;self.closed=False
+        self.read_error=None
         self.waiting=threading.Event();self.drain_limits=[]
 
     def watch(self,scope,path,identity):
@@ -415,6 +416,7 @@ class ControlledCgroupEvents:
 
     def drain(self,max_events=256):
         self.drain_limits.append(max_events)
+        if self.read_error is not None:raise self.read_error
         dirty,lost=self.dirty,self.lost
         self.dirty=set();self.lost=set()
         return dirty,lost
@@ -575,7 +577,7 @@ def test_cgroup_watch_loss_is_visible_and_does_not_spin_on_numeric_ticks(event_m
     lost=monitor.poll_events_once()
     assert lost['errors']
     assert not lost['event_coverage']['complete']
-    assert lost['event_coverage']['scopes'][scope]['populated'] is None
+    assert lost['event_coverage']['scopes'][scope].get('populated') is None
     attempts=len(events.enrollments)
     for _ in range(3):assert monitor.poll_once()['errors']
     assert len(events.enrollments)==attempts
@@ -654,10 +656,32 @@ def test_linux_cgroup_event_source_overflow_invalidates_all_retained_scopes(moni
             info=path.stat();source.watch(record['scope_id'],path,(info.st_dev,info.st_ino))
         with monkeypatch.context() as patch:
             patch.setattr(m.os,'read',read_overflow)
-            _,lost=source.drain()
-        assert lost=={row[1]['scope_id'] for row in rows}
+            with pytest.raises(OSError,match='overflow'):
+                source.drain()
     finally:
         source.close()
+
+
+def test_cgroup_source_failure_recreates_descriptor_after_recovery_deadline(event_monitored):
+    import errno
+    a,b,rows,gpu,old,_,clock=event_monitored
+    old.close();first=ControlledCgroupEvents();second=ControlledCgroupEvents()
+    sources=iter([first,second]);monitor=type(old)(a,gpu,event_source_factory=lambda:next(sources),clock=clock)
+    try:
+        monitor.poll_once();first.read_error=OSError(errno.ENOBUFS,'injected overflow')
+        status=monitor.poll_events_once()
+        assert first.closed
+        assert not status['event_coverage']['complete']
+        assert all('populated' not in row for row in status['event_coverage']['scopes'].values())
+        monitor.poll_events_once()
+        assert not second.watched
+        clock.advance(monitor.recovery_interval_s)
+        recovered=monitor.poll_events_once()
+        assert recovered['event_coverage']['complete']
+        assert set(second.watched)=={row[1]['scope_id'] for row in rows}
+        assert len(gpu.calls)==1
+    finally:
+        monitor.close()
 
 
 def test_gpu_monitor_stops_only_attributed_attempt_and_preserves_first_cause(monitored):
