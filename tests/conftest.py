@@ -1137,6 +1137,32 @@ def action_common(
     }
 
 
+def frozen_common(
+    request: dict,
+    *,
+    snapshot: str = DECOMPOSITION_SNAPSHOT,
+    cwd: str = ".",
+    variables: dict[str, str] | None = None,
+    **sealed: object,
+) -> dict:
+    """Freeze a logical request against the shared synthetic action fixture."""
+    from prismabuild import decomposition
+
+    common = request["common"]
+    if common["gpu_memory_gb"] is not None:
+        sealed.setdefault("gpu_memory_gb", common["gpu_memory_gb"])
+    return decomposition.freeze_common(
+        common,
+        action_common=action_common(
+            snapshot=snapshot,
+            cwd=cwd,
+            manifest=None if common["data_manifest"] is None else DECOMPOSITION_MANIFEST,
+            variables={**common["env"], **(variables or {})},
+            **sealed,
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
     import pbrun
