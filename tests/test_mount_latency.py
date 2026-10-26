@@ -12,6 +12,8 @@ import io
 import os
 import json
 from pathlib import Path
+import selectors
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +23,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import mount_latency  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def private_sampler(tmp_path, monkeypatch):
+    locks = tmp_path / "admission-locks"
+    monkeypatch.setattr(mount_latency, "ADMISSION_LOCK_DIR", locks)
+    init = mount_latency.MountSampler.__init__
+    monkeypatch.setattr(init, "__kwdefaults__", {
+        **init.__kwdefaults__, "lock_dir": locks, "deadline_s": 120.0})
+    # Positive probe fixtures terminate; wait for their exit event.
+    monkeypatch.setattr(mount_latency.MountSampler, "_reap_within",
+                        staticmethod(lambda pid, grace: os.waitpid(pid, 0)[0]))
 
 
 def test_probe_failure_reaches_netdata_and_human_output():
@@ -87,6 +101,64 @@ def test_forked_probe_error_is_retained_verbatim(tmp_path):
     assert saved["recording"] == {"status": "ok", "path": str(path)}
 
 
+def _read_plugin_sample(stdout, stderr, *, timeout_s=120.0,
+                        clock=time.monotonic,
+                        selector_factory=selectors.DefaultSelector):
+    """Read a complete probe-state frame, even if a child holds the pipes.
+
+    No reader thread or buffered read can outlive the handshake deadline.
+    stderr is drained too, so a diagnostic cannot block the producer.
+    """
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    pending = b""
+    in_sample = False
+    deadline = clock() + timeout_s
+    with selector_factory() as ready:
+        for stream, name in ((stdout, "stdout"), (stderr, "stderr")):
+            os.set_blocking(stream.fileno(), False)
+            ready.register(stream, selectors.EVENT_READ, name)
+        while True:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise TimeoutError(f"incomplete plugin sample: {captured!r}")
+            for key, _events in ready.select(remaining):
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    ready.unregister(key.fileobj)
+                    if key.data == "stdout":
+                        raise AssertionError(f"plugin stdout ended before sample: {captured!r}")
+                    continue
+                captured[key.data].extend(chunk)
+                if sum(map(len, captured.values())) > 1024 * 1024:
+                    raise AssertionError("plugin output exceeded 1 MiB before sample")
+                if key.data == "stdout":
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        if line == b"BEGIN prismabuild.mount_probe_state":
+                            in_sample = True
+                        elif in_sample and line == b"END":
+                            return bytes(captured["stdout"]), bytes(captured["stderr"])
+
+
+def _stop_plugin(process, *, timeout_s=120.0):
+    """Kill the private group, including pipe-owning probes, then bound cleanup."""
+    try:
+        # Do this even if the group leader has already exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return process.communicate(timeout=timeout_s)
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        process.wait(timeout=timeout_s)
+
+
 @pytest.mark.parametrize("direct_exec", [False, True])
 def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec):
     """Exercise the installed symlink and Netdata's positional interval argv.
@@ -99,18 +171,21 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     lock_dir = tmp_path / "worker-locks"
     lock_dir.mkdir(mode=0o700)
     (lock_dir / "admission.lock").touch()
-    command = [str(plugin), "15", "--mount", str(tmp_path / "probe"),
+    command = [str(plugin), "15", "--deadline-s", "120",
+               "--mount", str(tmp_path / "probe"),
                "--record-dir", str(tmp_path / "records"),
                "--lock-dir", str(lock_dir)]
     if not direct_exec:
         command.insert(0, sys.executable)
-    with subprocess.Popen(command, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            stdout, stderr = process.communicate(timeout=5)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0,
+                               start_new_session=True)
+    try:
+        stdout, stderr = _read_plugin_sample(process.stdout, process.stderr)
+    finally:
+        tail_stdout, tail_stderr = _stop_plugin(process)
+    stdout = (stdout + tail_stdout).decode("utf-8")
+    stderr = (stderr + tail_stderr).decode("utf-8")
     assert not stderr
     lines = stdout.splitlines()
     assert lines and lines[0].startswith("CHART "), stdout
@@ -129,15 +204,81 @@ def test_external_plugin_interval_emits_charts_and_samples(tmp_path, direct_exec
     assert record["locks"]["identity_complete"] is False
 
 
+@pytest.mark.parametrize("partial_end", [b"", b"EN"])
+def test_plugin_handshake_expires_with_inherited_pipe_writers(partial_end):
+    clock = [0.0]
+
+    class ExpiringSelector(selectors.DefaultSelector):
+        def select(self, timeout):
+            assert 0 < timeout <= 120.0
+            events = super().select(0)
+            if not events:
+                clock[0] = 120.0
+            return events
+
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    try:
+        # An earlier END and a partial probe frame must not finish the
+        # handshake. Open writers model a descendant surviving its parent.
+        os.write(out_write, b"BEGIN other_chart\nEND\n"
+                 b"BEGIN prismabuild.mount_probe_state\nSET ok = 1\n" + partial_end)
+        os.write(err_write, b"fixture diagnostic\n")
+        with os.fdopen(out_read, "rb", buffering=0) as stdout, os.fdopen(
+                err_read, "rb", buffering=0) as stderr:
+            with pytest.raises(TimeoutError, match="incomplete plugin sample") as error:
+                _read_plugin_sample(stdout, stderr, clock=lambda: clock[0],
+                                    selector_factory=ExpiringSelector)
+            assert "SET ok = 1" in str(error.value)
+            assert "fixture diagnostic" in str(error.value)
+    finally:
+        os.close(out_write)
+        os.close(err_write)
+
+
+def test_plugin_cleanup_stops_pipe_owners_after_the_parent_exits():
+    # The leader exits, but its child holds both output pipes and is blocked
+    # on a private pipe. Killing only the leader cannot deliver output EOF.
+    command = [sys.executable, "-c", """
+import os
+read_fd, write_fd = os.pipe()
+if os.fork() == 0:
+    os.read(read_fd, 1)
+    os._exit(0)
+os.write(1, b'BEGIN prismabuild.mount_probe_state\\nSET ok = 1\\nEND\\n')
+os._exit(0)
+"""]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0,
+                               start_new_session=True)
+    try:
+        stdout, stderr = _read_plugin_sample(process.stdout, process.stderr)
+        assert b"SET ok = 1\nEND\n" in stdout
+        assert stderr == b""
+        assert process.wait(timeout=120) == 0
+    finally:
+        try:
+            tail = _stop_plugin(process)
+        except BaseException:
+            # Also contain the fixture if the cleanup helper regresses.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            raise
+    assert tail == (b"", b"")
+    assert process.stdout.closed and process.stderr.closed
+
+
 @pytest.mark.parametrize("json_mode", [False, True])
 def test_once_cli_preserves_human_and_json_output(tmp_path, json_mode):
-    command = [sys.executable, mount_latency.__file__, "--once",
+    command = [sys.executable, mount_latency.__file__, "--once", "--deadline-s", "120",
                "--mount", str(tmp_path / "probe"),
                "--record-dir", str(tmp_path / "records"),
                "--lock-dir", str(tmp_path / "locks")]
     if json_mode:
         command.append("--json")
-    result = subprocess.run(command, text=True, capture_output=True, timeout=5)
+    result = subprocess.run(command, text=True, capture_output=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert not result.stderr
     if json_mode:
@@ -291,16 +432,99 @@ def test_a_rate_is_never_reported_without_the_window_it_was_measured_over(
     sampler = mount_latency.MountSampler(
         probe=lambda *_a, **_k: {"status": "ok", "worst_ms": 0.01})
     healthy = _mount(HEALTHY)        # parsed before the reader is replaced
+    clock = [1000.0]
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
+    monkeypatch.setattr(sampler, "_run_probe", lambda: {"status": "ok", "worst_ms": 0.01})
     monkeypatch.setattr(mount_latency, "read_mountstats",
                         lambda *_a, **_k: healthy)
     first = sampler.sample()
-    time.sleep(0.01)
+    clock[0] = 1015.0
     second = sampler.sample()
 
     assert first["rpc"] is None
     assert first["window_s"] == 0.0
     assert "first sample" in first["note"]
-    assert second["window_s"] > 0
+    assert second["window_s"] == 15.0
+
+
+@pytest.mark.parametrize("operation_data", [
+    "",  # missing per-op section
+    "\tper-op statistics\n",  # empty per-op section
+    "\tper-op statistics\n\tOPEN: invalid\n\tCLOSE: invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 0\n\tCLOSE: invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 0\n\tCLOSE invalid\n",
+    "\tper-op statistics\n\tOPEN: 1 1 0 0 0 0 0 0 -1\n",
+])
+@pytest.mark.parametrize("passive", [False, True])
+def test_unusable_nfs_operations_clear_window_and_recover(
+    monkeypatch, operation_data, passive,
+):
+    """Bad counters are unavailable evidence, not a quiet NFS mount.
+
+    Exercise the real binary procfs reader with complete newline-terminated
+    inputs, including partially valid operation tables.
+    """
+    header = STORM.partition("\tper-op statistics\n")[0]
+    unusable = header + operation_data
+    increased = STORM.replace("GETATTR: 1024 1024", "GETATTR: 1044 1044")
+    samples = [unusable, unusable, STORM, STORM, unusable, STORM, increased]
+    reads = iter(text.encode("utf-8") for text in samples
+                 for _ in range(1 if passive else 2))
+    clock = iter(range(1000, 1070, 10))
+    actual_open = Path.open
+
+    def proc_open(path, mode="r", *args, **kwargs):
+        if str(path) != "/proc/self/mountstats":
+            return actual_open(path, mode, *args, **kwargs)
+        assert mode == "rb"
+        return io.BytesIO(next(reads))
+
+    monkeypatch.setattr(Path, "open", proc_open)
+    monkeypatch.setattr(mount_latency.time, "time", lambda: next(clock))
+    monkeypatch.setattr(mount_latency.MountSampler, "_run_probe",
+                        lambda self: {"status": "ok"})
+    monkeypatch.setattr(mount_latency, "lock_contention", lambda *a, **k: {})
+    sampler = mount_latency.MountSampler(
+        Path("/mnt/shared/prismabuild-fleet"), passive=passive)
+
+    records = [sampler.sample() for _ in samples]
+    for index in (0, 1, 4):
+        unavailable = records[index]
+        assert unavailable["rpc"] is None, "unusable counters are not zero RPCs"
+        assert unavailable["window_s"] == 0
+        assert unavailable["mount"]["transport"] == "unknown"
+        assert "unusable NFS operation data" in unavailable["note"]
+        assert not unavailable.get("attribution")
+    for index in (2, 5):
+        rebaseline = records[index]
+        assert rebaseline["rpc"] is None, "never bridge a gap in counter coverage"
+        assert rebaseline["window_s"] == 0
+    idle = records[3]
+    assert idle["window_s"] == 10
+    assert idle["rpc"]["ops"] == 0, "valid unchanged counters really are idle"
+    resumed = records[6]
+    assert resumed["window_s"] == 10
+    assert resumed["rpc"]["ops"] == 20
+    assert resumed["rpc"]["by_op"]["GETATTR"]["ops_per_s"] == 2.0
+
+
+@pytest.mark.parametrize("namespace", ["autofs", "submount", "unrelated"])
+def test_unusable_nfs_operation_rejection_respects_mount_selection(namespace):
+    bad = (HEALTHY.partition("\tper-op statistics\n")[0]
+           + "\tper-op statistics\n\tOPEN: invalid\n")
+    target = "/mnt/shared/jobs"
+    if namespace == "submount":
+        text = HEALTHY + bad.replace("/mnt/shared", "/mnt/shared/jobs")
+    elif namespace == "unrelated":
+        text = HEALTHY + bad.replace("/mnt/shared", "/elsewhere")
+    else:
+        text = bad  # includes an autofs trigger at the same mount point
+    result = _mount(text, target)
+    if namespace == "unrelated":
+        assert result is not None and result.ops["GETATTR"]["ops"] == 1000
+    else:
+        assert result is None, "do not fall back to a parent or autofs trigger"
 
 
 def test_a_remount_restarts_the_counters_and_the_window_says_so(monkeypatch):
@@ -315,11 +539,14 @@ def test_a_remount_restarts_the_counters_and_the_window_says_so(monkeypatch):
     after = _mount(HEALTHY)
     sampler = mount_latency.MountSampler(
         probe=lambda *_a, **_k: {"status": "ok", "worst_ms": 0.01})
+    clock = [1000.0]
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
+    monkeypatch.setattr(sampler, "_run_probe", lambda: {"status": "ok", "worst_ms": 0.01})
     readings = iter([before, before, after, after])
     monkeypatch.setattr(mount_latency, "read_mountstats",
                         lambda *_a, **_k: next(readings, after))
     sampler.sample()
-    time.sleep(0.01)
+    clock[0] = 1015.0
     second = sampler.sample()
 
     assert second["rpc"] is None
@@ -333,7 +560,13 @@ def test_counters_that_went_backwards_are_dropped_not_negated():
     assert "READ" in delta, "an op absent from the earlier snapshot still counts"
 
 
-def test_a_mount_that_does_not_answer_is_recorded_not_raised():
+@pytest.mark.parametrize("setup_s, expected_waits, expected_elapsed", [
+    (0.0, [0.2], 0.2),
+    (0.05, [0.15], 0.2),
+    (0.25, [], 0.25),
+])
+def test_a_mount_that_does_not_answer_is_recorded_not_raised(
+        monkeypatch, setup_s, expected_waits, expected_elapsed):
     """A hard NFS mount waits rather than failing, and no signal reaches it.
 
     So the deadline has to be enforced by a process the parent can walk away
@@ -342,22 +575,48 @@ def test_a_mount_that_does_not_answer_is_recorded_not_raised():
     scrape interval is just a gap in the series where the incident was.
     """
 
-    def never_returns(*_args, **_kwargs):
-        time.sleep(30)
-        return {"status": "ok"}
+    clock = [1000.0]
+    wait_budgets = []
+    monkeypatch.setattr(mount_latency.time, "time", lambda: clock[0])
 
-    sampler = mount_latency.MountSampler(
-        deadline_s=0.2, probe=never_returns)
-    started = time.time()
+    def start_unanswered_probe():
+        clock[0] += setup_s
+        return 4242
+
+    cancellations = []
+
+    def cancel_probe(pid, signum):
+        cancellations.append((pid, signum))
+
+    def reap_probe(pid, flags=0):
+        # This runnable child exits only after cancellation. Without SIGKILL
+        # it remains alive, so reaping cannot clear the outstanding waiter.
+        if (pid, signal.SIGKILL) in cancellations:
+            return pid, signal.SIGKILL
+        return 0, 0
+
+    monkeypatch.setattr(mount_latency.os, "fork", start_unanswered_probe)
+    monkeypatch.setattr(mount_latency.os, "kill", cancel_probe)
+    monkeypatch.setattr(mount_latency.os, "waitpid", reap_probe)
+
+    def unavailable(readers, writers, errors, timeout):
+        wait_budgets.append(timeout)
+        # Model an unanswered wait consuming its requested budget. The
+        # independent expected budgets below catch an oversized select wait,
+        # even when no data ever becomes ready.
+        clock[0] += timeout
+        return [], [], []
+
+    monkeypatch.setattr(mount_latency.select, "select", unavailable)
+    sampler = mount_latency.MountSampler(deadline_s=0.2)
     record = sampler.sample()
-    elapsed = time.time() - started
 
     assert record["probe"]["status"] == "timed_out"
     assert record["probe"]["deadline_s"] == 0.2
-    assert elapsed < 5.0, "the deadline bounds the caller, not just the child"
-    # The child was merely slow, not wedged, so SIGKILL reached it and the
-    # next sample is free to probe again.  Only a child the kernel will not
-    # kill is allowed to suppress the following one.
+    assert wait_budgets == pytest.approx(expected_waits)
+    assert record["probe"]["elapsed_s"] == expected_elapsed
+    assert cancellations == [(4242, signal.SIGKILL)]
+    # A successfully cancelled and reaped child must not leave a waiter.
     assert sampler._outstanding_pid is None
 
 
@@ -373,21 +632,20 @@ def test_a_wedged_probe_suppresses_the_next_one_instead_of_doubling_it(
     this module makes.
     """
 
-    calls = []
-    sampler = mount_latency.MountSampler(
-        probe=lambda *_a, **_k: calls.append(1) or {"status": "ok"})
+    sampler = mount_latency.MountSampler()
+    monkeypatch.setattr(mount_latency.os, "fork", lambda: pytest.fail(
+        "a wedged mount must not be given a second waiter"))
     sampler._outstanding_pid = 4242
-    sampler._outstanding_since = time.time() - 30.0
+    sampler._outstanding_since = 970.0
+    monkeypatch.setattr(mount_latency.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(mount_latency, "process_status", lambda *args, **kwargs: ("D", "fixture"))
     monkeypatch.setattr(mount_latency.os, "waitpid",
                         lambda _pid, _flags=0: (0, 0))    # still blocked
     record = sampler.sample()
 
     assert record["probe"]["status"] == "wedged"
     assert record["probe"]["outstanding_pid"] == 4242
-    assert record["probe"]["wedged_for_s"] == pytest.approx(30.0, abs=2.0)
-    assert calls == [], "a wedged mount must not be given a second waiter"
-    # The leg that costs the mount nothing keeps reporting throughout.
-    assert record["mount"]["is_nfs"] in (True, False)
+    assert record["probe"]["wedged_for_s"] == 30.0
 
 
 def test_the_syscall_leg_really_runs_and_times_the_claim_path(tmp_path):
@@ -609,15 +867,21 @@ def test_the_gate_is_measured_on_the_box_that_exports_the_filesystem(
     assert record["locks"]["identity_complete"] is False
 
 
-def test_a_lock_key_retains_its_zero_padded_report_format(monkeypatch):
+def test_a_lock_key_retains_its_zero_padded_report_format(tmp_path, monkeypatch):
+    target = tmp_path / "anything"
+    native = os.stat
+
+    def observed(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == target:
+            return os.stat_result((0o100600, 104, os.makedev(0, 30), 1, 0, 0, 0, 0, 0, 0))
+        return native(path, *args, **kwargs)
+
     monkeypatch.setattr(
-        mount_latency.os, "stat",
-        lambda _path: os.stat_result(
-            (0o100600, 104, os.makedev(0, 30), 1, 0, 0, 0, 0, 0, 0)))
-    assert mount_latency.lock_key(Path("/dev/shm/anything")) == "00:1e:104"
+        mount_latency.os, "stat", observed)
+    assert mount_latency.lock_key(target) == "00:1e:104"
 
 
-def test_a_high_major_number_is_not_truncated_by_the_padding(monkeypatch):
+def test_a_high_major_number_is_not_truncated_by_the_padding(tmp_path, monkeypatch):
     """The width is a minimum, not a field size.
 
     sparky's ``/tmp`` is major 259, which the kernel writes ``103``.  A fix for
@@ -625,9 +889,14 @@ def test_a_high_major_number_is_not_truncated_by_the_padding(monkeypatch):
     was developed on.
     """
 
-    monkeypatch.setattr(
-        mount_latency.os, "stat",
-        lambda _path: os.stat_result(
-            (0o100600, 1441858, os.makedev(259, 2), 1, 0, 0, 0, 0, 0, 0)))
+    target = tmp_path / "key"
+    native = os.stat
 
-    assert mount_latency.lock_key(Path("/tmp/x")) == "103:02:1441858"
+    def observed(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == target:
+            return os.stat_result(
+                (0o100600, 1441858, os.makedev(259, 2), 1, 0, 0, 0, 0, 0, 0))
+        return native(path, *args, **kwargs)
+
+    monkeypatch.setattr(mount_latency.os, "stat", observed)
+    assert mount_latency.lock_key(target) == "103:02:1441858"

@@ -42,6 +42,22 @@
     "workload_proof": "not run; lead must run the published-runtime guest/GPU proof",
     "remaining_scope": "Component lease-loss and waiter simulations tested; no live crash, staged-only campaign, whole-requirement, deployment or workload conformance claimed.",
     "round1_acceptance_record": "docs/evidence/issue1929_guest_placement_acceptance_2026-10-21.json"
+   },
+   "scoped_repair_2267": {
+    "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+    "implemented_source": {
+     "commit": "7dbd1079152621df08c4c5558560fbc250471f0a",
+     "state": "component-implemented",
+     "scope": "PassCensus suspends only the exact refreshed measurement election within a claim pass after fresh affirmative foreign CPU refusal, without resetting its opportunity."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2267/merge-acceptance.json",
+     "detail": "One- and two-measurement deterministic RED. Integrated x86/Python 3.14 and ARM/Python 3.12: five executed runs per architecture, two xdist each; 103 tests in each broad row and 29 in each other row. No skips. Source trees, logs, execution receipts and CAS payloads read back."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no staged-only campaign or live-host reproduction",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
    }
   },
   {
@@ -1571,7 +1587,23 @@
      "observed": "on 81d95cba8d91-1790160372-5d100532e024: mover 950345d2b90a could not invalidate the copy owned by failed consumer 2c164969c33c's mover 11c41436371f, exited rc 0 with complete false, reran without end holding 365 of 730 fill tokens, and consumer a7d31a4da9c1 was never admitted",
      "violation": "no progress; a consumer never admitted"
     }
-   ]
+   ],
+   "scoped_repair_2267": {
+    "target": "Conditional liveness on stated fairness/finite-IO premises with NFS limitation honest; queue timeout implies neither withdrawal nor containment.",
+    "implemented_source": {
+     "commit": "7dbd1079152621df08c4c5558560fbc250471f0a",
+     "state": "component-implemented",
+     "scope": "PassCensus suspends only the exact refreshed measurement election within a claim pass after fresh affirmative foreign CPU refusal, without resetting its opportunity."
+    },
+    "validation": {
+     "state": "component-qualified",
+     "acceptance_record": "docs/evidence/issue2267/merge-acceptance.json",
+     "detail": "One- and two-measurement deterministic RED. Integrated x86/Python 3.14 and ARM/Python 3.12: five executed runs per architecture, two xdist each; 103 tests in each broad row and 29 in each other row. No skips. Source trees, logs, execution receipts and CAS payloads read back."
+    },
+    "deployment": "not deployed; release train owns publication after independent review and merge",
+    "workload_proof": "not run; no staged-only campaign or live-host reproduction",
+    "remaining_scope": "Whole-requirement implementation, deployment and workload axes retain their existing states."
+   }
   },
   {
    "acceptance": [

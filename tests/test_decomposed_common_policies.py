@@ -83,6 +83,33 @@ def test_common_accepts_each_portability_policy(field: str) -> None:
     )
 
 
+@pytest.mark.parametrize('placement', [
+    {'tags': ['gb10']}, {'measurement': True, 'host_class': 'gb10'},
+])
+@pytest.mark.parametrize('demand,cap,effective', [
+    ({'gpu': 1, 'mem_gb': 104}, 105, 104),
+    ({'gpu': 1}, 5, 4),
+])
+def test_common_gb10_subset_uses_effective_demand(placement, demand, cap, effective):
+    for fields in [
+        {'demand': {'gpu': 1, 'mem_gb': 104}, 'gpu_memory_gb': 104},
+        {'demand': {'gpu': 1, 'mem_gb': 104}, 'gpu_memory_gb': 100},
+        {'demand': {'gpu': 1, 'mem_gb': 80}, 'gpu_memory_gb': 64},
+        {'demand': {'gpu': 1, 'mem_gb': 104}, 'gpu_memory_gb': None},
+        {'demand': {'gpu': 1}, 'gpu_memory_gb': 1},
+        {'exclusive': True, 'demand': {'gpu': 1, 'mem_gb': 4}, 'gpu_memory_gb': 16},
+    ]:
+        accepted = dc.validate_common_spec(_common(**placement, **fields))
+        assert accepted['gpu_memory_gb'] == fields['gpu_memory_gb']
+    discrete = dc.validate_common_spec(_common(
+        tags=['discrete'], demand={'gpu': 1, 'mem_gb': 64}, gpu_memory_gb=104))
+    assert discrete['gpu_memory_gb'] == 104
+    with pytest.raises(dc.ActionContractError) as error:
+        dc.validate_common_spec(_common(**placement, demand=demand, gpu_memory_gb=cap))
+    diagnostic = str(error.value).lower()
+    assert all(word in diagnostic for word in (str(cap), str(effective), 'subset', 'mem_gb'))
+
+
 def test_absent_common_policies_keep_the_legacy_canonical_shape() -> None:
     """Old logical requests must retain their parent identities unchanged."""
 
@@ -156,6 +183,25 @@ def test_decomposition_seals_shared_policies_on_every_child(
     assert [child["action_key"] for child in group["children"]] != [
         child["action_key"] for child in baseline["children"]
     ]
+
+
+@pytest.mark.parametrize('placement', [
+    {'tags': ['gb10']}, {'measurement': True, 'host_class': 'gb10'},
+])
+def test_logical_load_refuses_gb10_cap_before_publish(tmp_path, placement):
+    work = _checkout(tmp_path)
+    request = _request(work)
+    request['common'].update(placement)
+    request['common']['demand'] = {'gpu': 1, 'mem_gb': 104}
+    request['common']['gpu_memory_gb'] = 105
+    manifest = tmp_path / 'logical-gpu-request.json'
+    manifest.write_text(json.dumps(request), encoding='utf-8')
+    with pytest.raises(pbcampaign.ManifestError) as error:
+        pbcampaign.load_manifest(manifest, transport='pool')
+    diagnostic = str(error.value).lower()
+    assert all(word in diagnostic for word in ('105', '104', 'subset', 'mem_gb'))
+    assert not (tmp_path / 'cas').exists()
+    assert not (tmp_path / 'queue').exists()
 
 
 def test_logical_load_refuses_a_malformed_progress_policy_before_publish(

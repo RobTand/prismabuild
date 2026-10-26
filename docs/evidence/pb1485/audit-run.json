@@ -1,0 +1,53 @@
+{
+  "action_key": "ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe",
+  "attempt_history": [
+    {
+      "attempt": 1,
+      "outcome": "attempts/ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe/1e995053cf0bcb228025e811b02dfd9cf53e944054f268d64c89cd8124ba99f1/00000001.json"
+    }
+  ],
+  "checkout_snapshot": {
+    "commit": "d9af86312642cf6c34311187c3e72cbee51ee187",
+    "input": {
+      "bytes": 44788064,
+      "id": "pbrun.checkout-snapshot",
+      "sha256": "82ed1a1f70aa4e1476b6b36bb876f0e0c7407a2b966c3c3ff437737bac3a6c59"
+    },
+    "parent": "9dce28460e76d4115c925bac8efc4f397160f9cf",
+    "refs": {},
+    "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+    "subdirectory": "."
+  },
+  "cleanup_complete": true,
+  "ending_raw": {
+    "bytes": 14321,
+    "path": "/mnt/shared/prismabuild-fleet/pb-queue/done/ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe.json",
+    "sha256": "c3030caf96c1a18df1450058d667877732851992f29fe4400182caa0f00e3b6e"
+  },
+  "host": "sparklina",
+  "limits": "Static retained artifact authentication. No installed interpreter or GPU behavior was exercised.",
+  "pbwait_complete": true,
+  "pbwait_result_verified": true,
+  "projection_only": true,
+  "receipt_raw_sha256": "d6d79691e2e44fda7eaa8ca0c286974f9a694edea09b9b4376707a85f21b0ea2",
+  "resources": {
+    "cpu": 1,
+    "mem_gb": 2
+  },
+  "result": {
+    "bytes": 1794,
+    "sha256": "76c3881efec692d8c1e197284ab69808cfc74efcc4adfd2b084954c0cc651cc6"
+  },
+  "returncode": 0,
+  "schema": "prismabuild.pb1485.audit_run_projection.v1",
+  "scope_profile": {
+    "cpu_seconds": 0.652913,
+    "cpu_system_seconds": 0.252807,
+    "cpu_user_seconds": 0.400105,
+    "memory_current_bytes": 30072832,
+    "memory_peak_bytes": 162037760,
+    "source": "cgroup"
+  },
+  "status": "executed",
+  "stderr": "pbrun: log capture executable=/usr/bin/tee\n"
+}

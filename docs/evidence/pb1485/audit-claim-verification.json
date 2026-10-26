@@ -1,0 +1,48 @@
+{
+  "abandoned_readers": [],
+  "attestation_verified": null,
+  "cas_root": "/mnt/shared/prismabuild-fleet/cas",
+  "checks": {
+    "claim_addressed_correctly": true,
+    "claim_digest_matches_body": true,
+    "claim_present": true,
+    "payload_bytes_match": true,
+    "payload_present": true,
+    "payload_sha256_match": true,
+    "receipt_binds_the_claims_manifest": true,
+    "receipt_present": true,
+    "receipt_self_consistent": true
+  },
+  "checks_passed": true,
+  "claim": {
+    "action_key": "ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe",
+    "action_manifest_sha256": "da308ea3397ea1cd7627d376aa65cdffe4fc55d402a2580a425428fc95a916b0",
+    "checkout_root": "/home/rob/tmp/prismabuild-checkouts/ac7ddbc0909e.e4vv6kds/checkout",
+    "claim_sha256": "123f5e2c0c75df3a5ab5e3acff3077e8a4e1db0f64236cf98f73f040ceb24e09",
+    "result_path": "pbrun_result.4871708b3374cd3a.txt",
+    "schema": "prismaquant.prismabuild.local_result_claim.v1",
+    "working_directory": "."
+  },
+  "claim_path": "/mnt/shared/prismabuild-fleet/cas/local-results/v1/12/123f5e2c0c75df3a5ab5e3acff3077e8a4e1db0f64236cf98f73f040ceb24e09.json",
+  "complete": true,
+  "deadline_s": 5.0,
+  "generated_unix": 1792960097.4652348,
+  "generation": "9dce28460e76-1792959923-b5904f02524e",
+  "generation_stale": false,
+  "not_checked": [
+    "worker attestation (needs the full action manifest; core.PrismaBuildCAS.lookup is the verifier)"
+  ],
+  "payload": {
+    "bytes": 1794,
+    "present": true,
+    "sha256": "76c3881efec692d8c1e197284ab69808cfc74efcc4adfd2b084954c0cc651cc6"
+  },
+  "payload_path": "/mnt/shared/prismabuild-fleet/cas/blobs/76/76c3881efec692d8c1e197284ab69808cfc74efcc4adfd2b084954c0cc651cc6",
+  "receipt_path": "/mnt/shared/prismabuild-fleet/cas/actions/v3/ac/ac7ddbc0909ec5dcfda5f8ead291af6a8e44e7d150e78f733cd44181125794fe.json",
+  "schema": "prismaquant.prismabuild.pbmcp.v1",
+  "sha256": "123f5e2c0c75df3a5ab5e3acff3077e8a4e1db0f64236cf98f73f040ceb24e09",
+  "started_from_generation": true,
+  "timed_out": [],
+  "tool": "pb_verify_claim",
+  "unavailable": []
+}

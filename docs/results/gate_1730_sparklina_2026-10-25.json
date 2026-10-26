@@ -1,0 +1,202 @@
+{
+ "schema": "prismabuild.gate_1730_preflight.v1",
+ "host": "sparklina",
+ "started_unix": 1792963417.6722414,
+ "mounts": {
+  "/": "37 2 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro",
+  "/mnt/shared": "3673 53 0:77 / /mnt/shared rw,noatime shared:994 - nfs4 10.100.99.3:/storage_pool/shared rw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,local_lock=none,addr=10.100.99.3",
+  "/stage/prewarm": "770 57 0:79 / /stage/prewarm ro,noatime shared:1078 - nfs4 10.100.99.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,lookupcache=pos,local_lock=none,addr=10.100.99.3"
+ },
+ "root_vfs": {
+  "path": "/",
+  "avail_gib": 247.08,
+  "free_gib": 293.65,
+  "total_gib": 915.32,
+  "use_pct": 73.0
+ },
+ "d1_a8s": {
+  "need_gib": 163.47,
+  "avail_gib": 247.08,
+  "floor_gib": 45.77,
+  "tmp_need_gib": 265.21,
+  "fits": false,
+  "reason": "1.5N+20GiB rule fails"
+ },
+ "docker_root": "/var/lib/docker",
+ "docker_root_vfs": {
+  "path": "/var/lib/docker",
+  "avail_gib": 247.08,
+  "free_gib": 293.65,
+  "total_gib": 915.32,
+  "use_pct": 73.0
+ },
+ "canonical_path": {
+  "path": "/mnt/shared/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": true,
+  "device": 77,
+  "mountinfo": "3673 53 0:77 / /mnt/shared rw,noatime shared:994 - nfs4 10.100.99.3:/storage_pool/shared rw,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,local_lock=none,addr=10.100.99.3"
+ },
+ "stage_path": {
+  "path": "/stage/prewarm/tessera-runs/moe/glm53-a8-bf16menu-20260930/release/exported",
+  "present": false,
+  "mountinfo": "770 57 0:79 / /stage/prewarm ro,noatime shared:1078 - nfs4 10.100.99.3:/stage/prewarm ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,fatal_neterrors=none,proto=rdma,nconnect=16,port=20049,timeo=600,retrans=2,sec=sys,clientaddr=10.100.99.2,lookupcache=pos,local_lock=none,addr=10.100.99.3"
+ },
+ "local_path": {
+  "path": "/home/rob/models-local",
+  "present": true,
+  "device": 66306,
+  "mountinfo": "37 2 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro"
+ },
+ "space": {
+  "destination": "/home/rob/models-local",
+  "available_bytes": 265303769088,
+  "total_bytes": 982819848192,
+  "set_bytes": 175527382717,
+  "d1": {
+   "need_gib": 163.47,
+   "avail_gib": 247.08,
+   "floor_gib": 45.77,
+   "tmp_need_gib": 265.21,
+   "fits": false,
+   "reason": "1.5N+20GiB rule fails"
+  }
+ },
+ "speed": {
+  "status": "not_run",
+  "reason": "prerequisites only; no model payload reads or synthetic speed files"
+ },
+ "bind": {
+  "docker": {
+   "argv": [
+    "docker",
+    "version",
+    "--format",
+    "{{.Server.Version}}"
+   ],
+   "returncode": 0,
+   "stdout": "29.6.2\n",
+   "stderr": ""
+  },
+  "image_inspect": {
+   "argv": [
+    "docker",
+    "image",
+    "inspect",
+    "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+    "--format",
+    "{{.Id}}"
+   ],
+   "returncode": 0,
+   "stdout": "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63\n",
+   "stderr": ""
+  },
+  "image": "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+  "local_marker_after_write": "local-wins\n",
+  "calls": [
+   {
+    "step": "baseline ls",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+     "-c",
+     "ls \"$1\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-o1951_bg"
+    ],
+    "returncode": 0,
+    "stdout": "canonical.txt\n",
+    "stderr": ""
+   },
+   {
+    "step": "nested bind ls+cat",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-j62eq3nc,dst=/mnt/shared/gate-1730-shadow-o1951_bg,readonly",
+     "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+     "-c",
+     "ls \"$1\" && cat \"$1/marker.txt\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-o1951_bg"
+    ],
+    "returncode": 0,
+    "stdout": "marker.txt\nsecond.txt\nlocal-wins\n",
+    "stderr": ""
+   },
+   {
+    "step": "write through readonly bind",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-j62eq3nc,dst=/mnt/shared/gate-1730-shadow-o1951_bg,readonly",
+     "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+     "-c",
+     "printf changed > \"$1/marker.txt\"",
+     "sh",
+     "/mnt/shared/gate-1730-shadow-o1951_bg"
+    ],
+    "returncode": 2,
+    "stdout": "",
+    "stderr": "sh: 1: cannot create /mnt/shared/gate-1730-shadow-o1951_bg/marker.txt: Read-only file system\n"
+   },
+   {
+    "step": "mount with missing src",
+    "argv": [
+     "docker",
+     "run",
+     "--rm",
+     "--pull=never",
+     "--network=none",
+     "--user",
+     "1000",
+     "--entrypoint",
+     "/bin/sh",
+     "-v",
+     "/mnt/shared:/mnt/shared:ro",
+     "--mount",
+     "type=bind,src=/var/tmp/gate-1730-src-j62eq3nc/missing,dst=/mnt/shared/gate-1730-shadow-o1951_bg,readonly",
+     "sha256:acc684c06ec79aa303deda50a15c422084690d3252d2449e9702b40de571fe63",
+     "-c",
+     "true"
+    ],
+    "returncode": 125,
+    "stdout": "",
+    "stderr": "docker: Error response from daemon: invalid mount config for type \"bind\": bind source path does not exist: /var/tmp/gate-1730-src-j62eq3nc/missing\n\nRun 'docker run --help' for more information\n"
+   }
+  ],
+  "nested_shows_local_only": true,
+  "readonly_write_refused": true,
+  "missing_source_refused": true
+ },
+ "finished_unix": 1792963419.1030285
+}

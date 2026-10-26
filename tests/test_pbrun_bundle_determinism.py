@@ -32,6 +32,7 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -49,6 +50,11 @@ _SPEC.loader.exec_module(pbrun)                       # type: ignore[union-attr]
 THREADED_FILE_COUNT = 2000
 
 MAX_BYTES = 64 * 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def fresh_packs_for_determinism(monkeypatch):
+    monkeypatch.setenv("PRISMABUILD_BUNDLE_CACHE_ROOT", "off")
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
