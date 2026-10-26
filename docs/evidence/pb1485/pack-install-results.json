@@ -1,0 +1,209 @@
+{
+  "actions": {
+    "after-sparklina": {
+      "action_key": "0012609a5ddb952abb2b22b8b7df8e6a724ac8f35ae96904609c4e8f9d56b314",
+      "attestation_verification": "not independently verified",
+      "checkout_snapshot": {
+        "commit": "b3995c88444511ef444de1623173c7f0d5e9235d",
+        "input": {
+          "bytes": 45155043,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "abbefeee66edd42d196f0e857ccb2de19be97159b9f9967dea189d2afb60814d"
+        },
+        "parent": "9e2f3eca262e1a95529216d4c35b8bf0d5d96585",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "cleanup_complete": true,
+      "host": "sparklina",
+      "installed_check": {
+        "distribution": "prismabuild",
+        "expected_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+        "imported_file": "/home/rob/tmp/pri140-install-51q711ax/overlay/lib/python3.12/site-packages/prismabuild/__init__.py",
+        "installed_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+        "module": "prismabuild",
+        "origin": "/home/rob/tmp/pri140-install-51q711ax/overlay/lib/python3.12/site-packages/prismabuild/__init__.py",
+        "sdk": 5,
+        "verified_files": 48
+      },
+      "receipt": {
+        "bytes": 2543,
+        "file": "install-after-sparklina-receipt.json",
+        "identity": "f58f2b3d1256707e61ab1c6a724a9a6731f9347dae47114a911c7e998b1c1fd2",
+        "sha256": "f5673160bad72d5569be68aeeca4fc372b7b701935e0e59939a709987901c353"
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "result": {
+        "bytes": 4642,
+        "path": "/mnt/shared/prismabuild-fleet/cas/blobs/78/78e8196e7803fe9145f7c85f0f88806ec69088d022f8b6ad58f8ca307ab7afb2",
+        "sha256": "78e8196e7803fe9145f7c85f0f88806ec69088d022f8b6ad58f8ca307ab7afb2"
+      },
+      "returncode": 0,
+      "status": "executed",
+      "stderr": {
+        "bytes": 43,
+        "file": "install-after-sparklina.stderr.txt",
+        "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+      },
+      "stdout": {
+        "bytes": 7608,
+        "file": "install-after-sparklina.stdout.txt",
+        "sha256": "ba7ff03d3ddbab67cfd8581a2bcf520f7293023f0bcbf18474b3d054574f456e"
+      },
+      "terminal": {
+        "bytes": 17328,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/done/0012609a5ddb952abb2b22b8b7df8e6a724ac8f35ae96904609c4e8f9d56b314.json",
+        "sha256": "af2810c7067d3cbeee7af361e1f9ca9a3ccc09e4eb3020362d88b859a0b763d3"
+      }
+    },
+    "after-sparky": {
+      "action_key": "edf0d6e0ac156ffb7f6602e9df493528b128301a7d81682032dc917f74fb96a0",
+      "attestation_verification": "not independently verified",
+      "checkout_snapshot": {
+        "commit": "d073e9e48e4f991e28752d99c7258e72d32638cd",
+        "input": {
+          "bytes": 45155044,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "621d53ff03d86e5b381d2df4ba9c16e2469a922c5972285472ac508a6134221b"
+        },
+        "parent": "9e2f3eca262e1a95529216d4c35b8bf0d5d96585",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "cleanup_complete": true,
+      "host": "sparky",
+      "installed_check": {
+        "distribution": "prismabuild",
+        "expected_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+        "imported_file": "/home/rob/tmp/pri140-install-itif_wmd/overlay/lib/python3.12/site-packages/prismabuild/__init__.py",
+        "installed_commit": "027103d9a8417e06c7f13356e58779a313cd7088",
+        "module": "prismabuild",
+        "origin": "/home/rob/tmp/pri140-install-itif_wmd/overlay/lib/python3.12/site-packages/prismabuild/__init__.py",
+        "sdk": 5,
+        "verified_files": 48
+      },
+      "receipt": {
+        "bytes": 2537,
+        "file": "install-after-sparky-receipt.json",
+        "identity": "f5b17264f1c077a42625677ebd8f7b4c9a27ea764060faf6461acce7b7f38de3",
+        "sha256": "2049df7b64eecaad03560e67a2126419f067abab23846a471e9a7f3565c045b1"
+      },
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "result": {
+        "bytes": 4642,
+        "path": "/mnt/shared/prismabuild-fleet/cas/blobs/c7/c78cf74e4bf9f6fb61ad917fe95258e1367b6a7e7ae41070463fa52e04baed23",
+        "sha256": "c78cf74e4bf9f6fb61ad917fe95258e1367b6a7e7ae41070463fa52e04baed23"
+      },
+      "returncode": 0,
+      "status": "executed",
+      "stderr": {
+        "bytes": 43,
+        "file": "install-after-sparky.stderr.txt",
+        "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+      },
+      "stdout": {
+        "bytes": 7602,
+        "file": "install-after-sparky.stdout.txt",
+        "sha256": "74d1a79cf7ca5370ccaf9abc08ce66f5c173940281abab6e8acfc5b9c60aca10"
+      },
+      "terminal": {
+        "bytes": 17295,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/done/edf0d6e0ac156ffb7f6602e9df493528b128301a7d81682032dc917f74fb96a0.json",
+        "sha256": "2c3e29547443e7916b050bebf2e62502d967f900f90e0c51f49db36d01045e13"
+      }
+    },
+    "before": {
+      "action_key": "3ed46d1d6b6d50c0f73df935834610e8a3e813b24e3479e043f3d7e2bcbc7dc8",
+      "checkout_snapshot": {
+        "commit": "317ad627c5b3806c56d3af7feeece6cb00c0ac5d",
+        "input": {
+          "bytes": 45154017,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "38efdef9e5efaab2b3ee071d2c29f5b8d0b0146b34abfe0fd7bca002a7b36f17"
+        },
+        "parent": "defc5bd8467f009c9ea7935678e31e282e46d7a1",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "cleanup_complete": true,
+      "host": "sparklina",
+      "receipt": null,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2
+      },
+      "returncode": 1,
+      "status": "failed",
+      "stderr": {
+        "bytes": 831,
+        "file": "install-before.stderr.txt",
+        "sha256": "5497234347ff58f6272e5311a35ebe584b9bb8496171857bb4e1fb7ce622b21d"
+      },
+      "stdout": {
+        "bytes": 1967,
+        "file": "install-before.stdout.txt",
+        "sha256": "8783bc9f95b3c3c0d689cbb4daabfe8d2dee23bd60a3ae749aed25b533dd800c"
+      },
+      "terminal": {
+        "bytes": 12101,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/3ed46d1d6b6d50c0f73df935834610e8a3e813b24e3479e043f3d7e2bcbc7dc8.json",
+        "sha256": "b696a4755bc1564904c11a137263e310662841f1f80cf514bb7875ca7f9f6892"
+      }
+    },
+    "original": {
+      "action_key": "47f0d2fc05361819a203e921072c0ae798c49b0bf76f97bc0b3fae7a2f75361e",
+      "checkout_snapshot": {
+        "commit": "b50b6763de3467c45efb4de65349ed9836a3ee71",
+        "input": {
+          "bytes": 14901386,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "8621e09b82c8a19c622b6fe279d6ac2f0d9f8472661ac1c4178c10c53b212ebc"
+        },
+        "parent": "027103d9a8417e06c7f13356e58779a313cd7088",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "cleanup_complete": true,
+      "failure": "Traceback (most recent call last):\n  File \"/home/rob/tmp/prismabuild-checkouts/47f0d2fc0536.cujmab64/checkout/_pb1485/pack.py\", line 330, in <module>\n    main()\n  File \"/home/rob/tmp/prismabuild-checkouts/47f0d2fc0536.cujmab64/checkout/_pb1485/pack.py\", line 193, in main\n    opip(\"install\", \"--no-cache-dir\", \"--no-build-isolation\", \"--no-deps\", url)\n  File \"/home/rob/tmp/prismabuild-checkouts/47f0d2fc0536.cujmab64/checkout/_pb1485/pack.py\", line 186, in opip\n    return subprocess.run([op, \"-m\", \"pip\", *args], check=True,\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 571, in run\n    raise CalledProcessError(retcode, process.args,\nsubprocess.CalledProcessError: Command '['/home/rob/venvs/pb1485-sdk5-b40-overlay-20261004/bin/python', '-m', 'pip', 'install', '--no-cache-dir', '--no-build-isolation', '--no-deps', 'prismabuild @ git+file:///home/rob/tmp/prismabuild-checkouts/47f0d2fc0536.cujmab64/checkout@027103d9a8417e06c7f13356e58779a313cd7088']' returned non-zero exit status 1.\n",
+      "host": "sparky",
+      "limits": "Captured pip output was discarded by capture_output=True; outer CalledProcessError only.",
+      "receipt": null,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 4
+      },
+      "returncode": 1,
+      "status": "failed",
+      "stdout": null,
+      "terminal": {
+        "bytes": 11503,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/failed/47f0d2fc05361819a203e921072c0ae798c49b0bf76f97bc0b3fae7a2f75361e.json",
+        "sha256": "14cc4452a0b84fc40b0f8e9d2232de3ed0fda9f24482dd05ee4a86e300f8713d"
+      }
+    }
+  },
+  "historical_builder": {
+    "bytes": 16449,
+    "path": "_pb1485/pack.py",
+    "sha256": "8ba0fd0bb20781e4c7165407887c8eb72daa590acfcb6c90a3772cb0ff572afb",
+    "snapshot": "b50b6763de3467c45efb4de65349ed9836a3ee71"
+  },
+  "remaining": {
+    "1485": "End-to-end adoption unqualified.",
+    "2113": "No complete portable interpreter pack or qualified all-write supplier route.",
+    "2114": "No delivered interpreter or current both-host guarded GPU evidence; accepted PQ test absent and PQ is held.",
+    "2115": "Prerequisite dossier only; deployment decision packet not ready."
+  },
+  "schema": "prismabuild.pb1485.install_diagnosis.v1",
+  "scope": "Scratch install repair, not ARM pack delivery, current pin guard, GPU execution or runtime adoption."
+}
