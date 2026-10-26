@@ -1,6 +1,8 @@
 """Retained unified-memory admission claims through the current queue owners."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 import json
 
 import pytest
@@ -17,7 +19,7 @@ def claim(fleet, *, capacity=CAPACITY, adaptive=True):
     sample["cpu_pressure_full"] = 0.0
     tick(0.01)
     return queue.claim(
-        capacity=capacity, cpu_tiers=TIERS, adaptive_cpu=adaptive,
+        **simulated_admission(queue, capacity), cpu_tiers=TIERS, adaptive_cpu=adaptive,
         has_gpu=True, tags=["gb10", "sparklina"],
         cpu_sampler=lambda: cpu_sample(clock, readings),
         gpu_sampler=lambda: gpu_sample(sample, readings),
@@ -135,7 +137,7 @@ def test_observed_offer_and_claim_charge_foreign_memory_once(fleet):
     assert observed["mem_gb"] == 90
     candidate = publish("fills-foreign-adjusted-offer", gpu=0, mem_gb=30, tags=["sparklina"])
     result = queue.claim(
-        capacity=observed, cpu_tiers=TIERS, adaptive_cpu=True,
+        **simulated_admission(queue, observed), cpu_tiers=TIERS, adaptive_cpu=True,
         has_gpu=True, tags=["gb10", "sparklina"],
         cpu_sampler=lambda: cpu_sample(clock, readings),
         gpu_sampler=lambda: gpu_sample(sample, readings),

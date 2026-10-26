@@ -1,6 +1,8 @@
 """Fresh unknown foreign GPU residency fences new unified DRAM commitments."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission
+
 import pytest
 
 from prismabuild import _gang, adaptive_cpu, adaptive_gpu, census, pool
@@ -22,7 +24,7 @@ def direct_claim(fleet, *, adaptive=False):
     queue, clock, readings, sample, _publish, tick, _claim, _denial = fleet
     tick(0.01)
     return queue.claim(
-        capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=adaptive,
+        **simulated_admission(queue, CAPACITY), cpu_tiers=TIERS, adaptive_cpu=adaptive,
         has_gpu=True, tags=["gb10", "sparklina"],
         cpu_sampler=lambda: cpu_sample(clock, readings),
         gpu_sampler=lambda: gpu_sample(sample, readings),
@@ -104,7 +106,7 @@ def test_worker_serve_once_defers_before_execution(fleet, monkeypatch):
 
     monkeypatch.setattr(queue, "execute", unexpected_execution)
     assert queue.serve_once(
-        capacity=CAPACITY, has_gpu=True, tags=["gb10", "sparklina"],
+        **simulated_admission(queue, CAPACITY), has_gpu=True, tags=["gb10", "sparklina"],
     ) is None
     assert denial(key)["reason"] == "unified_gpu_memory_unknown"
     assert queue.records.item_path(pool.READY, key).is_file()

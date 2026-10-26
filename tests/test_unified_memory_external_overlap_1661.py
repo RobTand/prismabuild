@@ -1,4 +1,6 @@
 """GB10 foreign CUDA bytes are already inside host memory usage."""
+
+from admitted_queue_fixture import simulated_admission
 import pytest
 
 from prismabuild import box_capacity, gpu_sample_facts
@@ -30,7 +32,7 @@ def test_foreign_cpu_and_gpu_usage_share_one_physical_ceiling(
     key = publish("foreign-external-union", gpu=0, mem_gb=40, tags=["gb10"])
 
     claimed = queue.claim(
-        capacity=CAPACITY, has_gpu=True, tags=["gb10", "sparklina"],
+        **simulated_admission(queue, CAPACITY), has_gpu=True, tags=["gb10", "sparklina"],
         gpu_sampler=lambda: sample)
 
     if admitted:
@@ -59,7 +61,7 @@ def test_unclassifiable_sample_cannot_reuse_clear_evidence_in_a_claim(fleet, fau
         clock.now += box_capacity.GPU_SAMPLE_MAX_AGE_S + 1
 
     claimed = queue.claim(
-        capacity=CAPACITY, has_gpu=True, tags=["gb10", "sparklina"],
+        **simulated_admission(queue, CAPACITY), has_gpu=True, tags=["gb10", "sparklina"],
         gpu_sampler=lambda: None if fault == "missing" else sample,
         unified_memory=seed)
 
@@ -95,7 +97,7 @@ def test_overrunning_resident_scope_denies_a_new_pool_commitment(fleet):
     key = publish("overrunning-resident-scope", gpu=0, mem_gb=8, tags=["gb10"])
 
     claimed = queue.claim(
-        capacity=capacity, has_gpu=True, tags=["gb10", "sparklina"],
+        **simulated_admission(queue, capacity), has_gpu=True, tags=["gb10", "sparklina"],
         gpu_sampler=lambda: sample)
 
     assert claimed is None
