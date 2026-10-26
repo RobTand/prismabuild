@@ -228,6 +228,22 @@ def is_observing(queue: object) -> bool:
     return _collector(queue) is not None
 
 
+def on_unix_deadline(queue: object) -> Callable[[str, float], None] | None:
+    collector = _collector(queue)
+    return collector.unix_deadline if collector is not None else None
+
+
+@contextmanager
+def reading(queue: object, kind: SourceKind, identity: str) -> Iterator[None]:
+    observe(queue, kind, identity)
+    try:
+        yield
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        observe(queue, kind, identity,
+                EvidenceState.UNREADABLE if isinstance(exc, OSError) else EvidenceState.UNKNOWN)
+        raise
+
+
 def action_identity(item: Mapping[str, object]) -> str:
     return f"{item.get('action_key', '')}:{item.get('published_unix')!r}:{item.get('attempts', 0)!r}"
 

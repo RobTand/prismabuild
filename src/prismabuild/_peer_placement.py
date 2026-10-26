@@ -74,6 +74,7 @@ class PlacementPass:
         peer: Callable[[str, Mapping], PeerObservation | None],
         *, history: PlacementHistory, wall_clock: Callable[[], float],
         on_deadline: Callable[[TimedPreference, tuple[str, str], float], None] | None = None,
+        on_unavailable: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._read_offers = offers
         self._read_peer = peer
@@ -82,6 +83,7 @@ class PlacementPass:
         self._history = history
         self._wall_clock = wall_clock
         self._on_deadline = on_deadline
+        self._on_unavailable = on_unavailable
 
     def timer_expired(self, preference: TimedPreference, generation: tuple[str, str]) -> bool:
         started = self._history._deferrals.setdefault((preference, generation), time.monotonic())
@@ -117,6 +119,8 @@ class PlacementPass:
             except (OSError, ValueError, TypeError) as exc:
                 self._peers[host] = exc
         peer = self._peers[host]
+        if self._on_unavailable is not None and (peer is None or isinstance(peer, Exception)):
+            self._on_unavailable(host, isinstance(peer, Exception))
         if isinstance(peer, Exception):
             raise peer
         return peer

@@ -6754,10 +6754,13 @@ from rounded `yielding_s` or `wait_remaining_s` diagnostics.
 | CPU baseline | Counter writer or cached baseline stamp plus `MIN_INTERVAL_S`, currently 1 s | Next usable counter delta or the claim interest ends |
 | CPU and GPU observation | Next numeric sample within 1 s; consulted sample stamp plus 5 s freshness | New sample or the claim interest ends; counters lack complete callbacks |
 | Peer offer | Consulted announcement plus `OFFER_TIMEOUT_S`, currently 120 s | Replacement, retirement, or placement reevaluation |
+| Peer placement observations and scratch pass-on | Consulted host, GPU, power, denial, and sample stamps plus 5 s | New peer evidence, expiry, or claim cancellation |
+| Scratch service profile | Original measured time plus its declared maximum age; replacement offers retain their own 120 s expiry | Profile, device, root, offer, or generation changes |
 | Image class inventory | Consulted inventory stamp plus 5 s | Docker inventory or class policy changes |
 | Carried withhold | Original epoch plus 900 s, or exact `drain_until_unix`; unmeasured protection also retains its 180 s cutoff | Episode, reservation, holder, or publication changes; carried CPU proof retains original sample plus 5 s |
 | Other evaluated drain bounds | First denial or foreign stamp plus 900 s; holder-tail stamp plus the 60 s delta window and 5 s freshness | Fresh policy evidence or the existing bound expires; no synthetic refusal passes |
 | Gang readiness and terminal confirmation | Consulted readiness plus 30 s; first identical terminal observation plus 120 s | Member, readiness, or terminal signature changes |
+| Existing gang reservation horizon | First gang publication plus 600 s, at the first representable instant after the strict boundary | Gang or protected-copy authority changes; distinct from drain maturity |
 | Operator hold | Recorded hold expiry | Operator replacement, release, or expiry |
 | Claim lock contention | Cancellable retry within 1 s | Owner completion or claim cancellation; an unlock has no inotify event |
 | Unknown or unreadable source | Diagnosed recovery within 5 s | Source recovery, a fresh observation, or claim cancellation |

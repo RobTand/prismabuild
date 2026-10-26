@@ -15627,7 +15627,8 @@ class PoolQueue:
         return None
 
     @staticmethod
-    def _opposite_resource_load(offer: Mapping, *, gpu_job: bool) -> float | None:
+    def _opposite_resource_load(offer: Mapping, *, gpu_job: bool,
+                                on_expiry: Callable[[str, float], None] | None = None) -> float | None:
         """How busy this box is on the resource the item does NOT want.
 
         A placement proxy and nothing more.  It is not a thermal measurement,
@@ -15648,6 +15649,9 @@ class PoolQueue:
         stamp = detail.get("observed_unix")
         if not number(stamp) or not 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S:
             return None
+        if on_expiry is not None:
+            on_expiry(f"peer_observation_freshness:{offer.get('host', '?')}",
+                      stamp + box_capacity.GPU_SAMPLE_MAX_AGE_S)
         if gpu_job:
             # CPU load per preferred core, so boxes with different core counts
             # compare.  Load is already what the CPU admission controller reads.
@@ -15673,6 +15677,9 @@ class PoolQueue:
         load = measured if number(measured) else legacy
         if (number(stamp) and 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S
                 and number(load)):
+            if on_expiry is not None:
+                on_expiry(f"peer_gpu_power_freshness:{offer.get('host', '?')}",
+                          stamp + box_capacity.GPU_SAMPLE_MAX_AGE_S)
             return load
         return None
 
@@ -15708,7 +15715,8 @@ class PoolQueue:
         live = placement.offers()
         local = next((offer for offer in live if offer.get("host") == host), {})
         gpu_job = bool(demand.get("gpu"))
-        load = self._opposite_resource_load(local, gpu_job=gpu_job)
+        load = self._opposite_resource_load(local, gpu_job=gpu_job,
+                                            on_expiry=claim_wait.on_unix_deadline(self))
         if load is None or load < self.CROSS_RESOURCE_BUSY:
             return None           # this box is not taking anything from anyone
         identity = (str(item["action_key"]), repr(item.get("published_unix")))
@@ -15721,7 +15729,8 @@ class PoolQueue:
             remote_host = str(offer.get("host") or "")
             if not remote_host or remote_host == host:
                 continue
-            remote_load = self._opposite_resource_load(offer, gpu_job=gpu_job)
+            remote_load = self._opposite_resource_load(offer, gpu_job=gpu_job,
+                                                       on_expiry=claim_wait.on_unix_deadline(self))
             if remote_load is None or remote_load > load - self.CROSS_RESOURCE_MARGIN:
                 continue
             peer = placement.peer(remote_host, offer)
@@ -15811,11 +15820,15 @@ class PoolQueue:
         sampled = sample.get("sampled_unix")
         ceiling = (gpu_admission.MAX_SAMPLE_AGE_S if reason_class == "adaptive_gpu_refused"
                    else cpu_admission.MAX_SAMPLE_AGE_S)
-        return (type(denied) in (float, int) and math.isfinite(denied)
+        passed = (type(denied) in (float, int) and math.isfinite(denied)
                 and type(sampled) in (float, int) and math.isfinite(sampled)
                 and max(offer["announced_unix"], item.get("requeued_unix", item["published_unix"])) <= denied <= now
                 and 0 <= now - denied <= ceiling and 0 <= denied - sampled <= ceiling
                 and 0 <= now - sampled <= ceiling)
+        if passed:
+            claim_wait.unix_deadline(self, f"peer_denial_freshness:{offer['host']}", denied + ceiling)
+            claim_wait.unix_deadline(self, f"peer_sample_freshness:{offer['host']}", sampled + ceiling)
+        return passed
 
     @staticmethod
     def _scratch_refusal_sample_valid(reason, decision, sample, offer):
@@ -15863,6 +15876,25 @@ class PoolQueue:
         memory = memory_counters(device)
         return memory is not None and memory.total > 0 and memory.free + memory.used <= memory.total
 
+    def _scratch_profile_cost(self, offer, intent, *, now):
+        try:
+            cost = local_scratch.profile_cost(offer, intent, now=now)
+        except (ValueError, TypeError, OSError, KeyError):
+            claim_wait.observe(self, claim_wait.SourceKind.CAPABILITY,
+                               f"scratch:{offer.get('host', '?')}", claim_wait.EvidenceState.UNKNOWN)
+            raise
+        claim_wait.unix_deadline(self, f"scratch_profile_expiry:{offer.get('host', '?')}",
+                                 cost["measured_unix"] + intent["declaration"]["max_profile_age_s"])
+        return cost
+
+    def _scratch_current_offer(self, host):
+        with claim_wait.reading(self, claim_wait.SourceKind.PEER, f"scratch-offer:{host}"):
+            offer = record_store.read_document(self.records.worker_offer_path(host))
+        if not isinstance(offer, Mapping):
+            claim_wait.observe(self, claim_wait.SourceKind.PEER, f"scratch-offer:{host}",
+                               claim_wait.EvidenceState.UNKNOWN)
+        return offer
+
     def _scratch_placement(self, item, intent, demand, *, placement):
         """Independent worker choice; all shared offer/ledger reads precede admission."""
         host, now = socket.gethostname(), _now()
@@ -15871,13 +15903,13 @@ class PoolQueue:
         own = next((o for o in live if o.get("host") == host), None)
         if own is None or host not in matched or own.get("state") == "draining":
             raise local_scratch.LocalScratchError("scratch local offer missing or ineligible")
-        selected = local_scratch.profile_cost(own, intent, now=now)
+        selected = self._scratch_profile_cost(own, intent, now=now)
         candidates, cheaper, originals = [], [], {}
         for offer in sorted(live, key=lambda o: str(o.get("host", ""))):
             remote = str(offer.get("host", ""))
             candidate = {"host": remote, "fit": False, "exclusion": None}
             try:
-                candidate.update(local_scratch.profile_cost(offer, intent, now=_now()))
+                candidate.update(self._scratch_profile_cost(offer, intent, now=_now()))
                 originals[remote] = offer
                 if remote == host:
                     # Local feasibility belongs to the actual controllers and
@@ -15895,7 +15927,8 @@ class PoolQueue:
                 elif (candidate["envelope"] != selected["envelope"]
                       or candidate["pattern"] != selected["pattern"]):
                     candidate["exclusion"] = "incomparable_workload"
-                elif self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
+                elif self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu")),
+                        on_expiry=claim_wait.on_unix_deadline(self)) is None:
                     candidate["exclusion"] = "observations_not_fresh"
                 else:
                     try:
@@ -15924,14 +15957,16 @@ class PoolQueue:
             if remote == host or not candidate["fit"]:
                 continue
             try:
-                offer = record_store.read_document(self.records.worker_offer_path(remote))
+                offer = self._scratch_current_offer(remote)
                 if (not isinstance(offer, Mapping) or offer.get("host") != remote
                         or offer.get("state") == "draining"
                         or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
                         or not self._matching_offers(item, live=[offer])
                         or offer.get("cpu_tiers") != originals[remote].get("cpu_tiers")):
                     raise local_scratch.LocalScratchError("scratch peer current offer ineligible")
-                current_cost = local_scratch.profile_cost(offer, intent, now=_now())
+                claim_wait.unix_deadline(self, f"offer_expiry:{remote}",
+                                         offer["announced_unix"] + OFFER_TIMEOUT_S)
+                current_cost = self._scratch_profile_cost(offer, intent, now=_now())
                 if any(current_cost[k] != candidate[k] for k in (
                         "artifact_sha256", "measured_unix", "method", "envelope", "pattern",
                         "device", "filesystem", "root_inode")):
@@ -15960,12 +15995,13 @@ class PoolQueue:
             if remote == host or not candidate["fit"]:
                 continue
             try:
-                local_scratch.profile_cost(originals[remote], intent, now=now)
+                self._scratch_profile_cost(originals[remote], intent, now=now)
                 offer = current_offers[remote]
-                local_scratch.profile_cost(offer, intent, now=now)
+                self._scratch_profile_cost(offer, intent, now=now)
                 if not 0 <= now - offer["announced_unix"] <= OFFER_TIMEOUT_S:
                     raise local_scratch.LocalScratchError("scratch peer offer expired")
-                if self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu"))) is None:
+                if self._opposite_resource_load(offer, gpu_job=bool(demand.get("gpu")),
+                        on_expiry=claim_wait.on_unix_deadline(self)) is None:
                     raise local_scratch.LocalScratchError("observations_not_fresh")
                 view = cast(_peer_placement.PeerObservation,
                             placement.peer(remote, originals[remote]))
@@ -15985,19 +16021,20 @@ class PoolQueue:
 
     def _scratch_isolated(self, host, view):
         if view.scratch_isolated is None:
-            ledger = self.ledger(host)
-            census = ledger.holder_census()
-            isolated = False
-            for holder in census.non_private_holders:
-                if holder.kind is holder_census.HolderKind.HOST_MEMORY_MIRROR:
-                    continue
-                cpu = census.cpu_record(holder.name).fields
-                gpu = census.gpu_record(holder.name).fields
-                if (cpu.get("measurement") or cpu.get("unbounded_cpu")
-                        or gpu.get("measurement") or gpu.get("exclusive")):
-                    isolated = True
-                    break
-            view.scratch_isolated = isolated
+            with claim_wait.reading(self, claim_wait.SourceKind.HOST_LEDGER, host):
+                ledger = self.ledger(host)
+                census = ledger.holder_census()
+                isolated = False
+                for holder in census.non_private_holders:
+                    if holder.kind is holder_census.HolderKind.HOST_MEMORY_MIRROR:
+                        continue
+                    cpu = census.cpu_record(holder.name).fields
+                    gpu = census.gpu_record(holder.name).fields
+                    if (cpu.get("measurement") or cpu.get("unbounded_cpu")
+                            or gpu.get("measurement") or gpu.get("exclusive")):
+                        isolated = True
+                        break
+                view.scratch_isolated = isolated
         return view.scratch_isolated
 
     def _scratch_boundary(self, item, intent, evidence, demand):
@@ -16005,12 +16042,13 @@ class PoolQueue:
         # scans/CAS contract reads and BEFORE holding admission. No slow I/O
         # is added under the host lock. Inside, ORIGINAL age is checked again.
         host = socket.gethostname()
-        offer = record_store.read_document(self.records.worker_offer_path(host))
+        offer = self._scratch_current_offer(host)
         if (not isinstance(offer, Mapping) or offer.get("state") == "draining"
                 or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
                 or not self._matching_offers(item, live=[offer])):
             raise local_scratch.LocalScratchError("scratch local current offer ineligible")
-        cost = local_scratch.profile_cost(offer, intent, now=_now())
+        claim_wait.unix_deadline(self, f"offer_expiry:{host}", offer["announced_unix"] + OFFER_TIMEOUT_S)
+        cost = self._scratch_profile_cost(offer, intent, now=_now())
         chosen = next(c for c in evidence["candidates"] if c["host"] == host)
         current = local_scratch.root_identity(intent["root"])
         if (any(cost[k] != chosen[k] for k in (
@@ -16055,6 +16093,9 @@ class PoolQueue:
             return None
         denials = cpu_admission.read_json(
             self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
+        if not isinstance(denials, Mapping):
+            claim_wait.observe(self, claim_wait.SourceKind.PEER, f"denials:{host}",
+                               claim_wait.EvidenceState.UNKNOWN)
         capacity = _peer_placement.PeerCapacity(
             available=dict(remote.available()),
             observed=dict(offer.get("observed_capacity") or {}),
@@ -16136,7 +16177,8 @@ class PoolQueue:
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue
-            if require_fit and self._opposite_resource_load(offer, gpu_job=False) is None:
+            if require_fit and self._opposite_resource_load(
+                    offer, gpu_job=False, on_expiry=claim_wait.on_unix_deadline(self)) is None:
                 continue          # its reading is stale: not known to be there
             try:
                 view = placement.peer(remote_host, offer)
@@ -16156,18 +16198,23 @@ class PoolQueue:
         return None
 
     @staticmethod
-    def _idle_gpu_offer(offer: Mapping[str, object]) -> bool:
+    def _idle_gpu_offer(offer: Mapping[str, object], *,
+                         on_expiry: Callable[[str, float], None] | None = None) -> bool:
         """Positive, fresh broker evidence only; power draw alone proves no idle GPU."""
         if (capability_eligibility.HostPresence.from_offer(offer).gpu
                 is not capability_eligibility.Presence.PRESENT):
             return False
         detail = offer.get("observed_detail") or {}
         stamp = detail.get("gpu_sampled_unix")
-        return (detail.get("gpu_capacity_trusted") is True
+        idle = (detail.get("gpu_capacity_trusted") is True
                 and type(detail.get("foreign_gpu_processes")) is int
                 and detail["foreign_gpu_processes"] == 0
                 and type(stamp) in (int, float) and math.isfinite(stamp)
                 and 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        if idle and on_expiry is not None:
+            on_expiry(f"peer_gpu_freshness:{offer.get('host', '?')}",
+                      stamp + box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        return idle
 
     def _defer_to_idle_gpu_host(
         self, item: Mapping[str, object], demand: Mapping[str, int], *,
@@ -16179,7 +16226,8 @@ class PoolQueue:
             return None
         for offer in self._matching_offers(item, live=placement.offers()):
             host = str(offer.get("host") or "")
-            if not host or host == socket.gethostname() or not self._idle_gpu_offer(offer):
+            if not host or host == socket.gethostname() or not self._idle_gpu_offer(
+                    offer, on_expiry=claim_wait.on_unix_deadline(self)):
                 continue
             try:
                 peer = placement.peer(host, offer)
@@ -16205,7 +16253,7 @@ class PoolQueue:
             if not self._guest_restartable(item):
                 return None
             # CAS and withdrawal proof reads may outlive this GPU sample.
-            if not self._idle_gpu_offer(offer):
+            if not self._idle_gpu_offer(offer, on_expiry=claim_wait.on_unix_deadline(self)):
                 continue
             generation = (str(item["action_key"]), repr(item.get("published_unix")))
             if placement.timer_expired(_peer_placement.TimedPreference.IDLE_GPU_HOST, generation):
@@ -17782,14 +17830,16 @@ class PoolQueue:
                 }, scan)
         local_offer = next((offer for offer in placement.offers()
                             if offer.get("host") == socket.gethostname()), {})
-        idle_here = (portable and ready_gpu is None and self._idle_gpu_offer(local_offer)
+        idle_here = (portable and ready_gpu is None and self._idle_gpu_offer(
+            local_offer, on_expiry=claim_wait.on_unix_deadline(self))
                      and not self.ledger().held().get("gpu"))
         guest_retry = portable and item.get("cpu_guest_retry") is True
         # Most busy-host #1262 deferrals need no sealed CAS/lineage proof.
         restartable = (self._guest_restartable(item)
                        if idle_here or guest_retry else False)
         # Recheck the original sample after the blocking restartability proof.
-        idle_here = idle_here and self._idle_gpu_offer(local_offer)
+        idle_here = idle_here and self._idle_gpu_offer(
+            local_offer, on_expiry=claim_wait.on_unix_deadline(self))
         exhausted = guest_retry and not restartable
         cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
@@ -17931,6 +17981,14 @@ class PoolQueue:
         reservation_authority = (
             copy_authority and measurement_reservation.movement_drained(
                 census, self, tags=tagset, has_gpu=has_gpu, host=ledger.base.name))
+        if reservation_authority:
+            for election in census.get("gang_elections", {}).values():
+                rank = election.get("rank")
+                if (election.get("member_state") == "ready"
+                        and election.get("host") == ledger.base.name
+                        and (gang is None or election.get("group") != gang["group"])
+                        and isinstance(rank, list) and len(rank) == 3):
+                    self._observe_gang_reservation(rank[1], now=reservation_now)
         priority = measurement_reservation.candidate_priority(
             census, item, host=ledger.base.name, now=reservation_now,
             authority=reservation_authority,
@@ -19296,7 +19354,10 @@ class PoolQueue:
             self.offers, self._read_peer_observation, history=self._placement_history,
             wall_clock=lambda: _now(),
             on_deadline=lambda preference, generation, at: claim_wait.deadline(
-                self, f"{preference.value}_preference", at))
+                self, f"{preference.value}_preference", at),
+            on_unavailable=lambda host, unreadable: claim_wait.observe(
+                self, claim_wait.SourceKind.PEER, host,
+                claim_wait.EvidenceState.UNREADABLE if unreadable else claim_wait.EvidenceState.UNKNOWN))
 
         ledger = None
         host_gate = controller
@@ -20990,6 +21051,13 @@ class PoolQueue:
             validate_output_retry_stop=self._validate_output_retry_stop)
 
 
+    def _observe_gang_reservation(self, published: object, *, now: float) -> None:
+        from . import _measurement_reservation as reservation
+        if type(published) in (int, float) and math.isfinite(published):
+            if now - published <= reservation.GANG_RESERVE_AFTER_S:
+                claim_wait.unix_deadline(self, "gang_reservation_maturity",
+                    math.nextafter(published + reservation.GANG_RESERVE_AFTER_S, math.inf))
+
     def _gang_reservation_priority(self, item: Mapping[str, object], *,
                                    authority: bool) -> int | None:
         """The priority of the gang that ``item`` belongs to when it reserves its hosts now (#1579).
@@ -21006,6 +21074,8 @@ class PoolQueue:
         try:
             declared = _gang.declaration(item["gang"])
             record = _gang.read_group(self, declared["group"]) if declared else None
+            if record is not None and authority:
+                self._observe_gang_reservation(_gang.rank(record)[1], now=_now())
             if record is None or not measurement_reservation.reserves_after(
                     _gang.rank(record)[1], _now(), authority=authority):
                 return None

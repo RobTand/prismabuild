@@ -1,5 +1,6 @@
 """Claim reporting preserves dependencies before any candidate can be denied."""
 import json
+import math
 
 import pytest
 
@@ -7,6 +8,7 @@ from fleet_world import ActionRows
 from prismabuild import adaptive_cpu, claim_wait, host_hold, pool, resource_scope, runtime_publication
 from prismabuild import _peer_placement as placement
 from prismabuild import _gang
+from prismabuild import local_scratch
 
 
 def test_empty_claim_reports_ready_and_control_dependencies(tmp_path):
@@ -245,3 +247,147 @@ def test_gang_terminal_confirmation_keeps_its_first_observation_deadline(tmp_pat
             assert not _gang.note_terminal(queue, "b" * 32, "a" * 64, "same-ending", now=unix)
         assert collected.observation().blocked_on.deadlines == (
             claim_wait.RetryDeadline("gang_terminal_confirmation", 160.0),)
+
+
+@pytest.mark.parametrize("gpu_job", [False, True])
+def test_cross_resource_refusal_reports_the_consulted_peer_sample_expiry(
+        tmp_path, monkeypatch, clocks, gpu_job):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    tiers = {"preferred": [0, 1, 2, 3], "fallback": []}
+    capacity = {"cpu": 4, "gpu": 1, "mem_gb": 4}
+    for host, load in ((pool.socket.gethostname(), .75), ("peer", .1)):
+        queue.ledger(host).configure_cpu_tiers(tiers)
+        queue.ledger(host).ensure_capacity(capacity)
+        queue.announce(host=host, tags=[], has_gpu=True, capacity=capacity,
+                       cpu_tiers=tiers, observed_capacity=capacity, observed_detail={
+                           "observed_unix": 999.0, "load1": load * 4,
+                           "gpu_power_fraction": load, "gpu_power_sampled_unix": 998.0})
+    monkeypatch.setattr(runtime_publication, "live_authority", lambda: False)
+    monkeypatch.setattr(queue, "_ready_gpu_for_host", lambda *args, **kwargs: None)
+    row = {"action_key": "a" * 64, "published_unix": 1000.0,
+           "tags": [], "needs_gpu": gpu_job, "resources": {"cpu": 1, "mem_gb": 1}}
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        scan = queue._start_claim_scan(ready=[row])
+        assert queue._defer_cross_resource_placement(
+            row, {"cpu": 1, "mem_gb": 1, **({"gpu": 1} if gpu_job else {})},
+            placement=scan.placement) is not None
+    deadlines = collected.observation().blocked_on.deadlines
+    assert claim_wait.RetryDeadline("peer_observation_freshness:peer", 44.0) in deadlines
+    if not gpu_job:
+        assert claim_wait.RetryDeadline("peer_gpu_power_freshness:peer", 43.0) in deadlines
+
+
+def test_idle_gpu_sample_expiry_is_separate_from_a_preference_timeout(tmp_path, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    offer = {"host": "peer", "has_gpu": True, "observed_detail": {
+        "gpu_capacity_trusted": True, "foreign_gpu_processes": 0, "gpu_sampled_unix": 998.0}}
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        assert queue._idle_gpu_offer(offer, on_expiry=claim_wait.on_unix_deadline(queue))
+    assert collected.observation().blocked_on.deadlines == (
+        claim_wait.RetryDeadline("peer_gpu_freshness:peer", 43.0),)
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_swallowed_peer_reads_report_unknown_evidence_and_recovery(
+        tmp_path, monkeypatch, clocks, unreadable):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    def read_peer(host, offer):
+        if unreadable:
+            raise OSError("peer ledger unreadable")
+        return None
+    monkeypatch.setattr(queue, "_read_peer_observation", read_peer)
+    monkeypatch.setattr(runtime_publication, "live_authority", lambda: False)
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        scan = queue._start_claim_scan(ready=[])
+        if unreadable:
+            with pytest.raises(OSError):
+                scan.placement.peer("peer", {})
+        else:
+            assert scan.placement.peer("peer", {}) is None
+    result = collected.observation().blocked_on
+    assert not result.coverage.complete
+    state = claim_wait.EvidenceState.UNREADABLE if unreadable else claim_wait.EvidenceState.UNKNOWN
+    assert claim_wait.WakeInput(claim_wait.SourceKind.PEER, "peer", state) in result.inputs
+    assert claim_wait.RetryDeadline("source_recovery", 45.0) in result.deadlines
+
+
+def test_existing_gang_reservation_horizon_reports_the_strict_boundary(tmp_path, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        queue._observe_gang_reservation(500.0, now=1000.0)
+    due = math.nextafter(1100.0, math.inf) - 1000.0 + 40.0
+    assert collected.observation().blocked_on.deadlines == (
+        claim_wait.RetryDeadline("gang_reservation_maturity", due),)
+    assert due > 140.0
+
+
+def test_measured_scratch_profile_reports_its_original_expiry(tmp_path, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    root = str(tmp_path / "scratch")
+    device = {"device": "synthetic-device", "filesystem": "ext4", "root_inode": "1"}
+    profile = {"schema": local_scratch.PROFILE_SCHEMA, "host": "peer", "root": root,
+        **device, "profile_contract": local_scratch.PROFILE_CONTRACT,
+        "method": local_scratch.PROFILE_METHOD, "pattern": local_scratch.PROFILE_PATTERN,
+        "envelope": {"root": root, "bytes": 1024, "block_bytes": 1024, "repetitions": 1},
+        "measured_unix": 990.0, "write_bytes": 1024, "write_elapsed_s": 2.0,
+        "read_bytes": 0, "read_elapsed_s": None, "completed": True, "errors": []}
+    profile["artifact_sha256"] = pool.pb.canonical_sha256(profile)
+    offer = {"host": "peer", "observed_detail": {
+        local_scratch.PROFILES: [profile], local_scratch.DEVICES: {root: device}}}
+    intent = {"root": root, "declaration": {"profile_contract": local_scratch.PROFILE_CONTRACT,
+        "max_profile_age_s": 60.0, "write_bytes": 1024, "read_bytes": 0}}
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        assert queue._scratch_profile_cost(offer, intent, now=1000.0)["io_seconds"] == 2.0
+    assert collected.observation().blocked_on.deadlines == (
+        claim_wait.RetryDeadline("scratch_profile_expiry:peer", 90.0),)
+
+
+def test_scratch_peer_refusal_reports_both_original_freshness_bounds(tmp_path, clocks):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    row = {"action_key": "a" * 64, "published_unix": 900.0, "attempts": 0}
+    sample = {"sampled_unix": 997.0, "cpu_count": 4, "busy_cpus": 4.0,
+              "psi_some": .1, "interval_s": 1.0}
+    offer = {"host": "peer", "announced_unix": 990.0,
+             "cpu_tiers": {"preferred": [0, 1, 2, 3], "fallback": []}}
+    record = {**row, "host": "peer", "reason": "adaptive_cpu_refused", "denied_unix": 998.0,
+              "evidence": {"decision": {"reason": "host_pressure", "fresh": True, "sample": sample}}}
+    view = placement.PeerObservation(placement.PeerCapacity({}, {}, 0),
+                                     {"a" * 64 + ":900.0": record})
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        assert queue._scratch_peer_passed_on(row, offer, view, now=1000.0)
+    assert set(collected.observation().blocked_on.deadlines) == {
+        claim_wait.RetryDeadline("peer_denial_freshness:peer", 43.0),
+        claim_wait.RetryDeadline("peer_sample_freshness:peer", 42.0)}
+
+
+@pytest.mark.parametrize("source", ["offer", "isolation"])
+def test_scratch_reads_outside_the_peer_cache_preserve_unreadable_evidence(
+        tmp_path, monkeypatch, clocks, source):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    def unreadable(*args, **kwargs):
+        raise OSError("source unreadable")
+    if source == "offer":
+        monkeypatch.setattr(pool.record_store, "read_document", unreadable)
+        read = lambda: queue._scratch_current_offer("peer")
+        kind, identity = claim_wait.SourceKind.PEER, "scratch-offer:peer"
+    else:
+        ledger = queue.ledger("peer")
+        monkeypatch.setattr(ledger, "holder_census", unreadable)
+        monkeypatch.setattr(queue, "ledger", lambda host: ledger)
+        view = placement.PeerObservation(placement.PeerCapacity({}, {}, 0), {})
+        read = lambda: queue._scratch_isolated("peer", view)
+        kind, identity = claim_wait.SourceKind.HOST_LEDGER, "peer"
+    with claim_wait.capture(queue, wall_clock=lambda: clocks["unix"],
+                            monotonic_clock=lambda: clocks["monotonic"]) as collected:
+        with pytest.raises(OSError, match="source unreadable"):
+            read()
+    result = collected.observation().blocked_on
+    assert claim_wait.WakeInput(kind, identity, claim_wait.EvidenceState.UNREADABLE) in result.inputs
+    assert not result.coverage.complete
+    assert claim_wait.RetryDeadline("source_recovery", 45.0) in result.deadlines
