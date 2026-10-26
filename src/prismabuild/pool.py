@@ -9509,51 +9509,59 @@ class PoolQueue:
                     os.close(descriptor)
         return pruned
 
-    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
-        """Withdraw old member publications whose group was never filed."""
-        from . import _gang
-        paths = self.records.json_slot_paths(READY)
+    @contextmanager
+    def _gang_sweep_batch(self, paths: list[Path], *, limit: int, kind: str):
+        """Rotate bounded gang cleanup batches; the cursor grants no authority."""
         if not paths or limit <= 0:
+            yield []
             return
-        marker = self._sweep_marker().with_suffix(".gang-members")
+        marker = self._sweep_marker().with_suffix(f".gang-{kind}")
         try:
             cursor = (record_store.read_document(marker) or {}).get("after", "")
         except (OSError, PoolContractError):
             cursor = ""
         start = bisect_right([path.name for path in paths], str(cursor))
         selected = (paths[start:] + paths[:start])[:limit]
-        for path in selected:
-            try:
-                item = record_store.read_document(path)
-                if item is None:
-                    continue
-                gang = _gang.declaration(item.get("gang"))
-                if (gang is None
-                        or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
-                        or _gang.read_group(self, gang["group"]) is not None):
-                    continue
-                key = str(item["action_key"])
-                with self.action_transition_lock(key, blocking=False) as acquired:
-                    if not acquired:
-                        continue
-                    current = record_store.value_or_raise(self.records.item(READY, key))
-                    if (current is None
-                            or current.get("published_unix") != item["published_unix"]
-                            or _gang.declaration(current.get("gang")) != gang
-                            or _now() - float(current["published_unix"]) < GANG_REGISTRATION_GRACE_S
-                            or _gang.read_group(self, gang["group"]) is not None
-                            or record_store.value_or_raise(self.records.item(CLAIMED, key)) is not None):
-                        continue
-                    self.withdraw(key, reason="gang group not published within registration grace",
-                                  by=f"gang-registration:{gang['group']}")
-            except (_gang.GangContractError, PoolContractError, OSError,
-                    pb.PrismaBuildError, KeyError, TypeError, ValueError):
-                continue
-
         try:
-            immutable_files.write_json_atomic(marker, {"after": selected[-1].name})
-        except OSError:
-            pass
+            yield selected
+        finally:
+            try:
+                immutable_files.write_json_atomic(marker, {"after": selected[-1].name})
+            except OSError:
+                pass
+
+    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
+        """Withdraw old member publications whose group was never filed."""
+        from . import _gang
+        paths = self.records.json_slot_paths(READY)
+        with self._gang_sweep_batch(paths, limit=limit, kind="members") as selected:
+            for path in selected:
+                try:
+                    item = record_store.read_document(path)
+                    if item is None:
+                        continue
+                    gang = _gang.declaration(item.get("gang"))
+                    if (gang is None
+                            or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                            or _gang.read_group(self, gang["group"]) is not None):
+                        continue
+                    key = str(item["action_key"])
+                    with self.action_transition_lock(key, blocking=False) as acquired:
+                        if not acquired:
+                            continue
+                        current = record_store.value_or_raise(self.records.item(READY, key))
+                        if (current is None
+                                or current.get("published_unix") != item["published_unix"]
+                                or _gang.declaration(current.get("gang")) != gang
+                                or _now() - float(current["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                                or _gang.read_group(self, gang["group"]) is not None
+                                or record_store.value_or_raise(self.records.item(CLAIMED, key)) is not None):
+                            continue
+                        self.withdraw(key, reason="gang group not published within registration grace",
+                                      by=f"gang-registration:{gang['group']}")
+                except (_gang.GangContractError, PoolContractError, OSError,
+                        pb.PrismaBuildError, KeyError, TypeError, ValueError):
+                    continue
 
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
