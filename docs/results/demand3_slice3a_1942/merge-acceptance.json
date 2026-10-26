@@ -90,6 +90,16 @@
           "b4252b5d089997de8cd4751c3de31320c7f465e9fa68b8c95ce5dab5229d64b1"
         ],
         "outcome": "65 executed actions: 386 integrated passes and 1580 qualification passes; zero skips. Canonical receipts and bindings in evidence.json."
+      },
+      {
+        "id": "SC-03",
+        "scope": "Closed-field inventory follows the renamed DirtyInputs.confirm owner; no boundary policy change.",
+        "actions": [
+          "9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92",
+          "e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97"
+        ],
+        "outcome": "Two executed fleet actions, eight unique collected/ran/passed tests each, zero skips or warnings; canonical receipts, immutable logs, payloads and source bundles verified.",
+        "evidence": "inventory-repair-evidence.json"
       }
     ],
     "remaining_gaps": [
@@ -823,5 +833,20 @@
       }
     ]
   },
-  "persistence": "Read-back proves retained record and content availability only. No physical or power-loss durability is inferred; no storage policy changed."
+  "persistence": "Read-back proves retained record and content availability only. No physical or power-loss durability is inferred; no storage policy changed.",
+  "inventory_repair": {
+    "source_head": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+    "before_head": "052bcafb0b764420f144db32b106792603427c68",
+    "red_action": "2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39",
+    "green_actions": [
+      "9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92",
+      "e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97"
+    ],
+    "metadata_rows": 581,
+    "changed_rows": 1,
+    "unique_tests": 8,
+    "passing_executions": 16,
+    "source_binding": "Prior implementation qualification remains bound to 6cef1e12ef. The only src/tools/tests delta from 052bcafb0b to the repair source is one row in tests/compat/field_sets.json; all production and test bodies are unchanged. Both architecture inventory actions bind complete src/tools/tests trees to the repair source.",
+    "review": "Independent external review remains pending."
+  }
 }

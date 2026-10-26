@@ -57,3 +57,45 @@ Consumer arming, live latency, outage recovery, runtime publication, role
 convergence and whole staged-read or campaign acceptance remain unqualified.
 `standards-review.md` and `spec-review.md` are internal read-only reports;
 they grant no external approval. No deployment authority follows from this record.
+
+## Compatibility inventory repair
+
+The Chief of Staff found a missed inventory refresh after publication of
+`052bcafb0b`. The existing pinned-field test reproduced it in PB action
+`2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39`:
+`1 failed, 7 deselected`. The failure names row 339 and the old
+`queue_bell_host_reads.py` / `DirtyHostInputs.confirm` owner.
+
+`tools/maintenance/refresh_compat_field_sets.py` applied the reviewed rename to
+`queue_bell_input_reads.py` / `DirtyInputs.confirm`. Exactly one of 581 rows
+changed. The `keys` binding and `tuple(self._pending)` expression are identical.
+No test assertion or production source changed in the repair.
+
+Repair source `662aa8aaf4edae8b6beea68b2345bfecd0355b8c` passed the complete
+`tests/test_wire_inventory.py` on x86/Python 3.14 and GB10/Python 3.12.
+Each action collected, ran and passed the same eight tests, with zero skips or
+warnings. These are eight unique tests and 16 passing executions. Both actions
+executed once without a retry or cache hit. Each declared 1 CPU, 2 GiB and zero
+GPUs, with native threads 1, priority -10, 180s action timeout and 600s client
+wait. Combined demand was 2 CPU and 4 GiB. Architecture tags qualify the two
+required cohorts; PB owns placement and subdivision. Both transient units
+finished inactive/dead with ExecMainStatus 0.
+
+The earlier 386-test integrated and repeated qualification evidence remains
+bound to the earlier implementation source. From `052bcafb0b` to the repair
+source, `src` and `tools` trees match; the sole `tests` delta is this inventory
+row. The new inventory actions bind complete trees to the repair source.
+`inventory-repair-evidence.json` retains the failed reproduction, both successful
+terminals, immutable logs, receipt and result digests, runtime and populations.
+`inventory-repair-refresh.json` retains the reviewed scanner delta.
+
+```bash
+python3 docs/results/demand3_slice3a_1942/verify_inventory_repair.py \
+  --evidence-dir /mnt/shared/paperclip-runs/PRI-64/slice3a/inventory-repair
+```
+
+This read-only auditor checks the records, canonical receipts, CAS payloads,
+sealed request keys, source bundles and exact single-row repair. It runs no
+tests. External Standards and Spec review, batch merge and later slices remain
+pending. Requirement targets and global implementation/deployment axes are
+unchanged by this metadata repair.

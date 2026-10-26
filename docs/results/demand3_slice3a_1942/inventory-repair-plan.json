@@ -1,0 +1,105 @@
+{
+  "head": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+  "source_blobs": {
+    "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+  },
+  "runs": [
+    {
+      "name": "green-x86",
+      "checkout": "/home/rob/paperclip-worktrees/prismabuild/PRI-64-1942",
+      "head": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+      "files": [
+        "tests/test_wire_inventory.py"
+      ],
+      "report": "/mnt/shared/paperclip-runs/PRI-64/slice3a/inventory-repair/green-x86.json",
+      "argv": [
+        "python3",
+        "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+        "--checkout",
+        "/home/rob/paperclip-worktrees/prismabuild/PRI-64-1942",
+        "--python",
+        "/home/rob/venvs/pb-cpu/bin/python",
+        "--tmpdir",
+        "/tmp",
+        "--threads-per-shard",
+        "1",
+        "--cpus-per-shard",
+        "1",
+        "--mem-gb",
+        "2",
+        "--timeout-s",
+        "180",
+        "--wait-s",
+        "600",
+        "--priority",
+        "-10",
+        "--tag",
+        "x86",
+        "--json",
+        "/mnt/shared/paperclip-runs/PRI-64/slice3a/inventory-repair/green-x86.json",
+        "tests/test_wire_inventory.py"
+      ],
+      "architecture": "x86",
+      "workers": 1,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2,
+        "gpu": 0,
+        "native_threads_per_worker": 1
+      },
+      "unit": "pb-pri64-inventory-x86-662aa8aaf4.service"
+    },
+    {
+      "name": "green-gb10",
+      "checkout": "/home/rob/paperclip-worktrees/prismabuild/PRI-64-1942",
+      "head": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+      "files": [
+        "tests/test_wire_inventory.py"
+      ],
+      "report": "/mnt/shared/paperclip-runs/PRI-64/slice3a/inventory-repair/green-gb10.json",
+      "argv": [
+        "python3",
+        "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+        "--checkout",
+        "/home/rob/paperclip-worktrees/prismabuild/PRI-64-1942",
+        "--python",
+        "/home/rob/venvs/pb-cpu/bin/python",
+        "--tmpdir",
+        "/tmp",
+        "--threads-per-shard",
+        "1",
+        "--cpus-per-shard",
+        "1",
+        "--mem-gb",
+        "2",
+        "--timeout-s",
+        "180",
+        "--wait-s",
+        "600",
+        "--priority",
+        "-10",
+        "--tag",
+        "gb10",
+        "--json",
+        "/mnt/shared/paperclip-runs/PRI-64/slice3a/inventory-repair/green-gb10.json",
+        "tests/test_wire_inventory.py"
+      ],
+      "architecture": "gb10",
+      "workers": 1,
+      "resources": {
+        "cpu": 1,
+        "mem_gb": 2,
+        "gpu": 0,
+        "native_threads_per_worker": 1
+      },
+      "unit": "pb-pri64-inventory-gb10-662aa8aaf4.service"
+    }
+  ],
+  "aggregate": {
+    "cpu": 2,
+    "mem_gb": 4,
+    "gpu": 0,
+    "native_threads_per_worker": 1
+  },
+  "before_head": "052bcafb0b764420f144db32b106792603427c68"
+}
