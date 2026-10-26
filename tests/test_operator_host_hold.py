@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -14,9 +15,14 @@ from test_gpu_evicts_cpu_guests import guest_fleet
 import pbstatus
 
 
+@pytest.fixture(autouse=True)
+def fixed_hold_clock(monkeypatch):
+    monkeypatch.setattr(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
+
+
 def put_hold(root, host=HOST, **kw):
     return host_hold.change_host_hold(root, host, owner="operator", reason="external load",
-                                      expires_unix=time.time() + 3600, **kw)
+                                      expires_unix=host_hold.time.time() + 3600, **kw)
 
 
 @pytest.mark.parametrize("route", ["cpu", "gpu", "guest"])
@@ -204,7 +210,7 @@ def test_operator_withdrawal_remains_available_while_held(guest_fleet):
 
 def test_expiry_resumes_claiming_and_is_logged_once(guest_fleet, monkeypatch, capsys):
     fleet = guest_fleet
-    clock = time.time()
+    clock = host_hold.time.time()
     monkeypatch.setattr(host_hold.time, "time", lambda: clock)
     host_hold.change_host_hold(fleet.queue.root, "sparky", owner="operator", reason="load",
                               now=clock, expires_unix=clock + 1)
@@ -255,7 +261,7 @@ def test_only_the_owner_can_release_or_replace_and_force_needs_a_reason(tmp_path
     for release in (True, False):
         with pytest.raises(ValueError, match="another owner"):
             host_hold.change_host_hold(tmp_path, HOST, owner="other", reason="takeover",
-                                      expires_unix=time.time() + 100, release=release)
+                                      expires_unix=host_hold.time.time() + 100, release=release)
     with pytest.raises(ValueError, match="requires --reason"):
         host_hold.change_host_hold(tmp_path, HOST, owner="other", force=True, release=True)
     host_hold.change_host_hold(tmp_path, HOST, owner="other", force=True,
@@ -374,7 +380,7 @@ def test_pbhold_command_sets_lists_and_releases_a_fixture(tmp_path, capsys):
     spec = importlib.util.spec_from_file_location("operator_pbhold", tool)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    until = datetime.fromtimestamp(time.time() + 100, timezone.utc).isoformat()
+    until = datetime.fromtimestamp(host_hold.time.time() + 100, timezone.utc).isoformat()
     common = ["--queue-root", str(tmp_path), "--host", HOST]
     assert module.hold_main(common + ["--owner", "operator", "--reason", "load", "--until", until]) == 0
     assert module.hold_main(common + ["--list"]) == 0

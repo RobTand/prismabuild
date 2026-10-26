@@ -203,12 +203,13 @@ def _worker():
     return module
 
 
+@mock.patch.object(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
 def _run_worker(tmp_path, argv, *, ready, sample=None, held=False):
     worker = _worker()
     queue = _Queue(tmp_path / "pb-queue", ready=ready)
     if held:
         host_hold.change_host_hold(queue.root, "testbox", owner="operator",
-                                  reason="fixture hold", expires_unix=time.time() + 60)
+                                  reason="fixture hold", expires_unix=host_hold.time.time() + 60)
     sleeps = []
     for name in ("loaded.json", "published.json"):
         (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))

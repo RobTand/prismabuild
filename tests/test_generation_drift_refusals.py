@@ -133,6 +133,7 @@ def _drift_records(queue_root: Path) -> list[dict]:
             for path in sorted(directory.glob("*.json"))]
 
 
+@mock.patch.object(host_hold, "time", SimpleNamespace(time=lambda: 1_000.0))
 def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool,
                 held: bool = False):
     """One worker start whose fleet moves at the worst moment, if asked.
@@ -148,7 +149,7 @@ def _run_worker(tmp_path: Path, capsys, *, move_during_publication: bool,
     queue = _Queue(tmp_path / "pb-queue")
     if held:
         host_hold.change_host_hold(queue.root, wl.socket.gethostname(), owner="operator",
-                                  reason="fixture hold", expires_unix=wl.time.time() + 60)
+                                  reason="fixture hold", expires_unix=host_hold.time.time() + 60)
     loaded = _receipt(tmp_path / "gen-loaded" / "RUNTIME_VERSION.json", LOADED)
     live = _receipt(tmp_path / "repo" / "RUNTIME_VERSION.json", LOADED)
 
