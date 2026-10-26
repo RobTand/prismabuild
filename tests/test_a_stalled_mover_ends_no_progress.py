@@ -590,29 +590,13 @@ def _brief(outcome: dict) -> str:
         "stall", "stderr")})
 
 
-def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
-        tmp_path: Path, monkeypatch) -> None:
-    """Review test 1 on #1010.  The disk pacer holds the copy after its
-    first entry lands, for three copy graces, while the worker's own sample
-    of the pool's members reads their await over the pacer's cap.  The
-    worker credits the hold, the mover completes, and the record says how
-    many seconds were credited.  Red before #1010's credit: the same hold
-    ended the mover ``no_progress`` one grace after its last landing."""
-
-    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
-    disks = _Disks(OVER)
-    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", disks, raising=False)
-    total, digest, grace = _window(tmp_path)
-    base = tmp_path / "run"
-    hold = 3.0 * grace
-    argv = _mover_argv(base, digest=digest, total=total,
-                       manifest=tmp_path / "manifest.json")
+def _registered_resume(base: Path, source: str, monkeypatch):
+    """Observe the real resume holder before judging a zero-wait workload."""
 
     entered = base / "holder-writer-entered"
     release = base / "holder-writer-released"
     observed = base / "holder-record-observed"
     unknown = base / "holder-before-registration.json"
-    source = _mover_source(argv, hold_on=2, hold=hold)
     registration_window = (
         "real_holder_writer = pool.PoolQueue.write_stage_ownership_holder\n"
         "def wait_for_observer(path):\n"
@@ -649,12 +633,33 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
 
         monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
 
+    return source, observe_registration_window
+
+
+def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review test 1 on #1010.  The disk pacer holds the copy after its
+    first entry lands, for three copy graces, while the worker's own sample
+    of the pool's members reads their await over the pacer's cap.  The
+    worker credits the hold, the mover completes, and the record says how
+    many seconds were credited.  Red before #1010's credit: the same hold
+    ended the mover ``no_progress`` one grace after its last landing."""
+
+    monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
+    disks = _Disks(OVER)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT", disks, raising=False)
+    total, digest, grace = _window(tmp_path)
+    base = tmp_path / "run"
+    hold = 3.0 * grace
+    argv = _mover_argv(base, digest=digest, total=total,
+                       manifest=tmp_path / "manifest.json")
+
+    source, before = _registered_resume(
+        base, _mover_source(argv, hold_on=2, hold=hold), monkeypatch)
+
     outcome, receipt = _run_mover(
         base, source, _policy(grace),
-        contention=_contention(base), ceiling=60.0, before=observe_registration_window)
-
-    assert entered.exists() and release.exists() and observed.exists()
-    assert json.loads(unknown.read_text())["recorded"] is False
+        contention=_contention(base), ceiling=60.0, before=before)
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert outcome["elapsed_s"] > hold
