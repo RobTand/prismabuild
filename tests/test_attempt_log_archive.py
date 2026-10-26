@@ -313,29 +313,46 @@ def test_mcp_deadline_stops_the_archive_decoder(fleet, zstd_required, tmp_path, 
     import os
     import select
     import signal
+    from types import SimpleNamespace
     import pbmcp
     record = fleet.finish()
     fleet.retire()
     codec = tmp_path / "zstd"
-    pid_path = tmp_path / "decoder.pid"
-    codec.write_text(f"#!{sys.executable}\nimport os, signal\nfrom pathlib import Path\n"
-                     f"Path({str(pid_path)!r}).write_text(str(os.getpid()))\nsignal.pause()\n")
+    ready_path = tmp_path / "decoder-ready"
+    os.mkfifo(ready_path)
+    codec.write_text(f"#!{sys.executable}\nimport os, signal\n"
+                     f"with open({str(ready_path)!r}, 'w') as ready:\n"
+                     "    ready.write(str(os.getpid()))\n"
+                     "signal.pause()\n")
     codec.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     service = pbmcp.Session(queue_root=fleet.queue.root, cas_root=fleet.cas,
-                            repo_link=fleet.queue.root.parent / "repo", deadline_s=10)
-    service.deadline_s = 1
+                            repo_link=fleet.queue.root.parent / "repo", deadline_s=0)
+    ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
     pidfd = None
+    bounded, native_select = pbmcp._reader.bounded, select.select
+
+    def timeout_after_decoder_ready(readers, writers, errors, timeout):
+        nonlocal pidfd
+        ready, _, _ = native_select([ready_fd, *readers], [], [], 60)
+        assert ready_fd in ready, "log reader did not reach its decoder readiness handshake"
+        pidfd = os.pidfd_open(int(os.read(ready_fd, 64)))
+        return [], [], []
+
+    def expire_log(section, read, **kwargs):
+        if section != "log":
+            return bounded(section, read, **kwargs)
+        kwargs["deadline"] = SimpleNamespace(bounded=True, remaining=lambda: 60.0)
+        with monkeypatch.context() as waiting:
+            waiting.setattr(pbmcp._reader.select, "select", timeout_after_decoder_ready)
+            return bounded(section, read, **kwargs)
+
+    monkeypatch.setattr(pbmcp._reader, "bounded", expire_log)
     try:
         body = service.call("pb_log", {"key_prefix": record["action_key"]})
-        assert not body["complete"] and body["timed_out"], {
-            field: body.get(field) for field in ("complete", "timed_out", "found", "reason")}
-        assert pid_path.exists(), "MCP never reached its decoder"
-        try:
-            pidfd = os.pidfd_open(int(pid_path.read_text()))
-        except ProcessLookupError:
-            return  # Already reaped after its reader died.
-        assert select.select([pidfd], [], [], 5)[0], "decoder outlived the cancelled reader"
+        assert not body["complete"] and body["timed_out"] == ["log"], body
+        assert pidfd is not None, "MCP never reached its decoder"
+        assert native_select([pidfd], [], [], 60)[0], "decoder outlived the cancelled reader"
     finally:
         if pidfd is not None:
             try:
@@ -343,3 +360,4 @@ def test_mcp_deadline_stops_the_archive_decoder(fleet, zstd_required, tmp_path, 
             except ProcessLookupError:
                 pass
             os.close(pidfd)
+        os.close(ready_fd)
