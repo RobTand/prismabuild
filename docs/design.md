@@ -2556,6 +2556,25 @@ stdout line is scanned for receipt announcements during that same pass. The
 consumer projection bypasses the legacy renderer's complete log expansion;
 legacy JSON and human rendering keep their existing verification path.
 
+A consumer pinned to an overwritten or missing mutable terminal selects capped
+archive metadata through `archived_generation_summaries`. The complete selected
+generation's attempt documents share a 4 MiB accepted-byte budget. Canonical
+identities, contiguous history, retry bounds and handoff prefixes retain their
+existing checks. Selection reads no logs. Legacy readers retain
+`archived_generation_outcomes` and its full-log verification.
+
+The consumer carries the selected source path and reconstructed record into
+verification. An archived source must be the canonical immutable terminal
+attempt for that exact key, generation and attempt. Its reconstruction must
+still equal the captured record before and after streaming. Archive detail
+comes directly from that immutable source and has no mutable inline stream
+summary to compare. Full log digests and byte counts, receipt announcements,
+execution receipt and payload still verify normally. Archives do not retain a
+CAS locator, so the consumer supplies its configured CAS; the sealed request
+must match the action key and the exact announced execution receipt. A changed,
+missing or noncanonical archive refuses. SDK result reads continue to require
+the current mutable terminal. These are source contracts, not deployed claims.
+
 The 16 MiB per-stream cap bounds retained evidence, independently of total log
 size. Oversized descriptors retain `path`, `bytes` and `sha256` for the fully
 hashed log and add `truncated: true` and `evidence: {offset, bytes, sha256}`
@@ -10418,6 +10437,39 @@ ledger mutation guard (`ResourceLedger`'s `_guarded_mutation(blocking=True)`)
 and the stage root's ownership lock. The same holder failure would stall the
 loop there.
 
+### Shared waits before consumer integration (#1945)
+
+`host_wait.HostWaitHub` combines typed local invalidations, bell v2 hints,
+stop, and absolute monotonic deadlines. It is a source library with one
+observation/wait owner. Supervisor multiplexing and worker, prewarm, and tier
+consumer migrations remain separate slices. This library changes no live
+consumer default and does not establish deployed topic coverage.
+
+The caller captures `arm()` before reading authoritative records, then calls
+`wait_since(before, ClaimWait(...))`. Local generations stay latched across
+reads. Registration and generation comparison share the notification lock,
+so an event between a read and registration returns immediately. Wake inputs
+and deadline reasons are typed. Due deadlines retain their original absolute
+times across unrelated events and reconnects, including tied deadlines.
+The hub retains its remote cursor across ordinary arms and cancelled requests.
+It advances that cursor when delivering hints or processing a healthy empty
+renewal. A local wake therefore cannot skip an outstanding remote invalidation.
+
+The hub owns each remote request. A local event, stop, or deadline cancels
+the losing request through socket shutdown and joins its reader before the
+wait returns. A healthy empty long-poll renews transport internally without
+asking the caller to rescan. Reset and source failure degrade completeness.
+Reconnection alone cannot certify reconstructed records. The caller must
+acknowledge reconciliation against the captured generation after bounded
+authoritative reconstruction. Hints remain advisory throughout.
+
+Unavailable callbacks and repeated immediate resets or empty replies use
+named recovery deadlines, from 0.25 seconds up to five seconds. NFS visibility
+retry deadlines range from 50 milliseconds to one second and stay inside the
+original read budget. Stop and relevant notifications interrupt recovery.
+These timers do not grant extra policy time or authorize record observation
+under an admission lock. Wake results carry coverage and fallback diagnostics.
+
 ### Queue change hints on the queue host (#1894)
 
 `pbbell.py` is the supervised `bell` observer role on dl380g10 only. It watches
@@ -13505,8 +13557,12 @@ current) only when it permits the window this pass, and a window gated on
 its own fence reserves nothing, so it cannot hold every newcomer out (#881).
 Both the pressure probe and
 the publication gate use that identity and the next still-unpublished legs,
-with conservative obligations (full queued demand and a minimum next-step term
-from progressing windows). The relief is stated as the free the sweep must reach
+with the same obligations (queued demand not fully covered by funding and a
+minimum next-step term from progressing windows). A fully funded ready row
+spends its existing fence, already counted in held tokens; declared and
+streaming newcomers both exclude that row from new queued demand (#1759).
+Partial or unverified funding still counts the row's full demand. The relief
+is stated as the free the sweep must reach
 (`free + shortfall`) and is bounded to what the tier can give back: its
 orphans, and since #903 the landed ranges past their readers' refill
 horizons. A window that cannot fit even after all of that returns —
@@ -13620,11 +13676,13 @@ are unchanged. A READY retry remains eligible regardless of historical attempts.
 Admission relief applies to both stage and RAM. RAM asks only when its normal
 bounded window has a promotion whose stage source is resident, preserving
 the existing rule against eviction for an unavailable source or a declined
-run-ahead phase. Its full queued-demand estimate can defer
-additional relief when some ready rows are already funded. It is not a
-complete liveness proof. Earlier acceptance is recorded in
+run-ahead phase. Funding-aware relief does not establish a complete liveness
+proof. Earlier acceptance is recorded in
 `orphan_pressure_acceptance_2026-09-20.json`; #829's repair has its own scoped
-acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`.
+acceptance in `r3_admission_pressure_acceptance_2026-09-21.json`. The #1759
+funded-row accounting repair is component-qualified in
+[`evidence/issue1759/merge-acceptance.json`](evidence/issue1759/merge-acceptance.json);
+that record makes no deployment claim.
 
 The other half of the 2026-09-18 deadlock is the consumer's: the joint run
 carries no progress-v1 transport at all, so `accepted_phase` was `None` on

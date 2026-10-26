@@ -1189,6 +1189,29 @@ are served; overload returns 503 and clients use unavailable-callback backoff.
 Client connect, headers and body share the original patience. Repeated immediate
 empty/reset replies also use the capped backoff.
 
+The source library `host_wait.HostWaitHub` (#1945) exposes `arm()`,
+`wait_since()`, typed `WakeInput` dependencies, and `RetryDeadline` values.
+Capture before authoritative reads. Pass the resulting generation and the
+current dependencies to `wait_since`. Notify local changes through `notify`
+and stop through `stop`. Close the hub to release its request and reader.
+One caller owns each observation/wait sequence. Consumer integration and
+supervisor multiplexing remain separate work.
+
+The library retains these timers:
+
+| Timer | Source and bound | Cancellation |
+|---|---|---|
+| Bell renewal | Healthy transport request, at most 300 seconds | Local change, stop, or earlier deadline. Empty renewal stays inside the library. |
+| Bell recovery | Unavailable callback or repeated immediate reset/empty reply, 0.25 seconds to five seconds | Stop, relevant input change, or recovered complete stream. |
+| NFS visibility | A hinted record is not yet visible, 50 milliseconds to one second within its original read budget | Stop, visible authoritative record, or exhausted original budget. |
+| Caller deadline | Named policy/evidence expiry or renewal at its absolute monotonic time | Caller removes the dependency after authoritative observation. Reconnects do not move it. |
+
+Read the returned wake reason, coverage, and diagnostic when fallback occurs.
+After reset, reconstruct authoritative state within the caller's existing
+budget, then acknowledge reconciliation with the captured generation through
+`reconciled`. A successful reconnect does not establish completeness. This
+source addition neither enables a live consumer nor publishes a runtime.
+
 Bell v2 is additive (#1939). Existing live pbwait/pbrun/pbtest clients continue
 using v1. Source inclusion does not activate v2 consumers. Before enabling one,
 query `/v2/now` with its exact `X-PrismaBuild-Queue` header and verify every
