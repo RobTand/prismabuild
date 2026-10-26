@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import qualify_scratch_lifetime as qualification
 
-NATIVE_SLEEP = time.sleep
+NATIVE_SLEEP = time.sleep  # pb-timing-ok: never called identity reference; launcher adapter controls delays
 NATIVE_MONOTONIC = time.monotonic
 
 
@@ -177,7 +177,7 @@ def test_launcher_killer_signals_verified_handle(launcher_target):
 
 
 def test_launcher_fixture_keeps_the_standard_library_clock(launcher_target):
-    assert time.sleep is NATIVE_SLEEP
+    assert time.sleep is NATIVE_SLEEP  # pb-timing-ok: never called identity check; launcher adapter controls delays
     assert time.monotonic is NATIVE_MONOTONIC
 
 
