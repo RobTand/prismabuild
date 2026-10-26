@@ -641,7 +641,9 @@ def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
     ledger = pool.PoolQueue(_queue_root()).ledger(host)
     try:
         verdicts = filesystem_floor.enforce_paths(
-            ledger.root.parent, [path, LOG_DIR], label=f"supervisor {host} spool offer")
+            ledger.root.parent, [path], label=f"supervisor {host} spool offer")
+        filesystem_floor.enforce_paths(
+            ledger.root.parent, [LOG_DIR], label=f"supervisor {host} log destination")
     except filesystem_floor.FloorRefused as exc:
         return ("wait", str(exc))
 

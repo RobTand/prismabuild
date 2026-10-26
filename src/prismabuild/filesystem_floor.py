@@ -790,8 +790,9 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
         if binding.get("status") != "active":
             return floor_refusal(key, "binding_" + str(binding.get("status")))
         # A crash or incomplete census leaves dependent admission on HOLD.
-        _floor_write(directory / "sample.json", {"schema": SAMPLE_SCHEMA, "key": key,
-                     "refusal": "population_unknown", "detail": "refresh incomplete"})
+        pending = {"schema": SAMPLE_SCHEMA, "key": key, "refusal": "population_unknown",
+                   "detail": "refresh incomplete", "refresh_id": uuid.uuid4().hex}
+        _floor_write(directory / "sample.json", pending)
         try:
             coverage = _coverage(binding, now=now)
             granted_before = _granted(directory)
@@ -808,6 +809,8 @@ def refresh_binding(queue_root, binding: Mapping, *, now: float | None = None) -
     with floor_locked(directory) as acquired:
         if not acquired:
             return floor_refusal(key, "floor_lock_busy")
+        if _floor_read(directory / "sample.json") != pending:
+            return floor_refusal(key, "population_unknown", detail="refresh superseded")
         current = _floor_read(directory / "binding.json")
         if (current is None or coverage_identity(current) != identity
                 or canonical_sha256(_coverage(current, now=now)) != coverage_hash):
@@ -1111,15 +1114,20 @@ def _growth_ledger(queue_root, path):
     found = identify(path)
     known = bindings(queue_root)
     if found["key"] is None:
-        candidates = [b for b in known if found["server"] in b.get("server_addresses", ())]
+        candidates = _nfs_bindings(found, known)
     else:
-        candidates = [b for b in known if b["key"] == found["key"]]
-    ledgers = [m["ledger"] for b in candidates for m in b.get("members", [])
+        candidates = [b for b in known if b["key"] == found["key"] and any(
+            found.get("source") == d["source"] for d in b.get("destinations", []))]
+    if len(candidates) != 1:
+        raise FloorError(f"{path}: no unique authenticated filesystem mapping",
+                         reason="mapping_unknown")
+    ledgers = [m for b in candidates for m in b.get("members", [])
                if m["kind"] == FILESYSTEM_KIND]
     if len(ledgers) != 1:
         raise FloorError(f"{path}: {len(ledgers)} filesystem_gib ledgers bound to "
                          f"{found['key'] or 'nfs:' + str(found['server'])}; need exactly one")
-    return ResourceLedger(Path(queue_root) / FILESYSTEM_RESERVATIONS, host=ledgers[0])
+    member = ledgers[0]
+    return ResourceLedger(Path(queue_root) / member["ledger_root"], host=member["ledger"])
 
 
 @contextmanager
@@ -1149,7 +1157,7 @@ def operation(queue_root, *, used_paths: Iterable = (), growth_gib: Mapping | No
         member_bindings(queue_root, max_age_s=0.0)
     except (FloorError, OSError) as exc:
         refuse(floor_refusal("bindings", "unreadable", detail=str(exc)), exc)
-    verdicts.extend(enforce_paths(queue_root, used_paths, label=label))
+    verdicts.extend(enforce_paths(queue_root, [*used_paths, *(growth_gib or {})], label=label))
     taken: list[tuple[object, str, Path]] = []
     try:
         for path, gib in sorted((growth_gib or {}).items(), key=lambda i: str(i[0])):
