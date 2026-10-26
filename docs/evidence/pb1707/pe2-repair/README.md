@@ -4,7 +4,7 @@ Vehicle12 returned #2069 for two source integration failures. Both reproduced on
 
 The historical fixtures relied on the old implicit lifetime bound. The producer sealed no timeout, so it offered no finite drain opportunity. The host-fault case supplied only a worker ceiling, so its quiet allowance expired as `no_progress`. These are fixture contract mismatches. The original failed records remain failed. The two returned cases preserve all 22 original assertion ASTs and the existing deadline values.
 
-`pool.py` now uses `_sealed_action_request` for progress, deadline and advisory policy reads. Execution and advisory classification share `_action_execution_timeout`. The default active payload still has no total deadline. The default sealed holder still has no finite drain opportunity. A true sealed deadline retains precedence.
+`pool.py` now uses `_validated_action_request` for progress, deadline and advisory policy reads. Pool publication retains its `_sealed_action_request` error adapter. Execution and advisory classification share `_action_execution_timeout`. The default active payload still has no total deadline. The default sealed holder still has no finite drain opportunity. A true sealed deadline retains precedence.
 
 `checkpoint.json` records source and evidence limits. `design-synthesis.md` explains the rejected API and scheduling changes. The audit files bind terminal records, native populations, logs, cleanup, request snapshots, result payloads and success receipts. Worker signing keys were not checked.
 
@@ -19,4 +19,6 @@ python3 docs/evidence/pb1707/pe2-repair/audit_reports.py \
 
 The related export-allowance case also reproduced before receiving the same finite declaration. `assertion-comparison.json` and `compare_assertions.py` cover every original assertion in all three cases.
 
-The required architecture repeats and broader integration qualification remain pending. Independent changed-head review, merge acceptance and batch landing remain due. Historical qualification keeps its source scope, and all eight crash-era actions remain excluded. No deployment or whole-requirement completion is claimed.
+The first qualification at `237890e44c97` stopped after five x86 rounds passed 385 checks and its 19-file integration returned 410 passes and one failure. The original frozen plan and failed record remain unchanged. ARM was never submitted.
+
+The failure exposed an error translation regression introduced by the shared-reader refactor. The unchanged sealed-timeout tamper test requires `ActionContractError`. Unchanged main passes it, while the structural-only validation split retains the `PoolContractError` failure. `tamper-disposition.json` binds those controls, identical test bytes and the original integration failure. Execution now reads through shared validation without pool publication error translation. Corrected qualification remains pending. Independent changed-head review, merge acceptance and batch landing remain due. Historical qualification keeps its source scope, and all eight crash-era actions remain excluded. No deployment or whole-requirement completion is claimed.

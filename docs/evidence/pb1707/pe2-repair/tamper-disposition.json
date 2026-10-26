@@ -1,0 +1,256 @@
+{
+  "schema": "pb.1707_tamper_error_repair.v1",
+  "scope": "Restore pre-refactor execution error identity; preserve native tamper regression, no assertions changed",
+  "first_failure": {
+    "source": "237890e44c97a1e3a988fb75d77a0502dce741f4",
+    "plan_sha256": "779e27fed62ba042d871afd066f1c1ca7386e363be129c4b227ee3f6791f1d02",
+    "verdict": "failed; ARM rows never submitted",
+    "rows": {
+      "x86_64-1": {
+        "actions": 4,
+        "receipts": 4,
+        "call_outcomes": {
+          "call:passed": 77
+        }
+      },
+      "x86_64-2": {
+        "actions": 4,
+        "receipts": 4,
+        "call_outcomes": {
+          "call:passed": 77
+        }
+      },
+      "x86_64-3": {
+        "actions": 4,
+        "receipts": 4,
+        "call_outcomes": {
+          "call:passed": 77
+        }
+      },
+      "x86_64-4": {
+        "actions": 4,
+        "receipts": 4,
+        "call_outcomes": {
+          "call:passed": 77
+        }
+      },
+      "x86_64-5": {
+        "actions": 4,
+        "receipts": 4,
+        "call_outcomes": {
+          "call:passed": 77
+        }
+      },
+      "x86_64-integration": {
+        "actions": 19,
+        "receipts": 18,
+        "call_outcomes": {
+          "call:passed": 410,
+          "call:failed": 1
+        }
+      }
+    },
+    "failed": [
+      {
+        "action_key": "7f918a62d830205f51e1f78595fd6544971f3adb4f260c5b511b67abb3e316f1",
+        "failed_nodeids": [
+          "tests/test_pool_action_timeout.py::test_timeout_cannot_be_changed_without_resealing"
+        ]
+      }
+    ],
+    "hypotheses": [
+      {
+        "rank": 1,
+        "claim": "Refactor centralizes validation inside pool-error adapter",
+        "prediction": "Unchanged main raises native ActionContractError; split alone stays red; execution uses validation reader becomes green"
+      },
+      {
+        "rank": 2,
+        "claim": "Different sealed fixture or tamper bytes",
+        "prediction": "Test bytes differ across main, pre-refactor and repaired sources"
+      },
+      {
+        "rank": 3,
+        "claim": "Different execution route precedes validation",
+        "prediction": "Traceback enters new validation route without original execute owner"
+      }
+    ],
+    "scope": "No weakening of tamper assertions, sealed requests or prior limits; no runtime operation"
+  },
+  "main_control": {
+    "source_parent": "89650d873760adf6b0d21981fd0f2d4f4e5de8df",
+    "report": "tamper-main.json",
+    "entries": [
+      {
+        "action_key": "5d1be1f422851e375aa0b3b593ba058cbaef260e3e1a7b939b4f8a84213690b7",
+        "status": "executed",
+        "exit_code": 0,
+        "host": "dl380g10",
+        "snapshot_commit": "36e39ed33174c557dce854087d02571b8e5b777f",
+        "snapshot": {
+          "bytes": 46566911,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "1f350da48aad2abe7f27cadd8234df0249d22c4c7cd706fd857f5deeaa85aa2b"
+        },
+        "request_sha256": "cd81fdde723c54439fbed3e871093297935589890c5bc34f73ffd167131ac5f4",
+        "logs": {
+          "stdout": {
+            "bytes": 7203,
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5d1be1f422851e375aa0b3b593ba058cbaef260e3e1a7b939b4f8a84213690b7/b77ea9881274581a7372d06e979d38543d44f6cbaeae25e270a3901a8aa6be28/00000001.stdout.30c281729ebc2ba92c8facf52a561cebc1f7943795c6aced22e43b2cc71b1ec3.log",
+            "sha256": "30c281729ebc2ba92c8facf52a561cebc1f7943795c6aced22e43b2cc71b1ec3"
+          },
+          "stderr": {
+            "bytes": 46,
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5d1be1f422851e375aa0b3b593ba058cbaef260e3e1a7b939b4f8a84213690b7/b77ea9881274581a7372d06e979d38543d44f6cbaeae25e270a3901a8aa6be28/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+            "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+          }
+        },
+        "runtime": {
+          "complete": true,
+          "version": [
+            3,
+            14,
+            4
+          ],
+          "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+          "files": [
+            "tests/test_pool_action_timeout.py"
+          ],
+          "executable": {
+            "path": "/home/rob/venvs/pb-cpu/bin/python3.14",
+            "resolved_path": "/usr/bin/python3.14",
+            "bytes": 7477160,
+            "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+          },
+          "executable_path_matches_running": true,
+          "affinity": [
+            0,
+            1
+          ],
+          "native_threads": {
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1"
+          },
+          "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+          "kernel": {
+            "system": "Linux",
+            "node": "dl380g10",
+            "release": "7.0.0-38-generic",
+            "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+            "machine": "x86_64",
+            "processor": ""
+          },
+          "selected_files": [
+            "tests/test_pool_action_timeout.py"
+          ],
+          "selected_source_sha256": {
+            "tests/test_pool_action_timeout.py": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45"
+          },
+          "exitstatus": 0
+        },
+        "native_complete": true,
+        "cleanup_complete": true,
+        "receipt_sha256": "93f9ffeb55d8e5cfbc18de197c4deba008b706cd73c1c1235a0e550c2fdb744a",
+        "failed_nodeids": [],
+        "outcome_counts": {
+          "call:passed": 1
+        }
+      }
+    ],
+    "worker_signing_keys": "not checked; no cryptographic attestation claim"
+  },
+  "structural_control": {
+    "source_parent": "26dade712ebfc820dea76b2771040be2f9ec2624",
+    "report": "tamper-refactor.json",
+    "entries": [
+      {
+        "action_key": "230cae8146a3a225c808bc8ed6f3a69c38fe698cac14557c8bd70703fa506b83",
+        "status": "failed",
+        "exit_code": 1,
+        "host": "dl380g10",
+        "snapshot_commit": "6ace0a3794893c43fcb79153469c1b544aa1db11",
+        "snapshot": {
+          "bytes": 47171448,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "a0617cade539e4f8b539ca3e82b7b4e05f40f6e71b68063cc2aadd6257931e58"
+        },
+        "request_sha256": "6783ba8f353fe318d58cf68a60c5b6cad1b3d6fb68f8c9c2499a3774af273baf",
+        "logs": {
+          "stdout": {
+            "bytes": 8153,
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/230cae8146a3a225c808bc8ed6f3a69c38fe698cac14557c8bd70703fa506b83/b42784197a063ac51f03247636277ec2c1c32b6bff77216d253512bdd1999328/00000001.stdout.3b0f4e79315754b911ec890feb186e8a9e314956121a3df8a87f79b1a51bb3c0.log",
+            "sha256": "3b0f4e79315754b911ec890feb186e8a9e314956121a3df8a87f79b1a51bb3c0"
+          },
+          "stderr": {
+            "bytes": 931,
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/230cae8146a3a225c808bc8ed6f3a69c38fe698cac14557c8bd70703fa506b83/b42784197a063ac51f03247636277ec2c1c32b6bff77216d253512bdd1999328/00000001.stderr.89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c.log",
+            "sha256": "89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c"
+          }
+        },
+        "runtime": {
+          "complete": true,
+          "version": [
+            3,
+            14,
+            4
+          ],
+          "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+          "files": [
+            "tests/test_pool_action_timeout.py"
+          ],
+          "executable": {
+            "path": "/home/rob/venvs/pb-cpu/bin/python3.14",
+            "resolved_path": "/usr/bin/python3.14",
+            "bytes": 7477160,
+            "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+          },
+          "executable_path_matches_running": true,
+          "affinity": [
+            2,
+            3
+          ],
+          "native_threads": {
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1"
+          },
+          "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+          "kernel": {
+            "system": "Linux",
+            "node": "dl380g10",
+            "release": "7.0.0-38-generic",
+            "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+            "machine": "x86_64",
+            "processor": ""
+          },
+          "selected_files": [
+            "tests/test_pool_action_timeout.py"
+          ],
+          "selected_source_sha256": {
+            "tests/test_pool_action_timeout.py": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45"
+          },
+          "exitstatus": 1
+        },
+        "native_complete": true,
+        "cleanup_complete": true,
+        "receipt_sha256": null,
+        "failed_nodeids": [
+          "tests/test_pool_action_timeout.py::test_timeout_cannot_be_changed_without_resealing"
+        ],
+        "outcome_counts": {
+          "call:failed": 1
+        }
+      }
+    ],
+    "worker_signing_keys": "not checked; no cryptographic attestation claim"
+  },
+  "test_source_sha256": {
+    "89650d873760adf6b0d21981fd0f2d4f4e5de8df": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45",
+    "237890e44c97a1e3a988fb75d77a0502dce741f4": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45",
+    "26dade712ebfc820dea76b2771040be2f9ec2624": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45",
+    "24ce3c2c8d1": "cd69ac5ac893c5bd8607a24db4d00309e8159fb560ff53727571d475240c1b45"
+  },
+  "result": "Main passes, shared pool adapter and structural-only split fail with PoolContractError; execution readers switched to validation reader at 24ce3c2c8d1. Corrected fleet result pending.",
+  "exclusions": "No ARM or final qualification claim. Old frozen plan remains unchanged. No runtime operation or whole-axis promotion."
+}
