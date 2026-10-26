@@ -421,13 +421,13 @@
    "scoped_repair_2141": {
     "target": "Behavior attributed per (runtime_commit, generation_id).",
     "implemented_source": {
-     "commit": "3ac52e351f0c4720ddf1d34872ffa00c65f57f31",
+     "commit": "546649b7868c79a8cc111ae4b5cde820939d67bb",
      "scope": "Source qualification is attributed to its snapshot; runtime publication, convergence and celestia activation remain separate."
     },
     "validation": {
-     "state": "installer and root proofs verified; caller-integration revision pending",
+     "state": "capped-host component qualified; Principal re-review pending",
      "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-     "note": "Exact-source 65f287625f has five installer repeats and 36 root passes on each architecture. Its integrated failures are retained. New caller migration and main digest fix need qualification. No whole-requirement satisfaction or deployment claim."
+     "note": "Exact-source 546649b786: 1190 integrated passes and five 53-test fixture repeats per architecture, two under xdist. Retained installer repeats and actual-root proofs also pass with unchanged dependencies. All native outcomes, logs, CAS source/receipts and cleanup verified. Historical failures retained. No whole-requirement satisfaction or deployment claim."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -694,13 +694,13 @@
    "scoped_repair_2141": {
     "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
     "implemented_source": {
-     "commit": "3ac52e351f0c4720ddf1d34872ffa00c65f57f31",
+     "commit": "546649b7868c79a8cc111ae4b5cde820939d67bb",
      "scope": "The final claim fence rechecks the cap and maintenance before ready-to-claimed transition."
     },
     "validation": {
-     "state": "installer and root proofs verified; caller-integration revision pending",
+     "state": "capped-host component qualified; Principal re-review pending",
      "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-     "note": "Exact-source 65f287625f has five installer repeats and 36 root passes on each architecture. Its integrated failures are retained. New caller migration and main digest fix need qualification. No whole-requirement satisfaction or deployment claim."
+     "note": "Exact-source 546649b786: 1190 integrated passes and five 53-test fixture repeats per architecture, two under xdist. Retained installer repeats and actual-root proofs also pass with unchanged dependencies. All native outcomes, logs, CAS source/receipts and cleanup verified. Historical failures retained. No whole-requirement satisfaction or deployment claim."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -903,13 +903,13 @@
    "scoped_repair_2141": {
     "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
     "implemented_source": {
-     "commit": "3ac52e351f0c4720ddf1d34872ffa00c65f57f31",
+     "commit": "546649b7868c79a8cc111ae4b5cde820939d67bb",
      "scope": "Declared CPU and memory cap bounds startup offers, observed offers and the final claim transition. Aggregate slice contains supervisor, workers, broker and action scopes."
     },
     "validation": {
-     "state": "installer and root proofs verified; caller-integration revision pending",
+     "state": "capped-host component qualified; Principal re-review pending",
      "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-     "note": "Exact-source 65f287625f has five installer repeats and 36 root passes on each architecture. Its integrated failures are retained. New caller migration and main digest fix need qualification. No whole-requirement satisfaction or deployment claim."
+     "note": "Exact-source 546649b786: 1190 integrated passes and five 53-test fixture repeats per architecture, two under xdist. Retained installer repeats and actual-root proofs also pass with unchanged dependencies. All native outcomes, logs, CAS source/receipts and cleanup verified. Historical failures retained. No whole-requirement satisfaction or deployment claim."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -1249,13 +1249,13 @@
    "scoped_repair_2141": {
     "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
     "implemented_source": {
-     "commit": "3ac52e351f0c4720ddf1d34872ffa00c65f57f31",
+     "commit": "546649b7868c79a8cc111ae4b5cde820939d67bb",
      "scope": "Enrolling hosts require an explicit host name. General class eligibility and active-only publication/bootstrap participants use the shared roster contract."
     },
     "validation": {
-     "state": "installer and root proofs verified; caller-integration revision pending",
+     "state": "capped-host component qualified; Principal re-review pending",
      "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-     "note": "Exact-source 65f287625f has five installer repeats and 36 root passes on each architecture. Its integrated failures are retained. New caller migration and main digest fix need qualification. No whole-requirement satisfaction or deployment claim."
+     "note": "Exact-source 546649b786: 1190 integrated passes and five 53-test fixture repeats per architecture, two under xdist. Retained installer repeats and actual-root proofs also pass with unchanged dependencies. All native outcomes, logs, CAS source/receipts and cleanup verified. Historical failures retained. No whole-requirement satisfaction or deployment claim."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
@@ -2011,13 +2011,13 @@
    "scoped_repair_2141": {
     "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
     "implemented_source": {
-     "commit": "3ac52e351f0c4720ddf1d34872ffa00c65f57f31",
+     "commit": "546649b7868c79a8cc111ae4b5cde820939d67bb",
      "scope": "Deterministic component cap, claim-fence and enrollment controls only. Whole lifecycle and staged-lease race acceptance remains separate."
     },
     "validation": {
-     "state": "installer and root proofs verified; caller-integration revision pending",
+     "state": "capped-host component qualified; Principal re-review pending",
      "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-     "note": "Exact-source 65f287625f has five installer repeats and 36 root passes on each architecture. Its integrated failures are retained. New caller migration and main digest fix need qualification. No whole-requirement satisfaction or deployment claim."
+     "note": "Exact-source 546649b786: 1190 integrated passes and five 53-test fixture repeats per architecture, two under xdist. Retained installer repeats and actual-root proofs also pass with unchanged dependencies. All native outcomes, logs, CAS source/receipts and cleanup verified. Historical failures retained. No whole-requirement satisfaction or deployment claim."
     },
     "deployment": "not performed for #2141; historical requirement axis unchanged",
     "workload_proof": "not performed for #2141; historical requirement axis unchanged",
