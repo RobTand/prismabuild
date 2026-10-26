@@ -270,4 +270,9 @@ def test_resident_reuse_checks_actual_leaf(tmp_path, monkeypatch, route):
             local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     assert leaf in checked
     assert leaf.read_bytes() == b"weights"
-    assert store.read_copy(record["set_id"], "test-host") == previous
+    current = store.read_copy(record["set_id"], "test-host")
+    if route == "partial":
+        assert current["state"] == "copying"
+        assert not final.exists()
+    else:
+        assert current == previous
