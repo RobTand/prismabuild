@@ -316,6 +316,25 @@ def _elected_member_state(record: dict, key: str, *, ready_versions: set, claime
     return "terminal"
 
 
+def _gang_election_rows(record: dict, elections: dict, rows: dict[str, list[dict]], *,
+                        ready_versions: set, claimed_versions: set) -> dict:
+    from . import _gang
+    live = any(any(float(row.get("published_unix", math.nan)) == member["published_unix"]
+                   for row in rows.get(member["action_key"], []))
+               for member in record["members"])
+    if not live:
+        return {}
+    rank = list(_gang.rank(record))
+    return {election["action_key"]: {
+        "group": record["group"], "index": index, "action_key": election["action_key"],
+        "host": election["host"], "priority": election["priority"], "rank": rank,
+        "demand": _member_demand(rows, record, election["action_key"]),
+        "member_state": _elected_member_state(
+            record, election["action_key"], ready_versions=ready_versions,
+            claimed_versions=claimed_versions)}
+        for index, election in elections.items()}
+
+
 def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *,
                     ready_versions: set | None = None, claimed_versions: set | None = None) -> dict:
     """Live gang host elections (#1517), read in the same bounded child.
@@ -352,19 +371,9 @@ def _gang_elections(queue: PoolQueue, rows: dict[str, list[dict]], count: int, *
                 record = _gang.read_group(queue, group)
                 if record is None or _gang.teardown(queue, group) is not None:
                     continue
-                live = [member for member in record["members"]
-                        if any(float(row.get("published_unix", math.nan)) == member["published_unix"]
-                               for row in rows.get(member["action_key"], []))]
-                if not live:
-                    continue
-                rank = list(_gang.rank(record))
-                for index, election in _gang.elections(queue, group, record["size"]).items():
-                    found[election["action_key"]] = {
-                        "group": group, "index": index, "action_key": election["action_key"],
-                        "host": election["host"], "priority": election["priority"], "rank": rank,
-                        "demand": _member_demand(rows, record, election["action_key"]),
-                        "member_state": _elected_member_state(
-                            record, election["action_key"], ready_versions=ready, claimed_versions=claimed)}
+                elections = _gang.elections(queue, group, record["size"])
+                found.update(_gang_election_rows(
+                    record, elections, rows, ready_versions=ready, claimed_versions=claimed))
     except _gang.GangContractError as exc:
         raise CensusUnavailable(str(exc)) from exc
     return found
@@ -447,26 +456,15 @@ def _scan_election_refresh(queue: PoolQueue) -> dict:
     gangs: dict[str, dict] = {}
     for group, record in groups.items():
         try:
-            rank = list(_gang.rank(record))
             found = _gang.elections(queue, group, record["size"])
         except _gang.GangContractError as exc:
             raise CensusUnavailable(str(exc)) from exc
         count += len(found)
         if count > MAX_RECORDS:
             raise CensusUnavailable("measurement refresh record cap exceeded")
-        live = [member for member in record["members"]
-                if any(float(row["published_unix"]) == member["published_unix"]
-                       for row in members.get(member["action_key"], []))]
-        if not live:
-            continue
-        for index, election in found.items():
-            gangs[election["action_key"]] = {
-                "group": group, "index": index, "action_key": election["action_key"],
-                "host": election["host"], "priority": election["priority"], "rank": rank,
-                "demand": _member_demand(members, record, election["action_key"]),
-                "member_state": _elected_member_state(
-                    record, election["action_key"], ready_versions=ready_versions,
-                    claimed_versions=claimed_versions)}
+        gangs.update(_gang_election_rows(
+            record, found, members, ready_versions=ready_versions,
+            claimed_versions=claimed_versions))
     return {"selections": selections, "gang_elections": gangs}
 
 
