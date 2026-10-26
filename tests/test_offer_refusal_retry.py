@@ -23,6 +23,7 @@ import os
 import signal
 import socket
 import sys
+from types import SimpleNamespace
 import time
 from pathlib import Path
 
@@ -248,8 +249,9 @@ def test_offer_discovery_retries_end_at_the_campaign_deadline(monkeypatch):
 
     monkeypatch.setattr(pbcampaign, "submit_row", timed_out)
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", poll)
-    monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(pbcampaign.time, "sleep", sleep)
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "monotonic": lambda: clock[0], "sleep": sleep,
+    }))
     monkeypatch.setattr(pbcampaign.action_wait, "POLL_S", 1.0)
 
     submissions, waited = pbcampaign.run_windowed(

@@ -226,10 +226,16 @@ transport filed it. The result does not depend on which one carried it.
 
 ## Test
 
-Agents must follow [the execution policy](docs/agent_execution_policy.md).
-Submit tests through the published fleet runtime, reserving the resources used:
+Run one command from a task checkout:
 
-    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --tag x86 --cpus 8 --demand mem_gb=8 -- env PYTHONPATH=src OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /home/rob/venvs/pb-cpu/bin/python -m pytest -n 8 tests/
+    python3 tools/verify.py fast
+    python3 tools/verify.py integration
+    python3 tools/verify.py gpu
+
+See [test tiers and evidence](docs/testing.md). In a source checkout, the
+verification skill is `.agents/skills/verify-prismabuild/SKILL.md`.
+Agents must follow [the execution policy](docs/agent_execution_policy.md).
+The commands submit through the published fleet runtime with declared resources.
 
 The suite never touches the fleet's live store. `tests/conftest.py` repoints
 every default that names the shared mount at the test's own temporary

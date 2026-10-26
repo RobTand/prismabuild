@@ -154,6 +154,10 @@ _FANOUT_FINGERPRINTS: dict[tuple[str, str, str], tuple[object, ...]] = {}
 _MOVER_KEPT_TOLD: set[tuple[str, str, str]] = set()
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
+#: Last output census per queue and host; a process restart reports it again.
+_OUTPUT_OBSERVATIONS: dict[
+    tuple[str, str], dict[tuple[str, str], tuple[object, ...]]
+] = {}
 
 
 def _begin_verdict_cycle() -> None:
@@ -464,6 +468,10 @@ class ReceiptCache:
         self.ledger_records = kept_reads.DirectoryRecords(trust=self.trust)
         self._directories: tuple[Path, ...] = ()
         self._records: list[dict[str, object]] = []
+        self._receipt_thaws: dict[str, tuple[object, object]] = {}
+        self._receipt_seen: set[str] = set()
+        self._receipt_names: frozenset[str] = frozenset()
+        self._merged_generation: tuple | None = None
         self._folds: dict[str, tuple[tuple, dict[str, object]]] = {}
         self._queue: pool.PoolQueue | None = None
         self._retired_generation: tuple | None = None
@@ -508,10 +516,28 @@ class ReceiptCache:
             self._queue = current
         return current
 
+    def _thaw_receipt(self, path: Path, frozen: object) -> object:
+        """Reuse only the exact frozen input requalified by DirectoryRecords."""
+        key = str(path)
+        self._receipt_seen.add(key)
+        previous = self._receipt_thaws.get(key)
+        if previous is None or previous[0] is not frozen:
+            previous = (frozen, pool.record_store._thawed_document(path, frozen))
+            self._receipt_thaws[key] = previous
+        return previous[1]
+
     def read(self, directories: list[Path], *,
              liveness: "Liveness | None" = None,
              queue: pool.PoolQueue | None = None) -> list[dict[str, object]]:
-        """Every receipt in ``directories``, re-read only where it changed.
+        """Refresh receipt inputs and return independent mutable documents."""
+        self.refresh(directories, liveness=liveness, queue=queue)
+        return [pool.record_store.independent_document(record)
+                for record in self._records]
+
+    def refresh(self, directories: list[Path], *,
+                liveness: "Liveness | None" = None,
+                queue: pool.PoolQueue | None = None) -> None:
+        """Refresh private receipt inputs, re-thawing only changed records.
 
         ``liveness`` is the tier loop's `Liveness` (#1148).  The read
         checkpoints it while each directory is listed, before each entry is
@@ -538,6 +564,7 @@ class ReceiptCache:
         """
 
         owner = self._owner(directories, queue)
+        self._receipt_seen = set()
         store = pool.record_store.RecordStore.kept(
             Path(directories[0]).parent if directories else Path("."),
             records=self.records)
@@ -551,7 +578,7 @@ class ReceiptCache:
                     liveness.checkpoint, f"receipts:{directory.name}")
             try:
                 kept = store.receipt_records_at(
-                    directory, readers=RECEIPT_READERS,
+                    directory, readers=RECEIPT_READERS, thaw=self._thaw_receipt,
                     **({} if checkpoint is None else {"checkpoint": checkpoint}))
             except OSError as exc:
                 unreadable[str(directory)] = f"{type(exc).__name__}: {exc}"
@@ -573,7 +600,8 @@ class ReceiptCache:
                 # other record the loop keeps -- no bare stat tuple, and an
                 # unreadable directory is not an empty one.
                 documents = {
-                    path.name: record for path, record in store.retirement_documents()}
+                    path.name: record for path, record in store.retirement_documents(
+                        thaw=self._thaw_receipt)}
                 generation = self.records.generation(retired_dir)
                 checkpoint = documents.get(pool.record_store.MOVERS_RETIREMENT_CHECKPOINT)
                 state = documents.get(pool.record_store.MOVERS_RETIREMENT_STATE)
@@ -606,6 +634,16 @@ class ReceiptCache:
                 self._retired_memo = None
                 generation = None
                 retired = {}
+        self._receipt_thaws = {key: self._receipt_thaws[key]
+                               for key in self._receipt_seen}
+        self._receipt_names = frozenset(self._receipt_seen)
+        self._directories = tuple(read)
+        self._retired_generation = generation
+        self.retired_error = error
+        self.unreadable = unreadable
+        merged_generation = (id(self.records), self._generations())
+        if self._merged_generation == merged_generation:
+            return
         merged: list[dict[str, object]] = []
         for directory in read:
             records = by_directory.get(str(directory), [])
@@ -616,13 +654,8 @@ class ReceiptCache:
                     union[str(record.get("action_key") or "")] = record
                 records = [union[key] for key in sorted(union)]
             merged.extend(records)
-        self._directories = tuple(read)
         self._records = merged
-        self._retired_generation = generation
-        self.retired_error = error
-        self.unreadable = unreadable
-        return [pool.record_store.independent_document(record)
-                for record in merged]
+        self._merged_generation = merged_generation
 
     def _retired(self) -> None:
         """Refuse to fold when the retirement store could not be read."""
@@ -637,7 +670,11 @@ class ReceiptCache:
                              self.records.generation(directory))
                             for directory in self._directories)
         root = "" if self._queue is None else str(self._queue.root)
-        return generations + (("retired", root, self._retired_generation),)
+        # A same-tick or untrusted receipt is returned without being kept.
+        # Removing it before the next read need not advance the kept-set
+        # generation, even with other receipts left. Names invalidate its folds.
+        return generations + (("retired", root, self._retired_generation),
+                              ("receipt-names", self._receipt_names))
 
     def fill_supply(self, pool_identity: Mapping[str, object] | None,
                     ) -> dict[str, object]:
@@ -5351,6 +5388,12 @@ def window_pressure(
         stage_needs = stage_probe.advance
         stage_newcomer = _is_newcomer(consumer, stage_needs, already)
         if stage_newcomer:
+            if capacity > 0 and _newcomer_movement_impossible(
+                    {"plan": plan, "accepted": accepted},
+                    mover_role="mover_row", capacity_gib=int(capacity)):
+                # Relief cannot repair a later movement larger than the
+                # entire tier, even if the bounded probe could publish now.
+                continue
             if admissions is None:
                 admissions = _commitment_admissions(_commitment_census(
                     queue, tiers, consumers=consumers, unknown=unknown or (), store=store))
@@ -5466,10 +5509,16 @@ def window_pressure(
                 int(entry["start_bytes"]), int(entry["end_bytes"]),
                 state["stage_resident"])]
         if ram_wanted:
+            ram_needs = ram_probe.advance
+            ram_newcomer = _is_newcomer(consumer, ram_needs, set(state["already"]))
+            if (ram_newcomer and ram_capacity > 0
+                    and _newcomer_movement_impossible(
+                        {"plan": plan, "accepted": accepted},
+                        mover_role="ram_mover_row", capacity_gib=ram_capacity)):
+                continue
             need[ram_tier_id] = max(need.get(ram_tier_id, 0),
                                     int(ram_wanted[0]["stage_gib"]))
-            ram_needs = ram_probe.advance
-            if _is_newcomer(consumer, ram_needs, set(state["already"])):
+            if ram_newcomer:
                 newcomers.setdefault(ram_tier_id, []).append(
                     {**ram_needs, "consumer": str(_key),
                      "extra_held_gib": obligated.get(ram_tier_id, 0)})
@@ -6007,6 +6056,21 @@ def _advance_wants(
     return wants, unknown
 
 
+def _newcomer_movement_impossible(want: Mapping[str, object], *,
+                                  mover_role: str, capacity_gib: int) -> bool:
+    """Positive plan geometry witness only; never an admission certificate.
+
+    The caller has already read a validated frozen plan and authoritative
+    minted supply.  Do not use free capacity, bounded read footprint, or a
+    commitment refusal as evidence of impossibility.  Recompute each cycle;
+    neither the plan nor admitted-consumer continuity is changed.
+    """
+    window = residency_plan.ConsumerWindow(
+        want["plan"], want["accepted"],  # type: ignore[arg-type]
+        residency_plan.LegObservation(mover_role=mover_role))
+    return window.remaining_movement_minimum_gib > capacity_gib
+
+
 def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
                 grant: str, key: str, plan: Mapping[str, object],
                 leg: Mapping[str, object], demand: int) -> bool:
@@ -6510,6 +6574,17 @@ def _protect_tier_advances(
                 admitted_currents[key] = _unpublished_current_gib(
                     needs, held=held, rowed=ready_by_key, kind=kind)
             if want["newcomer"]:
+                # A bounded publication footprint can hide an impossible
+                # later leg/overlap (#1772). Refuse before publication,
+                # relief, or establishing the feasible-wait priority barrier.
+                if _newcomer_movement_impossible(
+                        want, mover_role=mover_role, capacity_gib=capacity_gib):
+                    gated[(key, tier_id)] = {
+                        "reason": window_credit.REASON_OVERSIZE,
+                        "permanent": True, "need_gib": cur,
+                        "tier_id": tier_id, "output_note": output_note,
+                    }
+                    continue
                 priority = priority_of(want)
                 if (priority_candidate(want) and waiting_priority is not None
                         and priority < waiting_priority):
@@ -6600,8 +6675,8 @@ def _protect_tier_advances(
                     # windows while existing promises drain. Only a feasible
                     # transient wait establishes this barrier; oversized or
                     # unknown work cannot block otherwise useful newcomers.
-                    # A commitment wait is feasible by construction: a read
-                    # footprint never exceeds the tier (#907).
+                    # The remaining movement minimum was checked separately
+                    # above: a bounded read footprint alone cannot prove it.
                     if (priority_candidate(want)
                             and decision["reason"] in (
                                 window_credit.REASON_STALL,
@@ -9821,10 +9896,11 @@ def _cycle(
     phases.lap("reclaim_idle_rates")
     # Checkpointed inside, per entry listed and read (#1148): the read can
     # outlast the liveness bound on a loaded pool.
-    fill_records = receipts.read(
+    receipts.refresh(
         [queue.root / pool.record_store.PREWARM, queue.root / MOVER_RECEIPTS],
         queue=queue,
         **({} if phases.liveness is None else {"liveness": phases.liveness}))
+    fill_records = receipts._records
     phases.lap("receipts")
     # The ram tier's declared sizing, read fresh: a published policy change is
     # picked up between cycles without a remount, and a rare operator remount
@@ -9859,7 +9935,12 @@ def _cycle(
     phases.lap("sync_ram_host_mirror")
     rows_held_gib = rows_held_for_gate(
         queue, host, bool(mirror.get("converged")))
-    tiers = discover(host=host, source_pool=source_pool, fill_records=fill_records,
+    # Native discovery only reads these inputs. Extension callbacks retain the
+    # independent mutable documents the public read has always supplied.
+    discovery_records = (fill_records if discover is storage_tiers.discover_tiers
+                         else [pool.record_store.independent_document(record)
+                               for record in fill_records])
+    tiers = discover(host=host, source_pool=source_pool, fill_records=discovery_records,
                      now=now, ram_policy=ram_policy,
                      rows_held_gib=rows_held_gib)
     phases.lap("discover")
@@ -9986,12 +10067,8 @@ def _cycle(
         tier_identity = record.get("pool_identity")
         identity = (tier_identity if isinstance(tier_identity, Mapping)
                     else None)
-        # Folded again only when the receipts changed (#992); a stand-in
-        # receipt reader without the memo folds every cycle, as before.
-        supply = (receipts.fill_supply(identity)
-                  if isinstance(receipts, ReceiptCache)
-                  else storage_tiers.fill_supply_from_records(
-                      fill_records, pool_identity=identity))
+        # Folded again only when the receipts changed (#992).
+        supply = receipts.fill_supply(identity)
         record["fill_supply"] = {key: value for key, value in supply.items()
                                  if key != "ceiling_receipt"}
         if supply["ceiling_receipt"]:
@@ -10068,10 +10145,7 @@ def _cycle(
         if record.get("tier") == "stage":
             # Which copies read the pool first, and how many at once (#1091),
             # beside the fill numbers it is folded from the same receipts as.
-            cap = (receipts.mover_cap(tier_id, identity)
-                   if isinstance(receipts, ReceiptCache)
-                   else storage_tiers.mover_cap_from_records(
-                       fill_records, tier_id=tier_id, pool_identity=identity))
+            cap = receipts.mover_cap(tier_id, identity)
             record[READER_PLAN_FIELD] = reader_plan(queue, tier_id, cap=cap, store=store)
         # What a movement node on this tier is run *with*, discovered on the
         # box that will run it.  A mover for the dl380g10 stage is sealed by a
@@ -10335,6 +10409,24 @@ def _cycle(
                                   census=commitments, consumers=planned, store=store):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("residency_window")
+    output_scope = (str(queue.root), host)
+    previous_outputs = _OUTPUT_OBSERVATIONS.get(output_scope, {})
+    current_outputs: dict[tuple[str, str], tuple[object, ...]] = {}
+    for event in produced_output.output_scope_tick(queue, tiers):
+        output_key = (str(event["batch_id"]), str(event["namespace"]))
+        signature = (event["event"], event.get("generation"),
+                     event.get("staged_logical_bytes"), event.get("manifest_digest"))
+        current_outputs[output_key] = signature
+        if previous_outputs.get(output_key) != signature:
+            _emit(queue, host, event, tier_consumers=tier_consumers)
+    for batch_id, namespace in sorted(previous_outputs.keys() - current_outputs.keys()):
+        _emit(queue, host, {"event": "output-batch-dropped", "batch_id": batch_id,
+                            "namespace": namespace}, tier_consumers=tier_consumers)
+    if current_outputs:
+        _OUTPUT_OBSERVATIONS[output_scope] = current_outputs
+    else:
+        _OUTPUT_OBSERVATIONS.pop(output_scope, None)
+    phases.lap("output_scope_tick")
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes

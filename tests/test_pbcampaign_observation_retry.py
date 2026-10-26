@@ -4,6 +4,8 @@ The window polls every pending key at zero patience. A reaped, timed-out read
 is not news about the action, so it must not stop publication while the
 campaign's own deadline lasts, and it must not release the key's slot.
 """
+from types import SimpleNamespace
+
 import pbcampaign
 
 
@@ -38,7 +40,9 @@ def _fakes(monkeypatch, polls):
     monkeypatch.setattr(pbcampaign, "submit_row", submit)
     monkeypatch.setattr(pbcampaign.pbwait, "wait_for_keys", wait)
     monkeypatch.setattr(pbcampaign, "_pool_slot_occupied", lambda *args: False)
-    monkeypatch.setattr(pbcampaign.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "sleep": lambda seconds: None,
+    }))
     return events
 
 
@@ -60,7 +64,9 @@ def test_unobserved_read_at_the_campaign_deadline_is_exit_74(monkeypatch):
 
     events = _fakes(monkeypatch, [{0: "unobserved"}])
     clock = [100.0]
-    monkeypatch.setattr(pbcampaign.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pbcampaign, "time", SimpleNamespace(**{
+        **vars(pbcampaign.time), "monotonic": lambda: clock[0],
+    }))
     poll = pbcampaign.pbwait.wait_for_keys
 
     def expired(*args, **kwargs):

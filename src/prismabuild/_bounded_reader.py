@@ -525,24 +525,29 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
                     cap_s: float | None,
                     on_spawn: Callable[[ReaderOwnership], None] | None = None,
                     pool_identity: str | None = None) -> dict:
-    read_fd, write_fd = os.pipe()
-    release_read = release_write = None
+    # A child may run before fork returns in the parent. Defer cancellation
+    # until the parent's finally owns every descriptor and the child PID.
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    read_fd = write_fd = release_read = release_write = None
     started = time.monotonic()
     try:
+        read_fd, write_fd = os.pipe()
         if on_spawn is not None:
             release_read, release_write = os.pipe()
         pid = os.fork()
     except BaseException:
-        os.close(read_fd)
-        os.close(write_fd)
-        for descriptor in (release_read, release_write):
-            if descriptor is not None:
-                os.close(descriptor)
+        try:
+            for descriptor in (read_fd, write_fd, release_read, release_write):
+                if descriptor is not None:
+                    os.close(descriptor)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         raise
     if pid == 0:                                   # child
         code = 1
         stage = "close_read_fd"
         try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             os.close(read_fd)
             if release_write is not None:
                 os.close(release_write)
@@ -600,6 +605,7 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
     pidfd = None
     try:
         os.close(write_fd)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         if release_read is not None:
             os.close(release_read)
             release_read = None
@@ -709,6 +715,7 @@ def _bounded_reader(section: str, read, *, deadline: Deadline, abandoned: list,
             finally:
                 if pidfd is not None:
                     os.close(pidfd)
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def _starttime_ticks(pid: int) -> int | None:

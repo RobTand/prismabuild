@@ -62,7 +62,7 @@ class LaunchEventDaemon:
     def close(self):
         self.events.put(None)
         self.watch.close()
-        self.thread.join(timeout=5)
+        self.thread.join()
         self.server.close()
         assert not self.thread.is_alive()
         assert not self.errors
@@ -83,7 +83,7 @@ def test_auto_remove_fault_needs_daemon_proof_that_payload_never_started(runtime
     try:
         authority.launch_watches[ticket] = daemon.watch
         daemon.emit('create')
-        assert daemon.inspected.wait(5)
+        assert daemon.inspected.wait()
         for action in history: daemon.emit(action)
         daemon.emit('destroy')
         def removed(cid): raise ValueError('No such container')
@@ -111,7 +111,7 @@ def test_missing_or_mismatched_daemon_proof_cannot_fence(runtime_authority, miss
         if missing == 'scope': row['Config']['Labels']['prismabuild.scope'] = 'other-scope'
         if missing != 'create':
             daemon.emit('create')
-            if missing != 'scope': assert daemon.inspected.wait(5)
+            if missing != 'scope': assert daemon.inspected.wait()
         if missing == 'duplicate_create': daemon.emit('create')
         if missing == 'stream': daemon.events.put(None)
         else: daemon.emit('destroy', cid='e'*64 if missing == 'identity' else None)

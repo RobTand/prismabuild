@@ -151,6 +151,7 @@ import prismabuild.core as pb  # noqa: E402
 from . import data_manifest as manifest_codec
 from prismabuild import manifest_layout
 from prismabuild import pool  # noqa: E402
+from prismabuild import filesystem_floor
 from prismabuild import produced_output  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
@@ -2208,6 +2209,11 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
         served = (served_addresses(queue, served_host) if served_host is not None
                   else {"served_host": "", "served_addresses": (),
                         "served_reason": "row not claimed", "offer_age_s": None})
+        used_paths = [queue.root, cas_root_of, *(mounts.local(str(entry["path"]))
+                                               for entry in entries)]
+        if args.log:
+            used_paths.append(args.log)
+        filesystem_floor.enforce_paths(queue.root, used_paths, label="prewarm window")
         started = time.time()
         if args.dry_run:
             pacer.begin_row(**served)
@@ -2341,15 +2347,20 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
             })
             continue
         start = max(resident, consumed)
-        record = warm(
-            key=key, manifest=manifest, digest=str(entry["sha256"]),
-            entries=manifest_layout.entries_between(read_entries, start, target),
-            start_bytes=start, target=target, phase=phase, phased=True,
-            trigger="progress" if window["phase"] else "claim",
-            served_host=str(window.get("claimed_host") or ""),
-            cas_root_of=root,
-            published_unix=window.get("published_unix"),
-        )
+        try:
+            record = warm(
+                key=key, manifest=manifest, digest=str(entry["sha256"]),
+                entries=manifest_layout.entries_between(read_entries, start, target),
+                start_bytes=start, target=target, phase=phase, phased=True,
+                trigger="progress" if window["phase"] else "claim",
+                served_host=str(window.get("claimed_host") or ""),
+                cas_root_of=root,
+                published_unix=window.get("published_unix"),
+            )
+        except filesystem_floor.FloorRefused as exc:
+            event["skipped"].append({"action_key": key, "reason": "filesystem_floor",
+                                     "detail": str(exc)})
+            continue
         event["advanced"].append({
             k: record[k] for k in
             ("action_key", "status", "manifest_bytes", "warmed_bytes",
@@ -2472,17 +2483,22 @@ def cycle(args, queue: pool.PoolQueue, mounts: MountMap, stop: threading.Event,
                 "phased": bool(phases),
             })
             continue
+        try:
+            record = warm(
+                key=key, manifest=manifest, digest=digest,
+                entries=manifest_layout.entries_between(read_entries, resident, target),
+                start_bytes=resident,
+                target=target, phase=phase, phased=bool(phases),
+                trigger=("progress" if target > row_budget_before_progress
+                         else "claim"),
+                cas_root_of=root,
+                published_unix=item.get("published_unix"),
+            )
+        except filesystem_floor.FloorRefused as exc:
+            event["skipped"].append({"action_key": key, "reason": "filesystem_floor",
+                                     "detail": str(exc)})
+            continue
         taken += 1
-        record = warm(
-            key=key, manifest=manifest, digest=digest,
-            entries=manifest_layout.entries_between(read_entries, resident, target),
-            start_bytes=resident,
-            target=target, phase=phase, phased=bool(phases),
-            trigger=("progress" if target > row_budget_before_progress
-                     else "claim"),
-            cas_root_of=root,
-            published_unix=item.get("published_unix"),
-        )
         warmed_entry = ({k: record[k] for k in
                          ("action_key", "status", "manifest_bytes",
                           "bytes_warmed", "warmed_bytes", "trigger",
@@ -2771,6 +2787,19 @@ def _warm_storage(args, stop: threading.Event) -> int:
         # outlived an open gate or the runtime it was preparing to serve.
         if (stop.is_set() or not isinstance(runtime_decision(), generation_receipt.Match)
                 or runtime_gate.read_maintenance_gate() is not None):
+            continue
+        control_paths = [queue.root]
+        if args.cas_root:
+            control_paths.append(args.cas_root)
+        if args.log:
+            control_paths.append(args.log)
+        try:
+            filesystem_floor.enforce_paths(queue.root, control_paths, label="prewarm control")
+        except filesystem_floor.FloorRefused as exc:
+            announce({"event": "prewarm-filesystem-floor", "detail": str(exc)})
+            if args.once:
+                return runtime_gate.ROLE_DEFERRED_EXIT
+            stop.wait(args.poll_s)
             continue
         event = cycle(args, queue, mounts, stop, pacer=pacer)
         line = json.dumps(event)

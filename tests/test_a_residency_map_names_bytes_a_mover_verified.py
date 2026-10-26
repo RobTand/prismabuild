@@ -201,6 +201,7 @@ def test_a_fragment_is_filed_under_one_writer_and_read_back(tmp_path: Path) -> N
     assert path_a.parent == path_b.parent
     read = rm.read_fragments(root, CONSUMER)
     assert [fragment["mover_action_key"] for fragment in read] == [MOVER_A, MOVER_B]
+    assert rm.read_fragments_checked(root, CONSUMER) == (read, False)
 
 
 def test_an_unreadable_fragment_does_not_hide_the_copies_that_were_made(
@@ -214,10 +215,37 @@ def test_an_unreadable_fragment_does_not_hide_the_copies_that_were_made(
         json.dumps(_fragment(MOVER_B, schema="something.else.v1")))
     read = rm.read_fragments(root, CONSUMER)
     assert [fragment["mover_action_key"] for fragment in read] == [MOVER_A]
+    assert rm.read_fragments_checked(root, CONSUMER) == (read, True)
 
 
 def test_a_consumer_with_no_fragments_reads_an_empty_list(tmp_path: Path) -> None:
     assert rm.read_fragments(tmp_path / "residency", CONSUMER) == []
+    assert rm.read_fragments_checked(tmp_path / "residency", CONSUMER) == ([], False)
+    (tmp_path / "residency" / CONSUMER).mkdir(parents=True)
+    assert rm.read_fragments_checked(tmp_path / "residency", CONSUMER) == ([], False)
+
+
+@pytest.mark.parametrize("failure", ["scan", "open"])
+def test_checked_fragments_report_io_failure(tmp_path: Path, monkeypatch, failure) -> None:
+    root = tmp_path / "residency"
+    path = rm.write_fragment(root, _fragment(MOVER_A))
+
+    def unreadable(*args, **kwargs):
+        raise OSError("fixture unavailable fragment evidence")
+
+    if failure == "scan":
+        real_scandir = rm.os.scandir
+
+        def scan(directory):
+            if not isinstance(directory, int) and Path(directory) == path.parent:
+                return unreadable()
+            return real_scandir(directory)
+
+        monkeypatch.setattr(rm.os, "scandir", scan)
+    else:
+        monkeypatch.setattr(rm, "open", unreadable, raising=False)
+    assert rm.read_fragments_checked(root, CONSUMER) == ([], True)
+    assert rm.read_fragments(root, CONSUMER) == []
 
 
 def test_the_map_round_trips_through_the_file_the_launcher_names(tmp_path: Path) -> None:

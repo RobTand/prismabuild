@@ -1414,7 +1414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     detail_note = None
     pool_summary = None
     if transport == "pool":
-        read = bounded("pool", lambda: fleet_census.action_rows(args.queue_root).value,
+        read = bounded("pool", lambda: fleet_census.action_rows(
+            args.queue_root, authoritative_holds=True).value,
                        deadline=deadline, abandoned=abandoned)
         if read["status"] == "ok":
             result = read["value"]

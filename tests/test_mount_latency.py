@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import os
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import selectors
 import signal
@@ -666,6 +667,43 @@ def test_the_syscall_leg_really_runs_and_times_the_claim_path(tmp_path):
     # would make its own listdir slower every sample.
     leftovers = [p.name for p in (tmp_path / "probe").iterdir()]
     assert leftovers == ["anchor"]
+
+
+def test_claim_probe_renames_only_closed_empty_files(tmp_path, monkeypatch):
+    native_open = Path.open
+    native_rename = os.rename
+    native_unlink = os.unlink
+    events = []
+
+    @contextmanager
+    def record_open(path, *args, **kwargs):
+        claim = path.name.startswith("claim-")
+        with native_open(path, *args, **kwargs) as handle:
+            if claim:
+                events.append("open")
+            yield handle
+        if claim:
+            assert handle.closed
+            events.append("close")
+
+    def rename_empty(source, target):
+        assert source.stat().st_size == 0, "dirty scratch triggers NFS retention"
+        events.append("rename")
+        native_rename(source, target)
+
+    def unlink_claim(target):
+        events.append("unlink")
+        native_unlink(target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", record_open)
+        patch.setattr(mount_latency.os, "rename", rename_empty)
+        patch.setattr(mount_latency.os, "unlink", unlink_claim)
+        result = mount_latency.timed_probe(tmp_path / "probe", repeats=2)
+
+    assert result["status"] == "ok"
+    assert events == ["open", "close", "rename", "unlink"] * 2
+    assert sorted(p.name for p in (tmp_path / "probe").iterdir()) == ["anchor"]
 
 
 def test_setup_is_paid_once_so_the_steady_state_cost_is_the_measurement(

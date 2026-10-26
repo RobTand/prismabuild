@@ -1197,7 +1197,8 @@ epoch/sequence when calling `/v2/wait`. Missing or wrong queue identity returns
 503. An old bell's 404 or a partial topic set requires degraded recovery.
 
 V2 covers `ready`, `claimed`, `done`, `failed`, `withdrawn`, `deferred`, `intent`,
-`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940).
+`attempts` and `publication-endings`, plus `workers` and `reservations` (#1940),
+and `adaptive`, `claim-denials`, `passes` and `denial-transitions` (#1941).
 Outcome IDs are lowercase 64-hex action keys. Host IDs preserve the exact store
 spelling, including dots, with at most 128 ASCII letters, digits, dots,
 underscores or hyphens and a leading letter or digit. Later adapters declare their own bounded ID
@@ -1229,7 +1230,7 @@ changes and removal. `reservations` observes each host root, `free`, `minted`,
 `.gpu.json` metadata. Private acquisitions, rollback and release can wake a
 host subscriber without any ready or terminal activity. Populated moved-in
 holders install watches before scanning. Traversal stops at holder contents;
-host adaptive mirrors, passes and denial topics require later slices.
+host adaptive mirrors are bounded separately as described below.
 Hidden and unknown holder directories use the `HolderCensus` enumeration and
 each add one watch. Reconstruction also retains all symlinks for rejection
 before checking directory membership. Every immediate holder entry invalidates
@@ -1268,6 +1269,44 @@ new generation dirty until another read confirms it within that same deadline.
 Run these reads outside admission and transition
 locks. The recorded offer expiry remains 120 seconds and is a separate consumer
 deadline. This source slice activates no consumer and adds no periodic discovery.
+
+Slice 2b adds fixed mirror filenames below `reservations/<host>/adaptive`.
+`adaptive` includes mirror changes and `publisher-result.json` completion;
+`claim-denials` isolates the latest-refusal file. Both use exact host IDs and
+observe parent removal. `passes` and `denial-transitions` use action IDs and
+flat `<key>.json` sidecars. In-place writes, replacement, removal and populated
+move-in are observed. Unsafe byte-read shapes withdraw coverage. These are
+source capabilities until the Principal Engineer publishes a reviewed runtime.
+Verify all required topics on the actual endpoint before enabling a consumer.
+
+`LocalMirrorPublisher` is available for explicit host-hub ownership in slice 7.
+It is not installed by existing worker loops. Its local observer singleton
+watches source changes and copy completion, and its context manager joins the
+observer at close. An active copy retains its original publication flock until
+process exit. Inspect its `invalidations`, `starts`, `completed`, `failed`,
+`source_failures`, `coalesced`, `dirty` and `retry_at` diagnostics. The fixed
+source set comes from `adaptive_snapshot.FILES` and the existing configured
+local/shared paths. Confirmed removals retire mirrors. Unreadable or replaced
+source roots remain unknown. Equal payloads create no shared rewrite.
+
+Dirty publication waits until the previous start plus one second. Copy failure
+and unavailable local-source recovery use 0.25 seconds doubling to five seconds,
+cancelled by source change, recovery or close. A verified older owner uses pidfd;
+an unknown legacy owner uses nonblocking 50-millisecond-to-one-second retry,
+cancelled by owner/result notification, clean state or close. A clean observer
+has no recurring deadline. These timers neither extend active-copy ownership
+nor change placement or drain maturity.
+
+Later consumers use `InputChanges` after authoritative reads to coalesce
+identical observations and their own evaluated writes. Keep evidence state and
+proof maturity in the observation, even if capacity rounds to the same value.
+Use the existing 5-second CPU and GPU and 120-second offer evidence horizons.
+`peer_evidence_deadlines` returns future wall-clock expiries, without a #1262
+policy timeout. Each expiry is consumed once. Healthy transport renewals do not
+request discovery. Inspect `changed`, `coalesced`, `expired`, `read_attempts`
+and `visibility_retries` alongside bell coverage diagnostics. Unconfirmed NFS
+visibility keeps its dirty ID and original 50-millisecond-to-one-second recovery
+budget. This slice adds no recurring consumer timer or live worker activation.
 
 The 4096-event ring, shared 128-connection cap, 300-second transport renewal,
 one-second connect deadline and absolute five-second server I/O budget retain
@@ -2019,6 +2058,50 @@ For observed rows, an observation error outranks an ordinary failure, which
 outranks supersession, which outranks waiting. Supersession never cancels
 existing work, follows the successor, or releases capacity on its own.
 
+## Broker maintenance bridge (#2229)
+
+Publish and converge the broker bridge as its own generation through normal
+rolling publication and the enrolled updater before a custody cutover. A
+hand-installed broker can be replaced on the updater's next tick. Verify the
+installed managed-member hashes and an authorized unprivileged query on each
+host before relying on the bridge. This source change does not publish it.
+
+Root closes or releases its gate through the locally installed, root-owned
+helper, using the existing maintenance owner protocol:
+
+```bash
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-begin OWNER --reason 'operator maintenance'
+sudo /usr/bin/python3 -I /opt/prismabuild-resource-broker/resource_broker.py --maintenance-end OWNER
+```
+
+Use the exact owner that holds the gate for the second command. Never run PB
+Python from the shared NFS generation as root. `-I` excludes ambient Python
+import paths. Verify the installed broker path, ownership and bytes before
+running either command. The helper's file check runs after Python has loaded
+it; it catches an accidental invocation from an untrusted path, but cannot
+make already executed code trustworthy. The local RPC is bounded to 30 seconds.
+Begin sends the operator reason, defaulting to `operator maintenance` when
+`--reason` is absent or empty. Both commands print bounded health errors.
+
+The configured execution UID can observe the gate through the existing
+unprivileged broker client:
+
+```python
+from prismabuild.resource_scope import broker_request
+state = broker_request({"op": "maintenance_query"})
+```
+
+Check `draining`, the exact `maintenance_owner`, `health`, `active_scopes` and
+the truncation/error fields. Missing or unhealthy evidence is not a zero. The
+query accepts no owner or caller proof and cannot change the gate, clean a
+pending setup, reclaim memory, retire a scope or write broker records. Its
+retired-container classification agrees with root status when root housekeeping
+succeeds. A failed root reap can leave root status unhealthy while the query
+reports healthy with none active. Ending maintenance re-runs the root check
+and refuses until it succeeds. Root maintenance must perform required cleanup; a query reporting zero active scopes does
+not certify checkout absence or resource return. Full stopped-writer proof and
+legacy adoption belong to the later custody deployment.
+
 ## Fan a test suite out
 
 `pbtest` shards a test suite across the fleet instead of running it on one box:
@@ -2668,7 +2751,11 @@ It prints three tables:
     holder and reason (both in the table's note and as `drain_owner`,
     `drain_reason` and `drain_changed_unix` in `--json`); it is neither stale
     nor unhealthy, and its `observed_capacity` is zero because it will not
-    claim -- only a loop that actually stopped leaves a stale offer. For SLURM, the controller's nodes, partitions,
+    claim -- only a loop that actually stopped leaves a stale offer. An operator
+    hold shows `held`, its owner, reason and expiry in the note and a `hold`
+    object in `--json`. An unreadable or malformed hold also shows `held` with
+    an error. Hold status reads the queue record directly; the worker keeps
+    refreshing a zero-observed-capacity offer while parked. For SLURM, the controller's nodes, partitions,
     CPU/memory allocation, GRES, features, load and reachability.
 *   **jobs** — for pool, ready and claimed action keys, resources, placement,
     admission denial counts and lease age. Ready jobs use the pool's existing
@@ -2685,6 +2772,48 @@ It prints three tables:
 *   **endings** — how the last actions ended, newest first, each labelled with
     the transport that produced it. `--recent N` changes how many are read; the
     default is 20.
+
+**Hold both Sparks for a direct vLLM serve.**
+
+To reserve both Sparks for an exempt direct vLLM serve, use the published
+`pbhold.py` before starting the serve:
+
+1.  Set a hold on both `sparky` and `sparklina`. Use your operator identity as
+    `--owner` and a UTC `--until` that covers the window, at most 12 hours ahead.
+    This example reserves two hours:
+
+    ```bash
+    until_utc=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+    for host in sparky sparklina; do
+      python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+        --host "$host" --owner operator --reason 'direct vLLM window' \
+        --until "$until_utc"
+    done
+    python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py --list
+    ```
+
+2.  Wait for running PB rows on both Sparks to finish. Check the **jobs** table
+    with `python3 /mnt/shared/prismabuild-fleet/repo/tools/pbstatus.py --transport pool`.
+    Both nodes show `held` with zero observed capacity. Running actions and
+    saved-finish retries continue while new claims are held.
+3.  Once the running rows finish, start the exempt vLLM serve directly.
+4.  Stop the serve, then release both holds with the same owner:
+
+    ```bash
+    for host in sparky sparklina; do
+      python3 /mnt/shared/prismabuild-fleet/repo/tools/pbhold.py \
+        --host "$host" --owner operator --release
+    done
+    ```
+
+An expired hold reopens admission and the loop logs its expiry once. To extend
+an active hold, repeat the set command with the same owner and a new `--until`.
+Replacing an active hold or releasing any hold requires its recorded owner.
+An expired record may be replaced by a new owner. An ownership override or an
+unreadable-record repair requires `--force` and an explicit `--reason`.
+Holds require no root and do not change the upgrade maintenance drain.
+Both controls must be open before new claims resume. `--queue-root` selects
+a private queue for fixtures.
 
 For ready and claimed items, `pbstatus` prints each host's latest recorded
 skip in `DENIAL` beside `PASSES`, with its age; `--json` includes
@@ -3825,6 +3954,13 @@ python -m prismabuild.filesystem_floor mode observe    # or off | enforce; no re
 python -m prismabuild.filesystem_floor reap            # release growth held by dead owners
 ```
 
+Registration without an authority-supplied coverage snapshot is diagnostic;
+under enforce it HOLDs as `population_unknown`. `register --coverage-json PATH`
+consumes versioned mapping/population/bounds evidence for the binding's exact
+`coverage_identity`. It does not create or approve that evidence. Unknown NFS
+export aliases HOLD. Current activation remains gated by the #2045 packet.
+See [the coverage reference](filesystem_floor.md#coverage-in-the-existing-binding).
+
 Register on the host where `ROOT` is local, through a PB action pinned to
 it.  `PRISMABUILD_FILESYSTEM_FLOOR=off|observe|enforce` overrides the mode
 for one process.  `pbrun --filesystem-growth-gib N` (default 1) sizes what a
@@ -4242,6 +4378,15 @@ bitwise-equal across sparky+sparklina). A failed canary marks and exits
 nonzero; it never rolls back and never touches admission. This source
 default reaches the fleet only when a generation carrying it is published.
 See the [canary runbook](canary_runbook_2026-09-19.md).
+
+Leg 3 observes its original action in 900-second intervals until a terminal
+outcome, unless the operator cancels or sets `pbcanary --leg3-wait-s SECONDS`.
+That option sets one total observation budget; expiry is NOT VERIFIED and
+retains the action key. It does not withdraw or retry the action. The
+600-second payload execution deadline still applies after launch. Higher-priority
+work may keep qualification pending, and the publishing process may retain its
+publication lock throughout that wait. See the runbook's
+[observation contract](canary_runbook_2026-09-19.md#leg-3-observation-patience).
 
 ## Smoke-test a transport
 
@@ -4680,6 +4825,12 @@ publication flock. For an absent or stale copy, inspect `publisher-owner.json`
 `<digest>.adaptive-cpu-v1` directory. Compare nonces before attributing a result.
 No publication timeout establishes process exit or authorizes deleting locks.
 Other shared claim operations remain exposed to a degraded mount.
+
+The additive slice-2b `LocalMirrorPublisher` session is available for future
+host-hub installation. Existing worker loops retain the one-shot path above.
+The bell v2 operating section documents observer ownership, completion and
+recovery diagnostics, deadlines and cancellation. Source support does not
+establish that a live worker installed the session.
 
 A measurement with missing, stale, future-dated or incomplete CPU telemetry
 is refused as `measurement_sampler_unknown` (`fresh: false`,

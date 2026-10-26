@@ -18,6 +18,7 @@ from prismabuild import batch_ledger as bl
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -449,7 +450,9 @@ def test_the_pacer_flushes_before_it_waits(tmp_path, monkeypatch):
 
 def test_a_pacer_behind_its_schedule_neither_flushes_nor_waits(tmp_path, monkeypatch):
     monkeypatch.setattr(ps.os, "fdatasync", lambda fd: pytest.fail("flushed"))
-    monkeypatch.setattr(ps.time, "sleep", lambda s: pytest.fail("waited"))
+    monkeypatch.setattr(ps, "time", SimpleNamespace(**{
+        **vars(ps.time), "sleep": lambda s: pytest.fail("waited"),
+    }))
     pacer = ps.ExportPacer(1)
     pacer.started -= 10.0
     with (tmp_path / "out").open("wb") as handle:

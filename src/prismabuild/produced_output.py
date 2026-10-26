@@ -5672,14 +5672,16 @@ def safe_release_instance(queue, instance: Mapping[str, object],
 def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, object]]:
     """Deterministic read-only reconciliation for the tier-loop tick.
 
-    NEW method owned by this lane. Staged means fragments compose AND the
-    mover's receipt says complete; fragments whose completeness cannot be
-    read are `output-recovery-unknown`, exactly as in `recover_batches`.
-    For each bound instance: compose each
-    unretired batch's fragments (existing validator, one manifest each),
-    report staged/retire-needed events. No publishing (liveness), no deletion
-    (lease), no placement. Proposed hook: call once per `tier_loop.cycle`
-    after `residency_window` and extend its events (exact diff through root).
+    Staged means fragments compose AND the active mover's receipt says
+    complete; unreadable evidence is `output-recovery-unknown`, exactly as
+    in `recover_batches`. For each bound instance, compose each unretired
+    active materialization's fragments (existing validator, one manifest
+    each). Staged logical payload bytes come from the validated composed
+    entries, not allocated filesystem space or an additional capacity debit.
+    The tier-cycle owner calls this once after `residency_window`, independent
+    of output-window enforcement, and emits changes through its stdout and
+    host-event diagnostics. No publishing (liveness), no deletion
+    (lease), no placement or retirement authority.
     """
 
     from prismabuild import pool as pool_mod
@@ -5711,6 +5713,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
             for batch_id, entry in batches.items():
                 if not isinstance(entry, bl.BatchFacets):
                     continue
+                ns = str(entry.namespace or '')
                 # The ACTIVE materialization owns the material: after a
                 # restage the entry flag describes a copy that is already
                 # gone, and reading it here would report a live successor as
@@ -5719,14 +5722,17 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     active = entry.active
                 except oc.ProducedOutputError:
                     events.append({"event": "output-recovery-unknown",
-                                   "batch_id": batch_id})
+                                   "batch_id": batch_id, "namespace": ns})
                     continue
                 if active.retired:
                     continue
-                ns = str(entry.namespace or '')
                 try:
-                    fragments = map_mod.read_fragments(out_base, ns)
+                    fragments, unreadable = map_mod.read_fragments_checked(out_base, ns)
                 except Exception:
+                    unreadable = True
+                if unreadable:
+                    events.append({"event": "output-recovery-unknown",
+                                   "batch_id": batch_id, "namespace": ns})
                     continue
                 if not fragments:
                     events.append({"event": "output-batch-unstaged",
@@ -5736,7 +5742,8 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     composed = map_mod.compose(fragments)
                 except ValueError as exc:
                     events.append({"event": "output-batch-invalid",
-                                   "batch_id": batch_id, "error": repr(exc)})
+                                   "batch_id": batch_id, "namespace": ns,
+                                   "error": repr(exc)})
                     continue
                 # Same question, same answer as `recover_batches`: composing
                 # fragments prove bytes landed, not that the batch did, and
@@ -5746,12 +5753,14 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
                     events.append({"event": "output-recovery-unknown",
                                    "batch_id": batch_id, "namespace": ns})
                     continue
-                entries = composed.get("entries")
+                entries = composed["entries"]
                 events.append({
                     "event": "output-batch-staged", "batch_id": batch_id,
                     "namespace": ns, "manifest_digest": str(entry.manifest),
                     "generation": int(active.generation or 0),
-                    "entries": len(entries) if isinstance(entries, Mapping) else 0,
+                    "entries": len(entries),
+                    "staged_logical_bytes": sum(
+                        item["bytes"] for item in entries.values()),
                 })
     return events
 
