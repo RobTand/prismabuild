@@ -1146,11 +1146,10 @@ class DirectoryRecords:
         self._names.forget(directory)
 
     def generation(self, directory: Path) -> int:
-        """A number that changes whenever ``directory``'s records change.
+        """A number that advances on parsing, kept-set changes or incomplete reads.
 
-        Equal before and after a :meth:`read` exactly when that read returned
-        the same names with the same record objects, so a pure function of
-        the records can be remembered under it.
+        An unkept name can disappear without advancing this number. Callers
+        memoizing a fold over all returned records must also track their names.
         """
 
         return self._generations.get(str(directory), 0)
@@ -1166,10 +1165,10 @@ class DirectoryRecords:
         given, says whether a parse may be remembered: one it refuses is
         returned but parsed again next time, and the directory is listed
         again next time too.  ``thaw``, when given, turns what ``parse``
-        returned into what the caller receives, on every read: a caller that
-        may change the record it is handed keeps the file's bytes here and
-        parses them per read, so no change leaks into the next cycle.  A
-        directory that does not exist reads as empty and is not remembered.
+        returned into what the caller receives, on every read. Callers that
+        may mutate records must detach them in ``thaw``; a read-only consumer
+        may retain a thaw while the exact parsed input object is unchanged.
+        A directory that does not exist reads as empty and is not remembered.
         With ``stat_parse`` the parse is called ``parse(path, info)``, where
         ``info`` is the ``os.stat`` its version was taken from (``None`` when
         that failed), so a parse that wants the file's metadata does not
