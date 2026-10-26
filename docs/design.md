@@ -20593,10 +20593,6 @@ retained driver. Complete inherited environment values are bound by a canonical
 digest. The parent captures one environment dictionary, hashes it and passes
 that same dictionary explicitly to the archival subprocess. Native library
 changes to the C environment cannot alter the selected launch environment.
-The pre-driver TMPDIR comes from that selected dictionary, including an unset
-value, rather than a deployment-specific directory (#2162). Later ambient
-changes cannot alter the snapshot. Changing the child's TMPDIR invalidates
-complete environment equality before the retained driver runs.
 The environment observation logs only native thread variables, TMPDIR
 and TZ values. The driver then changes TMPDIR to its private store as its
 retained source requires.
