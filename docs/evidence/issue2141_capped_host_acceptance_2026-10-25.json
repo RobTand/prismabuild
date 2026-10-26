@@ -278,13 +278,14 @@
       }
     ],
     "remaining_gaps": [
+      "Revised installer and current-main integration: focused GREEN outcome, repeated touched-file runs, integrated x86/ARM qualification and refreshed actual-root proof are pending. Historical qualification does not establish this revised source.",
       "The selected suite is not fully green. Both architectures have the same two duplication guard failures as clean main: tools/maintenance/measure_default_scratch_1914.py::load and src/prismabuild/sealed_bundle_cache.py::_reuse_bundle_cache. Principal review must assess the exact baseline evidence; required merge checks remain mandatory.",
       "INV-01 and SM-01: bounded cap/claim component proofs do not satisfy complete tier accounting, lease, release, recovery or lifecycle targets.",
       "INV-11: enrolling/active and explicit-host eligibility controls do not establish every class-tag conjunction or bad-pair dispatch target.",
       "ACC-02: cap, bootstrap and enrollment controls do not establish whole staged-lease lifecycle or campaign acceptance.",
       "ID-08: source merge, runtime deployment and host activation remain distinct. No live publication, generation change, service restart, celestia installation or activation is authorized by this task."
     ],
-    "note": "Scoped source qualification is complete with the baseline failures stated explicitly. Independent Principal review and green required checks still gate merge. Staged-only policy has no waiver. Wider requirement axes are unchanged. Receipts establish readback and integrity, not power-loss durability."
+    "note": "Principal P1 implemented; revised-source qualification and independent re-review are pending. Historical evidence retains exact-source attribution. Green required checks still gate merge. Whole requirement axes and staged-only policy are unchanged; no deployment or workload completion is claimed."
   },
   "deploy": {
     "status": "not-this-step"
@@ -1716,7 +1717,7 @@
       "success_receipts": 0
     },
     "current_native_qualification": {
-      "state": "audited; scoped tests passed; two unchanged-main guard failures per architecture",
+      "state": "Historical exact-source qualification at 8dc14f6774; superseded for the revised candidate, whose qualification is pending",
       "qualification": {
         "x86": {
           "counts": {
@@ -3255,20 +3256,42 @@
         "tests"
       ],
       "differences": [],
-      "note": "The rebase after native qualification adds only AGENTS.md, docs/contributing.md and docs/operating_prismabuild.md. Selected native files, conftest and every root-proof dependency match current bytes."
+      "note": "The rebase after native qualification adds only AGENTS.md, docs/contributing.md and docs/operating_prismabuild.md. Selected native files, conftest and every root-proof dependency match current bytes.",
+      "limitation_after_principal_review": "The earlier equality applied to reviewed b6487f1f49 only. Main integration and the stopped-state repair change executable directories. Do not transfer the earlier current-source equality claim to this revision."
+    },
+    "review_revision": {
+      "source": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
+      "integrated_main": "e994ac98f3843a1a2a6936cee3a736241b52abee",
+      "state": "implemented; integrated and repeated qualification pending",
+      "principal_finding": "P1: is-active accepted deactivating and query errors before cap writes",
+      "red_action": "05e0cb858623897a338a95aeaee533c2addd9c2c24126b3831f7fca45b371b60",
+      "red_outcome": "20 failed, 7 passed; failed service-state cases returned zero before the fix; terminal/log/cleanup verified",
+      "green_action": "9bb8c98b5b5503050ed4090e031271e94b210ca8bb02444960e14b2f14627a80",
+      "green_outcome": "pending; submission is not success",
+      "qualification_plan": {
+        "architectures": [
+          "x86_64",
+          "aarch64"
+        ],
+        "integrated_files": 43,
+        "touched_file_repeats_per_architecture": 5,
+        "xdist_repeats_per_architecture": 2,
+        "actual_root_bootstrap": "fresh qualification owed because conftest changed during main integration"
+      },
+      "deployment": "not performed; no runtime publication or service changes"
     }
   },
   "requirement_status": {
     "INV-01": {
       "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
       "implemented_source": {
-        "commit": "8dc14f6774e40255a40db9916ec93242236412af",
+        "commit": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
         "scope": "Declared CPU and memory cap bounds startup offers, observed offers and the final claim transition. Aggregate slice contains supervisor, workers, broker and action scopes."
       },
       "validation": {
-        "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+        "state": "revised component implemented; current-source qualification pending",
         "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-        "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
+        "note": "Historical native and strict-root evidence remains exact-source only. Principal P1 regression is RED before fix; revised GREEN, repeat, integration and root evidence is pending."
       },
       "deployment": "not performed for #2141; historical requirement axis unchanged",
       "workload_proof": "not performed for #2141; historical requirement axis unchanged"
@@ -3276,13 +3299,13 @@
     "INV-11": {
       "target": "Class-tag conjunction eligibility; host-pair tags admitting neither box are plan errors.",
       "implemented_source": {
-        "commit": "8dc14f6774e40255a40db9916ec93242236412af",
+        "commit": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
         "scope": "Enrolling hosts require an explicit host name. General class eligibility and active-only publication/bootstrap participants use the shared roster contract."
       },
       "validation": {
-        "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+        "state": "revised component implemented; current-source qualification pending",
         "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-        "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
+        "note": "Historical native and strict-root evidence remains exact-source only. Principal P1 regression is RED before fix; revised GREEN, repeat, integration and root evidence is pending."
       },
       "deployment": "not performed for #2141; historical requirement axis unchanged",
       "workload_proof": "not performed for #2141; historical requirement axis unchanged"
@@ -3290,13 +3313,13 @@
     "SM-01": {
       "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
       "implemented_source": {
-        "commit": "8dc14f6774e40255a40db9916ec93242236412af",
+        "commit": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
         "scope": "The final claim fence rechecks the cap and maintenance before ready-to-claimed transition."
       },
       "validation": {
-        "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+        "state": "revised component implemented; current-source qualification pending",
         "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-        "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
+        "note": "Historical native and strict-root evidence remains exact-source only. Principal P1 regression is RED before fix; revised GREEN, repeat, integration and root evidence is pending."
       },
       "deployment": "not performed for #2141; historical requirement axis unchanged",
       "workload_proof": "not performed for #2141; historical requirement axis unchanged"
@@ -3304,13 +3327,13 @@
     "ACC-02": {
       "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
       "implemented_source": {
-        "commit": "8dc14f6774e40255a40db9916ec93242236412af",
+        "commit": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
         "scope": "Deterministic component cap, claim-fence and enrollment controls only. Whole lifecycle and staged-lease race acceptance remains separate."
       },
       "validation": {
-        "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+        "state": "revised component implemented; current-source qualification pending",
         "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-        "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
+        "note": "Historical native and strict-root evidence remains exact-source only. Principal P1 regression is RED before fix; revised GREEN, repeat, integration and root evidence is pending."
       },
       "deployment": "not performed for #2141; historical requirement axis unchanged",
       "workload_proof": "not performed for #2141; historical requirement axis unchanged"
@@ -3318,13 +3341,13 @@
     "ID-08": {
       "target": "Behavior attributed per (runtime_commit, generation_id).",
       "implemented_source": {
-        "commit": "8dc14f6774e40255a40db9916ec93242236412af",
+        "commit": "d0a96bdac917fcd0124053154e18d8b49d2d8bd8",
         "scope": "Source qualification is attributed to its snapshot; runtime publication, convergence and celestia activation remain separate."
       },
       "validation": {
-        "state": "scoped-component-evidence verified; broader suite retains two clean-main failures per architecture",
+        "state": "revised component implemented; current-source qualification pending",
         "acceptance_record": "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
-        "note": "Native x86 and ARM audits plus strict actual-root proofs. No claim of whole-requirement satisfaction or a clean suite."
+        "note": "Historical native and strict-root evidence remains exact-source only. Principal P1 regression is RED before fix; revised GREEN, repeat, integration and root evidence is pending."
       },
       "deployment": "not performed for #2141; historical requirement axis unchanged",
       "workload_proof": "not performed for #2141; historical requirement axis unchanged"

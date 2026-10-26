@@ -5452,7 +5452,11 @@ space; add a measured numeric disk budget only after Rob approves it.
    unit. Drain and stop the system supervisor, broker, client-upgrade and
    movement-publish services before installing the cap. Stop the ancillary
    timers during this maintenance window. Install the current broker code with its normal root installer.
-   Stop the broker before the next step.
+   Stop the broker before the next step. Wait until `systemctl show --property=ActiveState --value`
+   reports `inactive` for all four services. The cap installer refuses active,
+   transitional, failed, unknown and unreadable states before writing containment
+   settings. A draining supervisor remains `deactivating` until its actions and
+   cleanup finish.
 3. Review the generated units without changing the host:
 
    ```bash

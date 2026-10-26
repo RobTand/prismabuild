@@ -6351,7 +6351,11 @@ it mints via the same live clamp and supplies the same final fence.
 movement-publisher drop-ins. The ancillary installers also copy the installed
 `/etc/prismabuild/host-cap.conf`, so either installation order retains their
 containment and individual memory/task limits. `--print`
-renders the units without installation. Both supervisor modes keep cooperative
+renders the units without installation. Before any containment write, the
+system installer requires a successful `ActiveState` query reporting exactly
+`inactive` for the supervisor, broker, client updater and movement publisher.
+Active, transitional, failed, unknown and unreadable states refuse installation.
+Both supervisor modes keep cooperative
 shutdown and explicit `--systemd` startup ownership. A stopped system unit
 also suppresses cron startup. The broker's per-host `PB_SCOPE_PARENT` setting
 supplies `resource_broker.py --scope-parent`, defaulting to `prismabuild.slice`.
