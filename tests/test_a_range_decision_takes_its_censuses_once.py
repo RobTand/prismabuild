@@ -280,8 +280,14 @@ def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
 
 
 def _write_range_partial(destination: Path, sibling: str) -> Path:
-    partial = destination.parent / f".{destination.name}.{sibling[:16]}.partial"
+    """Publish the fixture's directory change without waiting for a clock tick."""
+    directory = destination.parent
+    previous = directory.stat()
+    partial = directory / f".{destination.name}.{sibling[:16]}.partial"
     partial.write_bytes(b"half a copy")
+    current = directory.stat()
+    os.utime(directory, ns=(current.st_atime_ns,
+                            max(current.st_mtime_ns, previous.st_mtime_ns + 1)))
     return partial
 
 
