@@ -63,15 +63,30 @@ def verify_source_bundle(key, checkout, head, files):
             raise ValueError('attested source bundle differs at ' + file)
     return digest
 
-for arch, machine in [('x86', 'x86_64'), ('gb10', 'aarch64'), ('delta', 'x86_64'),
-                      ('ram-x86', 'x86_64'), ('ram-gb10', 'aarch64')]:
-    if arch.startswith('ram-'):
-        plan_file = f'validation-ram-positive-{arch[4:]}-4c0b7511.plan.json'
-    elif arch == 'delta':
-        plan_file = 'validation-delta-88d1d57d.plan.json'
-    else:
-        plan_file = f'validation-{arch}-b531027f.plan.json'
-    plan = json.loads((ROOT / plan_file).read_text())
+partial = '--partial' in sys.argv[2:]
+plans = []
+if partial:
+    manifest = json.loads((ROOT / 'partial-plans.json').read_text())
+    continuity = json.loads((ROOT / 'partial-rebase-continuity.json').read_text())
+    launch = json.loads((ROOT / 'partial-rebase-launch.json').read_text())
+    for path in [*manifest['plans'], launch['plan']]:
+        plan = json.loads(Path(path).read_text())
+        expected_head = (continuity['rebased_source'] if path == launch['plan']
+                         else manifest['head'])
+        if plan['head'] != expected_head:
+            raise ValueError('qualification head differs from frozen source')
+        plans.append((plan, plan['machine']))
+else:
+    for arch, machine in [('x86', 'x86_64'), ('gb10', 'aarch64'), ('delta', 'x86_64'),
+                          ('ram-x86', 'x86_64'), ('ram-gb10', 'aarch64')]:
+        if arch.startswith('ram-'):
+            plan_file = f'validation-ram-positive-{arch[4:]}-4c0b7511.plan.json'
+        elif arch == 'delta':
+            plan_file = 'validation-delta-88d1d57d.plan.json'
+        else:
+            plan_file = f'validation-{arch}-b531027f.plan.json'
+        plans.append((json.loads((ROOT / plan_file).read_text()), machine))
+for plan, machine in plans:
     for row in plan['rows']:
         report = Path(row['report'])
         item = dict(name=row['name'], report=str(report), head=plan['head'], state='pending')
@@ -112,14 +127,18 @@ for arch, machine in [('x86', 'x86_64'), ('gb10', 'aarch64'), ('delta', 'x86_64'
                     row['argv'][row['argv'].index('--workers-per-shard') + 1] == '2')
         except Exception as exc:
             item.update(state='unverified', error=str(exc))
+prefixes = ('partial-',) if partial else ('repeat-', 'ram-positive-')
+qualified = len(rows) == (12 if partial else 22) and all(r['state'] == 'verified' for r in rows)
+for prefix in prefixes:
+    for arch in ('x86', 'gb10'):
+        repeats = [r for r in rows if r['name'].startswith(prefix + arch + '-')]
+        qualified = qualified and len(repeats) == 5 and sum(r.get('xdist', False) for r in repeats) >= 2
 summary = dict(schema='pri36.source_qualification.v1',
-    head='4c0b7511c8e341e327ad98551b4a35df0ced0f79',
-    state='verified' if len(rows) == 22 and all(r['state'] == 'verified' for r in rows)
-        and all(sum(r.get('xdist', False) for r in rows if r['name'].startswith('repeat-' + arch)) >= 2
-                for arch in ('x86', 'gb10'))
-        and all(sum(r.get('xdist', False) for r in rows if r['name'].startswith('ram-positive-' + arch)) >= 2
-                for arch in ('x86', 'gb10')) else 'pending', rows=rows)
-(ROOT / 'qualification-4c0b7511.json').write_text(json.dumps(summary, indent=2) + '\n')
+    head=continuity['rebased_source'] if partial else '4c0b7511c8e341e327ad98551b4a35df0ced0f79',
+    state='verified' if qualified else 'pending', rows=rows,
+    successful_actions=len(keys), source_bundles=len(verified_bundles))
+output = 'partial-qualification-final.json' if partial else 'qualification-4c0b7511.json'
+(ROOT / output).write_text(json.dumps(summary, indent=2) + '\n')
 print(json.dumps({k:v for k,v in summary.items() if k != 'rows'}))
 for row in rows:
     print(json.dumps({k:v for k,v in row.items() if k not in ('actions', 'report', 'source_bundles')}))

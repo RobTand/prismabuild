@@ -103,14 +103,14 @@
    "scoped_repair_1483": {
     "target": "Keep movement and reservation authority in the existing PB owners.",
     "implemented_source": {
-     "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+     "commit": "94724101633fc4f125464c29aab003427c059b27",
      "state": "component-implemented",
-     "scope": "filesystem_floor, ResourceLedger.floor_snapshot, TierLedger and existing movement/prewarm callers share the same guard; no second ledger or dispatcher. Used-leaf checks, owner incarnation and explicit tmpfs reuse the existing identity boundary."
+     "scope": "filesystem_floor, ResourceLedger.floor_snapshot, TierLedger and existing movement/prewarm callers share the same guard; no second ledger or dispatcher. Used-leaf checks, owner incarnation and explicit tmpfs reuse the existing identity boundary. The existing shared stage/RAM copier checks its owner-keyed temporary before initial and retry opens."
     },
     "validation": {
      "state": "component-qualified-awaiting-independent-review",
      "acceptance_record": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
-     "detail": "Integrated 63-file selection: 1101 passed, 0 failed, 2 NFS-environment skips, 1 live-store deselection. Five six-file repeats per architecture: x86 163 passed and 2 skips each, GB10 165 passed each, two xdist runs per architecture. Rebase affected integration: 461 passed, 0 failed, 2 skips, 1 deselection. Final identity-file qualification: five 16-pass runs per architecture, two xdist each, including real enforce-mode RAM promotion. Verified 106 distinct successful terminal/log/CAS records and 22 source bundles. This is bounded component qualification, not a whole-repository suite or activation proof."
+     "detail": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending."
     },
     "deployment": "Not published or activated by this task.",
     "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
@@ -839,14 +839,14 @@
    "scoped_repair_1483": {
     "target": "Preserve lifecycle authority; infer no physical deletion from token return or copy completion.",
     "implemented_source": {
-     "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+     "commit": "94724101633fc4f125464c29aab003427c059b27",
      "state": "component-implemented",
-     "scope": "Existing release and transfer owners remain authoritative; this floor adds conservative whole-reservation accounting and no materialization credit."
+     "scope": "Existing release and transfer owners remain authoritative; this floor adds conservative whole-reservation accounting and no materialization credit. A floor refusal before acquiring the temporary handle preserves retained bytes. Cleanup after write acquisition keeps its existing owner."
     },
     "validation": {
      "state": "component-qualified-awaiting-independent-review",
      "acceptance_record": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
-     "detail": "Integrated 63-file selection: 1101 passed, 0 failed, 2 NFS-environment skips, 1 live-store deselection. Five six-file repeats per architecture: x86 163 passed and 2 skips each, GB10 165 passed each, two xdist runs per architecture. Rebase affected integration: 461 passed, 0 failed, 2 skips, 1 deselection. Final identity-file qualification: five 16-pass runs per architecture, two xdist each, including real enforce-mode RAM promotion. Verified 106 distinct successful terminal/log/CAS records and 22 source bundles. This is bounded component qualification, not a whole-repository suite or activation proof."
+     "detail": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending."
     },
     "deployment": "Not published or activated by this task.",
     "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
@@ -1013,14 +1013,14 @@
    "scoped_repair_1483": {
     "target": "Count all outstanding whole reservations across owners before new admission.",
     "implemented_source": {
-     "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+     "commit": "94724101633fc4f125464c29aab003427c059b27",
      "state": "component-implemented",
-     "scope": "spool_gb, stage_gib, local_gib and filesystem_gib are charged together; unknown mapping/population/bounds HOLD; grant counters persist before token mutation. Actual regular-file descriptors preserve mounted-leaf identity. Local machine, boot and namespace are checked before refresh. Explicit tmpfs retains full expiring coverage and growth bounds."
+     "scope": "spool_gb, stage_gib, local_gib and filesystem_gib are charged together; unknown mapping/population/bounds HOLD; grant counters persist before token mutation. Actual regular-file descriptors preserve mounted-leaf identity. Local machine, boot and namespace are checked before refresh. Explicit tmpfs retains full expiring coverage and growth bounds. Retained owner-keyed temporary leaves receive their own used-filesystem verdict before each initial or retry truncation."
     },
     "validation": {
      "state": "component-qualified-awaiting-independent-review",
      "acceptance_record": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
-     "detail": "Integrated 63-file selection: 1101 passed, 0 failed, 2 NFS-environment skips, 1 live-store deselection. Five six-file repeats per architecture: x86 163 passed and 2 skips each, GB10 165 passed each, two xdist runs per architecture. Rebase affected integration: 461 passed, 0 failed, 2 skips, 1 deselection. Final identity-file qualification: five 16-pass runs per architecture, two xdist each, including real enforce-mode RAM promotion. Verified 106 distinct successful terminal/log/CAS records and 22 source bundles. This is bounded component qualification, not a whole-repository suite or activation proof."
+     "detail": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending."
     },
     "deployment": "Not published or activated by this task.",
     "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
@@ -1205,14 +1205,14 @@
    "scoped_repair_1483": {
     "target": "Keep ownership and charge coherent across private acquisition, transfer, and competing refreshes.",
     "implemented_source": {
-     "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+     "commit": "94724101633fc4f125464c29aab003427c059b27",
      "state": "component-implemented",
-     "scope": "Strict owner snapshots count private, committed, transferred and orphan holdings; refresh identities fence stale publication; materialization gives zero credit."
+     "scope": "Strict owner snapshots count private, committed, transferred and orphan holdings; refresh identities fence stale publication; materialization gives zero credit. Denied retained partials publish neither success movement receipts nor residency fragments. Positive controls publish exact bytes and preserve foreign-owned partials."
     },
     "validation": {
      "state": "component-qualified-awaiting-independent-review",
      "acceptance_record": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
-     "detail": "Integrated 63-file selection: 1101 passed, 0 failed, 2 NFS-environment skips, 1 live-store deselection. Five six-file repeats per architecture: x86 163 passed and 2 skips each, GB10 165 passed each, two xdist runs per architecture. Rebase affected integration: 461 passed, 0 failed, 2 skips, 1 deselection. Final identity-file qualification: five 16-pass runs per architecture, two xdist each, including real enforce-mode RAM promotion. Verified 106 distinct successful terminal/log/CAS records and 22 source bundles. This is bounded component qualification, not a whole-repository suite or activation proof."
+     "detail": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending."
     },
     "deployment": "Not published or activated by this task.",
     "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
@@ -2706,14 +2706,14 @@
    "scoped_repair_1483": {
     "target": "State the persistence assumption separately from process-visible publication.",
     "implemented_source": {
-     "commit": "4c0b7511c8e341e327ad98551b4a35df0ced0f79",
+     "commit": "94724101633fc4f125464c29aab003427c059b27",
      "state": "component-implemented",
      "scope": "Counter writes fsync the file and parent before token admission; write failure refuses admission. No power-loss durability claim. The contract records storage_pool/shared sync=disabled; that storage policy was not reobserved or changed in this run."
     },
     "validation": {
      "state": "component-qualified-awaiting-independent-review",
      "acceptance_record": "docs/evidence/issue1483_source_acceptance_2026-10-26.json",
-     "detail": "Integrated 63-file selection: 1101 passed, 0 failed, 2 NFS-environment skips, 1 live-store deselection. Five six-file repeats per architecture: x86 163 passed and 2 skips each, GB10 165 passed each, two xdist runs per architecture. Rebase affected integration: 461 passed, 0 failed, 2 skips, 1 deselection. Final identity-file qualification: five 16-pass runs per architecture, two xdist each, including real enforce-mode RAM promotion. Verified 106 distinct successful terminal/log/CAS records and 22 source bundles. This is bounded component qualification, not a whole-repository suite or activation proof."
+     "detail": "Retained-partial repair: 74-file integration passed 1425 tests, with 2 NFS-environment skips and 1 live-store deselection. Five fresh 8-pass stage/RAM initial/retry denied/allowed runs per architecture, including two xdist runs each. Rebase integration on main bd73d5c8 passed 196 tests, with the same 2 skips and 1 deselection. Verified 12 report rows, 41 distinct successful terminal/log/CAS records and 12 attested source bundles. All task production and test blobs match the pre-rebase qualified source. Bounded component qualification only; independent review pending."
     },
     "deployment": "Not published or activated by this task.",
     "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
