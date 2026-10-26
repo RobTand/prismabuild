@@ -47,8 +47,16 @@ from prismabuild import staged_path
 UNRETIRED = 10
 
 
+@pytest.fixture(scope="module")
+def retirement_bundle(tmp_path_factory):
+    path = tmp_path_factory.mktemp("retirement-bundle") / "instance.json.gz"
+    path.write_bytes(r13.FIXTURE.read_bytes())
+    return path
+
+
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch):
+def _isolated(monkeypatch, retirement_bundle):
+    monkeypatch.setattr(r13, "FIXTURE", retirement_bundle)
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT", "PRISMABUILD_ACTION_KEY"):
         monkeypatch.delenv(name, raising=False)
