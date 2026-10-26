@@ -35,7 +35,7 @@ from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
-from prismabuild import residency_plan
+from prismabuild import batch_ledger, output_contract, residency_plan
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
     STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR,
@@ -649,7 +649,6 @@ class _ReferenceCensus:
     paths: set[str] = field(default_factory=set)
     references: list[dict[str, object]] = field(default_factory=list)
     refusals: list[dict[str, object]] = field(default_factory=list)
-    records: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def protected_paths(self) -> set[str]:
@@ -659,71 +658,36 @@ class _ReferenceCensus:
 
 def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                       cas_root: str | Path | None,
-                      residency_root: str | Path | None, io=None) -> _ReferenceCensus:
+                      residency_root: str | Path | None) -> _ReferenceCensus:
     """Resolve receipts, plans, consumers and orphan leases under the lock.
 
     Fragments and reader pins have their existing strict census. This census
-    adds records that can name bytes without a surviving fragment. Optional
-    report ``io`` supplies checked scandir, bounded document/request reads and
-    verified manifest layouts; per-record/traversal failures go to io.errors.
-    Its caller reads holder files separately. Without io, failures stay strict.
+    adds records that can name bytes without a surviving fragment.
     """
     census = _ReferenceCensus()
     named = census.paths
     roots = (stage, stage.resolve(strict=True))
     layouts: dict[tuple[str, str], tuple[str, list[dict[str, object]]]] = {}
 
-    def check():
-        if io is not None:
-            io.check()
-
-    def error(path, exc):
-        if io is None:
-            raise exc
-        io.errors.append({"record_path": str(path),
-                          "reason": str(exc) or type(exc).__name__})
-
-    def direct(value, paths):
-        check()
+    def direct(value):
         if isinstance(value, dict):
             for item in value.values():
-                direct(item, paths)
+                direct(item)
         elif isinstance(value, list):
             for item in value:
-                direct(item, paths)
+                direct(item)
         elif isinstance(value, str) and value.startswith("/"):
             path = Path(os.path.normpath(value))
             if any(root in path.parents for root in roots):
                 named.add(str(path))
-                paths.add(str(path))
 
-    def entry_sizes(entries):
-        for entry in entries:
-            check()
-            yield int(entry["bytes"])
-
-    def declared_destination(value, inherited):
-        # This is positive declaration evidence, unlike W1's conservative
-        # selected-stage protection set. Never infer a destination from the
-        # selected stage, tier, source_stage_root or ram_root.
-        if "stage_root" not in value:
-            return inherited
-        root = value["stage_root"]
-        if (not isinstance(root, str) or not root.startswith("/")
-                or ".." in Path(root).parts):
-            return None
-        return Path(os.path.normpath(root))
-
-    def manifests(value, own_cas, origin, paths, bound=None, destination=None):
-        check()
+    def manifests(value, own_cas, origin, bound=None):
         if isinstance(value, list):
             for item in value:
-                manifests(item, own_cas, origin, paths, destination=destination)
+                manifests(item, own_cas, origin)
             return
         if not isinstance(value, dict):
             return
-        if io is not None:
-            destination = declared_destination(value, destination)
         digest = value.get("manifest_sha256")
         declaration = value.get("data_manifest")
         if isinstance(declaration, dict):
@@ -738,38 +702,29 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                     raise ValueError("reference names an invalid manifest digest")
                 key = (own_cas, digest)
                 if key not in layouts:
-                    if io is None:
-                        blob = pb.PrismaBuildCAS(Path(own_cas)).blob_path(digest)
-                        proof = extent_digest(blob)
-                        if proof is None or proof[0] != digest:
-                            raise ValueError(f"reference manifest {digest} is unreadable")
-                        layout = staged_path.manifest_layout_for(own_cas, digest)
-                    else:
-                        layout = io.manifest_layout(own_cas, digest)
+                    blob = pb.PrismaBuildCAS(Path(own_cas)).blob_path(digest)
+                    proof = extent_digest(blob)
+                    if proof is None or proof[0] != digest:
+                        raise ValueError(f"reference manifest {digest} is unreadable")
+                    layout = staged_path.manifest_layout_for(own_cas, digest)
                     if layout is None:
                         raise ValueError(f"reference manifest {digest} is invalid")
                     layouts[key] = layout
                 prefix, entries = layouts[key]
                 start = value.get("range_start_bytes", 0)
                 end = value.get("range_end_bytes",
-                                sum(entry_sizes(entries)))
+                                sum(int(entry["bytes"]) for entry in entries))
                 if (staged_path.bounded_int(start) is None
                         or staged_path.bounded_int(end) is None or end < start):
                     raise ValueError("reference names an invalid extent")
-                if io is not None and destination is None:
-                    raise ValueError("reference manifest has no valid declared stage destination")
-                path_roots = roots if io is None else (destination,)
-                resolved = set()
+                paths = set()
                 for entry in manifest_layout.entries_between(entries, start, end):
-                    check()
                     relative = staged_path.stage_relative(
                         str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
                         mount_prefix=prefix)
-                    found = {str(root / relative) for root in path_roots}
-                    resolved.update(found)
-                    paths.update(found)
-                    named.update(found)
-                census.references.append({**provenance, "paths": sorted(resolved)})
+                    paths.update(str(root / relative) for root in roots)
+                named.update(paths)
+                census.references.append({**provenance, "paths": sorted(paths)})
             except (OSError, ValueError, TypeError, KeyError,
                     pool.PoolContractError, pb.PrismaBuildError) as exc:
                 # Layout uncertainty is never an empty read-set. Only an
@@ -780,15 +735,11 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                     **provenance, "scope": sorted({str(root) for root in scope}),
                     "reason": str(exc) or type(exc).__name__,
                 })
-                if io is not None:
-                    io.errors.append({**provenance,
-                                      "reason": str(exc) or type(exc).__name__})
         for item in value.values():
             if isinstance(item, (dict, list)):
-                # Report paths inherit the declared destination, but a parent
-                # mover's uncertainty bound says nothing about nested source
-                # obligations: never pass bound into the recursive call.
-                manifests(item, own_cas, origin, paths, destination=destination)
+                # A parent mover's destination says nothing about nested
+                # documents' source-read obligations.
+                manifests(item, own_cas, origin)
 
     def mover_bound(value):
         if (value.get("schema") != pool.POOL_MOVE_SCHEMA_V1
@@ -804,107 +755,62 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
         except (OSError, ValueError, RuntimeError):
             return None
 
-    def record(path, *, mover=False, direct_only=False):
-        check()
-        read = (pool.record_store.read_bounded_document if io is None
-                else io.read_document)
-        value = read(path, max_bytes=128 << 20)
+    def record(path, *, mover=False):
+        value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
         if not isinstance(value, dict) or not isinstance(value.get("schema"), str):
             raise ValueError(f"{path}: reference record is unreadable")
-        paths = set()
-        evidence = {"record_path": str(path), "paths": []}
-        if io is not None:
-            evidence["document"] = value
-            census.records.append(evidence)
+        direct(value)
         own_cas = str(cas_root or value.get("cas_root") or queue.root.parent / "cas")
-        try:
-            direct(value, paths)
-            if not direct_only:
-                manifests(value, own_cas, path, paths,
-                          mover_bound(value) if mover else None)
-        finally:
-            evidence["paths"] = sorted(paths)
-        return value, own_cas, evidence
-
-    def visit(path):
-        try:
-            check()
-            if path.name.startswith("."):
-                return
-            mode = os.lstat(path).st_mode
-            if io is not None and statmod.S_ISLNK(mode):
-                raise ValueError(f'{path}: symlink metadata excluded')
-            if statmod.S_ISDIR(mode):
-                yield from tree(path)
-            elif path.suffix in (".json", ".lease"):
-                if not statmod.S_ISREG(mode):
-                    raise ValueError(f"{path}: reference is not a regular file")
-                yield path
-        except (OSError, ValueError) as exc:
-            error(path, exc)
+        manifests(value, own_cas, path, mover_bound(value) if mover else None)
+        return value, own_cas
 
     def tree(root):
-        if io is not None:
-            try:
-                check()
-                with io.scandir(root) as entries:
-                    for entry in entries:
-                        check()
-                        yield from visit(Path(entry.path))
-            except (OSError, ValueError) as exc:
-                error(root, exc)
-            return
         try:
             with os.scandir(root) as entries:
                 paths = sorted((Path(entry.path) for entry in entries))
         except FileNotFoundError:
             return
         for path in paths:
-            yield from visit(path)
+            if path.name.startswith("."):
+                continue
+            mode = os.lstat(path).st_mode
+            if statmod.S_ISDIR(mode):
+                yield from tree(path)
+            elif path.suffix in (".json", ".lease"):
+                if not statmod.S_ISREG(mode):
+                    raise ValueError(f"{path}: reference is not a regular file")
+                yield path
 
     for root in (queue.root / pool.record_store.MOVERS, queue.root / pool.record_store.MOVERS_RETIRED,
                  residency_plan.registry_root(queue)):
         for path in tree(root):
-            try:
-                check()
-                record(path, mover=root != residency_plan.registry_root(queue))
-            except (OSError, ValueError, TypeError, KeyError,
-                    pool.PoolContractError, pb.PrismaBuildError) as exc:
-                error(path, exc)
-    for path in tree(Path(residency_root or queue.root / pool.record_store.RESIDENCY)):
-        try:
-            check()
-            record(path, direct_only=True)
-        except (OSError, ValueError, TypeError, KeyError,
-                pool.PoolContractError, pb.PrismaBuildError) as exc:
-            error(path, exc)
+            record(path, mover=root != residency_plan.registry_root(queue))
+    residency = Path(residency_root or queue.root / pool.record_store.RESIDENCY)
+    for path in tree(residency):
+        value = pool.record_store.read_bounded_document(path, max_bytes=128 << 20)
+        relative = path.relative_to(residency).parts
+        if (len(relative) == 4
+                and relative[0] == output_contract.OUTPUT_SCOPES_SUBDIR
+                and relative[3] == "commitments.json"):
+            template, _, nonce = relative[2].rpartition(".")
+            output_contract.output_key(relative[1], where="commitments owner")
+            output_contract.output_name(template, where="commitments template")
+            output_contract.output_nonce(nonce, where="commitments attempt")
+            batch_ledger.validate_commitments_document(value)
+        elif not isinstance(value, dict) or not isinstance(value.get("schema"), str):
+            raise ValueError(f"{path}: reference record is unreadable")
+        direct(value)
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for path in tree(queue.records.dir(state)):
-            try:
-                check()
-                value, own_cas, evidence = record(path)
-                key = value.get("action_key")
-                if not isinstance(key, str):
-                    raise ValueError(f"{path}: reference names no action")
-                check()
-                validate = (staged_path.validated_sealed_request if io is None
-                            else io.validated_request)
-                request, why = validate(own_cas, key)
-                if request is None:
-                    raise ValueError(f"{path}: {why}")
-                paths = set(evidence["paths"])
-                try:
-                    direct(request, paths)
-                    manifests(request.get("params"), own_cas, path, paths)
-                finally:
-                    evidence["paths"] = sorted(paths)
-            except (OSError, ValueError, TypeError, KeyError,
-                    pool.PoolContractError, pb.PrismaBuildError) as exc:
-                error(path, exc)
-    # Reporting reads holder evidence separately through its bounded I/O;
-    # never call the ledger's unbounded holders/holdings readers in that mode.
-    if io is not None:
-        return census
+            value, own_cas = record(path)
+            key = value.get("action_key")
+            if not isinstance(key, str):
+                raise ValueError(f"{path}: reference names no action")
+            request, why = staged_path.validated_sealed_request(own_cas, key)
+            if request is None:
+                raise ValueError(f"{path}: {why}")
+            direct(request)
+            manifests(request.get("params"), own_cas, path)
     ledger = queue.tier(tier_id)
     for key in ledger.holders():
         if not ledger.holdings(key).get('stage_gib', 0):
@@ -914,10 +820,9 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             max_bytes=128 << 20,
         )
         if isinstance(receipt, dict):
-            paths = set()
-            direct(receipt, paths)
+            direct(receipt)
             manifests(receipt, str(cas_root or queue.root.parent / "cas"),
-                      queue.records.move_path(key), paths, mover_bound(receipt))
+                      queue.records.move_path(key), mover_bound(receipt))
             if receipt.get("manifest_sha256") or receipt.get("entries"):
                 continue
         raise ValueError(f"{key}: held stage scope is unreadable")
@@ -1649,27 +1554,6 @@ def _emit_receipt(receipt: dict[str, object], path: str | None) -> int:
     return 0 if receipt["complete"] else 1
 
 
-def _report_source_mark(path):
-    try:
-        return os.getxattr(path, STAGE_SOURCE_XATTR, follow_symlinks=False)
-    except OSError as exc:
-        if exc.errno in staged_path._XATTR_ABSENT:
-            return None
-        raise
-
-
-def ownership_report(queue, *, tier_id, stage_root, cas_root=None,
-                     residency_root=None, max_files=100000,
-                     max_metadata_bytes=64 << 20, max_seconds=30):
-    """Return bounded observational evidence, never permission to delete."""
-    from stage_ownership import collect_stage_ownership
-    return collect_stage_ownership(queue, tier_id=tier_id, stage_root=stage_root,
-                                   cas_root=cas_root, residency_root=residency_root,
-                                   max_files=max_files, max_metadata_bytes=max_metadata_bytes,
-                                   max_seconds=max_seconds, reference_census=_reference_census,
-                                   source_mark=_report_source_mark)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="reclaim digest-proven source-mark-only stage copies "
@@ -1689,7 +1573,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stage-root", required=True,
                         help="the staging dataset's mountpoint; nothing "
                              "outside it is ever moved")
-    parser.add_argument("--mount-prefix", default=None,
+    parser.add_argument("--mount-prefix", required=True,
                         help="the source mount staged names resolve "
                              "against")
     parser.add_argument("--quarantine-root", default=None,
@@ -1725,32 +1609,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--restore", default=None,
                         help="restore a quarantine run instead of "
                              "reclaiming")
-    parser.add_argument("--report", action="store_true",
-                        help="read-only bounded ownership evidence as JSON; never deletion authority")
-    parser.add_argument("--max-files", type=int, default=100000,
-                        help="maximum payload regular-file observations in --report "
-                             "(default 100000)")
-    parser.add_argument("--max-metadata-bytes", type=int, default=64 << 20,
-                        help="maximum metadata content bytes read in --report "
-                             "(default 67108864)")
-    parser.add_argument("--max-seconds", type=float, default=30,
-                        help="cooperative elapsed-time budget for --report in seconds, "
-                             "checked between filesystem operations (default 30)")
     args = parser.parse_args(argv)
-    if args.report:
-        if args.apply or args.restore:
-            parser.error("--report cannot be combined with --apply or --restore")
-        if min(args.max_files, args.max_metadata_bytes, args.max_seconds) < 0:
-            parser.error("report budgets must be nonnegative")
-        report = ownership_report(pool.PoolQueue(Path(args.pool_root)),
-            tier_id=args.tier_id, stage_root=args.stage_root,
-            cas_root=args.cas_root, residency_root=args.residency_root,
-            max_files=args.max_files, max_metadata_bytes=args.max_metadata_bytes,
-            max_seconds=args.max_seconds)
-        print(pb.sorted_json(report))
-        return 0
-    if args.mount_prefix is None:
-        parser.error("--mount-prefix is required except with --report")
     declared_key = args.action_key or os.environ.get(pb.ACTION_KEY_ENV)
     args.action_key = (staged_path.own_action_key(declared_key)
                        if declared_key else None)
