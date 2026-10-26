@@ -1,0 +1,1068 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "a57e3813c3d5056b45d29e5e3323b1a040c93adc",
+  "scope": [
+    "SC-03",
+    "ID-01",
+    "ID-08",
+    "ID-09",
+    "DUR-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1914",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1914",
+    "readiness": "HOLD pending paired storage measurement",
+    "validated_repairs": [
+      {
+        "id": "ID-01",
+        "actions": [
+          "bf51a8b2639fc719316110bea85cc280663bcdf924b6f85e32d842791de58d39"
+        ],
+        "outcome": "17 passed; literal configured default and explicit overrides verified; actual missing roster refuses; full CAS lookup succeeds"
+      },
+      {
+        "id": "SC-03",
+        "actions": [
+          "edd5317ae6e7a621c2957b8a5699746a3df5da7adc3c010149641fcc97e91a2a",
+          "ff08c01f2fbec41517f7f3ab805079c26d78d96b6e67d96ca703466f485f03b1",
+          "10c74a8a55391c265ab1dd88f3ee9634ac082cefe1f403fc9b8f6b38d514eb96",
+          "dd5c277f1bcb5182201ede2bb7a2324fc180d6f81cde9f6b24f31e35c233d813",
+          "632dc0ec186a28410c259b749544c2f8eb2028960add9ccfac688f277a79a999",
+          "3954dc05771b6a905ff936d666a566ce8c4a8f03f15e6cca789c7452bd33e19e",
+          "f4d96eff01db8fe157a784581ad53abdf2fea6da3e9aa3fe447af425880110b8",
+          "3ed3bb997b0069a9902bcad5f3a737c074b30481c938133050106b59ed74f582",
+          "187e488562eccf71d9e927869a7266c149da6dce32b0df966a3c16870a19f822",
+          "e7c8f200239bce9b5483d982a848953b106f1065e72e9e50c8cdb313cb95fcce",
+          "fab79b02f373794a2ac90babd9457130ff3cd556147a38cb4bab73d1dc461fdd",
+          "871127e550d94f95f75bdb20a38e948506808071fc0f1d70515b825ec7ed9b3c",
+          "742fda255061a3c455baf80b7411571aa4a06ff3309a211a96589d0f9d0624b2"
+        ],
+        "outcome": "421 passed, zero skips in 13 adjacent shards; terminal records, stdout hashes, claim bindings, payload hashes and full CAS lookup verified"
+      }
+    ],
+    "remaining_gaps": [
+      "Paired before/after measurement adf33585a2888e5a40b4cc79ed6caff21406bb880beaccbbc730549ec9ab0f7b was withdrawn by the Chief of Staff after foreign-load admission refusals caused #2267 fleet starvation. It never launched and has no receipt. No performance result or merge acceptance claim.",
+      "Runtime publication and live default proof are pending Principal release; this engineer is prohibited from publishing or restarting services.",
+      "Archival harness pin removal belongs to existing PRs2191/2213; source not duplicated.",
+      "Issue2192 broader record-compat duration acceptance remains open."
+    ],
+    "note": "Scoped source validation only. No lifecycle, staged-reader, residency, application or whole-contract conformance claim. No user waiver."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "requirements": [
+    {
+      "id": "SC-03",
+      "target": "Target, source validation and deployment stay separate.",
+      "implemented": "This record attributes bounded source checks; measurement remains owed.",
+      "deployed": "not deployed in this unit"
+    },
+    {
+      "id": "ID-01",
+      "target": "Action identity binds the literal sealed environment.",
+      "implemented": "Configured TMPDIR is sealed before publication; explicit overrides unchanged.",
+      "deployed": "pending Principal release"
+    },
+    {
+      "id": "ID-08",
+      "target": "Source and deployed runtime identities are distinct.",
+      "implemented": "Tests executed source snapshots through published runtime9dce28460e76-1792959923-b5904f02524e.",
+      "deployed": "No new generation or restart performed."
+    },
+    {
+      "id": "ID-09",
+      "target": "Acknowledgement, terminal exit, CAS publication and application validity are distinct.",
+      "implemented": "Passing source tests have terminal, log and CAS verification. The measurement was withdrawn without execution or receipt.",
+      "deployed": "No application or campaign claim."
+    },
+    {
+      "id": "DUR-01",
+      "target": "State backing-storage persistence assumptions.",
+      "implemented": "Existing DL380 scratch/checkouts and shared CAS have sync=disabled; neither fsync nor receipts prove power-loss durability.",
+      "deployed": "No storage property changed."
+    }
+  ],
+  "tests": {
+    "passed": 438,
+    "skipped": 0,
+    "regression": {
+      "action_key": "bf51a8b2639fc719316110bea85cc280663bcdf924b6f85e32d842791de58d39",
+      "summary": "17 passed",
+      "receipt_sha256": "ec64261f17d40bda25e6f5f353c3c12a41d9c968de691a2d0c516d0d54a25388",
+      "payload_sha256": "0b05f00b223f411d2e21ddaac80de2e6356767cadc5ca43fa0ff438e7ebf25b7",
+      "full_cas_lookup": true
+    },
+    "adjacent_shards": [
+      {
+        "shard": 1,
+        "files": [
+          "tests/test_pbtest.py"
+        ],
+        "action_key": "edd5317ae6e7a621c2957b8a5699746a3df5da7adc3c010149641fcc97e91a2a",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "15 passed in 1.08s",
+        "test_counts": {
+          "passed": 15,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "0c632efef5116d7636b099da9f15fa4dc25c1b4f1d789b918d350c3d818c4f7d",
+        "payload_digest": "028061717b5d4ecffd451e3ad5c04733e0dc0c160bd7970c5dfd2dc0aa755cc4",
+        "claim_digest": "8bc31ff5dcb792c562cbc6960c7a256afaff0e9df04a8318d100370d39648e17",
+        "stdout_digest": "31a72334eefa23d9f9a10edd3d0b023c33f74d69db580801855597d4b44bcbcb",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 2,
+        "files": [
+          "tests/test_pbtest_sealed_basetemp_1469.py"
+        ],
+        "action_key": "ff08c01f2fbec41517f7f3ab805079c26d78d96b6e67d96ca703466f485f03b1",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "13 passed in 1.82s",
+        "test_counts": {
+          "passed": 13,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "cbb58f6c52399dc5cb23b3e2456131652ebf6f2a7e889f16fe9c001fb696d6c7",
+        "payload_digest": "50cab117c15ca3e262624deb70f0f81c62e4e9bf5b4e1d220902607dd1d0b432",
+        "claim_digest": "e63ba47076dd1b2b1b5c9faa54aaf5cd42b8e9c477506e33cd33f9bfdd028d88",
+        "stdout_digest": "50211ced2f32c97be6c5fc05a42d9b5ba7696cf0a8179302422f9819366e0e81",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 3,
+        "files": [
+          "tests/test_pbtest_identifies_its_checkout_once.py"
+        ],
+        "action_key": "10c74a8a55391c265ab1dd88f3ee9634ac082cefe1f403fc9b8f6b38d514eb96",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "19 passed, 16 warnings in 9.28s",
+        "test_counts": {
+          "passed": 19,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 16
+        },
+        "skipped": [],
+        "receipt_digest": "e5922174b5a8f2df067db2c60d840326acdf5d6ebc103cc24d8d8e187993f0ae",
+        "payload_digest": "4a6b303f8fd1ff2094b49ae7283a3c12965d928515c15ae5a260527557386260",
+        "claim_digest": "f5ea5ab5e48cb6e359fba5def8440b80e07e4a7890a8b505fd353cd7097b6050",
+        "stdout_digest": "dbe12468211aecd3e524a2b5bbceadd3fc220813a38f7209b6d60053806395c1",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 4,
+        "files": [
+          "tests/test_local_scratch_core_recipes.py"
+        ],
+        "action_key": "dd5c277f1bcb5182201ede2bb7a2324fc180d6f81cde9f6b24f31e35c233d813",
+        "claimed_host": "sparky",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "45 passed in 2.57s",
+        "test_counts": {
+          "passed": 45,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "b1fc6b0d46fd3f55b1eb7d758e30358028e0c378b264e36a15cef36258976c02",
+        "payload_digest": "edea276cd03c865512a43eabfa26dea1c8930af61d348ab5f45d3179b69fe5d3",
+        "claim_digest": "c3871b4c0808243d3265e74e395d7257f28ccc2ebaf9bfbfc63c87a05af0aa73",
+        "stdout_digest": "7c29f91db598a1e11be06e23881633875afe10699e12950a783366fa680e6588",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 5,
+        "files": [
+          "tests/test_local_scratch_measured_placement.py"
+        ],
+        "action_key": "632dc0ec186a28410c259b749544c2f8eb2028960add9ccfac688f277a79a999",
+        "claimed_host": "sparky",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "86 passed in 17.81s",
+        "test_counts": {
+          "passed": 86,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "547ea126aac5a3f14c127a949ac9341525eae455496a1fd2fe2bdd793acaa4b1",
+        "payload_digest": "76fbab55667be12921190c666ed074f6091bd3c8d28dec83b19df90440f515f8",
+        "claim_digest": "9a0547fc903d5a8c90259b98c18f297c18ff756f89b6c40bdf350b9e0c861030",
+        "stdout_digest": "e5c6b742746332aad9887dfa35be481004440e7b67ef31c9813f0f7896f9a375",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 6,
+        "files": [
+          "tests/test_roster_publication_boundary.py"
+        ],
+        "action_key": "3954dc05771b6a905ff936d666a566ce8c4a8f03f15e6cca789c7452bd33e19e",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "14 passed in 0.18s",
+        "test_counts": {
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "1843304d732e5e70d70d91e0b3db52611fb4acfad1d74a8a22e1989939dd927a",
+        "payload_digest": "53725aada2177e02f9a82ef714915e7897bd327d2fa96b0ab8831d93ee495bae",
+        "claim_digest": "eddb92d6e697b8caa8c802da964c46565a2a2ce911f3c29b17b94e329a51168a",
+        "stdout_digest": "6bf3e765e13950bb6c7550d6a4c90309802d44eb119d913b1516100bfe57889c",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 7,
+        "files": [
+          "tests/test_captured_fleet_roster_consumers.py"
+        ],
+        "action_key": "f4d96eff01db8fe157a784581ad53abdf2fea6da3e9aa3fe447af425880110b8",
+        "claimed_host": "dl380g10",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "28 passed in 2.61s",
+        "test_counts": {
+          "passed": 28,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "cf3974e9e16dc62d56c6443142dbd3c2439bd46c0e62939bce826f3bcc6ed399",
+        "payload_digest": "3378a45413dd75964f82206141abc01fe44862708bf417073eb1e78f87dd627b",
+        "claim_digest": "dd22190df21c2924038513186bee1dce091e2e53ba8ebc5eca6d8c367a8f681e",
+        "stdout_digest": "ee183877a1598302eecea602498851ad7631990e471910f4e464389f170a0463",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 8,
+        "files": [
+          "tests/test_supervisor_rereads_its_shape.py"
+        ],
+        "action_key": "3ed3bb997b0069a9902bcad5f3a737c074b30481c938133050106b59ed74f582",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "11 passed in 0.12s",
+        "test_counts": {
+          "passed": 11,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "c1580306996e5cf72bf4d3d171705f471dc1c79de6204783e2f1d900ab319601",
+        "payload_digest": "d2f734f79d9f3e8ebfa7ac28acc2b7a1cd161076ed171e6eadfd790d45e9109d",
+        "claim_digest": "d1ad740885ed5326c3b4e67622b105d4f764db14101f4d02752f93bba3218d71",
+        "stdout_digest": "15b92971454bdb9d84f9994062d7da273706ba18900959647b1ef1981f3a22ab",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 9,
+        "files": [
+          "tests/test_slurm_epilog.py"
+        ],
+        "action_key": "187e488562eccf71d9e927869a7266c149da6dce32b0df966a3c16870a19f822",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "31 passed in 0.49s",
+        "test_counts": {
+          "passed": 31,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "317c217be323d9f014dd84db789fb1cbade2a44796de662e28d0f13d015a49e3",
+        "payload_digest": "1284b29e2249079972b7d4f710323f5fdb3d70f0c19c22638f36ac5a36ef8fef",
+        "claim_digest": "d7b7440ef731c1caea496d50386767febcaaa56f511f5107bc4f3ed298fb2ce0",
+        "stdout_digest": "24398d2e64ed7f3614d53b3c8eac021f7a7e6f7c012c14e6c008c6ed5f00b199",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 10,
+        "files": [
+          "tests/test_publish_runtime.py"
+        ],
+        "action_key": "e7c8f200239bce9b5483d982a848953b106f1065e72e9e50c8cdb313cb95fcce",
+        "claimed_host": "sparky",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "61 passed in 8.50s",
+        "test_counts": {
+          "passed": 61,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "2f21acb9833ca34e674d142f5cbdb70ff95d19265b5548c382c1ec2a72fe3500",
+        "payload_digest": "48f49cebe437e83154f403312d8072504260d01161b1ba9a0266c796b8323924",
+        "claim_digest": "c1a52ea818b0f4b109b2635102c1a5c55be1c49e1c0f095b8651bdc10c2aba8a",
+        "stdout_digest": "eadc18b5c6d48178d047da93cd23a017f276df482ecc1011180957fef97dc1f6",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 11,
+        "files": [
+          "tests/test_live_store_guard.py"
+        ],
+        "action_key": "fab79b02f373794a2ac90babd9457130ff3cd556147a38cb4bab73d1dc461fdd",
+        "claimed_host": "sparky",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "64 passed in 5.56s",
+        "test_counts": {
+          "passed": 64,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "75c78e3156988fbca3943eaad34f73e72279cc40711ff76e18678a65f0907280",
+        "payload_digest": "ad00bd82ad9a69d1a9d4c1a19dbce28b8bdc25e6a9afa7e8d31c9ad6036cfe1a",
+        "claim_digest": "685b9e5fa9f5a8f18c9f084352aa1424442c3a71140ea8f01baac32c58dcc428",
+        "stdout_digest": "150b87ebe7b171d9aa4448bda2cb8b235c8e43bbf631e5ee7adea2ad58ac64b1",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 12,
+        "files": [
+          "tests/test_pbtest_scratch_roots_1710.py"
+        ],
+        "action_key": "871127e550d94f95f75bdb20a38e948506808071fc0f1d70515b825ec7ed9b3c",
+        "claimed_host": "sparky",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "26 passed in 0.70s",
+        "test_counts": {
+          "passed": 26,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "844082395d56a6d3c6dd4b992609c9e45c1f287534a8536737271972877ac689",
+        "payload_digest": "e16b73137c4f3208f0dc7ac58e31c6fbe41a75b2d35f6d79c33f2093e3e91a69",
+        "claim_digest": "3a8cfd4fe37222ae3b3cd2a7c16af99f2ebe64c90538b48e0c81808a29465eac",
+        "stdout_digest": "2ff781adbc9cd672e5cd7b1042038a9e696300097f28cf53914c54ce3ea923ff",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      },
+      {
+        "shard": 13,
+        "files": [
+          "tests/test_pbtest_attempt_temp_expiry.py"
+        ],
+        "action_key": "742fda255061a3c455baf80b7411571aa4a06ff3309a211a96589d0f9d0624b2",
+        "claimed_host": "sparklina",
+        "state": "done",
+        "outcome_status": "executed",
+        "returncode": 0,
+        "action_returncode": null,
+        "summary": "8 passed in 2.83s",
+        "test_counts": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "warnings": 0
+        },
+        "skipped": [],
+        "receipt_digest": "60a90505a31fa26c97490735ccaad2e67f72bcecb7f753c9958eadde4c12d159",
+        "payload_digest": "eed05e41dad1e540978dac52821b9bfd0410b18d1f6b4982d6eda2792e388892",
+        "claim_digest": "8bdd5e5776cfddfce3375bdf934c5ea828bf7ef5a9df171d4dafd990525b1eb1",
+        "stdout_digest": "a23e2804bce44230771f1b6679ee7b926e5f53b8cc98fb21a0997dbecd535169",
+        "checks_passed": true,
+        "checks": {
+          "terminal_done": true,
+          "terminal_returncode_zero": true,
+          "action_key_matches": true,
+          "claim_action_key_matches": true,
+          "receipt_present": true,
+          "stdout_hash_matches": true,
+          "stdout_length_matches": true,
+          "stdout_summary_matches": true,
+          "payload_summary_matches": true,
+          "payload_digest_matches_receipt": true,
+          "claim_receipt_payload_checks_passed": true,
+          "action_read_complete": true,
+          "claim_read_complete": true
+        },
+        "cas_checks": {
+          "claim_addressed_correctly": true,
+          "claim_digest_matches_body": true,
+          "claim_present": true,
+          "payload_bytes_match": true,
+          "payload_present": true,
+          "payload_sha256_match": true,
+          "receipt_binds_the_claims_manifest": true,
+          "receipt_present": true,
+          "receipt_self_consistent": true
+        },
+        "attestation_verified": null,
+        "complete": true,
+        "timed_out": {
+          "action": [],
+          "claim": []
+        }
+      }
+    ],
+    "preserved_failure": {
+      "action_key": "b641a1491ea7a804a6556dca93046851fd0ea21ad8588988849245847a87a198",
+      "summary": "1 failed,16passed; test assertion addressed a nonexistent ready directory rather than queue.ready_items; corrected and replaced by regression action above."
+    },
+    "revision_note": "Historical pre-review validation. Its 17-test regression included the removed checkout-root override test. Current revision evidence is recorded separately below."
+  },
+  "measurement": {
+    "action_key": "adf33585a2888e5a40b4cc79ed6caff21406bb880beaccbbc730549ec9ab0f7b",
+    "state": "withdrawn",
+    "cpu": 1,
+    "mem_gb": 2,
+    "gpu": 0,
+    "measurement": true,
+    "submitted_from": "dl380g10",
+    "experiment": "3 interleaved HDD/NVMe pairs;256 files x4096bytes; create/fsync/read/unlink; start/end load recorded",
+    "result": "not run; paired measurement remains owed; no speedup claimed",
+    "attempts": 0,
+    "receipt_present": false,
+    "reason": "Chief of Staff, PRI-1/PRI-123 recovery 2026-10-25T23:15Z: priority-0 measurement refused for foreign ambient load on dl380g10 for 2h+, while its election fenced all priority -10 work on the host (prismabuild#2267). Withdrawn to restore admission; owner resubmits after #2267 lands or in an idle window.",
+    "recovery_constraint": "Do not resubmit a dl380g10 measurement before #2267 is published without Chief of Staff approval."
+  },
+  "review_revision_validation": {
+    "review_round": 1,
+    "review_changes": [
+      "Removed the pool-only --local-checkout-root flag, roster argument and test. Checkouts retain their existing environment/default contract.",
+      "Used fleet_roster.LEGACY_ACTION_TMPDIR in the scratch environment validator without changing isolated recorder startup.",
+      "Rebased source onto origin/main 6a96867b3c. No integration changes to the affected production or regression files."
+    ],
+    "validated_source_head": "479b2ac14081c935e2e3bfed0f2f4e684042105c",
+    "suite_source_head": "9f6fbec19e8b3ead250d5361c5e21a2b4223c8cf",
+    "suite_report": "/mnt/shared/paperclip-runs/PRI-24/review1.json",
+    "passed": 240,
+    "skipped": 0,
+    "verification": "All ten terminal records, log hashes and lengths, summaries, claim bindings, payload hashes and full CAS lookups passed. All shards ran on sparky or sparklina; none uses the dl380g10 crash-window results.",
+    "shards": [
+      {
+        "files": [
+          "tests/test_fleet_action_storage_1914.py"
+        ],
+        "action_key": "179497cedb8a9d7287172a14e4759c402e41163bee2182790f8b2920980512d1",
+        "claimed_host": "sparky",
+        "summary": "16 passed in 0.96s",
+        "receipt_digest": "0a3f1e08f8e5cf13790fde98afa4a10c9d96c5faf0009a734fe71c28ac450364",
+        "payload_digest": "27ab4748303f3c04ae8e41e8b5fdfcfdbb0ff3ac746d2e4adc950ea781a2d50a",
+        "claim_digest": "c170acf99465e02f72ff385f22acd28c2f934d37bcc85f6fceb7b6acfd2bb600",
+        "stdout_digest": "d22d3667efbd07214cb3f193dedcbf24d7f3875dabd1627347a1401128b4cc87",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_core_recipes.py"
+        ],
+        "action_key": "4c4f03ad17f7c783d2fb454c740e7a7cee8e704a3ab3cdd1958d1eb58a7ce8c6",
+        "claimed_host": "sparky",
+        "summary": "45 passed in 3.12s",
+        "receipt_digest": "08695ad930389b2db84626b30c9864d61e35d71184fa69a0cf869fb41355cf73",
+        "payload_digest": "d4a4e873dbb44e838a50ac52815604a82c8ac226fa4f450134eec3881a08560d",
+        "claim_digest": "1422bb7f76876df2ef03c13aa281a5a21b809b50d28084cb53b4cdef1183f6bf",
+        "stdout_digest": "555c45be936f5a4bdcc48dc42b7bf01d8eb9393051248e43c34f81a49f03a193",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_measured_placement.py"
+        ],
+        "action_key": "f121d242f330d217011b5c290318c5a278857e008b98839354cb3e991b2a51e1",
+        "claimed_host": "sparklina",
+        "summary": "86 passed in 17.70s",
+        "receipt_digest": "077b4eec8637b6d340091ea5b99254e61a38a9f9533ed02c9f0e5f60a315571c",
+        "payload_digest": "4bf7f44b0f93df551a42c4b026ff6e32f3ea8061a97c8ffce5c4ccb25bcb0cbc",
+        "claim_digest": "c588c48eac86c3ab1f7afaa1795a27f277e907c907109d614d0a104a164c554a",
+        "stdout_digest": "42a55d3914ec14dba3ad36e02598ad667686b7ab81812a6b9869244667cf2ffd",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_local_scratch_retained_review_boundaries.py"
+        ],
+        "action_key": "dd7fc1212b092f852c7513c6a11f1e5ae1a80eca141505f7e7a87fda48b38417",
+        "claimed_host": "sparky",
+        "summary": "9 passed in 2.87s",
+        "receipt_digest": "142a534f836e4fedaf842f5431b1047b0fc5f823b98fb69729a2a00151878f25",
+        "payload_digest": "b775d33a374dccc33ddbe489b2b27815b9da3a74487ed47eefb68927cd261604",
+        "claim_digest": "4358a6b4afa984c19f98a400a96c533b630258858bf993abcd8ccc65b9f23ce4",
+        "stdout_digest": "030974285d22452263b97ee2b83d6e44938f7a415c24e2df9d7d4df4ce2ce225",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_scratch_record_review_boundaries.py"
+        ],
+        "action_key": "9272baec7a85534850f3fa03adc1bec54714ca89ff2f40c640abb9ba35387826",
+        "claimed_host": "sparklina",
+        "summary": "8 passed in 2.06s",
+        "receipt_digest": "82dad5e49fc4e933af8aa84262c1dc7c7e1abdefb9a2d7439a05d1f046ae87aa",
+        "payload_digest": "d6c57c4dd71e4beaaefc4269d5d83e3adf3b368894c9455e26a507281f768c44",
+        "claim_digest": "41c3b088297d0cd5976494bd3582a4fc6f871019e3c4351aeb1f9de98535e050",
+        "stdout_digest": "7f8c3eb42f73d29cbb0e6fbda83016be93fa4bc42d01594544861be7a318a5d7",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_worker_loop_offers_its_affinity.py"
+        ],
+        "action_key": "5d62dce19e168eda00bb5189aa02753843f53a3f55c5db48f87aad03273cd281",
+        "claimed_host": "sparklina",
+        "summary": "6 passed in 1.17s",
+        "receipt_digest": "78a981623815a312a1b6d2bad69d8d41e9f0dd57bb7ca634f7a46f2082092525",
+        "payload_digest": "c37da4d4922430bf383b9c3f304d08a8e26df156c0eb75a8f799e36d32a97981",
+        "claim_digest": "a8d705c7dabbcee43c8df31f78036a49d9caf3234669e0ba765dbf9c48fefd40",
+        "stdout_digest": "b708cf8ea39d16d85a359c1714fcb923ddb9ec161aae78e0c44e06dd4e99d6e9",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_roster_publication_boundary.py"
+        ],
+        "action_key": "ffb075166a7ebd1c5612403dbd9f6229d25215a6c9e18aefbfb4436d42d3b5aa",
+        "claimed_host": "sparky",
+        "summary": "14 passed in 0.19s",
+        "receipt_digest": "fb5adb86fa0e11f03959c1d3e9c39949dae50880d8c1cd38bc1ce1a4a2466022",
+        "payload_digest": "35519e8ed8852291a71f88cdae837af69be2374e6cdc483bbef2c870913ec624",
+        "claim_digest": "7bed46525ce9a03f4ee687cd9d05c1ab8ae14f0ca529b36b06927b59fc6a3f47",
+        "stdout_digest": "0fd9b08244bfe520c5143a207a21d27c2cf557b50fcb717e860117cf494304cb",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_captured_fleet_roster_consumers.py"
+        ],
+        "action_key": "6003046b20f45bb95da76c73cc9b342d4a89af025ea2f819a9fb7eb85e6ed5f0",
+        "claimed_host": "sparklina",
+        "summary": "28 passed in 0.93s",
+        "receipt_digest": "e96fcd55b48997bbcd478c37acd471c038d380ff585221427bff4a3933944602",
+        "payload_digest": "cdea74d50e920a5ff27a6216ceeeb29492f70d858c3945b300a957f74885a98b",
+        "claim_digest": "9b2212fcb8b57de1ce40e0f74088de59f19bc7ece90ecbe2d5ac110a0fa6e747",
+        "stdout_digest": "7586edb8453e1f147e54b221e2f36961a7ca1f785aa14cab89278ed4c897cf4c",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_pbtest.py"
+        ],
+        "action_key": "2bbde4fc1f3d0a18a75717a766f85c3063de9fad672629ea2fabe62954f78142",
+        "claimed_host": "sparky",
+        "summary": "15 passed in 1.30s",
+        "receipt_digest": "dfa3136e62fed8c32b7790b1bf4e0ce5f13bda1214f9ed35af1a277cf8e100d8",
+        "payload_digest": "4d32619e92e90aea2a37c0322bae8e89a0b795fd1a77a05beed4279dff002749",
+        "claim_digest": "0f8b477786610004c4905473a62c330687b8bc34f185cf45b1a052d7edecb0c6",
+        "stdout_digest": "c4b971d4a2e3e3a8f78ae5aa39d05b6c43607003866399eb3b0ecb4ce8ba9df8",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      },
+      {
+        "files": [
+          "tests/test_pbtest_sealed_basetemp_1469.py"
+        ],
+        "action_key": "47993367ef60e09e2f02ea6606f864d206611ca2934c32a2b17a514b0a5ecd5d",
+        "claimed_host": "sparklina",
+        "summary": "13 passed in 1.76s",
+        "receipt_digest": "a02d64deb7aa205777d02b8539f59bb78f01be9577ebda5d931cb2ac771459f3",
+        "payload_digest": "08af199a6ce92d224561d148792c7a78cb8c929dad7d62a686101cce8961d3a2",
+        "claim_digest": "568c5d8250a1b55c718130fddae22d77970f5817d081af4d42d41b1ad90554cb",
+        "stdout_digest": "6806c4055290a09686262aee1d9d9ab76ce1718ae796734e3f70480f2fd886ed",
+        "checks_passed": true,
+        "full_cas_lookup": true
+      }
+    ],
+    "rebased_check": {
+      "source_head": "479b2ac140",
+      "action_key": "1ceb182860a75a9a4f1b181cfd52a37f8526b2bdb3d5847d1a8bba37bee4e406",
+      "host": "sparklina",
+      "summary": "61 passed in 3.37s",
+      "receipt_sha256": "42798af58afde7e193087a7b56b768efe836936c68423c9d253bf4aaab5821a1",
+      "payload_sha256": "871fcba65bae05d7d86ed6711cf4728d91106a4944b600009e6a79f81a1df94f",
+      "stdout_sha256": "e2f1531624aaf6f0ae5be8293524df98acc5d611515e9e473d02298f6f4f240c",
+      "claim_sha256": "6968968e29761842e1bf496475ed385c22fdb6eba988a4dfaab31cddcffe7ef1",
+      "checks": {
+        "terminal": true,
+        "complete": true,
+        "log_hash": true,
+        "log_length": true,
+        "claim": true,
+        "claim_action": true,
+        "full_cas_lookup": true,
+        "payload": true
+      },
+      "all_verified": true,
+      "runtime_generation": "9dce28460e76-1792959923-b5904f02524e",
+      "snapshot": {
+        "commit": "6c01e47dff89691046043998a19235b05d6d038e",
+        "input": {
+          "bytes": 44962705,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "d10fa306756e09de9779c5cdaac927040970be4d47b3e8e54b02f6cecc326cc8"
+        },
+        "parent": "479b2ac14081c935e2e3bfed0f2f4e684042105c",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "request_sha256": "0d847d1a2d9fad53e5c6abe46337fec50804e4e5b1ee974a0cf201d11474a940"
+    },
+    "counting_note": "The rebased 61-test check overlaps the 240-test suite. Counts describe each execution, not 301 distinct tests.",
+    "measurement_withdrawal_evidence": {
+      "source": "/PRI/issues/PRI-123#comment-5c8210b5-fbe5-4d69-b063-e8675106961f",
+      "terminal_status": "withdrawn",
+      "attempts": 0,
+      "receipt_present": false
+    },
+    "merge_readiness": "HOLD pending authorized paired measurement; no deployment performed."
+  }
+}

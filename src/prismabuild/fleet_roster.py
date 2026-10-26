@@ -49,6 +49,7 @@ STATUSES = (ACTIVE, RETIRED, OFFLINE)
 
 #: States excluded from barrier quorums, attestation preflight and placement.
 ABSENT = (RETIRED, OFFLINE)
+LEGACY_ACTION_TMPDIR = "/home/rob/tmp"
 
 
 class RosterPresenceError(ValueError):
@@ -167,6 +168,15 @@ class Roster:
             raise ValueError("gpu_interpreters must be an array of absolute paths")
         return tuple(value)
 
+    @property
+    def action_tmpdir(self) -> str:
+        value = self.document.get("action_tmpdir", LEGACY_ACTION_TMPDIR)
+        if (not isinstance(value, str) or "\0" in value
+                or not value.startswith("/") or value == "/"
+                or ".." in Path(value).parts or str(Path(value)) != value):
+            raise ValueError("action_tmpdir must be a canonical absolute directory other than /")
+        return value
+
     def disk_floor_percent(self, entry: Mapping | None = None) -> int | None:
         field = "local_disk_free_floor_percent"
         source = entry if entry is not None and field in entry else self.document
@@ -219,6 +229,7 @@ class Roster:
         """Reject newly published bytes before strict generation readers use them."""
         self.d38_enforce
         self.gpu_interpreters
+        self.action_tmpdir
         self.disk_floor_percent()
         if "boxes" in self.document:
             boxes = self.boxes
