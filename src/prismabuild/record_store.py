@@ -1982,6 +1982,20 @@ class RecordStore:
     def inspection_slot(self, state: str, key: str) -> JsonRecord | None:
         return inspection_document(self.item_path(state, key))
 
+    def inspection_slot_result(self, state: str, key: str) -> ReadResult[JsonRecord]:
+        """Distinguish a missing inspection slot from unreadable present bytes."""
+        path = self.item_path(state, key)
+        try:
+            raw = _document_bytes(path)
+            if raw is None:
+                return Absent()
+            record = _document_from_bytes(path, raw)
+            if record is None:
+                raise PoolContractError(f"queue record is present but empty: {path}")
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Present(record)
+
     def inspection_tier_records(self) -> Iterator[tuple[str, ReadResult[JsonRecord]]]:
         directory = self.tier_directory()
         for key in _inspection_json_keys_at(directory):
