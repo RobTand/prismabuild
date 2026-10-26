@@ -93,8 +93,8 @@ def test_existing_leaf_uses_its_own_mount_descriptor(tmp_path, monkeypatch):
     assert not all(v["allowed"] for v in ff.check_paths(queue, [source]))
 
 
-def test_tmpfs_requires_explicit_complete_coverage(tmp_path, monkeypatch):
-    monkeypatch.setenv(ff.MODE_ENV, "enforce")
+@pytest.fixture
+def tmpfs_root(monkeypatch):
     with tempfile.TemporaryDirectory(prefix="pb-floor-", dir="/dev/shm") as scratch:
         read_room = ff.filesystem_capacity.local_disk_room
         sample = os.statvfs_result((4096, 4096, 100 * ff.GIB // 4096,
@@ -107,16 +107,21 @@ def test_tmpfs_requires_explicit_complete_coverage(tmp_path, monkeypatch):
             return read_room(path, floor_percent, statvfs=statvfs)
 
         monkeypatch.setattr(ff.filesystem_capacity, "local_disk_room", room)
-        found = ff.identify(scratch)
-        assert found["fstype"] == "tmpfs"
-        assert not all(v["allowed"] for v in ff.check_paths(tmp_path, [scratch]))
-        binding = ff.register(tmp_path, scratch)["binding"]
-        assert not ff.published_verdict(tmp_path, binding)["allowed"]
-        ff.register(tmp_path, scratch, coverage=closed_coverage(binding,
-                    additional_bytes=found["free_bytes"]))
-        assert not all(v["allowed"] for v in ff.check_paths(tmp_path, [scratch]))
-        ff.register(tmp_path, scratch, coverage=closed_coverage(binding, additional_bytes=1))
-        assert all(v["allowed"] for v in ff.check_paths(tmp_path, [scratch]))
+        yield Path(scratch)
+
+
+def test_tmpfs_requires_explicit_complete_coverage(tmp_path, monkeypatch, tmpfs_root):
+    monkeypatch.setenv(ff.MODE_ENV, "enforce")
+    found = ff.identify(tmpfs_root)
+    assert found["fstype"] == "tmpfs"
+    assert not all(v["allowed"] for v in ff.check_paths(tmp_path, [tmpfs_root]))
+    binding = ff.register(tmp_path, tmpfs_root)["binding"]
+    assert not ff.published_verdict(tmp_path, binding)["allowed"]
+    ff.register(tmp_path, tmpfs_root, coverage=closed_coverage(binding,
+                additional_bytes=found["free_bytes"]))
+    assert not all(v["allowed"] for v in ff.check_paths(tmp_path, [tmpfs_root]))
+    ff.register(tmp_path, tmpfs_root, coverage=closed_coverage(binding, additional_bytes=1))
+    assert all(v["allowed"] for v in ff.check_paths(tmp_path, [tmpfs_root]))
 
 
 def test_unidentified_disk_still_cannot_register(world, monkeypatch):
