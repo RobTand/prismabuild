@@ -470,6 +470,21 @@ class RecordStore:
         self.history_listed = 0
         self.history_kept = 0
 
+    def index_publication(self, record: Mapping[str, object]) -> bool:
+        """File advisory metadata candidates after the canonical publication."""
+        from . import publication_index
+        return publication_index.index_publication(self.root, record)
+
+    def publication_candidates(self, **query):
+        """Address bounded advisory candidates without canonical enumeration."""
+        from . import publication_index
+        return publication_index.publication_candidates(self.root, **query)
+
+    def begin_publication_reconciliation(self):
+        """Start explicit bounded legacy backfill; callers own closing the cursor."""
+        from .publication_index import Reconciliation
+        return Reconciliation(self)
+
     def claimed(self, key: str) -> ReadResult[JsonRecord]:
         """Read one claimed record without refreshing a missing name."""
         return self._plain("claimed", key)

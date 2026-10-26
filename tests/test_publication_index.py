@@ -167,3 +167,129 @@ def test_remote_filesystem_cannot_assert_legacy_publisher_coverage(tmp_path,monk
     result=store.publication_candidates(facets={'checkout_root':'/task'})
     assert result.candidates and not result.complete
     assert 'coverage-untrusted-filesystem' in result.reasons
+
+
+def test_corrupt_leaf_returns_partial_candidates_without_complete_coverage(tmp_path):
+    from prismabuild import publication_index
+    store = RecordStore(tmp_path)
+    item = record(1)
+    file_record(store, item)
+    reconcile(store)
+    candidate = publication_index._candidate(item)
+    path = (publication_index._buckets(store.root, candidate)[0]
+            / 'entries' / publication_index._leaf(candidate))
+    path.write_text('{broken')
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert result.candidates == () and not result.complete
+    assert 'index-leaf-unreadable' in result.reasons
+
+
+def test_unreadable_leaf_is_not_silently_an_absent_match(tmp_path, monkeypatch):
+    from prismabuild import publication_index
+    store = RecordStore(tmp_path)
+    file_record(store, record(1))
+    reconcile(store)
+    native = publication_index._read_leaf
+
+    def read(path):
+        if path.parent.name == 'entries':
+            raise PermissionError('fixture refused leaf')
+        return native(path)
+
+    monkeypatch.setattr(publication_index, '_read_leaf', read)
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert result.candidates == () and not result.complete
+    assert 'index-leaf-unreadable' in result.reasons
+
+
+def test_corrupt_coverage_does_not_prevent_verified_candidate_discovery(tmp_path):
+    store = RecordStore(tmp_path)
+    file_record(store, record(1))
+    reconcile(store)
+    (store.root / 'publication-index' / 'v1' / 'coverage.json').write_text('{broken')
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert [row.action_key for row in result.candidates] == [f'{1:064x}']
+    assert not result.complete and 'coverage-unreadable' in result.reasons
+
+
+def test_missing_entries_directory_invalidates_an_existing_bucket(tmp_path):
+    from prismabuild import publication_index
+    store = RecordStore(tmp_path)
+    item = record(1)
+    file_record(store, item)
+    reconcile(store)
+    candidate = publication_index._candidate(item)
+    directory = publication_index._buckets(store.root, candidate)[0] / 'entries'
+    (directory / publication_index._leaf(candidate)).unlink()
+    directory.rmdir()
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert result.candidates == () and not result.complete
+    assert 'bucket-coverage-missing-or-changed' in result.reasons
+
+
+def test_repeated_generation_indexing_does_not_duplicate_or_rewrite_leaves(tmp_path):
+    from prismabuild import publication_index
+    store = RecordStore(tmp_path)
+    item = record(1)
+    file_record(store, item)
+    candidate = publication_index._candidate(item)
+    directory = publication_index._buckets(store.root, candidate)[0] / 'entries'
+    path = directory / publication_index._leaf(candidate)
+    with path.open('rb') as retained:
+        before = os.fstat(retained.fileno())
+        assert store.index_publication({**item, 'attempts': 2, 'requeued_unix': 200})
+        assert path.stat().st_ino == before.st_ino
+    result = store.publication_candidates(facets={'checkout_root': '/task'})
+    assert [row.action_key for row in result.candidates] == [f'{1:064x}']
+
+
+def test_reconciliation_limits_reads_and_marker_writes_per_step(tmp_path):
+    store = RecordStore(tmp_path)
+    for key in range(1, 8):
+        file_record(store, record(key, checkout=f'/task/{key}'), index=False)
+    with store.begin_publication_reconciliation() as run:
+        first = run.step(max_entries=1)
+        assert first['entries_consumed'] == 1 and not first['finished']
+        for _ in range(100):
+            progress = run.step(max_entries=2)
+            assert progress['entries_consumed'] <= 2
+            if progress['finished']:
+                break
+        assert progress['finished'] and progress['complete']
+
+
+def test_reconciliation_close_releases_retained_iterator(tmp_path):
+    store = RecordStore(tmp_path)
+    for key in range(1, 3):
+        file_record(store, record(key), index=False)
+    run = store.begin_publication_reconciliation()
+    run.step(max_entries=1)
+    listing = run.listing
+    assert listing is not None
+    run.close()
+    assert list(listing) == []
+    assert run.step(max_entries=1)['reasons'] == ['reconciliation-cancelled']
+
+
+def test_pool_publication_indexes_after_canonical_write_and_survives_sidecar_failure(tmp_path, monkeypatch):
+    from prismabuild import immutable_files, pool
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    common = {'cas_root': tmp_path / 'cas', 'worker_script': tmp_path / 'worker.py',
+              'checkout_root': '/task', 'resources': {'cpu': 1, 'mem_gb': 1}}
+    queue.publish(action_key=f'{1:064x}', **common)
+    reconcile(queue.records)
+    native = immutable_files.write_json_atomic
+
+    def write(path, payload, **kwargs):
+        if 'publication-index' in path.parts:
+            assert queue.records.item_path('ready', f'{2:064x}').exists()
+            raise PermissionError('fixture refused sidecar')
+        return native(path, payload, **kwargs)
+
+    monkeypatch.setattr(immutable_files, 'write_json_atomic', write)
+    path = queue.publish(action_key=f'{2:064x}', **common)
+    assert json.loads(path.read_text())['action_key'] == f'{2:064x}'
+    result = queue.records.publication_candidates(facets={'checkout_root': '/task'})
+    assert not result.complete and 'coverage-changed' in result.reasons
+    assert [row.action_key for row in result.candidates] == [f'{1:064x}']
