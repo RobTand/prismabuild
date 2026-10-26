@@ -6754,6 +6754,7 @@ from rounded `yielding_s` or `wait_remaining_s` diagnostics.
 | CPU baseline | Counter writer or cached baseline stamp plus `MIN_INTERVAL_S`, currently 1 s | Next usable counter delta or the claim interest ends |
 | CPU and GPU observation | Next numeric sample within 1 s; consulted sample stamp plus 5 s freshness | New sample or the claim interest ends; counters lack complete callbacks |
 | Peer offer | Consulted announcement plus `OFFER_TIMEOUT_S`, currently 120 s | Replacement, retirement, or placement reevaluation |
+| Tier reader plan | Original tier announcement plus 120 s, at the first representable instant after the strict boundary, including cached records | Plan replacement, expiry, or claim cancellation |
 | Peer placement observations and scratch pass-on | Consulted host, GPU, power, denial, and sample stamps plus 5 s | New peer evidence, expiry, or claim cancellation |
 | Scratch service profile | Original measured time plus its declared maximum age; replacement offers retain their own 120 s expiry | Profile, device, root, offer, or generation changes |
 | Image class inventory | Consulted inventory stamp plus 5 s | Docker inventory or class policy changes |
@@ -6768,6 +6769,12 @@ from rounded `yielding_s` or `wait_remaining_s` diagnostics.
 `deferred_for_cpu_only_host` retains #1262's untimed policy. Peer offer and
 sample expiry can require reevaluation, but there is no CPU-host-yield timeout.
 No reporting deadline increments pass counts or authorizes admission.
+
+Sealed-request and current READY reads during scratch-intent qualification
+capture their named source before the legacy refusal handler consumes a read
+error. Unreadable or unknown evidence makes coverage incomplete and requests
+recovery within five seconds, even when the refusal uses the mixed
+`local_scratch_io_intent_invalid` reason.
 
 ### Cross-resource placement preference
 

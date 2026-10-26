@@ -11151,6 +11151,9 @@ class PoolQueue:
         moment = _now() if now is None else float(now)
         if moment - float(announced) > OFFER_TIMEOUT_S:
             return None
+        claim_wait.unix_deadline(
+            self, "tier_reader_plan_expiry",
+            math.nextafter(float(announced) + OFFER_TIMEOUT_S, math.inf))
         return {**plan, "announced_unix": float(announced)}
 
     def reader_plan_stand_aside(self, item: Mapping[str, object], *,
@@ -17754,7 +17757,9 @@ class PoolQueue:
         # non-adaptive callers. No erased/forged carrier bypasses the
         # actual sealed request, and opted-in work requires a ledger.
         try:
-            request = _sealed_action_request(item["cas_root"], key)
+            with claim_wait.reading(self, claim_wait.SourceKind.ACTION,
+                                    f"sealed-request:{key}"):
+                request = _sealed_action_request(item["cas_root"], key)
             scratch_intent = self._sealed_scratch_io(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if (item.get(local_scratch.IO_ENV) != scratch_intent
@@ -17762,7 +17767,9 @@ class PoolQueue:
                         (item.get("tags") or []))):
                 raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
             if scratch_intent is not None:
-                current = record_store.value_or_raise(self.records.item(READY, key))
+                with claim_wait.reading(self, claim_wait.SourceKind.ACTION,
+                                        f"ready:{claim_wait.action_identity(item)}"):
+                    current = record_store.value_or_raise(self.records.item(READY, key))
                 if not self._scratch_record_matches(current, item, scratch_intent):
                     raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
                 if ledger is None or not demand:
