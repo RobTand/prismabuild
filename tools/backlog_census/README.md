@@ -129,3 +129,8 @@ CAS receipt. Tests exercise the real CLI plus graph, scope, flow, conservative
 write rules, collector pagination, default-branch ancestry, and recall recovery.
 Offline fixtures do not qualify the live GitHub collector or complete the
 candidate source audit.
+
+## New tickets
+
+Use the shared matcher and creation gate in [INTAKE.md](INTAKE.md). It owns native
+child creation, priority evidence checks, and the repo-local to-tickets integration.

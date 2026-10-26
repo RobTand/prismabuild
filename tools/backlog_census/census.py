@@ -11,11 +11,12 @@ import json
 from pathlib import Path
 import re
 
+from duplicates import PREFIX, likely_duplicate
+
 PRIORITIES = ("P0", "P1", "P2+", "P2", "P3", "P4")
 SCOPE = PRIORITIES[:3]
 REPOS = tuple(f"RobTand/{name}" for name in ("prismaquant", "prismabuild", "tessera"))
 BLOCKED = {"tl:blocked", "ig:blocked"}
-from duplicates import PREFIX, likely_duplicate
 REFERENCE = r"(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)"
 PARENT = re.compile(r"^\s*(?:[-*]\s+)?(?:part of|sub-issue of|parent)\s*:?\s*" + REFERENCE, re.I | re.M)
 BLOCKER = re.compile(r"^(?:[-*][ \t]+)?(?:blocked by|depends on|blockers?|dependencies)\b[ \t]*:?[ \t]*(.*)$", re.I)
