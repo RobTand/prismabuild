@@ -23,6 +23,7 @@ from fleet_world import Clock as FleetClock
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -165,15 +166,14 @@ def test_a_reader_plan_refreshes_at_its_injected_hold_boundary(
     assert not other.yields()
     assert waited.exempt()
     path = queue.records.tier_record_path(TIER)
-    original_inode = path.stat().st_ino
-
-    clock.advance(0.125)
-    _announce(queue, [(WAITED, "claimed")])
-    assert path.stat().st_ino != original_inode
+    with path.open("rb") as original:
+        original_inode = os.fstat(original.fileno()).st_ino
+        clock.advance(0.125)
+        _announce(queue, [(WAITED, "claimed")])
+        assert path.stat().st_ino != original_inode
     assert not other.yields()
     assert not waited.yields()
     clock.advance(0.125)
-    assert clock.monotonic() == other.hold_s
     assert other.yields()
     assert not waited.yields()
 

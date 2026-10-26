@@ -1225,3 +1225,90 @@ def test_a_successor_repeating_a_spent_mover_key_retains(
     _install(world, [dict(rows[0]),
                      {**rows[1], "mover_key": str(rows[0]["mover_key"])}])
     _assert_retains(world)
+
+
+@pytest.mark.parametrize("failure", ["scan", "open", "partial"])
+def test_output_reconciliation_preserves_real_fragment_io_failures(
+        tmp_path: Path, monkeypatch, failure: str) -> None:
+    """Best-effort reads cannot prove absence or a complete logical-byte total."""
+
+    import builtins
+
+    world = _World(tmp_path)
+    payload = b"observed logical payload"
+    descs = _descriptors(world.template, world.inst, "p1", payload)
+    _prewrite(world.q, world.inst, world.template, "b1", descs)
+    first = world.first_publish("b1", descs)
+    mover = str(first["mover_key"])
+    world.run_mover(mover, "fragment-io-observer")
+    staged = po.output_scope_tick(world.q, {TIER: {}})
+    assert len(staged) == 1, staged
+    assert staged[0]["event"] == "output-batch-staged", staged
+    assert staged[0]["staged_logical_bytes"] == len(payload), staged
+
+    namespace = str(first["batch_namespace"])
+    fragment_path = map_mod.fragment_path(world.out_base, namespace, mover)
+    if failure == "partial":
+        # Another readable copy must not hide failure to read the first one.
+        fragment, = map_mod.read_fragments(world.out_base, namespace)
+        map_mod.write_fragment(world.out_base, {
+            **fragment, "mover_action_key": "f" * 64 if mover != "f" * 64 else "e" * 64,
+        })
+    batch_path = bl.BatchLedger.for_instance(world.q.root, world.inst).path
+    before = batch_path.read_bytes()
+    original_scandir = os.scandir
+    original_open = builtins.open
+    failures = []
+
+    def denied_scan(path):
+        if Path(path) == fragment_path.parent:
+            failures.append("scan")
+            raise PermissionError("fixture fragment directory unavailable")
+        return original_scandir(path)
+
+    def denied_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == fragment_path:
+            failures.append("open")
+            raise PermissionError("fixture fragment unavailable")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure == "scan":
+            patch.setattr(os, "scandir", denied_scan)
+        else:
+            patch.setattr(builtins, "open", denied_open)
+        # Existing consumers still get best-effort lists, including any copies
+        # they can read. Reconciliation needs the additional availability fact.
+        readable = map_mod.read_fragments(world.out_base, namespace)
+        assert isinstance(readable, list)
+        assert len(readable) == (1 if failure == "partial" else 0)
+        unknown = po.output_scope_tick(world.q, {TIER: {}})
+
+    assert len(failures) == 2, failures  # both calls exercised the real reader
+    assert len(unknown) == 1, unknown
+    assert unknown[0]["batch_id"] == "b1", unknown
+    assert unknown[0]["event"] == "output-recovery-unknown", unknown
+    assert unknown[0].get("staged_logical_bytes") is None, unknown
+    assert batch_path.read_bytes() == before
+    assert world.stage_path("p1.bin").read_bytes() == payload
+
+
+def test_output_reconciliation_distinguishes_empty_evidence(tmp_path: Path) -> None:
+    """Missing and readable-empty directories remain known unstaged evidence."""
+
+    world = _World(tmp_path)
+    descs = _descriptors(world.template, world.inst, "p1", b"not staged yet")
+    _prewrite(world.q, world.inst, world.template, "b1", descs)
+    first = world.first_publish("b1", descs)
+    namespace = str(first["batch_namespace"])
+    directory = map_mod.fragment_path(
+        world.out_base, namespace, str(first["mover_key"])).parent
+    assert not directory.exists()
+    for create_directory in (False, True):
+        if create_directory:
+            directory.mkdir(parents=True)
+        assert map_mod.read_fragments(world.out_base, namespace) == []
+        events = po.output_scope_tick(world.q, {TIER: {}})
+        assert len(events) == 1, events
+        assert events[0]["event"] == "output-batch-unstaged", events
+        assert events[0].get("staged_logical_bytes") is None, events

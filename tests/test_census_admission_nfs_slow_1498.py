@@ -193,6 +193,8 @@ def test_sweep_rotates_past_257_kept_sidecars_across_loop_restarts(
 def test_fair_sweep_recovers_capped_census_without_retiring_elections(
         fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    # This exercises full-census capacity, independently of ordinary retirement.
+    monkeypatch.setattr(reservation, "_ordinary_election_census", lambda *args: None)
     ordinary = publish("ordinary-after-fair-sweep", gpu=0)
     queue.record_pass(ordinary)
     kept = []

@@ -1,0 +1,33 @@
+{
+  "capture_name": "r2-host-census-capture",
+  "capture_report_sha256": "f4715a7d4bc5e71461d25977fd1ace0e528040a287fae974ebc9d98716414d0f",
+  "excluded_cases": [],
+  "files": {
+    "absent-participants-shared-admission-census-2199.jsonl": "a58b04fcf0eedcda0267d0c068fe96f593533d01693e933c877f20180f49c7d1",
+    "goldens-shared-admission-census-2199.jsonl": "d872d031d70a36d3588ff35171b93ad2bd68bfa4024a1494730b3f4eafe79437"
+  },
+  "finished_at": "2026-10-24T04:07:48.252610+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "host-admission-census/complete"
+  ],
+  "source_git": {
+    "parents": [
+      "4b5d88d0940e24e5af3fe78db34e04623e6aa056"
+    ],
+    "snapshot": "f14fa1c88967cecdac6d250861b2ce05fdae4264",
+    "tree": "d1a02fc814bf4556982fe941435e6ac230b484be"
+  },
+  "started_at": "2026-10-24T04:07:36.945663+00:00",
+  "verified_producer": {
+    "action_key": "270d0ca30bcce73c9fe976306776b3c44059ef058dd68bb2b9eefac1448502c1",
+    "receipt_sha256": "37046302ba784050a16753bbfd0519a8343a984453c92b5e4e38bffc09b53aff",
+    "request_sha256": "fe27537e19c9ecdc13279361777045fc17191496fb847f7be9b5989f0a796dd9",
+    "source_parent": "4b5d88d0940e24e5af3fe78db34e04623e6aa056"
+  }
+}

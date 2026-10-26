@@ -11,6 +11,7 @@ and the one refusal it must keep making.
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -142,7 +143,9 @@ def test_only_the_mismatched_loops_are_candidates(tmp_path, monkeypatch):
     monkeypatch.setattr(supervise, "CLAIM", tmp_path / "supervisor.claim")
     monkeypatch.setattr(supervise.socket, "gethostname", lambda: "boxa")
     monkeypatch.setattr(sys, "argv", ["supervise", "--once"])
-    monkeypatch.setattr(supervise.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": lambda _s: None,
+    }))
     monkeypatch.setattr(supervise, "_live_loops", lambda *_a, **_k: [11, 22, 33])
     # As above: the rule under test is the shape mismatch, not the ownership
     # proof these fake pids cannot satisfy.

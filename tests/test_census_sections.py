@@ -332,7 +332,9 @@ print(json.dumps({"values": values, "schedules": schedules}))
 '''
 
 
-def test_original_fact_values_and_observable_capture_order_match(tmp_path):
+def test_original_fact_values_and_observable_capture_order_match(tmp_path, monkeypatch):
+    # A transported checkout may have none of the historical Git objects.
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "unavailable-history.git"))
     repository = Path(__file__).resolve().parents[1]
     original = tmp_path / "original"
     original.mkdir()

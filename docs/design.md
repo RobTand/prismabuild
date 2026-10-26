@@ -165,6 +165,11 @@ The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
 private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
 and fence retained readers by their exact PID/starttime identity.
+Reader creation blocks SIGINT and SIGTERM from pipe allocation through fork
+until the parent enters its exact-child cleanup boundary (#2248). The child
+restores the caller's signal mask before reading. The parent restores it inside
+the cleanup boundary, so a signal pending at fork return cannot abandon the
+child or its pipe. Allocation failures also restore the caller's mask.
 `prismabuild.action_wait` owns the action-wait error types, bounded-read result
 translation, retained-reader polling, delivered-reader scope and timing defaults.
 The synchronous and detached frontends, campaign window and canary import that
@@ -725,6 +730,71 @@ scans for each later candidate.
 This source change retains PB admission authority (SC-01), movement authority
 (SC-02), and token settlement requirements (INV-07). It establishes no runtime
 deployment or campaign completion.
+
+**Ordinary admission without the census reader (#2199).** A non-measurement,
+non-gang candidate discovers measurement sidecars before M/H, then rechecks every
+sidecar's identity, size, mtime and ctime under host admission H. Parsed sidecars
+are reused within a pass only while these observations match; new, replaced or
+missing sources require fresh discovery. This lists and stats every sidecar per
+candidate, inline. A potentially fencing measurement receives the full census's
+per-key retirement check: exact READY, CLAIMED, finish marks and terminal slots.
+An exact-generation claim or mark takes precedence over an ending; otherwise an
+exact-generation ending or strictly newer live publications prove retirement.
+Local nonblocking M keys precede H; busy keys and retained holders stay fenced.
+Gang elections, including concluded entries, remain potential fences. An
+election on another host cannot fence this row. A measurement at the row's
+priority or below cannot fence it; an equal-priority gang still can reserve
+demand after maturation. Only when no source can fence the candidate does
+admission proceed without the reader. H remains held through reservation, so a
+new election cannot race between the proof and acquisition. A dependent whose
+sealed owner has a live or unproved selection also needs a complete or verified
+shared census.
+An elected measurement remains distinct from an ordinary incumbent even when
+the dependent is outside its direct priority fence. Unreadable,
+malformed, vanished, over-budget or ambiguous sources take the complete census
+path. No publisher or election writer gains a new participation requirement.
+
+Sibling loops may also reuse a complete under-H census for at most two seconds.
+The host-local record binds the pool, boot identity, monotonic creation time,
+payload digest and source generation. The generation includes identities, sizes,
+mtime and ctime for pass sidecars, gang records and state files, exact elected
+publication and retirement slots, and gang members. A live gang also includes
+all READY and CLAIMED sources for its movement obligations. Unrelated ordinary
+claims do not invalidate a measurement-only result. Directory identities
+bracket listings. Publication requires equal generations before and after the
+complete locked read. Reuse takes the cached and pass-remembered selections'
+sorted nonblocking M keys before H, verifies the generation and age under H,
+and restores fences for busy keys and retained holders. A sibling's omission
+is not retirement authority: selections remembered by this pass but absent
+from the shared result remain remembered, with their live fences intact.
+An election retained from busy discovery remains in the refreshed census's
+selections and keys as well as its live elections, so later candidates retain
+its M lock and fence even when the sidecar vanished before refresh.
+Both owned and accepted shared censuses update pass memory before candidate
+evaluation; candidate-relative ordinary negative proofs never replace it.
+Ordinary source parsing and election memory are separate. After the under-H
+metadata recheck, each observed measurement publication remains in pass memory
+even if its sidecar disappears or the current candidate outranks it. Later
+ordinary proofs apply the same exact retirement rule to those observations,
+taking their local M keys before H. Complete and shared fallback retain the
+strongest observed local fence per key, including across publication generations.
+An advisory source-verification refusal permits an independent ordinary proof;
+unsafe local rendezvous storage still refuses before either shortcut.
+Missing, stale or unverifiable results fall back. Shared reuse never supplies a
+new retirement proof. The ordinary proof uses exactly the complete census's
+per-key retirement rule. Optional source-generation preparation and verification
+run in a separately owned bounded child using the refresh budget. Its independent
+nonblocking guard never waits for the census reader fence. The persist-before-read
+handshake and inherited-descriptor isolation are the same as the census reader's:
+a timed-out child cannot retain M/H, and an unsettled child prevents another
+source helper across loop restarts without preventing a complete census. A busy,
+timed-out or unverifiable optional read disables cache publication or reuse,
+not an otherwise authoritative complete census. Ordinary sidecar proofs and local
+cache serialization still run inline; their cooperative deadlines do not bound a
+stalled filesystem syscall. Measurement and gang candidates retain their
+owned-reader path. A census refusal still ends reader attempts for the pass,
+but each later ordinary candidate can prove that it is outside every fence;
+the refusal is recorded only when that candidate still needs the census.
 
 An incumbent with no declared finite deadline (`pbrun` without `--timeout-s`,
 or a progress-governed action) does not void the election: requiring one left
@@ -5777,6 +5847,12 @@ fail with `movement_refused` and `residency_overran_reservation`.
 
 ## Gang reservation (#1517, default off)
 
+Gang claim readers use the bounded replaceable-record reader. Scope preparation
+may atomically replace a claimed row while a sibling checks readiness or its
+start barrier. That replacement is an ordinary whole-record update. No-follow,
+regular-file, strict JSON, size and substantive-identity checks still apply;
+immutable group records keep the stable-file reader (#2247).
+
 A gang is N sealed actions (2..16), one per target host or host class, admitted
 together or not at all. Each member seals `params.gang = {group, size, index}`.
 Its row requires the worker tag `gang-v1`, which a worker offers only with
@@ -8263,26 +8339,53 @@ ledger owner. The exclusion does not span payload I/O. Private
 acquisitions stay charged throughout their separate begin/commit lifecycle.
 
 **The used-filesystem floor (#1483, default-off).** `begin_acquire` asks
-`filesystem_floor.ledger_gate` before taking byte-kind tokens (`spool_gb`,
-`stage_gib`, `filesystem_gib`). Inside the ledger's mutation section the
-gate takes the floor lock of each filesystem the demand is bound to --
-sorted, each with a bounded wait -- and admits only when the owner's
-published sample satisfies `free >= ceil(size/20) + census +
-grants-since-sample + demand`. Floor locks are innermost: a floor section
-acquires nothing else, and the owner's refresh holds only the floor lock,
-so the order `[AdmissionGate] -> ledger lock -> floor locks` has no cycle.
-Under the ledger lock the gate reads only the floor lock, the published
-sample and the grant counter; the mode and bindings come from a
-per-process cache the loop tick refreshes outside every lock, and no name
-resolution, `statvfs` or subprocess runs there. A refusal is the ledger's
-ordinary shortage (`None`, `last_token_shortage.resource ==
-"filesystem_floor"`), so every caller's existing shortage handling applies.
-Release, commit, abandon, transfer and sweep are unchanged and take no
-floor lock: they only lower the charge. With the mode `off` (the default)
-`begin_acquire` reads one cached mode value and is otherwise the old
-locked acquisition. Bindings, stable identity, refresh, used-path checks,
-coordinator growth and the bootstrap order are in
-[filesystem_floor.md](filesystem_floor.md).
+`filesystem_floor.ledger_gate` before taking `spool_gb`, `stage_gib`,
+`local_gib` or `filesystem_gib` tokens. The existing binding must carry an
+authority-supplied, expiring coverage snapshot for its exact mapping,
+closed writer/member population and complete growth bounds. Missing or
+changed coverage HOLDs. A declaration or an empty directory is no closure
+proof. The source adds no fleet mappings or second ledger.
+
+`ResourceLedger.floor_snapshot` counts private, committed, transferred and
+orphan holdings under the existing owner lock. It requires fresh, complete,
+disjoint minted/free/held/dead custody. `TierLedger` supplies its existing
+mint lock. Refresh first records the binding/coverage identity and grant
+position under the floor lock, publishing an incomplete-census HOLD. It then
+releases that lock and snapshots each owner separately. Its final floor
+section first fences out superseded refreshes, rechecks identities, samples
+capacity, and publishes whole snapshot
+charges plus every intervening grant and authority-bounded additional growth.
+A grant seen by both sources is conservatively counted twice. A failed or
+interrupted census never turns unknown holdings into zero.
+
+Admission checks `free >= ceil(size/20) + census + grants-since-sample + demand`
+and every registered subordinate dataset constraint. It persists each grant
+counter, including file and parent-directory fsync, before token mutation.
+Partial writes can overcharge until refresh; they cannot admit uncharged
+tokens. No materialization credit is accepted. The order remains
+`[AdmissionGate] -> ledger lock -> floor locks`; refresh never takes an owner
+lock under a floor lock. Release and transfer retain their existing owners.
+With mode `off`, this path performs the existing acquisition.
+
+Used-path checks refuse unknown local mappings and require an exact,
+authority-supplied NFS export alias bound to client boot, mount namespace,
+device and mount incarnation. A server address alone supplies no authority.
+Native identity uses descriptor `statx`, never `fdinfo` or kernel lock tables.
+Existing regular files retain their own mount identity, including files reused
+or adopted at a destination; absent files use their nearest existing ancestor.
+Locally owned bindings require the current machine, boot and mount namespace
+at path and published admission boundaries, before any refresh. Remote owners
+retain their own incarnation and exact client NFS alias authority. Explicit
+tmpfs registration uses its boot-scoped identity and full coverage accounting;
+other volatile disk identities remain unregistrable.
+Supervisor spool offers retain the aggregate headroom; movement and prewarm
+check resolved sources and created/reused destinations before publication.
+The shared stage/RAM copier checks its actual owner-keyed temporary before
+the initial write and the parent-prune retry. Refusal before opening preserves
+retained bytes; failure after acquiring the write handle cleans up that copy.
+See [filesystem_floor.md](filesystem_floor.md) for coverage fields and limits.
+These are source mechanisms. Activation, live diagnostic authority and fleet
+publication remain gated by the accepted #2045 packet.
 
 The inode term (#1535) also requires `f_favail >= ceil(f_files / 20)`,
 with no fixed inode floor when the filesystem reports `f_files == 0`.
@@ -13225,6 +13328,22 @@ that finds no fragment and refuses. Publishing the
 action needs the producer's claimed row for its launch context, as publishing a
 mover does, so a call made after the owner's claim has ended can file an egress
 that already completed and cannot start one.
+
+The tier cycle calls `produced_output.output_scope_tick` after its residency
+window on every cycle, independently of output-window enforcement. The census
+reports staged logical payload bytes from validated composed entries and a
+complete active mover receipt. `residency_map.read_fragments_checked` returns
+best-effort fragments plus an unreadable flag; incomplete evidence is unknown,
+including a partially readable fragment set. `read_fragments` returns only
+the best-effort list.
+
+The tier loop keeps process-local observation history per queue and host,
+keyed by `(batch_id, namespace)`. It emits through stdout and host diagnostics
+only when `(event, generation, staged_logical_bytes, manifest_digest)` changes.
+A previously observed key absent from the next census emits one
+`output-batch-dropped` event and is forgotten. This means census absence,
+including unavailable scope evidence, and establishes no retirement, deletion,
+or capacity release. A reappearing key or process restart reports again.
 
 `produced_output.recover_batches` is the read-only census over the same
 evidence, and it may not turn unproven into a verdict. Fragments prove bytes
@@ -20543,6 +20662,22 @@ source pins, actual qualification and remaining integration/deployment gates.
 
 
 ### Root proof runtime qualification
+
+The repository's CPU integration tier uses the committed x86 native profile
+`_proof_runtime_profiles/standard3144.json` for its full root population.
+The profile supplies the admitted image and exact primary interpreter; its
+installed-reader closure is required by the current root tests. The ordinary
+pbtest interpreter override does not change that route. This tier does not
+replace release qualification's separately sealed collection index.
+
+The tier's root verdict consumes the retained stdout through
+`pbtest_outcomes.judge_shards` with its independent selected-file roster and
+invocation-owned record binding. Green requires a successful PB ending,
+reconciled outcomes and a complete pytest completion record. The proof
+launcher's runtime-closure checks and successful-action CAS verification remain
+required. A zero process exit or complete runtime attestation alone grants no
+test completion. `root.pbtest.json` retains the root observation, reconciliation,
+completion and skip reasons; the tier verdict includes its outcome counts.
 
 The root proof population retains its real UID/GID0 fixtures, assertions and
 node IDs. Ordinary portable execution records their real prerequisite failures.

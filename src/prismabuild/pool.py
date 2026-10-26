@@ -4200,6 +4200,63 @@ class ResourceLedger:
             counts[kind] = counts.get(kind, 0) + 1
         return counts, unreadable
 
+    def floor_snapshot(self, kinds: Iterable[str]) -> dict[str, int]:
+        """Whole held-token counts from a fresh, closed owner census.
+
+        Private acquisitions and unknown holders retain their obligations.
+        Unlike the cycle's capacity readers, this snapshot never uses cached
+        names or interprets inaccessible custody as an empty population.
+        """
+        selected = frozenset(kinds)
+        sidecars = {cpu_admission.METADATA, gpu_admission.METADATA}
+
+        def scan(directory: Path):
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise PoolContractError(f"floor snapshot: unsafe directory {directory}")
+            return immutable_files.scan_required(directory)
+
+        def token_names(paths, *, metadata: bool = False) -> set[str]:
+            names = set()
+            for path in paths:
+                if not stat.S_ISREG(path.lstat().st_mode):
+                    raise PoolContractError(f"floor snapshot: unsafe token {path}")
+                if metadata and path.name in sidecars:
+                    continue
+                kind, separator, ordinal = path.name.rpartition("-")
+                if (not kind or not separator or not ordinal.isascii()
+                        or not ordinal.isdigit()
+                        or ordinal != f"{int(ordinal):04d}"):
+                    raise PoolContractError(f"floor snapshot: malformed token {path}")
+                if kind in selected:
+                    names.add(path.name)
+            return names
+
+        with self._mutation_locked(blocking=False) as acquired:
+            if not acquired:
+                raise PoolContractError(f"floor snapshot: owner lock busy for {self.base}")
+            try:
+                minted_paths = scan(self.minted_dir)
+                dead = [path for path in minted_paths if path.name == "dead"]
+                minted = token_names(path for path in minted_paths if path.name != "dead")
+                dead_names = set()
+                if dead:
+                    dead_names = token_names(scan(dead[0]))
+                free = token_names(scan(self.free_dir))
+                held = set()
+                for holder in scan(self.held_dir):
+                    names = token_names(scan(holder), metadata=True)
+                    if held & names:
+                        raise PoolContractError(f"floor snapshot: duplicate custody in {holder}")
+                    held.update(names)
+                if free & held or dead_names & (free | held):
+                    raise PoolContractError(f"floor snapshot: conflicting token custody in {self.base}")
+                if minted != free | held | dead_names:
+                    raise PoolContractError(f"floor snapshot: incomplete token population in {self.base}")
+                return {kind: sum(name.rsplit("-", 1)[0] == kind for name in held)
+                        for kind in selected}
+            except OSError as exc:
+                raise PoolContractError(f"floor snapshot: {self.base}: {exc}") from exc
+
     def _minted_and_dead_names(self) -> tuple[set[str], set[str]]:
         """The mint markers and the destroyed names, error-visible.
 
@@ -4330,10 +4387,10 @@ class ResourceLedger:
                 if not allowed:
                     self.last_token_shortage = gate.shortage()
                     return None
-                handle = self._begin_acquire_locked(action_key, demand, **kwargs)
-                if handle is not None:
-                    gate.granted()
-                return handle
+                if not gate.reserve():
+                    self.last_token_shortage = gate.shortage()
+                    return None
+                return self._begin_acquire_locked(action_key, demand, **kwargs)
 
     @_guarded_mutation(blocking=False)
     def _begin_acquire_locked(
@@ -19520,12 +19577,10 @@ class PoolQueue:
                         if gang is _ClaimHandled.REFUSED:
                             continue
                         from . import _measurement_reservation as measurement_reservation
-                        if scan_pass.census_refusal is not None:
-                            self.record_denial(item, scan_pass.census_refusal.reason,
-                                               scan_pass.census_refusal.evidence)
-                            continue
-                        with measurement_reservation.pass_admission_census(
-                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate) as census:
+                        with measurement_reservation.candidate_admission_census(
+                                scan_pass.census, self, scan_pass.ledger, scan_pass.host_gate,
+                                item, scan_pass.census_refusal,
+                                dependent_owner=prepared.dependent_owner) as census:
                             host_claim = self._reserve_claim_host(
                                 prepared, gang, census, order, scan_pass, held_back=opening.held_back)
                             if host_claim is _ClaimHandled.REFUSED:

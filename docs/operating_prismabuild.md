@@ -3984,6 +3984,13 @@ python -m prismabuild.filesystem_floor mode observe    # or off | enforce; no re
 python -m prismabuild.filesystem_floor reap            # release growth held by dead owners
 ```
 
+Registration without an authority-supplied coverage snapshot is diagnostic;
+under enforce it HOLDs as `population_unknown`. `register --coverage-json PATH`
+consumes versioned mapping/population/bounds evidence for the binding's exact
+`coverage_identity`. It does not create or approve that evidence. Unknown NFS
+export aliases HOLD. Current activation remains gated by the #2045 packet.
+See [the coverage reference](filesystem_floor.md#coverage-in-the-existing-binding).
+
 Register on the host where `ROOT` is local, through a PB action pinned to
 it.  `PRISMABUILD_FILESYSTEM_FLOOR=off|observe|enforce` overrides the mode
 for one process.  `pbrun --filesystem-growth-gib N` (default 1) sizes what a

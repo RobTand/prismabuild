@@ -1,0 +1,470 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "88b1a5108799040c4dbd87bfd628a82e44bf739b",
+  "ledger_commit": "cf4a6782e9d0af136b4b42ad0a486c1d92473e65",
+  "scope": [
+    "SC-02",
+    "INV-01",
+    "SAFE-03"
+  ],
+  "requirement_scope": [
+    {
+      "id": "SC-02",
+      "target": "PB moves/publishes/retires bytes; PQ declares work/readsets/progress. No parallel dispatcher/cache/scheduler.",
+      "implemented": "This repair updates compatibility fixture context and catalogue ownership only. Existing production admission is unchanged from approved #2321 integrated with main 88b1a5108799.",
+      "validated": "Real consumers, authority-mismatch refusals and current production writes pass the scoped fleet checks below.",
+      "deployed": "No runtime publication or activation by this task; no new deployed or workload claim.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "yes",
+        "validation": "unknown",
+        "deployment": "unknown",
+        "workload_proof": "unknown"
+      }
+    },
+    {
+      "id": "INV-01",
+      "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+      "implemented": "This repair updates compatibility fixture context and catalogue ownership only. Existing production admission is unchanged from approved #2321 integrated with main 88b1a5108799.",
+      "validated": "Real consumers, authority-mismatch refusals and current production writes pass the scoped fleet checks below.",
+      "deployed": "No runtime publication or activation by this task; no new deployed or workload claim.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "partial",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "no"
+      }
+    },
+    {
+      "id": "SAFE-03",
+      "target": "No false complete: terminal record plus CAS receipt attest exit 0 and PB's own records only; payload-identity verification is the application consumer's gate, never attested by terminal success.",
+      "implemented": "This repair updates compatibility fixture context and catalogue ownership only. Existing production admission is unchanged from approved #2321 integrated with main 88b1a5108799.",
+      "validated": "Real consumers, authority-mismatch refusals and current production writes pass the scoped fleet checks below.",
+      "deployed": "No runtime publication or activation by this task; no new deployed or workload claim.",
+      "whole_requirement_axes_unchanged": {
+        "implementation": "yes",
+        "validation": "partial",
+        "deployment": "yes",
+        "workload_proof": "unknown"
+      }
+    }
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-1483",
+    "issue": "https://github.com/RobTand/prismabuild/issues/1483",
+    "task": "/PRI/issues/PRI-172",
+    "validated_repairs": [
+      {
+        "id": "INV-01",
+        "actions": [
+          "bd47f9a90b347ab09480906aa9dca15a62c80b352a37a58afcdb55312fa72847",
+          "a3c0fa95487bc1be6f5ee08b26391b35c27ba6a06d51c6e51b40b6c8dda94526",
+          "e86f32984ab6c1c25bf959ac7568093f24676d999e6788c5f1286f2dc4761fcb",
+          "53be7e44da92d9b25b282f2ec4f978dcae1e62544bbd07ffebb36ab1d453ceac",
+          "3376a6bb39243fe22d664cfb24fe4032ee8d093a13dbd21dbd3777e6d06e60c1",
+          "f06eb8231063335fe48c49fefe08fcf48c1377bcfa8c7f1be810580a37575234",
+          "fbb22cb8f6e90e6a2311eb09f390ad686d2768a86a530520794ee773f829bcf2",
+          "182993479172ce9e9aa4c388706e886ebee5fc82ea75b8f0cd8d075bd4aca3d6",
+          "c539e73c540ac73a9719cd16c0563eecf4e49288bf7a3d5aad1e871c2e849e68",
+          "44deefc249747a9de8b5c20fe83ab64cbf403fb2f051ed193fcf0c0375b07bdd"
+        ],
+        "outcome": "203 scoped tests passed, 2 NFS-environment skips. The separate unchanged-main baseline passed the four initially failing ZFS cases. 22 controller floor cases include all 19 reported IDs unchanged plus coverage mismatch and two historical HOLD controls."
+      },
+      {
+        "id": "SAFE-03",
+        "actions": [
+          "e82cb49dfd0087145004fb4e0a5064bcaef596bf851c109c764f3cb5f2e3f051"
+        ],
+        "outcome": "Verifier exit 0 on dl380g10: 12 test terminal/log records, 10 successful CAS receipts and 7 source bundles match pinned source paths; the repeated current-writer capture and its separate receipt are also verified."
+      }
+    ],
+    "remaining_gaps": [
+      "#1483, #2049 and #2050 remain open. Post-release acceptance belongs to PRI-163.",
+      "Runtime deployment, authenticated live mappings, full operational activation and staged-only workload acceptance remain unproven by this repair."
+    ],
+    "note": "Enforcement remains default-off. No runtime publication or direct merge. Independent Standards/Spec review of the final head is required before PRI-128 considers another vehicle."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "evidence": {
+    "root": "/mnt/shared/paperclip-runs/PRI-172",
+    "verifier": "docs/evidence/issue1483_verify_compat_repair_2026-10-26.py",
+    "validation_plan": "docs/evidence/issue1483_compat_validation_plan_2026-10-26.json",
+    "verified_evidence_sha256": "99d1fee0f3b1b43c8605d1393662311bf89e4991d98cbf1ae6d5b57453458b41",
+    "source_checks": [
+      {
+        "action_key": "93def9381a79e8c4f9ccc90975d402f466ee4401e42ad7c0494c5c16543e4a37",
+        "snapshot": "af4269157ccc49b670f13daf5df21849f6836fc8",
+        "bundle_sha256": "cd428493fd6ed63fb6d4025a853771421346a1d34d2f65205d4dfbaf108a56f1",
+        "expected_head": "e57b7a3c160f95f9b8da90337b3ed93b021d96d7",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "fb1bd2cb8439b982fdebc0430cb3a65bd2f81079ec5e37971804bfc037b9c98b"
+          },
+          {
+            "path": "tests/compat/support/compat_floor_adapters.py",
+            "tree_listing_sha256": "d879217f3ddcfc43cb3d94af8e9a86750d15263576246fb8019050b82390b5a3"
+          },
+          {
+            "path": "tests/test_record_compatibility_controller.py",
+            "tree_listing_sha256": "3b6a85ef539899d6709363db3da5236c1cf7e2830d0d9d6d61448941d34be663"
+          }
+        ]
+      },
+      {
+        "action_key": "3529c5dd6611d643e9a2f392958b543564cc7e2e033a277bb5b22d32f15d01e4",
+        "snapshot": "68572abda56c29bc4b20ee00222f00a22eb9a237",
+        "bundle_sha256": "e011b043e707afa554d37b0d7c133f5349c9c0d9dc2651d0f5c035c68c91caa3",
+        "expected_head": "a86ad16578",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "fb1bd2cb8439b982fdebc0430cb3a65bd2f81079ec5e37971804bfc037b9c98b"
+          },
+          {
+            "path": "tests/compat/support/compat_floor_adapters.py",
+            "tree_listing_sha256": "21c1bedccecc1c0c59ede88aba04a12ed0addc2a6cbe025304679573c9e507c5"
+          },
+          {
+            "path": "tests/test_record_compatibility_controller.py",
+            "tree_listing_sha256": "328082acd6075bb05ac1770b84ddbf991500e673d9a5c8ebe58fe5f7b124d1a8"
+          }
+        ]
+      },
+      {
+        "action_key": "bd47f9a90b347ab09480906aa9dca15a62c80b352a37a58afcdb55312fa72847",
+        "snapshot": "5c354c6a3f98b24be9110aadb7f540ab73efd9ef",
+        "bundle_sha256": "1dcccccdfaa31ae0dc757ab6c4bfffb580cfb48498a033fa159b53edd402202a",
+        "expected_head": "9dd0c63d1f",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/compat",
+            "tree_listing_sha256": "7ab849f32b76abafabdf833b44ab621b4e3d71ea095ad1a1785f23033841ea2d"
+          },
+          {
+            "path": "tests/record_compat_contract.py",
+            "tree_listing_sha256": "3363b14766a45c9b23d2ba3fc13a5ea6e5804612b01e6e3eb7d78cfb0c0d8002"
+          },
+          {
+            "path": "tests/test_record_compatibility_controller.py",
+            "tree_listing_sha256": "243e2a066c918df37fe49e1eb8eacc598e1a185e86d8e3b79e8742cb0a8b9383"
+          }
+        ]
+      },
+      {
+        "action_key": "a3c0fa95487bc1be6f5ee08b26391b35c27ba6a06d51c6e51b40b6c8dda94526",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_filesystem_floor_accounting_1483.py",
+            "tree_listing_sha256": "719b5f6bfab892471882a6eb41270176c05f54726ff6ada50db789acd9d429f3"
+          }
+        ]
+      },
+      {
+        "action_key": "e86f32984ab6c1c25bf959ac7568093f24676d999e6788c5f1286f2dc4761fcb",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_filesystem_floor_identity_1483.py",
+            "tree_listing_sha256": "5b989935cbb1380dfe0fa4a183e74f5aff33fbbbde47041075a2320209c8c231"
+          }
+        ]
+      },
+      {
+        "action_key": "53be7e44da92d9b25b282f2ec4f978dcae1e62544bbd07ffebb36ab1d453ceac",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_floor_ledger_snapshot.py",
+            "tree_listing_sha256": "363c120e3af5d89fc496561d1531d4a3505c3f43964560195513da11173e683c"
+          }
+        ]
+      },
+      {
+        "action_key": "3376a6bb39243fe22d664cfb24fe4032ee8d093a13dbd21dbd3777e6d06e60c1",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_stage_partial_floor_1483.py",
+            "tree_listing_sha256": "cb42d88794ed7836aac68e133da94de73e5e0a84960599b72939f12dda30180a"
+          }
+        ]
+      },
+      {
+        "action_key": "f06eb8231063335fe48c49fefe08fcf48c1377bcfa8c7f1be810580a37575234",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_used_filesystem_callers_2049.py",
+            "tree_listing_sha256": "2ede22f55825a4773712b3e38e9928f1f7a87b50591b76d8f8edd5551db52b09"
+          }
+        ]
+      },
+      {
+        "action_key": "fbb22cb8f6e90e6a2311eb09f390ad686d2768a86a530520794ee773f829bcf2",
+        "snapshot": "0927ca39a32db8f4799e14ab6eecf6f5b1c793f1",
+        "bundle_sha256": "ad6ca88a7c00de028e776ee43e98655c62753252092be6ed20008783550bd1bb",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_supervisor_declares_the_spool_budget.py",
+            "tree_listing_sha256": "d4185228b5e98b497a883050d0235309866e5a4870a3218254324106c19a9dc2"
+          }
+        ]
+      },
+      {
+        "action_key": "182993479172ce9e9aa4c388706e886ebee5fc82ea75b8f0cd8d075bd4aca3d6",
+        "snapshot": "ad3cb9be6e9a4ec5e8375f1ecd1196e2f80e6fdf",
+        "bundle_sha256": "b20c6d917812abc9dcc58337f093388a0ad510b845a42eb96a2423fc9a4b02e2",
+        "expected_head": "88b1a5108799",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "ec1c7d8fcf0e7d574779f05b7acd52e50efc80af8a2240f29edb7e3c52652af0"
+          },
+          {
+            "path": "tests/test_filesystem_floor_1483.py",
+            "tree_listing_sha256": "bc37f5d369a49990eaf3476dde0739ea9c886f853a7fa968a42d75148084524d"
+          }
+        ]
+      },
+      {
+        "action_key": "c539e73c540ac73a9719cd16c0563eecf4e49288bf7a3d5aad1e871c2e849e68",
+        "snapshot": "d7a5fb0091172b13068179e782a53467a933dd94",
+        "bundle_sha256": "ea9ffb1e3f5eaf691cbf4c54482f76fb5040f138a5170813463bccb118894720",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/test_filesystem_floor_1483.py",
+            "tree_listing_sha256": "7f2b8d5a4d1ab2ca19c9eb6b7c02e6fb142e64276f4b8d63e61ed1588cca38b5"
+          }
+        ]
+      },
+      {
+        "action_key": "44deefc249747a9de8b5c20fe83ab64cbf403fb2f051ed193fcf0c0375b07bdd",
+        "snapshot": "e5c94f08371b7796d9a1cd9bfd659e2747c20f04",
+        "bundle_sha256": "92a2fd4c4ed7833040a2e68fa4f61746b5b4e215e214784a2ec5ae9bca39a524",
+        "expected_head": "cf4a6782e9",
+        "verified_paths": [
+          {
+            "path": "src",
+            "tree_listing_sha256": "16b622f1217ffce4d64fa9198752908f2cc921ffef74bfaf5f2bde9c844f23f3"
+          },
+          {
+            "path": "tests/compat",
+            "tree_listing_sha256": "7ab849f32b76abafabdf833b44ab621b4e3d71ea095ad1a1785f23033841ea2d"
+          },
+          {
+            "path": "tests/test_wire_inventory.py",
+            "tree_listing_sha256": "b898507820e5e75b1cd1b3c593258d6883af0a1ffa42e9914ca271b4594bdc8e"
+          }
+        ]
+      }
+    ],
+    "positive_action_records": [
+      {
+        "action_key": "bd47f9a90b347ab09480906aa9dca15a62c80b352a37a58afcdb55312fa72847",
+        "files": [
+          "tests/test_record_compatibility_controller.py"
+        ],
+        "summary": "22 passed, 222 deselected in 156.62s (0:02:36)",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "e76a9c54d2800d7db1bf197af67bb9bc6805a0091e0beb29f20cb1f9a00fc2a6",
+        "result_sha256": "bdbe0203bb80c1e99870d6b55c60b93a6e88a4dad3e89b8138a4c01da9860574",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "a3c0fa95487bc1be6f5ee08b26391b35c27ba6a06d51c6e51b40b6c8dda94526",
+        "files": [
+          "tests/test_filesystem_floor_accounting_1483.py"
+        ],
+        "summary": "28 passed in 0.89s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "20302da5a45e6d293d1435274055942193b4d9d0114fa3a3bb2ad8df135c328f",
+        "result_sha256": "3b4f93ea08067f68433232c524fd5cf49a562ba37e628636b62f404a1d5aeb59",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "e86f32984ab6c1c25bf959ac7568093f24676d999e6788c5f1286f2dc4761fcb",
+        "files": [
+          "tests/test_filesystem_floor_identity_1483.py"
+        ],
+        "summary": "16 passed in 1.03s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "d05cf8b9eb99fe04631e50563590a4dfe9a34aecb2164c55529bc47b20c42481",
+        "result_sha256": "8abfe31e832ae882b454511127d95acaf50c03fc334dc117694bf6a9ea63a566",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "53be7e44da92d9b25b282f2ec4f978dcae1e62544bbd07ffebb36ab1d453ceac",
+        "files": [
+          "tests/test_floor_ledger_snapshot.py"
+        ],
+        "summary": "16 passed in 0.38s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "0e42484aa7bf25a487315a67e4dc045305b6c4e6cdb73dfe7edbfc5199388cac",
+        "result_sha256": "0832ad15d4ed5457e5d40ce212cfaee9a5e72cdc6b21fd1bce4ae6cf633e42f2",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "3376a6bb39243fe22d664cfb24fe4032ee8d093a13dbd21dbd3777e6d06e60c1",
+        "files": [
+          "tests/test_stage_partial_floor_1483.py"
+        ],
+        "summary": "8 passed in 2.26s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "73041c4d93b233a210e711642c5cc28d3fd19d5a7e5a2ac817d2f5236502c802",
+        "result_sha256": "0f521277b83d024b3e5e737e7cdd1a45d68aa02ba6d1120da14458d307a2a49d",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "f06eb8231063335fe48c49fefe08fcf48c1377bcfa8c7f1be810580a37575234",
+        "files": [
+          "tests/test_used_filesystem_callers_2049.py"
+        ],
+        "summary": "19 passed in 1.76s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "610d193eaec89b9031cb6a99a80c7992dc3d195e29ceb2f88aa601248f5c760b",
+        "result_sha256": "be4a1c68cec01ab28a9f606520501b0e80a484c78c08f69de669221faa351c2e",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "fbb22cb8f6e90e6a2311eb09f390ad686d2768a86a530520794ee773f829bcf2",
+        "files": [
+          "tests/test_supervisor_declares_the_spool_budget.py"
+        ],
+        "summary": "49 passed in 1.92s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "44049fb2fafd5b52456562e9cb5a66e574e64e3574e5f5ac41fa1e9d1b6236e2",
+        "result_sha256": "9fb21ff4bcc0c5f6c2528de6f1ae6fd05939d261531601eac8606eabedbe8be6",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "182993479172ce9e9aa4c388706e886ebee5fc82ea75b8f0cd8d075bd4aca3d6",
+        "files": [
+          "tests/test_filesystem_floor_1483.py"
+        ],
+        "summary": "4 passed, 35 deselected in 0.59s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "71eead3ec0a358ad7f6b6708d22160220018d47972403458d7c800b944562b39",
+        "result_sha256": "78bf45ca67764a70963e705190a1e1d6997dd8ab6c29257df6752e47013f13cc",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "c539e73c540ac73a9719cd16c0563eecf4e49288bf7a3d5aad1e871c2e849e68",
+        "files": [
+          "tests/test_filesystem_floor_1483.py"
+        ],
+        "summary": "37 passed, 2 skipped in 7.46s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "c72ef98b0db4dd04c6a98530d285931e709b706390adc2fb188795b2f7d95cbf",
+        "result_sha256": "73e214bc19c478d481897ba32015c4f0d55c7759703930e1dd325994d3fbd0a7",
+        "logs_verified": true,
+        "terminal_verified": true
+      },
+      {
+        "action_key": "44deefc249747a9de8b5c20fe83ab64cbf403fb2f051ed193fcf0c0375b07bdd",
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "8 passed in 40.24s",
+        "failing_nodes": [],
+        "host": "dl380g10",
+        "cleanup_complete": true,
+        "receipt_sha256": "425130e9a597ebdafab74716e403262359607b16eac0dd0df4a7106c1f14bb93",
+        "result_sha256": "7e842cfdae0616b09c223db24784b01be61417fb0159087564d08f7661665f61",
+        "logs_verified": true,
+        "terminal_verified": true
+      }
+    ],
+    "capture": {
+      "action_key": "fd5b327e8b4fa36b4c4827cf093b19e6bc85152391b07d35041c3607f84143f4",
+      "receipt_sha256": "07fb498ad3998bb127fce5d9fbf3383323a6e0f4dda5e96775ac5fa91b2d3973",
+      "stdout": {
+        "bytes": 3826,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/fd5b327e8b4fa36b4c4827cf093b19e6bc85152391b07d35041c3607f84143f4/9dcf30a65784a1d7cb838c1f0e65024922b874d215298e1736aee41f97bc401c/00000001.stdout.1476db7647b2d82aeb62f835bc44fd446447e571f18418da94d7d847d542465a.log",
+        "sha256": "1476db7647b2d82aeb62f835bc44fd446447e571f18418da94d7d847d542465a"
+      }
+    },
+    "source_head": "cf4a6782e9d0af136b4b42ad0a486c1d92473e65",
+    "source_continuity": "The final acceptance commit adds only this record, its frozen validation plan and its verifier. Production and test blobs retain their verified bytes. Historical captures, archival executables, negative-policy assertions and real consumer-boundary assertions are preserved."
+  }
+}
