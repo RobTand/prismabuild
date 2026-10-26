@@ -1,6 +1,7 @@
 """A heartbeat and observed output answer different liveness questions."""
 from prismabuild import census as fleet_census
 import json
+import os
 import time
 import uuid
 
@@ -83,9 +84,12 @@ def test_execution_ticks_report_output_without_inventing_quiet_progress(
 
 
 def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tmp_path, monkeypatch):
+    release = tmp_path / 'release'
+    os.mkfifo(release)
+    child_code = f'open({str(release)!r}, "rb").read(1)'
     script = tmp_path / 'worker.py'
     script.write_text('import subprocess, sys\n'
-                      'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.4)"])\n')
+                      f'subprocess.Popen([sys.executable, "-c", {child_code!r}])\n')
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / 'queue'), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
@@ -94,10 +98,16 @@ def test_exited_launcher_does_not_report_its_pipe_holding_descendant_as_alive(tm
     item = queue.claim()
     ticks = []
     original = queue.write_lease
+    released = False
 
     def record(*args, **kwargs):
+        nonlocal released
         original(*args, **kwargs)
         ticks.append(json.loads(queue.records.lease_path(key).read_text()))
+        if not released and ticks[-1]['execution_observation']['launcher_alive'] is False:
+            with release.open('wb', buffering=0) as gate:
+                gate.write(b'1')
+            released = True
 
     monkeypatch.setattr(queue, 'write_lease', record)
     result = queue.execute(item, heartbeat_s=0.05)
