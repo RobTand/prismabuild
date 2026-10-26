@@ -19,30 +19,44 @@
       {
         "id": "SC-01",
         "actions": [
-          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+          "0f64e5dc42946ccc9038f6c2f753811d4e9517c4395c2b8818d46db318ce3e29",
+          "539679831233a67cf6fbd8c63f5012636b0c8b571349d6737d13e9e8a46c0b31",
+          "84e5fdabacc33cf78aadbf12a4c2c1a090bff2fb194250d3fdfc856478279936",
+          "76abcf8cb7a9c1e6cfc569e6872c4ce9984a692d3beea5524640d0d43dec7c06",
+          "3d76da0cf89863c70619f86c1547102dab9f55abfbbfd71bf307ab01753ae43a",
+          "63fa547fdf7fedcd73f5728e9b0679406fe23235bf4413abd26e91c6ffb96948"
         ],
-        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+        "outcome": "Current integrated source 89a4e1dc25: 232 passed per architecture, no skips, complete outcomes and teardown. All 16 action receipts and cleanup/log/source checks verified; the listed actions cover the class admission and headroom component."
       },
       {
         "id": "INV-01",
         "actions": [
-          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+          "0f64e5dc42946ccc9038f6c2f753811d4e9517c4395c2b8818d46db318ce3e29",
+          "539679831233a67cf6fbd8c63f5012636b0c8b571349d6737d13e9e8a46c0b31",
+          "84e5fdabacc33cf78aadbf12a4c2c1a090bff2fb194250d3fdfc856478279936",
+          "76abcf8cb7a9c1e6cfc569e6872c4ce9984a692d3beea5524640d0d43dec7c06",
+          "3d76da0cf89863c70619f86c1547102dab9f55abfbbfd71bf307ab01753ae43a",
+          "63fa547fdf7fedcd73f5728e9b0679406fe23235bf4413abd26e91c6ffb96948"
         ],
-        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+        "outcome": "Current integrated source 89a4e1dc25: 232 passed per architecture, no skips, complete outcomes and teardown. All 16 action receipts and cleanup/log/source checks verified; the listed actions cover the class admission and headroom component."
       },
       {
         "id": "INV-11",
         "actions": [
-          "674767c913eb15cbe5d01c9e88a018cd301b7af1248e7b5849ca289ba3fb6304"
+          "0f64e5dc42946ccc9038f6c2f753811d4e9517c4395c2b8818d46db318ce3e29",
+          "539679831233a67cf6fbd8c63f5012636b0c8b571349d6737d13e9e8a46c0b31",
+          "84e5fdabacc33cf78aadbf12a4c2c1a090bff2fb194250d3fdfc856478279936",
+          "76abcf8cb7a9c1e6cfc569e6872c4ce9984a692d3beea5524640d0d43dec7c06",
+          "3d76da0cf89863c70619f86c1547102dab9f55abfbbfd71bf307ab01753ae43a",
+          "63fa547fdf7fedcd73f5728e9b0679406fe23235bf4413abd26e91c6ffb96948"
         ],
-        "outcome": "executed, rc=0, 131 passed; exact execution receipt 06cc18c79d31f027b61a89bba61d9d58055219da68d6aa2211446321784a6348"
+        "outcome": "Current integrated source 89a4e1dc25: 232 passed per architecture, no skips, complete outcomes and teardown. All 16 action receipts and cleanup/log/source checks verified; the listed actions cover the class admission and headroom component."
       }
     ],
     "remaining_gaps": [
-      "Integrated validation after rebase onto main 954e141715 is pending; five executed repetitions per architecture include two xdist runs.",
-      "Archival controller config-fleet/source fails on unchanged main and the candidate because #1914 added action_tmpdir fields absent from the golden. Verified baseline action ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2. Full integrated replay remains pending; no golden or assertion was changed.",
+      "Archival controller config-fleet/source fails on unchanged main and candidate: #1914 added action_tmpdir fields absent from the golden. Full controller replay 236 passed, one known failure; host replay 65 passed. Verified unchanged-main action ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2. No golden or assertion changed. Existing #2253 remains separate.",
       "Independent Principal Engineer review and merge are pending.",
-      "Deployment, live runtime qualification and staged-only campaign completion are outside this source repair."
+      "Deployment, live runtime qualification and staged-only campaign completion are outside this source repair. Broader #1721 gang/runtime-roll acceptance remains open."
     ],
     "note": "Candidate merge record, not merge acceptance by the Principal. Approval authorizes only the class CPU source policy. Existing ledger axes remain unchanged."
   },
@@ -69,7 +83,7 @@
         "deployment": "unknown",
         "workload_proof": "unknown"
       },
-      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
     },
     {
       "id": "SC-03",
@@ -91,7 +105,7 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
     },
     {
       "id": "INV-11",
@@ -102,10 +116,10 @@
         "deployment": "yes",
         "workload_proof": "no"
       },
-      "this_repair": "Component source implemented; 131 focused checks and 901 preservation tests per architecture passed before rebase, plus 65 archival host checks. Integrated five-run matrix pending after rebase. Archival controller baseline failure is recorded separately. Not merged, published as runtime, or workload-proven."
+      "this_repair": "Component source implemented and fleet tested. Frozen five-run matrix: 985 plus four times 145 passes per architecture, two xdist repetitions each. After main cleanup rebase: 232 integrated passes per architecture, 16 exact success receipts. Full archival replay: 236 controller passes, one known main-baseline failure; 65 host passes. Independent acceptance and merge pending. No runtime publication or workload proof."
     }
   ],
-  "source_commit": "4deb54300d65033d7340dd4717b583a616b1c1be",
+  "source_commit": "89a4e1dc25a535b7de9120a45b42dc5dd7c33c4e",
   "verification": {
     "ending": "/tmp/PRI-31-resume/final-focused-ending.json",
     "verified": "/mnt/shared/paperclip-runs/PRI-31/focused-verified/verified.json",
@@ -117,14 +131,28 @@
       "exact execution receipt lookup"
     ],
     "preservation": {
-      "source_head": "50d08b423b15224b419fdc7f8629a1352eb92c66",
-      "successful_actions": 41,
-      "x86_tests": 901,
-      "arm_tests": 901,
-      "archival_host_tests": 65,
-      "ending": "/mnt/shared/paperclip-runs/PRI-31/final-endings.json",
-      "verified": "/mnt/shared/paperclip-runs/PRI-31/final-verified/verified.json",
-      "collection_outcome_teardown": "Complete for all successful shards; no skips."
+      "source_head": "19511051f7ccdfe6f96881e7bb38cf8589921bf7",
+      "base": "128c8cc9581b839555ffaadad81da8c20a9cb6fe",
+      "successful_actions": 72,
+      "x86_tests": 1565,
+      "arm_tests": 1565,
+      "repetitions_per_architecture": 5,
+      "xdist_repetitions_per_architecture": 2,
+      "client_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-green-verified/verified.json",
+      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-reconciliation.json",
+      "collection_outcome_teardown": "Complete; no skips. Xdist test bytes proved from sealed bundle, without per-worker observed test-source hashes."
     },
     "baseline_failure": {
       "main_commit": "954e14171565e849198cd0287abe24ff1ea7d076",
@@ -134,11 +162,100 @@
       "production_config_blob": "fc953a49d95a2b3a874dbd133e417ad277c117ba",
       "assertions_changed": false
     },
-    "integrated_pending": {
-      "source_head": "df02fa7bb59a22efa9e5d87dfcb57a7112c56157",
-      "local_identical_tree_head": "a70f06917f",
-      "base": "954e14171565e849198cd0287abe24ff1ea7d076",
-      "launch_manifest": "/mnt/shared/paperclip-runs/PRI-31/integrated-a70f06917f-launch.json"
+    "archival": {
+      "source_head": "19511051f7ccdfe6f96881e7bb38cf8589921bf7",
+      "controller_action": "4fcb3ba986ce9e0b523cff59a5011e31e79bf76ad1d0fc014506b030141e54a7",
+      "controller_verdict": "236 passed, 1 failed: config-fleet/source, known baseline",
+      "host_action": "2a58881107e04c8b643c6c4c09289c771373ba9bc7850696bca15d110e4cbb7a",
+      "host_verdict": "65 passed",
+      "host_receipt": "b82c29dcec6a538ece6a27e743cbd7195b6a0b2d80cbb0ee9a9979e966b2d90b",
+      "client_exit_code": 1,
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-archival-verified/verified.json",
+      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/fence-19511051f7-archival-reconciliation.json"
+    },
+    "cleanup_integration": {
+      "source_head": "89a4e1dc25a535b7de9120a45b42dc5dd7c33c4e",
+      "base": "e2be346b0c1a7d4fa24ee0d2d146bcd3949c4fca",
+      "x86_tests": 232,
+      "arm_tests": 232,
+      "successful_actions": 16,
+      "client_exit_codes": [
+        0,
+        0
+      ],
+      "verified": "/mnt/shared/paperclip-runs/PRI-31/cleanup-89a4e1dc25-verified/verified.json",
+      "reconciliation": "/mnt/shared/paperclip-runs/PRI-31/cleanup-89a4e1dc25-reconciliation.json",
+      "receipts": [
+        {
+          "action_key": "0f64e5dc42946ccc9038f6c2f753811d4e9517c4395c2b8818d46db318ce3e29",
+          "receipt_sha256": "a7b3f36daa8241508065356391025711dc1c6de8139c30f16237909e918c4924"
+        },
+        {
+          "action_key": "539679831233a67cf6fbd8c63f5012636b0c8b571349d6737d13e9e8a46c0b31",
+          "receipt_sha256": "e7ae9839f29fd41b7bbaa84d8da4f0cbb3a5073f5a2eef47012551873f97cf19"
+        },
+        {
+          "action_key": "84e5fdabacc33cf78aadbf12a4c2c1a090bff2fb194250d3fdfc856478279936",
+          "receipt_sha256": "8b8411b26c825c821027e8e3607f761a1db104e71b7849a3b48c6bf6778fab8c"
+        },
+        {
+          "action_key": "7f85ff9ce4a6a490ef1eb4487020474919e42645d110b8c8c8b1ec25f73d4450",
+          "receipt_sha256": "4cc8cf9be528ed1f8d04c66c373d8fc58a4e02e8f74e3f180b4314e8077e166b"
+        },
+        {
+          "action_key": "30ac2633d03086b261d057b9003429648846768439d48e274f5a69d6ae8e603d",
+          "receipt_sha256": "7afeddf119e6eb1a16300b7117f01c813beb395a3772bf3ce50155353cd788f2"
+        },
+        {
+          "action_key": "972dff4878d0e5e95540d7c347c838bb2dfa7b4ea71dfa5db552c65975fcfbbf",
+          "receipt_sha256": "eb8c041d7961a343d73c978fe37dd39d708507876ff313808863d39a0094c06c"
+        },
+        {
+          "action_key": "42299f116a40ea407a6a813cf2f46c3461639aee5412c9fefa52bdb21942ffd8",
+          "receipt_sha256": "ba4d1283e01895f5e7dc95a2ce9e9fcfb563fe7491a39cf1fdc86e4c273561d0"
+        },
+        {
+          "action_key": "d3a51c5700473678d7ada66b8ec036e5dae86f73aa033b8afdbba618593ddb2e",
+          "receipt_sha256": "a401676335fcbbf6e13575fc9eeed7074ac973d4630a2f3a0df8dd766c4f47e7"
+        },
+        {
+          "action_key": "76abcf8cb7a9c1e6cfc569e6872c4ce9984a692d3beea5524640d0d43dec7c06",
+          "receipt_sha256": "2fcf23a97d75739fdcab0b2f1bc63467a700a63b009453ea96eb0b0380baa7ae"
+        },
+        {
+          "action_key": "3d76da0cf89863c70619f86c1547102dab9f55abfbbfd71bf307ab01753ae43a",
+          "receipt_sha256": "0c3970661885c895cafb9e2773dac0553be3a002611fe7e1feded9d8d114c16c"
+        },
+        {
+          "action_key": "63fa547fdf7fedcd73f5728e9b0679406fe23235bf4413abd26e91c6ffb96948",
+          "receipt_sha256": "bb797670a6191771c88a02a41c6402e4839c68ccf3ba90ce9d5fc018ba13cfd6"
+        },
+        {
+          "action_key": "6673828493c93a018b85846263260bf913c1b4fad378839297b21b1c9546c10a",
+          "receipt_sha256": "97604aa15a6af5b3b1fffd915171f78e5e130cfcbaa584ed68032232a5d98da9"
+        },
+        {
+          "action_key": "41d79d33f85718db2d5dc78d1210d0c79f96034616c95065d6d0dca137380950",
+          "receipt_sha256": "f1eb5c148a35dcb2aa74a15f1bdcf6f83853e65797ed7df7fca81c35679a2fa9"
+        },
+        {
+          "action_key": "696855f6952fe62db473f9453f234d7b33d4fdeb5d9dfa06627a9e122fbbf5aa",
+          "receipt_sha256": "874208c73062320f50d9e393d227cc482a06cb572c3b90d3cdac815106fe1771"
+        },
+        {
+          "action_key": "ac266d5e75e5b68f9d76f5b914f4bc188dc72f1a83f5d7f0c6ea47980e47865f",
+          "receipt_sha256": "ead3f5e3e6430ddee3438711078e03cbdd08459faf7503cdcd2a91303f20672a"
+        },
+        {
+          "action_key": "51369fdea15e0b16eb7fb4977983889648ea86adf61537ea291113b2ee29f531",
+          "receipt_sha256": "cf01321e2ad958320739f2c2f212e6eea2f0e48b8361f243965c830b3ac5fd3e"
+        }
+      ]
+    },
+    "failed_prior_client": {
+      "source_head": "a70f06917f",
+      "client_exit_code": 1,
+      "reason": "HEAD moved during active client; 901 shard passes do not erase identity failure; repetitions 2-5 never launched. Corrected frozen-head run passed."
     }
   }
 }

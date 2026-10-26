@@ -59,53 +59,72 @@ Sealed snapshot: `872124db0811d59633166799183a9cadcb516c4d`.
 The scheduler bytes match source commit
 `8d7a74ebcfdecd75672be085e2c7ff8e3909e21a`.
 
-## Preservation status
+## Preservation and integration evidence
 
-At source `50d08b423b`, both architecture runs passed 901 tests across 20
-shards, with complete collection, outcomes and teardown and no skips. The
-archival host replay passed all 65 checks. All 41 successful actions have
-verified cleanup, attempt log hashes, sealed scheduler bytes and exact CAS
-execution receipts. Reports and verification are retained in
-`final-{x86,arm,archival}-50d08b423b.json` and `final-verified/verified.json`.
+The frozen source `19511051f7`, based on main `128c8cc958`, passed 985 tests
+plus four 145-test repetitions on each architecture. Runs two and four used
+two pytest workers. All ten clients exited zero. Every collected test has
+an outcome and final teardown, with no skips. All 72 executed actions have
+verified cleanup, exact attempt log hashes, sealed scheduler and test bytes,
+runtime and conftest identities, and exact CAS execution receipts.
+`fence-19511051f7-reconciliation.json` records the checks. The xdist controller
+records no selected-file runtime hashes. Those test bytes are proved from
+the sealed input bundle, with the worker count in the sealed command.
+No per-worker observed test-source hash is claimed for xdist.
 
-Archival controller action
-`082d7e2c6f6aeda94a95cac147d125917dbe5d1ff8b1bc449f3908dde3b3d0c0`
-failed after 85 passes at `config-fleet/source`. Its golden lacks the
-`action_tmpdir` and `_action_tmpdir_why` fields added by #1914. This branch,
-its original base and main `954e141715` have identical fleet configuration
-bytes. Main-only action
+The same frozen source completed all 302 archival cases. Controller action
+`4fcb3ba986ce9e0b523cff59a5011e31e79bf76ad1d0fc014506b030141e54a7`
+reported 236 passed and one failure, only `config-fleet/source`. Host action
+`2a58881107e04c8b643c6c4c09289c771373ba9bc7850696bca15d110e4cbb7a`
+passed all 65 checks. All outcomes and teardowns reconcile, with no skips.
+The archival client exited 1. Both actions have verified log hashes, source
+and cleanup; the host action has an exact success receipt. The controller
+failure has no success receipt.
+
+The config golden lacks `action_tmpdir` and `_action_tmpdir_why` from #1914.
+Unchanged-main action
 `ae172f72e5f85f70bea778d321e447d14a4c49f01d2a7f5748e3f61a525344b2`
-reproduced that failure, with two related checks passing. Its terminal logs,
-scope cleanup and sealed bundle are verified. This is a baseline failure,
-not a compatibility pass. No golden or assertion was changed. Existing
-#2253 also records this case.
+reproduced it: one failure, two passes, 234 deselected. Branch and current
+main retain identical production config blob
+`fc953a49d95a2b3a874dbd133e417ad277c117ba`. Existing #2253 records this case.
+This remains a baseline compatibility failure. No golden, assertion, skip
+or timeout was changed to obtain a pass.
 
-The branch was rebased onto main `954e141715`. Published head `df02fa7bb5`
-has exactly the tree launched locally as `a70f06917f`, preserving commit
-order and the pricing refactor before behavior. Integrated validation is
-running in persistent user units:
+The subsequent rebase onto main `e2be346b0c1` retains #2272's exact cleanup
+obligations. The pricing and candidate-policy modules and all four touched
+test files are byte-identical to the frozen matrix. The field inventory
+retains main's changes and adds exactly the two reviewed class-admission
+entries. Its source-only maintenance report is `field-policy-e2be346b0c1.json`.
+The earlier maintenance-inventory entries now belong to main and are no longer
+a delta in `field-policy-review.json`.
 
-- `pb-pri31-integrated-x86-a70f06917f`
-- `pb-pri31-integrated-arm-a70f06917f`
-- `pb-pri31-integrated-archival-a70f06917f`
+Source `89a4e1dc25` passed the integrated eight-file claim/cleanup scope:
+232 tests per architecture, 16 actions, both clients exited zero. No skips
+or missing outcomes or teardown. Every action's cleanup, exact attempt logs,
+sealed source, runtime identity and exact CAS receipt are verified in
+`cleanup-89a4e1dc25-verified/verified.json`. The source is unchanged after
+that run; subsequent edits update evidence and generated field metadata.
 
-Each architecture runs the 28-file preservation scope, then four additional
-repetitions of the four touched test files. Runs two and four use two pytest
-workers. Every action reserves 2 CPUs, 4 GiB and zero GPUs, with one native
-thread per worker and the default maximum of eight clients. The complete
-archival replay keeps the 3600-second deadline and runs every case after a
-failure. It uses the qualified `/home/rob/pbt17` TMPDIR. No timeout or test
-expectation was changed to obtain a pass. Integrated terminal verification
-and final compatibility disposition remain pending.
+Each action reserved 2 CPUs, 4 GiB and zero GPUs, with one native thread per
+worker and priority -10. The matrix used 900-second deadlines, archival
+3600 seconds, and the cleanup integration 900 seconds. Default max-clients
+8 remained unchanged. Aggregate bounds were 38 CPUs and 76 GiB for the matrix
+plus archival, then 32 CPUs and 64 GiB for cleanup integration. PB owned
+placement. Architecture tags express the required matrix. Every client ran
+in a persistent transient user unit. The qualified TMPDIR was `/home/rob/pbt17`.
 
-The published pbtest client has no action progress-phase submission option.
-Its durable report records completed shards with explicit action deadlines.
+The earlier `a70f06917f` x86 client failed because HEAD moved during its run,
+despite 901 passing shard tests. Its four repetitions never launched. That
+failed client verdict is retained; the frozen-head matrix corrected it.
+Earlier preservation and main-baseline proof remain available. The published
+pbtest client lacks action progress-phase submission; it records durable
+completed shards with explicit deadlines.
 
-Reports and launch manifests live under
-`/mnt/shared/paperclip-runs/PRI-31`. The task records exact final unit names.
-No runtime is published by this task. No staged-read deployment or workload
-axis is promoted. [The candidate merge record](merge-acceptance.json) states
-target and scoped implementation separately.
+Reports, launch manifests, verification and reconciliation live under
+`/mnt/shared/paperclip-runs/PRI-31`. Independent Principal review and merge
+remain pending. No runtime was published. The staged-read ledger axes are
+unchanged. [The candidate merge record](merge-acceptance.json) keeps targets,
+component test evidence, deployment and workload proof separate.
 
 ## Recheck recorded fleet artifacts
 
