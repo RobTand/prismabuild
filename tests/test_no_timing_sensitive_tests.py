@@ -119,7 +119,7 @@ def _queue_boolean_expression(node, known_boolean):
             or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not))
 
 
-class _QueueBindingScopes(ast.NodeVisitor):
+class _BindingScopes(ast.NodeVisitor):
     def __init__(self, tree):
         self.scope = tree
         self.parents = {tree: None}
@@ -226,8 +226,7 @@ class _QueueBindingScopes(ast.NodeVisitor):
         return None, name
 
 
-def _queue_get_calls(tree):
-    scopes = _QueueBindingScopes(tree)
+def _queue_get_calls(scopes):
     nodes = list(scopes.owners)
     queue_types, receivers, booleans = set(), set(), set()
     type_names = {"Queue", "SimpleQueue", "LifoQueue", "PriorityQueue"}
@@ -313,7 +312,8 @@ class _TimingReferences(ast.NodeVisitor):
         self.subprocess_modules = set()
         self.subprocess_runs = set()
         self.zero_callees = set()
-        self.queue_get_calls = _queue_get_calls(tree)
+        self.scopes = _BindingScopes(tree)
+        self.queue_get_calls = _queue_get_calls(self.scopes)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 self.time_modules.update(alias.asname or alias.name for alias in node.names
