@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 import time
 from pathlib import Path
 
@@ -58,7 +59,9 @@ def logs(tmp_path, monkeypatch):
         if seconds >= supervise.BUSY_INTERVAL_S:
             raise CycleComplete
 
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
     return directory
 
 
@@ -218,7 +221,9 @@ def test_scratch_sweep_runs_at_startup_and_hourly_under_custody(logs, monkeypatc
         except StopIteration:
             raise CycleComplete from None
 
-    monkeypatch.setattr(supervise.time, "sleep", next_cycle)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": next_cycle,
+    }))
     _cycle(monkeypatch, ["--loops", "1"], [])
     assert calls == [0, 3600, 7200]
 
