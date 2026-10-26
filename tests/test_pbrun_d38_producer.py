@@ -285,3 +285,18 @@ def test_installed_flat_layout_resolves_owned_sources(tmp_path, monkeypatch):
     descriptor = d38_producer.descriptor()
     assert descriptor["source_sha256"] == hashlib.sha256(b"canary source\n").hexdigest()
     assert descriptor["docker_sha256"] == hashlib.sha256(b"docker shim\n").hexdigest()
+
+
+def test_preflight_binds_the_shared_digest_owner(planned):
+    import copy
+    from prismabuild import d38_producer, digest_primitives
+
+    plan, action, cas, _, _ = planned
+    owners = [entry for entry in action["inputs"] if entry["id"] == "d38-digests"]
+    assert len(owners) == 1
+    assert cas.input_path(owners[0]).read_bytes() == Path(digest_primitives.__file__).read_bytes()
+    assert d38_producer.validated_cpu_preflight(cas, action)
+    changed = copy.deepcopy({key: value for key, value in action.items() if key != "action_key"})
+    replacement, _ = cas.ingest_bytes(b"raise RuntimeError('unreviewed digest owner')\n", input_id="d38-digests")
+    changed["inputs"] = [replacement if entry["id"] == "d38-digests" else entry for entry in changed["inputs"]]
+    assert not d38_producer.validated_cpu_preflight(cas, pb.seal_action(changed))
