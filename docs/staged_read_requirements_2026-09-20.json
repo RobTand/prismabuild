@@ -1607,7 +1607,7 @@
    "scoped_repair_1772": {
     "target": "Observe the same canary action through feasible higher-priority waiting without weakening priority or treating elapsed wait as a pass.",
     "implemented_source": {
-     "commit": "e8e5c75f523706e44ccfb863db4f0df8ed36879c",
+     "commit": "eb36f95ee0b978cbceb6ac06aac8f1d33e8d64d1",
      "state": "component-implemented",
      "scope": "Leg 3 continues bounded observations after rc75 by default; --leg3-wait-s caps one total observation budget. Execution remains 600 seconds at priority -10."
     },

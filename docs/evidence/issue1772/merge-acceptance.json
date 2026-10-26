@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
-  "ledger_commit": "f6fa642f8d1f7081e17d51635eeee346e7b3819d",
+  "ledger_commit": "8e8d215e3fd47851dbf9f992288efb0d0d5b4066",
   "scope": [
     "LIVE-01"
   ],
