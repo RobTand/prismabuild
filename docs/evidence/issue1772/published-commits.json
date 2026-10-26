@@ -1,0 +1,36 @@
+{
+  "reason": "Git transport lacked write credentials; the authorized GitHub connection replayed the ordered commits. Code and evidence trees match the locally validated branch.",
+  "local_final_head": "d5201b843deab17495f4a4d7e9a85899368944cc",
+  "published_final_head": "211b9a86d0e8e0b6b5b052ef43c613a8199bd2e4",
+  "verified_tree": "61dbc3add97c24cd9e1b1444707dfdc9e94bcfab",
+  "commits": [
+    {
+      "local": "dfc2a0acae",
+      "remote": "bac46438bf5feef8449ef7c397a8ddc1a6ec7516"
+    },
+    {
+      "local": "f4073a16c80669fe333cb6ee93d9ed4673a7f88a",
+      "remote": "7c92742d1bdda0a8def1814da6385c160f6be848"
+    },
+    {
+      "local": "2241db1c2fee602683afa82160c5f9a02242881e",
+      "remote": "14023231f15ab7c5fb69e245f772573dc4d0637a"
+    },
+    {
+      "local": "e8e5c75f523706e44ccfb863db4f0df8ed36879c",
+      "remote": "eb36f95ee0b978cbceb6ac06aac8f1d33e8d64d1"
+    },
+    {
+      "local": "55be469a3d49670b39661e450f0fc102f3e68b00",
+      "remote": "e0eb1c0ab55bbd046f5da528cf88a88df2a069d1"
+    },
+    {
+      "local": "f6fa642f8d1f7081e17d51635eeee346e7b3819d",
+      "remote": "8e8d215e3fd47851dbf9f992288efb0d0d5b4066"
+    },
+    {
+      "local": "d5201b843deab17495f4a4d7e9a85899368944cc",
+      "remote": "211b9a86d0e8e0b6b5b052ef43c613a8199bd2e4"
+    }
+  ]
+}

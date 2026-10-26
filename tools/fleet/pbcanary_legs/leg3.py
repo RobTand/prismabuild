@@ -31,6 +31,10 @@ this module owns the fixed spec and the mechanical verdict):
       (the driver injects its own ``--priority`` once for every leg;
       the spec no longer pins one — issue #690)
 
+     The driver keeps observing this action after each 900-second wait
+     interval. Its optional ``--leg3-wait-s`` caps total observation time
+     without changing the sealed action's execution deadline.
+
      with ``PBCANARY_LEG3_MANIFEST=<absolute manifest path>`` in the
      action environment. The manifest's ``read_plan`` phases and the
      ``--progress-phase`` names are identical strings: the tiers loop
@@ -95,7 +99,7 @@ LEG3_MANIFEST_SCHEMA = "prismaquant.prismabuild.data_manifest.v2"
 #: beside its manifest before that chunk's progress unit is reported.
 LEG3_CHECKPOINT_SCHEMA = "prismabuild.pbcanary.leg3_checkpoint.v1"
 
-LEG3_WAIT_S = 900  # Issue #688 residency wait budget.
+LEG3_WAIT_S = 900  # Bounded observer interval; the driver owns total patience.
 LEG3_TIMEOUT_S = 600  # Execution deadline: read 24 MiB + hash takes seconds.
 LEG3_PRIORITY = -10  # Documented default; the driver's --priority governs
 # the submission (issue #690 dedupe: specs do not pin --priority).

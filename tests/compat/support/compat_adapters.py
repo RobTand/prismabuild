@@ -157,7 +157,7 @@ def operate(request, store, load):
         adapter = runpy.run_path(str(Path(__file__).with_name("compat_domain_adapters.py")))["operate"]
         return adapter(request, store, load)
     if family.startswith("q-"):
-        filename = ("compat_pool_wire_adapters.py" if family in ("q-item", "q-offer", "q-intent", "q-lease", "q-attempt",
+        filename = ("compat_pool_wire_adapters.py" if family in ("q-host-hold", "q-item", "q-offer", "q-intent", "q-lease", "q-attempt",
                                                                 "q-outcome", "q-tier-commitment", "q-stage-holder")
                     else "compat_queue_adapters.py")
         adapter = runpy.run_path(str(Path(__file__).with_name(filename)))["operate"]

@@ -75,6 +75,12 @@ def test_never_collected():
 '''
 
 
+@pytest.fixture(autouse=True)
+def admitted_outcome_children(monkeypatch):
+    # The outer action has admitted these children. Discovery is tested elsewhere.
+    monkeypatch.setattr(pbtest, "placement", lambda *args, **kwargs: ({}, None, 60.0))
+
+
 def _checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
@@ -99,7 +105,8 @@ def _dispatch(checkout: Path, monkeypatch, extra: list[str]):
     report = checkout.parent / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", sys.executable,
-        "--threads-per-shard", "1", "--json", str(report), *extra, "tests",
+        "--threads-per-shard", "1", "--tmpdir", str(checkout.parent),
+        "--json", str(report), *extra, "tests",
     ])
     return pbtest.main(), json.loads(report.read_text())
 
@@ -113,7 +120,7 @@ def test_a_summary_that_exceeds_its_tests_reconciles_by_name(
     """7 tests, 9 outcomes: 1 skip at collection, 1 test counted twice."""
 
     if "--workers-per-shard" in extra:
-        pytest.importorskip("xdist")
+        __import__("xdist")
     code, results = _dispatch(_checkout(tmp_path), monkeypatch, extra)
     printed = capsys.readouterr().out
     assert code == 0, printed
@@ -152,7 +159,7 @@ def test_a_collect_only_run_reconciles_its_item_count(tmp_path, monkeypatch, cap
 def test_a_fully_deselected_file_is_accounted_for(
         tmp_path, monkeypatch, capsys, workers, selector):
     if workers > 1:
-        pytest.importorskip("xdist")
+        __import__("xdist")
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
     (checkout / "tests" / "test_keep.py").write_text(
@@ -187,7 +194,7 @@ def test_nested_pytest_root_still_matches_assigned_files(tmp_path, monkeypatch, 
 def test_selector_does_not_excuse_a_file_with_no_collection(
         tmp_path, monkeypatch, capsys, workers):
     if workers > 1:
-        pytest.importorskip("xdist")
+        __import__("xdist")
     checkout = tmp_path / "project"
     (checkout / "tests").mkdir(parents=True)
     (checkout / "tests" / "test_keep.py").write_text(

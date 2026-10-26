@@ -12,6 +12,7 @@ still stops every proven-idle loop above the target.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -72,7 +73,9 @@ def test_an_alternating_claim_count_starts_and_stops_no_loop(
         except StopIteration:
             raise TicksDone
 
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
 
     with pytest.raises(TicksDone):
         supervise.main()
@@ -108,7 +111,9 @@ def test_a_steady_low_claim_count_still_shrinks(
         except StopIteration:
             raise TicksDone
 
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
 
     with pytest.raises(TicksDone):
         supervise.main()
@@ -146,7 +151,9 @@ def test_unknown_workers_are_never_stopped(box, monkeypatch):
         except StopIteration:
             raise TicksDone
 
-    monkeypatch.setattr(supervise.time, "sleep", sleep)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": sleep,
+    }))
 
     with pytest.raises(TicksDone):
         supervise.main()

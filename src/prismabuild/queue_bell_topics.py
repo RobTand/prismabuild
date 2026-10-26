@@ -4,9 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import stat
 
-from .holder_census import CPU_METADATA, GPU_METADATA, HolderCensus
+from .holder_census import HolderCensus
+from .adaptive_snapshot import FILES as MIRROR_FILES
+from .record_store import PASSES, DENIAL_TRANSITIONS
 
 MAX_TOPIC_FILTERS = 32
 MAX_ID_FILTERS = 128
@@ -37,8 +38,12 @@ OUTCOME_TOPICS = tuple(Topic(name, name, r"[0-9a-f]{64}", required, True)
 HOST_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 WORKER_TOPICS = (Topic("workers", "workers", HOST_ID_PATTERN),)
 HOST_RESERVATION_TOPICS = (Topic("reservations", "reservations", HOST_ID_PATTERN),)
+ADAPTIVE_TOPICS = (Topic("adaptive", "reservations", HOST_ID_PATTERN),
+                   Topic("claim-denials", "reservations", HOST_ID_PATTERN),
+                   Topic(PASSES, PASSES, r"[0-9a-f]{64}"),
+                   Topic(DENIAL_TRANSITIONS, DENIAL_TRANSITIONS, r"[0-9a-f]{64}"))
 TOPICS = {topic.name: topic for topic in
-          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS)}
+          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS, *ADAPTIVE_TOPICS)}
 
 
 class OutcomeNamespaces:
@@ -147,52 +152,59 @@ class HostReservations:
         return None
 
 
-class HostInputShapes:
-    """The filesystem read set, independent of the watch installation code.
+class AdaptiveInputs:
+    """Fixed mirror filenames and flat per-action sidecars, without body reads."""
 
-    Names-only token reads need no descent below their containing directory.
-    Unexpected shapes are incomplete, rather than extending the traversal.
-    """
+    topics = tuple(topic for topic in ADAPTIVE_TOPICS if topic.name != "claim-denials")
+    mirror_files = frozenset((*MIRROR_FILES, "publisher-result.json"))
+    action_directories = frozenset((PASSES, DENIAL_TRANSITIONS))
 
     @staticmethod
-    def kind(relative: Path) -> str | None:
+    def allows(relative: Path) -> bool:
         parts = relative.parts
-        if not parts or parts[0] not in ("workers", "reservations"):
+        if not parts:
+            return False
+        if parts[0] in AdaptiveInputs.action_directories:
+            return len(parts) == 1
+        return (parts[0] == "reservations" and (len(parts) == 1
+                or (TOPICS["adaptive"].accepts_id(parts[1])
+                    and (len(parts) == 2 or (len(parts) == 3 and parts[2] == "adaptive")))))
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if not parts:
             return None
-        if len(parts) == 1:
-            return "directory"
-        if parts[0] == "workers":
-            if len(parts) == 2 and parts[1].endswith(".json"):
-                return "file" if WorkerOffers.hint(relative) else "unknown"
-            return None
-        if not HOST_RESERVATION_TOPICS[0].accepts_id(parts[1]):
-            return "unknown"
-        if len(parts) == 2 or (len(parts) == 3 and parts[2] in HostReservations.token_directories):
-            return "directory"
-        if len(parts) == 3 and parts[2] in ("cpu-map.json", "capacity.json"):
-            return "file"
-        if len(parts) == 4 and parts[2] == "held":
-            return "holder"
-        if len(parts) == 5 and parts[2] == "held":
-            return "file" if parts[4] in (CPU_METADATA, GPU_METADATA) else "entry"
-        if len(parts) == 4 and parts[2] in ("free", "minted"):
-            return "entry"
+        if parts[0] in AdaptiveInputs.action_directories and len(parts) == 2:
+            key, suffix = relative.stem, relative.suffix
+            if suffix == ".json" and TOPICS[parts[0]].accepts_id(key):
+                return parts[0], key
+        if (parts[0] == "reservations" and len(parts) >= 2
+                and TOPICS["adaptive"].accepts_id(parts[1])):
+            if len(parts) == 2 or (len(parts) == 3 and parts[2] == "adaptive"):
+                return "adaptive", parts[1]
+            if (len(parts) == 4 and parts[2] == "adaptive"
+                    and parts[3] in AdaptiveInputs.mirror_files and parts[3] != "claim-denials.json"):
+                return "adaptive", parts[1]
         return None
 
+
+class ClaimDenials:
+    topics = (TOPICS["claim-denials"],)
+
     @staticmethod
-    def watchable(kind: str, info) -> bool:
-        if kind == "unknown" or stat.S_ISLNK(info.st_mode):
-            return False
-        if kind == "directory":
-            return stat.S_ISDIR(info.st_mode)
-        if kind == "holder":
-            # Non-directories are excluded by the authoritative predicate;
-            # their later replacement is visible through the held watch.
-            return True
-        if kind == "entry":
-            return stat.S_ISREG(info.st_mode)
-        return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and bool(info.st_mode & 0o444))
+    def allows(relative: Path) -> bool:
+        return False  # AdaptiveInputs installs the shared parent watches.
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if (len(parts) in (2, 3, 4) and parts[0] == "reservations"
+                and TOPICS["claim-denials"].accepts_id(parts[1])
+                and (len(parts) == 2 or (parts[2] == "adaptive"
+                     and (len(parts) == 3 or parts[3] == "claim-denials.json")))):
+            return "claim-denials", parts[1]
+        return None
 
 
 class TopicFilters:

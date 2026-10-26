@@ -124,7 +124,7 @@ FLEET_SCRIPTS = (
     # neither dl380g10 nor sparklina has a checkout to run it from.
     # runtime_process_census.py is here for the same reason and is only
     # useful there: it reads /proc on the box it runs on.
-    "pbstatus.py", "pbmetrics.py", "pbbell.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
+    "pbstatus.py", "pbhold.py", "pbmetrics.py", "pbbell.py", "pbwait.py", "pbcampaign.py", "runtime_process_census.py",
     # pbsnapshot.py runs inside an action: a client that hashes its own
     # source asks it which files in the pbrun checkout PrismaBuild generated.
     # It has to be the executing generation's copy, found by published path.
