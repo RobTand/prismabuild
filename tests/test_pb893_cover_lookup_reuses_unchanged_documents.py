@@ -558,6 +558,17 @@ def test_covers_for_keys_answers_exactly_what_the_pre_893_lookup_answers(
     assert compared > 30_000, compared
 
 
+def _compare_query(root: Path, keys: list[str], arguments: dict, *,
+                   new_context: dict, old_context: dict) -> dict:
+    new = reader_lease.covers_for_keys(
+        root, CONSUMER, keys, context=new_context, **arguments)
+    with reference.old_hex_checks():
+        old = reference.covers_for_keys(
+            root, CONSUMER, keys, context=old_context, **arguments)
+    assert new == old, (keys, arguments, new, old)
+    return new
+
+
 def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
                       omits: bool = False,
                       differed: list[object] | None = None) -> int:
@@ -607,12 +618,8 @@ def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
                 for keys in _queries(rng):
                     arguments = dict(tier_id=tier_id,
                                      manifest_sha256=manifest, epoch=epoch)
-                    new = reader_lease.covers_for_keys(
-                        root, CONSUMER, keys, context={}, **arguments)
-                    with reference.old_hex_checks():
-                        old = reference.covers_for_keys(
-                            root, CONSUMER, keys, context={}, **arguments)
-                    assert new == old, (seed, step, event, keys, arguments)
+                    new = _compare_query(root, keys, arguments,
+                                         new_context={}, old_context={})
                     if omits:
                         if differed is not None:
                             with reference.old_hex_checks(), _untrimmed():
@@ -624,15 +631,9 @@ def _compare_sequence(base: Path, seed: int, outcomes: set[str], *,
                         compared += 1
                         outcomes.add(str(new.get("refusal") or "ok"))
                         continue
-                    new = reader_lease.covers_for_keys(
-                        root, CONSUMER, keys, context=persistent_new,
-                        **arguments)
-                    with reference.old_hex_checks():
-                        old = reference.covers_for_keys(
-                            root, CONSUMER, keys, context=persistent_old,
-                            **arguments)
-                    assert new == old, (seed, step, event, keys, arguments,
-                                        "persistent")
+                    new = _compare_query(
+                        root, keys, arguments, new_context=persistent_new,
+                        old_context=persistent_old)
                     compared += 2
                     outcomes.add(str(new.get("refusal") or "ok"))
         _assert_cache_matches_disk(root)
