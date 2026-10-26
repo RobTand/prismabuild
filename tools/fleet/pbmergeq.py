@@ -468,9 +468,25 @@ class GitHub:
 
     def pr(self, number: int) -> dict:
         fields = ("number,state,isDraft,author,headRefOid,headRefName,"
-                  "isCrossRepository,headRepositoryOwner,baseRefName,title,body,closingIssuesReferences")
+                  "isCrossRepository,headRepositoryOwner,baseRefName,title,body")
         out = call_tool(["gh", "pr", "view", str(number), "-R", self.cfg.repo, "--json", fields])
-        return json.loads(out.stdout)
+        pr = json.loads(out.stdout)
+        owner, name = self.cfg.repo.split("/", 1)
+        query = """query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              closingIssuesReferences(first: 100, after: $endCursor) {
+                nodes { number url }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }"""
+        pr["closingIssuesReferences"] = read_json_rows([
+            "gh", "api", "graphql", "--paginate", "-f", f"query={query}",
+            "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}",
+            "--jq", ".data.repository.pullRequest.closingIssuesReferences.nodes[] | @json"])
+        return pr
 
     def issue(self, number: int) -> dict:
         out = call_tool(["gh", "api", f"repos/{self.cfg.repo}/issues/{number}"])

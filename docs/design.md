@@ -18915,6 +18915,11 @@ pull request numbers before testing or publication. A failed `issue-link` check
 is terminal and requeues members charged. Other expired green waits release the
 queue without retrying already-integrated members.
 
+The GitHub adapter reads PR metadata with fields supported by `gh` 2.46.
+Closing-issue references use paginated GraphQL through `gh api`, because that
+CLI version does not expose them through `gh pr view --json`. The returned
+issue numbers and URLs still pass through same-repository issue validation.
+
 Terminal disposition, requeue, and `vehicle_cleanup` intent are saved before
 remote cleanup. Cleanup retries outside the active batch are bounded by
 `max_attempts`, separated by `stuck_backoff_s`. Exhausted obligations remain
