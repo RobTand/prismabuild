@@ -202,3 +202,44 @@ def test_native_mount_probe_uses_statx_and_never_fdinfo(tmp_path, monkeypatch):
         assert fstype and source and options
     finally:
         os.close(descriptor)
+
+
+def test_growth_cannot_treat_a_server_address_as_an_export_mapping(world, monkeypatch):
+    from prismabuild.pool import ResourceLedger
+
+    queue, _, root = world
+    ledger = ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="growth")
+    ledger.ensure_capacity({"filesystem_gib": 8})
+    binding = bind(world, (ff.FILESYSTEM_RESERVATIONS, "growth", "filesystem_gib"))
+    binding["server_addresses"] = ["192.0.2.1"]
+    ff._floor_write(ff.fs_dir(queue.root, binding["key"]) / "binding.json", binding)
+    remote = dict(ff.identify(root), key=None, fstype="nfs4", server="192.0.2.1",
+                  source="example:/unmapped-export", device=12, mount_id=34)
+    monkeypatch.setattr(ff, "identify", lambda path: remote)
+
+    with pytest.raises(ff.FloorRefused):
+        with ff.operation(queue.root, growth_gib={root: 1}):
+            pytest.fail("unmapped export entered the write window")
+    assert not ledger.held()
+
+
+def test_older_refresh_cannot_overwrite_a_newer_incomplete_census(world, monkeypatch):
+    queue, _, _ = world
+    binding = bind(world, ("reservations", "test-host", "spool_gb"))
+    original = ff.census
+    host = queue.ledger("test-host")
+    nested = False
+
+    def interleave(queue_root, current):
+        nonlocal nested
+        if nested:
+            return original(queue_root, current)
+        counted = original(queue_root, current)
+        nested = True
+        host.held_dir.rename(host.base / "inaccessible-held")
+        assert not ff.refresh_binding(queue_root, current)["allowed"]
+        return counted
+
+    monkeypatch.setattr(ff, "census", interleave)
+    assert not ff.refresh_binding(queue.root, binding)["allowed"]
+    assert not ff.published_verdict(queue.root, binding)["allowed"]

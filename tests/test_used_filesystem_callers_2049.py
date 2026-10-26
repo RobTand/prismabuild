@@ -150,3 +150,54 @@ def test_storage_control_refusal_defers_before_cycle_or_log(role, monkeypatch, t
     assert loop.main(argv + ["--once", "--log", str(log)]) == 75
     assert calls == []
     assert not log.exists()
+
+
+@pytest.mark.parametrize("state", ["new", "partial", "final"])
+def test_resident_copy_checks_nested_destinations_before_publication(tmp_path, monkeypatch, state):
+    store, record, spec = nested_world(tmp_path)
+    final = Path(spec["root"]) / record["set_id"]
+    partial = final.with_name(final.name + ".partial")
+    guard(monkeypatch)
+    if state == "final":
+        local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
+    elif state == "partial":
+        (partial / "nested").mkdir(parents=True)
+        (partial / "nested" / "weights").write_bytes(b"weights")
+    refused = (final if state == "final" else partial) / "nested"
+    checked = guard(monkeypatch, refused)
+
+    with pytest.raises(floor.FloorRefused):
+        local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
+    assert refused in checked
+    assert store.read_copy(record["set_id"], "test-host")["state"] != "resident" or state == "final"
+
+
+def nested_world(tmp_path):
+    store, original, spec = world(tmp_path)
+    root = Path(original["canonical_root"])
+    nested = root / "nested" / "weights"
+    nested.parent.mkdir()
+    (root / "weights").rename(nested)
+    manifest = {**original["manifest"], "entries": [
+        {**original["manifest"]["entries"][0], "path": str(nested)}]}
+    record = store.publish(manifest=manifest, canonical_root=str(root),
+        hosts=["test-host"], lease={"until": 150, "hard_max": 200},
+        created_by="test", now=100)
+    return store, record, spec
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+def test_resident_adoption_checks_nested_files_before_publication(tmp_path, monkeypatch, reuse):
+    store, record, spec = nested_world(tmp_path)
+    source = tmp_path / "manual"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "weights").write_bytes(b"weights")
+    guard(monkeypatch)
+    if reuse:
+        local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
+    target = Path(spec["root"]) / record["set_id"] if reuse else source
+    checked = guard(monkeypatch, target / "nested")
+
+    with pytest.raises(floor.FloorRefused):
+        local_resident.adopt_resident_copy(store, record["set_id"], "test-host", spec, source, now=120)
+    assert target / "nested" in checked
