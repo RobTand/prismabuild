@@ -1283,7 +1283,7 @@ An inode rebound to a different name gets a new watch descriptor, so stale
 self-events cannot discard its replacement watch during reconstruction.
 
 Hints grant no free capacity. Keep the existing confirmed offer/ledger reads.
-`DirtyHostInputs` is available to later consumers to retain unknown host IDs,
+`DirtyInputs` is available to later consumers to retain unknown host IDs,
 retry NFS visibility from 50 ms to one second within the original read budget,
 and expose `read_attempts` and `visibility_retries`. Confirmation or stop cancels
 the retry; exhaustion keeps the ID dirty and reports `Unavailable`. Duplicate
@@ -1301,6 +1301,36 @@ flat `<key>.json` sidecars. In-place writes, replacement, removal and populated
 move-in are observed. Unsafe byte-read shapes withdraw coverage. These are
 source capabilities until the Principal Engineer publishes a reviewed runtime.
 Verify all required topics on the actual endpoint before enabling a consumer.
+
+Slice 3a (#1942) adds source support for `tiers`, `tier-reservations`,
+`tier-funding` and `tier-commitments`. All four use the exact tier ID, including
+its dots and colon. Claim order is inside the commitment record. Funding hints
+preserve the tier portion after the mover action key, including output retirement
+under `tier-funding/retired/`. Tier ledger watches include private/hidden holders,
+partial acquisition and rollback, token release, and `minted/dead` retirement.
+They stop at immediate holder/dead contents. No arbitrary queue traversal is added.
+
+The bell remains names-only. Invalid or unsupported tier identifiers, unsafe
+record shapes, unreadable directory scopes, watch exhaustion and lost watches
+cannot establish complete coverage. Lazy and populated moved-in trees withdraw
+coverage until watch-before-scan reconstruction has finished. Watch counts,
+coverage changes and resets expose these boundaries without healthy-renewal logs.
+After a loss, repair the scope/watch limit and reconstruct before relying on it.
+`queue_bell_input_reads.DirtyInputs` retains unknown tier IDs through the same
+50 ms to one-second visibility retry and original absolute read budget used for
+host inputs. Duplicate hints cannot extend that budget. Confirmation or stop
+cancels recovery; expiry keeps the ID dirty and reports unavailable evidence.
+
+Later consumers must retain the recorded tier announcement expiry of 120 s,
+private-acquisition grace of 300 s or 30 s for a known-dead local claimant, and
+the actual claim-order short-relief window, currently 120 s by default. Use the
+authoritative predicate's equality boundary. Funding has no TTL. Its generation
+binding and state/terminal/token proofs remain authoritative. Progress and lease
+inputs to claim order require their later adapters too. Bell outage recovery
+stays 0.25 s doubling to five seconds and cancels on recovered complete coverage
+or stop. These adapters add no periodic scan, timer default, consumer installation
+or live runtime publication. Verify the required topics on the published endpoint
+before enabling any dependent consumer.
 
 `LocalMirrorPublisher` is available for explicit host-hub ownership in slice 7.
 It is not installed by existing worker loops. Its local observer singleton

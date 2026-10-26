@@ -7,7 +7,8 @@ import re
 
 from .holder_census import HolderCensus
 from .adaptive_snapshot import FILES as MIRROR_FILES
-from .record_store import PASSES, DENIAL_TRANSITIONS
+from .record_store import (PASSES, DENIAL_TRANSITIONS, TIERS, TIER_RESERVATIONS,
+                           TIER_FUNDING, TIER_FUNDING_RETIRED, TIER_COMMITMENTS)
 
 MAX_TOPIC_FILTERS = 32
 MAX_ID_FILTERS = 128
@@ -42,8 +43,12 @@ ADAPTIVE_TOPICS = (Topic("adaptive", "reservations", HOST_ID_PATTERN),
                    Topic("claim-denials", "reservations", HOST_ID_PATTERN),
                    Topic(PASSES, PASSES, r"[0-9a-f]{64}"),
                    Topic(DENIAL_TRANSITIONS, DENIAL_TRANSITIONS, r"[0-9a-f]{64}"))
+TIER_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+TIER_TOPICS = tuple(Topic(name, name, TIER_ID_PATTERN) for name in
+                   (TIERS, TIER_RESERVATIONS, TIER_FUNDING, TIER_COMMITMENTS))
 TOPICS = {topic.name: topic for topic in
-          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS, *ADAPTIVE_TOPICS)}
+          (*OUTCOME_TOPICS, *WORKER_TOPICS, *HOST_RESERVATION_TOPICS,
+           *ADAPTIVE_TOPICS, *TIER_TOPICS)}
 
 
 class OutcomeNamespaces:
@@ -205,6 +210,96 @@ class ClaimDenials:
                      and (len(parts) == 3 or parts[3] == "claim-denials.json")))):
             return "claim-denials", parts[1]
         return None
+
+
+class TierInputs:
+    """Existing tier records and flat token censuses, without reading bodies."""
+
+    topics = TIER_TOPICS
+    directories = frozenset(topic.directory for topic in TIER_TOPICS)
+    record_directories = frozenset((TIERS, TIER_COMMITMENTS))
+    token_directories = frozenset(("free", "held", "minted"))
+    funding_suffixes = (".output-funding.json", ".funding.json")
+
+    @staticmethod
+    def record_id(relative: Path) -> str | None:
+        parts = relative.parts
+        if not parts:
+            return None
+        if parts[0] in TierInputs.record_directories and len(parts) == 2:
+            return relative.name[:-5] if relative.name.endswith(".json") else None
+        if (parts[0] == TIER_FUNDING
+                and (len(parts) == 2 or (len(parts) == 3 and parts[1] == TIER_FUNDING_RETIRED))):
+            suffixes = (TierInputs.funding_suffixes[:1] if len(parts) == 3
+                        else TierInputs.funding_suffixes)
+            for suffix in suffixes:
+                if relative.name.endswith(suffix):
+                    mover, separator, tier = relative.name[:-len(suffix)].partition(".")
+                    if separator and re.fullmatch(r"[0-9a-f]{64}", mover):
+                        return tier
+        return None
+
+    @staticmethod
+    def allows(relative: Path) -> bool:
+        parts = relative.parts
+        if not parts or parts[0] not in TierInputs.directories:
+            return False
+        if len(parts) == 1:
+            return True
+        if parts[0] == TIER_FUNDING:
+            return parts == (TIER_FUNDING, TIER_FUNDING_RETIRED)
+        if parts[0] != TIER_RESERVATIONS or not TOPICS[TIER_RESERVATIONS].accepts_id(parts[1]):
+            return False
+        return (len(parts) == 2
+                or (len(parts) == 3 and parts[2] in TierInputs.token_directories)
+                or (len(parts) == 4 and (parts[2] == "held"
+                    or parts[2:] == ("minted", "dead"))))
+
+    @staticmethod
+    def hint(relative: Path) -> tuple[str, str] | None:
+        parts = relative.parts
+        if not parts:
+            return None
+        if parts[0] == TIER_RESERVATIONS:
+            if len(parts) < 2 or not TOPICS[TIER_RESERVATIONS].accepts_id(parts[1]):
+                return None
+            if (len(parts) == 2
+                    or (len(parts) == 3 and parts[2] in TierInputs.token_directories)
+                    or (len(parts) == 4 and parts[2] in TierInputs.token_directories)
+                    or (len(parts) == 5 and (parts[2] == "held"
+                        or parts[2:4] == ("minted", "dead")))):
+                return TIER_RESERVATIONS, parts[1]
+            return None
+        tier = TierInputs.record_id(relative)
+        if tier is not None and TOPICS[parts[0]].accepts_id(tier):
+            return parts[0], tier
+        return None
+
+    @staticmethod
+    def hidden_input(relative: Path) -> bool:
+        return TierInputs.hint(relative) is not None
+
+    @staticmethod
+    def reconstruction_inputs(relative: Path, entries):
+        # Tier observation fences and mint history enumerate all names. Unlike
+        # host held censuses, their non-directory entries cannot be omitted.
+        return entries
+
+
+class NamespaceInputs:
+    """Per-namespace census rules used by the common watch installer."""
+
+    adapters = (HostReservations, TierInputs)
+
+    @classmethod
+    def hidden_input(cls, relative: Path) -> bool:
+        return any(adapter.hidden_input(relative) for adapter in cls.adapters)
+
+    @classmethod
+    def reconstruction_inputs(cls, relative: Path, entries):
+        for adapter in cls.adapters:
+            entries = adapter.reconstruction_inputs(relative, entries)
+        return entries
 
 
 class TopicFilters:

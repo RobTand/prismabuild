@@ -1,0 +1,312 @@
+{
+  "source_head": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+  "metadata_rows": 581,
+  "changed_rows": 1,
+  "unique_tests": 8,
+  "passing_executions": 16,
+  "results": [
+    {
+      "run": "red",
+      "population": {
+        "collected": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0
+      },
+      "action": {
+        "action_key": "2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39",
+        "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/failed/2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39.json",
+        "terminal_sha256": "3b6f60ed4873dc0be5eca465651fcba0f8112aa59275996bdac7467c899ba31a",
+        "status": "failed",
+        "returncode": 1,
+        "host": "sparky",
+        "snapshot": {
+          "commit": "2017aa48e71f64176ef7062066d090d3a085d240",
+          "input": {
+            "bytes": 45937262,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "6a4170abab79fbb189061d8e1860824d3c9db021033fbc9470777cb32609e668"
+          },
+          "parent": "052bcafb0b764420f144db32b106792603427c68",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "resources": {
+          "cpu": 1,
+          "mem_gb": 2
+        },
+        "cleanup_complete": true,
+        "logs": {
+          "stdout": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39/18b49a17a1f867bf8d74c99ef65683805bdac52f76ec2928e2523c8b5f412b45/00000001.stdout.f6c8006ad648df4a3f567723a882110af90308bcb04b1a1aeeabb6f8a066549f.log",
+            "sha256": "f6c8006ad648df4a3f567723a882110af90308bcb04b1a1aeeabb6f8a066549f",
+            "bytes": 4229
+          },
+          "stderr": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2fff38fbc7f3cf4f2f8eb1e4133cbf750b07c8a987262d7ff525f149e60a5b39/18b49a17a1f867bf8d74c99ef65683805bdac52f76ec2928e2523c8b5f412b45/00000001.stderr.2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356.log",
+            "sha256": "2542d44c71caa12d608aa650135e893c3cdb2e5f11b2e8ce920b23d7c5de2356",
+            "bytes": 831
+          }
+        },
+        "collected": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "failed_nodes": [
+          "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned"
+        ],
+        "runtime": {
+          "complete": true,
+          "version": [
+            3,
+            12,
+            3
+          ],
+          "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "executable": {
+            "path": "/home/rob/venvs/pb-cpu/bin/python",
+            "resolved_path": "/usr/bin/python3.12",
+            "bytes": 7845048,
+            "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+          },
+          "executable_path_matches_running": true,
+          "affinity": [
+            5
+          ],
+          "native_threads": {
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1"
+          },
+          "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+          "kernel": {
+            "system": "Linux",
+            "node": "sparky",
+            "release": "7.0.0-1019-nvidia",
+            "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+            "machine": "aarch64",
+            "processor": "aarch64"
+          },
+          "selected_files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "selected_source_sha256": {
+            "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+          },
+          "exitstatus": 1
+        },
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "1 failed, 7 deselected in 19.86s",
+        "receipt": "no success receipt expected"
+      }
+    },
+    {
+      "run": "green-x86",
+      "population": {
+        "collected": 8,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0
+      },
+      "action": {
+        "action_key": "9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92",
+        "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92.json",
+        "terminal_sha256": "0c42c3fa196a4d3099bf05f43d8c3746ce0bf37b5640e978263aab1ef0ee8a97",
+        "status": "executed",
+        "returncode": 0,
+        "host": "dl380g10",
+        "snapshot": {
+          "commit": "61f5c03b509aee4c574e011f0910c3cb6cb885b0",
+          "input": {
+            "bytes": 45936334,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "e7404a7fbbf389157c5dc78e4d7d1e12cc47c384a10fce0fb4146e4d06095988"
+          },
+          "parent": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "resources": {
+          "cpu": 1,
+          "mem_gb": 2
+        },
+        "cleanup_complete": true,
+        "logs": {
+          "stdout": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92/1a9371a4be89089f9cf8e1bd5c12eb0504a27e517284ca288eafb99f38485fdd/00000001.stdout.6e0cf625797249df5064d182aa7175e50185651f9844f3cbefc05fac3cb68799.log",
+            "sha256": "6e0cf625797249df5064d182aa7175e50185651f9844f3cbefc05fac3cb68799",
+            "bytes": 8979
+          },
+          "stderr": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92/1a9371a4be89089f9cf8e1bd5c12eb0504a27e517284ca288eafb99f38485fdd/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+            "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c",
+            "bytes": 46
+          }
+        },
+        "collected": 8,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "failed_nodes": [],
+        "runtime": {
+          "complete": true,
+          "version": [
+            3,
+            14,
+            4
+          ],
+          "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "executable": {
+            "path": "/home/rob/venvs/pb-cpu/bin/python",
+            "resolved_path": "/usr/bin/python3.14",
+            "bytes": 7477160,
+            "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+          },
+          "executable_path_matches_running": true,
+          "affinity": [
+            0
+          ],
+          "native_threads": {
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1"
+          },
+          "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+          "kernel": {
+            "system": "Linux",
+            "node": "dl380g10",
+            "release": "7.0.0-38-generic",
+            "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+            "machine": "x86_64",
+            "processor": ""
+          },
+          "selected_files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "selected_source_sha256": {
+            "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+          },
+          "exitstatus": 0
+        },
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "8 passed in 37.15s",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/9c/9c1a29dec67a46b70d0d8246b80c5ba62a6730e747b26bc5e282a49a2bee2f92.json",
+        "receipt_sha256": "87bf55645d7c5062d27c8be1de25ea5648d0fbe62dfa07a32c632e70a634bb7e",
+        "payload_sha256": "62030078ebfdffafda7a0c0cd4d504d55269d92f5bf5b56a005ed2bf7300504f"
+      }
+    },
+    {
+      "run": "green-gb10",
+      "population": {
+        "collected": 8,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0
+      },
+      "action": {
+        "action_key": "e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97",
+        "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97.json",
+        "terminal_sha256": "885a18df60d3868344fcd6c7810e026d851e50a61f9e0d89dceed5d3ea388209",
+        "status": "executed",
+        "returncode": 0,
+        "host": "sparky",
+        "snapshot": {
+          "commit": "3af415c92e84f9507fd6c023c774d688985c55e2",
+          "input": {
+            "bytes": 45936335,
+            "id": "pbrun.checkout-snapshot",
+            "sha256": "6027c3a116069f518217165f2420be25a0932b8852f4bc1bbab60ecb8b220e37"
+          },
+          "parent": "662aa8aaf4edae8b6beea68b2345bfecd0355b8c",
+          "refs": {},
+          "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+          "subdirectory": "."
+        },
+        "resources": {
+          "cpu": 1,
+          "mem_gb": 2
+        },
+        "cleanup_complete": true,
+        "logs": {
+          "stdout": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97/0e7414841f0c3cc71190731eb2a864ff498071af8cf0976556291ca17750d1c1/00000001.stdout.a7140833f89b6e50fb3f8e36e6890fd59ee174182113037d015c1e6228a7636b.log",
+            "sha256": "a7140833f89b6e50fb3f8e36e6890fd59ee174182113037d015c1e6228a7636b",
+            "bytes": 9074
+          },
+          "stderr": {
+            "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97/0e7414841f0c3cc71190731eb2a864ff498071af8cf0976556291ca17750d1c1/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+            "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f",
+            "bytes": 43
+          }
+        },
+        "collected": 8,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "failed_nodes": [],
+        "runtime": {
+          "complete": true,
+          "version": [
+            3,
+            12,
+            3
+          ],
+          "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+          "files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "executable": {
+            "path": "/home/rob/venvs/pb-cpu/bin/python",
+            "resolved_path": "/usr/bin/python3.12",
+            "bytes": 7845048,
+            "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+          },
+          "executable_path_matches_running": true,
+          "affinity": [
+            5
+          ],
+          "native_threads": {
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1"
+          },
+          "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+          "kernel": {
+            "system": "Linux",
+            "node": "sparky",
+            "release": "7.0.0-1019-nvidia",
+            "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+            "machine": "aarch64",
+            "processor": "aarch64"
+          },
+          "selected_files": [
+            "tests/test_wire_inventory.py"
+          ],
+          "selected_source_sha256": {
+            "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+          },
+          "exitstatus": 0
+        },
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "summary": "8 passed in 19.82s",
+        "receipt": "/mnt/shared/prismabuild-fleet/cas/actions/v3/e1/e18461a0c3d7ed5cc6adfb1fdfd6999a04457f0c95d85c4e0dc276b7f2befd97.json",
+        "receipt_sha256": "f24b4e37ed15105ac3c36e5333ea314dc346cbd3be9c7f88b80416d13d833dd1",
+        "payload_sha256": "231ed204bfb053913e9c24c6ff3cd1d86facf6ec225f00c3301e728dea821841"
+      }
+    }
+  ]
+}
