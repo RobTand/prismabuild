@@ -21,7 +21,7 @@ from prismabuild import submission as submit_core
 from prismabuild import movement_actions  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -321,6 +321,30 @@ def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
                         hold_on=int(hold_on), hold=float(hold), receipt=receipt)
 
 
+def _gated_mover_source(argv, control, *, read="real", readers=1, hold_on=0):
+    gates = textwrap.dedent(f'''
+        reporter = None
+        native_reporter_start = stage_move._ProgressReporter.start
+        def remember_reporter(self):
+            global reporter
+            native_reporter_start(self)
+            reporter = self
+        stage_move._ProgressReporter.start = remember_reporter
+        def mover_gate():
+            if reporter is not None:
+                reporter.report()
+            _pb_gate()
+        read_gate = threading.Barrier({readers!r}, action=mover_gate)
+    ''')
+    source = _mover_source(argv, read=read, hold_on=hold_on)
+    source = source.replace("real = os.readv", "real = os.readv\n" + gates, 1)
+    source = source.replace("time.sleep(3600)", "mover_gate()", 1)
+    source = source.replace("time.sleep(0.0)", "mover_gate()", 1)
+    source = source.replace("time.sleep(max(0.0, until - time.monotonic()))",
+                            "read_gate.wait(timeout=60)", 1)
+    return control.source + source
+
+
 def _real_window(tmp_path: Path, entries: int = 3) -> dict[str, object]:
     """``entries`` one-MiB files with real bytes, one phase over all of them."""
 
@@ -418,7 +442,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
 
     The mover lands the first entry and hangs reading the second.  On main
     it seals no policy, so nothing ends it before the worker's ceiling (here
-    20 s): it stays claimed past the grace, and the consumer waiting on it
+    60 s): it stays claimed past the grace, and the consumer waiting on it
     stays exempt.  Now its own ``no_progress`` rung ends it within the
     grace of its last report, and the ending record names the bytes landed
     and the range they belong to.
@@ -426,7 +450,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
 
     from prismabuild import stage_release
 
-    grace, ceiling = 4, 20.0
+    grace, ceiling = 4, 60.0
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     window = _real_window(tmp_path)
     total = int(window["total_bytes"])                   # type: ignore[arg-type]
@@ -444,7 +468,8 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
             "--range-start-bytes", "0", "--range-end-bytes", str(total),
             "--readers", "1", "--max-readers", "1", "--block", str(MIB),
             "--warm-after-copy", "never", "--unpaced"]
-    source = _mover_source(argv, read="stall")
+    control = ControlledAction(tmp_path / "stall-control")
+    source = _gated_mover_source(argv, control, read="stall")
     queue, item = _claimed_mover(tmp_path, source, policy)
     assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
@@ -460,12 +485,14 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
     assert [(entry["key"], entry["state"], entry["evidence"])
             for entry in before["movers"]] == [(mover, "claimed", "claimed")]
 
-    outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
-                            timeout_grace_s=0.5)
+    actions = {str(queue.records.action_progress_path(mover)): control}
+    with controlled_actions(monkeypatch, actions):
+        outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=HEARTBEAT,
+                                timeout_grace_s=0.5, clock=control.clock)
 
     assert outcome.get("termination_reason") == "no_progress", repr(
         {k: outcome.get(k) for k in ("status", "termination_reason", "elapsed_s")})
-    assert outcome["elapsed_s"] < ceiling
+    assert outcome["stall"]["quiet_s"] == pytest.approx(grace)
     observed = outcome["progress_observation"]
     assert observed["grace_s"] == grace
     landed = observed["last_accepted"]
@@ -552,13 +579,7 @@ class _Disks:
 OVER, UNDER = 50.0, 1.0
 
 
-def _run_mover(base: Path, source: str, policy, *, ceiling: float,
-               contention=None, heartbeat: float = HEARTBEAT,
-               before=None, control=None, monkeypatch=None) -> tuple[dict, dict]:
-    """Seal, claim and execute one mover action under ``base``; return the
-    outcome and the receipt the mover filed as its result.  ``before`` runs
-    with the queue once the action is claimed, before it executes."""
-
+def _prepare_mover(base: Path, source: str, policy, contention=None):
     from prismabuild import stage_release
 
     base.mkdir(parents=True, exist_ok=True)
@@ -566,13 +587,23 @@ def _run_mover(base: Path, source: str, policy, *, ceiling: float,
     queue, item = _claimed_mover(base, source, policy, contention)
     assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=base / "stage") == "registered"
+    return queue, item
+
+
+def _run_mover(base: Path, source: str, policy, *, control, monkeypatch,
+               ceiling: float,
+               contention=None, heartbeat: float = HEARTBEAT,
+               before=None) -> tuple[dict, dict]:
+    """Execute one claimed mover; return its outcome and durable receipt."""
+
+    queue, item = _prepare_mover(base, source, policy, contention)
     if before is not None:
         before(queue)
     actions = {str(queue.records.action_progress_path(item["action_key"])): control}
-    with (nullcontext() if control is None else controlled_actions(monkeypatch, actions)):
+    with controlled_actions(monkeypatch, actions):
         outcome = queue.execute(item, timeout_s=ceiling, heartbeat_s=heartbeat,
                                 timeout_grace_s=0.5,
-                                clock=None if control is None else control.clock)
+                                clock=control.clock)
     result = base / "checkout" / "result"
     receipt = json.loads(result.read_text()) if result.exists() else {}
     return outcome, receipt
@@ -596,26 +627,19 @@ def _brief(outcome: dict) -> str:
         "stall", "stderr")})
 
 
-def _registered_source(source: str, events_path: Path,
-                       commands_path: Path) -> str:
-    registration_window = textwrap.dedent(f'''
+def _registered_source(source: str) -> str:
+    registration_window = textwrap.dedent('''
         real_holder_writer = pool.PoolQueue.write_stage_ownership_holder
         def registered_holder_writer(self, *args, **kwargs):
+            _pb_gate()
             pool.PoolQueue.write_stage_ownership_holder = real_holder_writer
-            startup_events = open({str(events_path)!r}, "wb", buffering=0)
-            startup_commands = open({str(commands_path)!r}, "rb", buffering=0)
-            startup_events.write(b"L")
-            assert startup_commands.read(1) == b"R"
             record = real_holder_writer(self, *args, **kwargs)
-            startup_events.write(b"H")
-            assert startup_commands.read(1) == b"A"
+            _pb_gate()
             real_reporter_start = stage_move._ProgressReporter.start
             def registered_copy(self):
                 real_reporter_start(self)
                 assert self.reported_phase == "copy"
-                startup_events.write(b"C")
-                startup_events.close()
-                startup_commands.close()
+                _pb_gate()
             stage_move._ProgressReporter.start = registered_copy
             return record
         pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer
@@ -625,19 +649,11 @@ def _registered_source(source: str, events_path: Path,
 
 
 @contextmanager
-def _registered_resume(source: str, monkeypatch, tmp_path: Path, *, control=None):
+def _registered_resume(source: str, monkeypatch, *, control):
     """Force grant-before-registration, then observe the real self-holder."""
 
-    events_path = tmp_path / "resume-events"
-    commands_path = tmp_path / "resume-commands"
-    os.mkfifo(events_path)
-    os.mkfifo(commands_path)
     observed = []
-    source = _registered_source(source, events_path, commands_path)
-    if control is not None:
-        source = control.source + source.replace(
-            "    pool.PoolQueue.write_stage_ownership_holder = real_holder_writer",
-            "    _pb_gate()\n    pool.PoolQueue.write_stage_ownership_holder = real_holder_writer", 1)
+    source = _registered_source(source)
 
     def before(queue):
         read_holder = queue.stage_ownership_holder
@@ -645,26 +661,21 @@ def _registered_resume(source: str, monkeypatch, tmp_path: Path, *, control=None
         def holder_at_registration(stage_root):
             if observed:
                 return read_holder(stage_root)
-            if control is not None:
-                control.connection.sendall(b"R")
-            with (events_path.open("rb", buffering=0) as events,
-                  commands_path.open("wb", buffering=0) as commands):
-                assert events.read(1) == b"L"
-                unknown = read_holder(stage_root)
-                assert unknown["recorded"] is False
-                commands.write(b"R")
-                assert events.read(1) == b"H"
-                holder = read_holder(stage_root)
-                assert holder["recorded"] is True and holder["live"] is True
-                assert queue.records.claimed_names().blocks(str(holder["action_key"]))
-                assert holder["host"] == socket.gethostname()
-                assert holder["role"] == "mover-resume"
-                observed.extend((unknown, holder))
-                commands.write(b"A")
-                assert events.read(1) == b"C"
-                if control is not None:
-                    control._milestone()
-                return holder
+            unknown = read_holder(stage_root)
+            assert unknown["recorded"] is False
+            control.connection.sendall(b"R")
+            control._milestone()
+            holder = read_holder(stage_root)
+            assert holder["recorded"] is True and holder["live"] is True
+            assert queue.records.claimed_names().blocks(str(holder["action_key"]))
+            assert holder["host"] == socket.gethostname()
+            assert holder["role"] == "mover-resume"
+            observed.extend((unknown, holder))
+            control.connection.sendall(b"R")
+            control._milestone()
+            control.connection.sendall(b"R")
+            control._milestone()
+            return holder
 
         monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
 
@@ -675,7 +686,8 @@ def _registered_resume(source: str, monkeypatch, tmp_path: Path, *, control=None
 def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
         tmp_path: Path, monkeypatch) -> None:
     """Review test 1 on #1010.  The disk pacer holds the copy after its
-    first entry lands, for three copy graces, while the worker's own sample
+    first entry lands, for three virtual copy graces, while the worker's
+    own sample
     of the pool's members reads their await over the pacer's cap.  The
     worker credits the hold, the mover completes, and the record says how
     many seconds were credited.  Red before #1010's credit: the same hold
@@ -689,18 +701,20 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
     hold = 3.0 * grace
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
+    control = ControlledAction(tmp_path / "pacer-control", steps=1, step_s=hold)
 
     with _registered_resume(
-            _mover_source(argv, hold_on=2, hold=hold), monkeypatch, tmp_path
+            _gated_mover_source(argv, control, hold_on=2), monkeypatch,
+            control=control
             ) as (source, before):
         outcome, receipt = _run_mover(
             base, source, _policy(grace),
-            contention=_contention(base), ceiling=60.0, before=before)
+            contention=_contention(base), ceiling=60.0, before=before,
+            control=control, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed", _brief(outcome)
-    assert outcome["elapsed_s"] > hold
     assert receipt["complete"] is True
-    assert receipt["disk_pacing"]["held_seconds"] >= hold
+    assert receipt["disk_pacing"]["holds"] == 1
     observed = outcome["progress_observation"]
     assert observed["pool_contention_exempt_s"] >= hold - grace
     assert observed["start_gate_exempt_s"] == 0.0
@@ -727,18 +741,9 @@ def _slow_copy(tmp_path: Path, monkeypatch, await_ms: float
     argv = _mover_argv(base, digest=digest, total=total, readers=3,
                        manifest=tmp_path / "manifest.json")
     control = ControlledAction(tmp_path / "copy-control", steps=1, step_s=8 * grace)
-    reads = textwrap.dedent('''
-        read_gate = threading.Barrier(3, action=_pb_gate)
-        def gated_read(fd, buffers):
-            got = real(fd, buffers)
-            read_gate.wait(timeout=60)
-            return got
-        os.readv = gated_read
-    ''')
-    source = _mover_source(argv).replace("code = stage_move.main(",
-                                        reads + "code = stage_move.main(", 1)
+    source = _gated_mover_source(argv, control, read="share", readers=3)
     with _registered_resume(
-            source, monkeypatch, tmp_path, control=control
+            source, monkeypatch, control=control
             ) as (source, before):
         outcome, receipt = _run_mover(
             base, source, _policy(grace),
@@ -793,15 +798,14 @@ class _Schedule(_Disks):
     """``_Disks`` whose read await follows ``plan``: ``[(seconds, await_ms),
     ...]`` from the first read, the last entry holding for good."""
 
-    def __init__(self, plan: list[tuple[float, float]]) -> None:
+    def __init__(self, plan: list[tuple[float, float]], *, clock) -> None:
         super().__init__(plan[0][1])
         self.plan = plan
+        self.clock = clock
         self.first: float | None = None
 
     def __call__(self, device: str) -> list[int] | None:
-        import time as _time
-
-        now = _time.monotonic()
+        now = self.clock()
         if self.first is None:
             self.first = now
         elapsed, left = now - self.first, 0.0
@@ -838,24 +842,28 @@ def test_the_probe_releases_at_the_pacers_release_fraction() -> None:
 def test_a_pool_held_in_the_pacers_release_band_is_credited(
         tmp_path: Path, monkeypatch) -> None:
     """Review of f769c2daec8b on #1016.  The pool is over its caps for the
-    first second, then sits at 0.7 of the read-await cap while the mover's
+    first virtual second, then sits at 0.7 of the read-await cap while the
+    mover's
     pacer holds for three graces.  The pacer is still holding there, so the
     worker still credits it and the mover completes.  Red before the probe
     shared the pacer's hysteresis: 0.7 of the cap read ``under``, and the
     hold was charged and killed at one grace."""
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
-    monkeypatch.setattr(pool, "POOL_MEMBER_STAT",
-                        _Schedule([(1.0, OVER), (1.0, 7.0)]), raising=False)
     total, digest, grace = _window(tmp_path)
     base = tmp_path / "run"
     hold = 3.0 * grace
+    control = ControlledAction(tmp_path / "pacer-control", steps=1, step_s=hold)
+    monkeypatch.setattr(pool, "POOL_MEMBER_STAT",
+                        _Schedule([(1.0, OVER), (1.0, 7.0)],
+                                  clock=control.clock.monotonic), raising=False)
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
 
     outcome, receipt = _run_mover(
-        base, _mover_source(argv, hold_on=2, hold=hold), _policy(grace),
-        contention=_contention(base), ceiling=60.0)
+        base, _gated_mover_source(argv, control, hold_on=2), _policy(grace),
+        contention=_contention(base), ceiling=60.0,
+        control=control, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert receipt["complete"] is True
@@ -883,13 +891,15 @@ def test_a_mover_that_holds_itself_on_a_pool_under_its_caps_earns_nothing(
     base = tmp_path / "run"
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
+    control = ControlledAction(tmp_path / "pacer-control", steps=1, step_s=3 * grace)
 
     outcome, _receipt = _run_mover(
-        base, _mover_source(argv, hold_on=2, hold=3.0 * grace), _policy(grace),
-        contention=_contention(base), ceiling=60.0)
+        base, _gated_mover_source(argv, control, hold_on=2), _policy(grace),
+        contention=_contention(base), ceiling=60.0,
+        control=control, monkeypatch=monkeypatch)
 
     assert outcome.get("termination_reason") == "no_progress", _brief(outcome)
-    assert outcome["elapsed_s"] < 3.0 * grace
+    assert outcome["stall"]["quiet_s"] == pytest.approx(grace)
     assert outcome["progress_observation"]["pool_contention_exempt_s"] == 0.0
     assert outcome["stall"]["last_landing"]["units_completed"] == MIB
 
@@ -909,10 +919,12 @@ def test_a_pool_the_worker_cannot_read_is_credited_and_says_so(
     base = tmp_path / "run"
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
+    control = ControlledAction(tmp_path / "pacer-control", steps=1, step_s=3 * grace)
 
     outcome, receipt = _run_mover(
-        base, _mover_source(argv, hold_on=2, hold=3.0 * grace), _policy(grace),
-        contention=_contention(base), ceiling=60.0)
+        base, _gated_mover_source(argv, control, hold_on=2), _policy(grace),
+        contention=_contention(base), ceiling=60.0,
+        control=control, monkeypatch=monkeypatch)
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert receipt["complete"] is True
@@ -937,7 +949,8 @@ def _only_key(queue: pool.PoolQueue) -> str:
 def test_a_start_gate_held_by_a_live_egress_is_credited(
         tmp_path: Path, monkeypatch) -> None:
     """The coordinator's addendum on #1010.  An egress holds the stage's
-    ownership lock for three graces while the mover waits at its start gate.
+    ownership lock for three virtual graces while the mover waits at its
+    start gate.
     The first phase's clock starts at launch, so the wait would be charged;
     the worker sees the lock held at both ends of each interval and credits
     it, the mover completes, and the record carries the wait and the
@@ -953,28 +966,59 @@ def test_a_start_gate_held_by_a_live_egress_is_credited(
                        manifest=tmp_path / "manifest.json")
     holding, release = threading.Event(), threading.Event()
     held_for = 3.0 * grace
+    holder = None
+
+    class GateWait(ControlledAction):
+        def launch(self, native, argv, **kwargs):
+            super().launch(native, argv, **kwargs)
+            self.connection.sendall(b"R")
+            return self
+
+        def communicate(self, timeout):
+            if self.now >= held_for:
+                release.set()
+                return self.process.communicate(timeout=60)
+            return super().communicate(timeout)
+
+    control = GateWait(tmp_path / "egress-control")
+    gate = textwrap.dedent('''
+        native_lock = pool.PoolQueue.stage_ownership_lock
+        waited = False
+        def waiting_lock(self, *args, **kwargs):
+            global waited
+            if not waited and kwargs.get("blocking", True):
+                waited = True
+                _pb_gate()
+            return native_lock(self, *args, **kwargs)
+        pool.PoolQueue.stage_ownership_lock = waiting_lock
+    ''')
+    source = control.source + _mover_source(argv).replace(
+        "code = stage_move.main(", gate + "code = stage_move.main(", 1)
 
     def egress(queue: pool.PoolQueue) -> None:
+        nonlocal holder
         def hold() -> None:
             with queue.stage_ownership_lock(str(base / "stage")):
                 holding.set()
-                release.wait(held_for)
-        threading.Thread(target=hold, daemon=True).start()
-        assert holding.wait(10.0)
+                assert release.wait(60)
+        holder = threading.Thread(target=hold)
+        holder.start()
+        assert holding.wait(60)
 
     try:
         outcome, receipt = _run_mover(
-            base, _mover_source(argv), _policy(grace),
-            contention=_contention(base), ceiling=60.0, before=egress)
+            base, source, _policy(grace),
+            contention=_contention(base), ceiling=60.0, before=egress,
+            control=control, monkeypatch=monkeypatch)
     finally:
         release.set()
+        if holder is not None:
+            holder.join(60)
+            assert not holder.is_alive()
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert receipt["complete"] is True
-    # The mover waited out the egress before its first read: in the resume
-    # census, which takes the same lock first (#988), or at the gate.
-    assert (receipt["resume_lock_wait_s"] + receipt["start_gate_wait_s"]
-            >= held_for - grace)
+    assert receipt["bytes_staged"] == total
     observed = outcome["progress_observation"]
     assert observed["start_gate_exempt_s"] >= held_for - 2 * grace
     assert observed["pool_contention"]["start_gate_held_s"] >= held_for - 2 * grace
@@ -990,7 +1034,8 @@ def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
     each reserves.  The manifest's last window landed at 1 MB/s per copy
     with three movers copying, so each mover's grace is priced at 1 MB/s
     and the plan records the three.  Each copies its three entries at once
-    at 1 MB/s, landing all of them in about 3.15 s, inside the 4 s grace
+    at 1 MB/s, landing them after about 3.15 virtual seconds, inside the
+    4 s grace
     with the members under both caps: none is killed, and none needed a
     credit."""
 
@@ -1010,21 +1055,35 @@ def test_movers_sharing_a_pool_at_their_fill_share_are_not_killed(
     assert derivation["unit_bytes"] == total
     assert derivation["grace_s"] == 4
 
-    def run(index: int) -> tuple[dict, dict]:
+    prepared = []
+    for index in range(3):
         base = tmp_path / f"mover-{index}"
+        base.mkdir()
         argv = _mover_argv(base, digest=digest, total=total, readers=3,
                            manifest=tmp_path / "manifest.json")
-        return _run_mover(base, _mover_source(argv, read="share", rate=MB),
-                          policy, contention=_contention(base), ceiling=40.0)
+        control = ControlledAction(base / "copy-control", steps=1,
+                                   step_s=total / MB)
+        queue, item = _prepare_mover(
+            base, _gated_mover_source(argv, control, read="share", readers=3),
+            policy, _contention(base))
+        prepared.append((base, control, queue, item))
 
-    with concurrent.futures.ThreadPoolExecutor(3) as pool_:
-        results = list(pool_.map(run, range(3)))
+    def run(entry) -> tuple[dict, dict]:
+        base, control, queue, item = entry
+        outcome = queue.execute(item, timeout_s=60, heartbeat_s=HEARTBEAT,
+                                timeout_grace_s=0.5, clock=control.clock)
+        return outcome, json.loads((base / "checkout" / "result").read_text())
+
+    actions = {str(queue.records.action_progress_path(item["action_key"])): control
+               for _base, control, queue, item in prepared}
+    with controlled_actions(monkeypatch, actions):
+        with concurrent.futures.ThreadPoolExecutor(3) as pool_:
+            results = list(pool_.map(run, prepared))
 
     for outcome, receipt in results:
         assert outcome["status"] == "executed", _brief(outcome)
         assert receipt["complete"] is True
-        # The share really was 1 MB/s: 3 MiB took over 3 s.
-        assert receipt["seconds"] >= total / MB * 0.95
+        assert receipt["bytes_staged"] == total
         assert outcome["progress_observation"]["pool_contention_exempt_s"] == 0.0
 
 
