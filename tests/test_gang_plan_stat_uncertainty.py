@@ -128,8 +128,9 @@ def test_one_shot_verdict_stat_failure_resets_lead_confirmation(
     assert _gang.teardown(queue, group) is not None
 
 
+@pytest.mark.parametrize("error_type", [OSError, FileNotFoundError])
 def test_resident_verdict_cannot_hide_an_earlier_stat_failure(
-        gang_fleet, monkeypatch, tmp_path):
+        gang_fleet, monkeypatch, tmp_path, error_type):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second, lead, refill, plan = _waiting_plan(
         gang_fleet, monkeypatch, tmp_path, "resident-stat")
@@ -141,7 +142,7 @@ def test_resident_verdict_cannot_hide_an_earlier_stat_failure(
     def unavailable(candidate, *args, **kwargs):
         if candidate == path and not faults:
             faults.append(True)
-            raise OSError("one-shot resident verdict stat failure")
+            raise error_type("one-shot resident verdict stat failure")
         return original_stat(candidate, *args, **kwargs)
 
     with monkeypatch.context() as fault:

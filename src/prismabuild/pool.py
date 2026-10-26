@@ -17044,15 +17044,15 @@ class PoolQueue:
             return scan
         reason = candidate_policy.residency_denial(residency)
         if reason is None and item.get("gang") is not None:
-            if any(plan_uncertainty):
-                self._gang_clear_terminal(item, key)
-                return candidate_policy.CandidateDenial(
-                    "residency_plan_unreadable", {'residency': residency}, scan)
             # A resident map does not make a retired filing usable. Inspect
             # plan retirement independently of the host's residency verdict,
             # including while resources keep this member READY. Keep the
             # existing denial name and defer admission during confirmation.
             try:
+                if plan_uncertainty and (
+                        any(plan_uncertainty) or residency_plan.incarnation(
+                            self.records.residency_plan_path(key)) is not None):
+                    raise ValueError("uncertain residency plan observation")
                 if self._terminal_plan_signature(key) is not None:
                     reason = "residency_plan_unreadable"
             except (OSError, ValueError, pb.PrismaBuildError):
