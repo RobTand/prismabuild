@@ -1838,7 +1838,7 @@ class ResourceMonitor:
             except (OSError,ValueError) as exc:self._source_failed(exc)
         if self.events is None:return
         enrolled=0
-        for scope,entry in self.observations.items():
+        for scope,entry in sorted(self.observations.items(),key=lambda row:row[1].retry_at):
             if entry.coverage=='watching' or now<entry.retry_at:continue
             if enrolled>=self.event_work_limit:break
             enrolled+=1
@@ -1871,7 +1871,6 @@ class ResourceMonitor:
         for scope in list(self.stop_retry_at):
             if scope not in records or not records[scope].get('monitor_stop_pending'):
                 self.stop_retry_at.pop(scope,None)
-        self._consume_wake()
         self._reconcile(interests)
         if self.events is not None:
             try:
@@ -1976,6 +1975,7 @@ class ResourceMonitor:
         return status
 
     def poll_once(self):
+        self._consume_wake()
         records,interests=self._inventory()
         stopped,errors=self._observe_scopes(records,interests,force_retry=True)
         snapshot,device_readings=self._sample_numeric(records,stopped,errors)
@@ -1984,6 +1984,7 @@ class ResourceMonitor:
         return status
 
     def poll_events_once(self):
+        self._consume_wake()
         records,interests=self._inventory()
         stopped,errors=self._observe_scopes(records,interests)
         status={**(self.last_status or {'sampled_unix':None,'gpu':None}),
