@@ -736,13 +736,18 @@ def _descriptor_mount(fd):
 
 def descriptor_backing(fd):
     """Exact mount and backing source of an open descriptor."""
-    ids = [line.split(":", 1)[1].strip() for line in
-           Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
+    return _descriptor_mount_backing(
+        Path(f"/proc/self/fdinfo/{fd}").read_text(),
+        Path("/proc/self/mountinfo").read_text())
+
+
+def _descriptor_mount_backing(fdinfo, mountinfo):
+    """Parse the exact descriptor mount, without resolving its pathname."""
+    ids = [line.split(":", 1)[1].strip() for line in fdinfo.splitlines()
            if line.startswith("mnt_id:")]
     if len(ids) != 1 or not ids[0].isascii() or not ids[0].isdigit():
         raise LocalScratchError("scratch descriptor mount ID unknown")
-    matches = [line.split(" - ", 1) for line in
-               Path("/proc/self/mountinfo").read_text().splitlines()
+    matches = [line.split(" - ", 1) for line in mountinfo.splitlines()
                if line.split(" ", 1)[0] == ids[0]]
     if len(matches) != 1 or len(matches[0]) != 2:
         raise LocalScratchError("scratch descriptor mount identity unknown")

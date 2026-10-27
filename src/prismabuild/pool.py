@@ -4587,6 +4587,16 @@ class ResourceLedger:
         """
 
         self.last_token_shortage = None
+        return self._take_acquire_locked(
+            action_key, demand, adaptive=adaptive, cpu_tiers=cpu_tiers,
+            adaptive_gpu=adaptive_gpu)
+
+    def _take_acquire_locked(
+        self, action_key: str, demand: Mapping[str, int], *,
+        adaptive: dict | None = None, cpu_tiers: Mapping | None = None,
+        adaptive_gpu: dict | None = None,
+    ) -> str | None:
+        """Move tokens after admission; caller retains the mutation exclusion."""
         wanted = {k: int(v) for k, v in demand.items() if int(v) > 0}
         handle = (
             f"{ACQUIRING_PREFIX}{int(_now() * 1_000_000)}.{action_key}"
