@@ -26,6 +26,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = sorted([*(REPO / "tools" / "fleet").glob("*.py"),
+                REPO / "tools" / "maintenance" / "prove_d38_canary.py",
                 *(REPO / "src" / "prismabuild" / (name + ".py")
                   for name in ('prewarm_loop', 'stage_move', 'stage_release', 'ram_promote', 'stage_rounding', 'submission_frontend', 'pbtest_collection', 'pbtest_capabilities', 'runtime_paths', 'role_log_identity', 'deferred_release', 'manifest_promotion', 'fleet_submit', 'pbmergeq_runtime', 'prelaunch_tier', 'tier_cycle')),
                 REPO / "src" / "prismabuild" / "d38_gate.py"])

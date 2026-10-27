@@ -731,13 +731,14 @@ This source change retains PB admission authority (SC-01), movement authority
 (SC-02), and token settlement requirements (INV-07). It establishes no runtime
 deployment or campaign completion.
 
-**Ordinary admission without the census reader (#2199).** A non-measurement,
+**Ordinary admission without the full census reader (#2199, #2307).** A non-measurement,
 non-gang candidate discovers measurement sidecars before M/H, then rechecks every
 sidecar's identity, size, mtime and ctime under host admission H. Parsed sidecars
 are reused within a pass only while these observations match; new, replaced or
-missing sources require fresh discovery. This lists and stats every sidecar per
-candidate, inline. A potentially fencing measurement receives the full census's
-per-key retirement check: exact READY, CLAIMED, finish marks and terminal slots.
+missing sources require fresh discovery. An independently owned bounded child
+lists and stats every sidecar per candidate. A potentially fencing measurement
+receives the full census's per-key retirement check: exact READY, CLAIMED, finish
+marks and terminal slots.
 An exact-generation claim or mark takes precedence over an ending; otherwise an
 exact-generation ending or strictly newer live publications prove retirement.
 Local nonblocking M keys precede H; busy keys and retained holders stay fenced.
@@ -745,8 +746,8 @@ Gang elections, including concluded entries, remain potential fences. An
 election on another host cannot fence this row. A measurement at the row's
 priority or below cannot fence it; an equal-priority gang still can reserve
 demand after maturation. Only when no source can fence the candidate does
-admission proceed without the reader. H remains held through reservation, so a
-new election cannot race between the proof and acquisition. A dependent whose
+admission proceed without the full census. H remains held through reservation,
+so a new election cannot race between the proof and acquisition. A dependent whose
 sealed owner has a live or unproved selection also needs a complete or verified
 shared census.
 An elected measurement remains distinct from an ordinary incumbent even when
@@ -789,10 +790,18 @@ handshake and inherited-descriptor isolation are the same as the census reader's
 a timed-out child cannot retain M/H, and an unsettled child prevents another
 source helper across loop restarts without preventing a complete census. A busy,
 timed-out or unverifiable optional read disables cache publication or reuse,
-not an otherwise authoritative complete census. Ordinary sidecar proofs and local
-cache serialization still run inline; their cooperative deadlines do not bound a
-stalled filesystem syscall. Measurement and gang candidates retain their
-owned-reader path. A census refusal still ends reader attempts for the pass,
+not an otherwise authoritative complete census. Ordinary discovery, under-H
+source revalidation, and the claimed/retirement/gang proof use a separate
+`.ordinary` reader owner with the same refresh budget and persist-before-read
+handshake (#2307). Its nonblocking guard is acquired before M/H and held through
+reservation. A stalled child drops inherited lock descriptors before reading;
+unresolved custody prevents another ordinary helper across restarts while the
+independent complete census remains available. A timeout or unreadable result
+falls back after releasing the ordinary guard and M/H, never becomes an empty
+proof. Source metadata uses JSON-native lists so transport preserves comparisons.
+Local rendezvous and cache serialization still run inline and retain their
+documented local-filesystem assumptions. Measurement and gang candidates retain
+their owned-reader path. A census refusal still ends reader attempts for the pass,
 but each later ordinary candidate can prove that it is outside every fence;
 the refusal is recorded only when that candidate still needs the census.
 
@@ -5928,7 +5937,8 @@ launch through the declared-manifest branch of `residency_map_environment`.
 Slow movers keep fences on the hosts that their gang siblings elect.
 The claim pass tears down a gang after it confirms `residency_lead_terminal`.
 This denial covers failed, withdrawn, dropped, unpinned, and manifest-mismatched leads.
-The sweep withdraws all members and releases their fences (#1543).
+The recorded teardown makes the reservation census ignore the gang; the ordinary
+sweep finishes withdrawing members (#1543).
 
 The first terminal observation writes `gangs/<group>/terminal-<member>.json`.
 The mark contains a signature of each pending lead's records and generations.
@@ -5949,18 +5959,42 @@ It cannot confirm that member until the reset succeeds.
 A new queue instance resets inherited evidence before use.
 This restart costs a new confirmation window but prevents an old mark from bypassing a failed reset.
 
-Only `lead_not_resident` and `lead_unpinned` can start or confirm a teardown.
-Every other verdict state ends the window and clears the mark.
+Only `lead_not_resident` and `lead_unpinned` can start or confirm the terminal-lead proof.
+Without terminal plan evidence, every other verdict state ends the window and clears the mark.
 This includes the shape refusal `prelaunch_undeclared`, `map_unreadable`, `map_incomplete`, and any state added later.
 The shape check (#1594) answers before the leads are read, so it blocks the proof at the confirming read too.
 A prelaunch gang defers each election while a sibling's verdict is unresolved (`deferred_for_gang_prelaunch`).
 A dead member therefore holds no fence there, and the teardown still ends the gang.
 
-Plan refusals (`plan_unreadable`, `plan_superseded`) remain outside this change.
-A READY member with a plan refusal still holds its siblings' fences until withdrawal.
-Issue #1543 remains open for that scope.
-Submit movers before the gang.
-Withdraw the gang when its member's plan cannot become resident.
+Terminal plan evidence also uses this confirmation window, independently of whether
+leads have failed, are absent, or remain pinned. It requires positively readable
+filed bytes deterministically refused by plan validation, or a supersession marker
+verified by the plan owner against the current body and filing incarnation.
+The signature binds the evidence kind, filing, exact plan bytes, and (for
+supersession) marker identity. Recovery, failed reads, unverified markers, and
+changed evidence reset confirmation; a denial named `plan_unreadable` alone is
+not proof. Existing public denial names are unchanged, including supersession
+that is discovered without an ended lead in the verdict. A resident map does
+not override verified supersession: the member still defers admission and
+confirms teardown while READY, even if no other resource blocks its launch.
+An unavailable plan stat or failed plan read anywhere in that scan resets
+confirmation even when another observation succeeds later in the same scan;
+it cannot reuse the aged observation. Filing observations distinguish genuine
+absence from stat failure. Only genuine initial absence permits the separate
+lead-only proof. A disappeared or replaced filing during revalidation defers
+admission and teardown. The final locked lead-verdict refresh also retains
+swallowed plan-read uncertainty and rechecks the filing identity before commit.
+After the same terminal evidence has been observed for 120 seconds, the next
+successful eligible claim scan must freshly confirm it and record teardown.
+Plan proof and commit hold the consumer's transition lock; the distinct
+terminal-lead proof retains all the lead-lock and generation safeguards above.
+Reservation census then ignores the gang, removing its fences; ordinary gang
+and stage-pin sweeps subsequently finish member withdrawal and pin retirement,
+without withdrawing an executed mover. This is not an unconditional wall-clock
+bound during unavailable scans, failed evidence reads, or unavailable storage.
+Ordinary mover waits and merely absent leads without terminal plan evidence
+remain nonterminal and have no ready-wait timeout. Submit movers before the gang;
+a requeue after confirmed teardown cannot resurrect it.
 These source changes do not establish deployment or a live-queue qualification.
 
 Per member host, inside the ordinary claim pass:
@@ -19765,12 +19799,16 @@ CPU changes.  The entry point is a `script` (`[interpreter, script, *args]`) or 
 reviewed invocation descriptor (`d38_gate.INVOCATIONS`, keyed `kind:interpreter:target`) lists
 the CPU changes that entry point allows, each `{flag, from, to}`; the CPU arguments must equal
 the target's arguments with exactly the plan's listed changes applied, so a changed program,
-module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
-receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
-the only authorization path. What the worker executes is `task.argv`, not the descriptive `params.command`:
-the preflight's `task.argv` must be the standard captured-log recipe of its declared command
-(`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
-receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
+module, input or check argument is a difference no descriptor lists. Canary leg 2 is the first
+reviewed descriptor, `script:/usr/bin/python3:tools/fleet/pbcanary_legs/leg2.py`. It requires
+`-I` before the script and the exact argument form documented below. Other entry points still
+need a reviewed descriptor or a scoped CEO exception. What the worker executes is `task.argv`,
+not the descriptive `params.command`. The source producer reconstructs its complete expected
+CPU action, including the separate result-file capture recipe, and compares it to the request.
+Its CAS driver and digest-owner inputs must match the installed reviewed source bytes,
+including each hash, byte count and actual CAS content. Legacy consumer fixtures
+retain the standard captured-log check in `action_result.bind_standard_capture_command`.
+A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
 change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
 `CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
 host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
@@ -19804,13 +19842,55 @@ is refused at registration, and release rechecks the sealed key for an old pendi
 record before publishing (the two evidence flags ride in its publication options,
 as optional keys so older records still read).
 
-The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
-flags and retiring old installed clients remain separate work. The invocation
-registry, preflight producers, action keys and evidence schemas are unchanged by
-#1649. This describes source behavior and isolated test coverage; it does not
-claim that a runtime generation carrying the change is deployed or that
-enforcement has been activated. Delivery is source only, with coordinator
-verification and runtime activation recorded separately.
+**Producer (#1639).** `--d38-plan PATH` seals the target and writes a strict JSON plan of at most
+64 KiB. It publishes no action request, queue row, staging child or scheduler job. Snapshot and
+input blob ingestion still occurs. Keep the plan and namespace files outside the sealed checkout,
+so creating them does not change the target snapshot when submitting it later.
+
+The plan carries the full sealed target, its namespace descriptor, both commands, the single
+typed CPU change, and the reviewed source/check descriptor. The first supported command is:
+
+```text
+/usr/bin/python3 -I tools/fleet/pbcanary_legs/leg2.py --image REPOSITORY@sha256:DIGEST --device cuda --checks-path .d38/leg2-checks.json [--input ID=PATH=SHA256 ...]
+```
+
+`--d38-preflight-for PLAN` derives its action entirely from that plan. Only `--detach`,
+`--wait-s`, and `--priority` may accompany it. The CPU action retains the target snapshot,
+code closure, image, namespace and other execution settings. GPU demand changes from 1 to 0;
+the sole argument change is `--device cuda` to `--device cpu`. Placement requires GB10 because
+the approved production image is ARM64. Both GPU visibility variables are sealed disabled.
+Only the fully reconstructed CPU producer recipe with zero sealed and publication GPU demand
+is exempt from needing its own D38 receipt. A producer label alone grants no exemption.
+
+The standalone CAS-bound driver runs under `/usr/bin/python3 -I` and loads the sealed
+`d38-digests` input from the shared `digest_primitives.py` owner. The reviewed descriptor
+also pins the checkout copy. The driver verifies that copy before leg 2 runs; both CPU and
+GPU modes mount it read-only at `/pb-canary/digest_primitives.py` beside the entry script.
+No digest recipe depends on an ambient installed package. It verifies the source and
+Docker shim hashes, an ARM64 execution host and disabled GPU visibility. The target cannot
+carry shell startup hooks, exported Bash functions, `LD_*` variables or the Docker testing
+override. The source launcher invokes the verified shim under isolated Python too.
+The shim executes the same digest-pinned image with an empty entrypoint in both modes.
+The CPU payload imports torch, parses its arguments, verifies source/payload/image identity,
+reads each declared input once, and checks a 16-element tensor and scalar result 1240.
+CPU mode requires no visible CUDA device and uses CPU tensors. Each required check must say
+`passed` in `.d38/leg2-checks.json`; skipped, failed, missing or malformed evidence produces no
+D38 receipt. The action's separate CAS result is `.d38/receipt.json`, schema
+`fleet.d38.preflight.v1`. Logs remain in `.d38-preflight.log`.
+
+This first descriptor supports generation tasks at the checkout root and checkout-relative
+input files of at most 64 KiB each. It accepts only the checkout snapshot CAS input.
+Measurements, data manifests, gangs, progress policies and other invocation forms are not
+supported by this producer. PrismaQuant and Tessera descriptors remain on hold. A supported
+grant issuer, `pbgang` member flags and retiring old installed clients remain separate work.
+These are source contracts; deployment and enforcement activation require separate evidence
+and authority. The shipped enforcement setting remains false, and activation remains Rob's decision.
+
+The source-candidate proof helper lives at `tools/maintenance/prove_d38_canary.py`,
+with the other checkout-only qualification tools. It seals and verifies candidate
+proofs without entering the runtime publisher catalogue. The rollout intent binds
+the executing publisher's exact source digest, so adding a qualification helper
+does not require changing that writer.
 
 
 ## Source ownership after the 2026-10-14 simplification

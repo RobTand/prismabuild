@@ -34,6 +34,8 @@ READ_SECTION = "measurement-publications-v1"
 READ_BUDGET_S = 5.0
 REFRESH_SECTION = "measurement-election-refresh-v1"
 SOURCE_SECTION = "measurement-shared-sources-v1"
+ORDINARY_SOURCES_SECTION = "ordinary-selection-sources-v1"
+ORDINARY_PROOF_SECTION = "ordinary-election-proof-v1"
 #: The reuse refresh reads far fewer, much smaller records than a full
 #: census, so it runs on a smaller share of the same bounded-reader
 #: contract: an abandonable owned child with durable reader ownership,
@@ -164,8 +166,8 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode):
             raise CensusUnavailable("nonregular ordinary election source")
-        version = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
-                   info.st_mtime_ns, info.st_ctime_ns)
+        version = [info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                   info.st_mtime_ns, info.st_ctime_ns]
         prior = cached.get(name)
         if prior is not None and prior[0] == version:
             current[name] = prior
@@ -178,7 +180,7 @@ def _ordinary_selection_sources(queue: PoolQueue, cached: dict, *, recheck=False
             chosen = selection(record)
             if chosen is not None and chosen["action_key"] != key:
                 raise CensusUnavailable("ordinary selection sidecar key mismatch")
-            current[name] = (version, chosen)
+            current[name] = [version, chosen]
         if deadline.remaining() <= 0:
             raise CensusUnavailable("ordinary election proof budget exceeded")
     if recheck and current != cached:
@@ -962,6 +964,36 @@ class _SourceGenerationReader(CensusReader):
         self._held = None
 
 
+class _OrdinaryAdmissionReader(CensusReader):
+    """Independent proof custody; an unresolved child leaves full census usable."""
+
+    _sections = (ORDINARY_SOURCES_SECTION, ORDINARY_PROOF_SECTION)
+
+    def __init__(self, census_reader: CensusReader):
+        self.queue = census_reader.queue
+        self.directory = census_reader.directory
+        self.name = census_reader.name + ".ordinary"
+        self.pool_identity = census_reader.pool_identity
+        self._held = None
+
+    def selection_sources(self, cached: dict, *, recheck=False) -> dict:
+        return self._spawn_owned(
+            self._held[0], ORDINARY_SOURCES_SECTION,
+            lambda: _ordinary_selection_sources(self.queue, cached, recheck=recheck),
+            REFRESH_BUDGET_S)
+
+    def election_census(self, item: dict, dependent_owner: object,
+                        selections: Iterable[dict], ledger: ResourceLedger,
+                        busy: set[str]) -> dict | None:
+        value = self._spawn_owned(
+            self._held[0], ORDINARY_PROOF_SECTION,
+            lambda: {"census": _ordinary_election_census(
+                self.queue, item, ledger.base.name, dependent_owner, selections, ledger, busy)},
+            REFRESH_BUDGET_S)
+        census = value.get("census")
+        return self._checked_census(census) if census is not None else None
+
+
 class PassCensus:
     """One successful census a claim pass reuses for later candidates (#1571).
 
@@ -1283,7 +1315,7 @@ def admission_census(queue: PoolQueue, ledger: ResourceLedger, controller):
 def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                ledger: ResourceLedger, controller, item: dict, refusal=None, *,
                                dependent_owner: object):
-    """Ordinary rows need the reader only when an election could fence them.
+    """Ordinary rows need the full census only when an election could fence them.
 
     Shared reads preserve M-before-H ordering and recheck every mutable source.
     The negative proof takes H and keeps it through the actual reservation, so
@@ -1305,7 +1337,9 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
             try:
                 census_reader = CensusReader(queue, ledger)
                 saved = census_reader.shared_census()
-                sources = _ordinary_selection_sources(queue, pass_census.ordinary_sources)
+                ordinary_reader = _OrdinaryAdmissionReader(census_reader)
+                held.enter_context(ordinary_reader.held(blocking=False))
+                sources = ordinary_reader.selection_sources(pass_census.ordinary_sources)
                 pass_census.ordinary_sources = sources
                 busy = set()
                 prior = pass_census.census
@@ -1326,7 +1360,7 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                     if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                         busy.add(key)
                 held.enter_context(queue._admission_lock(controller))
-                _ordinary_selection_sources(queue, sources, recheck=True)
+                ordinary_reader.selection_sources(sources, recheck=True)
                 for _, chosen in sources.values():
                     if chosen is not None:
                         pass_census.ordinary_elections.setdefault(
@@ -1368,8 +1402,8 @@ def candidate_admission_census(pass_census: PassCensus, queue: PoolQueue,
                                and item.get("priority", 0) <= chosen["priority"]
                                for chosen in prior["gang_elections"].values())))
                     if not remembered:
-                        current = _ordinary_election_census(
-                            queue, item, ledger.base.name, dependent_owner,
+                        current = ordinary_reader.election_census(
+                            item, dependent_owner,
                             pass_census.ordinary_elections.values(),
                             ledger, busy)
             except (OSError, ValueError, TypeError, KeyError, CensusUnavailable,

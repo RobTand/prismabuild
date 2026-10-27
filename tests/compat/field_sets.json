@@ -4116,6 +4116,17 @@
     "binding": "keys"
   },
   {
+    "path": "tools/backlog_census/fetch_open_issues.py",
+    "owner": "<module>",
+    "unresolved": "'\\nnumber title body state createdAt updatedAt closedAt url\\nrepository { nameWithOwner }\\nlabels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }\\nparent { number repository { nameWithOwner } }\\n'",
+    "binding": "ISSUE_FIELDS"
+  },
+  {
+    "path": "tools/backlog_census/hindsight.py",
+    "owner": "collect",
+    "unresolved": "{key for key in index if not key.startswith('_')}"
+  },
+  {
     "path": "tools/duplication_inventory.py",
     "owner": "same_name_growth",
     "unresolved": "set(base.get(name, ()))"
@@ -4446,6 +4457,18 @@
     "owner": "_port_holder",
     "unresolved": "line.split()",
     "binding": "fields"
+  },
+  {
+    "path": "tools/fleet/pbrun.py",
+    "owner": "parse_args",
+    "fields": [
+      "--client-events-fd",
+      "--d38-preflight-for",
+      "--detach",
+      "--priority",
+      "--wait-s"
+    ],
+    "binding": "allowed"
   },
   {
     "path": "tools/fleet/pbrun.py",
