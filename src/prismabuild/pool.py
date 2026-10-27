@@ -18219,13 +18219,10 @@ class PoolQueue:
             from . import _gang
             try:
                 if backfill_eligible is None:
-                    backfill_eligible = (item.get("priority") == -10
-                                         and item.get("gang") is None
-                                         and _gang.backfill_enabled())
+                    from . import gang_loans
+                    backfill_eligible = gang_loans.preemptible_candidate(self, item)
                     if backfill_eligible:
-                        backfill_eligible = self._preemption_eligible(item)
-                        if backfill_eligible:
-                            backfill_binding = self._preemption_proof_binding(item)
+                        backfill_binding = self._preemption_proof_binding(item)
                 allowed = (backfill_eligible
                            and _gang.backfill_allowed(self, gang_blocked, _now()))
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
