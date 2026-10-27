@@ -2217,7 +2217,7 @@
   },
   {
     "path": "src/prismabuild/local_scratch.py",
-    "owner": "_descriptor_mount",
+    "owner": "_descriptor_mount_backing",
     "unresolved": "matches[0][1].split()",
     "binding": "fields"
   },
@@ -2278,6 +2278,14 @@
     "fields": [
       "name",
       "root_env"
+    ]
+  },
+  {
+    "path": "src/prismabuild/local_scratch.py",
+    "owner": "capacity_roots",
+    "fields": [
+      "root_envs",
+      "schema"
     ]
   },
   {
@@ -2795,6 +2803,12 @@
     "owner": "PoolQueue._output_batch_identity_matches",
     "unresolved": "PoolQueue._OUTPUT_BATCH_IDENTITY_FIELDS",
     "binding": "fields"
+  },
+  {
+    "path": "src/prismabuild/pool.py",
+    "owner": "PoolQueue._sealed_scratch_capacity",
+    "unresolved": "set(params['placement']['required_tags'])",
+    "binding": "required"
   },
   {
     "path": "src/prismabuild/pool.py",
@@ -3710,6 +3724,131 @@
     "owner": "read_process_io",
     "unresolved": "stat[stat.rindex(')') + 1:].split()",
     "binding": "fields"
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "<module>",
+    "fields": [
+      "dataset",
+      "guid",
+      "quota_bytes",
+      "reservation_bytes"
+    ],
+    "binding": "BACKING_FIELDS"
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "<module>",
+    "fields": [
+      "birthtime_ns",
+      "device",
+      "filesystem",
+      "filesystem_type",
+      "root_inode"
+    ],
+    "binding": "IDENTITY_FIELDS"
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "RootBudget.parse",
+    "fields": [
+      "backing",
+      "identity",
+      "max_gib",
+      "min_free_gib",
+      "root"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "RootBudget.parse",
+    "fields": [
+      "birthtime_ns",
+      "device",
+      "filesystem",
+      "filesystem_type",
+      "root_inode"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "RootBudget.parse",
+    "fields": [
+      "dataset",
+      "guid",
+      "quota_bytes",
+      "reservation_bytes"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "RootInputs.__init__",
+    "fields": [
+      "roots",
+      "schema"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "validate_observation",
+    "fields": [
+      "backing",
+      "floor_bytes",
+      "free_bytes",
+      "free_inodes",
+      "identity",
+      "kind",
+      "max_gib",
+      "measured_gib",
+      "mount",
+      "root",
+      "size_bytes",
+      "size_inodes"
+    ],
+    "binding": "fields"
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "validate_observation",
+    "fields": [
+      "backing",
+      "floor_bytes",
+      "free_bytes",
+      "free_inodes",
+      "identity",
+      "kind",
+      "max_gib",
+      "measured_gib",
+      "mount",
+      "root",
+      "size_bytes",
+      "size_inodes"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "validate_observation",
+    "fields": [
+      "filesystem_type",
+      "major_minor",
+      "mount_id",
+      "mount_root",
+      "mountpoint",
+      "source"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "validate_observation",
+    "fields": [
+      "roots",
+      "schema"
+    ]
+  },
+  {
+    "path": "src/prismabuild/scratch_capacity.py",
+    "owner": "zfs_properties",
+    "unresolved": "{row[0] for row in rows}"
   },
   {
     "path": "src/prismabuild/scratch_lifetime.py",

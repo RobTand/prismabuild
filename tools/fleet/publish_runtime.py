@@ -212,6 +212,9 @@ STANDALONE_PACKAGE_SOURCES = {
 #: The tuple exists so that leaving one out is a decision
 #: somebody wrote down rather than an omission nobody noticed.
 EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("qualify_scratch_capacity.py",
+     "the #2383 read-only dedicated-root prerequisite probe runs from a "
+     "sealed source checkout through pbrun; it provisions or activates nothing"),
     ("prove_queue_bell.py",
      "the #1894 scratch-queue NFS and private-link proof runs from a submitted "
      "checkout through pbrun, not from an installed runtime"),

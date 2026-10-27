@@ -72,11 +72,12 @@ def inspect_host(*, root: str, dataset: str, max_gib: int, min_free_gib: int,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--max-gib", type=int, default=320)
-    parser.add_argument("--min-free-gib", type=int, default=32)
-    parser.add_argument("--allocation-gib", type=int, default=384)
+    parser.add_argument("--root", required=True, help="Exact local mount proposed for dedicated scratch.")
+    parser.add_argument("--dataset", required=True, help="ZFS dataset backing that mount.")
+    parser.add_argument("--max-gib", type=int, default=320, help="Planned PB root capacity ceiling in GiB.")
+    parser.add_argument("--min-free-gib", type=int, default=32, help="Required free-space floor in GiB.")
+    parser.add_argument("--allocation-gib", type=int, default=384,
+                        help="Exact approved quota and reservation in GiB; both must match.")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}", os.environ.get("PRISMABUILD_ACTION_KEY", "")):
         parser.error("submit this probe through the published PrismaBuild client")
