@@ -7577,6 +7577,42 @@ ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
 
+The broker monitor separates cgroup event observation from numeric collection
+(#2064). One monitor thread owns inotify watches for `memory.events`,
+`memory.events.local` and `cgroup.events`, including unreleased retired scopes
+with population interests. Watch enrollment precedes the first snapshot.
+Retained observations bind action key, nonce, token, both memory budgets and
+cgroup device/inode. Durable authority changes wake reconciliation through a
+nonblocking pipe. The callback never reads counters or installs watches under
+the authority lock. Notifications invalidate observations. Stops still use the
+fresh authority and inode checks, and cleanup still obtains fresh population
+evidence from the backend.
+
+Unchanged event files are not reread on numeric ticks. Lost watches, replaced
+files and invalid observations clear retained counters and population evidence.
+Registration recovery has a named one-second backoff. Queue overflow or a drain
+exceeding 256 events closes the notification descriptor before recovery, so its
+own watch-removal events cannot sustain a recovery loop. Each pass also bounds
+enrollment and event-snapshot refreshes at 256 scopes. Enrollment considers new
+and oldest-due scopes before recently failed entries. Private `monitor.status`
+reports `event_coverage`; incomplete coverage fails monitor health and public
+capacity completeness. An event-only pass can invalidate the last capacity
+sample but cannot refresh its numeric timestamp or restore completeness.
+
+Numeric telemetry retains its independent one-second default sampling interval,
+vendor collection bounds, GPU confirmation rules and successful-sample health
+limit of 15 seconds. Continuous notifications cannot postpone the numeric
+deadline. A failed stop invalidates observation coverage and keeps its error
+visible through the one-second recovery backoff. Fresh enrollment and counters
+recover an observed local OOM even when the failure preceded persisted stop
+intent. Persisted stop failures also retry on a numeric tick or their named
+retry deadline without another notification. Shutdown wakes the descriptor wait and
+joins the existing sampler. Collection already in progress finishes before
+queued events or shutdown are handled. These are source contracts, not evidence
+of deployment, live cgroup qualification or a production syscall-rate reduction.
+Linux documents these event inputs in its
+[cgroup v2 reference](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
+
 The pool persists the creation key, nonce, memory budget and broker endpoint in
 both claim and lease before requesting a scope. A lost reply is reconciled by
 `recover_create` using that exact identity, without creating a kernel group.
@@ -11047,8 +11083,9 @@ Explicit reconciliation still requires the existing exact-attempt cleanup,
 receipt and termination checks described above. SIGINT retains main's existing
 exception and monitor cleanup path. Startup and request framing retain their
 10-second bounds; process termination retains its 15-second waits.
-`ResourceMonitor` retains its independent 1-second sampler. No background loop
-is added by the listener change.
+`ResourceMonitor` retains its independent 1-second numeric sampler. Its cgroup
+event handling is described in the resource-scope contract above. No background
+loop is added by the listener change.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
@@ -20963,6 +21000,15 @@ Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical
 custody, drain, performance or RootGO credit.
 
+Controller record tests partition the existing native population by family so
+file-level fanout can admit independent shards. Verified generation and writer
+source closures live until pytest configuration cleanup and are shared across
+imported fixture definitions through that configuration's stash. Every replay
+still creates a fresh isolated process and private store, including its bundle
+cache and TMPDIR. Definition indexes share immutable names by exact source
+bytes; each lookup rereads its path so source mutations cannot reuse an index
+for older content. Executing source/code attestation remains per replay.
+
 Native historical byte reproduction selects an explicit qualified archival
 replay runtime from the `archival-replay` test capability. That source
 declaration is the sole executable path and SHA-256 authority. The test
@@ -20973,6 +21019,9 @@ retained driver. Complete inherited environment values are bound by a canonical
 digest. The parent captures one environment dictionary, hashes it and passes
 that same dictionary explicitly to the archival subprocess. Native library
 changes to the C environment cannot alter the selected launch environment.
+The expected pre-driver TMPDIR comes from that captured environment and must
+be nonempty and absolute. An unset, empty or relative TMPDIR refuses archival
+replay before launch. No host scratch path is part of runtime qualification.
 The environment observation logs only native thread variables, TMPDIR
 and TZ values. The driver then changes TMPDIR to its private store as its
 retained source requires.
@@ -21723,7 +21772,9 @@ The explicit assessment now requires a separately sealed qualification index,
 assessment and immutable plan. Its `target_commit` names the final source;
 `populations.root` and `.corpus` declare exact required whole-file lists and
 complete node-ID lists from qualified final-source collection. The required
-files are the two bootstrap root files and all eight record-compatibility files.
+files are the two bootstrap root files and every record-compatibility file in
+`installed_bootstrap.CORPUS_FILES`, including all nineteen controller files
+after the family split.
 Every native root lane and every corpus lane must cover its complete declared
 population; valid successful subset receipts refuse. The expected nodes are
 never derived from execution logs. `source_sha256` pins required tests, root
