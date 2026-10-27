@@ -374,7 +374,9 @@ def test_native_evidence_refusal_retains_failures_without_charging_members(tmp_p
         path.write_text('tampered native stdout\n')
     with pytest.raises(action_result.ActionResultError):
         action_result.read_verified_ending_result(
-            native.queue, native.key, include_producer_attestation=True)
+            native.queue, native.key,
+            published_unix=observed['tests/test_a.py']['published_unix'],
+            attempt=observed['tests/test_a.py']['attempt'], include_producer_attestation=True)
 
     queue, origin, github, _ = make_queue(tmp_path / 'batch')
     origin.pr(1, {'fail-new': 'tests/test_a.py::broken\n'})
