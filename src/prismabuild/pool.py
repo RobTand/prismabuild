@@ -12229,7 +12229,11 @@ class PoolQueue:
             if progress_observation is not None:
                 self._record_payload_supervision(claim, progress_observation, sampled_unix)
 
-    def _record_payload_supervision(self, claim, observation, sampled_unix):
+    def _record_payload_supervision(
+        self, claim: Mapping[str, object], observation: Mapping[str, object], sampled_unix: float,
+    ) -> None:
+        if not all(claim.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+            return
         try:
             self.records.append_supervision_event(claim, {
                 "event": "payload-supervision", "action_key": claim["action_key"],

@@ -289,9 +289,10 @@ class Silent:
     pass
 
 
-
-def _measurement_refusal_verdict(decision, verdict):
-    if (verdict is not None and verdict["withhold"]
+def _measurement_refusal_verdict(
+    decision: Mapping[str, object] | None, verdict: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    if (verdict is not None
             and isinstance(decision, Mapping)
             and decision.get("reason") == "measurement_holder"
             and decision.get("isolated_by")):

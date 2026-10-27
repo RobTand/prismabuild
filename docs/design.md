@@ -990,7 +990,10 @@ are overtaken. Every other adaptive refusal is overtaken as before. A
 `measurement_holder` refusal whose decision names `isolated_by` -- a
 measurement already holds the box -- never withholds: that box admits only the
 measurement's own dependents, so a veto would block just the work its progress
-waits on, and it would never drain (#982). While an item withholds, the scan
+waits on, and it would never drain (#982). Its refusal retains
+`measurement_admits_only_its_dependents` whether the holder is bounded or
+unbounded; this reason does not depend on an earlier withholding verdict.
+While an item withholds, the scan
 goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
@@ -4720,7 +4723,9 @@ accepted report count. Activity samples never receive a committed-work label.
 Each heartbeat also records
 age and the observation in the action's `residency-events` log, before payload
 completion. A separate file per exact claim retains the newest 256 records
-after it exceeds 512. These records never count as payload activity. A sealed action without a
+after it exceeds 512. Partial legacy claims keep observations in their lease
+but emit no exact-claim event because they lack the identity and age authority
+that the event requires. These records never count as payload activity. A sealed action without a
 total budget is unbounded for advisory incumbent classification. Legacy holders
 without a request retain their advisory age classification. None of these
 payload policies proves an admission-to-resource-release bound (#1429).
