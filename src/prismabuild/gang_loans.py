@@ -30,7 +30,7 @@ def bounded_candidate(item) -> bool:
             and 0 < timeout <= MAX_RUNTIME_S)
 
 
-def slot_path(queue, group):
+def loan_path(queue, group):
     return _gang.state_dir(queue, group) / "bounded-loan.json"
 
 
@@ -44,7 +44,7 @@ def loan_binding(election, item):
 def read_slot(queue, group):
     from . import pool
     return pool.record_store.read_confirmed_document(
-        slot_path(queue, group), max_bytes=_gang.MAX_RECORD_BYTES)
+        loan_path(queue, group), max_bytes=_gang.MAX_RECORD_BYTES)
 
 
 def available(queue, election, item) -> bool:
@@ -66,7 +66,7 @@ def pending(queue, group, index=None) -> bool:
                 or key in queue.ledger(slot["host"]).held_keys())
 
 
-def reserve(queue, elections, item, now) -> bool:
+def reserve_loan(queue, elections, item, now) -> bool:
     """Serialize the bounded exception with every member's claim transition."""
     from . import pool
     bounded = [election for election in elections if election.get("bounded_loan")]
@@ -90,7 +90,7 @@ def reserve(queue, elections, item, now) -> bool:
                 return False
         for election in bounded:
             binding = loan_binding(election, item)
-            path = slot_path(queue, election["group"])
+            path = loan_path(queue, election["group"])
             if not _gang._link_new(path, binding) and read_slot(queue, election["group"]) != binding:
                 return False
     return True

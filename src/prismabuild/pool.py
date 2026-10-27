@@ -18904,7 +18904,7 @@ class PoolQueue:
                     "group": gang["group"], "index": gang["index"], **readiness})
                 return _ClaimHandled.REFUSED
         from . import gang_loans
-        if not gang_loans.reserve(self, gang_backfill, item, _now()):
+        if not gang_loans.reserve_loan(self, gang_backfill, item, _now()):
             reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
             self.record_denial(item, "deferred_for_gang_reservation", {"bounded_loan_taken": True})
             return _ClaimHandled.REFUSED
