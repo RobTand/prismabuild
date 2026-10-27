@@ -1328,10 +1328,10 @@ class Queue:
         self.store.remember_baseline(baseline_key(self.cfg, batch["candidate_tree"],
                                                  full.runtime), full.files,
                                      set(full.failed) - set(flakes), full.environments)
+        verdict = self.culprit(batch, outdir, new) if new else None
         for nodeid in flakes:
             self.flake(batch, nodeid)
         if new:
-            verdict = self.culprit(batch, outdir, new)
             identity = candidate_failure_identity(
                 self.cfg, batch["candidate_tree"], batch["base_tree"], full.runtime, files)
             self.store.remember_known_failure(identity, {
