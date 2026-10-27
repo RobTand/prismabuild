@@ -136,7 +136,8 @@ def test_every_green_wait_releases_the_queue_after_a_persisted_allowance(
     assert store.state["batch"] is None
     assert runner.runs == completed
     if cause == "member-unobserved":
-        assert git("rev-parse", "main", cwd=origin.work) != pending["base"]
+        main_head = git("rev-parse", "main", cwd=origin.work)
+        assert main_head != pending["base"]
         assert store.state["queue"] == [], "already-integrated members must not be retried as failures"
 
 
@@ -264,7 +265,8 @@ def test_terminal_retry_is_saved_before_close_and_recovers_branch_deletion(
 
     assert store.state["vehicle_cleanup"] == {}
     assert [p["attempts"] for p in store.state["queue"]] == [1]
-    assert git("for-each-ref", "--format=%(refname)", "refs/heads/release-mq/", cwd=origin.work) == ""
+    branches = git("for-each-ref", "--format=%(refname)", "refs/heads/release-mq/", cwd=origin.work)
+    assert branches == ""
     assert runner.runs == completed
 
 
@@ -296,7 +298,8 @@ def test_dry_run_restart_preserves_pending_vehicle_cleanup(
     resumed.resume()
     assert resumed.tick() is None
 
-    assert git("rev-parse", branch, cwd=origin.work) == candidate
+    retained_candidate = git("rev-parse", branch, cwd=origin.work)
+    assert retained_candidate == candidate
     assert store.state["vehicle_cleanup"] == pending
     assert github.pr(batch["vehicle"]["number"])["state"] == vehicle_state
     assert runner.runs == completed
@@ -304,7 +307,8 @@ def test_dry_run_restart_preserves_pending_vehicle_cleanup(
     status = mq.Queue(queue.cfg, store, status_github, queue.mirror, runner, "status")
     status.cleanup_vehicles()
     assert store.state["vehicle_cleanup"] == {}
-    assert git("for-each-ref", "--format=%(refname)", branch, cwd=origin.work) == ""
+    branches = git("for-each-ref", "--format=%(refname)", branch, cwd=origin.work)
+    assert branches == ""
     assert status_github.pr(batch["vehicle"]["number"])["state"] == "CLOSED"
 
 

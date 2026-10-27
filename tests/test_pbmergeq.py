@@ -211,8 +211,8 @@ class FakeGitHub(mq.GitHub):
         self.calls.append(["vehicle", "create", branch])
         self.origin.vehicle_creations.append(branch)
         number = 10000 + len(self.origin.vehicle_creations)
-        vehicle = {"number": number, "state": "OPEN", "headRefOid": git(
-            "rev-parse", branch, cwd=self.origin.work), "headRefName": branch,
+        head = git("rev-parse", branch, cwd=self.origin.work)
+        vehicle = {"number": number, "state": "OPEN", "headRefOid": head, "headRefName": branch,
             "url": f"https://github.com/{self.cfg.repo}/pull/{number}",
             "title": title, "body": body, "isDraft": draft}
         self.origin.vehicles[branch] = vehicle
@@ -432,7 +432,8 @@ def test_merge_mode_merges_the_tested_vehicle_and_confirms_each_member(tmp_path)
     merges = [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
     assert [(c[3], c[-1]) for c in merges] == [(str(vehicle["number"]), batch["candidate"])]
     assert statuses(github) == [(batch["candidate"], "success")]
-    assert git("rev-parse", "main^{tree}", cwd=origin.work) == batch["candidate_tree"]
+    main_tree = git("rev-parse", "main^{tree}", cwd=origin.work)
+    assert main_tree == batch["candidate_tree"]
     assert [github.pr(n)["state"] for n in (1, 2, vehicle["number"])] == ["MERGED"] * 3
     assert github.contains(one) and github.contains(two)
     ledger = queue.store.ledger()
