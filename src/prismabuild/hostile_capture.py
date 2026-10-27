@@ -86,6 +86,10 @@ class TextCapture:
         safe, self._pending = self._pending[:cut], self._pending[cut:]
         sanitized, count = self._policy._pattern.subn(REPLACEMENT, safe)
         self._redactions += count
+        return self._limit(sanitized)
+
+    def _limit(self, sanitized: bytes) -> bytes:
+        """Apply the retained-byte ceiling after sanitization."""
         room = max(0, self._policy.max_output_bytes - self._emitted_bytes)
         if len(sanitized) > room:
             self._truncated = True
