@@ -10,7 +10,7 @@ import sys
 
 import pytest
 from prismabuild import adaptive_cpu, adaptive_gpu, adaptive_snapshot, census, core, gpu_capacity, gpu_runtime_gate, movement_actions, pool
-from admitted_queue_fixture import AdmittedQueueFixture
+from admitted_queue_fixture import AdmittedQueueFixture, simulated_admission, simulated_capacity
 from test_pool_resource_scope import scoped, _process
 
 
