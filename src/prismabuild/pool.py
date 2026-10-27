@@ -606,6 +606,7 @@ _RESIDENCY_KEYS = frozenset({
 #: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
+GANG_REGISTRATION_GRACE_S = 600.0
 CLAIM_DENIALS = "claim-denials.json"
 #: Per-ledger report of holders a census could not read (#936): written by
 #: every inexact retire, removed by the next exact one.
@@ -5902,6 +5903,8 @@ class PoolQueue:
         # Drain observations waiting for the next ``record_pass`` of their key
         # (#924); never read as admission authority on their own.
         self._drain_accounting = _DrainAccounting()
+        from . import gang_loans
+        self._gang_loans = gang_loans.Observer()
         self._admission_busy_logged_at: float | None = None
         self._expired_host_holds: dict[str, tuple[object, ...]] = {}
         # Queue directories are created once per process (see
@@ -9731,17 +9734,72 @@ class PoolQueue:
                     os.close(descriptor)
         return pruned
 
+    @contextmanager
+    def _gang_sweep_batch(self, paths: list[Path], *, limit: int, kind: str):
+        """Rotate bounded gang cleanup batches; the cursor grants no authority."""
+        if not paths or limit <= 0:
+            yield []
+            return
+        marker = self._sweep_marker().with_suffix(f".gang-{kind}")
+        try:
+            cursor = (record_store.read_document(marker) or {}).get("after", "")
+        except (OSError, PoolContractError):
+            cursor = ""
+        start = bisect_right([path.name for path in paths], str(cursor))
+        selected = (paths[start:] + paths[:start])[:limit]
+        try:
+            yield selected
+        finally:
+            try:
+                immutable_files.write_json_atomic(marker, {"after": selected[-1].name})
+            except OSError:
+                pass
+
+    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
+        """Withdraw old member publications whose group was never filed."""
+        from . import _gang
+        paths = self.records.json_slot_paths(READY)
+        with self._gang_sweep_batch(paths, limit=limit, kind="members") as selected:
+            for path in selected:
+                try:
+                    item = record_store.read_document(path)
+                    if item is None:
+                        continue
+                    gang = _gang.declaration(item.get("gang"))
+                    if (gang is None
+                            or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                            or _gang.read_group(self, gang["group"]) is not None):
+                        continue
+                    key = str(item["action_key"])
+                    with self.action_transition_lock(key, blocking=False) as acquired:
+                        if not acquired:
+                            continue
+                        current = record_store.value_or_raise(self.records.item(READY, key))
+                        if (current is None
+                                or current.get("published_unix") != item["published_unix"]
+                                or _gang.declaration(current.get("gang")) != gang
+                                or _now() - float(current["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                                or _gang.read_group(self, gang["group"]) is not None
+                                or record_store.value_or_raise(self.records.item(CLAIMED, key)) is not None):
+                            continue
+                        self.withdraw(key, reason="gang group not published within registration grace",
+                                      by=f"gang-registration:{gang['group']}")
+                except (_gang.GangContractError, PoolContractError, OSError,
+                        pb.PrismaBuildError, KeyError, TypeError, ValueError):
+                    continue
+
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
 
         Runs on the orphan-passes schedule. A torn-down gang's members still
-        READY are withdrawn here (a claim pass that found the teardown could
+        READY or CLAIMED are withdrawn here (a claim pass that found the teardown could
         not withdraw the row whose lock it held). A gang whose every member
         has an exact ending -- none READY or CLAIMED -- loses its record and
         state, so the census never reads a dead gang. A gang with a live or
         unaccounted member is kept; failures are per gang.
         """
         from . import _gang
+        self._sweep_unregistered_gang_members(limit=limit)
         pruned: list[str] = []
         try:
             with os.scandir(_gang.root(self)) as entries:
@@ -9749,55 +9807,46 @@ class PoolQueue:
                                if entry.name.endswith(".json") and not entry.name.startswith("."))
         except OSError:
             return pruned
-        for name in names[:limit]:
-            group = name[: -len(".json")]
-            try:
-                record = _gang.read_group(self, group)
-                if record is None:
-                    continue
-                keys = [str(member["action_key"]) for member in record["members"]]
-                torn = _gang.teardown(self, group)
-                if torn is None:
-                    # Every terminal path, including the reaper failing a
-                    # member whose lease was lost, ends the gang here: a
-                    # sibling already running is withdrawn (#1519 review).
-                    ended = {index: state for index, state in _gang.member_states(self, record).items()
-                             if state in _gang.UNSUCCESSFUL}
-                    if ended:
-                        index = min(ended)
-                        member = record["members"][index]
-                        self._gang_teardown(
-                            {"gang": {"group": group, "size": record["size"], "index": index}},
-                            by=str(member["action_key"]),
-                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
-                        torn = _gang.teardown(self, group)
-                if torn is not None:
-                    for key in keys:
-                        if bool(
-                            record_store.value_or_raise(self.records.item_presence(READY, key)),
-                        ):
+        paths = [_gang.root(self) / name for name in names]
+        with self._gang_sweep_batch(paths, limit=limit, kind="groups") as selected:
+            for path in selected:
+                group = path.stem
+                try:
+                    record = _gang.read_group(self, group)
+                    if record is None:
+                        continue
+                    from . import gang_wait
+                    gang_wait.cancel_expired(self, record, _now())
+                    torn = _gang.teardown(self, group)
+                    if torn is None:
+                        # Every terminal path, including the reaper failing a
+                        # member whose lease was lost, ends the gang here: a
+                        # sibling already running is withdrawn (#1519 review).
+                        ended = {index: state for index, state in _gang.member_states(self, record).items()
+                                 if state in _gang.UNSUCCESSFUL}
+                        if ended:
+                            index = min(ended)
+                            member = record["members"][index]
+                            self._gang_teardown(
+                                {"gang": {"group": group, "size": record["size"], "index": index}},
+                                by=str(member["action_key"]),
+                                reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                            torn = _gang.teardown(self, group)
+                    if torn is not None:
+                        for member in record["members"]:
                             try:
-                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
-                                              by=f"gang:{group}")
-                            except (PoolContractError, OSError, pb.PrismaBuildError):
+                                self._withdraw_gang_member(
+                                    record, member, reason=str(torn.get("reason")))
+                            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                                 continue
-                if any(bool(
-                    record_store.value_or_raise(self.records.item_presence(READY, key)),
-                ) or bool(
-                    record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
-                )
-                       for key in keys):
+                    states = _gang.member_states(self, record)
+                    if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
+                        continue
+                    shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
+                    _gang.group_path(self, group).unlink(missing_ok=True)
+                except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
                     continue
-                if not all(any(bool(
-                    record_store.value_or_raise(self.records.item_presence(state, key)),
-                )
-                               for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
-                    continue
-                shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
-                _gang.group_path(self, group).unlink(missing_ok=True)
-            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
-                continue
-            pruned.append(group)
+                pruned.append(group)
         return pruned
 
     def sweep_consumer_events(
@@ -15839,7 +15888,14 @@ class PoolQueue:
         not prefer a box on a stale picture of either side.
         """
 
+        if gpu_job:
+            load = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            return load.load1 / load.preferred if load is not None else None
+
         detail = offer.get("observed_detail") or {}
+        if not isinstance(detail, Mapping):
+            return None
 
         def number(value: object) -> bool:
             return type(value) in (int, float) and math.isfinite(value) and value >= 0
@@ -15847,12 +15903,6 @@ class PoolQueue:
         stamp = detail.get("observed_unix")
         if not number(stamp) or not 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S:
             return None
-        if gpu_job:
-            # CPU load per preferred core, so boxes with different core counts
-            # compare.  Load is already what the CPU admission controller reads.
-            cores = len((offer.get("cpu_tiers") or {}).get("preferred", []))
-            load = detail.get("load1")
-            return load / cores if cores and number(load) else None
         gpu = capability_eligibility.HostPresence.from_offer(offer).gpu
         if gpu is capability_eligibility.Presence.ABSENT:
             return 0.0            # no GPU to take power from; nothing to prefer away
@@ -15883,6 +15933,45 @@ class PoolQueue:
     # reading nearly the same never take turns deferring to each other.
     CROSS_RESOURCE_BUSY = 0.60
     CROSS_RESOURCE_MARGIN = 0.20
+
+    def _defer_for_cpu_load(
+        self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
+    ) -> dict[str, object] | None:
+        """Give portable CPU work a bounded preference for runnable headroom."""
+        cpus = demand.get("cpu", 0)
+        if not self._portable_cpu_work(item) or not cpus or demand.get("gpu"):
+            return None
+        host = socket.gethostname()
+        live = placement.offers()
+        local_offer = next((offer for offer in live if offer.get("host") == host), {})
+        local = _peer_placement.cpu_load(
+            local_offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        if local is None or cpus > local.preferred or local.headroom >= cpus:
+            return None
+        generation = (str(item["action_key"]), repr(item.get("published_unix")))
+        if placement.timer_expired(_peer_placement.TimedPreference.CPU_LOAD, generation):
+            return None
+        for offer in self._matching_offers(item, live=live):
+            remote_host = str(offer.get("host") or "")
+            if not remote_host or remote_host == host:
+                continue
+            remote = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            if remote is None or remote.headroom < cpus:
+                continue
+            try:
+                peer = placement.peer(remote_host, offer)
+            except (OSError, ValueError, TypeError, PoolContractError):
+                continue
+            if peer is None or not peer.remaining.fits_measured(demand):
+                continue
+            return {"host": remote_host, "local_load1": local.load1,
+                    "local_headroom": local.headroom, "remote_load1": remote.load1,
+                    "remote_headroom": remote.headroom,
+                    "available": peer.remaining.available,
+                    "observed_capacity": peer.remaining.observed,
+                    "demand": dict(demand)}
+        return None
 
     def _defer_cross_resource_placement(
         self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
@@ -17954,6 +18043,13 @@ class PoolQueue:
                 "demand": demand, "reservation_demand": reservation_demand,
                 "remote_offer": cross_resource,
             }, scan)
+        cpu_load = self._defer_for_cpu_load(
+            item, reservation_demand, placement=placement)
+        if cpu_load is not None:
+            return candidate_policy.CandidateDenial("deferred_for_cpu_load", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "remote_offer": cpu_load,
+            }, scan)
         # Slow sealed-request I/O must not hold host admission (#351).
         identity = (cpu_admission.action_identity(item)
                     if controller is not None else None)
@@ -18037,21 +18133,21 @@ class PoolQueue:
                         self.record_denial(item, "gang_torn_down",
                                            {"group": gang["group"], "teardown": torn})
                         return _ClaimHandled.REFUSED
+                if gang_record is not None:
+                    pending_backfill = self._preempt_gang_backfill(
+                        ledger, gang_record, gang_entry, controller=host_gate,
+                        demand=request.candidate.demand.reservation, memory=memory)
+                    if isinstance(pending_backfill, candidate_policy.CandidateDenial):
+                        self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
+                        return _ClaimHandled.REFUSED
+                    if pending_backfill:
+                        self.record_denial(item, "gang_waiting_for_backfill_release", {
+                            "group": gang["group"], "holders": pending_backfill,
+                            "tokens_returned_unix": None})
+                        return _ClaimHandled.REFUSED
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                     KeyError, TypeError, ValueError) as exc:
                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
-                return _ClaimHandled.REFUSED
-        if gang_record is not None:
-            pending_backfill = self._preempt_gang_backfill(
-                ledger, gang_record, gang_entry, controller=host_gate,
-                demand=request.candidate.demand.reservation, memory=memory)
-            if isinstance(pending_backfill, candidate_policy.CandidateDenial):
-                self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
-                return _ClaimHandled.REFUSED
-            if pending_backfill:
-                self.record_denial(item, "gang_waiting_for_backfill_release", {
-                    "group": gang["group"], "holders": pending_backfill,
-                    "tokens_returned_unix": None})
                 return _ClaimHandled.REFUSED
         return _ClaimGang(gang, gang_record, gang_entry, _gang_api)
 
@@ -18134,15 +18230,16 @@ class PoolQueue:
             from . import _gang
             try:
                 if backfill_eligible is None:
-                    backfill_eligible = (item.get("priority") == -10
-                                         and item.get("gang") is None
-                                         and _gang.backfill_enabled())
+                    from . import gang_loans
+                    backfill_eligible = gang_loans.preemptible_candidate(self, item)
                     if backfill_eligible:
-                        backfill_eligible = self._preemption_eligible(item)
-                        if backfill_eligible:
-                            backfill_binding = self._preemption_proof_binding(item)
+                        backfill_binding = self._preemption_proof_binding(item)
                 allowed = (backfill_eligible
+                           and not gang_loans.pending(self, gang_blocked["group"])
                            and _gang.backfill_allowed(self, gang_blocked, _now()))
+                if not allowed and self._gang_loans.allowed(self, gang_blocked, item, _now()):
+                    allowed = True
+                    gang_blocked = dict(gang_blocked, bounded_loan=True)
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                     KeyError, TypeError, ValueError):
                 allowed = False
@@ -18151,7 +18248,9 @@ class PoolQueue:
             gang_backfill.append(gang_blocked)
             remaining = dict(census, gang_elections={
                 k: e for k, e in census["gang_elections"].items()
-                if e not in gang_backfill})
+                if not any(all(e.get(field) == mark.get(field)
+                               for field in ("group", "index", "action_key", "host"))
+                           for mark in gang_backfill)})
             gang_blocked = measurement_reservation.gang_blocking(
                 remaining, item, host=ledger.base.name, group=None,
                 now=reservation_now, held=reservation_held,
@@ -18811,6 +18910,11 @@ class PoolQueue:
                 self.record_denial(item, "gang_waiting_for_peers", {
                     "group": gang["group"], "index": gang["index"], **readiness})
                 return _ClaimHandled.REFUSED
+        from . import gang_loans
+        if not gang_loans.reserve_loan(self, gang_backfill, item, _now()):
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "deferred_for_gang_reservation", {"bounded_loan_taken": True})
+            return _ClaimHandled.REFUSED
         self._write_claim_intent(key, owner=owner)
         src = self.records.item_path(READY, key)
         dst = self.records.item_path(CLAIMED, key)
@@ -18854,7 +18958,14 @@ class PoolQueue:
             class_verdict = (image_check.evidence["container_class_verdict"]
                              if isinstance(image_check, capability_eligibility.CapabilityRefusal)
                              else image_check.class_verdict)
-        position = candidate_policy.moved_claim_position(class_verdict, moved, gang_backfill)
+        bounded_loan = any(mark.get("bounded_loan") for mark in gang_backfill)
+        position = candidate_policy.moved_claim_position(
+            class_verdict, moved, [] if bounded_loan else gang_backfill)
+        if bounded_loan:
+            from . import gang_loans
+            if (moved.get("published_unix") != item.get("published_unix")
+                    or not gang_loans.bounded_candidate(moved)):
+                position = candidate_policy.MovedClaimPosition.BACKFILL_REFUSED
         class_refused = position is candidate_policy.MovedClaimPosition.CLASS_REFUSED
         if (position in (candidate_policy.MovedClaimPosition.CLASS_REFUSED,
                          candidate_policy.MovedClaimPosition.BACKFILL_REFUSED)
@@ -18964,6 +19075,9 @@ class PoolQueue:
             # attempt, a clobbered generation costs the whole
             # submission.
             return _ClaimHandled.REFUSED
+        if host.gang is not None and host.gang.record is not None:
+            from . import gang_wait
+            gang_wait.started(self, host.gang.record, _now())
         return _CommittedClaim(tiers, moved_ready, class_verdict, filed, tier_filed, tier_wanted)
 
     def _verify_claim_funding(self, committed: _CommittedClaim) -> bool:
@@ -19467,6 +19581,9 @@ class PoolQueue:
                 ready = self.ready_items()
         else:
             ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
+        from . import gang_wait
+        gang_wait.poll(self, ready, _now())
+        self._gang_loans.observe(self, ready, socket.gethostname(), _now())
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
         self._placement_history.retain(live_generations)
@@ -21398,6 +21515,28 @@ class PoolQueue:
             return False
         return True
 
+    def _withdraw_gang_member(self, record: Mapping[str, object],
+                              member: Mapping[str, object], *, reason: str) -> None:
+        """Withdraw only the exact member publication, retaining worker custody."""
+        from . import _gang
+        key = str(member["action_key"])
+        with self.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                return
+            claimed = record_store.value_or_raise(self.records.item(CLAIMED, key))
+            item = claimed if claimed is not None else record_store.value_or_raise(
+                self.records.item(READY, key))
+            if item is None or item.get("published_unix") != member["published_unix"]:
+                return
+            declared = _gang.declaration(item.get("gang"))
+            if declared != {"group": record["group"], "size": record["size"],
+                            "index": member["index"]}:
+                return
+            if self.withdrawal_covers(item) is not None:
+                return
+            self.withdraw(key, reason=f"gang teardown: {reason}",
+                          by=f"gang:{record['group']}", expected_claim=claimed)
+
     def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
                                 reason: str, by: str,
                                 exclude: Container[str] = ()) -> None:
@@ -21424,9 +21563,8 @@ class PoolQueue:
             if member["action_key"] == by or member["action_key"] in exclude:
                 continue
             try:
-                self.withdraw(member["action_key"], reason=f"gang teardown: {reason}",
-                              by=f"gang:{record['group']}")
-            except (PoolContractError, OSError, pb.PrismaBuildError):
+                self._withdraw_gang_member(record, member, reason=reason)
+            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
 
     def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,

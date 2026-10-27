@@ -29,8 +29,12 @@ Four constraints shape this:
   own gives each worker its share of those cores: each xdist worker would
   otherwise inherit the whole row's thread count (#1192).
 
-Shards use receipt-backed duration history when available and round-robin by
-file otherwise. The report records predicted and actual durations so a bad
+Shards automatically use the latest green report for the same Git repository,
+including linked worktrees and changed path lists; --history overrides it.
+Without history they rotate by file.
+Files predicted above the per-shard target split into deterministic node groups;
+pytest's current collection determines their nodes and coverage is checked across
+all groups before the run can be green. The report records predicted and actual durations so a bad
 estimate or an unbalanced shard remains visible.
 """
 from __future__ import annotations
@@ -56,6 +60,7 @@ import traceback
 import uuid
 import zlib
 from pathlib import Path, PurePath
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 _PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
@@ -77,7 +82,7 @@ from prismabuild.submission_types import (
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, movement_actions, owned_tree, pbtest_scratch_roots, pool  # noqa: E402
-from prismabuild import dependency_digest, fleet_roster, pbtest_collection  # noqa: E402
+from prismabuild import dependency_digest, fleet_roster, pbtest_collection, pbtest_history  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
@@ -861,7 +866,7 @@ def default_duration(known: dict[str, float]) -> float | None:
 def shard(files: list[str], count: int, *, durations: dict[str, float] | None = None,
           ceiling: float | None = None,
           model_default: float | None = None) -> list[list[str]]:
-    """Round-robin without measurements; measured packing with them (#1246).
+    """Pack whole files when no node groups are needed (#1246).
 
     ``durations`` maps each measured file to its predicted seconds, and
     ``ceiling`` is the sealed shard deadline the predictions are judged
@@ -912,11 +917,73 @@ def shard(files: list[str], count: int, *, durations: dict[str, float] | None = 
     totals = [0.0] * pools
     packed: list[list[str]] = [[] for _ in range(pools)]
     for name in rest:
-        index = min(range(pools), key=lambda i: (totals[i], i))
+        index = min(range(pools), key=lambda i: (totals[i], len(packed[i]), i))
         packed[index].append(name)
         totals[index] += predicted[name]
     buckets.extend(packed)
     return [bucket for bucket in buckets if bucket]
+
+
+class TestShard(NamedTuple):
+    files: list[str]
+    node_groups: dict
+    predicted_s: float | None
+
+
+def plan_shards(files: list[str], count: int, *, durations: dict[str, float],
+                ceiling: float | None = None,
+                model_default: float | None = None,
+                node_durations: dict[str, float] | None = None) -> list[TestShard]:
+    """Split above-target files and pack groups onto distinct shards.
+
+    Without groups, ``shard`` retains half-deadline singleton isolation.
+    With groups, the entire cohort uses longest-first packing instead:
+    reserving singleton buckets could leave fewer buckets than a file's
+    sealed group count. The execution deadline still applies to each shard.
+    """
+    default = model_default if model_default is not None else default_duration(durations)
+    estimates = {name: durations.get(name, default) for name in files} if durations else {}
+    target = sum(estimates.values()) / count if estimates and count > 1 else None
+    groups = {name: min(count, math.ceil(seconds / target))
+              for name, seconds in estimates.items()
+              if target is not None and target > 0 and seconds > target}
+    if not groups:
+        buckets = shard(files, count, durations=durations, ceiling=ceiling,
+                        model_default=default)
+        return [TestShard(bucket, {}, round(sum(durations.get(name, default)
+                                              for name in bucket), 1)
+                          if durations else None)
+                for bucket in buckets]
+    units = []
+    for name in files:
+        splits = groups.get(name, 1)
+        samples = {node: seconds for node, seconds in (node_durations or {}).items()
+                   if node.split("::", 1)[0] == name}
+        costs = [estimates[name] / splits] * splits
+        if samples and splits > 1:
+            parts = pbtest_collection.partition_nodes(list(samples), splits, samples)
+            total = sum(samples.values())
+            if total > 0:
+                costs = [estimates[name] * sum(samples[node] for node in part) / total
+                         for part in parts]
+        for index, seconds in enumerate(costs):
+            group = ({"index": index, "count": splits, "durations": samples}
+                     if splits > 1 else None)
+            units.append((name, index, seconds, group))
+    count = min(count, len(units))
+    buckets = [[] for _ in range(count)]
+    selections = [{} for _ in range(count)]
+    totals = [0.0] * count
+    for name, index, seconds, group in sorted(units, key=lambda u: (-u[2], u[0], u[1])):
+        eligible = [i for i in range(count) if name not in buckets[i]]
+        owner = min(eligible, key=lambda i: (totals[i], i))
+        buckets[owner].append(name)
+        if group is not None:
+            selections[owner][name] = group
+        totals[owner] += seconds
+    return [TestShard(bucket, selection, round(seconds, 1))
+            for bucket, selection, seconds in zip(buckets, selections, totals, strict=True)
+            if bucket]
 
 
 def _round_robin(files: list[str], count: int) -> list[list[str]]:
@@ -942,8 +1009,11 @@ def allocate_shards(weights: dict, count: int) -> dict:
     keys = sorted(weights)
     total = {key: 1 for key in keys}
     weight_sum = sum(weights[key] for key in keys)
+    if weight_sum <= 0:
+        weights = dict.fromkeys(keys, 1.0)
+        weight_sum = len(keys)
     remaining = count - len(keys)
-    if remaining <= 0 or weight_sum <= 0:
+    if remaining <= 0:
         return total
     exact = {key: remaining * weights[key] / weight_sum for key in keys}
     for key in keys:
@@ -956,25 +1026,20 @@ def allocate_shards(weights: dict, count: int) -> dict:
     return total
 
 
-def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[str]]:
-    """Per-file wall-time samples out of prior ``--json`` run reports (#1246).
+class HistoryReport(NamedTuple):
+    path: str
+    sha256: str
+    rows: list
 
-    Each report holds every shard's files beside its full stdout, and the
-    stdout holds the shard's outcome record with its ``file_durations`` --
-    so a prior report is the receipts' content in one file, and loading it
-    reads no live state.  Returns ``(history, problems)``: unreadable
-    files, non-list shapes, and non-numeric samples are ignored with a
-    stated reason per path, never silently and never fatally -- a history
-    flag must neither fail a submission because one old report rotted nor
-    pretend a foreign report packed the shards (#1303 review).  The caller
-    prints the problems; tests assert on them.
-    """
 
-    history: dict[str, list[float]] = {}
-    problems: list[str] = []
+def read_history(paths: list[str] | None) -> tuple[list[HistoryReport], list[str]]:
+    """Capture and validate each report once before extracting its samples."""
+    reports = []
+    problems = []
     for raw in paths or ():
         try:
-            runs = json.loads(Path(raw).read_text())
+            content = Path(raw).read_bytes()
+            runs = json.loads(content.decode("utf-8"))
         except OSError as exc:
             problems.append(f"{raw}: unreadable, skipped ({exc})")
             continue
@@ -985,8 +1050,19 @@ def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[
             problems.append(f"{raw}: top shape is "
                             f"{type(runs).__name__}, not a run list; skipped")
             continue
+        reports.append(HistoryReport(raw, core.raw_sha256(content), runs))
+    return reports, problems
+
+
+def history_samples(reports: list[HistoryReport], *, field: str = "file_durations"
+                    ) -> tuple[dict[str, list[float]], list[str]]:
+    """Extract duration samples from captured reports without reopening them."""
+    history: dict[str, list[float]] = {}
+    problems: list[str] = []
+    for report in reports:
         skipped = 0
-        for result in runs:
+        samples: dict[str, float] = {}
+        for result in report.rows:
             if not isinstance(result, dict):
                 skipped += 1
                 continue
@@ -995,22 +1071,33 @@ def load_history(paths: list[str] | None) -> tuple[dict[str, list[float]], list[
             if record is None:
                 skipped += 1
                 continue
-            durations = record.get("file_durations") or {}
+            durations = record.get(field) or {}
             if not isinstance(durations, dict):
                 skipped += 1
                 continue
             for name, seconds in durations.items():
                 if (not isinstance(name, str) or isinstance(seconds, bool)
                         or not isinstance(seconds, (int, float))
-                        or seconds < 0):
+                        or not math.isfinite(seconds) or seconds < 0):
                     skipped += 1
                     continue
-                history.setdefault(name, []).append(float(seconds))
+                samples[name] = samples.get(name, 0.0) + float(seconds)
+        for name, seconds in samples.items():
+            history.setdefault(name, []).append(seconds)
         if skipped:
-            problems.append(f"{raw}: {skipped} entr" +
+            problems.append(f"{report.path}: {skipped} entr" +
                             ("y" if skipped == 1 else "ies") +
                             " without usable file_durations, skipped")
     return history, problems
+
+
+
+def load_history(paths: list[str] | None, *, field: str = "file_durations"
+                 ) -> tuple[dict[str, list[float]], list[str]]:
+    """Read prior reports, returning usable samples and a diagnostic per problem."""
+    reports, problems = read_history(paths)
+    history, sample_problems = history_samples(reports, field=field)
+    return history, problems + sample_problems
 
 
 def predict_durations(history: dict[str, list[float]]) -> dict[str, float]:
@@ -1096,7 +1183,7 @@ shipped_collection = load("pbtest_collection")
 selection = None
 if @COLLECTION@:
     import json
-    selection = json.loads(sys.argv.pop(1))
+    selection = shipped_collection.decode_selection(sys.argv.pop(1))
 
 
 def preflight():
@@ -1633,9 +1720,9 @@ def pbtest_argument_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tag", action="append", default=[],
                     help="additional placement constraint; CPU default is portable, GPU is gb10")
     ap.add_argument("--shards", type=int, default=20,
-                    help="how many actions the suite is split into, "
-                         "round-robin over the discovered files; more than "
-                         "there are files is lowered to one shard per file")
+                    help="maximum actions for the suite; measured duration packing "
+                         "splits files above the per-shard target into node groups; "
+                         "without history, round-robin by file")
     ap.add_argument("--max-clients", type=int, default=DEFAULT_MAX_CLIENTS,
                     help="most pbrun clients this process keeps resident at "
                          f"once (default {DEFAULT_MAX_CLIENTS}; 0 = one per "
@@ -1716,16 +1803,14 @@ def pbtest_argument_parser() -> argparse.ArgumentParser:
                          "--tag and the --gpu default tag; ignores execution options, "
                          "including --pytest-args (no pytest collection)")
     ap.add_argument("--history", action="append", default=[],
-                    help="prior --json run reports whose file_durations "
-                         "pack this run's shards by measured duration "
-                         "(#1246): repeatable, one report per flag "
-                         "(--history takes exactly one path so it can never "
-                         "swallow the test paths that follow it); each "
-                         "measured file is predicted at the max of its "
-                         "samples, a file past half the sealed deadline "
-                         "shards alone, the rest pack longest-first, and "
-                         "unmeasured files take the median. Without it the "
-                         "shards stay round-robin")
+                    help="override automatic history with prior --json reports "
+                         "(repeatable, one path per flag). Default: latest completed "
+                         "green report for this Git repository across worktrees "
+                         "and path lists, retained "
+                         "under XDG_STATE_HOME or ~/.local/state. Measured files use "
+                         "maximum durations, unmeasured files the median; files "
+                         "above the per-shard target split into node groups. "
+                         "Without usable history, round-robin by file")
     ap.add_argument(
         "--capabilities", default=None, metavar="PATH",
         help="capability configuration relative to --checkout (default "
@@ -1892,14 +1977,27 @@ def main() -> int:
     if population["refusals"]:
         return 2
     files = population["files"]
-    history, history_problems = load_history(args.history)
+    history_paths = args.history
+    if not history_paths:
+        try:
+            cached = pbtest_history.cached_report(checkout, args.paths or ["tests"])
+            history_paths = [str(cached)] if cached is not None else []
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"pbtest: automatic history unavailable: {exc}\n")
+    history_reports, history_problems = read_history(history_paths)
+    history, sample_problems = history_samples(history_reports)
+    history_problems.extend(sample_problems)
+    node_history, _ = history_samples(history_reports, field="node_durations")
+    history_source = {
+        "mode": "explicit" if args.history else "automatic",
+        "reports": [{"path": report.path, "sha256": report.sha256}
+                    for report in history_reports],
+    }
+    node_predictions = predict_durations(node_history)
     for problem in history_problems:
         sys.stderr.write(f"pbtest: --history {problem}\n")
     predicted = predict_durations(history)
     model_default = default_duration(predicted)
-    # The packing model (#1246): prior ``--json`` reports are the receipts'
-    # content in one file, so loading them reads no live state -- and a
-    # submission never fails because one old report rotted.
     # Tests that read the shared mount undeclared cost the fleet a scan it
     # cannot see or stage (#915), so they run only with a manifest.
     if args.residency == "stage" and not args.data_manifest:
@@ -2127,33 +2225,28 @@ def main() -> int:
                     print(f"pbtest:   pins {entry['path']} at "
                           f"{entry['sha256']}", flush=True)
     buckets: list[list[str]] = []
+    shard_plans: list[TestShard] = []
     plan_of: list[dict] = []
     if predicted:
-        # The ceiling is sealed now, so the model can judge against it: the
-        # slow file shards alone, the rest pack longest-first (#1246).
         assert model_default is not None
         default = model_default
         measured = sum(1 for name in files if name in predicted)
-        print(f"pbtest: duration model from {len(args.history)} history "
+        print(f"pbtest: duration model from {len(history_paths)} history "
               f"file(s): {measured}/{len(files)} files measured, the rest "
               f"default to the median {default:.1f}s, predictions are "
               "per-file maxima", flush=True)
     for plan in plans:
-        if predicted:
-            plan_buckets = shard(plan["members"], plan["shards"],
-                                 durations=predicted,
-                                 ceiling=plan["sealed_s"],
-                                 model_default=model_default)
-        else:
-            plan_buckets = shard(plan["members"], plan["shards"])
-        buckets.extend(plan_buckets)
-        plan_of.extend([plan] * len(plan_buckets))
+        packed = plan_shards(plan["members"], plan["shards"],
+                             durations=predicted, ceiling=plan["sealed_s"],
+                             model_default=model_default,
+                             node_durations=node_predictions)
+        shard_plans.extend(packed)
+        buckets.extend(part.files for part in packed)
+        plan_of.extend([plan] * len(packed))
     if predicted:
-        totals = [sum(predicted.get(name, default) for name in bucket)
-                  for bucket in buckets]
         print("pbtest: predicted shard totals: " +
-              ", ".join(f"shard {index} {total:.0f}s"
-                           for index, total in enumerate(totals)), flush=True)
+              ", ".join(f"shard {index} {part.predicted_s:.0f}s"
+                        for index, part in enumerate(shard_plans)), flush=True)
     sizes = [len(b) for b in buckets]
     print(f"{len(files)} files -> {len(buckets)} shards "
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
@@ -2209,6 +2302,8 @@ def main() -> int:
                        *threads, *plan["bound_env"], *explicit_env,
                        "PYTHONPATH=src:experiments", *args.env]
         spec: dict = {"files": bucket, "roots": roots}
+        if shard_plans[index].node_groups:
+            spec["node_groups"] = shard_plans[index].node_groups
         if plan["selection"] is not None:
             spec["capabilities"] = plan["selection"]
         arguments = shard_arguments(spec, pytest_args, index,
@@ -2290,6 +2385,9 @@ def main() -> int:
             # of stdout. Old report rows lack this declaration and stay legacy.
             "record_binding": pbtest_outcomes.RECORD_BINDING_VERSION,
             "action_key": shard_result.get("action_key")})
+    for observation in observations:
+        if shard_plans[observation["shard"]].node_groups:
+            observation["node_groups"] = shard_plans[observation["shard"]].node_groups
     verdict = pbtest_outcomes.judge_shards(observations, requested_files=files)
     results = []
     for observation, shard_verdict in zip(observations, verdict["shards"], strict=True):
@@ -2350,12 +2448,12 @@ def main() -> int:
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
         action_key = observation["action_key"]
-        predicted_s = (round(sum(predicted.get(name, model_default)
-                                 for name in bucket), 1)
-                       if predicted else None)
+        predicted_s = shard_plans[index].predicted_s
         actual_s = summary_seconds(summary) if ran else None
         results.append({"schema": "prismabuild.pbtest_report.v1",
                         "shard": index, "files": bucket,
+                        **({"node_groups": observation["node_groups"]}
+                           if "node_groups" in observation else {}),
                         "record_binding": observation["record_binding"],
                         "returncode": returncode, "action_key": action_key,
                         "receipt_path": receipt_path(action_key),
@@ -2365,6 +2463,7 @@ def main() -> int:
                         # own session seconds beside it, so the report can say
                         # whether the packing bought what it promised (#1246).
                         "predicted_s": predicted_s,
+                        "history_source": history_source,
                         "pytest_s": actual_s,
                         "test_completion": test_completion,
                         "timed_out": timed_out,
@@ -2447,6 +2546,11 @@ def main() -> int:
         # The full pytest failure section precedes the final 25 lines on a
         # busy shard. Keep the actual tracebacks visible without another run.
         print("\n".join(displayed(r["output"])))
+    if verdict["green"] and not progress.failed and changed is None:
+        try:
+            pbtest_history.remember_report(checkout, args.paths or ["tests"], results)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"pbtest: cannot retain automatic history: {exc}\n")
     if args.json:
         try:
             report_bytes = json.dumps(results, indent=1).encode()

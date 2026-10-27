@@ -25,9 +25,12 @@ class Clock:
         return self.now
 
     def wait(self, condition, delay):
-        assert delay is not None
-        self.delays.append(delay)
-        self.now += delay
+        if delay is None:
+            condition.wait()
+        else:
+            assert delay is not None
+            self.delays.append(delay)
+            self.now += delay
 
 
 class Bell:
@@ -194,13 +197,7 @@ def test_repeated_immediate_resets_have_bounded_named_recovery():
         def wait_v2(self, *args):
             return body(reset=True)
 
-    def wait(condition, delay):
-        if delay is None:
-            condition.wait(10)
-        else:
-            clock.wait(condition, delay)
-
-    with host_wait.HostWaitHub(clock=clock, wait=wait,
+    with host_wait.HostWaitHub(clock=clock, wait=clock.wait,
                               client_factory=lambda c: ResetBell()) as hub:
         kinds = []
         for _ in range(8):
@@ -283,14 +280,12 @@ def test_local_event_or_stop_shutdowns_the_blocking_bell_and_joins(tmp_path, tri
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        listener.settimeout(10)
 
         def serve():
             try:
                 for _ in range(count):
                     with listener.accept()[0] as peer:
                         accepted.append(True)
-                        peer.settimeout(10)
                         request = b""
                         while b"\r\n\r\n" not in request:
                             request += peer.recv(4096)
@@ -319,7 +314,7 @@ def test_local_event_or_stop_shutdowns_the_blocking_bell_and_joins(tmp_path, tri
                 observer = threading.Thread(target=lambda: outcomes.append(hub.wait_since(
                     before, host_wait.ClaimWait(frozenset({source}), deadlines))))
                 observer.start()
-                assert waiting.wait(10)
+                assert waiting.wait()
                 assert not failure
                 if trigger == "local":
                     hub.notify(source)
@@ -330,16 +325,16 @@ def test_local_event_or_stop_shutdowns_the_blocking_bell_and_joins(tmp_path, tri
                     hub.notify(local(host_wait.WakeKind.CONTROL))
                 else:
                     hub.close()
-                observer.join(10)
+                observer.join()
                 assert not observer.is_alive()
-                assert disconnected.wait(10)
+                assert disconnected.wait()
                 expected = {"local": host_wait.WakeReasonKind.CHANGED,
                             "deadline": host_wait.WakeReasonKind.DEADLINE,
                             "stop": host_wait.WakeReasonKind.STOP,
                             "close": host_wait.WakeReasonKind.STOP}[trigger]
                 assert outcomes[0].kind is expected
                 assert not any(t.name == "prismabuild-bell-wait" for t in threading.enumerate())
-        server.join(10)
+        server.join()
         assert not server.is_alive()
         assert not failure
     assert len(accepted) == count
@@ -382,13 +377,7 @@ def test_immediate_empty_renewals_enter_backoff_instead_of_spinning():
         def wait_v2(self, *args):
             return body()
 
-    def wait(condition, delay):
-        if delay is None:
-            condition.wait(10)
-        else:
-            clock.wait(condition, delay)
-
-    with host_wait.HostWaitHub(clock=clock, wait=wait,
+    with host_wait.HostWaitHub(clock=clock, wait=clock.wait,
                               client_factory=lambda c: EmptyBell()) as hub:
         wake = hub.wait_since(hub.arm(), host_wait.ClaimWait())
     assert wake.kind is host_wait.WakeReasonKind.UNAVAILABLE
@@ -426,17 +415,11 @@ def test_arm_identity_change_reports_recovery_without_a_zero_wait_loop():
         def wait_v2(self, *args):
             raise AssertionError("reset requires reconstruction before remote waiting")
 
-    def wait(condition, delay):
-        if delay is None:
-            condition.wait(10)
-        else:
-            clock.wait(condition, delay)
-
     class RecoveryBell(ChangingBell):
         def wait_v2(self, *args):
             return body(reset=True)
 
-    with host_wait.HostWaitHub(clock=clock, wait=wait,
+    with host_wait.HostWaitHub(clock=clock, wait=clock.wait,
                               client_factory=lambda c: RecoveryBell()) as hub:
         first = hub.arm()
         hub.reconciled(first)
@@ -501,7 +484,7 @@ def test_cancelling_a_bell_read_keeps_its_cursor_for_the_next_observation():
             if len(cursors) == 1:
                 self.cancellation.attach(CancelSocket())
                 started.set()
-                assert release.wait(10)
+                assert release.wait()
                 raise queue_bell.Unavailable("request cancelled before queued event delivery")
             if since.seq >= 1:
                 hub.stop()
@@ -514,9 +497,9 @@ def test_cancelling_a_bell_read_keeps_its_cursor_for_the_next_observation():
         observer = threading.Thread(target=lambda: outcomes.append(hub.wait_since(
             before, host_wait.ClaimWait(frozenset({source})))))
         observer.start()
-        assert started.wait(10)
+        assert started.wait()
         hub.notify(source)
-        observer.join(10)
+        observer.join()
         assert not observer.is_alive()
         assert outcomes[0].inputs == frozenset({source})
         wake = hub.wait_since(hub.arm(), host_wait.ClaimWait())
@@ -540,7 +523,7 @@ def test_a_local_and_bell_change_in_one_wake_preserve_both_inputs():
             return body(1, ({"seq": 1, "topic": "done", "id": KEY},))
 
     def wait(condition, delay):
-        assert condition.wait(10)
+        assert condition.wait()
         hub.notify(source)
 
     with host_wait.HostWaitHub(wait=wait, client_factory=lambda c: ChangedBell()) as hub:

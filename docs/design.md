@@ -2750,6 +2750,48 @@ there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
 
+`pbtest` automatically retains the latest observed green report per Git
+repository, identified by its resolved common directory (#2286). Linked
+worktrees and changed requested path lists share estimates. Non-Git source
+directories use their resolved root as identity. The submitter stores one
+atomic report per repository under `$XDG_STATE_HOME/prismabuild/pbtest-history-v2`
+(or `~/.local/state`). Failed, interrupted or incomplete runs preserve the prior
+report. `--history` remains a repeatable explicit override. Without usable
+history, files rotate round-robin. File predictions take the maximum per-report
+sample; disjoint fragments of one file are summed within their report first.
+Optional `node_durations` records summed setup/call/teardown seconds by
+checkout-relative node ID.
+Each report row carries `history_source` with mode `automatic` or `explicit`
+and a `reports` list containing each source path and its raw-byte `sha256`.
+File and node predictions consume the same captured bytes. An empty source
+list records that no report was available; unusable samples still warn.
+
+Planning represents each shard's files, optional node groups and prediction
+before publishing any shard. Within each capability cohort, a file predicted
+above total predicted seconds divided by its shard budget splits into at most
+that many node groups. Groups pack longest-first and distinct groups of a file
+occupy distinct shards. The sealed selection carries each file's group index,
+group count and node-duration model. Current pytest collection still owns ignore
+hooks, parametrization and `-k`/`-m`; the carried collection owner partitions its
+current selected node IDs after those hooks, with deterministic LPT when measured
+nodes exist and sorted round-robin otherwise. Unmeasured nodes use the measured
+node median. Each group records the same complete pre-partition node roster.
+New tests therefore remain in the population. An individual test is indivisible.
+Whole-file cohorts retain half-deadline singleton isolation. A cohort with node
+groups uses longest-first packing for all its units; singleton reservations could
+leave fewer available shards than a split file's sealed group count. Every shard
+retains its execution deadline.
+
+Repeated file assignment is valid only for a complete group-index cover with
+identical sealed group models and current rosters, and each group's collected
+nodes must equal its projection of that roster. Missing groups, different
+collections, a mismatched declared selection, duplicate nodes and ordinary
+repeated files remain non-green. Empty groups establish exclusion through the
+normal deselection evidence. Grouped selections compress their JSON before crossing the exec argument
+boundary, so a long node-duration map does not exceed the single-argument limit.
+Ordinary selections retain their existing JSON bytes. These selection bytes enter ordinary action
+identity; source support requires a later reviewed runtime release for live use.
+
 `pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
 `SubmissionRequest.env` and template preparation used by `pbrun --env`
 (#1891). Every shard sealed from a plan retains those values in
@@ -5939,6 +5981,59 @@ fail with `movement_refused` and `residency_overran_reservation`.
 
 ## Gang reservation (#1517, default off)
 
+### Bounded absence loans and submitter wait deadlines (#2343)
+
+Source contract, component-qualified on the integrated main base with merged
+#2344. Independent source review and actual merge remain pending.
+[Scoped qualification and remaining gates](evidence/issue2343/README.md)
+record the actual evidence. No runtime deployment or operational acceptance
+is claimed by this change.
+
+Terminal gang evidence remains the only fence release. The default loan path
+still requires proven preemptibility. The added exception admits one borrowing
+publication per gang with a sealed positive execution deadline at most 1800
+seconds, only after 600 seconds of continuous dual absence. Both worker-offer
+absence for the sibling's requirements and affirmative runtime host absence
+must be observed. `fleet_roster.runtime_presence` is the shared runtime source
+for the worker observer and `pb_runtime.host_presence`: explicit `offline` or
+`retired` declarations retain their operator provenance. A missing, malformed
+or active declaration is never affirmative absence. Missing offers alone do
+not establish runtime absence. No roster state is changed by this feature.
+
+The observer runs on every claim scan, including scans with no bounded
+candidate. Partner offers, including an alias or nonmatching tags, runtime
+presence, unknown evidence, gaps over 30 seconds and observer restarts reset
+the interval. An unelected sibling must name exactly one roster host in its
+placement tags; unresolved class placement supplies no absence evidence.
+The interval binds sibling publication, election, target host and roster
+capture. The observer owns no token or fence-release authority.
+
+All measurement fences, demand reservations and remaining gang fences retain
+their ordinary checks. After resource gates pass, the borrowing publication
+reserves a no-clobber group slot while every member transition is excluded.
+The slot survives restarts and completion. It authorizes no second borrowing
+publication; a failed pre-claim admission may retry only the same publication.
+Fresh readiness from before a pending bounded loan cannot let a returned peer
+commit ahead of it. Pending status rechecks the borrower's transition, exact
+claim and actual held tokens. Ordinary cleanup remains responsible for token
+return. Once the bounded publication ends, default proven-preemptible loans
+remain available under their existing rules.
+
+`pbgang --queue-wait-timeout-s` or the manifest's `queue_wait_timeout_s` is a
+positive, finite opt-in. The immutable group binds it to its member
+publications. Its deadline is the last member publication time plus the
+requested allowance. The cancellation check excludes all member transitions
+in key order and cancels only a wholly READY, unchanged original group.
+First claim permanently disarms the deadline. Busy, replaced or unknown
+members defer cancellation; they do not authorize a key-only withdrawal.
+Cleanup composition requires #2344's exact-publication member withdrawal.
+No running attempt's reservations are returned by the deadline checker.
+
+Alive but indefinitely unclaimable gangs, nonrestartable pre-election work,
+waiting for one bounded loan after partner return, and unknown GB10 cleanup
+latency remain explicit residuals. General starvation is unresolved.
+
+
 Gang claim readers use the bounded replaceable-record reader. Scope preparation
 may atomically replace a claimed row while a sibling checks readiness or its
 start barrier. That replacement is an ordinary whole-record update. No-follow,
@@ -6172,8 +6267,43 @@ Per member host, inside the ordinary claim pass:
    expired barrier, or a sibling found failed files `gangs/<group>/teardown.json`
    once. The writer withdraws the other members through the ordinary withdrawal
    path. The census stops fencing for a torn-down gang. `sweep_gangs`, on the
-   orphan-passes schedule, withdraws leftover READY members and prunes the
-   records of a gang whose every member has an exact ending.
+   orphan-passes schedule, retries withdrawal of both READY and CLAIMED
+   members until each exact publication ends. Immediate teardown and sweep
+   cancellation recheck the member's group and publication under its transition
+   lock. A covered claim is never retargeted to a queued successor. Running
+   members retain their tokens until the ordinary worker containment and ending
+   path completes. Pruning requires positive terminal evidence for every exact
+   member publication; another generation's ending is not sufficient. Missing
+   or malformed terminal publication timestamps supply no ending evidence.
+   Group cleanup rotates its own host-local cursor through bounded batches;
+   retained or corrupt groups cannot indefinitely hide later teardown retries.
+
+   A READY gang member whose group record was never filed is withdrawn after
+   `GANG_REGISTRATION_GRACE_S` (600 seconds). The sweep rechecks the same row,
+   its age and the absent group under the member transition lock. A filed group,
+   unreadable record, busy lock or successor publication prevents this orphan
+   cancellation. Each pass reads at most `ORPHAN_PASSES_SWEEP_LIMIT` READY rows. A
+   host-local cursor advances past ordinary, kept and busy rows and survives
+   worker replacement. This registration grace never expires a filed gang's
+   pre-claim fence. New group registration takes every member transition lock
+   in action-key order and verifies the exact READY publications before filing
+   the record. A stale publisher cannot register withdrawn rows. Replaying an
+   identical existing group remains valid after its members advance or end.
+
+   The legacy empty object in `teardown.json` remains a stop marker. The start
+   barrier reports `gang_torn_down` for it; nonempty records still require the
+   teardown schema, group, reason, author and finite timestamp.
+
+   Gang records and residency timing inputs share the finite scalar predicate
+   in `numeric_fields.py`. It excludes booleans, nonnumeric values, nonfinite
+   floats and integers that overflow float conversion. This record-boundary
+   validation stays outside the source-attested `core.py`; moving the helper
+   does not change runtime, attestation or receipt identity.
+
+   Malformed group, election and teardown records refuse only their own gang.
+   Both full and refreshed reservation censuses discard that gang's whole
+   election projection while continuing to honor healthy gangs. Global directory
+   failures and census record-cap exhaustion still refuse admission.
 
 **Ranking between gangs.** Gangs are totally ordered by (higher priority,
 earliest member publication, group). Before electing or readying, a member is
@@ -6181,7 +6311,15 @@ deferred (`deferred_for_gang_reservation`, `ranked_behind`) while a better-ranke
 live gang holds an election on any host its gang uses. Two gangs sharing hosts
 therefore never each commit one member and then wait on each other until both
 fail. Residual: a better-ranked gang that first appears after a lower gang has
-already committed one member costs that lower gang its run, bounded by `skew_s`.
+already committed one member, or two hosts making simultaneous first elections
+from different views, can cost a gang its run, bounded by `skew_s`.
+
+The recorded policy rejects time-only fence expiry. A slow but live gang can
+still retain its pre-claim fences indefinitely. The dual-evidence dead-partner
+bounded-loan exception and submitter opt-in queue-wait cancellation remain owed
+in [#2343](https://github.com/RobTand/prismabuild/issues/2343), split from #1521.
+Neither that policy target nor these cleanup changes establishes deployment,
+live GB10 release latency, or general starvation freedom.
 
 **Lost workers.** `sweep_gangs` runs beside `sweep_orphan_passes` in the claim-site
 sweep. It also tears down any gang with a member whose exact-generation ending is
@@ -6993,20 +7131,41 @@ preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
 Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
-The pass view owns the three 20-second monotonic grace questions and the separate
+The pass view owns the four 20-second monotonic grace questions and the separate
 Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
 without restarting grace. Empty adaptive discovery, absent ready generations
 and a successful claim retire history through its owner. CPU-host age never
 becomes an expiry condition. Clock reads retain their original conditional
 positions and the Unix clock resolves the current pool clock on each read.
 
-All three timer rules consult capacity remaining after earlier CPU-host or scratch
+All four timer rules consult capacity remaining after earlier CPU-host or scratch
 yields in the pass. Preferred-CPU and cross-resource timer rules do not charge
 capacity for their own yields; idle-GPU yields charge the advisory peer view.
 This avoids a second timer wait after another rule has already left a peer
 as much work as it fits; preferred-CPU and cross-resource timer yields can
 still name more rows than the peer fits. These are advisory placement
-decisions, not peer reservations.
+decisions, not peer reservations. The CPU-load timer also reads remaining
+capacity without charging its own yields.
+
+Portable CPU rows additionally prefer a peer with observed CPU headroom (#2242).
+This rule runs after the existing idle-GPU, CPU-only-host and cross-resource
+rules. `_peer_placement.cpu_load` reads fresh finite nonnegative `load1` and
+the preferred CPU count from each offer. If the local preferred count minus
+load cannot cover the row's CPU demand, a compatible peer with enough such
+headroom and complete measured CPU/memory/other resource fit gets up to 20
+seconds to claim. The exact publication's monotonic timer persists across
+passes. A request larger than the local preferred tier keeps the existing
+preferred-CPU fallback rule. Missing, malformed, future or stale evidence supplies no preference;
+expiry leaves local admission authoritative. Equal saturated peers do not
+defer to each other. The denial is `deferred_for_cpu_load`, and an ordinary
+CPU-host denial already supplies #1262's existing pass-on evidence.
+
+Load1 includes PB work, foreign runnable threads and uninterruptible waits.
+It is a whole-host placement proxy, not foreign-process attribution or a
+throughput measurement. CPU token capacity is unchanged. Explicit hostname
+and class tags bypass the new rule through `_portable_cpu_work`; READY GPU
+protection, guest restartability and operator holds retain their earlier
+gates. This source change does not deploy a runtime or establish live effects.
 
 Reusing the first advisory observation deliberately changes observation
 timing: a peer ledger or offer replacement after that read is ordinarily observed on the
@@ -7470,6 +7629,42 @@ the enclosing attempt's budget or causing its termination. A missing broker, fai
 ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
+
+The broker monitor separates cgroup event observation from numeric collection
+(#2064). One monitor thread owns inotify watches for `memory.events`,
+`memory.events.local` and `cgroup.events`, including unreleased retired scopes
+with population interests. Watch enrollment precedes the first snapshot.
+Retained observations bind action key, nonce, token, both memory budgets and
+cgroup device/inode. Durable authority changes wake reconciliation through a
+nonblocking pipe. The callback never reads counters or installs watches under
+the authority lock. Notifications invalidate observations. Stops still use the
+fresh authority and inode checks, and cleanup still obtains fresh population
+evidence from the backend.
+
+Unchanged event files are not reread on numeric ticks. Lost watches, replaced
+files and invalid observations clear retained counters and population evidence.
+Registration recovery has a named one-second backoff. Queue overflow or a drain
+exceeding 256 events closes the notification descriptor before recovery, so its
+own watch-removal events cannot sustain a recovery loop. Each pass also bounds
+enrollment and event-snapshot refreshes at 256 scopes. Enrollment considers new
+and oldest-due scopes before recently failed entries. Private `monitor.status`
+reports `event_coverage`; incomplete coverage fails monitor health and public
+capacity completeness. An event-only pass can invalidate the last capacity
+sample but cannot refresh its numeric timestamp or restore completeness.
+
+Numeric telemetry retains its independent one-second default sampling interval,
+vendor collection bounds, GPU confirmation rules and successful-sample health
+limit of 15 seconds. Continuous notifications cannot postpone the numeric
+deadline. A failed stop invalidates observation coverage and keeps its error
+visible through the one-second recovery backoff. Fresh enrollment and counters
+recover an observed local OOM even when the failure preceded persisted stop
+intent. Persisted stop failures also retry on a numeric tick or their named
+retry deadline without another notification. Shutdown wakes the descriptor wait and
+joins the existing sampler. Collection already in progress finishes before
+queued events or shutdown are handled. These are source contracts, not evidence
+of deployment, live cgroup qualification or a production syscall-rate reduction.
+Linux documents these event inputs in its
+[cgroup v2 reference](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
 
 The pool persists the creation key, nonce, memory budget and broker endpoint in
 both claim and lease before requesting a scope. A lost reply is reconciled by
@@ -10941,8 +11136,9 @@ Explicit reconciliation still requires the existing exact-attempt cleanup,
 receipt and termination checks described above. SIGINT retains main's existing
 exception and monitor cleanup path. Startup and request framing retain their
 10-second bounds; process termination retains its 15-second waits.
-`ResourceMonitor` retains its independent 1-second sampler. No background loop
-is added by the listener change.
+`ResourceMonitor` retains its independent 1-second numeric sampler. Its cgroup
+event handling is described in the resource-scope contract above. No background
+loop is added by the listener change.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
@@ -19592,6 +19788,63 @@ query, capture command and binary digest; report fields and Core byte recipes
 remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
 
+### Merge-queue vehicle and approval contract (#2295)
+
+A queued member must carry the full lowercase Git SHA approved by its reviewer.
+The enqueue boundary refuses missing or malformed pins; selection rejects legacy
+unpinned entries and comments when a head moved after approval. One-shot shadow
+status runs can capture current heads, but one-shot merge runs refuse.
+
+The existing batch state owns a green decision, immutable candidate reference,
+vehicle branch `release-mq/<batch>-<uuid>`, and member SHA manifest before remote
+publication. The vehicle ID is generated once per green decision; recovery uses
+the saved branch. Fresh queue states do not share vehicle identities, including
+when they construct identical candidates. Git owns branch publication; the GitHub adapter finds a vehicle
+across all PR states before creating one. The fsynced ledger records the vehicle,
+its statuses and confirmed member merges. Recovery after a green decision
+continues that exact batch without testing or creating another vehicle. Earlier
+interruption retries preserve pins and attempts.
+
+Only the candidate receives required-context success. Member heads receive an
+informational context. Merge mode waits for GitHub Actions `issue-link` success
+on that candidate and merges only the vehicle with a matching head constraint.
+Strict branch protection is the final base compare-and-swap. A moved base closes
+the vehicle and requeues members uncharged. Member states must each reach MERGED
+before batch completion. Waiting for checks, GitHub acknowledgement or member
+state propagation preserves the batch until its persisted green-publication
+deadline.
+`green_wait_s` defaults to 3,600 seconds from the green decision and is not
+renewed by restart, a crash during publication or a changed waiting cause. Selection verifies existing issue references and rejects
+pull request numbers before testing or publication. A failed `issue-link` check
+is terminal and requeues members charged. Other expired green waits release the
+queue without retrying already-integrated members.
+
+The GitHub adapter reads PR metadata with fields supported by `gh` 2.46.
+Closing-issue references use paginated GraphQL through `gh api`, because that
+CLI version does not expose them through `gh pr view --json`. The returned
+issue numbers and URLs still pass through same-repository issue validation.
+
+Terminal disposition, requeue, and `vehicle_cleanup` intent are saved before
+remote cleanup. Cleanup retries outside the active batch are bounded by
+`max_attempts`, separated by `stuck_backoff_s`. Exhausted obligations remain
+visible for operator repair. Status-mode vehicles are drafts and close with
+branch deletion after the verdict. Dry-run never processes retained remote
+cleanup or consumes its retry budget; status or merge mode resumes it.
+A member push during the final vehicle
+merge race receives the re-review notice and a distinct `member-head-moved`
+ledger fact. After confirming unchanged members, `merged-head-moved` releases
+the queue without claiming MERGED for the changed PR. Unobserved fleet shards requeue uncharged
+with the existing backoff; no missing observation becomes a code verdict.
+
+The PrismaBuild config uses `pb-tests`, author RobTand, celestia-local state,
+20 shards, all clients published, a 3,600-second execution deadline and priority
+0 without an architecture tag. The supplied status-only user unit restarts on
+exit; the config has no merge-enabled file. This source contract is distinct
+from a deployed shadow day or permission to enable merges. PB still owns test
+placement and execution. No staged-read requirement implementation, deployment
+or workload-proof axis changes; SC-01/SC-02, ID-08/ID-09 and SAFE-03 retain their
+ledger status. See [the queue guide](pbmergeq.md) for the shadow evidence gate.
+
 ### Merge-queue reviewed interpreter family (#1427)
 
 The one-shot `pbmergeq gate` consumer command (#1896) composes the existing
@@ -20903,6 +21156,15 @@ Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical
 custody, drain, performance or RootGO credit.
 
+Controller record tests partition the existing native population by family so
+file-level fanout can admit independent shards. Verified generation and writer
+source closures live until pytest configuration cleanup and are shared across
+imported fixture definitions through that configuration's stash. Every replay
+still creates a fresh isolated process and private store, including its bundle
+cache and TMPDIR. Definition indexes share immutable names by exact source
+bytes; each lookup rereads its path so source mutations cannot reuse an index
+for older content. Executing source/code attestation remains per replay.
+
 Native historical byte reproduction selects an explicit qualified archival
 replay runtime from the `archival-replay` test capability. That source
 declaration is the sole executable path and SHA-256 authority. The test
@@ -20913,6 +21175,9 @@ retained driver. Complete inherited environment values are bound by a canonical
 digest. The parent captures one environment dictionary, hashes it and passes
 that same dictionary explicitly to the archival subprocess. Native library
 changes to the C environment cannot alter the selected launch environment.
+The expected pre-driver TMPDIR comes from that captured environment and must
+be nonempty and absolute. An unset, empty or relative TMPDIR refuses archival
+replay before launch. No host scratch path is part of runtime qualification.
 The environment observation logs only native thread variables, TMPDIR
 and TZ values. The driver then changes TMPDIR to its private store as its
 retained source requires.
@@ -21663,7 +21928,9 @@ The explicit assessment now requires a separately sealed qualification index,
 assessment and immutable plan. Its `target_commit` names the final source;
 `populations.root` and `.corpus` declare exact required whole-file lists and
 complete node-ID lists from qualified final-source collection. The required
-files are the two bootstrap root files and all eight record-compatibility files.
+files are the two bootstrap root files and every record-compatibility file in
+`installed_bootstrap.CORPUS_FILES`, including all nineteen controller files
+after the family split.
 Every native root lane and every corpus lane must cover its complete declared
 population; valid successful subset receipts refuse. The expected nodes are
 never derived from execution logs. `source_sha256` pins required tests, root

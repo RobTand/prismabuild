@@ -9,8 +9,9 @@ sharding and placement.
 
 1. Take up to `batch_cap` queued pull requests. Each must pass the
    eligibility filter: open, not a draft, a head branch in the repository
-   itself (never a fork), opened by `author`, based on `base_branch`. An entry
-   enqueued with a SHA is refused if the head has moved.
+   itself (never a fork), opened by `author`, based on `base_branch`. Every enqueue requires the full lowercase SHA the reviewer approved. A moved
+   head is refused with a comment requesting re-review and a new enqueue.
+   Legacy unpinned entries are refused before testing.
 2. Fetch the base branch and each full immutable commit selected from GitHub
    into a bare mirror the queue owns. Require exact destination-ref equality
    and a commit object; refuse failed fetches explicitly. Synthetic
@@ -30,10 +31,23 @@ sharding and placement.
    demand. A node that passes an equivalent rerun is a qualified flake; its
    source/worker/action evidence is recorded and an existing exact-node owner is
    reused before creating an issue.
-5. Green: post `success` on each included head. In `merge` mode, check that
-   the base branch still points at the tested base, then merge in order with
-   `gh pr merge --merge --match-head-commit <sha>`; if the base moved, the
-   batch is re-queued and re-tested.
+5. Green: retain the tested candidate and publish it to `release-mq/<batch>-<uuid>`.
+   Generate the vehicle ID once and save the branch before publication.
+   Fresh queue states use separate vehicles even for identical candidates;
+   recovery uses the saved branch.
+   Open one vehicle PR listing every member, its approved SHA and `Refs #N`
+   for its linked issues. Post the required context only on the candidate;
+   member heads receive the informational `<context>/members` context.
+   In `merge` mode, wait for `issue-link` success and merge only the vehicle
+   with `gh pr merge --merge --match-head-commit <candidate>`. Strict branch
+   protection supplies the final base check. If main moves, close the vehicle
+   and requeue all members uncharged. Confirm each member is `MERGED` before
+   recording completion. A moved member head closes the open vehicle and
+   requests review; other members requeue uncharged. If a head moves during the
+   final merge race, the vehicle remains a verified merge but that member gets
+   a `member-head-moved` ledger record and the re-review comment. The batch
+   ends as `merged-head-moved` once unchanged members are confirmed. It never
+   claims the moved PR is MERGED or silently adopts its new head.
 6. Red: bisect over batch prefixes, re-running only the newly failing files.
    The first failing prefix names the culprit, which gets `failure` with the
    node IDs and a comment. The other pull requests are re-queued at the front.
@@ -61,18 +75,19 @@ A report owns refusal classification: only its unobserved shards may identify
 runtime refusal. Echoed refusal text from observed failing pytest outcomes is
 ordinary test evidence, never a runtime blocker. Client-log fallback applies
 only when no report exists. All concurrent results are recorded and inspected
-for runtime refusals before any ordinary inconclusive result charges attempts.
+for runtime refusals before classifying ordinary inconclusive results.
 
 A shard with no pytest summary or outcome record and no explicit runtime refusal is inconclusive. Its files
 are re-run up to `inconclusive_retries` times; if they stay unobserved the
-batch posts nothing, re-queues its entries and backs off.
+batch posts nothing, re-queues its entries without charging attempts, and keeps
+the existing backoff.
 
 ## Modes
 
 | Mode | Statuses and comments | Merges |
 |---|---|---|
 | `dry-run` | logged as "would", never posted | never |
-| `status` | posted | never |
+| `status` | posted; creates draft vehicles, then closes them and deletes their branches | never |
 | `merge` | posted | yes; refuses to start unless `merge_enabled_file` exists |
 
 ## State
@@ -90,11 +105,44 @@ evidence; the digest never aliases two full pins sharing a path abbreviation.
 Version3 compatibility includes the actually launched pbtest path and rejects
 older version2 evidence whose generation may have been resolved after execution.
 
-A restart re-queues the interrupted batch's entries at the front and runs it
-again. The ledger keeps a status from being posted twice for the same batch,
-and a merge is skipped when the ledger or GitHub says it already happened.
+Before a green verdict, restart requeues the interrupted entries with their
+pins and attempt counts. After green, it resumes the same persisted candidate
+and branch without another suite run. Vehicle lookup includes open, closed
+and merged PRs, covering a crash after remote creation but before local receipt.
+The ledger records the vehicle, candidate statuses and confirmed member merges.
+Selection verifies that each member references an existing issue in this
+repository, excluding pull request numbers. A missing issue reference refuses
+the member before tests or publication.
+
+Pending checks, transient GitHub refusals and delayed member state updates retain
+the batch for the next daemon tick, up to `green_wait_s`, which defaults to
+3,600 seconds from the persisted green decision. Restarts, crashes during
+publication and changes in wait cause do not renew the deadline. A failed `issue-link` check ends the batch and
+requeues its members with an attempt charge. Expired waits also release the
+active batch. A confirmed vehicle merge never requeues integrated members.
+
+Terminal disposition and any requeue are saved before remote cleanup. Cleanup
+obligations live in `state.json` under `vehicle_cleanup`, outside the active
+batch. They retry up to `max_attempts` with `stuck_backoff_s` between attempts.
+Exhausted obligations stay visible for operator repair and do not hold later
+batches. Status vehicles are drafts and close with branch deletion after the
+verdict. A refused cleanup retains its obligation across restart.
+Dry-run leaves retained cleanup obligations and their retry budgets unchanged.
+Resume in status or merge mode to close the vehicles and delete their branches.
+A repeated `once` reconciles a retained batch before accepting another batch
+and refuses a mode change while it is active. A status refusal never permits
+a merge.
 
 ## Configuration
+
+The queue needs authenticated `gh` commands and authenticated Git pushes.
+`Mirror.push_candidate` runs `git push` from the queue's bare mirror, so
+`gh auth login` alone does not configure its HTTPS Git credentials.
+For an operator-managed GitHub CLI identity, run `gh auth setup-git --hostname
+github.com` as the user who runs the queue. Confirm that the user service can
+access the same credential helper and identity before starting the shadow.
+Managed agent launchers must provide both Git and `gh` capabilities. Keep
+credentials out of queue configuration, unit files, PR bodies, and task comments.
 
 The configured `pbtest` entrypoint is resolved once when configuration is
 constructed, before discovery, module loading or submission. Its retained,
@@ -181,7 +229,7 @@ claim of live configuration or fleet activation.
 ## Commands
 
 ```bash
-pbmergeq.py --config C enqueue PR [SHA]      # any process; prints the daemon's mode
+pbmergeq.py --config C enqueue PR SHA      # any process; prints the daemon's mode
 pbmergeq.py --config C daemon --mode status  # run the queue
 pbmergeq.py --config C once --mode dry-run PR [PR ...]  # one batch, outside the queue
 pbmergeq.py --config C status                # print STATUS.txt
@@ -233,3 +281,43 @@ A supported once does not retain a queued hold or worktree. Its explicit
 known-failure-blocked verdict exits 2, submits no repeated suite and creates no
 success status. This is a source contract, not permission to activate a
 daemon or change the fleet.
+
+
+## PrismaBuild shadow on celestia
+
+The checked-in `tools/fleet/mergeq/prismabuild.json` uses priority 0 for the
+merge gate, ahead of priority -10 self-validation and measurement jobs. It
+publishes all 20 shards with an explicit 3,600-second execution deadline.
+Each shard declares 4 CPUs and 8 GiB with four pytest workers and one native
+thread each, for at most 80 CPUs and 160 GiB across the full batch, with no
+GPU demand. Portable work has no architecture tag. It runs the complete
+`tests` inventory without fleet-data exclusions.
+
+`tools/fleet/mergeq/pbmergeq-prismabuild.service` is a status-only user unit
+with `Restart=always`. Its environment file is
+`/home/rob/pbmergeq/prismabuild/shadow.env`, containing `PBMERGEQ_CLIENT`
+and `PBMERGEQ_CONFIG` as absolute paths to the reviewed source entrypoint and
+this config. The GitHub CLI must have managed repository access available to
+that service. The config deliberately omits `merge_enabled_file`, so merge
+mode refuses even if invoked separately. Installing this unit starts no fleet
+worker, publishes no runtime, and changes no branch protection.
+
+After installing the reviewed unit and its environment file, start only
+`pbmergeq-prismabuild.service`. Do not touch the disabled PrismaQuant unit or
+its state directory. Reviewers can continue manual merges during the shadow
+period. `once --mode status PR PR` captures current heads for a shadow batch
+and creates a draft vehicle without merging it. After recording the verdict,
+the queue closes that vehicle and deletes its `release-mq/*` branch.
+`once --mode merge` refuses
+because that command carries no reviewed SHAs. Approved entries instead use
+`enqueue PR SHA` and the daemon.
+
+Retain a day's batch records and compare each verdict to manual merge outcomes
+on the recorded base and member SHAs. Link candidate action keys, verified
+receipts, vehicle URLs and any stale-base refusals. Source unit tests alone
+establish neither live shadow operation nor the day of comparison.
+After the shadow day passes, the Chief of Staff owns the reviewer switch
+to `enqueue N SHA` and adds `pb-tests` to the required checks on `main`, as
+authorized by Rob on 2026-10-25. Strict mode and `enforce_admins` stay enabled.
+The Chief of Staff posts before/after protection evidence on PRI-1.
+Merge mode remains disabled until separately authorized.
