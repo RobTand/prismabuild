@@ -80,31 +80,40 @@ def test_a_prefix_on_a_different_worker_cannot_identify_a_culprit(tmp_path):
     assert [entry['attempts'] for entry in queue.store.state['queue']] == [0, 0]
 
 
-def test_a_mixed_batch_files_no_flake_when_prefix_environments_differ(tmp_path):
+@pytest.mark.parametrize('different_prefix', [False, True])
+def test_a_mixed_batch_files_flakes_only_after_prefix_environments_qualify(tmp_path, different_prefix):
     queue, origin, github, _ = make_queue(tmp_path)
     origin.pr(1, {'fail-flaky': 'flaky:tests/test_a.py::wobbly\n'})
-    origin.pr(2, {'fail-new': 'tests/test_b.py::broken\n'})
+    bad = origin.pr(2, {'fail-new': 'tests/test_b.py::broken\n'})
 
     class DifferentPrefix(FakeRunner):
         def run_many(self, batch, outdir, jobs):
             results = super().run_many(batch, outdir, jobs)
             for name, _, files in jobs:
-                if name.startswith('prefix'):
+                if name.startswith('prefix') and different_prefix:
                     results[name].environments = {f: {'identity': 'another-worker'} for f in files}
             return results
 
     queue.runner = DifferentPrefix()
     batch = queue.run_batch(entries(1, 2))
 
-    assert batch['verdict'] == 'attribution-inconclusive'
     assert batch['runs']['candidate']['failed'] == [
         'tests/test_a.py::wobbly', 'tests/test_b.py::broken']
     assert batch['new'] == ['tests/test_b.py::broken']
     assert batch['flakes'] == ['tests/test_a.py::wobbly']
-    assert 'culprit' not in batch
-    assert github.calls == []
-    assert queue.store.state['flakes'] == {}
-    assert [entry['attempts'] for entry in queue.store.state['queue']] == [0, 0]
+    if different_prefix:
+        assert batch['verdict'] == 'attribution-inconclusive'
+        assert 'culprit' not in batch
+        assert github.calls == []
+        assert queue.store.state['flakes'] == {}
+        assert [entry['attempts'] for entry in queue.store.state['queue']] == [0, 0]
+    else:
+        assert batch['verdict'] == 'red'
+        assert batch['culprit']['pr'] == 2
+        assert statuses(github) == [(bad, 'failure')]
+        assert [call for call in github.calls if call[0] == 'flake'] == [
+            ['flake', 'tests/test_a.py::wobbly']]
+        assert queue.store.state['flakes']['RobTand/proj::tests/test_a.py::wobbly']['issue'] == '#999'
 
 
 def test_a_cached_base_from_another_worker_is_observed_again(tmp_path):
