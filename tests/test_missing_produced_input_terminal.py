@@ -7,12 +7,12 @@ executed and no real mountpoint is read or removed.
 from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 from prismabuild import adaptive_cpu, pool, produced_output as po
 from prismabuild.record_store import RecordStore
@@ -173,20 +173,21 @@ def test_a_busy_transition_lock_does_not_block_the_claim_pass(tmp_path):
     # holder must be another process, exactly as another box would be.
     holder = subprocess.Popen(
         [sys.executable, "-c",
-         "import fcntl, sys, time\n"
+         "import fcntl, sys\n"
          "handle = open(sys.argv[1], 'a+')\n"
          "fcntl.lockf(handle, fcntl.LOCK_EX)\n"
          "print('held', flush=True)\n"
-         "time.sleep(2.0)", str(lock)],
-        stdout=subprocess.PIPE, text=True)
-    assert holder.stdout.readline().strip() == "held"
-    try:
-        started = time.monotonic()
-        claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
-        elapsed = time.monotonic() - started
-    finally:
-        holder.wait(timeout=10)
-    assert elapsed < 1.0, f"the claim pass blocked {elapsed:.2f}s on a foreign lock"
+         "sys.stdin.read(1)", str(lock)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    with ThreadPoolExecutor(max_workers=1) as claims:
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            claimed = claims.submit(
+                world.q.claim, owner="w-mover", tags=[_tier_host(world.q)],
+            ).result(timeout=60)
+        finally:
+            holder.stdin.close()
+            holder.wait(timeout=60)
     assert claimed is None
     assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     path = (adaptive_cpu.local_state_base(world.q.ledger().base)

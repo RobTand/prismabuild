@@ -8,6 +8,7 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -78,24 +79,27 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
         arguments += ["-n", str(workers)]
     if stop_early:
         arguments += ["-x"]
-    process = subprocess.Popen(
-        [*pbtest.shard_entry(sys.executable, checkout), *arguments, "test_one.py"],
-        cwd=checkout, env=environment, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, start_new_session=True,
-        pass_fds=(write_fd,))
-    os.close(write_fd)
-    try:
-        if worker_exit:
-            with pytest.raises(subprocess.TimeoutExpired):
-                process.communicate(timeout=10)
-        else:
-            ready, _, _ = select.select([read_fd], [], [], 30)
-            assert ready, "The shard did not reach the controlled blocker."
-            assert os.read(read_fd, 64) == b"blocked\n"
-    finally:
-        os.close(read_fd)
-        os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate(timeout=10)
+    with tempfile.TemporaryFile(mode="w+t") as stream:
+        process = subprocess.Popen(
+            [*pbtest.shard_entry(sys.executable, checkout), *arguments, "test_one.py"],
+            cwd=checkout, env=environment, stdout=stream,
+            stderr=subprocess.STDOUT, text=True, start_new_session=True,
+            pass_fds=(write_fd,))
+        os.close(write_fd)
+        try:
+            if worker_exit:
+                with pytest.raises(subprocess.TimeoutExpired):
+                    process.wait(timeout=10)
+            else:
+                ready, _, _ = select.select([read_fd], [], [], 30)
+                assert ready, "The shard did not reach the controlled blocker."
+                assert os.read(read_fd, 64) == b"blocked\n"
+        finally:
+            os.close(read_fd)
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
+            stream.seek(0)
+            output = stream.read()
     if worker_exit:
         stacks = [path.read_text() for path in checkout.glob("worker-stack-*")]
         assert len(stacks) == workers
@@ -236,3 +240,17 @@ def test_complete_tests_without_final_outcomes_cannot_make_an_exit_zero_green(
     assert record["ran"] is False
     assert code == 1
     assert "0/1 shards green" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["single", "xdist"])
+def test_blocker_readiness_survives_output_larger_than_a_pipe(
+        tmp_path, monkeypatch, workers):
+    diagnostic = "blocker diagnostic\n" * 65536
+    monkeypatch.setattr(sys.modules[__name__], "BLOCKER", BLOCKER.replace(
+        "    faulthandler.dump_traceback()",
+        f"    os.write(2, {diagnostic.encode()!r})\n"
+        "    faulthandler.dump_traceback()"))
+    output = blocked_shard(
+        tmp_path, workers=workers, incomplete=False, exit_hook="unconfigure")
+    assert diagnostic in output
+    assert pbtest.pbtest_outcomes.pytest_summary(output.splitlines()).startswith("2 passed")

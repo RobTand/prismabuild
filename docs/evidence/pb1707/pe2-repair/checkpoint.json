@@ -1,0 +1,128 @@
+{
+  "schema": "pb.1707_pe2_repair_checkpoint.v1",
+  "source_approved_before_repair": "efff85c6f1c49d789afa733b36364be4a3b0d5c0",
+  "structural_commit": "ec746b50da30e4d4156cee8955bcd2d31ae40d30",
+  "fixture_commit": "00008cc027f790cc66389b32df24266b2d4de32f",
+  "integrated_main": "89650d873760adf6b0d21981fd0f2d4f4e5de8df",
+  "qualified_focused_source": "3b732a3495549a1944b0fad0330a129763ad7ea6",
+  "reproduction": {
+    "actions": 2,
+    "failed": 2,
+    "success_receipts": 0,
+    "audit": "repro-audit.json"
+  },
+  "structural_verification": {
+    "actions": 6,
+    "passes": 97,
+    "original_failures_retained": 2,
+    "success_receipts": 4,
+    "audit": "refactor-audit.json"
+  },
+  "repaired_focused": {
+    "actions": 7,
+    "passes": 130,
+    "failed": 0,
+    "success_receipts": 7,
+    "audit": "repaired-focused-audit.json"
+  },
+  "causal_limit": "Vehicle12 and new originals prove integration expectation breaks with immutable historical fixture bytes. Neither original setup sealed execution_timeout_s. These records do not prove loss of a true sealed explicit deadline or failure of funded-export bypass. Corrected fixtures now request that finite authority before publication and preserve all 22 original assertion ASTs.",
+  "qualification": "five rounds per touched test file per architecture, two xdist rounds, and broader integrated regression selection still owed",
+  "candidate_deployment": "not deployed; no runtime publication or restart",
+  "whole_requirement_axes": "unchanged; this checkpoint grants no axis promotion or target completion",
+  "incoming_requirement_rows": {
+    "SC-03": {
+      "owner": "PB:docs-process",
+      "implementation": {
+        "commit": null,
+        "path": null,
+        "state": "no"
+      },
+      "validation": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "deployment": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "unknown",
+        "state": "unknown"
+      },
+      "target": null
+    },
+    "PRG-03": {
+      "owner": "PB:pool-claim",
+      "implementation": {
+        "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:abb13ff58bf7 (#948) and 0411c83330da (#970) remove two refusal loops; f5ae2a06efc9 (#969) starts no read on an expired wait. PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable. 2026-09-23 PB#989 (branch fix/989-expected-landing, not merged): the tier loop publishes <consumer>.landing.json (each pending range's mover, state and expected landing), and the no_progress rung exempts a consumer's declared wait on its own staged range while the mover is ready or claimed, or the range waits on a live window; recorded as staged_wait_exempt_s. 2026-09-23 PB#1010 (branch ws-mp/mover-progress-1010, not merged): a stage mover with a measured landing rate is sealed with progress phases start, copy and warm, reports landed bytes on the heartbeat, and ends no_progress after ceil(unit / rate + 2 * HEARTBEAT_S) of charged quiet; the worker credits, rather than charges, intervals its own sample of the sealed pool members reads over the pacer's caps or blind, and a start-gate wait on a live egress, and records the credited seconds; the landing record prices a claimed copy from its last report (basis reported). PB#1011 (branch fix/1011-claimed-consumer-order, not merged): a ready or claimed mover exempts its consumer only on evidence (a ready row refused by the claim pass on every host exempts nothing, one it withholds for exempts until WITHHOLD_CEILING_S past the withhold's epoch; otherwise its bytes_ahead in the landing record must fall within the evidence window, the phase grace floored at OFFER_TIMEOUT_S, or a mover queued ahead of it at the wait's first check must be claimed with a live lease; a claimed mover's report must be within two heartbeats or have grown since the previous check, or its lease must be live); on an over-committed stage tier the range a claim order holds back is unpublished in the landing record, naming the consumer ahead, the GiB and a priced landing; staged_wait_verdict exempts a held-back consumer while the consumer ahead shows growth (accepted_count, staged_wait_exempt_s, or an exempt wait of its own) within the evidence window or its own watch has not ended it (a live lease and quiet_s within grace_s), the head and granted consumers while the tier loop lives, no standing when relief is refused or unknown, and, when relief is futile with nobody granted and every ranked consumer blocked, every consumer but the one stuck victim, the lowest ranked.",
+        "path": "src/prismabuild/pool.py residency_verdict pending paths; mover retry/timeout policy",
+        "state": "partial"
+      },
+      "validation": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #948 base 06f967048e46 (3 failed, 2 passed), head 6c5341cc569c (5558 passed), mutant e55d70da5570; #970 red 4ef563d6429c and afa1f02853aa (53 named failures), targeted 7b9d621ef31b, d98e7a4c04c0, f4f4f3db321b, 78a2132a0024, 5e3135f1076e, 57f88d722225 (255 passed); #969 red c6a01dc82d3f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green c31dff7965fb (36 passed: the new file's 28 and test_a_stage_proof_runs_outside_the_ownership_lock.py); broad stage_move, pool and tier_loop set 47cdadc0b7fa, c0c14a671b8a, 00adfc3479f8, 1217417e52ce, 71faebe99958, cb6ba37e21df, 74bafed1912d, c7aed681fd68 (2,402 passed); mutants 6644443e38dd (15 of 15 killed). Component tests only; not deployed. 2026-09-23 PB#989: red f88e948e9747 and a55597ef3e0e (7 failed on main's code); green 4aa8a78896b3, 9331534a60b1, aac8fd179f51, 0da3a5a8be6d, 5061f3d9e456, 677d426943c3 (1,498 passed: the tier_loop, residency_plan, window_credit and progress set). Component tests only; not deployed. 2026-09-23 PB#1010: red 4f6515ea6c21 (17 failed on main's code; the stalled mover ended execution_deadline at 20.6 s); green 3b2e152f2579 (17 passed); whole suite at 395f0eac201a 2562bd1ed0c3, 0d19e51d088a, 26defde2f1ba, 5f708040ebfc, 5c8b6a4407fa, 7f1c87245cea, e52b483209b4, c181ec9636e7 (7,843 passed, 4 skipped, 1 failed: test_progress_reporting_is_reachable_from_any_action's helper test read its progress record as CASTamperError under load, and the file passed 41 of 41 alone on the branch a40aa1315f9e and on main 2c245ee4693e).. Review round (contention credit): red on the previous head 38e3c3b6d889 1fb6613060ae (4 of 4 selected failed: the pacer hold, the tenth-rate copy over the caps and the start-gate wait each ended no_progress at one 4 s grace; the under-cap kill had no stall record); green on 2d9b0c759689, rebased on 18751b6f6026: 9f8c586128fd (26 passed) with eight related files (141 passed); whole suite 126696b940dc, 7021963d68f5, 14b20712e370, 8b8e44272360, d950d09a12b8, 1ad05e20476c, abb3d96301db, c57c6645256e (7,871 passed, 4 skipped, 0 failed). Second review (the pacer's hysteresis): red on f769c2daec8b aa3d58642fe3 (2 of 2 selected failed: the probe read 0.7 of the cap as under after an over interval, and the mover held there was killed at one grace); green on 29e8ec77e26b d604074eb4f2 (28 passed) with ten related files (174 passed in all); whole suite 84e0b4efd25f, 57226d032223, d192c083523d, da9cef645272, c651f434a630, 5e6821e62914, 4ed0ff8efaa2, 215bf6bb612a (7,873 passed, 4 skipped, 0 failed). Component tests only; not deployed. 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #948, #969 and #970 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732. PB#966 has no fix, so its refusal loop is not addressed by any deployed code. PB #1707 candidate is not deployed; this task prohibits runtime publication.",
+        "state": "yes"
+      },
+      "workload_proof": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): No. On 81d95cba8d91-1790160372-5d100532e024 a mover waited on the wrong typed refusal for 1,596 passes (PB#944); an oversize chunk looped instead of refusing at seal as unsupported-workset (PB#965); a deterministic refusal reran without end (PB#966).",
+        "state": "no"
+      },
+      "target": null
+    },
+    "PRG-04": {
+      "owner": "PB:tiers",
+      "implementation": {
+        "commit": "PB:af6234389dfc5cafd1fef0fcf5af3cd0a3ab3420; 2026-09-23 update (snapshot 13:50Z): PB:97faa0e67200 (#928) charges refill horizons and owed outputs jointly; 2c55b69482ef (#931) withholds per holder; 4448dd9dcec5 (#956) reports joint-commitment stalls (not deployed). PB#966 fix in review on branch fix/966-mover-dead-owner, not merged: a divergent staged name is settled by its owners' states -- an ended owner's copy is replaced by rename, a live owner is a terminal staged_destination_conflict that retires the mover's window, an unproven ending stays retryable. 2026-09-23 PB#1011 (branch fix/1011-claimed-consumer-order, not merged): a deterministic next-step policy for claimed consumers on an over-committed stage tier -- window_credit.claim_order ranks blocked first, longest blocked first among them, then claim time; tier_loop.evict_beyond_horizon makes the head's room from what is ranked after it (Belady against the head's landing time for a blocked head, whole or declined, no futile eviction), and last preempts the landed reading-phase chunks of blocked consumers ranked after the head; one head is served a cycle. Its stuck state (relief futile, nobody granted, every ranked consumer blocked) ends one consumer a cycle, the lowest ranked (window_credit.stuck_victim). A range several claimed consumers read is still charged per consumer.",
+        "path": "Existing tier/window ledgers now reserve protected next steps, gate competing consumers and recover exact funding transfers; tier_loop._protect_tier_advances/_settle_terminal_fence and pool._reserve_fence_locked.",
+        "state": "partial"
+      },
+      "validation": {
+        "detail": "PR746 root-reviewed component behavior: 71 passing tests across six recorded scopes with real tiny stage/RAM copies, two-consumer progress, cleanup and short-transfer recovery; four R4 failures reproduced before the fix. See window_progress_acceptance_2026-09-20.json. PR758 additionally repairs feasible stage-newcomer orphan relief (88 passing integrated CPU tests; scoped limits in orphan_pressure_acceptance_2026-09-20.json). Live full-workload conformance remains unproved; produced-output integration and stale donor recovery remain separate. 2026-09-23 update (snapshot 13:50Z): #928 red e05102b65674, ee8e749f8fa2; #956 red 30bd4d48e56f. 2026-09-23 PB#966 (WS-RM, branch fix/966-mover-dead-owner): red e0f20aba3642 (8 failed on main's code); green c31dff7965fb (36 passed: the new file's 28 and test_a_stage_proof_runs_outside_the_ownership_lock.py); broad stage_move, pool and tier_loop set 47cdadc0b7fa, c0c14a671b8a, 00adfc3479f8, 1217417e52ce, 71faebe99958, cb6ba37e21df, 74bafed1912d, c7aed681fd68 (2,402 passed); mutants 6644443e38dd (15 of 15 killed). Component tests only; not deployed.",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): #928 and #931 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #956 is merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
+        "state": "yes"
+      },
+      "workload_proof": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): No. On 81d95cba8d91-1790160372-5d100532e024 consumer a7d31a4da9c1 was never admitted while a rerunning mover held 365 of 730 fill tokens (PB#966).",
+        "state": "no"
+      },
+      "target": null
+    },
+    "LIVE-01": {
+      "owner": "PB:tiers",
+      "implementation": {
+        "state": "partial",
+        "commit": "PB:944a8d8ae0cbb5049a2f0f51596d96bb0749dd57 (PR #2069, source candidate)",
+        "path": "src/prismabuild/pool.py ActivityWatch and execution loop; src/prismabuild/contracts.py; src/prismabuild/record_store.py"
+      },
+      "validation": {
+        "detail": "unknown 2026-10-25 PB #1707 source/component scope: default activity and semantic phase supervision, explicit deadline/D30 precedence, bounded per-claim running logs, and an explicit-allowance capability fence. Focused PB actions 9f9f5df619064cfba4ab07cb30a429090b19ee5a5a9d39667d2e6c7f0ad8219d, 3efc60d73c7f39cb8e4dc63c574b08f4a4b510ad0046d53f9c6b6e5b3597417f, 0d048f35f829158680cff9447cfda56acd9d0f41a25911f9077cabdd92a817e1, aaa3f4424c9d3cd70196d150eef9a75b2d3fd0bd780d55e4294f0bb8f64429dd: 72 passed. The scoped acceptance record is docs/evidence/pb1707/merge-acceptance.json. This does not establish the whole requirement, staged-reader behavior or workload proof.",
+        "state": "partial"
+      },
+      "deployment": {
+        "detail": "unknown PB #1707 candidate is not deployed; this task prohibits runtime publication.",
+        "state": "unknown"
+      },
+      "workload_proof": {
+        "detail": "2026-09-23 update (snapshot 13:50Z): No. Three R13 launch attempts on 81d95cba8d91-1790160372-5d100532e024 stalled: PB#944, PB#965 and PB#966. PQ#1080 ended a fourth attempt with a refusal, not a stall.",
+        "state": "no"
+      },
+      "target": null
+    }
+  },
+  "worker_signing_keys": "not checked",
+  "related_reproduction": {
+    "actions": 1,
+    "passes": 9,
+    "failed": 1,
+    "audit": "sibling-repro-audit.json",
+    "case": "tests/test_a_producers_exports_run_on_its_allowance.py::test_a_withholding_foreign_action_does_not_hold_the_export_out",
+    "correction": "same finite producer declaration as family case; original assertions preserved"
+  },
+  "original_assertions_preserved": 34
+}

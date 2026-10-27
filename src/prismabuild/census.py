@@ -237,8 +237,8 @@ def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str
     The column beside it -- OUTPUT age -- is the number #480 says proves
     nothing: a launcher writing log lines is not an application committing
     work.  This is the other reading, and it is the one the watchdog acts on.
-    ``None`` when the action declared no policy, so a whole-run ceiling still
-    governs it and ``KILL AT`` is the number to read.
+    For activity supervision, output and CPU totals explain the renewed quiet.
+    ``None`` means no observation is available, never proof of a deadline.
 
     Held to the same attempt identity as the execution observation: a lease
     naming another claim describes another run.
@@ -257,9 +257,22 @@ def _progress_observation(claim: dict, lease: dict | None, *, now: float) -> str
     phase = value.get("phase")
     accepted = value.get("accepted_count")
     said = f"{phase if isinstance(phase, str) and phase else '?'} "
+    committed = value.get("last_accepted")
+    if value.get("source") != "activity" and isinstance(committed, dict):
+        units = committed.get("units_completed")
+        if type(units) in (int, float) and math.isfinite(units) and units >= 0:
+            said += f"committed {units:g}"
+            unit = committed.get("unit")
+            said += f" {unit} " if isinstance(unit, str) and unit else " "
     said += f"quiet {float(quiet):.0f}/{float(grace):g}s"
     if type(accepted) is int:
         said += f" ({accepted} accepted)"
+    if value.get("source") == "activity":
+        out, cpu = value.get("stdout_bytes"), value.get("cpu_seconds")
+        if type(out) is int:
+            said += f" out {out}B"
+        if type(cpu) in (int, float) and math.isfinite(cpu):
+            said += f" cpu {float(cpu):.0f}s"
     return said
 
 def _execution_observation(claim: dict, lease: dict | None, *, now: float) -> dict:

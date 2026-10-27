@@ -61,6 +61,7 @@ def test_starved_fixture_dates_observations_after_landed_files(tmp_path, monkeyp
     from types import SimpleNamespace
     import pbmcp_fixture as fixture
 
+    monkeypatch.setattr(fixture, 'STARVED_GIB', 1024)
     clock = [1700000000.0]
     monkeypatch.setattr(fixture, 'time', SimpleNamespace(time=lambda: clock[0]))
     publish = residency_publication.publish_landed_files

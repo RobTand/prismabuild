@@ -1,0 +1,964 @@
+{
+  "schema": "pb.1707_counter_qualification.v1",
+  "counts": {
+    "passed": 1500
+  },
+  "distinct_executed_actions": 54,
+  "successful_receipts": 54,
+  "scope": "Source/component only; no deployment or workload proof. Earlier failures and eight crash-era exclusions remain recorded.",
+  "source_comparison": {
+    "schema": "pb.1707_counter_revision_source_comparison.v1",
+    "reviewed_head": "117c410f788cfd0312337e7b83680e5f3b552b74",
+    "qualified_source": "b530faad8d8218fe7e9bb805cc94f399a81dfda1",
+    "revision_source": "5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+    "revision_tree": "ad42857e340de83087417ad0a4171df5f3733e3a",
+    "delivered_head": "eca345a74ea4c7d5f83d6898d351e515d9cd31af",
+    "delivered_tree": "ad42857e340de83087417ad0a4171df5f3733e3a",
+    "main_integrated": "954e14171565e849198cd0287abe24ff1ea7d076",
+    "previous_paths": [
+      {
+        "path": "src/prismabuild/_measurement_reservation.py",
+        "qualified_blob": "a2a154fd0f953fe45032f2b6da3e9a7e2a8d3d1b",
+        "revision_blob": "a2a154fd0f953fe45032f2b6da3e9a7e2a8d3d1b",
+        "equal": true
+      },
+      {
+        "path": "src/prismabuild/census.py",
+        "qualified_blob": "86eef56d7220d0577012269d027a366173c27ca8",
+        "revision_blob": "330c5b3379ab520a4189c429fe58ad0bb138089e",
+        "equal": false
+      },
+      {
+        "path": "src/prismabuild/contracts.py",
+        "qualified_blob": "43d60c472496c274d9fb37a6f03e51614013fc52",
+        "revision_blob": "43d60c472496c274d9fb37a6f03e51614013fc52",
+        "equal": true
+      },
+      {
+        "path": "src/prismabuild/core.py",
+        "qualified_blob": "0c9b60974e63942bd0b49ed5d3c6edb11b64cc52",
+        "revision_blob": "0c9b60974e63942bd0b49ed5d3c6edb11b64cc52",
+        "equal": true
+      },
+      {
+        "path": "src/prismabuild/pool.py",
+        "qualified_blob": "7b079c1f458a117dd8ee4294bb8ef352cf674be3",
+        "revision_blob": "5639eaf596fd8fe65a186cd01a2c40cce537aadd",
+        "equal": false
+      },
+      {
+        "path": "src/prismabuild/record_store.py",
+        "qualified_blob": "20f280cf163e187b34506df09ae08b5067e43c8b",
+        "revision_blob": "20f280cf163e187b34506df09ae08b5067e43c8b",
+        "equal": true
+      },
+      {
+        "path": "src/prismabuild/submission.py",
+        "qualified_blob": "d1cc7de37773b476f66b805e0c854082a1832ca6",
+        "revision_blob": "d1cc7de37773b476f66b805e0c854082a1832ca6",
+        "equal": true
+      },
+      {
+        "path": "src/prismabuild/submission_types.py",
+        "qualified_blob": "98ba9675ace68568f0dff96fdc03a8ad4dfa8c95",
+        "revision_blob": "98ba9675ace68568f0dff96fdc03a8ad4dfa8c95",
+        "equal": true
+      },
+      {
+        "path": "tests/compat/capture-receipt.json",
+        "qualified_blob": "6171a64bad2027770f219ed394e712b4e0f27a9e",
+        "revision_blob": "6171a64bad2027770f219ed394e712b4e0f27a9e",
+        "equal": true
+      },
+      {
+        "path": "tests/compat/goldens-receipt.jsonl",
+        "qualified_blob": "fc6a2933bc534201decb11890f63cafe9dfc83be",
+        "revision_blob": "fc6a2933bc534201decb11890f63cafe9dfc83be",
+        "equal": true
+      },
+      {
+        "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/capture-receipt.json",
+        "qualified_blob": "ee86df6a3f33fa816d7880687539777e9a14eef2",
+        "revision_blob": "ee86df6a3f33fa816d7880687539777e9a14eef2",
+        "equal": true
+      },
+      {
+        "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/goldens-receipt.jsonl",
+        "qualified_blob": "f14b7b6f999692f9d63752afdb70d14e71134f26",
+        "revision_blob": "f14b7b6f999692f9d63752afdb70d14e71134f26",
+        "equal": true
+      },
+      {
+        "path": "tests/compat/history-controls/superseded-runtime-54a45eeafcdd8d67/provenance.json",
+        "qualified_blob": "bee27ac097b3a767c6e33a569ef839268ac68acf",
+        "revision_blob": "bee27ac097b3a767c6e33a569ef839268ac68acf",
+        "equal": true
+      },
+      {
+        "path": "tests/test_1707_activity_signal_boundary.py",
+        "qualified_blob": "0106f18d87290b6738d1083fef10d23a510b1922",
+        "revision_blob": "0106f18d87290b6738d1083fef10d23a510b1922",
+        "equal": true
+      },
+      {
+        "path": "tests/test_1707_default_stall_repro.py",
+        "qualified_blob": "5bc5b817e4a9b578b1ecc0cc870320c930de82cc",
+        "revision_blob": "5bc5b817e4a9b578b1ecc0cc870320c930de82cc",
+        "equal": true
+      },
+      {
+        "path": "tests/test_1707_progress_supervision_by_stall.py",
+        "qualified_blob": "82d8096a752b5dfd21b2a90c061869ff7c453c31",
+        "revision_blob": "82d8096a752b5dfd21b2a90c061869ff7c453c31",
+        "equal": true
+      },
+      {
+        "path": "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py",
+        "qualified_blob": "66c0c5ad67a817ad57785e762a01d9a4ae2e149a",
+        "revision_blob": "66c0c5ad67a817ad57785e762a01d9a4ae2e149a",
+        "equal": true
+      },
+      {
+        "path": "tests/test_census_sections.py",
+        "qualified_blob": "dc02b8add9413116ac845ed1c36e042d6af51f25",
+        "revision_blob": "7571d0a501d3bfb051b5388e7028885bf3f8caf0",
+        "equal": false
+      },
+      {
+        "path": "tests/test_contained_deadline_profile.py",
+        "qualified_blob": "ad40adb856b3e0aad832caf2e17acbc8b1c42a51",
+        "revision_blob": "ad40adb856b3e0aad832caf2e17acbc8b1c42a51",
+        "equal": true
+      },
+      {
+        "path": "tests/test_contract_registry_publication.py",
+        "qualified_blob": "d342c789604026107ce01c168878a1e1e9ecb0b6",
+        "revision_blob": "d342c789604026107ce01c168878a1e1e9ecb0b6",
+        "equal": true
+      },
+      {
+        "path": "tests/test_execution_budget_is_stated_not_silent.py",
+        "qualified_blob": "c5a767d089a29579593f005c4fa08725836d4eff",
+        "revision_blob": "c5a767d089a29579593f005c4fa08725836d4eff",
+        "equal": true
+      },
+      {
+        "path": "tests/test_measurement_reservation_backfill_1419.py",
+        "qualified_blob": "1f1ec523753868f7d10d5f401a3abbceb2708d05",
+        "revision_blob": "1f1ec523753868f7d10d5f401a3abbceb2708d05",
+        "equal": true
+      },
+      {
+        "path": "tests/test_progress_keeps_a_working_action_alive.py",
+        "qualified_blob": "ebc1cc42e5b10ff05a2d807a00847c10399b0b73",
+        "revision_blob": "c46f58bb39aa7a545a722aed4b20efb48e2319d4",
+        "equal": false
+      },
+      {
+        "path": "tools/fleet/pbrun.py",
+        "qualified_blob": "7fc52d5b383560432a78bce032d7f03c3003c17f",
+        "revision_blob": "7fc52d5b383560432a78bce032d7f03c3003c17f",
+        "equal": true
+      },
+      {
+        "path": "tools/fleet/worker_loop.py",
+        "qualified_blob": "e8a04d7b563a34cdfe13c86ca9ca1f93e0200d5c",
+        "revision_blob": "e13b948d44d8b169d902adcf7177560611068002",
+        "equal": false
+      }
+    ],
+    "new_test_path": "tests/test_pbstatus_pool.py",
+    "prior_evidence_scope": "20 of 25 retained blobs equal b530faad. Changed census, pool, worker_loop and both revised expectation files have fresh component integration evidence. No current-main composition is claimed.",
+    "qualification_pending": false,
+    "main_observed": "6185a6ee60f32cea85e4c45144493767a7477998",
+    "main_integration_policy": "No additional rebase after first review; merge train owns current-main composition (merge-via-batch-20261026).",
+    "main_changed_qualified_paths": [
+      "src/prismabuild/_measurement_reservation.py",
+      "src/prismabuild/census.py",
+      "src/prismabuild/pool.py",
+      "src/prismabuild/record_store.py",
+      "src/prismabuild/submission.py",
+      "tests/test_census_sections.py",
+      "tools/fleet/worker_loop.py"
+    ]
+  },
+  "groups": [
+    {
+      "source": "0f914f44a85ea10b1e332e93f7919e05f81dceea",
+      "plan": "/mnt/shared/paperclip-runs/PRI-43/counter-plan-0f914f44.json",
+      "plan_sha256": "9efcba612f188f8c3499e49cf83434827e95654a2a0514645438aed39d69cefd",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/counter-audit-0f914f44.json",
+      "audit_sha256": "c237d477f1484ebc04267953711f075fdbfe0299e3353dd3ad979f05d98107c5",
+      "rows": [
+        {
+          "id": "x86_64-1",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "7bb561b58f64501787f84651d7d3b3d808debcf8e9e960afd3e2ce45ffed315f",
+              "receipt": "ae7595311194d72f8382518a6115c8b2553e0858a11af7c5314493d24d856df9",
+              "worker": "dl380g10",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-1",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "4252035d1973d6790ccde77234572880ef7503494cece71fd0ccbd596d4232c4",
+              "receipt": "d258ac885c1fe7246518340a37f416d0a49d91c7d81730b5f9eb1daf632bc0a6",
+              "worker": "sparklina",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-2",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "a6bd1e83d388ad0dc881132b2f889b14e9e0ba4bb304d488ac824ded708312bd",
+              "receipt": "6d315da6e6a4a3f1e052c2e344b3b186922f391ec287cdd3de9c12ead070a4f3",
+              "worker": "dl380g10",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-2",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "c1cbee6c1edb22b69d1b0827f833c3fc3e78912002fedecc6a3d01240faa08f9",
+              "receipt": "d48eb794d7876508eb58f480abda193ed9aa9089c65b066a9a6b229c17104e5e",
+              "worker": "sparky",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-3",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "8384511fac59ae8fba34a0b1a788dcdeef05cf3845759856041a5df8695e9d3d",
+              "receipt": "e9a1f369fc791940edb1f4e771f1b9b0eaa43806d6b2f194a021acadaef3b429",
+              "worker": "dl380g10",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-3",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "eda9e8e361eaa25324f726665def319a5435bdabb4cadc8086ef5e0842bd6d9b",
+              "receipt": "e2aa2d3e484d0cf5228c2e2f8acd32e396b75edd879a0e0373b9a03c57eefd16",
+              "worker": "sparklina",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-4",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "33360a5af4ad560bef8baf1d57f08872f7ea33cb31c4407fc1a9c319eac03420",
+              "receipt": "53d309ec9e57da3449e07d3e1aae0050fde8e6f9ddcd42a266c1963f6e480653",
+              "worker": "dl380g10",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-4",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "74248bb1971ad3bc41e21da580f100d472c3d2c8b9109a57f704c950eb4d1006",
+              "receipt": "d43728cecb605312b76e1b9f08e42e93d1f58cfc1a97a372bbbeb64c6f5fcb2e",
+              "worker": "sparklina",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-5",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "6a5d7c7ba0c251ad6799bfd7b99c42225e2976128a07f9e72336f2fac6e463da",
+              "receipt": "45c3b62bb6af3a41e2205e83371e742797b6a920d31767b5c18ee373019535b8",
+              "worker": "dl380g10",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-5",
+          "counts": {
+            "passed": 28
+          },
+          "actions": [
+            {
+              "key": "f9843fb48d371fa46c0cc07190c83c20eab5fb28deb2bede0b9a90c69acd5657",
+              "receipt": "b665da03e00e7ab490f44b3c8872c61a72ddf034ac4f8a1c565d067ede55a8e3",
+              "worker": "sparky",
+              "selected": 28,
+              "files": [
+                "tests/test_pbstatus_pool.py"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source": "687714c72a894628ce957a42da3f258c99cc911b",
+      "plan": "/mnt/shared/paperclip-runs/PRI-43/counter-followup-plan-687714c7.json",
+      "plan_sha256": "c3dabcfc3c78bb68c761a544f426fe2d5a4e1155509c21a704b5719b8f02cdc3",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/counter-followup-audit-687714c7.json",
+      "audit_sha256": "555ac1ded0f58230ced12ed13f999fc5a4f1c879e38b5055945bcfd2da3300d7",
+      "rows": [
+        {
+          "id": "x86_64-1",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "d014fbc1a11ab39861fd09a6d10c69d04921b7c6db5bd43f9de9e2efd1528d3d",
+              "receipt": "60da645e93f16050dac124b58d9b3aab9ff3803d06391722b55aab89c547de6f",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-1",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "b92669b27b19645562dbe325ac4022fca2c5715c48446a05fa3f4c0907d89950",
+              "receipt": "71162ee3946b6d000b6392dc1cfbb0ddde456370972786dcd0bcf62cacd642d1",
+              "worker": "sparklina",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-2",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "6e5799bcd97948e2c4a1b7fd934e5f9274e8909cc5bf90dc70741240106d765f",
+              "receipt": "d14c96140a1767dac08e93dc566df10ad6736b910721a6cb20ce05d348202693",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-2",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "5a7334350cfbc1ba666a41b2ba11c33e3ec48165b6aa2d9125e80bccbcbaf7b0",
+              "receipt": "c00910b7f5f218072027cb05e217ca6db9e5534bcc68e514ac34765aaf5f3bdb",
+              "worker": "sparklina",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-3",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "9eb47cd2d73c860b577120ddf07203fb71429a5bff330fb9bb53b347b2b1ae13",
+              "receipt": "56cec707d2381b0583b42df12b3e1e2e0ac5431c4dcdd0a5cee23fea6f59d203",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-3",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "4aef501d123fc116840411eb812fec953900a6eb4eeddf0774e37f6e6a338675",
+              "receipt": "0c04cbb16162cea22c33ff77722f4f36d93927c2cdb09d6c29d85909fb08017d",
+              "worker": "sparklina",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-4",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "b40845cfc318eaf772a265c35b506b284e7f69dbbf92969e82a22f97f483f898",
+              "receipt": "c204e78893d6fce2f05f94112a536ddf2403572f8044a1829ee0acd2b262a0cc",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-4",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "62d15752f7005dd5238fcefeabf904cd4f1bf1e027cf439461a00cbe786ff1e5",
+              "receipt": "ef0824f3dafd9cd826ee4b5684c082136108a9f6fff097b5c0598ece97eb356a",
+              "worker": "sparky",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-5",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "3c215f5901409dfc056c55e283db9c6fa82c76be3efecccf3c8b0baa2a6a3099",
+              "receipt": "70cc5f1e7ec7133e6dfe3ef278c430efb95854631042b73f66d2f1f9b4494458",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-5",
+          "counts": {
+            "passed": 50
+          },
+          "actions": [
+            {
+              "key": "e8e07c00175b58dffa1972c48a238f9c1bb98523cbb56087aecd24a5213672fd",
+              "receipt": "83a5b3956980a503a8e583bf7b8763e377de702e836f374218c1dddf12cc8cd8",
+              "worker": "sparky",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source": "5482fb5e2ee3887ca08eb0acded230a96361c3f8",
+      "plan": "/mnt/shared/paperclip-runs/PRI-43/counter-parity-plan-5482fb5e.json",
+      "plan_sha256": "c968a8ada9954a89b07f666b81526653cab44e71b8c3f21d777ba413f254e132",
+      "audit": "/mnt/shared/paperclip-runs/PRI-43/counter-parity-audit-5482fb5e.json",
+      "audit_sha256": "f3b67292ae7f8056833fa91458766d88c446e349dbd8eadbd7314032127f40aa",
+      "rows": [
+        {
+          "id": "x86_64-1",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "34367c4b6b9e499e705ecfba161282e1a36f53ee8255c9c8aa9ffd550212466c",
+              "receipt": "2b5889a78386d4b3c6c061f04668eb8cf9bf8430a8d5146b68696880a7c23e72",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-1",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "1ecbea8d7c0cdd54374616416727e10c2c1f596c502733ebfa4fe5802651dad4",
+              "receipt": "2d25ba0c0474ed49c6f6d97083ca8b4c2ef2b682abb488b3d8ab2baff6b1e8f2",
+              "worker": "sparklina",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-2",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "8e63a42dcd7d0511221385bbed1ea88fdc4694a452a49967660aa75b5f436ec3",
+              "receipt": "8a8003a7762afcedd07ff576b4c3631acb03a638bb4810afa98294b78ed74358",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-2",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "bf85011ff45b9b563c42da08f9a86a2aa6e46717edaf7f9ac83b4a0f6a19238c",
+              "receipt": "0f46424a416c79f8516dc93a61915c42686b8a90ad48fd60a388d70ee98dbf07",
+              "worker": "sparklina",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-3",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "10ccb06f96e5d7582092d54af846132d8b969a646c56ada47fa09fa0013aabd1",
+              "receipt": "0a054f96a70f183981fc12403f51bae5543c6b9bf6b118790d8156ffe04e15c0",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-3",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "9af5ade65a496cb81876fc791af27368380600ece3580b5dbb8af7b2ba624686",
+              "receipt": "2d2293becb56b6f39a3079b01147ee1c9b84a006b18b238c10deb50a692ad865",
+              "worker": "sparklina",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-4",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "1da4a256d773d703e2c3b6de5b06ea446e03ada55581b6b4cffdc479e4b3ea51",
+              "receipt": "6d5693989464046fa1823d7d47cf46a7d3207b29165c29d4df6591452233cee2",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-4",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "7e6691e54aca0843bddd8917c2e7e18bcd76b5a0595f7bf5df6771c7596ce23e",
+              "receipt": "ecab6e89050a3d2320e18e58b65fb8fee648a8919730bcb0c5a9dec06feefc64",
+              "worker": "sparky",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-5",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "f8d6acd219f87195fd025a539b7a5d1c02562e84fb807e83cf636261eddb2755",
+              "receipt": "81ac5d6a86056e70c4f516f549f014d4caec6d0f52c24bb2c86f772d9767909a",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-5",
+          "counts": {
+            "passed": 18
+          },
+          "actions": [
+            {
+              "key": "520b6efaf494266f1135b2bdb8c8ebf4bbffc8f13ab11abafe65eb320b196afe",
+              "receipt": "a40459629a380284880eb9f148ac01d059b79819d52734b789d65625e38dd02c",
+              "worker": "sparky",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "x86_64-integration",
+          "counts": {
+            "passed": 270
+          },
+          "actions": [
+            {
+              "key": "a1aa3175155ab45e8f04005e7bb1196a7e6dfe5df7745b090a20ea52bf87615b",
+              "receipt": "112df2196bed42c26e63a53ecaee7005bfc78d19f7640262cc9e04cf4924c810",
+              "worker": "dl380g10",
+              "selected": 19,
+              "files": [
+                "tests/test_1707_activity_signal_boundary.py"
+              ]
+            },
+            {
+              "key": "4bd1a040f9ceff4bd73a7426c668da3d1a3c9d80e7f14b2e136fc428fee0c7e1",
+              "receipt": "1c12e3bcacbb8d354760e7eb882ccbda0c65cafc42fa2ab0c4b7865c5577686e",
+              "worker": "dl380g10",
+              "selected": 5,
+              "files": [
+                "tests/test_1707_default_stall_repro.py"
+              ]
+            },
+            {
+              "key": "5e3f32d42580e1838db93f5da642ecdc787b12aeed5481835339f3e2248da29b",
+              "receipt": "652abff51a99c688db57841ae6ad81bfce75dda149af6f827684cb9f3bb9e0d6",
+              "worker": "dl380g10",
+              "selected": 27,
+              "files": [
+                "tests/test_1707_progress_supervision_by_stall.py"
+              ]
+            },
+            {
+              "key": "32865280ea22063f92d441dba63a4ab07bf2c9552cb008e5cbb114706762fb89",
+              "receipt": "a70d83bc88d156e6a2e304fb24281008672a104f25e21031e1c386eef70a67f6",
+              "worker": "dl380g10",
+              "selected": 53,
+              "files": [
+                "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py"
+              ]
+            },
+            {
+              "key": "978b3421bf3159142ee34a206ab50879fa507c7ac0a4e75ea60ae32396ab8889",
+              "receipt": "86888269f41e27fba26b552580415b33fa75d693ef8676bac694de698745d40e",
+              "worker": "dl380g10",
+              "selected": 9,
+              "files": [
+                "tests/test_contained_deadline_profile.py"
+              ]
+            },
+            {
+              "key": "ea1421ac9fdccf38046a118e3f39476c416c519d8b1f815301fae57904da767b",
+              "receipt": "7f7a039c5f3a395e970c19240533404dadaa72f62d7903a94dc76d573675da06",
+              "worker": "dl380g10",
+              "selected": 21,
+              "files": [
+                "tests/test_contract_registry_publication.py"
+              ]
+            },
+            {
+              "key": "eb85f4de8e3f67b5920d27372ac3ce179bd6e52bc7b9b3798be4debf31f6e050",
+              "receipt": "458ca2c7049097d9801c3e9a848a97ea7543439e5f0f52667cee6faac76ed458",
+              "worker": "dl380g10",
+              "selected": 25,
+              "files": [
+                "tests/test_execution_budget_is_stated_not_silent.py"
+              ]
+            },
+            {
+              "key": "0c45ad2f92afdd127daeab34017681cfcf0038338d3011bdf59c8ab2bc97f248",
+              "receipt": "9170bfefb2e5ac80238ceee8bc0b886b9b3fb508d78cb8ec101bc1b7ff819eb8",
+              "worker": "dl380g10",
+              "selected": 6,
+              "files": [
+                "tests/test_measurement_reservation_backfill_1419.py"
+              ]
+            },
+            {
+              "key": "16d846cee7b152ad098358ea37fc8c481a5056eb0f1976c30a87aeba71702134",
+              "receipt": "e10c80ce45facc294c8e8dd7786e5a214b5e4dd779e13d01d71c7e922a44e30f",
+              "worker": "dl380g10",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            },
+            {
+              "key": "a460b0ce8adff499c2fd97e99a020c7f87ae546fefcbec1648d6a9ac7644598a",
+              "receipt": "eee1d2cd35190cc2114328849c7351190c788fb03c7c983efd023cd9acf0f7f3",
+              "worker": "dl380g10",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            },
+            {
+              "key": "4f4b9f3d248082eb99eee8e4830f9d85538255b57f12015c1ac827c1107e6ac8",
+              "receipt": "da53da78dc47aeab1fe63df016b86a18cbb83cb1e113e2f39303beaec1cfb4c6",
+              "worker": "dl380g10",
+              "selected": 32,
+              "files": [
+                "tests/test_pbstatus.py"
+              ]
+            },
+            {
+              "key": "67b2079369150269f5e18ea6d56b5ba7f53829530f80cea9f5849c5cc9e7df22",
+              "receipt": "78f07415af6b6f46453822a9d408d163c00dd576403bfd86c9217b5381b8abd4",
+              "worker": "dl380g10",
+              "selected": 5,
+              "files": [
+                "tests/test_unified_memory_status_recovery_2089.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "aarch64-integration",
+          "counts": {
+            "passed": 270
+          },
+          "actions": [
+            {
+              "key": "abaad6ea62d6332e386b6d1459738e7ae79292d5aed1e64edcbedaf12779cfe3",
+              "receipt": "c71a26634ef13015ae1c545dda9e0729de1a9e016fc6ca02df92f5c40687f784",
+              "worker": "sparklina",
+              "selected": 19,
+              "files": [
+                "tests/test_1707_activity_signal_boundary.py"
+              ]
+            },
+            {
+              "key": "265a15fc9c6d84dbd215bffc045b2166dd2c183fb1bd0c7fd847255adaef4eef",
+              "receipt": "99b3316f71f1dd898dfca1c9ff01ea4ce178629e034dc39129c0a2419e53b5be",
+              "worker": "sparklina",
+              "selected": 5,
+              "files": [
+                "tests/test_1707_default_stall_repro.py"
+              ]
+            },
+            {
+              "key": "6555b10dfb0e4ba04184125431e8eafdfaccf76a5bbc74b4dfe31ec7868ced7b",
+              "receipt": "b9404263451d0c80ebb15bc7de4fb22c06d77e89b90ee053a7785ed38139ef19",
+              "worker": "sparklina",
+              "selected": 27,
+              "files": [
+                "tests/test_1707_progress_supervision_by_stall.py"
+              ]
+            },
+            {
+              "key": "94ef42df23463f19675163171fc234c5cbdb1feec04dfbeb38b8a863cbda9b9f",
+              "receipt": "49cd5b38459da1db6f881a543c077742ae542d2aac25b20f608a121103a40779",
+              "worker": "sparky",
+              "selected": 53,
+              "files": [
+                "tests/test_a_ready_gpu_action_is_not_starved_by_cpu_shards.py"
+              ]
+            },
+            {
+              "key": "434fd63cda8a70a29cfeb535e9d18fdbe502731d902c8563d0f355d59366fd1b",
+              "receipt": "7b6bc2caf63526046324740a533d3526e4ba65e5ae66717810897de67930fb62",
+              "worker": "sparky",
+              "selected": 9,
+              "files": [
+                "tests/test_contained_deadline_profile.py"
+              ]
+            },
+            {
+              "key": "c979ab9ff34391d2aaa08657ff3a45a4a3f439c7c875b61139ab6f38e1aa6c66",
+              "receipt": "a7a1be517dc975b3f650756082e5dc656327a54d08c65fb1cebf8a706bf3915f",
+              "worker": "sparky",
+              "selected": 21,
+              "files": [
+                "tests/test_contract_registry_publication.py"
+              ]
+            },
+            {
+              "key": "09e29ffe6c30286c433178e6b3ac9a48c35ca9610643788095011d81bf2c53e7",
+              "receipt": "f1562f37fea8ef8e736bcd3434947ffb6f5da91152a9fe65b2120f7970072d1a",
+              "worker": "sparklina",
+              "selected": 25,
+              "files": [
+                "tests/test_execution_budget_is_stated_not_silent.py"
+              ]
+            },
+            {
+              "key": "f6301a39906d1be9a3142f6300283f9276f9390e9b28e978e70ada6248cc873f",
+              "receipt": "7f45d6a5f8962db4794cc9970ba4e231181d0c20a5842bd71de7ef79ab255804",
+              "worker": "sparky",
+              "selected": 6,
+              "files": [
+                "tests/test_measurement_reservation_backfill_1419.py"
+              ]
+            },
+            {
+              "key": "d80e554471d9aca33ae4885b01fd9f0fa1968515e65ae850745743d505fafcf6",
+              "receipt": "c206c5eb7f7f795e94f4ba04d0d5d7da8d692da99dbfc103e2598720acd42467",
+              "worker": "sparky",
+              "selected": 50,
+              "files": [
+                "tests/test_progress_keeps_a_working_action_alive.py"
+              ]
+            },
+            {
+              "key": "3945fce59e699969db82a03253c5131d1feb221a8e6adf4a7ca421867cb5d72b",
+              "receipt": "46b9323295ce8b22b3a8981204c378c23e8daff8a05abb399795d74cc6db015d",
+              "worker": "sparklina",
+              "selected": 18,
+              "files": [
+                "tests/test_census_sections.py"
+              ]
+            },
+            {
+              "key": "3af98c6813fdd0ed0ecb0ebbb8bebda1068931bbf69388e8bf63eae6b392a19e",
+              "receipt": "fa8a884ee3c99e685b5a6fce7b119526ee0a11b7da1165ddbc4a1eb0bb944fdb",
+              "worker": "sparklina",
+              "selected": 32,
+              "files": [
+                "tests/test_pbstatus.py"
+              ]
+            },
+            {
+              "key": "374d134172cecb57cf494bee056bf148d7dca6b684e60fce8ce81a5a37579b76",
+              "receipt": "f5cdefaa0d088ce3376da0fcb27d90953ec93e41386e0c3dacb75b1bbcb2cd1f",
+              "worker": "sparky",
+              "selected": 5,
+              "files": [
+                "tests/test_unified_memory_status_recovery_2089.py"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "resolved_failure_audit": {
+    "path": "/mnt/shared/paperclip-runs/PRI-43/counter-audit-0f914f44.json",
+    "sha256": "c237d477f1484ebc04267953711f075fdbfe0299e3353dd3ad979f05d98107c5",
+    "counts": {
+      "passed": 548,
+      "failed": 2
+    }
+  }
+}

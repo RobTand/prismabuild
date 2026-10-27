@@ -597,7 +597,7 @@ constant: a holder younger than `WITHHOLD_CEILING_S`, or whose sealed
 `execution_timeout_s` ends inside it, is transient; a bounded holder past that
 line is long; a holder past its own sealed end is overdue, which outranks age,
 since a holder that outlived what it declared is no evidence of a drain (#939);
-a progress-governed holder with no total timeout is unbounded;
+a progress- or stall-governed holder with no total timeout is unbounded;
 a raw ledger holder with no readable claim is judged by the waiting item's own
 first-denial clock, as every holder was before #924. The age half of
 "transient" is a presumption, not a declaration: a young deadline-governed
@@ -999,7 +999,10 @@ are overtaken. Every other adaptive refusal is overtaken as before. A
 `measurement_holder` refusal whose decision names `isolated_by` -- a
 measurement already holds the box -- never withholds: that box admits only the
 measurement's own dependents, so a veto would block just the work its progress
-waits on, and it would never drain (#982). While an item withholds, the scan
+waits on, and it would never drain (#982). Its refusal retains
+`measurement_admits_only_its_dependents` whether the holder is bounded or
+unbounded; this reason does not depend on an earlier withholding verdict.
+While an item withholds, the scan
 goes on only for rows that may be a producer's export (the rows above): one
 admitted on its producer's allowance takes nothing the withholding item waits
 for. Any other row is left unevaluated, with no pass, as the withhold always
@@ -1139,6 +1142,21 @@ and withdrawal lineage. The same exact-generation reader serves an ordinary
 generation whose row a later run replaced, with no handoff context to follow.
 Recovery writes no queue pointer and names the immutable attempt as its source.
 Attempts predating this context provide no inferred link.
+
+UNKNOWN interpreter evidence on an otherwise matching live CPU-only peer is
+placement uncertainty (#2014), even when that peer is full or has passed on
+the row. Advisory CPU-host matching tolerates only that UNKNOWN answer;
+submission placeability, ordinary offer matching and live claim/launch checks
+still require PRESENT and share all other capability and capacity predicates.
+A portable CPU row remains READY with `deferred_for_unresolved_cpu_host`,
+without a timer, unless a positively idle GPU host proves sealed restartability
+and marks the claim `cpu_guest`. The idle sample is rechecked after proof reads.
+Missing CAS, inconsistent interruption history, missing retry safety and an
+exhausted budget cannot turn uncertainty into a protected claim. PRESENT
+restores the existing fit/pass rules; completed ABSENT observations, draining,
+stale or disappeared peers end that peer's unresolved wait. Explicit host or
+architecture requirements retain their existing placement. These are source
+semantics, not a claim of deployed behavior or measured GPU latency.
 
 GPU denial also has a guest policy (#1929). A portable CPU claim on a GPU
 host carries the claim-scoped `cpu_guest: true` only when its sealed generation
@@ -4373,7 +4391,13 @@ An explicit `pbrun --timeout-s` is sealed as `params.execution_timeout_s`, a
 positive finite number of seconds. Its value participates in the action key.
 The pool reads and validates this value from the CAS request, not the mutable
 queue record, and applies the shorter of it and the worker's timeout ceiling.
-Without the field, existing actions retain the worker ceiling. The pool starts
+Without the field, actions have no total execution deadline (#1707).
+`PoolQueue.execute(timeout_s=...)` supplies the worker ceiling, not a sealed
+request for a total deadline. Supervision and advisory scheduling read the
+same validated CAS authority through `_validated_action_request` and
+`_action_execution_timeout`. Core validation failures retain their
+`ActionContractError` identity in execution policy reads. Pool publication
+translates authority failures through `_sealed_action_request`. The pool starts
 its monotonic budget immediately before launcher spawn, after checkout
 materialization, withdrawal checks, scope preparation and status-file cleanup.
 Those prelaunch operations and queue waiting do not consume it. After launch,
@@ -4689,6 +4713,46 @@ the kill. A failure to read it is filed as
 `dependents_error` beside the kill and never replaces the kill's own record.
 
 ### Progress-bounded execution
+
+Without semantic phases, `ActivityWatch` supervises output and containment CPU
+activity. New stdout/stderr bytes or a rising CPU total restart quiet. The
+allowance defaults to 7200 seconds, the former worker execution ceiling, so
+quiet work cannot stall earlier than that former limit by default. Docker image
+loads and pulls can advance in the daemon outside the attempt's containment
+while the client emits no output and uses no CPU. GPU activity, I/O byte
+counters and progress-file changes also do not renew this watch. Only new
+stdout/stderr bytes and rising containment CPU count. For quiet work, choose
+`--stall-s`, a semantic phase allowance, or periodic output.
+`pbrun --stall-s` seals a positive finite `params.stall_allowance_s`; the worker
+ceiling clamps it, including the default. The outcome reports requested,
+effective and ceiling values and whether the allowance was clamped. A default
+action may run indefinitely while active. Missing CPU evidence grants no renewal.
+This is an activity fallback, not proof of committed work.
+An explicit allowance requires the `activity-stall-v1` worker capability.
+Submission and alternate queue publishers derive that fence from the sealed
+allowance. A client ahead of the published runtime cannot silently lose it.
+
+A semantic policy keeps `ProgressWatch` as the owner of accepted counters,
+phase grants, final stall checks and verified dependency-wait credits. Output
+and CPU activity never renew its allowance. `--stall-s` cannot combine with
+semantic phases and is refused on SLURM. Existing explicit execution budgets,
+D30 containment, withdrawal and bounded termination retain their precedence.
+Both watchers use the execution clock and refund only measured checkpoint I/O.
+An expired allowance ends `timeout` with `termination_reason: no_progress`;
+an explicit budget ends `timeout` with `termination_reason: execution_deadline`.
+Leases and endings carry activity totals or semantic phase/counter observations;
+`pbstatus` displays these with age and quiet time. Ordinary table and JSON jobs
+include the semantic committed count and optional unit separately from the
+accepted report count. Activity samples never receive a committed-work label.
+Each heartbeat also records
+age and the observation in the action's `residency-events` log, before payload
+completion. A separate file per exact claim retains the newest 256 records
+after it exceeds 512. Partial legacy claims keep observations in their lease
+but emit no exact-claim event because they lack the identity and age authority
+that the event requires. These records never count as payload activity. A sealed action without a
+total budget is unbounded for advisory incumbent classification. Legacy holders
+without a request retain their advisory age classification. None of these
+payload policies proves an admission-to-resource-release bound (#1429).
 
 An action may declare, in `params.progress`
 (`prismabuild.action_progress_policy.v1`), an ordered closed list of phases
@@ -20536,6 +20600,21 @@ contention, reservation normalization, gang/canary authority and scratch trust
 remain with their current owners. Unknown advertised capacity is still distinct
 from zero. These answer fit, authority and admission questions beyond host
 capability. No C01 reservation, census, lock or commit owner changes.
+
+Worker interpreter observations retain at most 32 requested path names and
+request timestamps in host-local per-UID state, with a fair cursor across
+larger READY populations (#2164). Unrequested names expire after one hour;
+empty and drain snapshots do not renew their request time. Each open, empty
+or drain refresh probes selected names through abandonable readers, with a
+one-second per-path and two-second total budget outside the publisher child,
+publication lock and publication deadline. The publisher only merges captured
+scheduling progress and publishes captured answers. A child-held path lock
+prevents siblings from stacking behind an outstanding filesystem probe.
+Persistence stores no executable-presence answers. Incomplete probes remain
+UNKNOWN after any number of timeouts, with separate `interpreter_probes`
+diagnostics. Completed negative observations may report ABSENT. Drain still
+publishes zero observed capacity and admits no new action. A blocked filesystem
+has no promised eventual conclusive answer.
 
 ### Scratch lifetime ownership (C24)
 
