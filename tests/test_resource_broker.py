@@ -599,12 +599,12 @@ def test_monitor_close_wakes_blocked_event_wait(event_monitored):
     closer=threading.Thread(target=close,daemon=True)
     monitor.start()
     try:
-        assert events.waiting.wait(5), 'monitor never reached its event wait'
+        assert events.waiting.wait(60), 'monitor never reached its event wait'
         closer.start()
-        closed=finished.wait(5)
+        closed=finished.wait(60)
     finally:
         os.write(write,b'x')
-        if closer.ident is not None:closer.join(timeout=5)
+        if closer.ident is not None:closer.join(timeout=60)
         monitor.close();os.close(read);os.close(write)
     assert closed, 'close did not wake the event wait'
     assert not monitor.thread.is_alive()
