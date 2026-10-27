@@ -5910,6 +5910,8 @@ class PoolQueue:
         # Drain observations waiting for the next ``record_pass`` of their key
         # (#924); never read as admission authority on their own.
         self._drain_accounting = _DrainAccounting()
+        from . import gang_loans
+        self._gang_loans = gang_loans.Observer()
         self._admission_busy_logged_at: float | None = None
         self._expired_host_holds: dict[str, tuple[object, ...]] = {}
         # Queue directories are created once per process (see
@@ -9816,6 +9818,8 @@ class PoolQueue:
                     record = _gang.read_group(self, group)
                     if record is None:
                         continue
+                    from . import gang_wait
+                    gang_wait.cancel_expired(self, record, _now())
                     torn = _gang.teardown(self, group)
                     if torn is None:
                         # Every terminal path, including the reaper failing a
@@ -18258,15 +18262,16 @@ class PoolQueue:
             from . import _gang
             try:
                 if backfill_eligible is None:
-                    backfill_eligible = (item.get("priority") == -10
-                                         and item.get("gang") is None
-                                         and _gang.backfill_enabled())
+                    from . import gang_loans
+                    backfill_eligible = gang_loans.preemptible_candidate(self, item)
                     if backfill_eligible:
-                        backfill_eligible = self._preemption_eligible(item)
-                        if backfill_eligible:
-                            backfill_binding = self._preemption_proof_binding(item)
+                        backfill_binding = self._preemption_proof_binding(item)
                 allowed = (backfill_eligible
+                           and not gang_loans.pending(self, gang_blocked["group"])
                            and _gang.backfill_allowed(self, gang_blocked, _now()))
+                if not allowed and self._gang_loans.allowed(self, gang_blocked, item, _now()):
+                    allowed = True
+                    gang_blocked = dict(gang_blocked, bounded_loan=True)
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                     KeyError, TypeError, ValueError):
                 allowed = False
@@ -18275,7 +18280,9 @@ class PoolQueue:
             gang_backfill.append(gang_blocked)
             remaining = dict(census, gang_elections={
                 k: e for k, e in census["gang_elections"].items()
-                if e not in gang_backfill})
+                if not any(all(e.get(field) == mark.get(field)
+                               for field in ("group", "index", "action_key", "host"))
+                           for mark in gang_backfill)})
             gang_blocked = measurement_reservation.gang_blocking(
                 remaining, item, host=ledger.base.name, group=None,
                 now=reservation_now, held=reservation_held,
@@ -18935,6 +18942,11 @@ class PoolQueue:
                 self.record_denial(item, "gang_waiting_for_peers", {
                     "group": gang["group"], "index": gang["index"], **readiness})
                 return _ClaimHandled.REFUSED
+        from . import gang_loans
+        if not gang_loans.reserve_loan(self, gang_backfill, item, _now()):
+            reservation.abandon(_ClaimExit.QUEUED_REFUSAL)
+            self.record_denial(item, "deferred_for_gang_reservation", {"bounded_loan_taken": True})
+            return _ClaimHandled.REFUSED
         self._write_claim_intent(key, owner=owner)
         src = self.records.item_path(READY, key)
         dst = self.records.item_path(CLAIMED, key)
@@ -18978,7 +18990,14 @@ class PoolQueue:
             class_verdict = (image_check.evidence["container_class_verdict"]
                              if isinstance(image_check, capability_eligibility.CapabilityRefusal)
                              else image_check.class_verdict)
-        position = candidate_policy.moved_claim_position(class_verdict, moved, gang_backfill)
+        bounded_loan = any(mark.get("bounded_loan") for mark in gang_backfill)
+        position = candidate_policy.moved_claim_position(
+            class_verdict, moved, [] if bounded_loan else gang_backfill)
+        if bounded_loan:
+            from . import gang_loans
+            if (moved.get("published_unix") != item.get("published_unix")
+                    or not gang_loans.bounded_candidate(moved)):
+                position = candidate_policy.MovedClaimPosition.BACKFILL_REFUSED
         class_refused = position is candidate_policy.MovedClaimPosition.CLASS_REFUSED
         if (position in (candidate_policy.MovedClaimPosition.CLASS_REFUSED,
                          candidate_policy.MovedClaimPosition.BACKFILL_REFUSED)
@@ -19088,6 +19107,9 @@ class PoolQueue:
             # attempt, a clobbered generation costs the whole
             # submission.
             return _ClaimHandled.REFUSED
+        if host.gang is not None and host.gang.record is not None:
+            from . import gang_wait
+            gang_wait.started(self, host.gang.record, _now())
         return _CommittedClaim(tiers, moved_ready, class_verdict, filed, tier_filed, tier_wanted)
 
     def _verify_claim_funding(self, committed: _CommittedClaim) -> bool:
@@ -19591,6 +19613,9 @@ class PoolQueue:
                 ready = self.ready_items()
         else:
             ready = self._aged_for(ready, tags=tagset, has_gpu=has_gpu)
+        from . import gang_wait
+        gang_wait.poll(self, ready, _now())
+        self._gang_loans.observe(self, ready, socket.gethostname(), _now())
         live_generations = {(str(item.get("action_key", "")), repr(item.get("published_unix")))
                             for item in ready}
         self._placement_history.retain(live_generations)

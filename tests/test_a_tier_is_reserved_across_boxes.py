@@ -21,6 +21,8 @@ renames a second machine would.  Nothing touches the live queue.
 """
 
 from __future__ import annotations
+
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows, FleetWorld
 
 from pathlib import Path
@@ -29,7 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import pool  # noqa: E402
 from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:dl380g10"
@@ -69,18 +71,6 @@ def _range_block(tier: str, range_bytes: int) -> dict[str, object]:
         "range_start_bytes": 0,
         "range_end_bytes": range_bytes,
     }
-
-
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    """The denial log is host-local; read the one belonging to ``q``'s host."""
-
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def test_the_second_box_is_refused_the_gigabytes_the_first_took(
@@ -126,7 +116,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     loser = ON_SPARKLINA if winner == ON_SPARKY else ON_SPARKY
     assert sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8}) is None
 
-    denial = _denial(sparklina, loser)
+    denial = latest_claim_denial(sparklina, loser)
     assert denial is not None
     assert denial["reason"] == "tier_reservation_unavailable"
     shortage = denial["evidence"]["tier_shortage"]
@@ -204,7 +194,7 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
     claimed = sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8})
     # The tier-hungry row was passed over; the ordinary row ran.
     assert claimed is not None and claimed["action_key"] == ordinary
-    denial = _denial(sparklina, ON_SPARKLINA)
+    denial = latest_claim_denial(sparklina, ON_SPARKLINA)
     assert denial is not None and denial["reason"] == "tier_reservation_unavailable"
 
 
@@ -225,7 +215,7 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
         residency=_range_block(TIER, 5 * GIB),
     )
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
-    denial = _denial(sparky, ON_SPARKY)
+    denial = latest_claim_denial(sparky, ON_SPARKY)
     assert denial is not None and denial["reason"] == "never_fits_tier_capacity"
 
     # A tier nobody has minted at all is a different answer from a busy one.
@@ -240,4 +230,4 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
         residency=_range_block('prismabuild-stage:nowhere', 1),
     )
     assert sparky.claim(owner="sparky-worker", capacity={"cpu": 8}) is None
-    assert _denial(sparky, unknown)["reason"] == "tier_unknown"
+    assert latest_claim_denial(sparky, unknown)["reason"] == "tier_unknown"

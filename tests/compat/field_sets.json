@@ -2017,6 +2017,12 @@
     ]
   },
   {
+    "path": "src/prismabuild/gang_loans.py",
+    "owner": "reserve_loan",
+    "unresolved": "sorted({member['action_key'] for record in records.values() for member in record['members']})",
+    "binding": "keys"
+  },
+  {
     "path": "src/prismabuild/gpu_capacity.py",
     "owner": "<module>",
     "fields": [
@@ -2702,7 +2708,13 @@
   {
     "path": "src/prismabuild/pool.py",
     "owner": "PoolQueue._arbitrate_claim_census",
-    "unresolved": "backfill_eligible and _gang.backfill_allowed(self, gang_blocked, _now())",
+    "unresolved": "True",
+    "binding": "allowed"
+  },
+  {
+    "path": "src/prismabuild/pool.py",
+    "owner": "PoolQueue._arbitrate_claim_census",
+    "unresolved": "backfill_eligible and (not gang_loans.pending(self, gang_blocked['group'])) and _gang.backfill_allowed(self, gang_blocked, _now())",
     "binding": "allowed"
   },
   {
@@ -4546,6 +4558,7 @@
       "members",
       "priority",
       "priority_reason",
+      "queue_wait_timeout_s",
       "skew_s",
       "timeout_s"
     ]
@@ -4565,7 +4578,7 @@
   {
     "path": "tools/fleet/pbmergeq.py",
     "owner": "GitHub.pr",
-    "unresolved": "'number,state,isDraft,author,headRefOid,headRefName,isCrossRepository,headRepositoryOwner,baseRefName,title'",
+    "unresolved": "'number,state,isDraft,author,headRefOid,headRefName,isCrossRepository,headRepositoryOwner,baseRefName,title,body'",
     "binding": "fields"
   },
   {
