@@ -1445,6 +1445,18 @@ class RecordStore:
         with open(directory / f"{socket.gethostname()}-stall-watch.jsonl", "a") as stream:
             stream.write(line + "\n")
 
+    def append_supervision_event(self, claim: Mapping[str, object],
+                                 record: Mapping[str, object], *, limit: int) -> None:
+        """Retain a bounded log with one writer per exact claim."""
+        identity = digest_primitives.canonical_sha256({
+            field: claim.get(field) for field in CLAIM_IDENTITY_FIELDS})
+        path = self.consumer_event_path(str(claim["action_key"]),
+                                        f"{socket.gethostname()}-supervision-{identity}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        append_event_record(path, record)
+        if event_line_count(path) > 2 * limit:
+            replace_event_tail(path, limit)
+
     def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
         """Replace a canonical store address or a path held by a domain transition."""
         immutable_files.write_json_atomic(path, payload)

@@ -217,11 +217,12 @@ def test_chunk_mover_keys_join_the_plans_key_set() -> None:
         residency_plan.mover_keys(plan))
 
 
-def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
+def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path, monkeypatch) -> None:
     """The starvation census must not read a chunked phase as having no ram
     leg: its per-chunk promotion state rides beside the phase's own
     (whole-phase) ``ram``, which stays ``None`` so the existing shape holds."""
 
+    monkeypatch.setattr(sys.modules[__name__], "GIB", 1024)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     plan = _plan()

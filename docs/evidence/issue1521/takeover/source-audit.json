@@ -1,0 +1,24 @@
+{
+  "head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "prior_head": "8b2835da9254e515e11aa5ce1fc774067f9f14a6",
+  "core_matches_pre2344": true,
+  "predicate_ast_unchanged": true,
+  "numeric_assertions_unchanged": true,
+  "source_sha256": {
+    "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+    "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+    "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+    "tests/test_record_compatibility_core.py": "7e6ac0313499b90c56ea41033ebfca0fd40c71f86a6768c0c43ab44eb907e94d",
+    "tests/test_record_compatibility.py": "7893d5b3a7f5b85a841dd0340fe6264f0298a77b607f6893094e0b295bdf7e86",
+    "tests/test_duplication_baseline.py": "c844a44dcec35e59bb4a0f375128a07f1354ed804479c39ecfc04ea149f71013",
+    "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc",
+    "tests/test_runtime_capture_source_binding.py": "ddd6b9fc722af2ec4d988ae95cb9a152722efb117956dc09ea24a9fd5b70f4cb",
+    "tests/test_runtime_source_pin.py": "a423098ca16a0324b7b42bfccb0f8356ea86506520280267b6e479485a4dff4f",
+    "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+    "src/prismabuild/digest_primitives.py": "25bd3fa7e4609773825df3b4cd6893f7bd0456221857d9474e273383cf5bb5bf",
+    "src/prismabuild/immutable_files.py": "b8b4ac2f579f56be40075b556bda149d25e1e667fe6f3280dab5a32cc9573843",
+    "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+    "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4"
+  },
+  "limits": "Static source identity audit. Behavioral evidence comes from PB."
+}

@@ -1,0 +1,63 @@
+[
+  {
+    "key": "03d5cc5d729ae1915d88d98144b7b15702e385470ef4db0efcd8b0e1b3efe69f",
+    "head": "1556f7758c3620a8f68a6068a1f15bd1b0d05f16",
+    "actual_main": "8aaca73eb8eb305db4f2cf3b52625fc05cb710d0",
+    "logs": {
+      "stdout": {
+        "bytes": 11049876,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/03d5cc5d729ae1915d88d98144b7b15702e385470ef4db0efcd8b0e1b3efe69f/92f794c3452fdbd0a4353526b432299c6d30baa94f0ac5dfe02cee8d341b508e/00000001.stdout.36f4208af69b0b8e13273a1c90bb6fddb4d8ef8ff382af86438828b141767cef.log",
+        "sha256": "36f4208af69b0b8e13273a1c90bb6fddb4d8ef8ff382af86438828b141767cef"
+      },
+      "stderr": {
+        "bytes": 46,
+        "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/03d5cc5d729ae1915d88d98144b7b15702e385470ef4db0efcd8b0e1b3efe69f/92f794c3452fdbd0a4353526b432299c6d30baa94f0ac5dfe02cee8d341b508e/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+        "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+      }
+    },
+    "observed": [
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]",
+        "call",
+        "passed",
+        null,
+        null
+      ],
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]",
+        "call",
+        "passed",
+        null,
+        null
+      ],
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]",
+        "call",
+        "passed",
+        null,
+        null
+      ],
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]",
+        "call",
+        "passed",
+        null,
+        null
+      ],
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]",
+        "call",
+        "passed",
+        null,
+        null
+      ],
+      [
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]",
+        "call",
+        "passed",
+        null,
+        null
+      ]
+    ]
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "run": "qual-gb10-2",
+  "source_head": "6cef1e12efbb2610c8186fd2ab304bcfc1f55726",
+  "population": {
+    "collected": 158,
+    "passed": 158,
+    "failed": 0,
+    "skipped": 0
+  },
+  "snapshots": [
+    {
+      "commit": "b428d63a45768d73fce2d0661ad942c5be74ae58",
+      "bundle_sha256": "b1559b8781ea786a46f1c53b57d08d17eb0395a0668ddffbf60f480322b920d5",
+      "source_tools_tests_equal": true
+    }
+  ],
+  "architecture": "gb10",
+  "reports_and_resources_match": true,
+  "unique_population_sha256": "9ff122f1f15aaa0d75e7d321f95958f80f9b130f068f483c1e9d118f45712927"
+}

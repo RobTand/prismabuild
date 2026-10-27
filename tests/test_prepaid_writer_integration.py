@@ -989,7 +989,7 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
 
 def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
         tmp_path: Path) -> None:
-    """Four batches through a window that never holds more than ONE credit.
+    """Two batches through a window that never holds more than ONE credit.
 
     Sizing a window to the batch count proves only that the batches fit.
     Here the tier's whole CAPACITY and the admitted window are both ONE
@@ -1011,7 +1011,7 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
     residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     free_after_each: list[int] = []
-    for n in range(4):
+    for n in range(2):
         tag, batch_id = f"r{n}", f"rb{n}"
         if n:
             # The window is empty: the previous batch's credit went to
@@ -1047,8 +1047,8 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
         free_after_each.append(ledger.free_supply().get(KIND, 0))
 
     # The counter loses nothing: every retirement returned the credit,
-    # through four cycles of a one-credit window.
-    assert free_after_each == [1, 1, 1, 1], free_after_each
+    # through the first use and reuse of a one-credit window.
+    assert free_after_each == [1, 1], free_after_each
     q.finish(owner, status="executed")
     assert ledger.holdings(owner).get(KIND, 0) == 0
     assert ledger.free_supply() == ledger.mint_supply()

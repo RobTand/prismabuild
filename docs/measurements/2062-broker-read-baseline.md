@@ -29,6 +29,24 @@ reads/s or MB/s is justified. The reported approximately 17,000 reads/s and
 153 MB/s remain unattributed claims; neither original findings nor a live trace
 was inspected. This baseline neither verifies nor refutes those deployed rates.
 
+## W3 event-observation comparison
+
+The #2064 regression uses this same callable with three monitor ticks and zero
+unrelated PIDs. Before the source change, `memory.current`, `memory.events` and
+`memory.events.local` each have three successful Python reads. W3 requires all
+three numeric memory reads while each unchanged OOM input has one initial read.
+The fixture now also supplies `cgroup.events`, classified as `scope_population`,
+and closes each monitor so notification descriptors do not escape the workload.
+The baseline still uses the real collector and monitor with fixed time and
+stubbed vendor results. Retained W1 counts below describe the historical source.
+
+Controlled acceptance separately exercises dirty scopes, enrollment races,
+attempt and inode replacement, lost coverage, overflow recovery, pending stop
+retries, cancellation and numeric-deadline fairness. Real inotify tests use
+ordinary fixture files. They prove the Linux notification adapter's behavior,
+not privileged cgroup-controller behavior. This comparison does not qualify
+live cgroups, attribute the original reported rate or establish fleet rollout.
+
 ## Fixture and source identity
 
 Recovered the reproducer and this note from implementation commit

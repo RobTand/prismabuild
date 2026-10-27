@@ -18,6 +18,8 @@ from record_compat import accepted, archival_runtime, decode_wire, historical_ab
 from prismabuild.record_kinds import KINDS
 from prismabuild.digest_primitives import canonical_sha256, raw_sha256
 from compat_references import generation_reference
+from controller_contract import controller_partition
+from compat_session import retained_for_session
 
 DATA = ROOT / "tests/compat"
 def records(pattern):
@@ -127,7 +129,7 @@ def runtime_observer(operation, generation, case, *, raw=None):
     return partial(RUNTIME_EVIDENCE.observe, operation, generation, case, raw=raw)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def generations(pytestconfig):
     global WRITER_EVIDENCE, RUNTIME_EVIDENCE
     WRITER_EVIDENCE = pytestconfig.pluginmanager.get_plugin("compat-writer-evidence")
@@ -138,14 +140,12 @@ def generations(pytestconfig):
     if RUNTIME_EVIDENCE is None:
         RUNTIME_EVIDENCE = OperationRuntimeEvidence()
         pytestconfig.pluginmanager.register(RUNTIME_EVIDENCE, "compat-operation-runtime-evidence")
-    with retained() as result:
-        yield result
+    yield retained_for_session(pytestconfig, DATA / "generations")
 
 
-@pytest.fixture(scope="module")
-def writer_sources():
-    with retained(DATA / "writer-sources", history_control=True) as result:
-        yield result
+@pytest.fixture(scope="session")
+def writer_sources(pytestconfig):
+    yield retained_for_session(pytestconfig, DATA / "writer-sources", history_control=True)
 
 
 def protocol_group(kind):
@@ -174,6 +174,9 @@ def pytest_generate_tests(metafunc):
     if metafunc.cls is None or not issubclass(metafunc.cls, RecordContract):
         return
     kinds = [kind for kind in KINDS if protocol_group(kind) == metafunc.cls.domain]
+    family_group = getattr(metafunc.cls, "family_group", None)
+    if family_group is not None:
+        kinds = [kind for kind in kinds if controller_partition(kind) == family_group]
     if "variant" in metafunc.fixturenames:
         shapes = [(kind, variant) for kind in kinds if kind.variant_readers for variant, _ in kind.variant_readers]
         metafunc.parametrize("kind,variant", shapes, ids=[kind.name + "-" + variant for kind, variant in shapes])

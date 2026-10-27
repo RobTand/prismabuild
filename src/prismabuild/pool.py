@@ -366,6 +366,16 @@ DOCKER = "/usr/bin/docker"
 HEARTBEAT_S = 30.0
 LEASE_TIMEOUT_S = 300.0
 
+#: How long an action without a progress policy may go without observable
+#: activity before the worker ends it as a stall (#1707). The default is
+#: 7200 s, the former worker execution ceiling. Quiet daemon-side image
+#: loads and pulls may advance outside containment without observable client
+#: CPU or output; the default must not end them earlier than that ceiling.
+#: The submitter sets it with ``pbrun --stall-s`` (sealed
+#: ``stall_allowance_s``); the worker ceiling clamps it like a phase grace,
+#: never in silence, and the receipt reports both numbers.
+DEFAULT_STALL_ALLOWANCE_S = 7200.0
+
 # How long the timeout path gives the launcher's process group to go down.
 # The launcher does not just exit when signalled: it relays the signal into the
 # action's own session -- ``run_local_action`` gives the action
@@ -596,6 +606,7 @@ _RESIDENCY_KEYS = frozenset({
 #: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
+GANG_REGISTRATION_GRACE_S = 600.0
 CLAIM_DENIALS = "claim-denials.json"
 #: Per-ledger report of holders a census could not read (#936): written by
 #: every inexact retire, removed by the next exact one.
@@ -1187,7 +1198,11 @@ def execution_budget(
 
     requested = _requested_execution_timeout(item)
     if requested is None:
-        return ExecutionBudget(ceiling, None, ceiling)
+        # No wall-clock budget by default (#1707): a payload stops on a
+        # progress stall, the D30 memory guard, or an explicit budget the
+        # submitter sealed. The ceiling still clamps an explicit budget and
+        # the stall allowance, never the whole run in silence.
+        return ExecutionBudget(None, None, ceiling)
     effective = requested if ceiling is None else min(requested, ceiling)
     return ExecutionBudget(effective, requested, ceiling)
 
@@ -1310,11 +1325,24 @@ def _sealed_action_request(
     action_key: str,
     *, max_bytes: int | None = None,
 ) -> Mapping[str, object] | None:
-    """Read one validated sealed request for all publication policies.
+    """Translate sealed authority failures at the pool publication boundary."""
+    try:
+        return _validated_action_request(cas_root, action_key, max_bytes=max_bytes)
+    except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
+            ValueError, OSError) as exc:
+        raise PoolContractError(
+            f"pool action request unreadable: {exc}") from exc
+
+
+def _validated_action_request(
+    cas_root: str | Path,
+    action_key: str,
+    *, max_bytes: int | None = None,
+) -> Mapping[str, object] | None:
+    """Read sealed authority and preserve core validation errors.
 
     An absent request permits only the legacy direct-publish path. Corrupt,
     unreadable or key-mismatched authority never silently becomes legacy.
-    R5 batch binding and #1213 canary binding share this read.
     """
 
     key = str(action_key)
@@ -1327,14 +1355,9 @@ def _sealed_action_request(
         )
     except FileNotFoundError:
         return None
-    try:
-        action = pb.validate_action(
-            pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-        )
-    except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
-            ValueError, OSError) as exc:
-        raise PoolContractError(
-            f"pool action request unreadable: {exc}") from exc
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     params = action.get("params")
@@ -1380,19 +1403,9 @@ def _sealed_progress_policy(
     contention spec a stage mover declares beside it (#1010).
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(request, where="pool action request")
-    except FileNotFoundError:
-        # Same rule as the deadline: a legacy launcher with no request declares
-        # nothing, and the canonical worker refuses a missing request itself.
+    action = _validated_action_request(str(item["cas_root"]), str(item["action_key"]))
+    if action is None:
         return None
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
     try:
         return read(action)
     except pb.ActionContractError as exc:
@@ -1894,6 +1907,144 @@ class ProgressWatch:
         }
 
 
+class DefaultStall(NamedTuple):
+    """The stall allowance for an action without a progress policy (#1707)."""
+
+    requested: float | None
+    ceiling: float | None
+    effective: float
+
+    @property
+    def clamped(self) -> bool:
+        """Did the worker's ceiling, and not the submitter, decide?"""
+
+        basis = DEFAULT_STALL_ALLOWANCE_S if self.requested is None else self.requested
+        return self.ceiling is not None and self.ceiling < basis
+
+    def as_record(self) -> dict[str, object]:
+        """The fields an outcome carries so a receipt can be read years later."""
+
+        return {
+            "stall_allowance_s": self.effective,
+            "stall_allowance_requested_s": self.requested,
+            "stall_allowance_ceiling_s": self.ceiling,
+            "stall_allowance_clamped": self.clamped,
+        }
+
+
+def default_stall(item: Mapping[str, object], ceiling: float | None) -> DefaultStall:
+    """The stall allowance for an action without a progress policy."""
+
+    requested = _sealed_stall_allowance(item)
+    basis = DEFAULT_STALL_ALLOWANCE_S if requested is None else requested
+    effective = basis if ceiling is None else min(basis, ceiling)
+    return DefaultStall(requested, ceiling, effective)
+
+
+def _sealed_stall_allowance(item: Mapping[str, object]) -> float | None:
+    action = _sealed_action_request(str(item["cas_root"]), str(item["action_key"]))
+    if action is None:
+        return None
+    return pb.action_stall_allowance(action)
+
+
+class ActivityWatch:
+    """End a no-policy action on output and CPU silence, never on age (#1707).
+
+    The worker's fallback when the action declared no progress policy: any
+    observable activity -- new launcher pipe bytes or a larger payload CPU
+    total -- restarts the quiet. Only a silence longer than the allowance
+    ends the run, with the same ``timeout``/``no_progress`` verdict a
+    progress stall carries. A wall-clock budget the submitter sealed still
+    ends the run at its limit, and the D30 memory guard still ends it first.
+
+    ``now`` is a ``time.monotonic()`` reading throughout, like
+    :class:`ProgressWatch`: a wall-clock jump must not decide either way.
+    """
+
+    def __init__(self, allowance_s: float, *, started: float,
+                 clock: ExecutionClock | None = None) -> None:
+        self.clock = clock or ExecutionClock(time.monotonic, _now)
+        self.allowance_s = float(allowance_s)
+        self.last_activity_monotonic = started
+        self.last_advance_monotonic = started
+        self.last_advance_unix: float | None = None
+        self.stdout_bytes = 0
+        self.stderr_bytes = 0
+        self.cpu_seconds: float | None = None
+        self.observations = 0
+        self.advances = 0
+        self.sampled_unix: float | None = None
+
+    @property
+    def grace_s(self) -> float:
+        """The silence this watch allows, so ``pbstatus`` reads it like a phase."""
+
+        return self.allowance_s
+
+    def stall_deadline(self) -> float:
+        return self.last_activity_monotonic + self.allowance_s
+
+    def shift(self, seconds: float) -> None:
+        """Retain quiet spent on shared I/O this loop, not the action, did."""
+
+        self.last_activity_monotonic += seconds
+        self.last_advance_monotonic += seconds
+
+    def observe(self, *, now: float, stdout_bytes: int = 0,
+                stderr_bytes: int = 0,
+                cpu_seconds: float | None = None) -> bool:
+        """Fold one execution sample in; return whether it showed activity."""
+
+        self.sampled_unix = self.clock.unix()
+        self.observations += 1
+        advanced = False
+        if stdout_bytes > self.stdout_bytes or stderr_bytes > self.stderr_bytes:
+            advanced = True
+        if (cpu_seconds is not None and self.cpu_seconds is not None
+                and cpu_seconds > self.cpu_seconds):
+            advanced = True
+        if self.cpu_seconds is None and cpu_seconds is not None:
+            self.cpu_seconds = cpu_seconds
+        else:
+            if cpu_seconds is not None:
+                self.cpu_seconds = max(self.cpu_seconds or 0.0, cpu_seconds)
+        self.stdout_bytes = max(self.stdout_bytes, stdout_bytes)
+        self.stderr_bytes = max(self.stderr_bytes, stderr_bytes)
+        if advanced:
+            self.advances += 1
+            self.last_activity_monotonic = now
+            self.last_advance_monotonic = now
+            self.last_advance_unix = self.sampled_unix
+        return advanced
+
+    def as_record(self, *, now: float) -> dict[str, object]:
+        """What a receipt carries so a reader can see what activity looked like."""
+
+        quiet = max(0.0, now - self.last_activity_monotonic)
+        return {
+            "source": "activity",
+            "sampled_unix": self.sampled_unix,
+            "accepted_count": self.advances,
+            "rejected_count": 0,
+            "last_rejection": None,
+            "last_accepted": {
+                "phase": "activity",
+                "units_completed": self.advances,
+                "unit": None,
+                "reported_unix": self.last_advance_unix,
+            } if self.advances else None,
+            "quiet_s": quiet,
+            "grace_s": self.allowance_s,
+            "phase": "activity",
+            "phases_entered": 1,
+            "stdout_bytes": self.stdout_bytes,
+            "stderr_bytes": self.stderr_bytes,
+            "cpu_seconds": self.cpu_seconds,
+            "observations": self.observations,
+        }
+
+
 #: How the worker reads one pool member's ``/sys/block/<dev>/stat`` row
 #: (#1010).  A module attribute so a test can supply the disks; production
 #: reads the kernel's.
@@ -2227,38 +2378,37 @@ def _sealed_execution_policy(
 ) -> tuple[float | None, bool]:
     """The sealed deadline and profile declaration from one request read.
 
-    The effective timeout is exactly what :func:`_execution_timeout` always
-    returned: the sealed ``execution_timeout_s`` bounded by ``ceiling``, with
-    the same validation, key binding and legacy missing-request handling.  The
-    second element says whether the same validated request declares a
-    nonempty ``params.profile``.  Reading both here, before launch, is what
-    lets the deadline's flush opportunity use the declaration as immutable
-    local authority instead of rereading shared CAS at the deadline.
+    The effective timeout is the sealed ``execution_timeout_s`` bounded by
+    ``ceiling``, with the same validation, key binding and legacy
+    missing-request handling. No sealed budget means no deadline (#1707):
+    the stall watch, not elapsed time, ends the run. The second element
+    says whether the same validated request declares a nonempty
+    ``params.profile``. Reading both here, before launch, is what lets the
+    deadline's flush opportunity use the declaration as immutable local
+    authority instead of rereading shared CAS at the deadline.
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(request, where="pool action request")
-    except FileNotFoundError:
-        # Legacy/custom launchers can have no request. The canonical worker
-        # independently refuses a missing request before executing any action.
-        return ceiling, False
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
+    action = _validated_action_request(str(item["cas_root"]), str(item["action_key"]))
+    if action is None:
+        return None, False
     mode = action["params"].get("profile")
     profiled = isinstance(mode, str) and bool(mode)
+    requested = _action_execution_timeout(action)
+    if requested is None:
+        return None, profiled
+    return (requested if ceiling is None else min(requested, ceiling)), profiled
+
+
+def _action_execution_timeout(action: Mapping[str, object]) -> float | None:
+    """Validate the total deadline shared by execution and admission."""
+
     requested = action["params"].get("execution_timeout_s")
     if requested is None:
-        return ceiling, profiled
+        return None
     if (type(requested) not in (int, float) or not math.isfinite(requested)
             or requested <= 0):
         raise PoolContractError("execution_timeout_s must be a positive finite number")
-    return (float(requested) if ceiling is None
-            else min(float(requested), ceiling)), profiled
+    return float(requested)
 
 
 def _execution_timeout(item: Mapping[str, object], ceiling: float | None) -> float | None:
@@ -2283,39 +2433,33 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
 
     Returns ``(governed_by, requested_timeout_s)``, read once from the same
     sealed request ``_execution_timeout`` and ``_sealed_progress_policy``
-    read.  ``governed_by`` is ``"progress"`` when the request seals a progress
-    policy and ``"deadline"`` otherwise -- including a legacy item with no
-    request, which the worker runs under its own ceiling.  A progress-governed
-    action with no requested timeout has no total bound at all: the worker
-    re-aims its ceiling at each phase's quiet instead (#480).  Anything the
-    request refuses raises ``PoolContractError`` exactly as it does there.
+    read. ``governed_by`` is ``"progress"`` when the request seals a progress
+    policy, ``"deadline"`` when it seals an explicit ``execution_timeout_s``,
+    and ``"stall"`` for a sealed request with neither -- the worker ends it
+    on output and CPU silence past its allowance, with no total bound at all
+    (#1707). A legacy item with no request keeps the historical
+    ``("deadline", None)`` advisory answer, so a young holder still reads
+    transient for withhold purposes; execution still supervises it by the
+    default stall watch. A progress-governed action with no requested timeout
+    has no total bound either: the worker re-aims its ceiling at each phase's
+    quiet instead (#480). Anything the request refuses raises
+    ``PoolContractError`` exactly as it does there.
     """
 
-    key = str(item["action_key"])
-    request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-    try:
-        raw = immutable_files.read_stable_file(
-            request,
-            where="pool action request",
-            max_bytes=max_bytes,
-        )
-    except FileNotFoundError:
+    action = _validated_action_request(
+        str(item["cas_root"]), str(item["action_key"]), max_bytes=max_bytes)
+    if action is None:
         return "deadline", None
-    action = pb.validate_action(
-        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
-    )
-    if action["action_key"] != key:
-        raise PoolContractError("pool action request does not match the claimed key")
     try:
         policy = pb.action_progress_policy(action)
     except pb.ActionContractError as exc:
         raise PoolContractError(str(exc)) from exc
-    requested = action["params"].get("execution_timeout_s")
-    if requested is not None and (type(requested) not in (int, float)
-                                  or not math.isfinite(requested) or requested <= 0):
-        raise PoolContractError("execution_timeout_s must be a positive finite number")
-    return ("progress" if policy is not None else "deadline",
-            None if requested is None else float(requested))
+    requested = _action_execution_timeout(action)
+    if policy is not None:
+        return "progress", requested
+    if requested is not None:
+        return "deadline", requested
+    return "stall", None
 
 
 @contextmanager
@@ -2725,6 +2869,17 @@ def _observe_execution(
             "last_output_unix": last_output,
             "child": _observe_child(scope, sampled=sampled,
                                     last_output_unix=last_output)}
+
+
+def _observed_cpu_s(observation: Mapping[str, object]) -> float | None:
+    """The payload CPU total inside one execution observation, if readable."""
+
+    child = observation.get("child")
+    if isinstance(child, Mapping):
+        cpu = child.get("cpu_seconds")
+        if type(cpu) in (int, float) and math.isfinite(cpu):
+            return float(cpu)
+    return None
 
 
 def action_process_groups(launcher_pid: int) -> list[int]:
@@ -6162,7 +6317,8 @@ class PoolQueue:
         return skews
 
     def _matching_offers(
-        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]],
+        allow_unknown_interpreter: bool = False,
     ) -> list[Mapping[str, object]]:
         """The offers among ``live`` that could run ``item``.
 
@@ -6188,7 +6344,9 @@ class PoolQueue:
                     has_gpu=presence.gpu is capability_eligibility.Presence.PRESENT):
                 continue
             if isinstance(capability_eligibility.OfferCapabilities.from_offer(offer).check(
-                    requirements, clock=_now), capability_eligibility.CapabilityRefusal):
+                    requirements, clock=_now,
+                    allow_unknown_interpreter=allow_unknown_interpreter),
+                    capability_eligibility.CapabilityRefusal):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -6874,6 +7032,8 @@ class PoolQueue:
                        if sealed_request is not None else None)
             declared_contracts = contracts.declared_contract_tags(contracts.Publication(
                 progress=progress,
+                activity_stall=sealed_request is not None
+                    and pb.action_stall_allowance(sealed_request) is not None,
                 pool_contention=progress is not None and contention is not None,
                 awaited_batch=progress is not None and awaited is not None,
                 egress=progress is not None and movement_role is not None
@@ -9565,17 +9725,72 @@ class PoolQueue:
                     os.close(descriptor)
         return pruned
 
+    @contextmanager
+    def _gang_sweep_batch(self, paths: list[Path], *, limit: int, kind: str):
+        """Rotate bounded gang cleanup batches; the cursor grants no authority."""
+        if not paths or limit <= 0:
+            yield []
+            return
+        marker = self._sweep_marker().with_suffix(f".gang-{kind}")
+        try:
+            cursor = (record_store.read_document(marker) or {}).get("after", "")
+        except (OSError, PoolContractError):
+            cursor = ""
+        start = bisect_right([path.name for path in paths], str(cursor))
+        selected = (paths[start:] + paths[:start])[:limit]
+        try:
+            yield selected
+        finally:
+            try:
+                immutable_files.write_json_atomic(marker, {"after": selected[-1].name})
+            except OSError:
+                pass
+
+    def _sweep_unregistered_gang_members(self, *, limit: int) -> None:
+        """Withdraw old member publications whose group was never filed."""
+        from . import _gang
+        paths = self.records.json_slot_paths(READY)
+        with self._gang_sweep_batch(paths, limit=limit, kind="members") as selected:
+            for path in selected:
+                try:
+                    item = record_store.read_document(path)
+                    if item is None:
+                        continue
+                    gang = _gang.declaration(item.get("gang"))
+                    if (gang is None
+                            or _now() - float(item["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                            or _gang.read_group(self, gang["group"]) is not None):
+                        continue
+                    key = str(item["action_key"])
+                    with self.action_transition_lock(key, blocking=False) as acquired:
+                        if not acquired:
+                            continue
+                        current = record_store.value_or_raise(self.records.item(READY, key))
+                        if (current is None
+                                or current.get("published_unix") != item["published_unix"]
+                                or _gang.declaration(current.get("gang")) != gang
+                                or _now() - float(current["published_unix"]) < GANG_REGISTRATION_GRACE_S
+                                or _gang.read_group(self, gang["group"]) is not None
+                                or record_store.value_or_raise(self.records.item(CLAIMED, key)) is not None):
+                            continue
+                        self.withdraw(key, reason="gang group not published within registration grace",
+                                      by=f"gang-registration:{gang['group']}")
+                except (_gang.GangContractError, PoolContractError, OSError,
+                        pb.PrismaBuildError, KeyError, TypeError, ValueError):
+                    continue
+
     def sweep_gangs(self, *, limit: int = ORPHAN_PASSES_SWEEP_LIMIT) -> list[str]:
         """Finish torn-down gangs and prune ended ones (#1517).
 
         Runs on the orphan-passes schedule. A torn-down gang's members still
-        READY are withdrawn here (a claim pass that found the teardown could
+        READY or CLAIMED are withdrawn here (a claim pass that found the teardown could
         not withdraw the row whose lock it held). A gang whose every member
         has an exact ending -- none READY or CLAIMED -- loses its record and
         state, so the census never reads a dead gang. A gang with a live or
         unaccounted member is kept; failures are per gang.
         """
         from . import _gang
+        self._sweep_unregistered_gang_members(limit=limit)
         pruned: list[str] = []
         try:
             with os.scandir(_gang.root(self)) as entries:
@@ -9583,55 +9798,44 @@ class PoolQueue:
                                if entry.name.endswith(".json") and not entry.name.startswith("."))
         except OSError:
             return pruned
-        for name in names[:limit]:
-            group = name[: -len(".json")]
-            try:
-                record = _gang.read_group(self, group)
-                if record is None:
-                    continue
-                keys = [str(member["action_key"]) for member in record["members"]]
-                torn = _gang.teardown(self, group)
-                if torn is None:
-                    # Every terminal path, including the reaper failing a
-                    # member whose lease was lost, ends the gang here: a
-                    # sibling already running is withdrawn (#1519 review).
-                    ended = {index: state for index, state in _gang.member_states(self, record).items()
-                             if state in _gang.UNSUCCESSFUL}
-                    if ended:
-                        index = min(ended)
-                        member = record["members"][index]
-                        self._gang_teardown(
-                            {"gang": {"group": group, "size": record["size"], "index": index}},
-                            by=str(member["action_key"]),
-                            reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
-                        torn = _gang.teardown(self, group)
-                if torn is not None:
-                    for key in keys:
-                        if bool(
-                            record_store.value_or_raise(self.records.item_presence(READY, key)),
-                        ):
+        paths = [_gang.root(self) / name for name in names]
+        with self._gang_sweep_batch(paths, limit=limit, kind="groups") as selected:
+            for path in selected:
+                group = path.stem
+                try:
+                    record = _gang.read_group(self, group)
+                    if record is None:
+                        continue
+                    torn = _gang.teardown(self, group)
+                    if torn is None:
+                        # Every terminal path, including the reaper failing a
+                        # member whose lease was lost, ends the gang here: a
+                        # sibling already running is withdrawn (#1519 review).
+                        ended = {index: state for index, state in _gang.member_states(self, record).items()
+                                 if state in _gang.UNSUCCESSFUL}
+                        if ended:
+                            index = min(ended)
+                            member = record["members"][index]
+                            self._gang_teardown(
+                                {"gang": {"group": group, "size": record["size"], "index": index}},
+                                by=str(member["action_key"]),
+                                reason=f"member {str(member['action_key'])[:12]} ended {ended[index]}")
+                            torn = _gang.teardown(self, group)
+                    if torn is not None:
+                        for member in record["members"]:
                             try:
-                                self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
-                                              by=f"gang:{group}")
-                            except (PoolContractError, OSError, pb.PrismaBuildError):
+                                self._withdraw_gang_member(
+                                    record, member, reason=str(torn.get("reason")))
+                            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                                 continue
-                if any(bool(
-                    record_store.value_or_raise(self.records.item_presence(READY, key)),
-                ) or bool(
-                    record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
-                )
-                       for key in keys):
+                    states = _gang.member_states(self, record)
+                    if not all(state in {DONE, FAILED, WITHDRAWN} for state in states.values()):
+                        continue
+                    shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
+                    _gang.group_path(self, group).unlink(missing_ok=True)
+                except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
                     continue
-                if not all(any(bool(
-                    record_store.value_or_raise(self.records.item_presence(state, key)),
-                )
-                               for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
-                    continue
-                shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
-                _gang.group_path(self, group).unlink(missing_ok=True)
-            except (_gang.GangContractError, OSError, PoolContractError, pb.PrismaBuildError):
-                continue
-            pruned.append(group)
+                pruned.append(group)
         return pruned
 
     def sweep_consumer_events(
@@ -11857,14 +12061,15 @@ class PoolQueue:
         This is not an admission-to-resource-release fence (#1429). The
         answer is read from the holder's declaration, never observed settlement:
 
-        * ``unbounded`` -- its sealed request is progress-governed and asks for
-          no total payload timeout. Semantic stall allowances still apply,
-          but this supplies no declared finite incumbent opportunity.
+        * ``unbounded`` -- its sealed request is progress- or stall-governed
+          and asks for no total payload timeout. Semantic stall allowances
+          still apply, but this supplies no declared finite incumbent
+          opportunity.
         * ``transient`` -- it is still inside ``WITHHOLD_CEILING_S`` of its
           claim, or a finite declared ``claimed_unix + requested_timeout_s``
           lies inside that ceiling from now. Age alone also classifies a
-          deadline-governed holder whose requested timeout is absent; this
-          is not proof of an explicit budget or guaranteed resource return.
+          legacy holder with no sealed request; this is not proof of an
+          explicit budget or guaranteed resource return.
         * ``long`` -- its age exceeds that line and no finite declared
           advisory opportunity lies inside it.
         * ``overdue`` -- the advisory opportunity has already passed. This
@@ -11902,7 +12107,7 @@ class PoolQueue:
         age = max(0.0, moment - float(claimed_unix))
         answer.update(age_s=age, claimed_unix=float(claimed_unix), governed_by=governed_by,
                       requested_timeout_s=requested)
-        if governed_by == "progress" and requested is None:
+        if requested is None and governed_by in ("progress", "stall"):
             answer["bound"] = "unbounded"
             return answer
         left = None if requested is None else float(claimed_unix) + requested - moment
@@ -12023,6 +12228,7 @@ class PoolQueue:
             if not acquired:
                 self._stamp_contended_heartbeat(action_key, owner, claim_snapshot)
                 return  # The attempt-specific stamp needs no transition lock.
+            sampled_unix = _now()
             lease = {
                     "schema": POOL_LEASE_SCHEMA_V1,
                     "action_key": action_key,
@@ -12030,7 +12236,7 @@ class PoolQueue:
                     "host": socket.gethostname(),
                     "pid": os.getpid(),
                     "child_pid": int(child_pid) if child_pid is not None else None,
-                    "heartbeat_unix": _now(),
+                    "heartbeat_unix": sampled_unix,
                 }
             if container_owner is not None:
                 lease["container_owner"] = str(container_owner)
@@ -12068,6 +12274,25 @@ class PoolQueue:
             if previous is not None and self._heartbeat_conflicts(current, previous):
                 raise AmbiguousClaimHolder("foreign heartbeat lease custody observed before publication")
             self.records.replace_record_at(self.records.lease_path(action_key), lease)
+            if progress_observation is not None:
+                self._record_payload_supervision(claim, progress_observation, sampled_unix)
+
+    def _record_payload_supervision(
+        self, claim: Mapping[str, object], observation: Mapping[str, object], sampled_unix: float,
+    ) -> None:
+        if not all(claim.get(field) is not None for field in claim_identity.CLAIM_IDENTITY_FIELDS):
+            return
+        try:
+            self.records.append_supervision_event(claim, {
+                "event": "payload-supervision", "action_key": claim["action_key"],
+                **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+                "unix": sampled_unix,
+                "age_s": max(0.0, sampled_unix - claim["claimed_unix"]),
+                "progress_observation": dict(observation),
+            }, limit=MAX_CONSUMER_EVENT_LINES)
+        except OSError as exc:
+            print(f"PrismaBuild: supervision event unwritten: {exc!r}",
+                  file=sys.stderr, flush=True)
 
     def _heartbeat_stamp_path(self, lease: Mapping[str, object]) -> Path:
         identity = {field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
@@ -15652,7 +15877,14 @@ class PoolQueue:
         not prefer a box on a stale picture of either side.
         """
 
+        if gpu_job:
+            load = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            return load.load1 / load.preferred if load is not None else None
+
         detail = offer.get("observed_detail") or {}
+        if not isinstance(detail, Mapping):
+            return None
 
         def number(value: object) -> bool:
             return type(value) in (int, float) and math.isfinite(value) and value >= 0
@@ -15660,12 +15892,6 @@ class PoolQueue:
         stamp = detail.get("observed_unix")
         if not number(stamp) or not 0 <= _now() - stamp <= box_capacity.GPU_SAMPLE_MAX_AGE_S:
             return None
-        if gpu_job:
-            # CPU load per preferred core, so boxes with different core counts
-            # compare.  Load is already what the CPU admission controller reads.
-            cores = len((offer.get("cpu_tiers") or {}).get("preferred", []))
-            load = detail.get("load1")
-            return load / cores if cores and number(load) else None
         gpu = capability_eligibility.HostPresence.from_offer(offer).gpu
         if gpu is capability_eligibility.Presence.ABSENT:
             return 0.0            # no GPU to take power from; nothing to prefer away
@@ -15696,6 +15922,45 @@ class PoolQueue:
     # reading nearly the same never take turns deferring to each other.
     CROSS_RESOURCE_BUSY = 0.60
     CROSS_RESOURCE_MARGIN = 0.20
+
+    def _defer_for_cpu_load(
+        self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
+    ) -> dict[str, object] | None:
+        """Give portable CPU work a bounded preference for runnable headroom."""
+        cpus = demand.get("cpu", 0)
+        if not self._portable_cpu_work(item) or not cpus or demand.get("gpu"):
+            return None
+        host = socket.gethostname()
+        live = placement.offers()
+        local_offer = next((offer for offer in live if offer.get("host") == host), {})
+        local = _peer_placement.cpu_load(
+            local_offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+        if local is None or cpus > local.preferred or local.headroom >= cpus:
+            return None
+        generation = (str(item["action_key"]), repr(item.get("published_unix")))
+        if placement.timer_expired(_peer_placement.TimedPreference.CPU_LOAD, generation):
+            return None
+        for offer in self._matching_offers(item, live=live):
+            remote_host = str(offer.get("host") or "")
+            if not remote_host or remote_host == host:
+                continue
+            remote = _peer_placement.cpu_load(
+                offer, now=_now(), max_age_s=box_capacity.GPU_SAMPLE_MAX_AGE_S)
+            if remote is None or remote.headroom < cpus:
+                continue
+            try:
+                peer = placement.peer(remote_host, offer)
+            except (OSError, ValueError, TypeError, PoolContractError):
+                continue
+            if peer is None or not peer.remaining.fits_measured(demand):
+                continue
+            return {"host": remote_host, "local_load1": local.load1,
+                    "local_headroom": local.headroom, "remote_load1": remote.load1,
+                    "remote_headroom": remote.headroom,
+                    "available": peer.remaining.available,
+                    "observed_capacity": peer.remaining.observed,
+                    "demand": dict(demand)}
+        return None
 
     def _defer_cross_resource_placement(
         self, item: Mapping, demand: Mapping, *, placement: _peer_placement.PlacementPass,
@@ -16138,12 +16403,19 @@ class PoolQueue:
         if not isinstance(item.get("published_unix"), (int, float)):
             return None           # no denial could ever end the wait
         host = socket.gethostname()
-        for offer in self._matching_offers(item, live=placement.offers()):
+        for offer in self._matching_offers(item, live=placement.offers(),
+                allow_unknown_interpreter=self._portable_cpu_work(item)):
             remote_host = str(offer.get("host") or "")
-            if (not remote_host or remote_host == host
+            if (not remote_host or remote_host == host or offer.get("state") == "draining"
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue
+            interpreter = item.get("interpreter")
+            if (isinstance(interpreter, str)
+                    and capability_eligibility.InterpreterAnswers.from_offer(offer).answer(interpreter)
+                    is capability_eligibility.Presence.UNKNOWN):
+                return {"host": remote_host, "interpreter": interpreter,
+                        "interpreter_presence": "unknown"}
             if require_fit and self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
             try:
@@ -17482,8 +17754,14 @@ class PoolQueue:
         # ``tolerate_stale`` inside the by-key readers, whose loudness
         # is what turns a broken mount into a visible failure instead
         # of a confident wrong verdict.
+        from . import residency_plan
+
         try:
-            residency = self.residency_verdict(item)
+            # Best-effort plan readers may swallow an I/O error before a
+            # later read succeeds in this same verdict. Preserve that reset
+            # signal privately, without changing the public verdict shape.
+            with residency_plan._observe_read_uncertainty() as plan_uncertainty:
+                residency = self.residency_verdict(item)
         except (OSError, PoolContractError) as exc:
             residency_block = item.get("residency")
             leads = (residency_block.get("leads")
@@ -17506,6 +17784,22 @@ class PoolQueue:
                    if carried is not None else {})})
             return scan
         reason = candidate_policy.residency_denial(residency)
+        if reason is None and item.get("gang") is not None:
+            # A resident map does not make a retired filing usable. Inspect
+            # plan retirement independently of the host's residency verdict,
+            # including while resources keep this member READY. Keep the
+            # existing denial name and defer admission during confirmation.
+            try:
+                if plan_uncertainty and (
+                        any(plan_uncertainty) or residency_plan.incarnation(
+                            self.records.residency_plan_path(key)) is not None):
+                    raise ValueError("uncertain residency plan observation")
+                if self._terminal_plan_signature(key) is not None:
+                    reason = "residency_plan_unreadable"
+            except (OSError, ValueError, pb.PrismaBuildError):
+                self._gang_clear_terminal(item, key)
+                return candidate_policy.CandidateDenial(
+                    "residency_plan_unreadable", {'residency': residency}, scan)
         if reason is not None:
             # Before any token is taken, and without ``record_pass``:
             # the bytes are not there, so this box should go do other
@@ -17534,7 +17828,20 @@ class PoolQueue:
             # loop's next recomposition drops the prior-epoch
             # fragment (#640).
             if item.get("gang") is not None:
-                if reason != "residency_lead_terminal":
+                interrupted = bool(plan_uncertainty)
+                if (interrupted and not any(plan_uncertainty)
+                        and reason == "residency_lead_terminal"):
+                    # An absent plan is ordinary for lead-only consumers.
+                    # Preserve their separate proof, but never bridge a
+                    # missing observation into a now-readable plan proof.
+                    try:
+                        interrupted = residency_plan.incarnation(
+                            self.records.residency_plan_path(key)) is not None
+                    except (OSError, ValueError, pb.PrismaBuildError):
+                        pass
+                if interrupted:
+                    # No successful reproof in this scan may bridge an
+                    # unavailable earlier plan/marker observation.
                     self._gang_clear_terminal(item, key)
                 elif self._gang_terminal_confirmed(item, key, residency):
                     # This member can never start, so its gang cannot:
@@ -17543,15 +17850,14 @@ class PoolQueue:
                     # elections never expire and the sweep tears a
                     # gang down only on an unsuccessful member
                     # (#1543).  The confirmation above proved the
-                    # verdict once more under the leads' locks and
-                    # filed the one-shot teardown marker there, so no
-                    # requeue can win between the proof and the
-                    # commit; the siblings are withdrawn here, after
-                    # the leads' locks are released, and this row's
-                    # lock is held, so the sweep withdraws it.
+                    # terminal plan under this consumer's lock, or the
+                    # lead verdict under the leads' locks, and filed
+                    # the one-shot teardown marker. The siblings are
+                    # withdrawn here after any lead locks are released;
+                    # this row's lock is held, so the sweep withdraws it.
                     self._gang_teardown_withdraw(
                         item, by=key, exclude={key},
-                        reason=f"member {key[:12]} cannot start: residency_lead_terminal")
+                        reason=f"member {key[:12]} cannot start: {reason}")
             return candidate_policy.CandidateDenial(
                 reason, {'residency': residency}, scan)
         if item.get("gang") is not None:
@@ -17679,9 +17985,11 @@ class PoolQueue:
         # Peer registry and sealed restartability reads stay outside admission.
         portable = has_gpu and self._portable_cpu_work(item) and (
             item.get("cpu_guest_retry") is True or any(
-                capability_eligibility.HostPresence.from_offer(offer).gpu
+                offer.get("state") != "draining"
+                and capability_eligibility.HostPresence.from_offer(offer).gpu
                 is capability_eligibility.Presence.ABSENT
-                for offer in self._matching_offers(item, live=placement.offers())))
+                for offer in self._matching_offers(item, live=placement.offers(),
+                    allow_unknown_interpreter=True)))
         if not has_gpu:
             idle_peer = self._defer_to_idle_gpu_host(
                 item, reservation_demand, placement=placement, ready=ready)
@@ -17699,14 +18007,19 @@ class PoolQueue:
         restartable = (self._guest_restartable(item)
                        if idle_here or guest_retry else False)
         # Recheck the original sample after the blocking restartability proof.
-        idle_here = idle_here and self._idle_gpu_offer(local_offer)
+        idle_here = (idle_here and self._idle_gpu_offer(local_offer)
+                     and not self.ledger().held().get("gpu"))
         exhausted = guest_retry and not restartable
         cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
             **({"require_fit": False} if exhausted else {})))
         if cpu_host is not None:
+            reason = ("deferred_for_unresolved_cpu_host"
+                      if cpu_host.get("interpreter_presence") == "unknown"
+                      else "guest_retry_budget_exhausted" if exhausted
+                      else "deferred_for_cpu_only_host")
             return candidate_policy.CandidateDenial(
-                "guest_retry_budget_exhausted" if exhausted else "deferred_for_cpu_only_host", {
+                reason, {
                     "demand": demand, "reservation_demand": reservation_demand,
                     "cpu_host": cpu_host,
                 }, scan)
@@ -17718,6 +18031,13 @@ class PoolQueue:
             return candidate_policy.CandidateDenial("deferred_for_cross_resource_placement", {
                 "demand": demand, "reservation_demand": reservation_demand,
                 "remote_offer": cross_resource,
+            }, scan)
+        cpu_load = self._defer_for_cpu_load(
+            item, reservation_demand, placement=placement)
+        if cpu_load is not None:
+            return candidate_policy.CandidateDenial("deferred_for_cpu_load", {
+                "demand": demand, "reservation_demand": reservation_demand,
+                "remote_offer": cpu_load,
             }, scan)
         # Slow sealed-request I/O must not hold host admission (#351).
         identity = (cpu_admission.action_identity(item)
@@ -17802,21 +18122,21 @@ class PoolQueue:
                         self.record_denial(item, "gang_torn_down",
                                            {"group": gang["group"], "teardown": torn})
                         return _ClaimHandled.REFUSED
+                if gang_record is not None:
+                    pending_backfill = self._preempt_gang_backfill(
+                        ledger, gang_record, gang_entry, controller=host_gate,
+                        demand=request.candidate.demand.reservation, memory=memory)
+                    if isinstance(pending_backfill, candidate_policy.CandidateDenial):
+                        self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
+                        return _ClaimHandled.REFUSED
+                    if pending_backfill:
+                        self.record_denial(item, "gang_waiting_for_backfill_release", {
+                            "group": gang["group"], "holders": pending_backfill,
+                            "tokens_returned_unix": None})
+                        return _ClaimHandled.REFUSED
             except (_gang.GangContractError, OSError, pb.PrismaBuildError,
                     KeyError, TypeError, ValueError) as exc:
                 self.record_denial(item, "gang_contract_invalid", {"error": str(exc)})
-                return _ClaimHandled.REFUSED
-        if gang_record is not None:
-            pending_backfill = self._preempt_gang_backfill(
-                ledger, gang_record, gang_entry, controller=host_gate,
-                demand=request.candidate.demand.reservation, memory=memory)
-            if isinstance(pending_backfill, candidate_policy.CandidateDenial):
-                self.record_denial(item, pending_backfill.reason, pending_backfill.evidence)
-                return _ClaimHandled.REFUSED
-            if pending_backfill:
-                self.record_denial(item, "gang_waiting_for_backfill_release", {
-                    "group": gang["group"], "holders": pending_backfill,
-                    "tokens_returned_unix": None})
                 return _ClaimHandled.REFUSED
         return _ClaimGang(gang, gang_record, gang_entry, _gang_api)
 
@@ -20989,8 +21309,77 @@ class PoolQueue:
             return None
         return sorted({str(entry.get("lead")) for entry in pending})
 
+    def _terminal_plan_signature(self, key: str) -> str | None:
+        """Positive terminal plan proof, independent of lead presence or verdict.
+
+        The consumer's transition lock is held by the claim pass: plan filing,
+        retirement and reaping use that same lock. Bracket the reads as well,
+        so a changed filing or unavailable read cannot confirm old evidence.
+        A denial string alone deliberately proves nothing here.
+        """
+        from . import residency_plan
+
+        path = self.records.residency_plan_path(key)
+        filing = residency_plan.incarnation(path)
+        if filing is None:
+            return None
+        refused = False
+        try:
+            document = self.records.text_document_at(path)
+        except ValueError:
+            # Readable bytes with invalid JSON are deterministic refusal too.
+            refused = True
+        if not refused:
+            try:
+                plan = residency_plan.validate_plan(document)
+            except ValueError:
+                refused = True
+        raw = path.read_bytes()
+        if residency_plan.incarnation(path) != filing:
+            raise ValueError("residency plan filing changed during terminal proof")
+        if refused:
+            return pb.canonical_sha256(["plan-refused", filing, pb.raw_sha256(raw)])
+        marker = residency_plan.superseded(self, plan)
+        if marker is None:
+            return None
+        if marker.get("unreadable"):
+            raise ValueError("unverified residency supersession")
+        if residency_plan.incarnation(path) != filing:
+            raise ValueError("residency plan filing changed during terminal proof")
+        return pb.canonical_sha256(
+            ["plan-superseded", filing, pb.raw_sha256(raw), marker])
+
     def _gang_terminal_confirmed(self, item: Mapping[str, object], key: str,
                                  residency: Mapping[str, object]) -> bool:
+        """Confirm plan evidence first; retain the distinct locked lead proof."""
+        from . import _gang
+
+        try:
+            signature = self._terminal_plan_signature(key)
+            if signature is None:
+                if candidate_policy.residency_denial(residency) == "residency_lead_terminal":
+                    return self._gang_lead_terminal_confirmed(item, key, residency)
+                self._gang_clear_terminal(item, key)
+                return False
+            group = self._gang_member_group(item)
+            if group is None:
+                return False
+            if self._gang_terminal_resets.get((group, key), True):
+                if not self._gang_clear_terminal(item, key):
+                    return False
+            if not _gang.note_terminal(self, group, key, signature, now=_now()):
+                return False
+            if self._terminal_plan_signature(key) != signature:
+                self._gang_clear_terminal(item, key)
+                return False
+            return self._gang_teardown_mark(
+                item, reason=f"member {key[:12]} cannot start: terminal residency plan", by=key)
+        except (_gang.GangContractError, OSError, ValueError, pb.PrismaBuildError):
+            self._gang_clear_terminal(item, key)
+            return False
+
+    def _gang_lead_terminal_confirmed(self, item: Mapping[str, object], key: str,
+                                      residency: Mapping[str, object]) -> bool:
         """Whether a member's terminal reading has stood and still holds (#1543).
 
         One reading is not enough: a lead mid-requeue (READY -> CLAIMED) reads
@@ -21007,7 +21396,7 @@ class PoolQueue:
         and never sleeps; the leads' locks are released before the caller
         withdraws any sibling.
         """
-        from . import _gang
+        from . import _gang, residency_plan
         group: str | None = None
         try:
             group = self._gang_member_group(item)
@@ -21038,8 +21427,13 @@ class PoolQueue:
                         ) is not None:
                             self._gang_clear_terminal(item, key)
                             return False
-                fresh = self.residency_verdict(item, fresh=True)
-                if (fresh["state"] not in ("lead_not_resident", "lead_unpinned")
+                path = self.records.residency_plan_path(key)
+                filing = residency_plan.incarnation(path)
+                with residency_plan._observe_read_uncertainty() as uncertainty:
+                    fresh = self.residency_verdict(item, fresh=True)
+                if (any(uncertainty) or (uncertainty and filing is not None)
+                        or residency_plan.incarnation(path) != filing
+                        or fresh["state"] not in ("lead_not_resident", "lead_unpinned")
                         or fresh.get("plan_superseded") is not None
                         or self._terminal_signature(fresh) != signature):
                     self._gang_clear_terminal(item, key)
@@ -21089,6 +21483,28 @@ class PoolQueue:
             return False
         return True
 
+    def _withdraw_gang_member(self, record: Mapping[str, object],
+                              member: Mapping[str, object], *, reason: str) -> None:
+        """Withdraw only the exact member publication, retaining worker custody."""
+        from . import _gang
+        key = str(member["action_key"])
+        with self.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                return
+            claimed = record_store.value_or_raise(self.records.item(CLAIMED, key))
+            item = claimed if claimed is not None else record_store.value_or_raise(
+                self.records.item(READY, key))
+            if item is None or item.get("published_unix") != member["published_unix"]:
+                return
+            declared = _gang.declaration(item.get("gang"))
+            if declared != {"group": record["group"], "size": record["size"],
+                            "index": member["index"]}:
+                return
+            if self.withdrawal_covers(item) is not None:
+                return
+            self.withdraw(key, reason=f"gang teardown: {reason}",
+                          by=f"gang:{record['group']}", expected_claim=claimed)
+
     def _gang_teardown_withdraw(self, item: Mapping[str, object] | None, *,
                                 reason: str, by: str,
                                 exclude: Container[str] = ()) -> None:
@@ -21115,9 +21531,8 @@ class PoolQueue:
             if member["action_key"] == by or member["action_key"] in exclude:
                 continue
             try:
-                self.withdraw(member["action_key"], reason=f"gang teardown: {reason}",
-                              by=f"gang:{record['group']}")
-            except (PoolContractError, OSError, pb.PrismaBuildError):
+                self._withdraw_gang_member(record, member, reason=reason)
+            except (_gang.GangContractError, PoolContractError, OSError, pb.PrismaBuildError):
                 continue  # already terminal, or the sweep finishes it
 
     def _gang_start_barrier(self, item: Mapping[str, object], *, owner: str,
@@ -22202,22 +22617,17 @@ class PoolQueue:
         # the same number from the same sealed request, which is idempotent
         # under the clamp; passing the effective value keeps the two in step
         # without giving either one a second source of truth.
-        # An action admitted under the progress contract is not bounded in
-        # total duration by this box's ceiling -- that ceiling is what killed
-        # two demonstrably advancing GLM rows (#480), and a limit nobody
-        # submitted and no receipt explained is exactly what the contract
-        # replaces.  The ceiling is not waived, it is *re-aimed*: it clamps
-        # every declared phase's quiet instead, so a stuck action still ends on
-        # this box's terms.  A deadline the submitter asked for explicitly
-        # still governs, progress or no progress.
+        # The ceiling clamps quiet allowances, never unrequested total time.
+        # Preserve explicit budgets and their existing per-policy clamp.
         policy = progress_policy(item, timeout_s)
         budget = execution_budget(item, None if policy is not None else timeout_s)
+        stall = None if policy is not None else default_stall(item, timeout_s)
         with _execution_checkout(item) as checkout_root:
             outcome = self._execute_in_checkout(
                 item, checkout_root=checkout_root, python=python,
                 timeout_s=budget.effective, heartbeat_s=heartbeat_s,
                 timeout_grace_s=timeout_grace_s, containment=containment,
-                progress=policy, clock=clock,
+                progress=policy, stall=stall, clock=clock,
             )
         outcome.update(budget.as_record())
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
@@ -22227,9 +22637,12 @@ class PoolQueue:
         # field over): with a policy in force it is the stall ceiling, and
         # ``progress_no_progress_bound_s`` is the total quiet it permits.
         outcome["worker_timeout_ceiling_s"] = timeout_s
-        outcome["execution_governed_by"] = "progress" if policy is not None else "deadline"
+        outcome["execution_governed_by"] = ("progress" if policy is not None else
+                                            "deadline" if budget.effective is not None else "stall")
         if policy is not None:
             outcome.update(policy.as_record())
+        elif stall is not None:
+            outcome.update(stall.as_record())
         if item.get("resource_scope") is not None:
             telemetry = self._sample_resource_scope(self.scope_for_record(item))
             outcome["resource_telemetry"] = telemetry
@@ -22388,6 +22801,7 @@ class PoolQueue:
         containment: bool = False,
         clock: ExecutionClock | None = None,
         progress: ProgressPolicy | None = None,
+        stall: DefaultStall | None = None,
     ) -> dict[str, object]:
         """Run one claimed item through the canonical worker argv.
 
@@ -22564,6 +22978,12 @@ class PoolQueue:
             watch = (None if progress is None else ProgressWatch(
                 progress_path, progress_token, progress,
                 started=checkpoint_started, clock=clock))
+            activity = (None if progress is not None else ActivityWatch(
+                stall.effective if stall is not None else DEFAULT_STALL_ALLOWANCE_S,
+                started=checkpoint_started, clock=clock))
+            if activity is not None:
+                activity.observe(now=checkpoint_started,
+                                 cpu_seconds=_observed_cpu_s(observation))
             # A stage mover's pool, judged by this worker (#1010).
             contention = (
                 None if watch is None or progress is None
@@ -22697,6 +23117,13 @@ class PoolQueue:
                             contention.as_record())
                     if outcome.get("termination_reason") == "no_progress":
                         stall = watch.stall_record(now=ended, contention=contention)
+                elif activity is not None:
+                    ended = clock.monotonic()
+                    outcome["progress_observation"] = activity.as_record(now=ended)
+                    if outcome.get("termination_reason") == "no_progress":
+                        stall = {"allowance_s": activity.grace_s,
+                                 "phase": "activity", "last_landing": None,
+                                 **activity.as_record(now=ended)}
                 if stall is not None:
                     # Outside the diagnosis read below, so a failure there
                     # never loses what the kill was measured against.
@@ -22753,6 +23180,8 @@ class PoolQueue:
                 deadline += clock.monotonic() - checkpoint_started
             if watch is not None:
                 watch.shift(clock.monotonic() - checkpoint_started)
+            if activity is not None:
+                activity.shift(clock.monotonic() - checkpoint_started)
             # Refresh the lease while the child runs; a long action must not be
             # reaped out from under itself.
             next_heartbeat = clock.monotonic() + heartbeat_s
@@ -22766,6 +23195,10 @@ class PoolQueue:
                         interval = min(
                             interval,
                             max(0.0, watch.stall_deadline() - clock.monotonic()))
+                    if activity is not None:
+                        interval = min(
+                            interval,
+                            max(0.0, activity.stall_deadline() - clock.monotonic()))
                     out, err = process.communicate(timeout=interval)
                     break
                 except subprocess.TimeoutExpired as exc:
@@ -22773,6 +23206,12 @@ class PoolQueue:
                     observation = _observe_execution(
                         process, observation, stdout=exc.output,
                         stderr=exc.stderr, scope=scope)
+                    if activity is not None:
+                        activity.observe(
+                            now=checkpoint_started,
+                            stdout_bytes=int(observation.get("stdout_bytes") or 0),
+                            stderr_bytes=int(observation.get("stderr_bytes") or 0),
+                            cpu_seconds=_observed_cpu_s(observation))
                     if scope is not None:
                         telemetry = self._sample_resource_scope(scope)
                         resource_failure = self._resource_failure(telemetry)
@@ -22847,8 +23286,10 @@ class PoolQueue:
                             key, owner=owner, child_pid=process.pid, claim_snapshot=item,
                             execution_observation=observation,
                             progress_observation=(
-                                None if watch is None
-                                else watch.as_record(now=clock.monotonic())),
+                                watch.as_record(now=clock.monotonic())
+                                if watch is not None else
+                                (activity.as_record(now=clock.monotonic())
+                                 if activity is not None else None)),
                             container_owner=(str(item["container_owner"])
                                              if item.get("container_owner") else None),
                         )
@@ -22857,6 +23298,8 @@ class PoolQueue:
                         deadline += clock.monotonic() - checkpoint_started
                     if watch is not None:
                         watch.shift(clock.monotonic() - checkpoint_started)
+                    if activity is not None:
+                        activity.shift(clock.monotonic() - checkpoint_started)
                     if deadline is not None and clock.monotonic() >= deadline:
                         # The branch's worst case stays the old three grace
                         # budgets.  The profiled flush opportunity, discovery
@@ -22927,6 +23370,41 @@ class PoolQueue:
                             # worker and whether the worker exited within it.
                             outcome["profile_settle"] = settled
                         return ending(outcome)
+                    if activity is not None and clock.monotonic() >= activity.stall_deadline():
+                        # The default stall watch (#1707): the observation
+                        # above is already fresh from this checkpoint, so no
+                        # second read can show activity this poll missed.
+                        # Reached only when containment, withdrawal and an
+                        # explicit deadline all had nothing to say.
+                        if scope is not None:
+                            scope.terminate_owned("timeout")
+                        pb._terminate_process_group(
+                            process, grace_s=timeout_grace_s
+                        )
+                        out, err, survived = _drain(
+                            process, timeout_s=timeout_grace_s
+                        )
+                        return ending({
+                            # A stall IS an execution timeout: every reader
+                            # of this lane already knows the word, and
+                            # inventing a sixth status would make a policy
+                            # change look like a schema change. Which
+                            # policy ended it is in the reason.
+                            "status": "timeout",
+                            "termination_reason": "no_progress",
+                            "execution_observation": observation,
+                            "returncode": None,
+                            "launcher_returncode": process.returncode,
+                            "stdout": out,
+                            "stderr": err,
+                            "action_survived_kill": survived,
+                            "elapsed_s": clock.unix() - started,
+                            "child_rusage": _reaped_children(
+                                rusage_before,
+                                resource.getrusage(resource.RUSAGE_CHILDREN)),
+                            "argv": argv,
+                            "cpu_allocation": allocation,
+                        })
                     if watch is not None:
                         stall = watch.check_stall(wait_sources)
                         if stall is not None:
@@ -22991,6 +23469,19 @@ class PoolQueue:
             # that evidence before ending() removes the channel. This read is
             # observational: it cannot change the completed action's verdict.
             watch.sample(now=clock.monotonic())
+        if activity is not None:
+            # The final pipes hold output the last checkpoint had not seen.
+            # Observational like the progress re-read above: it only keeps
+            # the terminal record honest, never the verdict.
+            activity.observe(
+                now=clock.monotonic(),
+                stdout_bytes=max(
+                    activity.stdout_bytes,
+                    len((out or "").encode("utf-8", "replace"))),
+                stderr_bytes=max(
+                    activity.stderr_bytes,
+                    len((err or "").encode("utf-8", "replace"))),
+                cpu_seconds=_observed_cpu_s(observation))
         # Checkpoint three: on the way out.  When the operator's own signal
         # reached the action group first, the launcher reports the SIGTERM that
         # stopped it and this worker would otherwise log a defect for a

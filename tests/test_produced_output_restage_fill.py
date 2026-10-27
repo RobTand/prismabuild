@@ -82,7 +82,7 @@ def _with_env(monkeypatch, value: str) -> None:
 
 def test_off_by_default_a_restage_reserves_no_fill(tmp_path: Path) -> None:
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
     mover = str(ensured["mover_key"])
@@ -95,7 +95,7 @@ def test_off_by_default_a_restage_reserves_no_fill(tmp_path: Path) -> None:
 
 def test_an_opted_in_restage_reserves_the_offer_and_runs(tmp_path: Path) -> None:
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = po.ensure_batch_materialized(
         world.q, world.inst, world.template, batch_id="b1",
         cas_root=world.cas_root, restage_fill=True, **world.publish_kwargs)
@@ -103,38 +103,38 @@ def test_an_opted_in_restage_reserves_the_offer_and_runs(tmp_path: Path) -> None
     mover = str(ensured["mover_key"])
     action = _sealed(world, mover)
     # Nothing has measured the pool, so the price is the tier's offer.
-    assert action["params"]["demand"][FILL_DEMAND] == 100
+    assert action["params"]["demand"][FILL_DEMAND] == 2
     command = action["params"]["command"]
-    assert command[command.index("--fill-mb-s-pool-side") + 1] == "100"
+    assert command[command.index("--fill-mb-s-pool-side") + 1] == "2"
     assert _row(world, mover)["resources"] == action["params"]["demand"]
     assert world.entry("b1")["materializations"][0][
-        "fill_mb_s_pool_side"] == 100
+        "fill_mb_s_pool_side"] == 2
     # The stage window still comes from the producer by transfer; the fill
     # comes from free at the claim, and goes back when the mover stops.
     restage._claim_mover(world.q, "w-fill")
-    assert world.ledger.holdings(mover) == {KIND: 1, FILL: 100}
+    assert world.ledger.holdings(mover) == {KIND: 1, FILL: 2}
     receipt = restage._execute_mover(world.q, mover)
     assert receipt["complete"] is True, receipt
     world.q.finish(mover, status="executed")
-    assert world.ledger.free_supply().get(FILL) == 100
+    assert world.ledger.free_supply().get(FILL) == 2
 
 
 def test_the_sealed_environment_opts_the_producer_in(
         tmp_path: Path, monkeypatch) -> None:
     _with_env(monkeypatch, "1")
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
     demand = _sealed(world, str(ensured["mover_key"]))["params"]["demand"]
-    assert demand[FILL_DEMAND] == 100
+    assert demand[FILL_DEMAND] == 2
 
 
 def test_a_call_can_opt_out_of_the_sealed_setting(
         tmp_path: Path, monkeypatch) -> None:
     _with_env(monkeypatch, "1")
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = po.ensure_batch_materialized(
         world.q, world.inst, world.template, batch_id="b1",
         cas_root=world.cas_root, restage_fill=False, **world.publish_kwargs)
@@ -148,7 +148,7 @@ def test_an_unset_or_zero_setting_is_off(tmp_path: Path, monkeypatch,
                                         value: str) -> None:
     _with_env(monkeypatch, value)
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
     assert FILL_DEMAND not in _sealed(
@@ -169,7 +169,7 @@ def test_a_first_publication_never_reserves_fill(
         tmp_path: Path, monkeypatch) -> None:
     _with_env(monkeypatch, "1")
     world = restage._World(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     descs = restage._descriptors(world.template, world.inst, "p1", b"X" * 600)
     restage._prewrite(world.q, world.inst, world.template, "b1", descs)
     first = world.first_publish("b1", descs)
@@ -196,7 +196,7 @@ def test_a_resumed_restage_keeps_the_price_it_was_sealed_at(
     sealed demand is refused at launch."""
 
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
 
     def _boom(*args, **kwargs):
         raise restage._Crash("before-publish")
@@ -208,12 +208,12 @@ def test_a_resumed_restage_keeps_the_price_it_was_sealed_at(
                 world.q, world.inst, world.template, batch_id="b1",
                 cas_root=world.cas_root, restage_fill=True,
                 **world.publish_kwargs)
-    _offer_fill(world.q, 60)
+    _offer_fill(world.q, 1)
     resumed = world.ensure("b1")
     assert resumed.get("ok") is True and resumed.get("resumed") is True, resumed
     mover = str(resumed["mover_key"])
     demand = _sealed(world, mover)["params"]["demand"]
-    assert demand[FILL_DEMAND] == 100
+    assert demand[FILL_DEMAND] == 2
     assert _row(world, mover)["resources"] == demand
 
 
@@ -224,7 +224,7 @@ def test_the_batch_gate_admits_fill_on_its_own_tier_only(
     floor, and nothing may name a second tier."""
 
     world, _descs = restage._staged_world(tmp_path)
-    _offer_fill(world.q, 100)
+    _offer_fill(world.q, 2)
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
     params = _sealed(world, str(ensured["mover_key"]))["params"]

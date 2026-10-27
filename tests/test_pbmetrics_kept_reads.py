@@ -7,15 +7,10 @@ plans) that was about 1,000 NFS lookups a second from each box that ran it,
 around the clock, and its cost grew with the fleet's history rather than with
 its live work.
 
-These tests size a ``tmp_path`` queue like the live one and count what a
-scrape does to the filesystem: directory listings, ``stat`` calls and file
-opens.  The exporter's server path (``MetricsCache``) is what is measured, so
-what the exporter keeps from one scrape to the next is what is tested.
-
-The same fixture and the same probe are what the before/after profile of
-#1020 was measured with (``python tests/test_pbmetrics_kept_reads.py
---profile``), so the numbers in the pull request and the assertions here come
-from one instrument.
+These tests use a small ``tmp_path`` queue with every record family and count
+directory listings, ``stat`` calls and file opens. They exercise the exporter's
+server path, ``MetricsCache``, across successive scrapes. The optional
+``--profile`` command retains the larger live-shaped queue and the same probe.
 """
 from __future__ import annotations
 
@@ -494,10 +489,10 @@ def _scrape(cache) -> str:
 # --------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def live_shaped(tmp_path_factory):
+def populated_queue(tmp_path_factory):
     root = tmp_path_factory.mktemp("kept") / "pb-queue"
     now = time.time()
-    build_queue(root, now, LIVE_SHAPE)
+    build_queue(root, now, SMALL_SHAPE)
     with pytest.MonkeyPatch.context() as patch:
         settle(root, patch)
         yield root
@@ -514,11 +509,11 @@ def _require_trusted(root: Path) -> None:
         "filesystem (zfs, ext4, xfs, btrfs or tmpfs)")
 
 
-def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
+def test_idle_scrape_reads_no_record_and_lists_no_directory(populated_queue):
     """The second scrape of an unchanged queue re-stats each directory only."""
 
-    _require_trusted(live_shaped)
-    cache = pbmetrics.MetricsCache(live_shaped, 0.0, WINDOW_S, LIMIT)
+    _require_trusted(populated_queue)
+    cache = pbmetrics.MetricsCache(populated_queue, 0.0, WINDOW_S, LIMIT)
     first = _scrape(cache)
     assert "prismabuild_collection_success 1" in first
     probe = FsProbe()
@@ -535,23 +530,23 @@ def test_idle_scrape_reads_no_record_and_lists_no_directory(live_shaped):
     assert not_directories == [], (
         f"{len(not_directories)} stats of records on an unchanged queue, e.g. "
         f"{Counter(Path(p).parent.name for p in not_directories).most_common(5)}")
-    probed = kept_reads._filesystem_type(os.stat(live_shaped).st_dev) is None
-    assert len(probe.stats) <= (2 if probed else 1) * directories_under(live_shaped)
+    probed = kept_reads._filesystem_type(os.stat(populated_queue).st_dev) is None
+    assert len(probe.stats) <= (2 if probed else 1) * directories_under(populated_queue)
     assert probe.namespace_stats, "retention must still check its current namespace"
 
 
-def test_one_new_ending_is_the_only_record_read(live_shaped, monkeypatch):
+def test_one_new_ending_is_the_only_record_read(populated_queue, monkeypatch):
     """A changed directory is listed again; only the new record is opened."""
 
-    _require_trusted(live_shaped)
-    cache = pbmetrics.MetricsCache(live_shaped, 0.0, WINDOW_S, LIMIT)
+    _require_trusted(populated_queue)
+    cache = pbmetrics.MetricsCache(populated_queue, 0.0, WINDOW_S, LIMIT)
     _scrape(cache)
     key = _key("late-ending", 0)
-    path = live_shaped / pool.record_store.DONE / f"{key}.json"
+    path = populated_queue / pool.record_store.DONE / f"{key}.json"
     _replace(path, _ending(key, "executed", "sparky", time.time() - 1.0,
                            profiled=True))
     try:
-        settle(live_shaped, monkeypatch)
+        settle(populated_queue, monkeypatch)
         probe = FsProbe()
         with probe.active():
             text = _scrape(cache)
@@ -560,10 +555,10 @@ def test_one_new_ending_is_the_only_record_read(live_shaped, monkeypatch):
         assert opened == [str(path)], (
             f"{len(opened)} records opened after one new ending, e.g. "
             f"{Counter(Path(p).parent.name for p in opened).most_common(5)}")
-        assert probe.listings == [str(live_shaped / pool.record_store.DONE)]
+        assert probe.listings == [str(populated_queue / pool.record_store.DONE)]
     finally:
         path.unlink()
-        settle(live_shaped, monkeypatch)
+        settle(populated_queue, monkeypatch)
 
 
 GOLDEN = Path(__file__).resolve().parent / "data" / "pbmetrics_kept_reads_main.prom"

@@ -20,11 +20,9 @@ published once it allows, whatever the copy does next, and the waiting mover
 adopts the name through the publication gate's proof.
 
 The fixtures drive the real ``stage_move.move`` over tiny real files, with
-real sealed claims for the publication gate's live-claim census.  The first
-mover is held on its last entry for longer than the grace, the shape of a
-pacer hold.  The grace and the rate limit are shortened in proportion: the
-rate limit stays well inside the grace, as 5 s is inside 30 s.  Runs under
-pbtest at priority -10; never executed locally.
+real sealed claims for the publication gate's live-claim census. The first
+mover is held on its last entry while explicit ticks drive the real trailing
+thread across the publication interval. Runs under pbtest at priority -10.
 """
 from __future__ import annotations
 
@@ -32,6 +30,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from queue import Queue
 import sys
 import threading
 import time
@@ -55,9 +54,56 @@ MOVER_P1 = "2" * 64
 N = 3
 SIZE = 16 * 1024
 PHASE_BYTES = N * SIZE
-#: Shortened for the test; the rate limit stays a fraction of the grace.
-GRACE = 4.0
-FRAGMENT_S = 1.0
+
+
+class _PublicationClock:
+    now = 100.0
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class _TrailingTicks:
+    def __init__(self):
+        self.commands = Queue()
+        self.paid = threading.Event()
+
+    def wait(self, _interval):
+        return self.commands.get(timeout=60)
+
+    def set(self):
+        self.commands.put(True)
+
+    def tick(self):
+        self.paid.clear()
+        self.commands.put(False)
+        assert self.paid.wait(60), "the trailing thread did not pay its tick"
+
+
+def _control_publication(monkeypatch):
+    clock = _PublicationClock()
+    ticks = []
+    real_init = stage_move._TrailingFragment.__init__
+
+    def initialize(self, pay, *, interval_s):
+        control = _TrailingTicks()
+
+        def paid():
+            try:
+                pay()
+            finally:
+                control.paid.set()
+
+        real_init(self, paid, interval_s=interval_s)
+        self._stop = control
+        ticks.append(control)
+
+    monkeypatch.setattr(stage_move, "time", clock)
+    monkeypatch.setattr(stage_move._TrailingFragment, "__init__", initialize)
+    return clock, ticks
 
 
 def _payload(index: int) -> bytes:
@@ -184,10 +230,8 @@ def _fixture(tmp_path: Path, monkeypatch):
     queue.records.ensure_layout()
     (tmp_path / "stage").mkdir()
     manifest, digest, paths = _manifest(tmp_path)
-    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
-    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
-    monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", FRAGMENT_S)
-    return queue, manifest, digest, paths
+    clock, ticks = _control_publication(monkeypatch)
+    return queue, manifest, digest, paths, clock, ticks
 
 
 def _vouched(queue: pool.PoolQueue, consumer: str, mover: str) -> set[str]:
@@ -203,9 +247,9 @@ def _vouched(queue: pool.PoolQueue, consumer: str, mover: str) -> set[str]:
 
 def test_a_held_first_publisher_does_not_fail_its_sibling(
         tmp_path: Path, monkeypatch) -> None:
-    """RED before #1151: the second mover waits out the grace and refuses."""
+    """A held mover's trailing vouch lets its sibling adopt the landed names."""
 
-    queue, manifest, digest, paths = _fixture(tmp_path, monkeypatch)
+    queue, manifest, digest, paths, clock, ticks = _fixture(tmp_path, monkeypatch)
     cas = tmp_path / "cas"
     _seal_claim(queue, cas, MOVER_P0, digest, 0, PHASE_BYTES)
     _seal_claim(queue, cas, MOVER_P1, digest, PHASE_BYTES, 2 * PHASE_BYTES)
@@ -221,18 +265,22 @@ def test_a_held_first_publisher_does_not_fail_its_sibling(
     thread = threading.Thread(target=run_first, daemon=True)
     thread.start()
     try:
-        assert held.wait(30), "the first mover never reached its last entry"
+        assert held.wait(60), "the first mover never reached its last entry"
         # The first mover renamed every name but the last and is held; the
         # second walks the same names.
         renamed = [_staged(tmp_path, path) for path in paths[:-1]]
         before = [reader_lease.stat_identity(str(path)) for path in renamed]
         assert all(before), before
 
-        started = time.monotonic()
+        assert _vouched(queue, CONSUMER_P0, MOVER_P0) == {
+            os.path.normpath(str(renamed[0]))}
+        clock.now += stage_move.FRAGMENT_PUBLISH_S
+        ticks[0].tick()
+        assert _vouched(queue, CONSUMER_P0, MOVER_P0) == {
+            os.path.normpath(str(path)) for path in renamed}
         second = stage_move.move(_args(
             tmp_path, queue, manifest, digest, CONSUMER_P1, MOVER_P1,
             PHASE_BYTES, 2 * PHASE_BYTES))
-        elapsed = time.monotonic() - started
         _conclude(queue, MOVER_P1)
     finally:
         release.set()
@@ -243,14 +291,11 @@ def test_a_held_first_publisher_does_not_fail_its_sibling(
     assert isinstance(receipt, dict)
 
     assert second["complete"] is True, (
-        f"the second phase mover failed on a name the first had renamed and "
-        f"not yet vouched, after {elapsed:.1f} s against a {GRACE} s grace: "
+        f"the second phase mover failed on the held mover's vouched names: "
         f"{second['errors']}")
     assert second["errors"] == [], second["errors"]
     assert receipt["complete"] is True, receipt["errors"]
     assert receipt["errors"] == [], receipt["errors"]
-    assert elapsed < GRACE, (
-        f"the second mover waited out the grace: {elapsed:.1f} s")
     # Nothing was replaced: the names the first mover renamed kept their
     # inodes, and the second adopted them rather than copying over them.
     assert [reader_lease.stat_identity(str(path))
@@ -276,21 +321,22 @@ def test_a_landed_name_is_vouched_while_the_copy_lands_nothing(
         tmp_path: Path, monkeypatch) -> None:
     """RED before #1151: the name stayed unvouched until the range ended.
 
-    The invariant under the collision: a renamed name is vouched within
-    about ``FRAGMENT_PUBLISH_S`` whatever the copy does next.  And the
+    The invariant under the collision: a renamed name is vouched when
+    ``FRAGMENT_PUBLISH_S`` permits it, whatever the copy does next. And the
     trailing edge adds no writes of its own: while nothing is owed, nothing
     is written.
     """
 
-    queue, manifest, digest, paths = _fixture(tmp_path, monkeypatch)
+    queue, manifest, digest, paths, clock, ticks = _fixture(tmp_path, monkeypatch)
     _seal_claim(queue, tmp_path / "cas", MOVER_P0, digest, 0, PHASE_BYTES)
     held, release = _hold(monkeypatch, MOVER_P0, paths[-1])
-    writes: list[float] = []
+    writes: list[set[str]] = []
     real_write = residency_map.write_fragment
 
     def counted(*args, **kwargs):
-        writes.append(time.monotonic())
-        return real_write(*args, **kwargs)
+        result = real_write(*args, **kwargs)
+        writes.append(_vouched(queue, CONSUMER_P0, MOVER_P0))
+        return result
 
     monkeypatch.setattr(residency_map, "write_fragment", counted)
     first: dict[str, object] = {}
@@ -305,19 +351,18 @@ def test_a_landed_name_is_vouched_while_the_copy_lands_nothing(
     landed = {os.path.normpath(str(_staged(tmp_path, path)))
               for path in paths[:-1]}
     try:
-        assert held.wait(30), "the mover never reached its last entry"
-        held_at = time.monotonic()
-        deadline = held_at + 3 * FRAGMENT_S
-        vouched: set[str] = set()
-        while time.monotonic() < deadline:
-            vouched = _vouched(queue, CONSUMER_P0, MOVER_P0)
-            if vouched == landed:
-                break
-            time.sleep(0.05)
-        waited = time.monotonic() - held_at
-        # Hold on past the vouch for a few more ticks: nothing owed, so
-        # nothing more may be written.
-        time.sleep(FRAGMENT_S)
+        assert held.wait(60), "the mover never reached its last entry"
+        first_name = {os.path.normpath(str(_staged(tmp_path, paths[0])))}
+        assert writes == [first_name]
+        clock.now += stage_move.FRAGMENT_PUBLISH_S / 2
+        ticks[0].tick()
+        assert writes == [first_name]
+        clock.now += stage_move.FRAGMENT_PUBLISH_S / 2
+        ticks[0].tick()
+        assert _vouched(queue, CONSUMER_P0, MOVER_P0) == landed
+        assert writes == [first_name, landed]
+        clock.now += stage_move.FRAGMENT_PUBLISH_S
+        ticks[0].tick()
         during_hold = len(writes)
     finally:
         release.set()
@@ -325,10 +370,6 @@ def test_a_landed_name_is_vouched_while_the_copy_lands_nothing(
     assert not thread.is_alive()
     _conclude(queue, MOVER_P0)
 
-    assert vouched == landed, (
-        f"{len(landed - vouched)} renamed name(s) still unvouched "
-        f"{waited:.1f} s into a hold, against a {FRAGMENT_S} s rate limit")
-    assert waited <= 2 * FRAGMENT_S, waited
     # The first landing's publication, then the trailing one; no more.
     assert during_hold == 2, (
         f"{during_hold} fragment writes during the hold; the trailing edge "

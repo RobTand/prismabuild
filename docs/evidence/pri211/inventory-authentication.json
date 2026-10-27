@@ -1,0 +1,15 @@
+{
+  "action_key": "b4180d05c5e9dc6bec15701599d124322f64833cd6fa6efa988cec3cbe156269",
+  "result": {
+    "bytes": 462,
+    "sha256": "46b4115eacf7ca682ea7b7eadb7dd14fb472988929325016cf1c50e2a5686d86"
+  },
+  "report": {
+    "after": 585,
+    "before": 584,
+    "bytes": 18721,
+    "reviewed": true,
+    "sha256": "0e85decddefe9bdfcfe65f4a65524d77d0c28e4bc71347496bba3655e0c90560"
+  },
+  "report_matches_verified_result": true
+}

@@ -225,8 +225,8 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
     assert (group / "reservation.json").read_bytes() == reservation
     assert list((spool.queue.root / pool.record_store.READY).glob("*.json")) == [
         spool.queue.records.item_path(pool.record_store.READY, handle["export_key"])]
-    execute_export(spool, handle, destination, payload, rate=7)
     assert source.read_bytes() == payload and ps._identity(source) == identity
+    return handle
 
 
 def test_new_explicit_paced_export_without_price_refuses_before_publication(tmp_path):
@@ -235,7 +235,10 @@ def test_new_explicit_paced_export_without_price_refuses_before_publication(tmp_
     spool = base.world(tmp_path)
     assert spool.paced_export is False
     source, destination, entries = base.prepare(spool)
-    refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=True)
+    identity = ps._identity(source)
+    handle = refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=True)
+    execute_export(spool, handle, destination, b"hello", rate=7)
+    assert source.read_bytes() == b"hello" and ps._identity(source) == identity
 
 
 @pytest.mark.parametrize("paced", [None, True], ids=["sealed-env1", "sealed-env1-override"])

@@ -114,6 +114,7 @@ class SubmissionRequest:
     retry_scope: Literal["interruption"] | None = None
     max_attempts: int = 1
     timeout_s: float | None = None
+    stall_s: float | None = None
     awaited_batch: Mapping[str, object] | None = None
     wait_s: float = 86400.0
     filesystem_growth_gib: int = 1

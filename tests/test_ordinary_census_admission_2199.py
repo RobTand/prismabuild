@@ -170,11 +170,12 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
     second = publish("r2-recheck-second", gpu=0)
     pass_census = reservation.PassCensus(queue, queue.ledger(), adaptive_cpu.AdmissionGate(queue.ledger()))
     original = reservation._read
-    reads = []
+    reads = queue.root / "ordinary-source-reads.log"
 
     def observe(path, **kwargs):
         if path == queue.records.passes_path(selected):
-            reads.append(path)
+            with reads.open("a") as log:
+                log.write(str(path) + "\n")
         return original(path, **kwargs)
 
     monkeypatch.setattr(reservation, "_read", observe)
@@ -184,7 +185,7 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
                 pass_census, queue, queue.ledger(), pass_census._controller, row,
                 dependent_owner=None) as census:
             assert "unavailable" not in census
-    assert len(reads) == 1
+    assert len(reads.read_text().splitlines()) == 1
     _fixture_selection(queue, selected)
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.02)
     with _fixture_census_fence(queue):
@@ -192,7 +193,7 @@ def test_parsed_sidecars_are_reused_but_replacements_are_rechecked(fleet, monkey
                 pass_census, queue, queue.ledger(), pass_census._controller, row,
                 dependent_owner=None) as census:
             assert "unavailable" in census
-    assert len(reads) == 2
+    assert len(reads.read_text().splitlines()) == 2
 
 
 def test_election_between_source_discovery_and_H_cannot_authorize_admission(fleet, monkeypatch):

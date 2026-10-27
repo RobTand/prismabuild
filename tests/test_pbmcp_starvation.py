@@ -31,7 +31,8 @@ DEADLINE_S = 1.0
 
 
 @pytest.fixture()
-def fleet(tmp_path: Path) -> fx.Fleet:
+def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> fx.Fleet:
+    monkeypatch.setattr(fx, "STARVED_GIB", 1024)
     return fx.build_starved(tmp_path)
 
 
