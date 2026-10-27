@@ -1,5 +1,8 @@
 """Publication refuses an impossible canary before changing the runtime."""
+import importlib.util
+from pathlib import Path
 import shutil
+import sys
 
 import pytest
 
@@ -121,3 +124,44 @@ def test_driver_without_placement_preflight_refuses_before_publication(tmp_path,
     with pytest.raises(SystemExit, match="no preflight_publication"):
         _run_publish(tmp_path, monkeypatch, checkout, [])
     assert not (tmp_path / "runtime-generations").exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("refuse", [False, True])
+@pytest.mark.parametrize("bytecode_disabled", [False, True])
+def test_preflight_imports_preserve_dry_run_and_caller_bytecode_policy(
+    tmp_path, monkeypatch, dry_run, refuse, bytecode_disabled,
+):
+    checkout = _checkout(tmp_path / "checkout", "new")
+    driver = checkout / "tools/fleet/pbcanary.py"
+    dependency = driver.with_name("_pri173_canary_dependency.py")
+    dependency.write_text("def check(refuse):\n"
+                          "    if refuse:\n"
+                          "        raise ValueError('fixture placement refusal')\n")
+    driver.write_text(
+        "def preflight_publication(*, fleet_root):\n"
+        "    import _pri173_canary_dependency\n"
+        f"    _pri173_canary_dependency.check({refuse!r})\n"
+        "def run_canary(*, generation):\n"
+        "    return 0\n")
+    monkeypatch.syspath_prepend(str(driver.parent))
+    monkeypatch.delitem(sys.modules, dependency.stem, raising=False)
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", tmp_path / "mirror")
+    monkeypatch.setattr(sys, "dont_write_bytecode", bytecode_disabled)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    before = set(checkout.rglob("*"))
+
+    if refuse:
+        with pytest.raises(publish_runtime._CanaryPrecondition, match="fixture placement refusal"):
+            publish_runtime._preflight_canary_placement(dry_run=dry_run)
+    else:
+        publish_runtime._preflight_canary_placement(dry_run=dry_run)
+
+    assert dependency.stem in sys.modules
+    assert sys.dont_write_bytecode is bytecode_disabled
+    if dry_run or bytecode_disabled:
+        assert set(checkout.rglob("*")) == before
+    else:
+        assert Path(importlib.util.cache_from_source(str(driver))).is_file()
+        assert Path(importlib.util.cache_from_source(str(dependency))).is_file()
