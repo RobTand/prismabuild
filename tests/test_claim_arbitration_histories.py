@@ -85,7 +85,7 @@ def test_gang_diagnostic_failure_keeps_the_active_handler(gang_fleet, monkeypatc
     assert _gang.elections(queue, group, 2) == {}
 
 
-def test_a_failed_census_is_cached_after_real_gang_preparation(gang_fleet, monkeypatch):
+def test_a_failed_gang_census_does_not_refuse_an_unfenced_ordinary_follower(gang_fleet, monkeypatch):
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     group, (first, peer) = members("cached-census-gang")
     second = publish("cached-census-ordinary", tags=["sparklina"])
@@ -103,14 +103,14 @@ def test_a_failed_census_is_cached_after_real_gang_preparation(gang_fleet, monke
 
     monkeypatch.setattr(reservation.CensusReader, "capture", unavailable)
     monkeypatch.setattr(queue, "_preempt_gang_backfill", reclaim)
-    assert claim("sparklina", ready=[_row(queue, first), _row(queue, second)]) is None
+    assert claim("sparklina", ready=[_row(queue, first), _row(queue, second)]) == second
     assert len(reads) == 1
     assert reclaimed == [group]
-    for key in (first, second):
-        refusal = denial(key, "sparklina")
-        assert refusal["reason"] == "measurement_census_unavailable"
-        assert refusal["evidence"]["unavailable"] == "native characterization refusal"
-        _assert_ready_unheld(queue, key)
+    refusal = denial(first, "sparklina")
+    assert refusal["reason"] == "measurement_census_unavailable"
+    assert refusal["evidence"]["unavailable"] == "native characterization refusal"
+    _assert_ready_unheld(queue, first)
+    assert queue.records.item_path(pool.CLAIMED, second).is_file()
     assert queue.records.item_path(pool.READY, peer).is_file()
 
 

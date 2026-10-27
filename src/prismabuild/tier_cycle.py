@@ -154,6 +154,10 @@ _FANOUT_FINGERPRINTS: dict[tuple[str, str, str], tuple[object, ...]] = {}
 _MOVER_KEPT_TOLD: set[tuple[str, str, str]] = set()
 #: Per event file this process writes, the lines it holds (counted once).
 _EVENT_LINES: dict[str, int] = {}
+#: Last output census per queue and host; a process restart reports it again.
+_OUTPUT_OBSERVATIONS: dict[
+    tuple[str, str], dict[tuple[str, str], tuple[object, ...]]
+] = {}
 
 
 def _begin_verdict_cycle() -> None:
@@ -10405,6 +10409,24 @@ def _cycle(
                                   census=commitments, consumers=planned, store=store):
         _emit(queue, host, event, tier_consumers=tier_consumers)
     phases.lap("residency_window")
+    output_scope = (str(queue.root), host)
+    previous_outputs = _OUTPUT_OBSERVATIONS.get(output_scope, {})
+    current_outputs: dict[tuple[str, str], tuple[object, ...]] = {}
+    for event in produced_output.output_scope_tick(queue, tiers):
+        output_key = (str(event["batch_id"]), str(event["namespace"]))
+        signature = (event["event"], event.get("generation"),
+                     event.get("staged_logical_bytes"), event.get("manifest_digest"))
+        current_outputs[output_key] = signature
+        if previous_outputs.get(output_key) != signature:
+            _emit(queue, host, event, tier_consumers=tier_consumers)
+    for batch_id, namespace in sorted(previous_outputs.keys() - current_outputs.keys()):
+        _emit(queue, host, {"event": "output-batch-dropped", "batch_id": batch_id,
+                            "namespace": namespace}, tier_consumers=tier_consumers)
+    if current_outputs:
+        _OUTPUT_OBSERVATIONS[output_scope] = current_outputs
+    else:
+        _OUTPUT_OBSERVATIONS.pop(output_scope, None)
+    phases.lap("output_scope_tick")
     # Terminal output funding last, once every step above that could still
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes

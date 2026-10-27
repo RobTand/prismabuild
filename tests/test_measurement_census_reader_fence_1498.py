@@ -68,7 +68,7 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
     other = pool.PoolQueue(queue.root)
 
     publish("fence-measurement", measurement=True, priority=-100)
-    candidate = publish("fence-candidate", priority=-10)
+    candidate = publish("fence-candidate", measurement=True, priority=-10)
     candidate_record = pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.READY, candidate),
     )
@@ -171,7 +171,7 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         publish("busy-fence-measurement", measurement=True, priority=-100)
-        candidate = publish("busy-fence-candidate", priority=-10)
+        candidate = publish("busy-fence-candidate", measurement=True, priority=-10)
         candidate_record = pool.record_store.value_or_raise(
             queue.records.item(pool.record_store.READY, candidate),
         )

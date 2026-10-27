@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+from types import SimpleNamespace
 import textwrap
 import time
 
@@ -160,7 +161,9 @@ def isolated_supervisor(monkeypatch, tmp_path):
     monkeypatch.setattr(supervise, '_reap_children', lambda: 0)
     monkeypatch.setattr(supervise, 'declared_shape', lambda *a, **k: (1, []))
     monkeypatch.setattr(supervise, '_worker_log_census', lambda: [])
-    monkeypatch.setattr(supervise.time, 'sleep', lambda _: None)
+    monkeypatch.setattr(supervise, "time", SimpleNamespace(**{
+        **vars(supervise.time), "sleep": lambda _: None,
+    }))
 
 
 def test_stop_received_during_cycle_prevents_role_or_worker_spawns(monkeypatch, tmp_path):

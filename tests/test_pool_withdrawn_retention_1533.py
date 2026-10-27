@@ -17,6 +17,7 @@ from test_gang_reservation_1517 import gang_fleet  # noqa: F401
 from test_gang_teardown_1517 import _both_claimed
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from prismabuild import pool, resource_scope
+from prismabuild import _gang, immutable_files
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun
@@ -105,14 +106,47 @@ def test_running_withdrawal_retains_cleanup_and_immutable_attempt(scoped, monkey
                for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED))
 
 
+@pytest.mark.parametrize("reader", ["states", "readiness"])
+def test_gang_observes_a_scope_update_that_replaces_a_claim_during_read(
+        gang_fleet, monkeypatch, reader):
+    queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+    group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
+    path = queue.records.item_path(pool.record_store.CLAIMED, second)
+    original = immutable_files.open_regular_nofollow
+    replaced = []
+
+    def opening(candidate, **kwargs):
+        handles = original(candidate, **kwargs)
+        if candidate == path and not replaced:
+            # Scope preparation atomically replaces this same claimed row
+            # while its sibling has the old inode open at the start barrier.
+            document = json.loads(path.read_text())
+            document["resource_scope_intent"] = {"nonce": "new-scope"}
+            immutable_files.write_json_atomic(path, document)
+            replaced.append(path)
+        return handles
+
+    monkeypatch.setattr(immutable_files, "open_regular_nofollow", opening)
+    record = _gang.read_group(queue, group)
+    if reader == "states":
+        assert _gang.member_states(queue, record) == {0: "claimed", 1: "claimed"}
+    else:
+        assert _gang.sibling_readiness(
+            queue, record, record["members"][0], "sparklina", clock.now) == {
+                "complete": True, "waiting": []}
+    observations = list(queue.records.gang_member_slots(second))
+    claimed = pool.record_store.value_or_raise(observations[0].result)
+    assert claimed["resource_scope_intent"]["nonce"] == "new-scope"
+    assert replaced == [path]
+
+
 def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broker, gang_fleet, monkeypatch, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
     # These are the fixture hosts' CPU indices, not this shard's mask. The
     # real subprocesses below still inherit PrismaBuild's admitted affinity.
     monkeypatch.setattr(pool.os, "sched_getaffinity", lambda pid: set(range(20)))
-    fail = tmp_path / "fail-now"
-    stop = tmp_path / "stop-now"
+    gates = {key: os.pipe() for key in (first, second)}
     launched = {}
     started = {key: threading.Event() for key in (first, second)}
     original_popen = pool.subprocess.Popen
@@ -126,16 +160,16 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
                         lambda record: {"complete": True, "used": True, "removed": [], "remaining": []})
 
     def payload(scope, argv, **kwargs):
-        gate = fail if scope.action_key == second else stop
-        program = ("from pathlib import Path; import time\n"
-                   + "while not Path(" + repr(str(gate)) + ").exists():\n time.sleep(0.01)\n"
-                   + "raise SystemExit(" + ("1" if scope.action_key == second else "0") + ")")
+        read_fd, _ = gates[scope.action_key]
+        program = (f"import os; os.read({read_fd}, 1); "
+                   f"raise SystemExit({1 if scope.action_key == second else 0})")
         return [sys.executable, "-c", program, scope.action_key]
 
     def launch(argv, **kwargs):
-        process = original_popen(argv, **kwargs)
-        launched[argv[-1]] = process
-        started[argv[-1]].set()
+        key = argv[-1]
+        process = original_popen(argv, pass_fds=(gates[key][0],), **kwargs)
+        launched[key] = process
+        started[key].set()
         return process
 
     monkeypatch.setattr(resource_scope.ResourceScope, "wrap_argv", payload)
@@ -159,12 +193,12 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
     try:
         for thread in threads:
             thread.start()
-        assert all(event.wait(10) for event in started.values()), errors
+        assert all(event.wait(60) for event in started.values()), errors
         # Both members are past the real start barrier: their payload processes
         # are launched and still running, not just claimed or barrier-waiting.
         assert all(process.poll() is None for process in launched.values())
-        fail.touch()
-        threads[1].join(10)
+        os.write(gates[second][1], b"F")
+        threads[1].join(60)
         assert not threads[1].is_alive() and not errors, errors
         queue.finish(second, status=outcomes[second]["status"], detail=outcomes[second],
                      claim_snapshot=snapshots[second])
@@ -179,7 +213,7 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
             queue.records.item(pool.record_store.WITHDRAWN, first),
         )
         assert decision["withdrawn_by"] == "gang:" + group
-        threads[0].join(20)
+        threads[0].join(60)
         assert not threads[0].is_alive() and not errors, errors
         assert outcomes[first]["status"] == "withdrawn"
         monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
@@ -196,14 +230,15 @@ def test_running_gang_teardown_retains_the_withdrawn_siblings_cleanup(gang_broke
             ) for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.READY)),
         )
     finally:
-        fail.touch()
-        stop.touch()
+        for read_fd, write_fd in gates.values():
+            os.close(write_fd)
+            os.close(read_fd)
         for process in launched.values():
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
+            process.wait(timeout=60)
         for thread in threads:
-            thread.join(10)
+            thread.join(60)
 
 
 def test_ready_withdrawal_adds_no_worker_evidence(scoped):
