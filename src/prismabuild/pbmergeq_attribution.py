@@ -1,8 +1,6 @@
 """Pure failure attribution policy for the merge queue."""
 
-import json
-
-from prismabuild import core
+from prismabuild import core, pbtest_collection
 
 
 def environment_identity(producer: dict, interpreter: dict, runtime: dict,
@@ -10,7 +8,7 @@ def environment_identity(producer: dict, interpreter: dict, runtime: dict,
     """Compare observed environments without source/attempt-specific fields."""
     evidence = producer["evidence"]
     command = request["params"]["command"]
-    selection = json.loads(command[3])
+    selection = pbtest_collection.decode_selection(command[3])
     return core.canonical_sha256({
         "schema": "pbmergeq.observed_environment.v2",
         "recorder": command[:3],
@@ -40,3 +38,24 @@ def failure_sets(original: set[str], baseline: set[str], rerun: set[str]):
     candidate_new = original - baseline
     return (sorted(candidate_new & rerun), sorted(original & baseline),
             sorted(candidate_new - rerun))
+
+
+def file_environments(observations: dict, refused: set[str]) -> tuple[dict, list[str]]:
+    """Retain all immutable groups only when the file has one environment."""
+    environments, errors = {}, []
+    for name, parts in observations.items():
+        if name in refused:
+            continue
+        first = parts[0]
+        if len(parts) > 1:
+            groups = [part['selection'].get('node_groups', {}).get(name) for part in parts]
+            if (any(group is None for group in groups)
+                    or len({group['index'] for group in groups}) != len(parts)
+                    or any(part['identity'] != first['identity'] for part in parts)
+                    or any({key: value for key, value in group.items() if key != 'index'}
+                           != {key: value for key, value in groups[0].items() if key != 'index'}
+                           for group in groups)):
+                errors.append(f'{name}: file has incompatible or duplicate environment observations')
+                continue
+        environments[name] = first if len(parts) == 1 else {**first, 'parts': parts}
+    return environments, errors

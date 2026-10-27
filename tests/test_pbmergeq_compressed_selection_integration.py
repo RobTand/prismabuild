@@ -48,3 +48,27 @@ def test_a_mismatched_or_corrupt_node_selection_is_inconclusive(tmp_path, monkey
         native.rows, native.runtime, checkout=native.checkout, files=native.files)
     assert observations == {}
     assert len(errors) == 1
+
+
+@pytest.mark.parametrize('damage', [None, 'worker', 'duplicate', 'plan', 'refused'])
+def test_grouped_file_attribution_requires_every_native_environment(damage):
+    from prismabuild.pbmergeq_attribution import file_environments
+
+    parts = [{'identity': 'worker-a', 'action_key': str(index),
+              'selection': {'files': [FILE], 'roots': [['tests', 'directory']],
+                            'node_groups': {FILE: {**GROUPS[FILE], 'index': index}}},
+              'collected': [FILE + '::test_' + str(index)]} for index in range(2)]
+    if damage == 'worker':
+        parts[1]['identity'] = 'worker-b'
+    elif damage == 'duplicate':
+        parts[1]['selection']['node_groups'][FILE]['index'] = 0
+    elif damage == 'plan':
+        parts[1]['selection']['node_groups'][FILE]['durations'] = {NODE: 3.0}
+    observations, errors = file_environments({FILE: parts}, {FILE} if damage == 'refused' else set())
+    if damage is None:
+        assert errors == []
+        assert observations[FILE]['parts'] == parts
+        assert [part['action_key'] for part in observations[FILE]['parts']] == ['0', '1']
+    else:
+        assert observations == {}
+        assert bool(errors) == (damage != 'refused')

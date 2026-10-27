@@ -53,6 +53,13 @@ sharding and placement.
    node IDs and a comment. The other pull requests are re-queued at the front.
 
 Missing or different observed environments return `attribution-inconclusive`.
+The native recipe qualifier and environment parser use the collection owner's
+selection codec, including compressed immutable node groups. Qualification binds
+the original roots, assigned files, reported groups and exact recorder/pytest
+command. File evidence retains the selected node IDs and each native action.
+A grouped file qualifies only when every observed group has the same environment;
+duplicate groups, changed group plans or a refused observation leave attribution
+inconclusive. Population completeness remains the shard outcome owner's gate.
 The failed outcomes remain in the batch record. The queue posts no status,
 names no culprit, files no flake and requeues without charging member attempts.
 The same rule applies to every bisection prefix. Old node-only cache entries

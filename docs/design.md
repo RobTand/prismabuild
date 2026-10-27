@@ -2681,6 +2681,16 @@ authority and public campaign refusal messages remain unchanged.
 
 ## Test fanout submission
 
+Merge-queue environment attribution consumes `pbtest_collection.decode_selection`
+and the shared canonical shard argument builder for compressed immutable node
+groups as well as ordinary selections. Native qualification binds request roots,
+assigned files, capability declarations, node groups and the exact recorder and
+pytest invocation. All group observations for one file must agree on environment;
+refused evidence or duplicate/conflicting groups cannot charge a queue member.
+Each observation retains its sealed selection and actual collected node IDs.
+This integration is source behavior and claims no deployed runtime adoption.
+
+
 `pbtest` validates every requested path before fanout. A path that is neither
 a file nor a directory, or a discovery error, refuses with exit code 2 before
 any shard is submitted. Valid paths never hide a missing member of the request;

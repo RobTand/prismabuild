@@ -30,7 +30,7 @@ def test_a_different_worker_cannot_make_an_unchanged_failure_new_or_flaky(tmp_pa
             return results
 
     queue.runner = DifferentWorkers()
-    batch = queue.run_batch([{**entries(1)[0], 'attempts': 1}])
+    batch = queue.run_batch([{**entries(github, 1)[0], 'attempts': 1}])
 
     assert batch['verdict'] == 'attribution-inconclusive', batch
     assert batch['runs']['candidate']['failed'] == [node]
@@ -50,7 +50,7 @@ def test_missing_environment_evidence_retains_failure_without_charging_the_membe
                     for name, result in super().run_many(batch, outdir, jobs).items()}
 
     queue.runner = NoEnvironment()
-    batch = queue.run_batch(entries(1))
+    batch = queue.run_batch(entries(github, 1))
     assert batch['verdict'] == 'attribution-inconclusive'
     assert batch['runs']['candidate']['failed'] == ['tests/test_a.py::broken']
     assert batch['attribution']['files'] == ['tests/test_a.py']
@@ -72,7 +72,7 @@ def test_a_prefix_on_a_different_worker_cannot_identify_a_culprit(tmp_path):
             return results
 
     queue.runner = DifferentPrefix()
-    batch = queue.run_batch(entries(1, 2))
+    batch = queue.run_batch(entries(github, 1, 2))
     assert batch['verdict'] == 'attribution-inconclusive'
     assert 'culprit' not in batch
     assert batch['new'] == ['tests/test_a.py::broken']
@@ -95,7 +95,7 @@ def test_a_mixed_batch_files_flakes_only_after_prefix_environments_qualify(tmp_p
             return results
 
     queue.runner = DifferentPrefix()
-    batch = queue.run_batch(entries(1, 2))
+    batch = queue.run_batch(entries(github, 1, 2))
 
     assert batch['runs']['candidate']['failed'] == [
         'tests/test_a.py::wobbly', 'tests/test_b.py::broken']
@@ -124,7 +124,7 @@ def test_a_cached_base_from_another_worker_is_observed_again(tmp_path):
     git('add', '-A', cwd=origin.work)
     git('commit', '-q', '-m', 'red main', cwd=origin.work)
     origin.pr(1, {'one.txt': 'one\n'})
-    assert queue.run_batch(entries(1))['verdict'] == 'green'
+    assert queue.run_batch(entries(github, 1))['verdict'] == 'green'
     origin.pr(2, {'two.txt': 'two\n'})
 
     class NewWorker(FakeRunner):
@@ -135,7 +135,7 @@ def test_a_cached_base_from_another_worker_is_observed_again(tmp_path):
             return results
 
     queue.runner = runner = NewWorker()
-    batch = queue.run_batch(entries(2))
+    batch = queue.run_batch(entries(github, 2))
     assert batch['verdict'] == 'green'
     assert batch['shared'] == ['tests/test_a.py::old']
     assert ('base', ['tests/test_a.py']) in runner.runs
@@ -402,7 +402,7 @@ def test_native_evidence_refusal_retains_failures_without_charging_members(tmp_p
             return results
 
     queue.runner = NativeEvidenceRunner()
-    batch = queue.run_batch([{**entries(1)[0], 'attempts': 2}])
+    batch = queue.run_batch([{**entries(github, 1)[0], 'attempts': 2}])
     assert batch['verdict'] == 'attribution-inconclusive', batch
     assert batch['runs']['candidate']['failed'] == ['tests/test_a.py::broken']
     assert batch['runs']['candidate']['environment_errors']

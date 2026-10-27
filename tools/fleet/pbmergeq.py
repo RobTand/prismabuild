@@ -62,7 +62,9 @@ from prismabuild.pbmergeq_runtime import (
     validate_policy,
 )
 from prismabuild import core
-from prismabuild.pbmergeq_attribution import environment_identity, failure_sets, unmatched_files
+from prismabuild.pbmergeq_attribution import (
+    environment_identity, failure_sets, file_environments, unmatched_files,
+)
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -1080,11 +1082,11 @@ class Runner:
     def observe_environments(self, rows: list, runtime: dict, *,
                              checkout: Path | None = None, files: list[str] | None = None
                              ) -> tuple[dict, list[str]]:
-        from prismabuild import action_client, action_result, action_wait, pool
+        from prismabuild import action_client, action_result, action_wait, pbtest_collection, pool
         from prismabuild.submission_frontend import store_for
 
         queue = pool.PoolQueue(store_for(self.cfg.pbtest).root / "pb-queue")
-        environments, errors = {}, []
+        observations, errors, refused = {}, [], set()
         config = json.loads(json.dumps(dataclasses.asdict(self.cfg), default=str))
         for row in rows:
             if not isinstance(row, dict) or not row.get("action_key"):
@@ -1129,30 +1131,33 @@ class Runner:
                 qualify(params["command"], request["environment"]["variables"],
                         invocation=test_command(self.cfg, checkout, files, Path("unused"), [],
                                                 python=runtime["python"])[2:],
-                        files=row["files"], index=row["shard"])
+                        files=row["files"], index=row["shard"],
+                        **({"node_groups": row["node_groups"]} if "node_groups" in row else {}))
                 native = self.outcomes.parse(verified["producer_stdout"] or "",
                                              record_binding=row.get("record_binding"))
                 reported = self.outcomes.parse(row.get("output") or "",
                                                record_binding=row.get("record_binding"))
                 if native is None or native != reported:
                     raise ValueError("report outcomes differ from verified native stdout")
+                selection = pbtest_collection.decode_selection(params["command"][3])
+                if selection.get("node_groups") != (native.get("file_selection") or {}).get("node_groups"):
+                    raise ValueError("native outcomes differ from the sealed node groups")
                 identity = environment_identity(producer, interpreter, runtime, config, request)
                 for name in row["files"]:
-                    if name in environments:
-                        raise ValueError("file has multiple environment observations")
-                    environments[name] = {"identity": identity, "action_key": key,
+                    observations.setdefault(name, []).append({"identity": identity, "action_key": key,
                         "published_unix": generation, "attempt": record["attempts"],
                         "host": producer["evidence"]["hostname"],
                         "attestation_sha256": producer["attestation_sha256"],
                         "interpreter": interpreter, "receipt_sha256": verified["receipt_sha256"],
-                        "stdout": verified["stdout"], "stderr": verified["stderr"]}
+                        "stdout": verified["stdout"], "stderr": verified["stderr"],
+                        "selection": selection, "collected": native["collected"]})
             except (OSError, core.PrismaBuildError, action_result.ActionResultError,
                     action_wait.OutcomeReadUnavailable,
                     ValueError, KeyError, TypeError) as exc:
                 errors.append(f"{key}: {exc}")
-                for name in row.get("files", []):
-                    environments.pop(name, None)
-        return environments, errors
+                refused.update(row.get("files", []))
+        environments, conflicts = file_environments(observations, refused)
+        return environments, [*errors, *conflicts]
 
 
 # --------------------------------------------------------------------------

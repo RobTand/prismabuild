@@ -1483,13 +1483,14 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
 def shard_arguments(spec: dict, pytest_args: list[str], index: int, *,
                     explicit_options: list[str], pytest_workers: list[str]) -> list[str]:
     """The recorder's selection and pytest argv for one immutable shard."""
-    return [json.dumps(spec), "-q", "--no-header", "-p", "no:cacheprovider",
+    return [pbtest_collection.encode_selection(spec), "-q", "--no-header", "-p", "no:cacheprovider",
             *explicit_options, *shard_pytest_args(pytest_args, index),
             *pytest_workers, *spec["files"]]
 
 
 def qualify_shard_command(command: list[str], environment: dict, *,
-                          invocation: list[str], files: list[str], index: int) -> None:
+                          invocation: list[str], files: list[str], index: int,
+                          node_groups: dict | None = None) -> None:
     """Refuse native evidence outside this generation's selected test recipe."""
     try:
         args = pbtest_argument_parser().parse_args(invocation)
@@ -1506,9 +1507,19 @@ def qualify_shard_command(command: list[str], environment: dict, *,
     if len(cohorts) != 1:
         raise ValueError("native shard crosses selected capability cohorts")
     spec = {"files": files, "roots": requested_roots(checkout, args.paths)}
+    if node_groups is not None:
+        spec["node_groups"] = pbtest_collection.node_group_spec(node_groups, files)
     names = next(iter(cohorts))
     if names:
         spec["capabilities"] = pbtest_capabilities.shard_selection(names, config)
+    if len(command) < 4:
+        raise ValueError("native command has no sealed shard selection")
+    try:
+        selected = pbtest_collection.decode_selection(command[3])
+    except (ValueError, zlib.error) as exc:
+        raise ValueError("native command has an unreadable shard selection") from exc
+    if selected != spec:
+        raise ValueError("native selection differs from the selected roots/files/node groups")
     pytest_args = (parse_pytest_args(args.pytest_args, gpu=args.gpu,
                                     workers=args.workers_per_shard)
                    if args.pytest_args is not None else [])

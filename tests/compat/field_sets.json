@@ -234,6 +234,16 @@
   },
   {
     "path": "src/prismabuild/action_result.py",
+    "owner": "_ending_producer_evidence",
+    "fields": [
+      "bytes",
+      "path",
+      "resolved_path",
+      "sha256"
+    ]
+  },
+  {
+    "path": "src/prismabuild/action_result.py",
     "owner": "_native_producer_context",
     "fields": [
       "bytes",
@@ -2540,6 +2550,11 @@
     "owner": "process_starttime",
     "unresolved": "rest.split()",
     "binding": "fields"
+  },
+  {
+    "path": "src/prismabuild/pbmergeq_attribution.py",
+    "owner": "unmatched_files",
+    "unresolved": "set(absent)"
   },
   {
     "path": "src/prismabuild/pbmergeq_runtime.py",
