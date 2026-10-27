@@ -6316,7 +6316,8 @@ class PoolQueue:
         return skews
 
     def _matching_offers(
-        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]]
+        self, item: Mapping[str, object], *, live: Sequence[Mapping[str, object]],
+        allow_unknown_interpreter: bool = False,
     ) -> list[Mapping[str, object]]:
         """The offers among ``live`` that could run ``item``.
 
@@ -6342,7 +6343,9 @@ class PoolQueue:
                     has_gpu=presence.gpu is capability_eligibility.Presence.PRESENT):
                 continue
             if isinstance(capability_eligibility.OfferCapabilities.from_offer(offer).check(
-                    requirements, clock=_now), capability_eligibility.CapabilityRefusal):
+                    requirements, clock=_now,
+                    allow_unknown_interpreter=allow_unknown_interpreter),
+                    capability_eligibility.CapabilityRefusal):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -16315,12 +16318,19 @@ class PoolQueue:
         if not isinstance(item.get("published_unix"), (int, float)):
             return None           # no denial could ever end the wait
         host = socket.gethostname()
-        for offer in self._matching_offers(item, live=placement.offers()):
+        for offer in self._matching_offers(item, live=placement.offers(),
+                allow_unknown_interpreter=self._portable_cpu_work(item)):
             remote_host = str(offer.get("host") or "")
-            if (not remote_host or remote_host == host
+            if (not remote_host or remote_host == host or offer.get("state") == "draining"
                     or capability_eligibility.HostPresence.from_offer(offer).gpu
                     is not capability_eligibility.Presence.ABSENT):
                 continue
+            interpreter = item.get("interpreter")
+            if (isinstance(interpreter, str)
+                    and capability_eligibility.InterpreterAnswers.from_offer(offer).answer(interpreter)
+                    is capability_eligibility.Presence.UNKNOWN):
+                return {"host": remote_host, "interpreter": interpreter,
+                        "interpreter_presence": "unknown"}
             if require_fit and self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
             try:
@@ -17890,9 +17900,11 @@ class PoolQueue:
         # Peer registry and sealed restartability reads stay outside admission.
         portable = has_gpu and self._portable_cpu_work(item) and (
             item.get("cpu_guest_retry") is True or any(
-                capability_eligibility.HostPresence.from_offer(offer).gpu
+                offer.get("state") != "draining"
+                and capability_eligibility.HostPresence.from_offer(offer).gpu
                 is capability_eligibility.Presence.ABSENT
-                for offer in self._matching_offers(item, live=placement.offers())))
+                for offer in self._matching_offers(item, live=placement.offers(),
+                    allow_unknown_interpreter=True)))
         if not has_gpu:
             idle_peer = self._defer_to_idle_gpu_host(
                 item, reservation_demand, placement=placement, ready=ready)
@@ -17910,14 +17922,19 @@ class PoolQueue:
         restartable = (self._guest_restartable(item)
                        if idle_here or guest_retry else False)
         # Recheck the original sample after the blocking restartability proof.
-        idle_here = idle_here and self._idle_gpu_offer(local_offer)
+        idle_here = (idle_here and self._idle_gpu_offer(local_offer)
+                     and not self.ledger().held().get("gpu"))
         exhausted = guest_retry and not restartable
         cpu_host = (None if idle_here and restartable else self._defer_to_cpu_host(
             item, reservation_demand, has_gpu=has_gpu, placement=placement,
             **({"require_fit": False} if exhausted else {})))
         if cpu_host is not None:
+            reason = ("deferred_for_unresolved_cpu_host"
+                      if cpu_host.get("interpreter_presence") == "unknown"
+                      else "guest_retry_budget_exhausted" if exhausted
+                      else "deferred_for_cpu_only_host")
             return candidate_policy.CandidateDenial(
-                "guest_retry_budget_exhausted" if exhausted else "deferred_for_cpu_only_host", {
+                reason, {
                     "demand": demand, "reservation_demand": reservation_demand,
                     "cpu_host": cpu_host,
                 }, scan)

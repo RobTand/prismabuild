@@ -92,6 +92,22 @@
         "deployment": "not deployed by this task; no publication, activation or restart",
         "workload_proof": "not established; no live gang or staged-only campaign proof",
         "remaining_target": "Whole-requirement axes are unchanged. Component tests do not establish full staged-read conformance."
+      },
+      "scoped_repair_2014": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "commit": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+          "state": "component-implemented",
+          "scope": "Fresh bounded interpreter evidence and fail-closed UNKNOWN advisory CPU-peer placement; strict execution capability remains positive-only."
+        },
+        "validation": {
+          "state": "component-qualified",
+          "acceptance_record": "docs/evidence/issue2014/source-acceptance.json",
+          "detail": "355 unique tests per architecture, plus four additional full-file repeats of both touched files. Five runs per file per architecture include two xdist runs. Terminal records, report binding, complete log digests and CAS receipts verified. Original fixture failures are retained."
+        },
+        "deployment": "not established; no runtime publication authorized in this task",
+        "workload_proof": "not run; no staged-only campaign or live GPU latency claim",
+        "remaining_scope": "Whole-requirement axes unchanged. #2162 remains owned by PRI-49/#2191. Independent Principal review and batch merge are pending."
       }
     },
     {
