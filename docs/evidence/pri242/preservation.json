@@ -1,0 +1,163 @@
+{
+  "parents": [
+    "6a73af3edd365e8d10939bc8998f2dd527b4fa72",
+    "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036"
+  ],
+  "ledger_rows": 69,
+  "all_parent_fields_preserved": true,
+  "complete_collision_archives_preserved": true,
+  "worker_observations_both_present": true,
+  "assertions": [
+    {
+      "path": "tests/test_a_prelaunch_sharer_waits_for_its_whole_vouch.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 29,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 29
+      },
+      "current_assertions": 29
+    },
+    {
+      "path": "tests/test_a_prior_epoch_ram_range_is_not_resident.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 26,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 26
+      },
+      "current_assertions": 26
+    },
+    {
+      "path": "tests/test_a_ready_consumers_lead_is_read_first.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 35,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 35
+      },
+      "current_assertions": 35
+    },
+    {
+      "path": "tests/test_a_residency_plan_nobody_can_read_is_a_denial.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 20,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 20
+      },
+      "current_assertions": 20
+    },
+    {
+      "path": "tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 66,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 66
+      },
+      "current_assertions": 66
+    },
+    {
+      "path": "tests/test_a_terminal_lead_is_named_in_the_denial.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 10,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 10
+      },
+      "current_assertions": 10
+    },
+    {
+      "path": "tests/test_a_tier_is_reserved_across_boxes.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 25,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 25
+      },
+      "current_assertions": 25
+    },
+    {
+      "path": "tests/test_claim_completion_histories.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 40,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 40
+      },
+      "current_assertions": 40
+    },
+    {
+      "path": "tests/test_consumer_archived_endings.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 20
+      },
+      "current_assertions": 20
+    },
+    {
+      "path": "tests/test_gang_plan_terminal_1543.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 31
+      },
+      "current_assertions": 31
+    },
+    {
+      "path": "tests/test_gb10_gpu_capacity_2087.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 15
+      },
+      "current_assertions": 15
+    },
+    {
+      "path": "tests/test_gpu_runtime_integration.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 35
+      },
+      "current_assertions": 35
+    },
+    {
+      "path": "tests/test_ordinary_census_admission_2199.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 62
+      },
+      "current_assertions": 62
+    },
+    {
+      "path": "tests/test_pool_external_cpu_placement.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 15
+      },
+      "current_assertions": 15
+    },
+    {
+      "path": "tests/test_pool_poison_record_is_a_denial.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 31,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 31
+      },
+      "current_assertions": 31
+    },
+    {
+      "path": "tests/test_pool_receipt_reconciliation.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 36
+      },
+      "current_assertions": 36
+    },
+    {
+      "path": "tests/test_pool_tier_reservations.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 69,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 69
+      },
+      "current_assertions": 69
+    },
+    {
+      "path": "tests/test_residency_is_derived_and_gates_admission.py",
+      "preserved_assertions": {
+        "6a73af3edd365e8d10939bc8998f2dd527b4fa72": 48,
+        "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036": 48
+      },
+      "current_assertions": 48
+    },
+    {
+      "path": "tests/test_shared_census_safety_2199.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 49
+      },
+      "current_assertions": 49
+    },
+    {
+      "path": "tests/test_unknown_cpu_interpreter_placement.py",
+      "preserved_assertions": {
+        "ec5517a2aee42e7205a166fb0e77a5f449f44db9": 45
+      },
+      "current_assertions": 45
+    }
+  ]
+}

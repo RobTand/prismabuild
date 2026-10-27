@@ -1,0 +1,82 @@
+[
+  {
+    "path": "tests/test_a_prelaunch_sharer_waits_for_its_whole_vouch.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_prior_epoch_ram_range_is_not_resident.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_ready_consumers_lead_is_read_first.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_residency_plan_nobody_can_read_is_a_denial.py",
+    "blocks": 3,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py",
+    "blocks": 3,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_terminal_lead_is_named_in_the_denial.py",
+    "blocks": 3,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_a_tier_is_reserved_across_boxes.py",
+    "blocks": 3,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_claim_completion_histories.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_pool_poison_record_is_a_denial.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_pool_tier_reservations.py",
+    "blocks": 1,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tests/test_residency_is_derived_and_gates_admission.py",
+    "blocks": 8,
+    "resolution": "Combine cap admission with shared denial reader; preserve all automatic main changes"
+  },
+  {
+    "path": "tools/fleet/worker_loop.py",
+    "blocks": 1,
+    "resolution": "Retain both cap detail and interpreter observation detail"
+  },
+  {
+    "path": "docs/staged_read_requirements_2026-09-20.json",
+    "resolution": "Keep every main field plus five exact inherited scoped_repair_2141 fields; no existing axis changes"
+  },
+  {
+    "path": "tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54/provenance.json",
+    "resolution": "Main archive remains at existing identity; complete source-parent archive retained byte-exact at tests/compat/history-controls/superseded-upgrade-intent-f1d6ce6052c13d54-pr2219-6a73af3edd36"
+  },
+  {
+    "path": "tests/compat/capture-rollout.json",
+    "resolution": "Seed main baseline; regenerate only through authoritative scanner or admitted strict capture/adoption"
+  },
+  {
+    "path": "tests/compat/goldens-rollout.jsonl",
+    "resolution": "Seed main baseline; regenerate only through authoritative scanner or admitted strict capture/adoption"
+  },
+  {
+    "path": "tests/compat/field_sets.json",
+    "resolution": "Seed main baseline; regenerate only through authoritative scanner or admitted strict capture/adoption"
+  }
+]

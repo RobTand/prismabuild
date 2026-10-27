@@ -1,0 +1,239 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+  "ledger_commit": "8be219c5b1d878311e82fc38e47cf1eb3903d326",
+  "scope": [
+    "ID-08",
+    "SM-01",
+    "INV-01",
+    "INV-11",
+    "ACC-02"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2141",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2141",
+    "task": "PRI-242",
+    "qualified_source": "8be219c5b1d878311e82fc38e47cf1eb3903d326",
+    "approved_source_parent": "6a73af3edd365e8d10939bc8998f2dd527b4fa72",
+    "main_parent": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+    "integration_merge": "ec5517a2aee42e7205a166fb0e77a5f449f44db9",
+    "validated_repairs": [
+      {
+        "id": "ID-08",
+        "actions": [
+          "96db90842de7ae4df2a3dcad89bf50cc47e758317a587e93f63dab42c415bc4d",
+          "fea97e4536d35ae48e75e79414b85805fc468409456310663cde0662a13e814d",
+          "04cc35bc6a68a571fa6be44ba3b175b7b9e07313429512dbee7888ecd751671c",
+          "7495582a9619d071b9c4e203746e17c0747d8c5308d2d87a8b1a930d1671ec30",
+          "779955a61606c9b12cbdea20e2a5a59259d08ab6ee874e391869ba7f937ddd94",
+          "75416ce2f70eeaaf4599da7e90912db7a3e228aadd6864e31fc043db4f2df790",
+          "ff6836f8a109312e012e5fd1ef6626b43f3b383569cfe1874e73ea216f1ca822",
+          "be2192e8e07cfe3c18b9c5633345d630e742d232043eeef8369bf399d0a988d4",
+          "57c1144e0ab8a4d533f1e6bf90f574e6d20145e07fa86b02d3e6c2498761a9e6",
+          "8207206383f69fe2c7b27da5fd3d1f219ef4d3892b767044e265f1ae0d99ede5",
+          "5adf90cb1d9d7e181f3da82623775403a5408a3cdc49c793c43ad186a2655f07",
+          "997d02c8832c6afe0e8ecfa864228f956f28320e31aaf04a2ab6801e9a22a0fa",
+          "e3ded3b97888528c1bf25f1c0a3280e17bb1a004db6519919fbe21f990da2ef1",
+          "2f78dba3cabdb13087bbe9d84b5bdfb214ae2bf5ea07827161570c78d14b2c7d",
+          "23da9c12f3711b982ca1228cd1b30b99a95e806d26cb7e96139f326db525fc4a",
+          "ae93b71fa90bb6075c11775b3d956c4db470b97397e96094c89152291af0e0fa",
+          "affcee2fdcf3bf48972a1f99100a51eafbd55012f416dd3ed445d0f83b7c092a",
+          "cd145a9741f135b9484a56f4dcf0e632113d4e7ca2fb66b400da3e1a96491e0c",
+          "317830dea275d6e51e50474c2a6654d715059911b1596083c7231fd3c639e21a",
+          "e26b7c855aeff8abc8ef830a17c76b085fc76456ce55f6d95bfe43c75d69c178",
+          "1f12f20e5dbac348e09049b2e4c868e6ab27faa228b475012d03a3742f01c801"
+        ],
+        "outcome": "565 unique integration/compatibility passes with complete native observations and verified immutable execution receipts; qualification.json binds files, source trees and receipt digests. Reuses original PRI-45/PRI-206 component evidence."
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "96db90842de7ae4df2a3dcad89bf50cc47e758317a587e93f63dab42c415bc4d",
+          "fea97e4536d35ae48e75e79414b85805fc468409456310663cde0662a13e814d",
+          "04cc35bc6a68a571fa6be44ba3b175b7b9e07313429512dbee7888ecd751671c",
+          "7495582a9619d071b9c4e203746e17c0747d8c5308d2d87a8b1a930d1671ec30",
+          "779955a61606c9b12cbdea20e2a5a59259d08ab6ee874e391869ba7f937ddd94",
+          "75416ce2f70eeaaf4599da7e90912db7a3e228aadd6864e31fc043db4f2df790",
+          "ff6836f8a109312e012e5fd1ef6626b43f3b383569cfe1874e73ea216f1ca822",
+          "be2192e8e07cfe3c18b9c5633345d630e742d232043eeef8369bf399d0a988d4",
+          "57c1144e0ab8a4d533f1e6bf90f574e6d20145e07fa86b02d3e6c2498761a9e6",
+          "8207206383f69fe2c7b27da5fd3d1f219ef4d3892b767044e265f1ae0d99ede5",
+          "5adf90cb1d9d7e181f3da82623775403a5408a3cdc49c793c43ad186a2655f07",
+          "997d02c8832c6afe0e8ecfa864228f956f28320e31aaf04a2ab6801e9a22a0fa",
+          "e3ded3b97888528c1bf25f1c0a3280e17bb1a004db6519919fbe21f990da2ef1",
+          "2f78dba3cabdb13087bbe9d84b5bdfb214ae2bf5ea07827161570c78d14b2c7d",
+          "23da9c12f3711b982ca1228cd1b30b99a95e806d26cb7e96139f326db525fc4a",
+          "ae93b71fa90bb6075c11775b3d956c4db470b97397e96094c89152291af0e0fa",
+          "affcee2fdcf3bf48972a1f99100a51eafbd55012f416dd3ed445d0f83b7c092a",
+          "cd145a9741f135b9484a56f4dcf0e632113d4e7ca2fb66b400da3e1a96491e0c",
+          "317830dea275d6e51e50474c2a6654d715059911b1596083c7231fd3c639e21a",
+          "e26b7c855aeff8abc8ef830a17c76b085fc76456ce55f6d95bfe43c75d69c178",
+          "1f12f20e5dbac348e09049b2e4c868e6ab27faa228b475012d03a3742f01c801"
+        ],
+        "outcome": "565 unique integration/compatibility passes with complete native observations and verified immutable execution receipts; qualification.json binds files, source trees and receipt digests. Reuses original PRI-45/PRI-206 component evidence."
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "96db90842de7ae4df2a3dcad89bf50cc47e758317a587e93f63dab42c415bc4d",
+          "fea97e4536d35ae48e75e79414b85805fc468409456310663cde0662a13e814d",
+          "04cc35bc6a68a571fa6be44ba3b175b7b9e07313429512dbee7888ecd751671c",
+          "7495582a9619d071b9c4e203746e17c0747d8c5308d2d87a8b1a930d1671ec30",
+          "779955a61606c9b12cbdea20e2a5a59259d08ab6ee874e391869ba7f937ddd94",
+          "75416ce2f70eeaaf4599da7e90912db7a3e228aadd6864e31fc043db4f2df790",
+          "ff6836f8a109312e012e5fd1ef6626b43f3b383569cfe1874e73ea216f1ca822",
+          "be2192e8e07cfe3c18b9c5633345d630e742d232043eeef8369bf399d0a988d4",
+          "57c1144e0ab8a4d533f1e6bf90f574e6d20145e07fa86b02d3e6c2498761a9e6",
+          "8207206383f69fe2c7b27da5fd3d1f219ef4d3892b767044e265f1ae0d99ede5",
+          "5adf90cb1d9d7e181f3da82623775403a5408a3cdc49c793c43ad186a2655f07",
+          "997d02c8832c6afe0e8ecfa864228f956f28320e31aaf04a2ab6801e9a22a0fa",
+          "e3ded3b97888528c1bf25f1c0a3280e17bb1a004db6519919fbe21f990da2ef1",
+          "2f78dba3cabdb13087bbe9d84b5bdfb214ae2bf5ea07827161570c78d14b2c7d",
+          "23da9c12f3711b982ca1228cd1b30b99a95e806d26cb7e96139f326db525fc4a",
+          "ae93b71fa90bb6075c11775b3d956c4db470b97397e96094c89152291af0e0fa",
+          "affcee2fdcf3bf48972a1f99100a51eafbd55012f416dd3ed445d0f83b7c092a",
+          "cd145a9741f135b9484a56f4dcf0e632113d4e7ca2fb66b400da3e1a96491e0c",
+          "317830dea275d6e51e50474c2a6654d715059911b1596083c7231fd3c639e21a",
+          "e26b7c855aeff8abc8ef830a17c76b085fc76456ce55f6d95bfe43c75d69c178",
+          "1f12f20e5dbac348e09049b2e4c868e6ab27faa228b475012d03a3742f01c801"
+        ],
+        "outcome": "565 unique integration/compatibility passes with complete native observations and verified immutable execution receipts; qualification.json binds files, source trees and receipt digests. Reuses original PRI-45/PRI-206 component evidence."
+      },
+      {
+        "id": "INV-11",
+        "actions": [
+          "96db90842de7ae4df2a3dcad89bf50cc47e758317a587e93f63dab42c415bc4d",
+          "fea97e4536d35ae48e75e79414b85805fc468409456310663cde0662a13e814d",
+          "04cc35bc6a68a571fa6be44ba3b175b7b9e07313429512dbee7888ecd751671c",
+          "7495582a9619d071b9c4e203746e17c0747d8c5308d2d87a8b1a930d1671ec30",
+          "779955a61606c9b12cbdea20e2a5a59259d08ab6ee874e391869ba7f937ddd94",
+          "75416ce2f70eeaaf4599da7e90912db7a3e228aadd6864e31fc043db4f2df790",
+          "ff6836f8a109312e012e5fd1ef6626b43f3b383569cfe1874e73ea216f1ca822",
+          "be2192e8e07cfe3c18b9c5633345d630e742d232043eeef8369bf399d0a988d4",
+          "57c1144e0ab8a4d533f1e6bf90f574e6d20145e07fa86b02d3e6c2498761a9e6",
+          "8207206383f69fe2c7b27da5fd3d1f219ef4d3892b767044e265f1ae0d99ede5",
+          "5adf90cb1d9d7e181f3da82623775403a5408a3cdc49c793c43ad186a2655f07",
+          "997d02c8832c6afe0e8ecfa864228f956f28320e31aaf04a2ab6801e9a22a0fa",
+          "e3ded3b97888528c1bf25f1c0a3280e17bb1a004db6519919fbe21f990da2ef1",
+          "2f78dba3cabdb13087bbe9d84b5bdfb214ae2bf5ea07827161570c78d14b2c7d",
+          "23da9c12f3711b982ca1228cd1b30b99a95e806d26cb7e96139f326db525fc4a",
+          "ae93b71fa90bb6075c11775b3d956c4db470b97397e96094c89152291af0e0fa",
+          "affcee2fdcf3bf48972a1f99100a51eafbd55012f416dd3ed445d0f83b7c092a",
+          "cd145a9741f135b9484a56f4dcf0e632113d4e7ca2fb66b400da3e1a96491e0c",
+          "317830dea275d6e51e50474c2a6654d715059911b1596083c7231fd3c639e21a",
+          "e26b7c855aeff8abc8ef830a17c76b085fc76456ce55f6d95bfe43c75d69c178",
+          "1f12f20e5dbac348e09049b2e4c868e6ab27faa228b475012d03a3742f01c801"
+        ],
+        "outcome": "565 unique integration/compatibility passes with complete native observations and verified immutable execution receipts; qualification.json binds files, source trees and receipt digests. Reuses original PRI-45/PRI-206 component evidence."
+      },
+      {
+        "id": "ACC-02",
+        "actions": [
+          "96db90842de7ae4df2a3dcad89bf50cc47e758317a587e93f63dab42c415bc4d",
+          "fea97e4536d35ae48e75e79414b85805fc468409456310663cde0662a13e814d",
+          "04cc35bc6a68a571fa6be44ba3b175b7b9e07313429512dbee7888ecd751671c",
+          "7495582a9619d071b9c4e203746e17c0747d8c5308d2d87a8b1a930d1671ec30",
+          "779955a61606c9b12cbdea20e2a5a59259d08ab6ee874e391869ba7f937ddd94",
+          "75416ce2f70eeaaf4599da7e90912db7a3e228aadd6864e31fc043db4f2df790",
+          "ff6836f8a109312e012e5fd1ef6626b43f3b383569cfe1874e73ea216f1ca822",
+          "be2192e8e07cfe3c18b9c5633345d630e742d232043eeef8369bf399d0a988d4",
+          "57c1144e0ab8a4d533f1e6bf90f574e6d20145e07fa86b02d3e6c2498761a9e6",
+          "8207206383f69fe2c7b27da5fd3d1f219ef4d3892b767044e265f1ae0d99ede5",
+          "5adf90cb1d9d7e181f3da82623775403a5408a3cdc49c793c43ad186a2655f07",
+          "997d02c8832c6afe0e8ecfa864228f956f28320e31aaf04a2ab6801e9a22a0fa",
+          "e3ded3b97888528c1bf25f1c0a3280e17bb1a004db6519919fbe21f990da2ef1",
+          "2f78dba3cabdb13087bbe9d84b5bdfb214ae2bf5ea07827161570c78d14b2c7d",
+          "23da9c12f3711b982ca1228cd1b30b99a95e806d26cb7e96139f326db525fc4a",
+          "ae93b71fa90bb6075c11775b3d956c4db470b97397e96094c89152291af0e0fa",
+          "affcee2fdcf3bf48972a1f99100a51eafbd55012f416dd3ed445d0f83b7c092a",
+          "cd145a9741f135b9484a56f4dcf0e632113d4e7ca2fb66b400da3e1a96491e0c",
+          "317830dea275d6e51e50474c2a6654d715059911b1596083c7231fd3c639e21a",
+          "e26b7c855aeff8abc8ef830a17c76b085fc76456ce55f6d95bfe43c75d69c178",
+          "1f12f20e5dbac348e09049b2e4c868e6ab27faa228b475012d03a3742f01c801"
+        ],
+        "outcome": "565 unique integration/compatibility passes with complete native observations and verified immutable execution receipts; qualification.json binds files, source trees and receipt digests. Reuses original PRI-45/PRI-206 component evidence."
+      }
+    ],
+    "remaining_gaps": [
+      "All 69 whole requirement implementation, validation, deployment and workload axes retain both parents exactly. Target and actual axes are reproduced per requirement in qualification.json.",
+      "Independent Engineer 24 native Standards/Spec approval and PE2 exact-head intake remain pending at author handoff.",
+      "PE2 owns final composition qualification and merge; source owners retain GitHub issue closure.",
+      "Host installation, enrollment, service convergence, cap enforcement deployment and live workload/campaign acceptance are not established by these component tests.",
+      "Worker signing-key authority/signature is unchecked; hashes bind actual runtime/receipt/payload/source evidence.",
+      "Frozen R6 remains 6cbaa7524e6e99d42a69b33d75faae9482e50253 / bf35bf34c9a8-1793101542-8c593f19863e, staged only."
+    ],
+    "note": "Scoped integration readiness only. No whole requirement axis promotion, runtime application, service restart, cgroup change, installation or enrollment. Original two RED actions and later failed integrated carrier remain failed. Zero-selected compatibility action remains unqualified. No baseline attribution or agent waiver."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "reused_acceptance": [
+    "docs/evidence/issue2141_capped_host_acceptance_2026-10-25.json",
+    "docs/evidence/issue2141_pri206_integration_acceptance_2026-10-26.json"
+  ],
+  "strict_capture": [
+    {
+      "action_key": "73c98615abddabc67687e71a15fd38d487540df0b9186bb8a73f0dd2a6f421ec",
+      "cleanup_complete": true,
+      "completion": null,
+      "inputs": [
+        {
+          "bytes": 48595218,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "71ee58dae14fdb800570a5dabc1fd97c89e61ba3376624958d300ba29f86362b"
+        }
+      ],
+      "logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/73c98615abddabc67687e71a15fd38d487540df0b9186bb8a73f0dd2a6f421ec/fe04a3218d1c73ab5e5007c1f7bfafc50443892dc30f1d13fb4b67a55f967050/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 3007,
+          "path": "attempts/73c98615abddabc67687e71a15fd38d487540df0b9186bb8a73f0dd2a6f421ec/fe04a3218d1c73ab5e5007c1f7bfafc50443892dc30f1d13fb4b67a55f967050/00000001.stdout.83c05db6121ade5f47be74070a09e52310db9b615e118c26dde9b8c4b52061bc.log",
+          "sha256": "83c05db6121ade5f47be74070a09e52310db9b615e118c26dde9b8c4b52061bc"
+        }
+      },
+      "native_completion": null,
+      "native_counts": [],
+      "outcomes": null,
+      "receipt_sha256": "91759a2c737cca8c1cbbf8f5fb485984b0f2ab0b192b39aa7796c4b3a5dd9e69",
+      "request_sha256": "585e5d528c0f6bc5237a01d7400ae7246dd6635cd09ba1ead79c100335f4b3cc",
+      "returncode": 0,
+      "runtime_sha256": "96beb253ca2f920b27313bcd0ac91308ae615464c919239a16b36840e408435f",
+      "source_bundle_heads_verified": true,
+      "source_git": {
+        "bundle_sha256": "71ee58dae14fdb800570a5dabc1fd97c89e61ba3376624958d300ba29f86362b",
+        "commit": "5b4733121783f8681056f5c21e10c6e49c4672e5",
+        "dirty_paths": [],
+        "git_objects_verified": true,
+        "parent": "5ec84efa47c071c6c5eafc39c48dd89675e54a32",
+        "tree": "9dd91073940f538ee988be6455e8997f5307cee6"
+      },
+      "source_parent": "5ec84efa47c071c6c5eafc39c48dd89675e54a32",
+      "source_snapshot": {
+        "commit": "5b4733121783f8681056f5c21e10c6e49c4672e5",
+        "input": {
+          "bytes": 48595218,
+          "id": "pbrun.checkout-snapshot",
+          "sha256": "71ee58dae14fdb800570a5dabc1fd97c89e61ba3376624958d300ba29f86362b"
+        },
+        "parent": "5ec84efa47c071c6c5eafc39c48dd89675e54a32",
+        "refs": {},
+        "schema": "prismaquant.prismabuild.pbrun_checkout_snapshot.v2",
+        "subdirectory": "."
+      },
+      "terminal": "/mnt/shared/prismabuild-fleet/pb-queue/done/73c98615abddabc67687e71a15fd38d487540df0b9186bb8a73f0dd2a6f421ec.json",
+      "worker": "dl380g10"
+    }
+  ]
+}

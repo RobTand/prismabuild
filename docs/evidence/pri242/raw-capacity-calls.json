@@ -1,0 +1,171 @@
+[
+  [
+    "tests/test_consumer_archived_endings.py",
+    [
+      [
+        133,
+        "{'gpu': 1}"
+      ],
+      [
+        135,
+        "{'gpu': 1}"
+      ],
+      [
+        137,
+        "{'gpu': 1}"
+      ],
+      [
+        131,
+        "{'gpu': 1}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_gang_plan_terminal_1543.py",
+    [
+      [
+        47,
+        "{'cpu': 8, 'mem_gb': 16}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_gb10_gpu_capacity_2087.py",
+    [
+      [
+        74,
+        "capacity"
+      ]
+    ]
+  ],
+  [
+    "tests/test_gpu_runtime_integration.py",
+    [
+      [
+        30,
+        "{'cpu': 2, 'mem_gb': 4, 'gpu': 1}"
+      ],
+      [
+        234,
+        "{'cpu': 1, 'mem_gb': 32, 'gpu': 1}"
+      ],
+      [
+        43,
+        "{'cpu': 2, 'mem_gb': 4, 'gpu': 1}"
+      ],
+      [
+        233,
+        "{'cpu': 1, 'mem_gb': 8, 'gpu': 1}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_ordinary_census_admission_2199.py",
+    [
+      [
+        120,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        241,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        263,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        279,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        368,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        384,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        400,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        416,
+        "{'cpu': 20, 'mem_gb': 120, 'gpu': 1}"
+      ],
+      [
+        470,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        607,
+        "{'cpu': 20, 'gpu': 1, 'mem_gb': 120}"
+      ],
+      [
+        157,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        216,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        336,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        433,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        485,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        513,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ],
+      [
+        642,
+        "{'cpu': 20, 'mem_gb': 120, 'gpu': 1}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_pool_external_cpu_placement.py",
+    [
+      [
+        40,
+        "{'cpu': cpus, 'mem_gb': 8, **({'gpu': 1} if gpu else {})}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_pool_receipt_reconciliation.py",
+    [
+      [
+        48,
+        "demand"
+      ]
+    ]
+  ],
+  [
+    "tests/test_shared_census_safety_2199.py",
+    [
+      [
+        70,
+        "{'cpu': 20, 'mem_gb': 120}"
+      ]
+    ]
+  ],
+  [
+    "tests/test_unknown_cpu_interpreter_placement.py",
+    [
+      [
+        185,
+        "CAPACITY"
+      ]
+    ]
+  ]
+]

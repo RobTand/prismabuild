@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-10-27T12:17:49.827046+00:00	merge	Merge exact approved parents without rebase	Preserve completed source/review history	merge-tree.txt; manual-resolutions.json; ec5517a2aee	17 conflicts resolved
+2026-10-27T12:17:49.827058+00:00	qualification	Run raw-capacity fixture reproduction first	New main callers cross the cap proof boundary	red.launch.json	running
+2026-10-27T12:22:40.623326+00:00	repair	Reuse the existing capped admission fixture at new-main callsites	Actual fleet reproduction hit require_capped_capacity	red.audited.json; migrated-calls.json	28 failed / 30 passed retained; assertions preserved
+2026-10-27T12:54:05.334837+00:00	qualification	Retained failed integrated carrier; fixed helper imports	The migration omitted new helpers when a partial import existed	integration.audited.json;8be219c5b1d	33 passed in affected file
+2026-10-27T12:54:05.334837+00:00	selection	Corrected immutable compatibility selection to controller_upgrade	Original controller_rollout partition selected zero tests	compatibility.audited.json;compatibility-upgrade.launch.json	Three intended nodes pending
+2026-10-27T12:54:05.334837+00:00	audit	Read immutable execution receipt rather than require reusable index	Successful result publication exists in execution CAS and hashed stdout	repair-compatibility-endings.json;integration-repair.audited.json	Native log/request/payload/source/cleanup verified

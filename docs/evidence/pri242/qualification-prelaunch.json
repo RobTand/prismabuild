@@ -1,0 +1,86 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "prelaunch",
+  "contract_commit": "8be4d4056fbcd6285a932d3ac4bf5d8bf6015036",
+  "ledger_commit": "4eab1f69ed0c88638bfefbe43540bd9819cbca4c",
+  "scope": [
+    "ID-08",
+    "SM-01",
+    "INV-01",
+    "INV-11",
+    "ACC-02"
+  ],
+  "prelaunch": {
+    "submission": {
+      "source": "4eab1f69ed0c88638bfefbe43540bd9819cbca4c",
+      "declares": [
+        "30 changed integration/nearby files including all four mandatory guards",
+        "then exact 3 upgrade-intent/armed + unknown/invalid upgrade-intent compatibility controls",
+        "per action 2 CPU/4 GiB/zero GPUs/native threads1; one controller with default8 clients",
+        "aggregate max16 CPU/32 GiB; priority-10; payload900s/observation21600s"
+      ]
+    },
+    "readiness_gate": "Ordinary PB claim admission with current release holds respected",
+    "tier_policy": "strict",
+    "window_fit": "private deterministic fixtures; no bulk resident inputs"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "reused_component_evidence": [
+    "PRI-45 original source qualification/RED-GREEN",
+    "PRI-206 native approved 6a73af3edd3 component qualification"
+  ],
+  "selected_files": [
+    "tests/test_a_prelaunch_sharer_waits_for_its_whole_vouch.py",
+    "tests/test_a_prior_epoch_ram_range_is_not_resident.py",
+    "tests/test_a_ready_consumers_lead_is_read_first.py",
+    "tests/test_a_residency_plan_nobody_can_read_is_a_denial.py",
+    "tests/test_a_staged_range_holds_its_tokens_until_an_egress_deletes_it.py",
+    "tests/test_a_terminal_lead_is_named_in_the_denial.py",
+    "tests/test_a_tier_is_reserved_across_boxes.py",
+    "tests/test_capped_claim_proof.py",
+    "tests/test_capped_host_offers.py",
+    "tests/test_capped_host_stale_admission.py",
+    "tests/test_capped_host_units.py",
+    "tests/test_claim_completion_histories.py",
+    "tests/test_consumer_archived_endings.py",
+    "tests/test_design_doc_line_references.py",
+    "tests/test_duplication_baseline.py",
+    "tests/test_fleet_tool_flags_have_help.py",
+    "tests/test_gang_plan_terminal_1543.py",
+    "tests/test_gb10_gpu_capacity_2087.py",
+    "tests/test_gpu_runtime_integration.py",
+    "tests/test_ordinary_census_admission_2199.py",
+    "tests/test_pool_external_cpu_placement.py",
+    "tests/test_pool_poison_record_is_a_denial.py",
+    "tests/test_pool_receipt_reconciliation.py",
+    "tests/test_pool_tier_reservations.py",
+    "tests/test_residency_is_derived_and_gates_admission.py",
+    "tests/test_shared_census_safety_2199.py",
+    "tests/test_unknown_cpu_interpreter_placement.py",
+    "tests/test_wire_inventory.py",
+    "tests/test_worker_interpreter_inventory.py",
+    "tests/test_worker_interpreters_are_pb_owned.py"
+  ],
+  "compatibility": {
+    "file": "tests/test_record_compatibility_controller_rollout.py",
+    "pytest_args": [
+      "-k",
+      "upgrade-intent"
+    ],
+    "expected_nodes": [
+      "test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[upgrade-intent/armed]",
+      "test_unknown_fields_follow_real_consumer_policy[upgrade-intent]",
+      "test_invalid_record_reaches_both_real_consumer_boundaries[upgrade-intent]"
+    ],
+    "placement": "pbtest archival-replay capability with x86 executable dependency, not a placement override"
+  }
+}

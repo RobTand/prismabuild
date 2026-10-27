@@ -1,0 +1,41 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/refresh_compat_fleet.py",
+      "owner": "refresh_fleet_addition",
+      "fields": [
+        "add_box",
+        "entry"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain inherited capped-host fleet-capture adoption policies from approved PR #2219; two distinct serialized policy field sets."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/maintenance/refresh_compat_fleet.py",
+      "owner": "refresh_fleet_addition",
+      "fields": [
+        "config-fleet/source"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain inherited capped-host fleet-capture adoption policies from approved PR #2219; two distinct serialized policy field sets."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "src/prismabuild/host_cap.py",
+      "owner": "HostCap.parse",
+      "fields": [
+        "cpus",
+        "mem_gb",
+        "slice"
+      ]
+    },
+    "count": 1,
+    "reason": "Retain the approved exact host cap declaration schema cpus/mem_gb/slice."
+  }
+]

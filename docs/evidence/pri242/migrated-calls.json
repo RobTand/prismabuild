@@ -1,0 +1,96 @@
+[
+  {
+    "path": "tests/test_consumer_archived_endings.py",
+    "calls": [
+      133,
+      135,
+      137,
+      131
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_gang_plan_terminal_1543.py",
+    "calls": [
+      47
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_gb10_gpu_capacity_2087.py",
+    "calls": [
+      74
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_gpu_runtime_integration.py",
+    "calls": [
+      30,
+      234,
+      43,
+      233
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_ordinary_census_admission_2199.py",
+    "calls": [
+      120,
+      241,
+      263,
+      279,
+      368,
+      384,
+      400,
+      416,
+      470,
+      607,
+      157,
+      216,
+      336,
+      433,
+      485,
+      513,
+      642,
+      153
+    ],
+    "restart_lines": [
+      120,
+      241,
+      368,
+      384,
+      433,
+      642
+    ]
+  },
+  {
+    "path": "tests/test_pool_external_cpu_placement.py",
+    "calls": [
+      40
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_pool_receipt_reconciliation.py",
+    "calls": [
+      48
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_shared_census_safety_2199.py",
+    "calls": [
+      70,
+      123
+    ],
+    "restart_lines": []
+  },
+  {
+    "path": "tests/test_unknown_cpu_interpreter_placement.py",
+    "calls": [
+      185
+    ],
+    "restart_lines": []
+  }
+]

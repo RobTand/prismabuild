@@ -1,0 +1,65 @@
+[
+  {
+    "path": "tests/test_consumer_archived_endings.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_gang_plan_terminal_1543.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_gb10_gpu_capacity_2087.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_gpu_runtime_integration.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_ordinary_census_admission_2199.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_pool_external_cpu_placement.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_pool_receipt_reconciliation.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_shared_census_safety_2199.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  },
+  {
+    "path": "tests/test_unknown_cpu_interpreter_placement.py",
+    "helper_imports": [
+      "simulated_admission",
+      "simulated_capacity"
+    ]
+  }
+]
