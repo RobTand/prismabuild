@@ -128,6 +128,49 @@ def test_normal_worker_attestation_cannot_certify_a_hostile_profile(tmp_path):
         pb.validate_worker_attestation({}, action=action)
 
 
+def test_a_hostile_keyed_receipt_is_a_typed_cas_refusal(tmp_path):
+    _queue, action, cas, _checkout = _sealed_request(tmp_path, {"execution_profile": PROFILE})
+    receipt = {"schema": pb.CAS_RECEIPT_SCHEMA_V3, "action_key": action["action_key"],
+               "action_manifest_sha256": pb.canonical_sha256(action),
+               "result": {"sha256": "b" * 64, "bytes": 0},
+               "producer": {key: None for key in pb._PRODUCER_KEYS},
+               "receipt_sha256": "c" * 64}
+    path = cas.receipt_path(action["action_key"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pb._canonical_file_bytes(receipt))
+    with pytest.raises(pb.CASTamperError, match="authenticated collection"):
+        cas.lookup(action)
+
+
+def test_preflight_refuses_before_checking_or_opening_payload_code(tmp_path, monkeypatch):
+    _queue, action, cas, checkout = _sealed_request(tmp_path, {"execution_profile": PROFILE})
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("unsupported profile reached code verification")
+    monkeypatch.setattr(pb, "verify_code_closure", unexpected)
+    with pytest.raises(pb.ActionContractError, match="authenticated collection"):
+        pb.preflight_action(action, cas_root=cas.root, checkout_root=checkout)
+
+
+@pytest.mark.parametrize("change", ["missing-policy", "extra-policy"])
+def test_forged_profile_row_claim_has_a_profile_diagnostic(tmp_path, monkeypatch, change):
+    queue, action, cas, checkout = _sealed_request(tmp_path, {"execution_profile": PROFILE})
+    demand = action["params"]["demand"]
+    path = queue.publish(action_key=action["action_key"], cas_root=cas.root,
+                         checkout_root=checkout, worker_script="/worker.py", resources=demand)
+    import json
+    row = json.loads(path.read_text())
+    if change == "missing-policy":
+        row["tags"].remove("hostile-policy:" + "a" * 64)
+    else:
+        row["tags"].append("hostile-policy:" + "b" * 64)
+    path.write_text(json.dumps(row))
+    reasons = []
+    monkeypatch.setattr(queue, "record_denial", lambda _row, reason, _detail=None: reasons.append(reason))
+    assert queue.claim(tags=row["tags"], capacity=demand) is None
+    assert "execution_profile_intent_invalid" in reasons
+    assert queue.ledger().held() == {}
+
+
 def test_no_worker_capability_is_advertised_by_this_unqualified_implementation():
     offered = contracts.offered_contract_tags(contracts.WorkerFacts(
         loaded_generation="g1", gang_admission=True))

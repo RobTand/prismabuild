@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import re
+from .digest_primitives import ActionContractError
 
 
 SCHEMA = "prismabuild.execution_profile.v1"
@@ -17,7 +18,7 @@ CAPABILITY = "hostile-execution-v1"
 GUARANTEES = tuple(f"PB-H{number}" for number in range(1, 8))
 
 
-class ProfileError(ValueError):
+class ProfileError(ActionContractError):
     """Invalid profile intent at a submission or sealed-record boundary."""
 
 
@@ -77,6 +78,6 @@ def check_row(action, *, tags, resources) -> Selection | None:
         return None
     if action["params"].get("demand") != resources:
         raise ProfileError("hostile-v1 row demand differs from its sealed request")
-    if not set(selected.required_tags()).issubset(set(tags)):
+    if reserved != set(selected.required_tags()):
         raise ProfileError("hostile-v1 row erased its exact execution-policy fences")
     return selected

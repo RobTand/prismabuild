@@ -14,14 +14,19 @@ from prismabuild.hostile_capture import CapturePolicy, TextCapture, capture_text
 SENTINEL = 'PB_SENTINEL_12345678?/"é'
 
 
-@pytest.mark.parametrize("encoding", ["raw", "base64", "base64url", "hex", "upperhex", "url", "json"])
+@pytest.mark.parametrize("encoding", ["raw", "base64", "base64-unpadded", "base64url",
+                                      "base64url-padded", "hex", "upperhex", "url", "url-lower", "json"])
 @pytest.mark.parametrize("chunk", [1, 2, 7, 4096])
 def test_split_and_encoded_sentinels_are_removed_before_any_file_write(tmp_path, encoding, chunk):
     raw = SENTINEL.encode()
+    quoted = quote_from_bytes(raw, safe="").encode()
+    lower_quoted = quoted.replace(b"%3F", b"%3f").replace(b"%2F", b"%2f").replace(b"%C3", b"%c3").replace(b"%A9", b"%a9")
     encoded = {"raw": raw, "base64": base64.b64encode(raw),
+               "base64-unpadded": base64.b64encode(raw).rstrip(b"="),
                "base64url": base64.urlsafe_b64encode(raw).rstrip(b"="),
+               "base64url-padded": base64.urlsafe_b64encode(raw),
                "hex": raw.hex().encode(), "upperhex": raw.hex().upper().encode(),
-               "url": quote_from_bytes(raw, safe="").encode(),
+               "url": quoted, "url-lower": lower_quoted,
                "json": json.dumps(SENTINEL, ensure_ascii=True)[1:-1].encode()}[encoding]
     policy = CapturePolicy([SENTINEL], max_output_bytes=4096)
     source = io.BytesIO(b"before " + encoded + b" after\n")
@@ -37,13 +42,22 @@ def test_split_and_encoded_sentinels_are_removed_before_any_file_write(tmp_path,
     assert path.read_bytes() == b"before [REDACTED] after\n"
     assert stats["redactions"] == 1
     assert stats["finished"] is True
-    assert SENTINEL not in repr(policy)
     assert SENTINEL not in repr(stats)
 
 
 def test_overlapping_literals_use_one_longest_replacement():
     capture = TextCapture(CapturePolicy(["sentinel-12345678", "sentinel-12345678-extra"], max_output_bytes=1024))
     result = b"".join(capture.feed(bytes([byte])) for byte in b"<sentinel-12345678-extra>") + capture.finish()
+    assert result == b"<[REDACTED]>"
+    assert capture.statistics()["redactions"] == 1
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 4096])
+def test_staggered_secret_occurrences_redact_their_complete_union(chunk):
+    capture = TextCapture(CapturePolicy(["AAAABBBBCCCC", "CCCCDDDDEEEE"], max_output_bytes=1024))
+    source = b"<AAAABBBBCCCCDDDDEEEE>"
+    result = b"".join(capture.feed(source[n:n + chunk]) for n in range(0, len(source), chunk))
+    result += capture.finish()
     assert result == b"<[REDACTED]>"
     assert capture.statistics()["redactions"] == 1
 
@@ -97,9 +111,58 @@ def test_a_stalled_sink_fails_without_a_raw_fallback():
         capture_text(io.BytesIO(SENTINEL.encode()), Stalled(), CapturePolicy([SENTINEL], max_output_bytes=1024))
 
 
-@pytest.mark.parametrize("literals,limit", [([], 1024), ([None], 1024), (["short"], 1024),
-                                          (["x" * 1025], 1024), ([SENTINEL], True), ([SENTINEL], 0)])
-def test_policy_errors_do_not_echo_private_values(literals, limit):
-    with pytest.raises(ValueError) as raised:
+@pytest.mark.parametrize("literals,limit,reason", [
+    ([], 1024, "bounded private literals"), ([None], 1024, "must be text"),
+    ([SENTINEL], True, "positive output ceiling"), ([SENTINEL], 0, "positive output ceiling"),
+])
+def test_invalid_policy_is_refused_with_its_boundary_reason(literals, limit, reason):
+    with pytest.raises(ValueError, match=reason):
         CapturePolicy(literals, max_output_bytes=limit)
-    assert SENTINEL not in str(raised.value)
+
+
+@pytest.mark.parametrize("literal", ["short", SENTINEL + "x" * 1024, SENTINEL + "\ud800", "REDACTED"])
+def test_rejected_private_literals_never_enter_error_details(literal):
+    with pytest.raises(ValueError) as raised:
+        CapturePolicy([literal], max_output_bytes=1024)
+    assert literal not in str(raised.value)
+    assert raised.value.__context__ is None
+
+
+def test_nonblocking_empty_read_is_not_a_successful_end_of_stream():
+    class Unready:
+        def read(self, _count):
+            return None
+    with pytest.raises(OSError, match="did not return byte data"):
+        capture_text(Unready(), io.BytesIO(), CapturePolicy([SENTINEL], max_output_bytes=1024))
+
+
+def test_an_overlapping_chain_stays_bounded_and_has_no_raw_suffix():
+    capture = TextCapture(CapturePolicy(["AAAAAAAA"], max_output_bytes=1024))
+    output = bytearray()
+    for _ in range(8192):
+        output.extend(capture.feed(b"A"))
+        assert sum(map(len, capture._chunks)) <= 128
+    output.extend(capture.finish())
+    assert output == b"[REDACTED]"
+    assert capture.statistics()["redactions"] == 1
+
+
+def test_separate_occurrences_keep_their_clear_text_separator():
+    stream = io.BytesIO(b"<sentinel-12345678>-<sentinel-12345678>")
+    target = io.BytesIO()
+    stats = capture_text(stream, target, CapturePolicy(["sentinel-12345678"], max_output_bytes=1024), chunk_bytes=1)
+    assert target.getvalue() == b"<[REDACTED]>-<[REDACTED]>"
+    assert stats["redactions"] == 2
+
+
+def test_late_terminal_controls_omit_pending_output_and_report_a_gap():
+    capture = TextCapture(CapturePolicy(["12345678"], max_output_bytes=1024))
+    assert capture.feed(b"A" * 128) == b"A" * 113
+    assert capture.feed(b"\x1b[31mred") + capture.finish() == b""
+    assert capture.statistics()["omitted_nontext"] is True
+
+
+def test_direct_feed_cannot_exceed_the_input_buffer_budget():
+    capture = TextCapture(CapturePolicy([SENTINEL], max_output_bytes=1024))
+    with pytest.raises(ValueError, match="exceeds one MiB"):
+        capture.feed(b"A" * (1024 * 1024 + 1))

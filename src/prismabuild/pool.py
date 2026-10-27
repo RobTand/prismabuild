@@ -17929,8 +17929,10 @@ class PoolQueue:
         # The optional row is only a projection, including on legacy
         # non-adaptive callers. No erased/forged carrier bypasses the
         # actual sealed request, and opted-in work requires a ledger.
+        intent_refusal = "local_scratch_io_intent_invalid"
         try:
             request = _sealed_action_request(item["cas_root"], key)
+            intent_refusal = "execution_profile_intent_invalid"
             selected_profile = execution_profiles.check_row(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if selected_profile is not None:
@@ -17939,6 +17941,7 @@ class PoolQueue:
                 except execution_profiles.ProfileUnavailable as exc:
                     self.record_denial(item, "execution_profile_unavailable", {"error": str(exc)})
                     return scan
+            intent_refusal = "local_scratch_io_intent_invalid"
             scratch_intent = self._sealed_scratch_io(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if (item.get(local_scratch.IO_ENV) != scratch_intent
@@ -17952,7 +17955,7 @@ class PoolQueue:
                 if ledger is None or not demand:
                     raise PoolContractError("scratch I/O requires full host-ledger admission")
         except (ValueError, OSError, KeyError, TypeError) as exc:
-            self.record_denial(item, "local_scratch_io_intent_invalid", {"error": str(exc)})
+            self.record_denial(item, intent_refusal, {"error": str(exc)})
             return scan
         if controller is not None and not demand:
             # Adaptive admission needs a durable reservation to make an

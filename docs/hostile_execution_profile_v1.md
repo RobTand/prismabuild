@@ -71,7 +71,7 @@ The shared host kernel remains outside the hostile-code threat model.
 | PB-H4 | Worker-owned status, collection and exact-attempt results; independently pinned test population; refuse replaced reports, forged output, missing/duplicate tests, runner injection and output symlinks | Unsupported-profile execution and receipt refusal implemented; authenticated collector and native proof owed |
 | PB-H5 | Cross-action file/process isolation; aggregate CPU, memory, pids, scratch bytes/inodes and admitted device limits | Trusted resource containment exists; hostile enforcement and native neighbour/limit proof owed |
 | PB-H6 | Exact stop proof, launch fence and private-state disposal across loss/restart; ambiguity retains capacity | Existing trusted cleanup machinery and merged #2272 are dependencies; hostile disposal and deployed loss proof owed |
-| PB-H7 | Sanitize capture before any durable write, including split/encoded sentinel and failure paths; omit binary/undecodable bytes; bound retention | Owed; no integrated hostile capture or native no-raw-copy proof |
+| PB-H7 | Sanitize capture before any durable write, including split/encoded sentinel and failure paths; omit binary/undecodable bytes; bound retention | Bounded literal text-capture component implemented; worker integration and native no-raw-copy proof owed |
 
 Source construction, component tests, source merge, runtime activation and
 native qualification are separate facts. PB-Q1 through PB-Q7 in TL2's trust
@@ -79,6 +79,32 @@ contract remain the native acceptance questions. All attacks use sentinel
 secrets, never live credentials. A fake, skipped case or controller check
 does not qualify a native guarantee. A receipt identifies recorded bytes;
 semantic honesty of arbitrary tests still requires review.
+
+`hostile_capture.capture_text` is a collector component, not a worker backend.
+It holds configured private literals in memory and sends only sanitized bytes
+to the supplied sink. Supported forms are raw UTF-8, Python JSON escaping with
+`ensure_ascii=True`, URL quoting with `safe=""` and uniformly upper- or lowercase
+percent escapes, uniform lower- or uppercase hex, and standard or URL-safe
+base64 of the literal alone, each with or without padding. The matcher covers
+read boundaries and replaces the union of staggered overlapping occurrences.
+It does not cover slash-preserving URL quoting, form-plus quoting, mixed-case
+percent escapes, JSON slash escaping, or base64 of enclosing text such as
+`user:secret`. Redaction precedes the byte ceiling. Invalid UTF-8, DEL, C1, or
+C0 controls other than tab, CR and LF stop further capture and omit the pending
+buffer; this includes ANSI terminal escapes. Previously emitted sanitized text
+can remain. Statistics contain counts
+and fixed algorithm identity, with no secret mapping or isolated-secret digest.
+The policy accepts 1–64 literals of 8–1024 UTF-8 bytes within a fixed pattern
+budget. A private automaton avoids the process-global regular-expression cache,
+and matched raw spans are consumed so overlapping chains cannot grow retention.
+Matching work is bounded by input and pattern size; no throughput qualification
+has been run. `read()` must return bytes, including an explicit empty byte string
+at EOF. A source or sink error raises; an integrating collector must record safe
+gap metadata for any retained sanitized prefix. This finite literal matching does not detect arbitrary transformations,
+unknown credentials or sensitive structured fields. It does not sanitize PB's
+current logs, terminal tails, sidecars, traces or CAS artifacts. Native PB-H7
+qualification requires those paths to use a trusted collector outside the
+payload before their first write, including failure and interruption paths.
 
 | Lane | PB-H1 | PB-H2 | PB-H3 | PB-H4 | PB-H5 | PB-H6 | PB-H7 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
