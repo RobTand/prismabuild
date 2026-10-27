@@ -138,6 +138,7 @@ def test_a_hostile_keyed_receipt_is_a_typed_cas_refusal(tmp_path):
     path = cas.receipt_path(action["action_key"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(pb._canonical_file_bytes(receipt))
+    path.chmod(0o444)
     with pytest.raises(pb.CASTamperError, match="authenticated collection"):
         cas.lookup(action)
 

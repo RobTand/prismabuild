@@ -45,7 +45,7 @@ class _LiteralMatcher:
                 self.failure[child] = self.edges[fallback].get(byte, 0)
                 self.length[child] = max(self.length[child], self.length[self.failure[child]])
 
-    def advance(self, state, byte):
+    def match_byte(self, state, byte):
         while state and byte not in self.edges[state]:
             state = self.failure[state]
         return self.edges[state].get(byte, 0)
@@ -80,7 +80,7 @@ class CapturePolicy:
         self._matcher = _LiteralMatcher(patterns)
         state = 0
         for byte in REPLACEMENT:
-            state = self._matcher.advance(state, byte)
+            state = self._matcher.match_byte(state, byte)
             if self._matcher.length[state]:
                 raise ValueError("capture replacement conflicts with the private policy")
         self.max_output_bytes = max_output_bytes
@@ -125,7 +125,7 @@ class TextCapture:
         for byte in data:
             self._ring[self._seen % len(self._ring)] = byte
             self._seen += 1
-            self._state = matcher.advance(self._state, byte)
+            self._state = matcher.match_byte(self._state, byte)
             length = matcher.length[self._state]
             if not length:
                 continue

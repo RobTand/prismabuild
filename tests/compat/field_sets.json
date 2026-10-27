@@ -1877,6 +1877,20 @@
     "binding": "MEASUREMENT_DRAIN_NOTE_FIELDS"
   },
   {
+    "path": "src/prismabuild/execution_profiles.py",
+    "owner": "check_row",
+    "unresolved": "reserved"
+  },
+  {
+    "path": "src/prismabuild/execution_profiles.py",
+    "owner": "parse_selection",
+    "fields": [
+      "name",
+      "policy_sha256",
+      "schema"
+    ]
+  },
+  {
     "path": "src/prismabuild/filesystem_floor.py",
     "owner": "_zfs_space",
     "unresolved": "_command(['zfs', 'get', '-Hp', '-o', 'value', 'used,available', pool]).split()",

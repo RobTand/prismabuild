@@ -166,3 +166,33 @@ def test_direct_feed_cannot_exceed_the_input_buffer_budget():
     capture = TextCapture(CapturePolicy([SENTINEL], max_output_bytes=1024))
     with pytest.raises(ValueError, match="exceeds one MiB"):
         capture.feed(b"A" * (1024 * 1024 + 1))
+
+
+@pytest.mark.parametrize("chunk", [1, 3, 64, 1024])
+def test_streaming_union_matches_an_independent_whole_buffer_oracle(chunk):
+    import random
+
+    rng = random.Random(2383)
+    literals = ["AAAABBBB", "BBBBCCCC", "CCCCDDDD", "AAAAAAAA", "ABCDABCD"]
+    for _ in range(40):
+        text = "".join(rng.choice("ABCD") for _ in range(32))
+        text += rng.choice(literals) + rng.choice(literals)
+        text += "AAAABBBBCCCCDDDD" + "A" * rng.randrange(8, 40)
+        # Batch oracle: enumerate every literal occurrence before merging.
+        intervals = sorted((start, start + len(value)) for start in range(len(text))
+                           for value in literals if text.startswith(value, start))
+        union = []
+        for start, end in intervals:
+            if union and start < union[-1][1]:
+                union[-1] = (union[-1][0], max(union[-1][1], end))
+            else:
+                union.append((start, end))
+        expected, cursor = [], 0
+        for start, end in union:
+            expected.extend((text[cursor:start], "[REDACTED]"))
+            cursor = end
+        expected.append(text[cursor:])
+        target = io.BytesIO()
+        capture_text(io.BytesIO(text.encode()), target,
+                     CapturePolicy(literals, max_output_bytes=4096), chunk_bytes=chunk)
+        assert target.getvalue() == "".join(expected).encode()
