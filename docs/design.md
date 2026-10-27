@@ -7078,20 +7078,41 @@ preferred-CPU fits retain their ledger fallback for an unmeasured kind.
 Freshness, eligibility, pass-on and timer rules remain separate.
 
 Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
-The pass view owns the three 20-second monotonic grace questions and the separate
+The pass view owns the four 20-second monotonic grace questions and the separate
 Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
 without restarting grace. Empty adaptive discovery, absent ready generations
 and a successful claim retire history through its owner. CPU-host age never
 becomes an expiry condition. Clock reads retain their original conditional
 positions and the Unix clock resolves the current pool clock on each read.
 
-All three timer rules consult capacity remaining after earlier CPU-host or scratch
+All four timer rules consult capacity remaining after earlier CPU-host or scratch
 yields in the pass. Preferred-CPU and cross-resource timer rules do not charge
 capacity for their own yields; idle-GPU yields charge the advisory peer view.
 This avoids a second timer wait after another rule has already left a peer
 as much work as it fits; preferred-CPU and cross-resource timer yields can
 still name more rows than the peer fits. These are advisory placement
-decisions, not peer reservations.
+decisions, not peer reservations. The CPU-load timer also reads remaining
+capacity without charging its own yields.
+
+Portable CPU rows additionally prefer a peer with observed CPU headroom (#2242).
+This rule runs after the existing idle-GPU, CPU-only-host and cross-resource
+rules. `_peer_placement.cpu_load` reads fresh finite nonnegative `load1` and
+the preferred CPU count from each offer. If the local preferred count minus
+load cannot cover the row's CPU demand, a compatible peer with enough such
+headroom and complete measured CPU/memory/other resource fit gets up to 20
+seconds to claim. The exact publication's monotonic timer persists across
+passes. A request larger than the local preferred tier keeps the existing
+preferred-CPU fallback rule. Missing, malformed, future or stale evidence supplies no preference;
+expiry leaves local admission authoritative. Equal saturated peers do not
+defer to each other. The denial is `deferred_for_cpu_load`, and an ordinary
+CPU-host denial already supplies #1262's existing pass-on evidence.
+
+Load1 includes PB work, foreign runnable threads and uninterruptible waits.
+It is a whole-host placement proxy, not foreign-process attribution or a
+throughput measurement. CPU token capacity is unchanged. Explicit hostname
+and class tags bypass the new rule through `_portable_cpu_work`; READY GPU
+protection, guest restartability and operator holds retain their earlier
+gates. This source change does not deploy a runtime or establish live effects.
 
 Reusing the first advisory observation deliberately changes observation
 timing: a peer ledger or offer replacement after that read is ordinarily observed on the
