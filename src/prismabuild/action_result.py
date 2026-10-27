@@ -702,7 +702,10 @@ def read_verified_ending_result(
     max_observation_s: float = 4.0,
     ending: tuple[Path, Mapping[str, object]] | None = None,
     cas_root: str | Path | None = None,
+    include_producer_attestation: bool = False,
 ) -> dict[str, object]:
+    if type(include_producer_attestation) is not bool:
+        raise ActionResultError("include_producer_attestation must be a boolean")
     if (isinstance(max_observation_s, bool) or not isinstance(max_observation_s, (int, float))
             or not math.isfinite(max_observation_s) or max_observation_s < 0):
         raise ActionResultError("max_observation_s must be finite and nonnegative")
@@ -711,14 +714,21 @@ def read_verified_ending_result(
             queue, action_key, published_unix=published_unix, attempt=attempt,
             max_log_bytes=max_log_bytes, max_evidence_bytes=max_evidence_bytes,
             max_result_bytes=max_result_bytes, deadline=time.monotonic() + max_observation_s,
-            ending=ending, cas_root=cas_root)
+            ending=ending, cas_root=cas_root,
+            include_producer_attestation=include_producer_attestation)
     except _EndingVerificationIncomplete as exc:
-        return unverified_ending_result(exc)
+        result = unverified_ending_result(exc)
+        if include_producer_attestation:
+            result.update(producer_attestation=None, producer_interpreter=None,
+                          producer_attestation_error=str(exc), producer_stdout=None,
+                          producer_request=None)
+        return result
 
 
 def _read_streamed_ending_result(
     queue, action_key, *, published_unix, attempt, max_log_bytes,
     max_evidence_bytes, max_result_bytes, deadline, ending, cas_root,
+    include_producer_attestation,
 ):
     """Verify the selected ending's logs, including a failed worker (#1892).
 
@@ -772,7 +782,8 @@ def _read_streamed_ending_result(
     if len(announcements) > 1:
         raise ActionResultError("the selected attempt has ambiguous receipts")
     receipt_sha256 = None
-    if announcements:
+    action = receipt = None
+    if announcements or include_producer_attestation:
         selected_cas_root = cas_root if archived else record.get("cas_root")
         if not isinstance(selected_cas_root, (str, Path)) or not str(selected_cas_root):
             raise ActionResultError("the selected ending names no CAS root")
@@ -785,6 +796,10 @@ def _read_streamed_ending_result(
             action = pb.validate_action(request)
             if action["action_key"] != key:
                 raise ActionResultError("sealed action request names another action key")
+        except (pb.PrismaBuildError, OSError) as exc:
+            raise ActionResultError(f"sealed action request refused: {exc}") from exc
+    if announcements:
+        try:
             announced = announcements[0]["receipt"]
             receipt, _ = cas.read_execution_result(
                 action, announced["receipt_sha256"], max_result_bytes=result_cap,
@@ -796,6 +811,8 @@ def _read_streamed_ending_result(
             raise ActionResultError(f"execution receipt refused: {exc}") from exc
     elif record["status"] in {"executed", "cache_hit"}:
         raise ActionResultError("the successful attempt announced no execution receipt")
+    producer_evidence = (_ending_producer_evidence(action, selected, receipt)
+                         if include_producer_attestation else {})
     rechecked, new_generation, new_path = _select_ending(
         queue, key, published, number, evidence_cap, ending)
     reselected = _read_selected_attempt(queue, new_path, evidence_cap)
@@ -806,7 +823,49 @@ def _read_streamed_ending_result(
     if time.monotonic() >= deadline:
         raise _EndingVerificationIncomplete("ending verification exceeded its observation budget")
     return {"verified": True, "receipt_sha256": receipt_sha256,
-            "stdout": stdout, "stderr": stderr, "outputs": []}
+            "stdout": stdout, "stderr": stderr, "outputs": [],
+            **producer_evidence,
+            **({"producer_request": action,
+                "producer_stdout": None if stdout.get("truncated") else raw.decode("utf-8", errors="replace")}
+               if include_producer_attestation else {})}
+
+
+def _ending_producer_evidence(action, selected, receipt):
+    detail = selected["detail"]
+    result = {"producer_attestation": None, "producer_interpreter": None,
+              "producer_attestation_error": None}
+    raw = receipt["producer"] if receipt is not None else detail.get("producer_attestation")
+    if raw is None:
+        result["producer_attestation_error"] = (detail.get("producer_attestation_error")
+            or "the selected ending has no producer attestation")
+        return result
+    try:
+        producer = pb.validate_worker_attestation(raw, action=action)
+        if producer["worker_id"] != selected.get("claimed_host"):
+            raise ActionResultError("producer attestation names a different selected host")
+        interpreter = detail.get("producer_interpreter")
+        if interpreter is not None:
+            declared = action["params"].get("interpreter")
+            bind_standard_capture_command(action)
+            command = action["params"]["command"]
+            if not declared or command[0] != declared:
+                raise ActionResultError("producer interpreter differs from the sealed command")
+            if (not isinstance(interpreter, dict)
+                    or set(interpreter) != {"path", "resolved_path", "sha256", "bytes"}
+                    or interpreter["path"] != declared
+                    or not isinstance(interpreter["resolved_path"], str)
+                    or not Path(interpreter["resolved_path"]).is_absolute()
+                    or any(ord(c) < 32 or ord(c) == 127 for c in interpreter["resolved_path"])
+                    or not isinstance(interpreter["sha256"], str)
+                    or _ACTION_KEY_RE.fullmatch(interpreter["sha256"]) is None
+                    or type(interpreter["bytes"]) is not int or interpreter["bytes"] <= 0):
+                raise ActionResultError("producer interpreter identity is malformed")
+        error = detail.get("producer_attestation_error")
+        result.update(producer_attestation=producer, producer_interpreter=interpreter,
+                      producer_attestation_error=error if isinstance(error, str) and error else None)
+    except (pb.PrismaBuildError, ActionResultError, OSError, ValueError) as exc:
+        result["producer_attestation_error"] = str(exc)
+    return result
 
 
 def read_verified_action_result(

@@ -1894,7 +1894,9 @@ def test_the_worker_leaves_the_action_status_where_it_was_asked_to(
         )
 
     assert str(caught.value) == "action argv exited with status 7"
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+    recorded = json.loads(sidecar.read_text(encoding="utf-8"))
+    pb.validate_worker_attestation(recorded.pop("producer_attestation"), action=action)
+    assert recorded == {
         "action_returncode": 7
     }
 
@@ -1924,7 +1926,9 @@ def test_a_signalled_action_leaves_its_signal_in_the_sidecar(
             )
         )
 
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+    recorded = json.loads(sidecar.read_text(encoding="utf-8"))
+    pb.validate_worker_attestation(recorded.pop("producer_attestation"), action=action)
+    assert recorded == {
         "action_returncode": -9, "action_signal": 9,
     }
 

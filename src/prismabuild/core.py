@@ -432,11 +432,17 @@ class LocalActionError(PrismaBuildError):
         returncode: int | None = None,
         signal: int | None = None,
         profile: Mapping[str, object] | None = None,
+        producer_attestation: Mapping[str, object] | None = None,
+        producer_interpreter: Mapping[str, object] | None = None,
+        producer_attestation_error: str | None = None,
     ) -> None:
         super().__init__(*args)
         self.returncode = returncode
         self.signal = signal
         self.profile = profile
+        self.producer_attestation = producer_attestation
+        self.producer_interpreter = producer_interpreter
+        self.producer_attestation_error = producer_attestation_error
 
 
 def _fail(message: str) -> NoReturn:
@@ -6187,6 +6193,16 @@ def run_local_action(
             checkout_root=root,
             worker_launcher_identity=worker_launcher_identity,
         )
+        interpreter = normalized["params"].get("interpreter")
+        producer_interpreter = None
+        interpreter_error = None
+        if interpreter is not None:
+            try:
+                if not isinstance(interpreter, str):
+                    raise ActionContractError("declared interpreter must be a path")
+                producer_interpreter = identify_executable(interpreter)
+            except (PrismaBuildError, OSError) as exc:
+                interpreter_error = f"interpreter identity unavailable: {exc}"
         claim = _load_local_result_claim(cas, normalized, root)
         if claim is not None:
             reaped_staging_files = _reap_local_result_staging(cas, claim)
@@ -6335,6 +6351,17 @@ def run_local_action(
             profile.note_backend_status(returncode, profile_record)
             returncode = action_status
         if returncode != 0:
+            producer_attestation = attestation
+            evidence_error = interpreter_error
+            try:
+                _verify_finished_execution_identity(attestation, normalized, root)
+                if (producer_interpreter is not None
+                        and identify_executable(interpreter) != producer_interpreter):
+                    raise LocalActionError("declared interpreter changed during execution")
+            except (PrismaBuildError, OSError) as exc:
+                producer_attestation = None
+                producer_interpreter = None
+                evidence_error = f"execution identity unavailable: {exc}"
             raise LocalActionError(
                 f"action argv exited with status {returncode}"
                 + (f"; its profile is CAS blob {profile_record['blob_sha256']}"
@@ -6350,6 +6377,9 @@ def run_local_action(
                 # names the blob; a reader should not have to scrape prose for
                 # a record this frame is holding.
                 profile=profile_record,
+                producer_attestation=producer_attestation,
+                producer_interpreter=producer_interpreter,
+                producer_attestation_error=evidence_error,
             )
         if profile_record is not None and profile_record.get("produced") is False:
             # A profile that does not cover the action's workload is not the
@@ -6403,6 +6433,16 @@ def run_local_action(
         "reaped_staging_files": reaped_staging_files,
         "local_result_claim_sha256": claim["claim_sha256"],
     }
+    if interpreter is not None:
+        try:
+            if (producer_interpreter is not None
+                    and identify_executable(interpreter) != producer_interpreter):
+                raise LocalActionError("declared interpreter changed during execution")
+        except (PrismaBuildError, OSError) as exc:
+            producer_interpreter = None
+            interpreter_error = f"interpreter identity unavailable: {exc}"
+        _write_action_status({"producer_interpreter": producer_interpreter,
+                              "producer_attestation_error": interpreter_error})
     if profile_record is not None:
         # Its own key, so a reader tests one field rather than parsing prose,
         # and so the pool can lift it into the ending without knowing anything
@@ -6504,6 +6544,12 @@ def _record_action_status(error: LocalActionError) -> None:
             body["action_signal"] = int(error.signal)
     if error.profile is not None:
         body["profile"] = dict(error.profile)
+    if error.producer_attestation is not None:
+        body["producer_attestation"] = dict(error.producer_attestation)
+    if error.producer_interpreter is not None:
+        body["producer_interpreter"] = dict(error.producer_interpreter)
+    if error.producer_attestation_error is not None:
+        body["producer_attestation_error"] = error.producer_attestation_error
     _write_action_status(body)
 
 

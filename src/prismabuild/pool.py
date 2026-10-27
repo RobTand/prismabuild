@@ -5945,6 +5945,13 @@ class PoolQueue:
             # refreshes it with the final profile. Prefer stdout when parsed,
             # and otherwise retain the evidence from the sidecar.
             outcome["profile"] = profile
+        for field in ("producer_attestation", "producer_interpreter"):
+            value = body.get(field)
+            if isinstance(value, dict):
+                outcome[field] = value
+        error = body.get("producer_attestation_error")
+        if isinstance(error, str) and error:
+            outcome["producer_attestation_error"] = error
         return outcome
 
     def _entomb_claim(
