@@ -1,0 +1,539 @@
+{
+  "source_parent": "3b732a3495549a1944b0fad0330a129763ad7ea6",
+  "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/repaired-focused.json",
+  "entries": [
+    {
+      "action_key": "41241590808f6d1fadcbb102e1597b1babfeab9216622f3b9701c3faa6141c1c",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "dl380g10",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "ed649980a42c7ba57b1f2c10352d9f1fbbc58dabc73e9b1a98c08d382adeee36",
+      "logs": {
+        "stdout": {
+          "bytes": 8471,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/41241590808f6d1fadcbb102e1597b1babfeab9216622f3b9701c3faa6141c1c/9f79252c6e336cb0f6ae179af6c88124d106f4a365309a0e1366ade07bc2015f/00000001.stdout.a5cce85c75e0f6be24de06a67e13b2c4c784c910030a9d78e826387df9bff21f.log",
+          "sha256": "a5cce85c75e0f6be24de06a67e13b2c4c784c910030a9d78e826387df9bff21f"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/41241590808f6d1fadcbb102e1597b1babfeab9216622f3b9701c3faa6141c1c/9f79252c6e336cb0f6ae179af6c88124d106f4a365309a0e1366ade07bc2015f/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_a_producers_export_rates_are_learned_per_family.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          2,
+          4
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_a_producers_export_rates_are_learned_per_family.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_a_producers_export_rates_are_learned_per_family.py": "03414d9e3769cbf97f136b48427b9b3f8e541da69f5d0d1258a49f86d29ae411"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "499da87cd87590c0ad204a5349ab051d234285275ccad0344c466ebe00cb8774",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "3a982dba0ed600adcc23befb43fdad1641dd5042e3f9163b3fc90afcde3c1564",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "sparky",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "ffab1f28f26653351555c07dd0dc5c470b5516167951eec7a4ad32b9d9509252",
+      "logs": {
+        "stdout": {
+          "bytes": 24192,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3a982dba0ed600adcc23befb43fdad1641dd5042e3f9163b3fc90afcde3c1564/1f54f72050ed37ba19db0a0536da88b0eb65d7b15b2d69dffe6e4d6b9f818fe1/00000001.stdout.b83d82b744c1295c734f6631d6584bb5308636e398642466338e5132bd05c568.log",
+          "sha256": "b83d82b744c1295c734f6631d6584bb5308636e398642466338e5132bd05c568"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3a982dba0ed600adcc23befb43fdad1641dd5042e3f9163b3fc90afcde3c1564/1f54f72050ed37ba19db0a0536da88b0eb65d7b15b2d69dffe6e4d6b9f818fe1/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gpu_runtime_integration.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gpu_runtime_integration.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gpu_runtime_integration.py": "3e50f228207463f1c749d19adbb23cae6dbebba7db76135e7d879ed0c582799f"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "303ce2d8327ed17c2db799aa5dba54b5f1ca6f077ff381e49302a956da001f9a",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 33
+      }
+    },
+    {
+      "action_key": "e3bbad8deef1944e15c1fc7405c9e07d5d7ce2628a511617a12add85a5294dd3",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "sparky",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "363506eef1083d6af6234c98343a5a98f5f5eac9339f70345a303abebd023526",
+      "logs": {
+        "stdout": {
+          "bytes": 20630,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e3bbad8deef1944e15c1fc7405c9e07d5d7ce2628a511617a12add85a5294dd3/8cd07f5fb6958cfcd267d10ad7d698d46dc75c8fc0006b2ea05d0658daab9332/00000001.stdout.8334c7f7a54c33647122bd16f8901ecf18a29324b25b71290e862861ecb23681.log",
+          "sha256": "8334c7f7a54c33647122bd16f8901ecf18a29324b25b71290e862861ecb23681"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e3bbad8deef1944e15c1fc7405c9e07d5d7ce2628a511617a12add85a5294dd3/8cd07f5fb6958cfcd267d10ad7d698d46dc75c8fc0006b2ea05d0658daab9332/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_pool_resource_scope.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_pool_resource_scope.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_pool_resource_scope.py": "8663623ddd822994ef12c196ba5976f3049372ea1f5e7b607b7e96ca408d5a76"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "3cd54cb4f345806b5815ace3df93845dbc8a60f989f4d7a1c13b36d67410943e",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 29
+      }
+    },
+    {
+      "action_key": "7be41cea6ef7b77b2312a5b9ab7d863878857da342cc3cc7fc40e487482d6f38",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "sparky",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "48d6cedd869146c265ef07d641c4deb0282c5c8363cb7727b609268d0a112f6d",
+      "logs": {
+        "stdout": {
+          "bytes": 20044,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7be41cea6ef7b77b2312a5b9ab7d863878857da342cc3cc7fc40e487482d6f38/5ccab9557ddc888e4b8b08dd244189567bbad545fd25bdd656c1521f3e88f9e9/00000001.stdout.ba413e48a6ac052892a44cc1b2f049927262840ad28c49eb95ebf8e1e4c32ae5.log",
+          "sha256": "ba413e48a6ac052892a44cc1b2f049927262840ad28c49eb95ebf8e1e4c32ae5"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7be41cea6ef7b77b2312a5b9ab7d863878857da342cc3cc7fc40e487482d6f38/5ccab9557ddc888e4b8b08dd244189567bbad545fd25bdd656c1521f3e88f9e9/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_execution_budget_is_stated_not_silent.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_execution_budget_is_stated_not_silent.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_execution_budget_is_stated_not_silent.py": "00d20d9619bd28a588cad8af5b58019dd13a1613af3a807d96900a660371d8bc"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "fd15a4ede8b3db13c75db9af5ca9b1f6218399ce1ca3127a1a6af3af67af4504",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 25
+      }
+    },
+    {
+      "action_key": "1d97f645120b87f3dc0ce6c47f669322f731c1176050c876406626b4dfbb04c6",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "sparky",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "95fa1551e7e038e133c02cf6fe4456a81bb865309f99167e2acc7348959e6aad",
+      "logs": {
+        "stdout": {
+          "bytes": 7826,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1d97f645120b87f3dc0ce6c47f669322f731c1176050c876406626b4dfbb04c6/3846fd7316a75e27bf58e7070cc2a015e165c165a141a9264af81fb6037a3a94/00000001.stdout.b69a443963f6ce3631c10b11bd07d1fdbff81d73261a31c3f1b01d61fdc0c930.log",
+          "sha256": "b69a443963f6ce3631c10b11bd07d1fdbff81d73261a31c3f1b01d61fdc0c930"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1d97f645120b87f3dc0ce6c47f669322f731c1176050c876406626b4dfbb04c6/3846fd7316a75e27bf58e7070cc2a015e165c165a141a9264af81fb6037a3a94/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_1707_default_stall_repro.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_1707_default_stall_repro.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_1707_default_stall_repro.py": "b87ce8523417d173bf6622348138e7472757073c9df226a9f018e8990c6d9867"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "a35bb7d5cf6857c46ebc231c947efe7a92dba5646001985b375009f9d93a3cf0",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 5
+      }
+    },
+    {
+      "action_key": "5528874816c21bc926a8a38571ab9c1f67a90b1848215460778c42f01c604cbd",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "sparklina",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "75281ee120b9bbf36fc51b63a50f19a20b6e70d3a5aef7341173be9ee7be66c0",
+      "logs": {
+        "stdout": {
+          "bytes": 22658,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5528874816c21bc926a8a38571ab9c1f67a90b1848215460778c42f01c604cbd/7c7b474c20cbc13f585438b5b37cde3e71fbadce9925d47c2953b38e0fbee511/00000001.stdout.3e20acf6409d6508f2f1131a8f75859dd7edda161683c821ce9efc3088e3fdc1.log",
+          "sha256": "3e20acf6409d6508f2f1131a8f75859dd7edda161683c821ce9efc3088e3fdc1"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/5528874816c21bc926a8a38571ab9c1f67a90b1848215460778c42f01c604cbd/7c7b474c20cbc13f585438b5b37cde3e71fbadce9925d47c2953b38e0fbee511/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_1707_progress_supervision_by_stall.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_1707_progress_supervision_by_stall.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_1707_progress_supervision_by_stall.py": "3c89275d015c73c5682e58a8d8a85aaa1a440012c927a7c0ab304ef8917ccf2f"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "e42e88c72309f7c454d4b9f156005fb67ee3ab4b262e00593aa768ac6a55bb93",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 27
+      }
+    },
+    {
+      "action_key": "f9bc7afa50bd9d4d80eda68273eefab036c267809d4c528d4fcf2fe3613e74d5",
+      "status": "executed",
+      "exit_code": 0,
+      "host": "dl380g10",
+      "snapshot_commit": "cc36e406830cf2e525cc18f55164a4049f8c8b56",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "fb188940bb6b07ad5fff874497c4b8781cc57f6a28d78f35cf4b06e759f5af5e"
+      },
+      "request_sha256": "f174477c527e69396459b39626602b401f8b33f7295492739230e59f0f4920f4",
+      "logs": {
+        "stdout": {
+          "bytes": 9084,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/f9bc7afa50bd9d4d80eda68273eefab036c267809d4c528d4fcf2fe3613e74d5/bfa4e050a8c31438662f1d85da87370e68ac02c4d68ebec7d89fcca6903aea5c/00000001.stdout.9cc87e78fce477eff5ef341a66b339d31e284df72cab24750f93b1807417ca3e.log",
+          "sha256": "9cc87e78fce477eff5ef341a66b339d31e284df72cab24750f93b1807417ca3e"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/f9bc7afa50bd9d4d80eda68273eefab036c267809d4c528d4fcf2fe3613e74d5/bfa4e050a8c31438662f1d85da87370e68ac02c4d68ebec7d89fcca6903aea5c/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_measurement_reservation_backfill_1419.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_measurement_reservation_backfill_1419.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_measurement_reservation_backfill_1419.py": "3d2126b62d61ab92fdc193ee3d1ddc2793a52334f41a9e9aad4b6e300cbc0165"
+        },
+        "exitstatus": 0
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": "d1d21b7161ca9ea007f35b044e4ae5b24db959ebc4a927cc8d416dbd2c0a2535",
+      "failed_nodeids": [],
+      "outcome_counts": {
+        "call:passed": 6
+      }
+    }
+  ],
+  "worker_signing_keys": "not checked; no cryptographic attestation claim"
+}

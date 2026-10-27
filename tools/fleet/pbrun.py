@@ -305,8 +305,13 @@ def argument_parser() -> argparse.ArgumentParser:
                     help="positive execution deadline in seconds, enforced by "
                          "both transports; the pool worker's safety ceiling "
                          "(7200 s by default, announced per box and reported "
-                         "here when it would cut this request short) also "
-                         "applies. Queue waiting is bounded by --wait-s")
+                         "here when it would cut this request short) clamps "
+                         "an explicit budget. Without it the pool ends a run "
+                         "on a progress stall. Queue waiting is bounded by --wait-s")
+    ap.add_argument("--stall-s", type=float, default=None,
+                    help="silence allowance for output and CPU activity when no "
+                         "--progress-phase is declared (default 7200 s, the former "
+                         "worker ceiling, clamped by the worker ceiling; pool only)")
     ap.add_argument("--progress-phase", "--progress", action="append", default=None,
                     metavar="NAME=SECONDS",
                     help="declare one phase of this action and the quiet it is "

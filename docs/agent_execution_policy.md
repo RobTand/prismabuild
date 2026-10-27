@@ -58,17 +58,15 @@ While the GPU is in use or GPU work is pending, #1262 and #1526 still apply.
 `deferred_for_cpu_only_host` remains an untimed placement rule for that case
 and for nonrestartable portable work. Leave portable work untagged.
 
-Every worker loop applies its own payload execution safety ceiling, **7200 s
-by default**, as a ``min`` against ``--timeout-s``. Each box announces its
-ceiling (``pbstatus`` shows it as ``KILL AT``); ``pbrun`` names eligible
-workers that grant a smaller payload budget and the lowest announced budget.
-This is not a shared wall-clock stop or admission-to-resource-release fence:
-checkout precedes payload execution, credited waits can extend its deadline,
-and uncertain settlement retains resources (#1429). The receipt records
-``execution_timeout_s``, ``execution_timeout_requested_s``,
-``execution_timeout_ceiling_s`` and ``execution_timeout_clamped``. A job that
-needs a larger payload allowance needs an eligible loop with a larger ceiling,
-not just a larger submission ``--timeout-s`` (RobTand/prismabuild#293).
+Pool actions without an explicit `execution_timeout_s` have no total-duration
+limit (#1707). Without semantic phases the worker watches output and containment
+CPU activity, ending a silence past 7200 seconds by default, the former worker
+execution ceiling. `pbrun --stall-s` seals another positive allowance;
+it cannot combine with progress phases and is refused on SLURM. The worker
+ceiling clamps the activity allowance and explicit no-policy execution budgets.
+Existing explicit-budget behavior is preserved for semantic policies. Receipts
+retain the requested/effective/ceiling budget and allowance fields. This is
+payload supervision, not an admission-to-resource-release fence (#1429).
 
 An action that can say when it commits work need not be bounded by elapsed
 time at all. Declare the phases it walks and the quiet each one is allowed --
@@ -167,8 +165,10 @@ only a total duration -- and an action that declares a policy refuses to
 launch if the launcher gave it no channel, rather than running with nothing
 bounding it.
 
-`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the quiet time
-against the current phase's allowance, and how many reports have been accepted.
+`pbstatus`'s job table has a `PROGRESS` column beside `OUTPUT`: the current phase,
+committed count and optional unit, quiet time against the phase's allowance,
+and accepted report count. JSON jobs carry the same observation. Activity
+samples retain their output/CPU counters without a committed-work label.
 `OUTPUT` age is log traffic and proves nothing; `PROGRESS` is what the watchdog
 acts on. A blank column means no valid progress observation is available; it
 alone does not identify the action's execution policy. Read the sealed request
