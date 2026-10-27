@@ -293,6 +293,8 @@ def _measurement_refusal_verdict(
     decision: Mapping[str, object] | None, verdict: Mapping[str, object] | None,
 ) -> Mapping[str, object] | None:
     if (verdict is not None
+            and (verdict["withhold"]
+                 or verdict.get("eligible") and verdict.get("why") == "holder_does_not_drain_soon")
             and isinstance(decision, Mapping)
             and decision.get("reason") == "measurement_holder"
             and decision.get("isolated_by")):
