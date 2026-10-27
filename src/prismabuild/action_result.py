@@ -832,11 +832,13 @@ def _read_streamed_ending_result(
 
 def _ending_producer_evidence(action, selected, receipt):
     detail = selected["detail"]
+    reported_error = detail.get("producer_attestation_error")
+    reported_error = reported_error if isinstance(reported_error, str) and reported_error else None
     result = {"producer_attestation": None, "producer_interpreter": None,
               "producer_attestation_error": None}
     raw = receipt["producer"] if receipt is not None else detail.get("producer_attestation")
     if raw is None:
-        result["producer_attestation_error"] = (detail.get("producer_attestation_error")
+        result["producer_attestation_error"] = (reported_error
             or "the selected ending has no producer attestation")
         return result
     try:
@@ -848,7 +850,8 @@ def _ending_producer_evidence(action, selected, receipt):
             declared = action["params"].get("interpreter")
             bind_standard_capture_command(action)
             command = action["params"]["command"]
-            if not declared or command[0] != declared:
+            if (not isinstance(declared, str) or not Path(declared).is_absolute()
+                    or command[0] != declared):
                 raise ActionResultError("producer interpreter differs from the sealed command")
             if (not isinstance(interpreter, dict)
                     or set(interpreter) != {"path", "resolved_path", "sha256", "bytes"}
@@ -860,9 +863,8 @@ def _ending_producer_evidence(action, selected, receipt):
                     or _ACTION_KEY_RE.fullmatch(interpreter["sha256"]) is None
                     or type(interpreter["bytes"]) is not int or interpreter["bytes"] <= 0):
                 raise ActionResultError("producer interpreter identity is malformed")
-        error = detail.get("producer_attestation_error")
         result.update(producer_attestation=producer, producer_interpreter=interpreter,
-                      producer_attestation_error=error if isinstance(error, str) and error else None)
+                      producer_attestation_error=reported_error)
     except (pb.PrismaBuildError, ActionResultError, OSError, ValueError) as exc:
         result["producer_attestation_error"] = str(exc)
     return result
