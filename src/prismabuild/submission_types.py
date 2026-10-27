@@ -122,6 +122,8 @@ class SubmissionRequest:
     priority: int = 0
     priority_reason: str | None = None
     profile: str | None = None
+    execution_profile: str | None = None
+    execution_policy_sha256: str | None = None
     env: Sequence[str] = ()
     no_default_env: bool = False
     withdraw: Sequence[str] = ()

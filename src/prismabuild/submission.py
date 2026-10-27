@@ -25,6 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 from . import action_client, action_wait, client_channel, endings, contracts, manifest_layout, sealed_bundle_cache
+from . import execution_profiles
 from . import (action_edges, adaptive_gpu, capability_eligibility, container_images,
     core as pb, decomposition as dc, dependency_digest, filesystem_floor, fleet_roster,
     materialize, movement_actions, owned_tree, pool, residency_plan, slurm_lane, storage_tiers,
@@ -4291,6 +4292,7 @@ def freeze_template(
     stall_allowance_s: float | None = None,
     awaited_batch: Mapping[str, object] | None = None,
     profile: object | None,
+    execution_profile: Mapping[str, object] | None = None,
     container_image_refs: Sequence[str] = (),
     d38_namespace: str | None = None,
     wrapper_dir: Path | None = None,
@@ -4322,6 +4324,15 @@ def freeze_template(
 
     wrapper_dir = store.wrapper_dir if wrapper_dir is None else wrapper_dir
     variables = dict(variables)
+    selected_profile = None
+    if execution_profile is not None:
+        try:
+            selected_profile = execution_profiles.parse(execution_profile)
+        except execution_profiles.ProfileError as exc:
+            raise SubmissionRefused(f"pbrun: {exc}") from None
+        if (transport != "pool" or not set(selected_profile.required_tags()).issubset(
+                placement.get("required_tags", []))):
+            raise SubmissionRefused("pbrun: hostile-v1 requires pool and its exact execution-policy fences")
     scratch_io = scratch_io_intent(variables, transport=transport)
     recorder = None
     if scratch_io is not None:
@@ -4572,6 +4583,8 @@ def freeze_template(
         "checkout_snapshot": checkout_snapshot,
         "retry_policy": retry_policy,
     }
+    if selected_profile is not None:
+        params[execution_profiles.PARAM] = selected_profile.record()
     if dependency_queries:
         params["dependency_queries"] = dict(dependency_queries)
         if local_dependencies.TAG in placement["required_tags"]:
@@ -4978,6 +4991,8 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
     """
 
     validate_request(args)
+    selected_profile = execution_profiles.requested(
+        args.execution_profile, args.execution_policy_sha256, transport=args.transport)
     progress_policy = args.progress_policy
     wrapper_dir = store.wrapper_dir
     if args.as_sealed_by is not None:
@@ -5229,8 +5244,11 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             awaited_batch=getattr(args, "awaited_batch", None) is not None
                 and progress_policy is not None,
             gang=gang is not None, container_images=bool(images),
+            hostile_execution=selected_profile is not None,
             scratch_io=scratch_io_intent(variables, transport=args.transport) is not None,
             requires_files=bool(requirements)))])
+    if selected_profile is not None:
+        tags = pool.normalize_placement_tags([*tags, *selected_profile.required_tags()])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=store.runtime_root)
     # Other paths retain lazy discovery until submission advice needs it.
@@ -5376,6 +5394,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         stall_allowance_s=args.stall_s,
         awaited_batch=getattr(args, "awaited_batch", None),
         profile=args.profile,
+        execution_profile=selected_profile.record() if selected_profile is not None else None,
         container_image_refs=images,
         d38_namespace=(d38_gate.load_namespace(args.d38_namespace)[1]
                        if getattr(args, "d38_namespace", None) else None),
@@ -6803,6 +6822,11 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
 
 
 def validate_request(request: SubmissionRequest) -> None:
+    try:
+        execution_profiles.requested(request.execution_profile, request.execution_policy_sha256,
+                                     transport=request.transport)
+    except execution_profiles.ProfileError as exc:
+        request.refuse_argument(str(exc))
     if request.profile is not None:
         try:
             pb.parse_profile_mode(request.profile)

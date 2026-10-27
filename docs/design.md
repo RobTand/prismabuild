@@ -1956,6 +1956,14 @@ ordinary CAS publication.
 
 ## Sealed execution environment
 
+The opt-in hostile profile has a separate sealed selector from diagnostic
+profiling. Its current source interface, trust boundaries, native acceptance
+questions and per-lane unqualified matrix are in
+[the hostile-v1 execution contract](hostile_execution_profile_v1.md).
+The selector partitions action identity and refuses unsupported execution and
+receipts. It enables no worker or sandbox. Trusted request defaults remain
+unchanged. Source support does not establish deployed isolation.
+
 The fleet roster's optional `action_tmpdir` names one canonical absolute scratch
 directory present on every eligible worker. `pbrun` and `pbtest` capture it from
 the same runtime's roster and seal its literal value as `TMPDIR`. The current

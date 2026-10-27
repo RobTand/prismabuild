@@ -142,6 +142,7 @@ import uuid
 from . import scratch_lifetime, record_store
 from . import endings, lifecycle, tier_holdings
 from . import contracts
+from . import execution_profiles
 from . import capability_eligibility
 from . import candidate_policy
 from . import host_hold
@@ -6981,6 +6982,12 @@ class PoolQueue:
             sealed_request_present = sealed_request is not None
             sealed_params = sealed_request["params"] if sealed_request is not None else {}
             assert isinstance(sealed_params, Mapping)
+            selected_profile = (execution_profiles.from_action(sealed_request)
+                                if sealed_request is not None else None)
+            if selected_profile is not None:
+                normalized_tags = normalize_placement_tags([
+                    *normalized_tags, *selected_profile.required_tags()])
+            execution_profiles.check_row(sealed_request, tags=normalized_tags, resources=demand)
             sealed_retry_scope = (sealed_params.get("retry_policy") or {}).get("retry_scope")
             if sealed_request_present and retry_scope != sealed_retry_scope:
                 raise PoolContractError("retry_scope differs from the sealed retry policy")
@@ -7043,7 +7050,8 @@ class PoolQueue:
                 local_dependencies=bool(dependencies),
                 requires_files=declared_requirements is not None,
                 container_images=bool(image_refs), canary=canary_ref is not None,
-                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime)))
+                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime),
+                hostile_execution=selected_profile is not None))
             for contract in contracts.CONTRACTS:
                 if contract.tag in normalized_tags and contract.tag not in declared_contracts:
                     unknown = ("; sealed request unavailable, declaration unknown"
@@ -17923,6 +17931,14 @@ class PoolQueue:
         # actual sealed request, and opted-in work requires a ledger.
         try:
             request = _sealed_action_request(item["cas_root"], key)
+            selected_profile = execution_profiles.check_row(
+                request, tags=item.get("tags") or [], resources=sealed_demand)
+            if selected_profile is not None:
+                try:
+                    execution_profiles.require_backend(request)
+                except execution_profiles.ProfileUnavailable as exc:
+                    self.record_denial(item, "execution_profile_unavailable", {"error": str(exc)})
+                    return scan
             scratch_intent = self._sealed_scratch_io(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if (item.get(local_scratch.IO_ENV) != scratch_intent

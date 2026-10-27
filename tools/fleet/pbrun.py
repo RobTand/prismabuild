@@ -42,6 +42,11 @@ def argument_parser() -> argparse.ArgumentParser:
                     "result does not depend on which."
     )
     ap.add_argument("--client-events-fd", type=int, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--execution-profile", choices=("hostile-v1",), default=None,
+                    help="opt-in hostile execution contract; requires an exact policy digest "
+                         "and a supported, natively qualified worker; never falls back to trusted")
+    ap.add_argument("--execution-policy-sha256", default=None,
+                    help="exact lane policy digest for --execution-profile, sealed into action identity")
     verbs = ap.add_mutually_exclusive_group()
     verbs.add_argument("--seal-only", action="store_true",
                        help="seal into the CAS, print prismabuild.sealed.v1, and publish no work")

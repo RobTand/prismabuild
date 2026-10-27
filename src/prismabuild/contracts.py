@@ -25,6 +25,7 @@ SCRATCH_IO_TAG = "local-scratch-io-v1"
 SCRATCH_LIFETIME_TAG = "scratch-lifetime-v1"
 GANG_TAG = "gang-v1"
 PUBLICATION_CANARY_TAG = "publication-canary-slot-v1"
+HOSTILE_EXECUTION_TAG = "hostile-execution-v1"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class Publication:
     scratch_lifetime: bool = False
     gang: bool = False
     canary: bool = False
+    hostile_execution: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,9 @@ CONTRACTS = (
              remedy="Update the published runtime, then provide the exact declared dependency bytes on an eligible worker."),
     Contract(SCRATCH_IO_TAG, lambda p: p.scratch_io),
     Contract(SCRATCH_LIFETIME_TAG, lambda p: p.scratch_lifetime),
+    Contract(HOSTILE_EXECUTION_TAG, lambda p: p.hostile_execution,
+             offered=lambda _worker: False,
+             remedy="Hostile execution backend, authenticated collection and native lane qualification are pending."),
     Contract(GANG_TAG, lambda p: p.gang,
              offered=lambda w: w.gang_admission,
              remedy="Enable gang admission on an eligible worker."),

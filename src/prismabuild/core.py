@@ -2371,6 +2371,9 @@ def _normalize_action_body(value: object) -> dict[str, object]:
         _canonical_bytes(normalized_params),
         where="action.params",
     )
+    if "execution_profile" in normalized_params:
+        from . import execution_profiles
+        execution_profiles.parse(normalized_params[execution_profiles.PARAM])
     if PROGRESS_PARAM in normalized_params:
         # Refused here rather than at the worker: a policy the worker cannot
         # read would be sealed into an action key that then answers every later
@@ -2956,6 +2959,9 @@ def validate_worker_attestation(
     """Validate a persisted preflight against the exact sealed action."""
 
     normalized_action = validate_action(action)
+    if "execution_profile" in normalized_action["params"]:
+        from . import execution_profiles
+        execution_profiles.require_backend(normalized_action)
     raw = _exact_mapping(value, keys=_PRODUCER_KEYS, where="worker attestation")
     if raw["schema"] != WORKER_ATTESTATION_SCHEMA_V2:
         _fail(
@@ -3190,6 +3196,9 @@ def preflight_action(
     """Derive and verify the execution facts required before launching argv."""
 
     normalized = validate_action(action)
+    if "execution_profile" in normalized["params"]:
+        from . import execution_profiles
+        execution_profiles.require_backend(normalized)
     root = Path(checkout_root)
     if not root.is_absolute():
         _fail("checkout_root must be absolute")
