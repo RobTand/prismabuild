@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -57,7 +58,7 @@ class Ticket:
     labels: tuple[str, ...] = ()
 
 
-def has_evidence(body: str) -> bool:
+def evidence_lines(body: str) -> Iterator[str]:
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
     active = False
     for line in body.splitlines():
@@ -70,9 +71,14 @@ def has_evidence(body: str) -> bool:
         if active:
             if line.lstrip().startswith(("```", "~~~")):
                 continue
-            content = re.sub(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?", "", line).strip().strip("`*_ -\t")
-            if content and not PLACEHOLDER.fullmatch(content):
-                return True
+            yield line
+
+
+def has_evidence(body: str) -> bool:
+    for line in evidence_lines(body):
+        content = re.sub(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?", "", line).strip().strip("`*_ -\t")
+        if content and not PLACEHOLDER.fullmatch(content):
+            return True
     return False
 
 
