@@ -20963,6 +20963,15 @@ Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical
 custody, drain, performance or RootGO credit.
 
+Controller record tests partition the existing native population by family so
+file-level fanout can admit independent shards. Verified generation and writer
+source closures live until pytest configuration cleanup and are shared across
+imported fixture definitions through that configuration's stash. Every replay
+still creates a fresh isolated process and private store, including its bundle
+cache and TMPDIR. Definition indexes share immutable names by exact source
+bytes; each lookup rereads its path so source mutations cannot reuse an index
+for older content. Executing source/code attestation remains per replay.
+
 Native historical byte reproduction selects an explicit qualified archival
 replay runtime from the `archival-replay` test capability. That source
 declaration is the sole executable path and SHA-256 authority. The test
@@ -21723,7 +21732,9 @@ The explicit assessment now requires a separately sealed qualification index,
 assessment and immutable plan. Its `target_commit` names the final source;
 `populations.root` and `.corpus` declare exact required whole-file lists and
 complete node-ID lists from qualified final-source collection. The required
-files are the two bootstrap root files and all eight record-compatibility files.
+files are the two bootstrap root files and every record-compatibility file in
+`installed_bootstrap.CORPUS_FILES`, including all nineteen controller files
+after the family split.
 Every native root lane and every corpus lane must cover its complete declared
 population; valid successful subset receipts refuse. The expected nodes are
 never derived from execution logs. `source_sha256` pins required tests, root
