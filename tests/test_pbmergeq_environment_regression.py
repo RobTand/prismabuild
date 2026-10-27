@@ -232,10 +232,7 @@ def test_environment_equivalence_requires_the_observed_runtime_and_test_contract
     assert environment_identity(producer, interpreter, runtime, {}, request) != before
 
 
-@pytest.mark.parametrize('case', ['matched', 'forged_outcome', 'wrong_source', 'wrong_python', 'unbound',
-    'unrelated', 'wrong_recorder', 'wrong_files', 'wrong_paths', 'wrong_options',
-    'wrong_workers', 'inherited_addopts', 'wrong_roots'])
-def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, monkeypatch, case):
+def native_environment(tmp_path, monkeypatch, case='matched'):
     import json
     import os
     import sys
@@ -334,11 +331,21 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
         row.pop('record_binding')
     monkeypatch.setattr(submission_frontend, 'store_for', lambda path: SimpleNamespace(root=tmp_path))
     runner = mq.Runner(cfg, mq.Store(cfg.state_dir))
-    observations, errors = runner.observe_environments([row], runtime, checkout=checkout, files=files)
+    return SimpleNamespace(runner=runner, rows=[row], runtime=runtime, checkout=checkout, files=files,
+                           queue=queue, cas=cas, key=key)
+
+
+@pytest.mark.parametrize('case', ['matched', 'forged_outcome', 'wrong_source', 'wrong_python', 'unbound',
+    'unrelated', 'wrong_recorder', 'wrong_files', 'wrong_paths', 'wrong_options',
+    'wrong_workers', 'inherited_addopts', 'wrong_roots'])
+def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, monkeypatch, case):
+    native = native_environment(tmp_path, monkeypatch, case)
+    observations, errors = native.runner.observe_environments(
+        native.rows, native.runtime, checkout=native.checkout, files=native.files)
     if case == 'matched':
         assert errors == []
         assert observations['tests/test_a.py']['host'] == 'fixture-host'
-        assert observations['tests/test_a.py']['action_key'] == key
+        assert observations['tests/test_a.py']['action_key'] == native.key
         assert observations['tests/test_a.py']['receipt_sha256'] is None
         assert observations['tests/test_a.py']['identity'] != 'untrusted report assertion'
     else:
