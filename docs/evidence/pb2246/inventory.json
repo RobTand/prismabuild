@@ -1,0 +1,649 @@
+[
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_dead_relay_reaps_its_owned_action",
+    "status": "rewritten",
+    "claim": "A broken relay fails closed without leaving its action behind (#514).",
+    "current_proof": "test_a_dead_relay_reaps_its_owned_action",
+    "before_assertions": [
+      "assert process.poll() is not None, 'the action was left running'"
+    ],
+    "after_assertions": [
+      "assert process.poll() is not None, 'the action was left running'"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_deadline_requires_a_recorded_finite_action_end_time",
+    "status": "rewritten",
+    "claim": "An old or malformed terminal relay record cannot bypass a deadline.",
+    "current_proof": "test_a_deadline_requires_a_recorded_finite_action_end_time",
+    "before_assertions": [],
+    "after_assertions": []
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_profiler_that_exits_first_waits_for_the_action",
+    "status": "rewritten",
+    "claim": "``nsys --duration`` stops tracing and exits while the action runs on.",
+    "current_proof": "test_a_profiler_that_exits_first_waits_for_the_action",
+    "before_assertions": [
+      "assert session.action_returncode() == 3"
+    ],
+    "after_assertions": [
+      "assert observed.wait(60)",
+      "assert session.action_returncode() == 3",
+      "assert not thread.is_alive()"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_registered_backend_wraps_the_child_and_its_output_is_ingested",
+    "status": "rewritten",
+    "claim": "a registered backend wraps the child and its output is ingested",
+    "current_proof": "test_a_registered_backend_wraps_the_child_and_its_output_is_ingested",
+    "before_assertions": [
+      "assert profile['mode'] == 'fake'",
+      "assert profile['backend'] == 'fake-profiler'",
+      "assert profile['rate_hz'] == 7",
+      "assert profile['samples'] == 3",
+      "assert blob.exists()",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert blob.stat().st_size == profile['bytes']",
+      "assert profile['blob_path'] == str(blob)",
+      "assert not (checkout / pb.PROFILE_SCRATCH_DIRNAME).exists()"
+    ],
+    "after_assertions": [
+      "assert profile['mode'] == 'fake'",
+      "assert profile['backend'] == 'fake-profiler'",
+      "assert profile['rate_hz'] == 7",
+      "assert profile['samples'] == 3",
+      "assert blob.exists()",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert blob.stat().st_size == profile['bytes']",
+      "assert profile['blob_path'] == str(blob)"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_timed_out_action_still_files_the_profile_it_reached",
+    "status": "rewritten",
+    "claim": "The timed-out case is the one a profile is most wanted for.",
+    "current_proof": "test_a_timed_out_action_still_files_the_profile_it_reached",
+    "before_assertions": [
+      "assert 'timed out' in str(error)",
+      "assert error.returncode is None, \"a timeout is the worker's verdict\"",
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is True",
+      "assert profile['action_phase'] == 'launched'",
+      "assert blob.exists()",
+      "assert str(profile['blob_sha256']) in str(error)"
+    ],
+    "after_assertions": [
+      "assert 'timed out' in str(error)",
+      "assert error.returncode is None, \"a timeout is the worker's verdict\"",
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is True",
+      "assert profile['action_phase'] == relay['phase']",
+      "assert relay['phase'] in {'launched', 'ended'}",
+      "assert blob.exists()",
+      "assert str(profile['blob_sha256']) in str(error)",
+      "assert relay['returncode'] == -signal.SIGTERM",
+      "assert relay['signal'] == signal.SIGTERM"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_a_windowed_profiler_does_not_cap_the_action_lifetime",
+    "status": "rewritten",
+    "claim": "A completed window leaves execution to its actual deadline policy (#514).",
+    "current_proof": "test_a_windowed_profiler_does_not_cap_the_action_lifetime",
+    "before_assertions": [
+      "assert session.action_returncode() == 0"
+    ],
+    "after_assertions": [
+      "assert observed.wait(60)",
+      "assert session.action_returncode() == 0",
+      "assert not thread.is_alive()"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_an_unreaped_zombie_relay_fails_closed",
+    "status": "rewritten",
+    "claim": "``kill(pid, 0)`` is insufficient: zombies have already exited (#514).",
+    "current_proof": "test_an_unreaped_zombie_relay_fails_closed",
+    "before_assertions": [
+      "assert time.monotonic() < deadline"
+    ],
+    "after_assertions": []
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_concurrent_actions_bind_independently",
+    "status": "rewritten",
+    "claim": "Two simultaneous bindings take different rates without crossing.",
+    "current_proof": "test_concurrent_actions_bind_independently",
+    "before_assertions": [
+      "assert errors == []",
+      "assert results == {'ten': 10, 'hundred': 100}",
+      "assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ",
+      "assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ"
+    ],
+    "after_assertions": [
+      "assert errors == []",
+      "assert results == {'ten': 10, 'hundred': 100}",
+      "assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ",
+      "assert not thread.is_alive()",
+      "assert registered.rate_hz == pb.PROFILE_SAMPLE_RATE_HZ"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_omitting_profile_leaves_the_key_untouched",
+    "status": "deleted",
+    "claim": "No flag, no key change: every action already in the CAS stays addressable.",
+    "current_proof": "none",
+    "before_assertions": [
+      "assert first['action_key'] == second['action_key']",
+      "assert 'profile' not in first['params']"
+    ],
+    "after_assertions": []
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_profile_fixtures_own_their_git_boundary",
+    "status": "added",
+    "claim": "An unrelated outer checkout cannot select this action's scratch parent.",
+    "current_proof": "test_profile_fixtures_own_their_git_boundary",
+    "before_assertions": [],
+    "after_assertions": [
+      "assert session.directory.parent == checkout.parent"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_the_ending_a_worker_files_carries_the_profile",
+    "status": "rewritten",
+    "claim": "Claim, run, finish -- and the reference is in the record on disk.",
+    "current_proof": "test_the_ending_a_worker_files_carries_the_profile",
+    "before_assertions": [
+      "assert outcome is not None and outcome['status'] == 'executed'",
+      "assert outcome['profile'] == _profile_record()",
+      "assert filed['detail']['profile'] == _profile_record()"
+    ],
+    "after_assertions": [
+      "assert outcome is not None and outcome['status'] == 'executed'",
+      "assert outcome['profile'] == _profile_record()",
+      "assert filed['detail']['profile'] == _profile_record()"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_the_output_lock_still_reaches_the_child_through_the_profiler",
+    "status": "rewritten",
+    "claim": "The real backend and relay must inherit the output lock into the payload.",
+    "current_proof": "test_the_output_lock_still_reaches_the_child_through_the_profiler",
+    "before_assertions": [
+      "assert len(holders) >= 2, f'expected the relay and the sealed shell: {holders}'",
+      "assert all(holders.values()), holders"
+    ],
+    "after_assertions": [
+      "assert 'inherited' in process.stdout.splitlines()",
+      "assert session.action_returncode() == 0"
+    ]
+  },
+  {
+    "file": "tests/test_sample_profile.py",
+    "test": "test_the_sampling_backend_profiles_the_pipeline_member",
+    "status": "rewritten",
+    "claim": "PB records the pipeline member with real py-spy and ingests it into CAS.",
+    "current_proof": "test_the_sampling_backend_profiles_the_pipeline_member",
+    "before_assertions": [
+      "assert profile['mode'] == 'sample'",
+      "assert profile['backend'] == 'py-spy'",
+      "assert profile['rate_hz'] == pb.PROFILE_SAMPLE_RATE_HZ",
+      "assert profile['samples'] > 0",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA"
+    ],
+    "after_assertions": [
+      "assert profile['mode'] == 'sample'",
+      "assert profile['backend'] == 'py-spy'",
+      "assert profile['rate_hz'] == pb.PROFILE_SAMPLE_RATE_HZ",
+      "assert profile['produced'] is True",
+      "assert profile['samples'] > 0",
+      "assert cas.lookup(action) == result['receipt']",
+      "assert document['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert any((document['shared']['frames'][index]['name'] == 'profile_pipeline_member' for index in sampled))"
+    ]
+  },
+  {
+    "file": "tests/test_profile_primary_checkpoint.py",
+    "test": "test_hard_stop_during_supplement_preserves_primary",
+    "status": "rewritten",
+    "claim": "hard stop during supplement preserves primary",
+    "current_proof": "test_hard_stop_during_supplement_preserves_primary",
+    "before_assertions": [
+      "assert process.returncode == -signal.SIGKILL, (stdout, stderr)",
+      "assert cas.lookup(action) is None, 'an evidence checkpoint is not success'",
+      "assert status.exists(), 'saved primary profile has no checkpoint'",
+      "assert profile['produced'] is True and profile['partial'] is True",
+      "assert 'kernel_summary_sha256' not in profile",
+      "assert len(blob) == profile['bytes']",
+      "assert hashlib.sha256(blob).hexdigest() == profile['blob_sha256']",
+      "assert json.loads(blob)['profiles'][0]['name'] == 'fake'",
+      "assert time.monotonic() < deadline, 'optional supplement never started'"
+    ],
+    "after_assertions": [
+      "assert process.returncode == -signal.SIGKILL, (stdout, stderr)",
+      "assert cas.lookup(action) is None, 'an evidence checkpoint is not success'",
+      "assert status.exists(), 'saved primary profile has no checkpoint'",
+      "assert profile['produced'] is True and profile['partial'] is True",
+      "assert 'kernel_summary_sha256' not in profile",
+      "assert len(blob) == profile['bytes']",
+      "assert hashlib.sha256(blob).hexdigest() == profile['blob_sha256']",
+      "assert json.loads(blob)['profiles'][0]['name'] == 'fake'"
+    ]
+  },
+  {
+    "file": "tests/test_profile_primary_checkpoint.py",
+    "test": "test_successful_profile_survives_unparseable_stdout_as_complete",
+    "status": "rewritten",
+    "claim": "successful profile survives unparseable stdout as complete",
+    "current_proof": "test_successful_profile_survives_unparseable_stdout_as_complete",
+    "before_assertions": [
+      "assert pb.PrismaBuildCAS(tmp_path / 'cas').lookup(action) == result['receipt']",
+      "assert pool.profile_from_launcher_stdout(stdout) is None",
+      "assert ending['profile'] == result['profile'], 'success adopted the in-flight checkpoint'",
+      "assert 'partial' not in ending['profile']",
+      "assert Path(ending['profile']['kernel_summary_blob_path']).read_text() == 'name,time\\nmm,1\\n'",
+      "assert not status.exists()"
+    ],
+    "after_assertions": [
+      "assert pb.PrismaBuildCAS(tmp_path / 'cas').lookup(action) == result['receipt']",
+      "assert pool.profile_from_launcher_stdout(stdout) is None",
+      "assert ending['profile'] == result['profile'], 'success adopted the in-flight checkpoint'",
+      "assert 'partial' not in ending['profile']",
+      "assert Path(ending['profile']['kernel_summary_blob_path']).read_text() == 'name,time\\nmm,1\\n'",
+      "assert not status.exists()"
+    ]
+  },
+  {
+    "file": "tests/test_sample_docker_coverage.py",
+    "test": "test_a_fifo_marker_neither_blocks_nor_certifies",
+    "status": "rewritten",
+    "claim": "``read_text()`` on a FIFO blocks; the bounded reader must not.",
+    "current_proof": "test_a_fifo_marker_neither_blocks_nor_certifies",
+    "before_assertions": [
+      "assert stat.S_ISFIFO(_marker_path(session).lstat().st_mode)",
+      "assert session.container_route() == 'unrecorded'"
+    ],
+    "after_assertions": [
+      "assert session.container_route() == 'unrecorded'"
+    ]
+  },
+  {
+    "file": "tests/test_sample_docker_coverage.py",
+    "test": "test_a_killed_run_keeps_the_coverage_disclaimer",
+    "status": "rewritten",
+    "claim": "The partial checkpoint shares ``ingest``, so it cannot claim coverage.",
+    "current_proof": "test_a_killed_run_keeps_the_coverage_disclaimer",
+    "before_assertions": [
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is False",
+      "assert profile['workload_coverage'] == 'unsupported'",
+      "assert profile['container_route'] == 'docker run'",
+      "assert \"does not cover the action's workload\" in str(raised.value)"
+    ],
+    "after_assertions": [
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is False",
+      "assert profile['workload_coverage'] == 'unsupported'",
+      "assert profile['container_route'] == 'docker run'",
+      "assert \"does not cover the action's workload\" in str(raised.value)"
+    ]
+  },
+  {
+    "file": "tests/test_sample_docker_coverage.py",
+    "test": "test_a_swallowed_refusal_publishes_no_receipt",
+    "status": "rewritten",
+    "claim": "The regression: before the fix this action published ``produced: true``.",
+    "current_proof": "test_a_swallowed_refusal_publishes_no_receipt",
+    "before_assertions": [
+      "assert error.returncode is None, 'a zero-exit action is a worker verdict'",
+      "assert profile['produced'] is False",
+      "assert profile['workload_coverage'] == 'unsupported'",
+      "assert profile['container_route'] == 'docker run'",
+      "assert 'Docker container route (docker run)' in str(profile['reason'])",
+      "assert 'No receipt was published' in str(error)",
+      "assert profile['samples'] == 3",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert cas.lookup(action) is None",
+      "assert not (tmp_path / 'cas' / 'actions').exists()",
+      "assert digest is not None",
+      "assert (tmp_path / 'cas' / 'blobs' / digest[:2] / digest).exists()",
+      "assert not (tmp_path / 'called.json').exists()",
+      "assert not (tmp_path / 'inspected.json').exists()",
+      "assert sidecar['profile']['produced'] is False",
+      "assert sidecar['profile']['workload_coverage'] == 'unsupported'",
+      "assert not (checkout / pb.PROFILE_SCRATCH_DIRNAME).exists()"
+    ],
+    "after_assertions": [
+      "assert error.returncode is None, 'a zero-exit action is a worker verdict'",
+      "assert profile['produced'] is False",
+      "assert profile['workload_coverage'] == 'unsupported'",
+      "assert profile['container_route'] == 'docker run'",
+      "assert 'Docker container route (docker run)' in str(profile['reason'])",
+      "assert 'No receipt was published' in str(error)",
+      "assert profile['samples'] == 3",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert cas.lookup(action) is None",
+      "assert not (tmp_path / 'cas' / 'actions').exists()",
+      "assert digest is not None",
+      "assert (tmp_path / 'cas' / 'blobs' / digest[:2] / digest).exists()",
+      "assert not (tmp_path / 'called.json').exists()",
+      "assert not (tmp_path / 'inspected.json').exists()",
+      "assert sidecar['profile']['produced'] is False",
+      "assert sidecar['profile']['workload_coverage'] == 'unsupported'"
+    ]
+  },
+  {
+    "file": "tests/test_sample_docker_coverage.py",
+    "test": "test_the_native_sampler_records_workload_frames",
+    "status": "rewritten",
+    "claim": "A supported native route publishes a real workload sample and receipt.",
+    "current_proof": "test_the_native_sampler_records_workload_frames",
+    "before_assertions": [
+      "assert profile['mode'] == 'sample'",
+      "assert profile['produced'] is True",
+      "assert 'workload_coverage' not in profile",
+      "assert profile['samples'] > 0",
+      "assert matching, frames"
+    ],
+    "after_assertions": [
+      "assert profile['mode'] == 'sample'",
+      "assert profile['produced'] is True",
+      "assert 'workload_coverage' not in profile",
+      "assert profile['samples'] > 0",
+      "assert cas.lookup(action) == result['receipt']",
+      "assert any((document['shared']['frames'][index]['name'] == 'prismabuild_native_workload' for index in sampled))"
+    ]
+  },
+  {
+    "file": "tests/test_sample_docker_coverage.py",
+    "test": "test_the_shim_does_not_block_on_a_fifo_marker",
+    "status": "rewritten",
+    "claim": "A FIFO at the marker path must not stall the refusal.",
+    "current_proof": "test_the_shim_does_not_block_on_a_fifo_marker",
+    "before_assertions": [
+      "assert result.returncode == 125, result.stderr",
+      "assert not stat.S_ISFIFO(_marker_path(session).lstat().st_mode)",
+      "assert json.loads(_marker_path(session).read_text(encoding='utf-8')) == {'schema': ROUTE_SCHEMA, 'state': 'route', 'route': 'docker run'}",
+      "assert not list(session.directory.glob('*.tmp'))"
+    ],
+    "after_assertions": [
+      "assert result.returncode == 125, result.stderr",
+      "assert not stat.S_ISFIFO(_marker_path(session).lstat().st_mode)",
+      "assert json.loads(_marker_path(session).read_text(encoding='utf-8')) == {'schema': ROUTE_SCHEMA, 'state': 'route', 'route': 'docker run'}",
+      "assert not list(session.directory.glob('*.tmp'))"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_a_contained_deadline_preserves_the_partial_sample_profile",
+    "status": "rewritten",
+    "claim": "a contained deadline preserves the partial sample profile",
+    "current_proof": "test_a_contained_deadline_preserves_the_partial_sample_profile",
+    "before_assertions": [
+      "assert 'started' in events, f'the fake sampler never started, so this run did not exercise the contained deadline path: {events}'",
+      "assert outcome['status'] == 'timeout'",
+      "assert outcome['termination_reason'] == 'execution_deadline'",
+      "assert outcome['returncode'] is None, \"a timeout is the worker's verdict\"",
+      "assert scope.stops == ['timeout']",
+      "assert scope.samples, 'the pool never sampled the scope before the deadline'",
+      "assert scope.ambiguous == [], f\"the hard-stop double found more than one worker for this attempt's request path and refused to kill any: {scope.ambiguous}\"",
+      "assert isinstance(settle, dict) and settle['settled'] is True, settle",
+      "assert 0.0 <= float(settle['elapsed_s']) <= 5.0, settle",
+      "assert isinstance(profile, dict), f'the contained deadline killed the worker before it could flush the sampler; the ending carries no partial profile (sampler saw {events})'",
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is True",
+      "assert profile['action_phase'] == 'launched'",
+      "assert profile['samples'] == 1",
+      "assert document['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert 'SIGINT' in events, f'the sampler was stopped without its flush signal, so no partial sample was ever produced: {events}'",
+      "assert cas.lookup(request) is None"
+    ],
+    "after_assertions": [
+      "assert outcome['status'] == 'timeout'",
+      "assert outcome['termination_reason'] == 'execution_deadline'",
+      "assert outcome['returncode'] is None",
+      "assert scope.stops == ['timeout']",
+      "assert scope.samples",
+      "assert outcome['profile_settle']['settled'] is True",
+      "assert profile['partial'] is True",
+      "assert profile['produced'] is True",
+      "assert profile['action_phase'] == relay['phase']",
+      "assert relay['phase'] in {'launched', 'ended'}",
+      "assert profile['samples'] == 1",
+      "assert json.loads(blob.read_text())['$schema'] == pb.PROFILE_SPEEDSCOPE_SCHEMA",
+      "assert 'SIGINT' in events and 'SIGTERM' not in events",
+      "assert cas.lookup(json.loads(request_path.read_text())) is None",
+      "assert relay['returncode'] == -signal.SIGTERM",
+      "assert relay['signal'] == signal.SIGTERM"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_a_flush_that_outlives_its_bound_ends_at_the_bound",
+    "status": "rewritten",
+    "claim": "a flush that outlives its bound ends at the bound",
+    "current_proof": "test_a_flush_that_outlives_its_bound_ends_at_the_bound",
+    "before_assertions": [
+      "assert 0.1 <= elapsed < 2.0",
+      "assert calls and all((0 < value <= 0.06 for value in calls)), calls",
+      "assert len(calls) <= 5, calls",
+      "assert pool._wait_for_pidfd_exit(read_end, deadline=started + 0.1) is False"
+    ],
+    "after_assertions": [
+      "assert pool._wait_for_pidfd_exit(123, deadline=100.125) is False",
+      "assert calls == pytest.approx([0.05, 0.05, 0.025])"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_a_flush_that_outlives_its_bound_still_reaches_the_hard_stop",
+    "status": "rewritten",
+    "claim": "a flush that outlives its bound still reaches the hard stop",
+    "current_proof": "test_a_flush_that_outlives_its_bound_still_reaches_the_hard_stop",
+    "before_assertions": [
+      "assert 'started' in events, f'the deaf sampler never started: {events}'",
+      "assert 'SIGINT' in events, f'the contained deadline never asked the sampler to flush: {events}'",
+      "assert outcome['status'] == 'timeout'",
+      "assert outcome['returncode'] is None",
+      "assert scope.stops == ['timeout']",
+      "assert outcome.get('profile') is None, 'a flush that outlived its bound must not produce a profile claim'",
+      "assert isinstance(settle, dict) and settle['settled'] is False, settle",
+      "assert float(settle['elapsed_s']) <= 2.5, f'the flush opportunity outlived its shared grace: {settle}'"
+    ],
+    "after_assertions": [
+      "assert 'SIGINT' in events",
+      "assert outcome['status'] == 'timeout'",
+      "assert outcome['returncode'] is None",
+      "assert scope.stops == ['timeout']",
+      "assert outcome.get('profile') is None",
+      "assert outcome['profile_settle']['settled'] is False",
+      "assert cas.lookup(json.loads(request_path.read_text())) is None"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_an_incomplete_scope_census_never_reaches_a_signal",
+    "status": "rewritten",
+    "claim": "One observed match is not uniqueness when discovery reports errors.",
+    "current_proof": "test_an_incomplete_scope_census_never_reaches_a_signal",
+    "before_assertions": [
+      "assert pool._contained_worker_pid(cgroup, worker, directory=directory) is None",
+      "assert result is not None and result['settled'] is False",
+      "assert 'no unique exact worker' in str(result['refused'])",
+      "assert opened == []",
+      "assert signals == []"
+    ],
+    "after_assertions": [
+      "assert pool._contained_worker_pid(cgroup, worker, directory=directory) is None",
+      "assert result is not None and result['settled'] is False",
+      "assert 'no unique exact worker' in str(result['refused'])",
+      "assert opened == []",
+      "assert signals == []"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_the_flush_opportunity_is_gated_and_fails_closed",
+    "status": "rewritten",
+    "claim": "Unprofiled, expired and pidfd-less paths fall through to the hard stop.",
+    "current_proof": "test_the_flush_opportunity_is_gated_and_fails_closed",
+    "before_assertions": [
+      "assert pool._settle_contained_profile(_Scope(), ['w'], profiled=False, deadline=time.monotonic() + 1.0) is None",
+      "assert discovered == []",
+      "assert expired is not None and expired['settled'] is False",
+      "assert 'grace expired' in str(expired['refused'])",
+      "assert discovered == []",
+      "assert broke is not None and broke['settled'] is False",
+      "assert 'worker discovery failed' in str(broke['refused'])",
+      "assert refused is not None and refused['settled'] is False",
+      "assert refused['worker_pid'] == 4242",
+      "assert 'pidfd' in str(refused['refused'])",
+      "assert discovered == [1]"
+    ],
+    "after_assertions": [
+      "assert pool._settle_contained_profile(_Scope(), ['w'], profiled=False, deadline=float('inf')) is None",
+      "assert discovered == []",
+      "assert expired is not None and expired['settled'] is False",
+      "assert 'grace expired' in str(expired['refused'])",
+      "assert discovered == []",
+      "assert broke is not None and broke['settled'] is False",
+      "assert 'worker discovery failed' in str(broke['refused'])",
+      "assert refused is not None and refused['settled'] is False",
+      "assert refused['worker_pid'] == 4242",
+      "assert 'pidfd' in str(refused['refused'])",
+      "assert discovered == [1]"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_the_flush_opportunity_needs_no_request_read_after_launch",
+    "status": "rewritten",
+    "claim": "the flush opportunity needs no request read after launch",
+    "current_proof": "test_the_flush_opportunity_needs_no_request_read_after_launch",
+    "before_assertions": [
+      "assert removed == [True], 'the request was not removed after launch'",
+      "assert not request_path.exists()",
+      "assert outcome['status'] == 'timeout'",
+      "assert scope.stops == ['timeout']",
+      "assert isinstance(profile, dict) and profile['partial'] is True, 'a request that is gone after launch must not prevent the flush'",
+      "assert 'SIGINT' in marker.read_text(encoding='utf-8').splitlines()"
+    ],
+    "after_assertions": [
+      "assert not request_path.exists()",
+      "assert outcome['status'] == 'timeout'",
+      "assert scope.stops == ['timeout']",
+      "assert outcome['profile']['partial'] is True",
+      "assert 'SIGINT' in events"
+    ]
+  },
+  {
+    "file": "tests/test_contained_deadline_profile.py",
+    "test": "test_the_prelaunch_read_is_the_profile_authority",
+    "status": "rewritten",
+    "claim": "One validated request read answers deadline and profile before launch.",
+    "current_proof": "test_the_prelaunch_read_is_the_profile_authority",
+    "before_assertions": [
+      "assert pool._sealed_execution_policy(item, None) == (30.0, True)",
+      "assert pool._sealed_execution_policy(item, 5.0) == (5.0, True)",
+      "assert pool._sealed_execution_policy(plain, 5.0) == (5.0, False)",
+      "assert pool._sealed_execution_policy(absent, None) == (None, False)",
+      "assert pool._sealed_execution_policy(absent, 4.0) == (4.0, False)"
+    ],
+    "after_assertions": [
+      "assert pool._sealed_execution_policy(item, None) == (30.0, True)",
+      "assert pool._sealed_execution_policy(item, 5.0) == (5.0, True)",
+      "assert pool._sealed_execution_policy(plain, 5.0) == (5.0, False)",
+      "assert pool._sealed_execution_policy(absent, None) == (None, False)",
+      "assert pool._sealed_execution_policy(absent, 4.0) == (4.0, False)"
+    ]
+  },
+  {
+    "file": "tests/test_profile_window_deadline.py",
+    "test": "test_direct_execution_deadline_still_governs_after_a_profile_window",
+    "status": "rewritten",
+    "claim": "The direct runner keeps its explicit deadline after nsys exits (#514).",
+    "current_proof": "test_direct_execution_deadline_still_governs_after_a_profile_window",
+    "before_assertions": [
+      "assert raised.value.returncode is None",
+      "assert raised.value.profile is not None",
+      "assert raised.value.profile['partial'] is True"
+    ],
+    "after_assertions": [
+      "assert raised.value.returncode is None",
+      "assert raised.value.profile is not None",
+      "assert raised.value.profile['partial'] is True"
+    ]
+  },
+  {
+    "file": "tests/test_profile_window_deadline.py",
+    "test": "test_pool_term_during_window_settle_keeps_profile_and_reaps_action",
+    "status": "rewritten",
+    "claim": "pool term during window settle keeps profile and reaps action",
+    "current_proof": "test_pool_term_during_window_settle_keeps_profile_and_reaps_action",
+    "before_assertions": [
+      "assert owned is not None, 'driver never reached the window settle'",
+      "assert process.returncode == (143 if stop_signal == signal.SIGTERM else -9), (stdout, stderr)",
+      "assert status.exists(), 'deadline discarded the completed profile instead of filing status'",
+      "assert profile['produced'] is True and profile['partial'] is True",
+      "assert hashlib.sha256(blob.read_bytes()).hexdigest() == profile['blob_sha256']",
+      "assert json.loads(blob.read_text())['profiles'][0]['name'] == 'window'",
+      "assert not list((tmp_path / 'cas' / 'actions' / 'v3').rglob('*.json'))",
+      "assert not (tmp_path / 'checkout' / '.prismabuild-profile').exists()"
+    ],
+    "after_assertions": [
+      "assert process.returncode == (143 if stop_signal == signal.SIGTERM else -9), (stdout, stderr)",
+      "assert status.exists(), 'deadline discarded the completed profile instead of filing status'",
+      "assert profile['produced'] is True and profile['partial'] is True",
+      "assert hashlib.sha256(blob.read_bytes()).hexdigest() == profile['blob_sha256']",
+      "assert json.loads(blob.read_text())['profiles'][0]['name'] == 'window'",
+      "assert not list((tmp_path / 'cas' / 'actions' / 'v3').rglob('*.json'))",
+      "assert not (tmp_path / 'checkout' / '.prismabuild-profile').exists()"
+    ]
+  },
+  {
+    "file": "tests/test_profile_window_deadline.py",
+    "test": "test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline",
+    "status": "rewritten",
+    "claim": "Ingest latency cannot turn a late windowed action into a success (#514).",
+    "current_proof": "test_profile_checkpoint_delay_uses_the_action_end_time_for_a_deadline",
+    "before_assertions": [
+      "assert outcome['status'] == 'published'",
+      "assert deadline is None",
+      "assert checkpoint_time is not None",
+      "assert raised.value.returncode is None",
+      "assert raised.value.profile is not None",
+      "assert time.monotonic() < watchdog, 'relay never recorded completion'"
+    ],
+    "after_assertions": [
+      "assert outcome['status'] == 'published'",
+      "assert deadline is None",
+      "assert checkpoint_time is not None",
+      "assert raised.value.returncode is None",
+      "assert raised.value.profile is not None"
+    ]
+  },
+  {
+    "file": "tests/test_profile_window_deadline.py",
+    "test": "test_unusable_early_report_does_not_leave_action_running",
+    "status": "rewritten",
+    "claim": "unusable early report does not leave action running",
+    "current_proof": "test_unusable_early_report_does_not_leave_action_running",
+    "before_assertions": [],
+    "after_assertions": []
+  }
+]

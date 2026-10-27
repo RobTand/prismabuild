@@ -25,11 +25,12 @@ def test_invalid_submission_deadline_is_refused(tmp_path, monkeypatch, value):
         _run_pbrun(tmp_path, monkeypatch, _checkout(tmp_path), '--detach', '--timeout-s', value)
 
 
-def _claimed(tmp_path, timeout):
+def _claimed(tmp_path, timeout, *, task_body=None):
     checkout = tmp_path / 'checkout'
     checkout.mkdir()
     script = checkout / 'task.py'
-    script.write_text('import time\ntime.sleep(1.5)\nopen("result", "w").write("ok")\n')
+    script.write_text(task_body if task_body is not None else
+                      'import time\ntime.sleep(1.5)\nopen("result", "w").write("ok")\n')
     action = pb.seal_action({
         'schema': pb.ACTION_SCHEMA_V2,
         'task': {'definition_id': 'tests/deadline', 'definition_version': 'v1',
@@ -80,7 +81,7 @@ def test_timeout_cannot_be_changed_without_resealing(tmp_path):
 
 
 def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
-    queue, item = _claimed(tmp_path, 5)
+    queue, item = _claimed(tmp_path, 60, task_body='open("result", "w").write("ok")\n')
     item['published_unix'] = 1
     item['claimed_unix'] = 1
     pool.immutable_files.write_json_atomic(
@@ -104,7 +105,7 @@ def test_prelaunch_delay_does_not_consume_execution_budget(tmp_path, monkeypatch
     import time
     from types import SimpleNamespace
 
-    queue, item = _claimed(tmp_path, 5)
+    queue, item = _claimed(tmp_path, 60, task_body='open("result", "w").write("ok")\n')
     offset = [0.0]
     monkeypatch.setattr(pool, 'time', SimpleNamespace(
         monotonic=lambda: time.monotonic() + offset[0],
@@ -113,7 +114,7 @@ def test_prelaunch_delay_does_not_consume_execution_budget(tmp_path, monkeypatch
 
     def delay():
         delayed.append(stage)
-        offset[0] += 10
+        offset[0] += 120
 
     if stage == 'withdrawal':
         original = queue.withdrawal_covers

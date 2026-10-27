@@ -15,7 +15,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-import time
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
@@ -53,10 +53,9 @@ def _run(tmp_path: Path, monkeypatch, *, fill_mb_s: int, entries: int,
          entry_bytes: int) -> tuple[dict, dict]:
     """Run one mover in-process against a pacer that always holds on wait.
 
-    Returns (receipt payload, pacer call counts).  The holding pacer is the
-    production ``DiskPacer`` subclass shape the #1010 suite uses: ``wait``
-    enters a real hold and sleeps, so the receipt's hold accounting is the
-    real one; ``sample`` only counts.
+    Returns (receipt payload, pacer call counts). The holding pacer uses
+    production hold accounting with a fake clock; each wait advances two
+    seconds and ``sample`` only counts.
     """
 
     manifest, digest, total = _window(tmp_path, entries, entry_bytes)
@@ -64,13 +63,17 @@ def _run(tmp_path: Path, monkeypatch, *, fill_mb_s: int, entries: int,
     (tmp_path / "stage").mkdir(exist_ok=True)
     (tmp_path / "cas").mkdir(exist_ok=True)
     calls = {"wait": 0, "sample": 0}
+    now = [0.0]
+    monkeypatch.setattr(stage_move, "time", SimpleNamespace(**{
+        **vars(stage_move.time), "perf_counter": lambda: now[0],
+    }))
 
     class Holding(prewarm_loop.DiskPacer):
         def wait(self, stop=None, abort=None):
             calls["wait"] += 1
             self._enter_hold()
             try:
-                time.sleep(2.0)
+                now[0] += 2.0
             finally:
                 self._leave_hold()
 
@@ -79,7 +82,7 @@ def _run(tmp_path: Path, monkeypatch, *, fill_mb_s: int, entries: int,
 
     monkeypatch.setattr(prewarm_loop, "pacer_from_args", lambda args: Holding(
         ["sdz"], max_util_pct=100.0, max_read_await_ms=1e9, max_backlog_ms=1e9,
-        readers=1, max_readers=1))
+        readers=1, max_readers=1, clock=lambda: now[0]))
     receipt_path = tmp_path / "receipt.json"
     argv = ["--pool-root", str(tmp_path / "queue"),
             "--action-key", "a" * 64,

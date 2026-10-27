@@ -1764,6 +1764,8 @@ class Session:
             "manifest",
             lambda: pool.record_store.inspection_document(self.repo_link / "RUNTIME_VERSION.json"))
         census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
+        from prismabuild import fleet_roster
+        host_presence = call.read("host_presence", lambda: fleet_roster.runtime_presence(self.repo_link))
         rollout = call.read("rollout",
                             lambda: upgrade_client.read_rollout_summary(self.repo_link))
         nodes = (census or {}).get("nodes") or []
@@ -1786,6 +1788,7 @@ class Session:
                  "loops": node.get("loops"), "age_s": node.get("age_s")}
                 for node in nodes
             ],
+            "host_presence": host_presence,
             "rollout": rollout,
         }
 

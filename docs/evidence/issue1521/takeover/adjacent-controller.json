@@ -1,0 +1,16 @@
+{
+  "lane": "adjacent",
+  "source_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "committed_reports": [
+    {
+      "id": "adjacent",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/adjacent.json",
+      "finished_at": "2026-10-27T02:04:06.148979+00:00",
+      "report_sha256": "2e295deebf306df28b15b9ec24eefb6f065797772beda560bb90f2b671b1b38d"
+    }
+  ],
+  "status": "reports_complete_pending_evidence_audit",
+  "started_at": "2026-10-27T01:54:45.256576+00:00",
+  "finished_at": "2026-10-27T02:04:06.179377+00:00"
+}

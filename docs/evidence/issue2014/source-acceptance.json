@@ -1,0 +1,1451 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "18e3324d3d6f9a113a0b9f5f65e48e918794bc23",
+  "scope": [
+    "SC-01"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2014",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2014",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "09622e30a473939b80e07c534ede429954be984d19a9676b979c0eb566926671",
+          "0aa565d41bea65674f53365266f35603f0f2c33c351d54e7953035a400d669f3",
+          "0b6dd18b7a3b2e27345bfe6601d22a8a5feaa1186770f781663c133d54e5016e",
+          "1a86530e33078ab037134a181040be4f3b42ee7ec8fd9698e9aa1ee1be313c11",
+          "1c1efcd2608ab4f080f1e5386022745b5a74763181452414e8f85cdf43189856",
+          "29827c03a15a5d505c21499b2195bd8df3add16f0e75e1aa848dec9a0b34edf7",
+          "2c55fd872a14ce0d4174ebb559cd9b3afba09069ace8aef4c2aa47775dff3bee",
+          "319c59f6395ce2465cdb1d3c5565148e13b7607576c715aec0c5901cfda78fd2",
+          "31a3d09e7a3b9d272668b3c9510bae54316b3cf21dd1179371729ef266344ae4",
+          "3b0687747344d7251a95503e807ab302707084bfc9a55a6504d2246879d04e66",
+          "3f3777e129897355acd5ccc48d2144b1a91d126bdaf6c752abf3574016c9a749",
+          "43d0ab904034845437ad80363b0b435829adcb25cee2aebe039e1b936ba1cb68",
+          "46e537609fd7c30fc8bfb1aed57c11f7d896f8f539a5fa22d5964eb04f5c6236",
+          "4af92fcfbb58c419e49bc798664fb86df00d726d9c0fcbc13112136c01a3e602",
+          "508dfa7515eb938d31036ea5e51812fc4e7c5d51349b0439da138e4d7cc34263",
+          "51652c9e84174d54bfda97a6ad06ab66ed05a98aa35f0092860ad9e213352bba",
+          "58b0a1fc82825083d7f3764d37f29e2149b241b98b9eb54d9d5a75eff577bbdd",
+          "5e12348aab6e485f28342c350e1995a7a0b2e3db02a6bab0d1d80f52b9af0853",
+          "60fb86dacb66a5241b67d5467f0f9cd86e0af05770bf8fbb17771344ddd154e5",
+          "6355b2faad580b4d4e39667b5372f18b96c5d693061eb48e86f7c71988e49e6f",
+          "675c7aa32d7cab152fbb2cf794860a4116d9d007712bf91cd67ffb33b0e23337",
+          "69d1644136813744a43f90f4cc8ece2e3c846474a82d086a7007ba89c0272f92",
+          "6a11bf54d2751d6903b82916419dd38c1afd870ad26987d33dcd7340bcd9b3ce",
+          "6b84c7a602f0d1673db261b64d88cd1192c0bf14c585de8f222223f7840a2382",
+          "6d32deedc58c2a4a7536390e968e00efed33e7d837b67504485419a486504f3a",
+          "71730f4e0145ac1922c1deee92eafbb46a9b31aa3b81b78b59180923e4319ce6",
+          "80671a4e36e55df2886593d7218c9727dd1c9766cd5cc8349e2778798b774176",
+          "86d74443e1a7e3ab5948ead8f61ad4b112d300ef3edb8f76469780fb1699afb3",
+          "883982713eec0fa0d46768d6164a80bc0bb5859999518bb7a9bdf72ea50f3e66",
+          "8a170bcef3f5242b40062690d6bcacb7b5b142ab68da714f3bce5109421517a7",
+          "905e6ed928fab84153ec4591dc98a6868a8232872db27ffc40925192d555fe01",
+          "94360b42d93841c18f9d9b6b108bab0755f70b00e30a7a5af7538c3ff58f97ef",
+          "9831a04224c1eab507f5046170087994f1e663a2c90715fc9e6a2f41db24d265",
+          "9c96dbd96794562ca82cc4c7508c88e2f8b5ee9d06986b4a7560f8f849c987da",
+          "9f144dc9571ec2d087b9fb858a9cf75234aa4ee4f39bc12fcc10abb8de105f82",
+          "a8be28cce65156cac05d50ccdecd4ede91d03f9f5cf3d42c3ba46e63a789d8d8",
+          "aa3bf69b090a10c9651d006c1beee02d330764c80938c291fccccdcf7ca01dd2",
+          "b340f58d6b943c23e2d051779c1586f5d0d4131d8e7e4f450887ad724a2d02a4",
+          "bafce04c57f0b0ee2245bbeaa31eb9cb4f2b5cc0a2edf8a69753f183816d6d3a",
+          "bcc7239b6e480e18d2e1772166c7d0f14642403a8813ae68a56b0345d6c3f9a9",
+          "cca7574b1319fbebddb94b15f4f2a2e218970b326676b43f403b195bb888adb6",
+          "cd6fd2d33c37cad7c69a4fb12609ee60b3fdbcc148ff9cbd0318837e2951985a",
+          "da46c4522bc162ad5513e48dbdc0462771926244f1b78552a6b1027514746c25",
+          "e89e11d6a22186e72e59d0561cee7501f31de45a0fc33ad9f39b7722718db584",
+          "f3b9391119a37e7de0ce9da8c0891920427d0b5445afff3ca4c8aef3cffee019",
+          "fb99b16be2774da62a688258a3262b3871a4861155a27b719af6db5a1f6ef019",
+          "fc73f8763a1f291963cf0682ce0c289c8b888589f66ac3634c1887ce2af68865",
+          "fd3d5f6129222ba3e35c8cfbbfc8b09495fc666fe5c5f56ab2ec3e302e861c08"
+        ],
+        "outcome": "component-qualified; terminal executed/0, complete logs and CAS receipts read back"
+      }
+    ],
+    "remaining_gaps": [
+      "Independent Principal review and batch merge remain pending.",
+      "SC-01 whole-requirement, deployed and workload axes are unchanged. No live guest/GPU or latency proof.",
+      "#2162 TMPDIR qualification belongs to PRI-49/PR #2191 and remains open.",
+      "Historical compatibility is retained frozen-source evidence, not a current-head historical gate.",
+      "No staged campaign, reader-lease, produced-output or power-loss durability acceptance."
+    ],
+    "note": "Prepared source merge record only. No merge, publication, activation, service restart or issue closure."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": [],
+  "source": {
+    "commit": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+    "tree": "f4d62449312cd5fecbbb5cb6a5afa2e178f265ce",
+    "integrated_parent": "1adf6a2dc2bbf2814135c5bf750d456759c71585",
+    "repair_delta": "Only fixture runtime_probe=None and memory=None, 2 insertions/2 deletions; production and assertions unchanged.",
+    "final_delta": "Evidence files and the scoped SC-01 ledger entry only after the qualified source."
+  },
+  "target_vs_status": {
+    "target": "PB owns placement. UNKNOWN CPU-peer interpreter evidence cannot authorize a protected Spark claim.",
+    "implemented": "Bounded fresh observations outside publication; advisory UNKNOWN matching and untimed deferral; only a positively idle, proven restartable guest may proceed.",
+    "validated": "355 unique tests per architecture, plus four additional full-file repeats of both touched files. Five runs per file per architecture include two xdist runs.",
+    "deployed": "not established; no runtime publication authorized in this task",
+    "workload_proof": "not run; no staged-only campaign or live GPU latency claim"
+  },
+  "repeated_files": [
+    "tests/test_unknown_cpu_interpreter_placement.py",
+    "tests/test_worker_interpreter_inventory.py"
+  ],
+  "reports": [
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/integrated-x86-1adf6a2dc2.json",
+      "sha256": "d26c5d916fb5c4e09b6ec4023a3eca5b72a9783cc837c5cc4aa1a326d25dccb4",
+      "snapshot_parent": "1adf6a2dc2bbf2814135c5bf750d456759c71585",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "fd3d5f6129222ba3e35c8cfbbfc8b09495fc666fe5c5f56ab2ec3e302e861c08",
+        "e89e11d6a22186e72e59d0561cee7501f31de45a0fc33ad9f39b7722718db584",
+        "508dfa7515eb938d31036ea5e51812fc4e7c5d51349b0439da138e4d7cc34263",
+        "fb99b16be2774da62a688258a3262b3871a4861155a27b719af6db5a1f6ef019",
+        "9c96dbd96794562ca82cc4c7508c88e2f8b5ee9d06986b4a7560f8f849c987da",
+        "1c1efcd2608ab4f080f1e5386022745b5a74763181452414e8f85cdf43189856",
+        "4af92fcfbb58c419e49bc798664fb86df00d726d9c0fcbc13112136c01a3e602",
+        "f3b9391119a37e7de0ce9da8c0891920427d0b5445afff3ca4c8aef3cffee019",
+        "6a11bf54d2751d6903b82916419dd38c1afd870ad26987d33dcd7340bcd9b3ce",
+        "cd6fd2d33c37cad7c69a4fb12609ee60b3fdbcc148ff9cbd0318837e2951985a",
+        "bafce04c57f0b0ee2245bbeaa31eb9cb4f2b5cc0a2edf8a69753f183816d6d3a",
+        "43d0ab904034845437ad80363b0b435829adcb25cee2aebe039e1b936ba1cb68",
+        "69d1644136813744a43f90f4cc8ece2e3c846474a82d086a7007ba89c0272f92",
+        "58b0a1fc82825083d7f3764d37f29e2149b241b98b9eb54d9d5a75eff577bbdd",
+        "883982713eec0fa0d46768d6164a80bc0bb5859999518bb7a9bdf72ea50f3e66"
+      ],
+      "selected_files": [
+        "tests/test_a_drained_box_finishes_its_pending_claim_1403.py",
+        "tests/test_a_draining_worker_stays_visible.py",
+        "tests/test_capability_eligibility.py",
+        "tests/test_design_doc_line_references.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_gpu_evicts_cpu_guests.py",
+        "tests/test_idle_gpu_cpu_guests.py",
+        "tests/test_idle_gpu_proof_freshness.py",
+        "tests/test_interpreter_placement.py",
+        "tests/test_pool_cpu_work_yields_gpu_host.py",
+        "tests/test_wire_inventory.py",
+        "tests/test_worker_interpreter_inventory.py",
+        "tests/test_worker_loop_bounded_offer_publication.py",
+        "tests/test_worker_loop_offers_what_is_free.py"
+      ]
+    },
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/fixture-x86-47f79a2f3d.json",
+      "sha256": "6dd4ca045552f86e33e75ab3e20e8661499077b5c12ad03acca1a3b0c4fb10b8",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "a8be28cce65156cac05d50ccdecd4ede91d03f9f5cf3d42c3ba46e63a789d8d8"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/integrated-arm-1adf6a2dc2.json",
+      "sha256": "ae1afe2536bd18021f4177e7ba7c13786ec786349e9af5a0f512cfa9980ccd13",
+      "snapshot_parent": "1adf6a2dc2bbf2814135c5bf750d456759c71585",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "6355b2faad580b4d4e39667b5372f18b96c5d693061eb48e86f7c71988e49e6f",
+        "94360b42d93841c18f9d9b6b108bab0755f70b00e30a7a5af7538c3ff58f97ef",
+        "51652c9e84174d54bfda97a6ad06ab66ed05a98aa35f0092860ad9e213352bba",
+        "46e537609fd7c30fc8bfb1aed57c11f7d896f8f539a5fa22d5964eb04f5c6236",
+        "31a3d09e7a3b9d272668b3c9510bae54316b3cf21dd1179371729ef266344ae4",
+        "6d32deedc58c2a4a7536390e968e00efed33e7d837b67504485419a486504f3a",
+        "5e12348aab6e485f28342c350e1995a7a0b2e3db02a6bab0d1d80f52b9af0853",
+        "675c7aa32d7cab152fbb2cf794860a4116d9d007712bf91cd67ffb33b0e23337",
+        "60fb86dacb66a5241b67d5467f0f9cd86e0af05770bf8fbb17771344ddd154e5",
+        "80671a4e36e55df2886593d7218c9727dd1c9766cd5cc8349e2778798b774176",
+        "aa3bf69b090a10c9651d006c1beee02d330764c80938c291fccccdcf7ca01dd2",
+        "da46c4522bc162ad5513e48dbdc0462771926244f1b78552a6b1027514746c25",
+        "8a170bcef3f5242b40062690d6bcacb7b5b142ab68da714f3bce5109421517a7",
+        "86d74443e1a7e3ab5948ead8f61ad4b112d300ef3edb8f76469780fb1699afb3",
+        "2c55fd872a14ce0d4174ebb559cd9b3afba09069ace8aef4c2aa47775dff3bee"
+      ],
+      "selected_files": [
+        "tests/test_a_drained_box_finishes_its_pending_claim_1403.py",
+        "tests/test_a_draining_worker_stays_visible.py",
+        "tests/test_capability_eligibility.py",
+        "tests/test_design_doc_line_references.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_gpu_evicts_cpu_guests.py",
+        "tests/test_idle_gpu_cpu_guests.py",
+        "tests/test_idle_gpu_proof_freshness.py",
+        "tests/test_interpreter_placement.py",
+        "tests/test_pool_cpu_work_yields_gpu_host.py",
+        "tests/test_wire_inventory.py",
+        "tests/test_worker_interpreter_inventory.py",
+        "tests/test_worker_loop_bounded_offer_publication.py",
+        "tests/test_worker_loop_offers_what_is_free.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/fixture-arm-47f79a2f3d.json",
+      "sha256": "6189bfe383b0067e142da52c11fc92605de682809a9d4eb9c659c5722018ced1",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "cca7574b1319fbebddb94b15f4f2a2e218970b326676b43f403b195bb888adb6"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py"
+      ]
+    },
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-x86-2-47f79a2f3d.json",
+      "sha256": "5ff9ae39fa1a48b487b1336b9e26d68d0d60d50c525804488105bf20b7ad897f",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 2,
+      "selected_keys": [
+        "71730f4e0145ac1922c1deee92eafbb46a9b31aa3b81b78b59180923e4319ce6",
+        "9f144dc9571ec2d087b9fb858a9cf75234aa4ee4f39bc12fcc10abb8de105f82"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-x86-3-47f79a2f3d.json",
+      "sha256": "8a704c4d28ca7da16d1f0736dce82dd09585b9bea99de3441cfb0204f78e2d1d",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 2,
+      "selected_keys": [
+        "29827c03a15a5d505c21499b2195bd8df3add16f0e75e1aa848dec9a0b34edf7",
+        "1a86530e33078ab037134a181040be4f3b42ee7ec8fd9698e9aa1ee1be313c11"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-x86-4-47f79a2f3d.json",
+      "sha256": "d3c13bd4fae7f442f81f6f5357b30ce0bbe6ab51378ede14aa3ad86ee1a3b795",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "fc73f8763a1f291963cf0682ce0c289c8b888589f66ac3634c1887ce2af68865",
+        "6b84c7a602f0d1673db261b64d88cd1192c0bf14c585de8f222223f7840a2382"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "x86",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-x86-5-47f79a2f3d.json",
+      "sha256": "512962ca4ee871ed2665d92d17d17cf23a3a320323d52a47048bf6d02b12edaa",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "3b0687747344d7251a95503e807ab302707084bfc9a55a6504d2246879d04e66",
+        "bcc7239b6e480e18d2e1772166c7d0f14642403a8813ae68a56b0345d6c3f9a9"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-arm-2-47f79a2f3d.json",
+      "sha256": "ced4f78b7721c075e2e212bc5b24f94bc4b8368f6477d7a2b1452b2cf282c43d",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 2,
+      "selected_keys": [
+        "9831a04224c1eab507f5046170087994f1e663a2c90715fc9e6a2f41db24d265",
+        "09622e30a473939b80e07c534ede429954be984d19a9676b979c0eb566926671"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-arm-3-47f79a2f3d.json",
+      "sha256": "c958d5e4545a3da608adb8d8d4fb8eb507c089dbc916445ded021acbdf2e4372",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 2,
+      "selected_keys": [
+        "905e6ed928fab84153ec4591dc98a6868a8232872db27ffc40925192d555fe01",
+        "3f3777e129897355acd5ccc48d2144b1a91d126bdaf6c752abf3574016c9a749"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-arm-4-47f79a2f3d.json",
+      "sha256": "6ce2b8960879f3b6d962816b9b9b4954de271afd254cd82d3da51aaaccde8baf",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "0aa565d41bea65674f53365266f35603f0f2c33c351d54e7953035a400d669f3",
+        "319c59f6395ce2465cdb1d3c5565148e13b7607576c715aec0c5901cfda78fd2"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    },
+    {
+      "arch": "arm",
+      "path": "/mnt/shared/paperclip-runs/PRI-30/repeat-arm-5-47f79a2f3d.json",
+      "sha256": "84ffa763db64c80e0b91a1549ef3927d80dd5ea51ba6d63bedf952a540545903",
+      "snapshot_parent": "47f79a2f3da2ef4d15aa6de9dc97234a1f99b53f",
+      "workers_per_shard": 1,
+      "selected_keys": [
+        "0b6dd18b7a3b2e27345bfe6601d22a8a5feaa1186770f781663c133d54e5016e",
+        "b340f58d6b943c23e2d051779c1586f5d0d4131d8e7e4f450887ad724a2d02a4"
+      ],
+      "selected_files": [
+        "tests/test_unknown_cpu_interpreter_placement.py",
+        "tests/test_worker_interpreter_inventory.py"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "action_key": "09622e30a473939b80e07c534ede429954be984d19a9676b979c0eb566926671",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "530650e22759db34b12c3a1f5211009027d7d877f11ec766054289e56d03b276",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/09622e30a473939b80e07c534ede429954be984d19a9676b979c0eb566926671/fbf93a0b30d521c33e923236191edb605eb9101d6e5e73526adce3c7f8f9f541/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 22249,
+          "path": "attempts/09622e30a473939b80e07c534ede429954be984d19a9676b979c0eb566926671/fbf93a0b30d521c33e923236191edb605eb9101d6e5e73526adce3c7f8f9f541/00000001.stdout.bf472a7ea5727b2d80a16fd5feccb218560f1f92ba78b4ccff97a0fd82b9abdd.log",
+          "sha256": "bf472a7ea5727b2d80a16fd5feccb218560f1f92ba78b4ccff97a0fd82b9abdd"
+        }
+      },
+      "test_summary": [
+        "25 passed, 51 warnings in 0.89s"
+      ]
+    },
+    {
+      "action_key": "0aa565d41bea65674f53365266f35603f0f2c33c351d54e7953035a400d669f3",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "cc57309e15329e78e25ffbab6cc96e909418eedf182cb2900c94eecc5da02caa",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/0aa565d41bea65674f53365266f35603f0f2c33c351d54e7953035a400d669f3/440804be0650d5dd18bf7a03df4c2cd254a5843e12296b10c40fcced29046a8c/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 26867,
+          "path": "attempts/0aa565d41bea65674f53365266f35603f0f2c33c351d54e7953035a400d669f3/440804be0650d5dd18bf7a03df4c2cd254a5843e12296b10c40fcced29046a8c/00000001.stdout.7877d4f8754a2499299b73f33c8e26f78be92f311ae57e4334d6d6eed9611755.log",
+          "sha256": "7877d4f8754a2499299b73f33c8e26f78be92f311ae57e4334d6d6eed9611755"
+        }
+      },
+      "test_summary": [
+        "33 passed in 1.18s"
+      ]
+    },
+    {
+      "action_key": "0b6dd18b7a3b2e27345bfe6601d22a8a5feaa1186770f781663c133d54e5016e",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "7fac9330b1a813499b739e3a0a2b1b78fd6b17649e4ac883bb5e730e935ed500",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/0b6dd18b7a3b2e27345bfe6601d22a8a5feaa1186770f781663c133d54e5016e/dd6496df77f75d693dba4d7a6fb05303128a0126bde4bdd8af7fd42ea0304901/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 26996,
+          "path": "attempts/0b6dd18b7a3b2e27345bfe6601d22a8a5feaa1186770f781663c133d54e5016e/dd6496df77f75d693dba4d7a6fb05303128a0126bde4bdd8af7fd42ea0304901/00000001.stdout.dd4f7e9e5da7d3657bc042595c54f7bfdad8e0ab63bc8bd3e896664cf34e2e45.log",
+          "sha256": "dd4f7e9e5da7d3657bc042595c54f7bfdad8e0ab63bc8bd3e896664cf34e2e45"
+        }
+      },
+      "test_summary": [
+        "33 passed in 1.13s"
+      ]
+    },
+    {
+      "action_key": "1a86530e33078ab037134a181040be4f3b42ee7ec8fd9698e9aa1ee1be313c11",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "0e2bc61a2166a0fd6004588119b53863135cb8bf1dc704973a8ec109478c8d52",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/1a86530e33078ab037134a181040be4f3b42ee7ec8fd9698e9aa1ee1be313c11/e01f3c8d167c0c319308352d8fd3359368fd20b25ed7a1c0e29726f8777c7eb2/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 22262,
+          "path": "attempts/1a86530e33078ab037134a181040be4f3b42ee7ec8fd9698e9aa1ee1be313c11/e01f3c8d167c0c319308352d8fd3359368fd20b25ed7a1c0e29726f8777c7eb2/00000001.stdout.8ec8bd35b9ef3eef9c0569f0fe3f4818b644a172b86944a85c41213dd20872ee.log",
+          "sha256": "8ec8bd35b9ef3eef9c0569f0fe3f4818b644a172b86944a85c41213dd20872ee"
+        }
+      },
+      "test_summary": [
+        "25 passed, 51 warnings in 2.82s"
+      ]
+    },
+    {
+      "action_key": "1c1efcd2608ab4f080f1e5386022745b5a74763181452414e8f85cdf43189856",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "d67a64411670e12ef6f32754170bad564eb82b81215e0b25eb1774590215bb91",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/1c1efcd2608ab4f080f1e5386022745b5a74763181452414e8f85cdf43189856/1087d2e321c0e6834227aadbf643b35df826dad641f57a680b88da81be26b741/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 58154,
+          "path": "attempts/1c1efcd2608ab4f080f1e5386022745b5a74763181452414e8f85cdf43189856/1087d2e321c0e6834227aadbf643b35df826dad641f57a680b88da81be26b741/00000001.stdout.ff266628dc9522fba2984e5f9b42e682c1cc9c318ea1503a4f8cd2fab463feb9.log",
+          "sha256": "ff266628dc9522fba2984e5f9b42e682c1cc9c318ea1503a4f8cd2fab463feb9"
+        }
+      },
+      "test_summary": [
+        "93 passed in 2.49s"
+      ]
+    },
+    {
+      "action_key": "29827c03a15a5d505c21499b2195bd8df3add16f0e75e1aa848dec9a0b34edf7",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "a96fff144e54a865c7f1ec85f64e10ce5192c0b28c0127085dd05dc26ca1b25e",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/29827c03a15a5d505c21499b2195bd8df3add16f0e75e1aa848dec9a0b34edf7/0ac405779168a4917af2b1785c9a10a532918f8df4706393acc59d4d5cec0d4e/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 27155,
+          "path": "attempts/29827c03a15a5d505c21499b2195bd8df3add16f0e75e1aa848dec9a0b34edf7/0ac405779168a4917af2b1785c9a10a532918f8df4706393acc59d4d5cec0d4e/00000001.stdout.ef6d7e8c4f4fc0168464d5436285407e03327a7a94c1385d90510730c6a9f5ea.log",
+          "sha256": "ef6d7e8c4f4fc0168464d5436285407e03327a7a94c1385d90510730c6a9f5ea"
+        }
+      },
+      "test_summary": [
+        "33 passed, 2 warnings in 2.71s"
+      ]
+    },
+    {
+      "action_key": "2c55fd872a14ce0d4174ebb559cd9b3afba09069ace8aef4c2aa47775dff3bee",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "cab517fad5c232188867dd1fdac6adde38db8b4a6fba0e43f727ffcd51e0e813",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/2c55fd872a14ce0d4174ebb559cd9b3afba09069ace8aef4c2aa47775dff3bee/b4ed5d5444ff4fc7863e3e7f744aac593681b5c8be52071679e52e0dd779a798/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 10241,
+          "path": "attempts/2c55fd872a14ce0d4174ebb559cd9b3afba09069ace8aef4c2aa47775dff3bee/b4ed5d5444ff4fc7863e3e7f744aac593681b5c8be52071679e52e0dd779a798/00000001.stdout.68b338811bf2ddca6582071387a479a292d5ed71ee878e46ab30a0f7c43bb8d5.log",
+          "sha256": "68b338811bf2ddca6582071387a479a292d5ed71ee878e46ab30a0f7c43bb8d5"
+        }
+      },
+      "test_summary": [
+        "9 passed in 17.29s"
+      ]
+    },
+    {
+      "action_key": "319c59f6395ce2465cdb1d3c5565148e13b7607576c715aec0c5901cfda78fd2",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "08a97877ee1f582dad6db8c614ba6fd54c17c8a53d6cb4ee24e9127d377cde7b",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/319c59f6395ce2465cdb1d3c5565148e13b7607576c715aec0c5901cfda78fd2/97bdf6d95175213dc7216353923165d80aeeba19da644a39aee444b2a235ad6b/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 21825,
+          "path": "attempts/319c59f6395ce2465cdb1d3c5565148e13b7607576c715aec0c5901cfda78fd2/97bdf6d95175213dc7216353923165d80aeeba19da644a39aee444b2a235ad6b/00000001.stdout.006b6a87a69062191750c330a55643e0b582ee1cf5ce7b3dcec959b523b6a63c.log",
+          "sha256": "006b6a87a69062191750c330a55643e0b582ee1cf5ce7b3dcec959b523b6a63c"
+        }
+      },
+      "test_summary": [
+        "25 passed in 1.21s"
+      ]
+    },
+    {
+      "action_key": "31a3d09e7a3b9d272668b3c9510bae54316b3cf21dd1179371729ef266344ae4",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "888a4a7ac24f93259849dd67bc9ab37e7905f2058513c1af1a9a72fcd78bdc57",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/31a3d09e7a3b9d272668b3c9510bae54316b3cf21dd1179371729ef266344ae4/3beedc13900d88ea67e7d72aef3763084a6ed57ea6d91c27d6356640f7f22302/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 8920,
+          "path": "attempts/31a3d09e7a3b9d272668b3c9510bae54316b3cf21dd1179371729ef266344ae4/3beedc13900d88ea67e7d72aef3763084a6ed57ea6d91c27d6356640f7f22302/00000001.stdout.bf493ac4126561d62a671eb1c958072bb698b13d381b8e6a77fdce90c8a4c27d.log",
+          "sha256": "bf493ac4126561d62a671eb1c958072bb698b13d381b8e6a77fdce90c8a4c27d"
+        }
+      },
+      "test_summary": [
+        "8 passed in 10.35s"
+      ]
+    },
+    {
+      "action_key": "3b0687747344d7251a95503e807ab302707084bfc9a55a6504d2246879d04e66",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "ffa9867dd09e43e14aa550891c565e2cd0bbf55dd50c311e03976bda2568f686",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/3b0687747344d7251a95503e807ab302707084bfc9a55a6504d2246879d04e66/0841391054d70ba707453437c48f193b41451ac520d25a7eab0c883881438e54/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 26893,
+          "path": "attempts/3b0687747344d7251a95503e807ab302707084bfc9a55a6504d2246879d04e66/0841391054d70ba707453437c48f193b41451ac520d25a7eab0c883881438e54/00000001.stdout.ef64ab28cfcf75ed132e71f7cd91372cd9ba76c42e6e2033a8a54c43766c7ee9.log",
+          "sha256": "ef64ab28cfcf75ed132e71f7cd91372cd9ba76c42e6e2033a8a54c43766c7ee9"
+        }
+      },
+      "test_summary": [
+        "33 passed in 2.06s"
+      ]
+    },
+    {
+      "action_key": "3f3777e129897355acd5ccc48d2144b1a91d126bdaf6c752abf3574016c9a749",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "6353eb058094f73cc70c378a9321c10d6f5cceea533f19a147f59ef007da6cee",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/3f3777e129897355acd5ccc48d2144b1a91d126bdaf6c752abf3574016c9a749/97a3ee4a3d7b860b1df84425da3c29d7934affb0f43bdceec3bcebffb29ad2b5/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 22355,
+          "path": "attempts/3f3777e129897355acd5ccc48d2144b1a91d126bdaf6c752abf3574016c9a749/97a3ee4a3d7b860b1df84425da3c29d7934affb0f43bdceec3bcebffb29ad2b5/00000001.stdout.57e31fc434221c528a89e3ed1d15a0c51d70c5a54fe2a3b3d5bf18698466d702.log",
+          "sha256": "57e31fc434221c528a89e3ed1d15a0c51d70c5a54fe2a3b3d5bf18698466d702"
+        }
+      },
+      "test_summary": [
+        "25 passed, 51 warnings in 0.93s"
+      ]
+    },
+    {
+      "action_key": "43d0ab904034845437ad80363b0b435829adcb25cee2aebe039e1b936ba1cb68",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "91e41cd541e54314f5100956d3a22e1e71f9fea07a8ddcbd5ca99d93fa18523a",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/43d0ab904034845437ad80363b0b435829adcb25cee2aebe039e1b936ba1cb68/02bb3cbee3cdb357bac9805069295ede0743b49d75757d43a2f7f334e8b14c43/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 8989,
+          "path": "attempts/43d0ab904034845437ad80363b0b435829adcb25cee2aebe039e1b936ba1cb68/02bb3cbee3cdb357bac9805069295ede0743b49d75757d43a2f7f334e8b14c43/00000001.stdout.494d84d0600b96198ac3e12ff45f7f14a4a4b2b86c152dd3726166fc98645b21.log",
+          "sha256": "494d84d0600b96198ac3e12ff45f7f14a4a4b2b86c152dd3726166fc98645b21"
+        }
+      },
+      "test_summary": [
+        "8 passed in 67.15s (0:01:07)"
+      ]
+    },
+    {
+      "action_key": "46e537609fd7c30fc8bfb1aed57c11f7d896f8f539a5fa22d5964eb04f5c6236",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "69b10aef3c0bee6dbe3e762195ee51d89dd85563b9ac4e0d3144e9608c75f862",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/46e537609fd7c30fc8bfb1aed57c11f7d896f8f539a5fa22d5964eb04f5c6236/9493ac18e76d549fe18c92090d1e172473339f298594947ce04e25a6eeafcf36/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 5683,
+          "path": "attempts/46e537609fd7c30fc8bfb1aed57c11f7d896f8f539a5fa22d5964eb04f5c6236/9493ac18e76d549fe18c92090d1e172473339f298594947ce04e25a6eeafcf36/00000001.stdout.b1dfa183afbdecbcf32e69fbab58dafaacae7be467e84510441f5e4ffe464bb8.log",
+          "sha256": "b1dfa183afbdecbcf32e69fbab58dafaacae7be467e84510441f5e4ffe464bb8"
+        }
+      },
+      "test_summary": [
+        "1 passed in 0.09s"
+      ]
+    },
+    {
+      "action_key": "4af92fcfbb58c419e49bc798664fb86df00d726d9c0fcbc13112136c01a3e602",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "cc495e60d5e8053308118b8afc2d22f70bcc55122b1911ab1fbfcba610cdb1f1",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/4af92fcfbb58c419e49bc798664fb86df00d726d9c0fcbc13112136c01a3e602/b11244cd1fe1192e89d57721d2de8681c51972da436fba57da9989c4496ca51f/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 18955,
+          "path": "attempts/4af92fcfbb58c419e49bc798664fb86df00d726d9c0fcbc13112136c01a3e602/b11244cd1fe1192e89d57721d2de8681c51972da436fba57da9989c4496ca51f/00000001.stdout.fb2d34b172ab474d30c56c8490582cc7f6fca5609d0ba5f1076b805b81933e80.log",
+          "sha256": "fb2d34b172ab474d30c56c8490582cc7f6fca5609d0ba5f1076b805b81933e80"
+        }
+      },
+      "test_summary": [
+        "25 passed in 4.26s"
+      ]
+    },
+    {
+      "action_key": "508dfa7515eb938d31036ea5e51812fc4e7c5d51349b0439da138e4d7cc34263",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "06676d076a0b61a302f29fc4327127445225f38dbe915c2d1a57113be1513e88",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/508dfa7515eb938d31036ea5e51812fc4e7c5d51349b0439da138e4d7cc34263/31eb26bf70ba335f950545405b07eca51c66dd50b1d66f46970cd5fd93afd970/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 43616,
+          "path": "attempts/508dfa7515eb938d31036ea5e51812fc4e7c5d51349b0439da138e4d7cc34263/31eb26bf70ba335f950545405b07eca51c66dd50b1d66f46970cd5fd93afd970/00000001.stdout.752d31254833037f2e7fea7239c8c521cf4251a79346e3d5f1712800dbdb28a1.log",
+          "sha256": "752d31254833037f2e7fea7239c8c521cf4251a79346e3d5f1712800dbdb28a1"
+        }
+      },
+      "test_summary": [
+        "62 passed in 5.65s"
+      ]
+    },
+    {
+      "action_key": "51652c9e84174d54bfda97a6ad06ab66ed05a98aa35f0092860ad9e213352bba",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "44de7467d8619fcc50822fabc7ade010dfd760761d8d99845ea9ed210e2bf240",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/51652c9e84174d54bfda97a6ad06ab66ed05a98aa35f0092860ad9e213352bba/62957a44c7a39400f17619bd32cf389e9fe10ed16bb227b0264de0e8d64b3eca/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 43710,
+          "path": "attempts/51652c9e84174d54bfda97a6ad06ab66ed05a98aa35f0092860ad9e213352bba/62957a44c7a39400f17619bd32cf389e9fe10ed16bb227b0264de0e8d64b3eca/00000001.stdout.2e3622c85f01dcab33abd0fdcf1b56457065125eefb066adeb70f48c896c5326.log",
+          "sha256": "2e3622c85f01dcab33abd0fdcf1b56457065125eefb066adeb70f48c896c5326"
+        }
+      },
+      "test_summary": [
+        "62 passed in 2.60s"
+      ]
+    },
+    {
+      "action_key": "58b0a1fc82825083d7f3764d37f29e2149b241b98b9eb54d9d5a75eff577bbdd",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "98e6d7f0268ee604ff1c531ba9ea8141c7811e8880732c38b4f27175d6155d59",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/58b0a1fc82825083d7f3764d37f29e2149b241b98b9eb54d9d5a75eff577bbdd/8e425db94b76ebfaf78942d0f73bd773cc6c10a8f8650e6740b9268c3dbe5644/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 9722,
+          "path": "attempts/58b0a1fc82825083d7f3764d37f29e2149b241b98b9eb54d9d5a75eff577bbdd/8e425db94b76ebfaf78942d0f73bd773cc6c10a8f8650e6740b9268c3dbe5644/00000001.stdout.98f0ca265eeceb458720bcd8fa16b34119195e8e7c2b2e735997e760b8b9918a.log",
+          "sha256": "98f0ca265eeceb458720bcd8fa16b34119195e8e7c2b2e735997e760b8b9918a"
+        }
+      },
+      "test_summary": [
+        "8 passed in 1.68s"
+      ]
+    },
+    {
+      "action_key": "5e12348aab6e485f28342c350e1995a7a0b2e3db02a6bab0d1d80f52b9af0853",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "c9a6bf25d1889fa8e33328f780b860ec0d291f467c0734032f540530d689a3cc",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/5e12348aab6e485f28342c350e1995a7a0b2e3db02a6bab0d1d80f52b9af0853/d7a8bf293c7aef219227916c946c288261466f0da32a48b6ea8725086b645f16/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 19048,
+          "path": "attempts/5e12348aab6e485f28342c350e1995a7a0b2e3db02a6bab0d1d80f52b9af0853/d7a8bf293c7aef219227916c946c288261466f0da32a48b6ea8725086b645f16/00000001.stdout.b5ebe3c3b1346c6d7828246da96b12162834d8703e8e724ac19d38d584265634.log",
+          "sha256": "b5ebe3c3b1346c6d7828246da96b12162834d8703e8e724ac19d38d584265634"
+        }
+      },
+      "test_summary": [
+        "25 passed in 6.46s"
+      ]
+    },
+    {
+      "action_key": "60fb86dacb66a5241b67d5467f0f9cd86e0af05770bf8fbb17771344ddd154e5",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "672f903cbfcca41dc6a93fbb2444855323a055ec2de3e7b5a4bf4b3806a3921c",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/60fb86dacb66a5241b67d5467f0f9cd86e0af05770bf8fbb17771344ddd154e5/70b8eb56f419ac457a0bde7fc7623f155f472c02f975d743f255feedbdb1b20c/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 6306,
+          "path": "attempts/60fb86dacb66a5241b67d5467f0f9cd86e0af05770bf8fbb17771344ddd154e5/70b8eb56f419ac457a0bde7fc7623f155f472c02f975d743f255feedbdb1b20c/00000001.stdout.8bfbd99ef0aace40d7806e689123042ea40405abc73ec982dd1ae9fcd096bd89.log",
+          "sha256": "8bfbd99ef0aace40d7806e689123042ea40405abc73ec982dd1ae9fcd096bd89"
+        }
+      },
+      "test_summary": [
+        "2 passed in 0.23s"
+      ]
+    },
+    {
+      "action_key": "6355b2faad580b4d4e39667b5372f18b96c5d693061eb48e86f7c71988e49e6f",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "518e7e7bbf20ac776ea7734f434d3a5d93aab49ce4724d0e54bf93c3ee771fdd",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/6355b2faad580b4d4e39667b5372f18b96c5d693061eb48e86f7c71988e49e6f/aae6abaaea763a162576f62a48e5457efc7ee79b2e1305cc29da25858ade4347/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 7110,
+          "path": "attempts/6355b2faad580b4d4e39667b5372f18b96c5d693061eb48e86f7c71988e49e6f/aae6abaaea763a162576f62a48e5457efc7ee79b2e1305cc29da25858ade4347/00000001.stdout.b8bcc34916aa0d12ab0d15d5d514263aefa1bc1b30ac2980afdc69cb9093fb06.log",
+          "sha256": "b8bcc34916aa0d12ab0d15d5d514263aefa1bc1b30ac2980afdc69cb9093fb06"
+        }
+      },
+      "test_summary": [
+        "3 passed in 0.46s"
+      ]
+    },
+    {
+      "action_key": "675c7aa32d7cab152fbb2cf794860a4116d9d007712bf91cd67ffb33b0e23337",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "74bfde8846af9bd4b26ed2b4d13933038d51ce259321dc0d765030fc0b0a2b10",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/675c7aa32d7cab152fbb2cf794860a4116d9d007712bf91cd67ffb33b0e23337/ea6e0bc670b09e1d46a8ac28166d181c5a0c4c4e51b703b54862ad2812f65b70/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 15703,
+          "path": "attempts/675c7aa32d7cab152fbb2cf794860a4116d9d007712bf91cd67ffb33b0e23337/ea6e0bc670b09e1d46a8ac28166d181c5a0c4c4e51b703b54862ad2812f65b70/00000001.stdout.b8ceb5af5b08c7a6ac078af6b187d7f73592c0c0a987480ec51a7055539d9ee7.log",
+          "sha256": "b8ceb5af5b08c7a6ac078af6b187d7f73592c0c0a987480ec51a7055539d9ee7"
+        }
+      },
+      "test_summary": [
+        "20 passed in 1.56s"
+      ]
+    },
+    {
+      "action_key": "69d1644136813744a43f90f4cc8ece2e3c846474a82d086a7007ba89c0272f92",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "d52b2151fe41fe573ef89ff8db24693402f6fb3a569939a17c75935a73d5a816",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/69d1644136813744a43f90f4cc8ece2e3c846474a82d086a7007ba89c0272f92/0ee04eea58e708dcecaf86c8d66bbd62a1d2176856173134962b63b45fcf3d50/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 21150,
+          "path": "attempts/69d1644136813744a43f90f4cc8ece2e3c846474a82d086a7007ba89c0272f92/0ee04eea58e708dcecaf86c8d66bbd62a1d2176856173134962b63b45fcf3d50/00000001.stdout.ee4a7a39146f62773ec316b26ed8fe89e0f837cabbb8d466d49a3f64ede72aff.log",
+          "sha256": "ee4a7a39146f62773ec316b26ed8fe89e0f837cabbb8d466d49a3f64ede72aff"
+        }
+      },
+      "test_summary": [
+        "25 passed in 3.55s"
+      ]
+    },
+    {
+      "action_key": "6a11bf54d2751d6903b82916419dd38c1afd870ad26987d33dcd7340bcd9b3ce",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "65d94f4b3f202620ce13e5f878ea618c50d3a2cfa878e2452a16956ff38e4b36",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/6a11bf54d2751d6903b82916419dd38c1afd870ad26987d33dcd7340bcd9b3ce/9d0cd3f6d3a5fdc65017817acb9c3f3a82d9ec7227249cf7b618f63332678282/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 6214,
+          "path": "attempts/6a11bf54d2751d6903b82916419dd38c1afd870ad26987d33dcd7340bcd9b3ce/9d0cd3f6d3a5fdc65017817acb9c3f3a82d9ec7227249cf7b618f63332678282/00000001.stdout.9d399d0f3b651d06e4a8b3d045a3dfd18ec348d9de90b46949bc15800087793b.log",
+          "sha256": "9d399d0f3b651d06e4a8b3d045a3dfd18ec348d9de90b46949bc15800087793b"
+        }
+      },
+      "test_summary": [
+        "2 passed in 0.59s"
+      ]
+    },
+    {
+      "action_key": "6b84c7a602f0d1673db261b64d88cd1192c0bf14c585de8f222223f7840a2382",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "adeab20bfacef9290fddcb075d8986c02e3482618fa4ca5dcf24ef2d25a5ae17",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/6b84c7a602f0d1673db261b64d88cd1192c0bf14c585de8f222223f7840a2382/66530a9da1fc92712388bf8a4ca552535fd8ee527a696f943b6a70dd174d893a/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 21731,
+          "path": "attempts/6b84c7a602f0d1673db261b64d88cd1192c0bf14c585de8f222223f7840a2382/66530a9da1fc92712388bf8a4ca552535fd8ee527a696f943b6a70dd174d893a/00000001.stdout.d42efafab7eacb3e188a77e8441db87dc606a62e559d23aecc39af10cb9b3b5f.log",
+          "sha256": "d42efafab7eacb3e188a77e8441db87dc606a62e559d23aecc39af10cb9b3b5f"
+        }
+      },
+      "test_summary": [
+        "25 passed in 5.37s"
+      ]
+    },
+    {
+      "action_key": "6d32deedc58c2a4a7536390e968e00efed33e7d837b67504485419a486504f3a",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "cdb662ed2376f9d83bd717f89547cc4e67836dc4cec3dc0821e8c992b9c604bd",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/6d32deedc58c2a4a7536390e968e00efed33e7d837b67504485419a486504f3a/17c22ce266ba255676795c260446b0ada626c1035fd2c4da425eae206d2313bb/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 58257,
+          "path": "attempts/6d32deedc58c2a4a7536390e968e00efed33e7d837b67504485419a486504f3a/17c22ce266ba255676795c260446b0ada626c1035fd2c4da425eae206d2313bb/00000001.stdout.7b15b87cfd3c8b82e551ae2f32b5814db34ac8507a4b4c8bae5adeaebc54c0e0.log",
+          "sha256": "7b15b87cfd3c8b82e551ae2f32b5814db34ac8507a4b4c8bae5adeaebc54c0e0"
+        }
+      },
+      "test_summary": [
+        "93 passed in 0.99s"
+      ]
+    },
+    {
+      "action_key": "71730f4e0145ac1922c1deee92eafbb46a9b31aa3b81b78b59180923e4319ce6",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "9bc559fedc6225e08069af53d4826b67ba81b6c1df3a1cc0542872c3ac6c0c3f",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/71730f4e0145ac1922c1deee92eafbb46a9b31aa3b81b78b59180923e4319ce6/05e29dcdbbacbb49078b8c9045388f3c83b34467f999afe057e3c4a85b42d150/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 27026,
+          "path": "attempts/71730f4e0145ac1922c1deee92eafbb46a9b31aa3b81b78b59180923e4319ce6/05e29dcdbbacbb49078b8c9045388f3c83b34467f999afe057e3c4a85b42d150/00000001.stdout.e1d15d07cee4c5002cacd332a3d283080d035b661c4ec7a6833494cf8dfce655.log",
+          "sha256": "e1d15d07cee4c5002cacd332a3d283080d035b661c4ec7a6833494cf8dfce655"
+        }
+      },
+      "test_summary": [
+        "33 passed, 2 warnings in 2.14s"
+      ]
+    },
+    {
+      "action_key": "80671a4e36e55df2886593d7218c9727dd1c9766cd5cc8349e2778798b774176",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "e22780581a8f4271ec8a6d205860949b836e5de552ab28d93ccc5ee259dcb61b",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/80671a4e36e55df2886593d7218c9727dd1c9766cd5cc8349e2778798b774176/1826549f8f7c3a969eb6558ffdefe1ca843dac0bd02ae7e83d4e3438d67543b2/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 20834,
+          "path": "attempts/80671a4e36e55df2886593d7218c9727dd1c9766cd5cc8349e2778798b774176/1826549f8f7c3a969eb6558ffdefe1ca843dac0bd02ae7e83d4e3438d67543b2/00000001.stdout.03e6097eaca158c6aa3361bcdb62ff168c9d3f1e49ff68aa63553ac105440eb0.log",
+          "sha256": "03e6097eaca158c6aa3361bcdb62ff168c9d3f1e49ff68aa63553ac105440eb0"
+        }
+      },
+      "test_summary": [
+        "30 passed in 0.88s"
+      ]
+    },
+    {
+      "action_key": "86d74443e1a7e3ab5948ead8f61ad4b112d300ef3edb8f76469780fb1699afb3",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "aa92b12107750c6a29f2ef8ee96c0ad90513ccda3c7e82015f3c3a4bbcae4822",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/86d74443e1a7e3ab5948ead8f61ad4b112d300ef3edb8f76469780fb1699afb3/581936accce063344bcce060d46f5842bd22e93aae0bfa505ae5473e2fc0a3b8/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 9816,
+          "path": "attempts/86d74443e1a7e3ab5948ead8f61ad4b112d300ef3edb8f76469780fb1699afb3/581936accce063344bcce060d46f5842bd22e93aae0bfa505ae5473e2fc0a3b8/00000001.stdout.6c56d8af334c14d046620a9796aaf1843010f291161da3b2861954bbbf02aa6a.log",
+          "sha256": "6c56d8af334c14d046620a9796aaf1843010f291161da3b2861954bbbf02aa6a"
+        }
+      },
+      "test_summary": [
+        "8 passed in 1.38s"
+      ]
+    },
+    {
+      "action_key": "883982713eec0fa0d46768d6164a80bc0bb5859999518bb7a9bdf72ea50f3e66",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "473a9ab01d24846306aaf9026161bb43e8cac5b7230a2e2d2bace05dbb2c7d01",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/883982713eec0fa0d46768d6164a80bc0bb5859999518bb7a9bdf72ea50f3e66/3f2390d911fa90986008726132856618eb3ba3c70018dfb98743c5f311cdfb37/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 10145,
+          "path": "attempts/883982713eec0fa0d46768d6164a80bc0bb5859999518bb7a9bdf72ea50f3e66/3f2390d911fa90986008726132856618eb3ba3c70018dfb98743c5f311cdfb37/00000001.stdout.e998b9d51156cc096447766fbe5e560d8633a2811f2e2892d1947c49f0e22725.log",
+          "sha256": "e998b9d51156cc096447766fbe5e560d8633a2811f2e2892d1947c49f0e22725"
+        }
+      },
+      "test_summary": [
+        "9 passed in 6.49s"
+      ]
+    },
+    {
+      "action_key": "8a170bcef3f5242b40062690d6bcacb7b5b142ab68da714f3bce5109421517a7",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "97c403e45b71e2fe933817563a774838374cab464628abb17acd25121c69b254",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/8a170bcef3f5242b40062690d6bcacb7b5b142ab68da714f3bce5109421517a7/572c02d225a744f18485f8565283e54931d3600e306a17aa2c64d89fc330dfef/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 21243,
+          "path": "attempts/8a170bcef3f5242b40062690d6bcacb7b5b142ab68da714f3bce5109421517a7/572c02d225a744f18485f8565283e54931d3600e306a17aa2c64d89fc330dfef/00000001.stdout.28d7f0c1f88b1e01ca1b359853886943f28df917261ff0a268d785a9b69cc289.log",
+          "sha256": "28d7f0c1f88b1e01ca1b359853886943f28df917261ff0a268d785a9b69cc289"
+        }
+      },
+      "test_summary": [
+        "25 passed in 1.43s"
+      ]
+    },
+    {
+      "action_key": "905e6ed928fab84153ec4591dc98a6868a8232872db27ffc40925192d555fe01",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "419a581c7ce9ff801516fec51703831ef84d72efde5b24445d86c1a6407f940a",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/905e6ed928fab84153ec4591dc98a6868a8232872db27ffc40925192d555fe01/5766f8abd281136f0d574227b025e6ecf719f955f755fc0162c3c6d1da1a4853/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 27251,
+          "path": "attempts/905e6ed928fab84153ec4591dc98a6868a8232872db27ffc40925192d555fe01/5766f8abd281136f0d574227b025e6ecf719f955f755fc0162c3c6d1da1a4853/00000001.stdout.d4e94581225eb8dabe68f8e095dfe0dae94187d0f650df41eadb0f008a8aea06.log",
+          "sha256": "d4e94581225eb8dabe68f8e095dfe0dae94187d0f650df41eadb0f008a8aea06"
+        }
+      },
+      "test_summary": [
+        "33 passed, 2 warnings in 1.04s"
+      ]
+    },
+    {
+      "action_key": "94360b42d93841c18f9d9b6b108bab0755f70b00e30a7a5af7538c3ff58f97ef",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "526f43bb73e717201717ea60d53987d622b078967dc0224b1cd868fb113879de",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/94360b42d93841c18f9d9b6b108bab0755f70b00e30a7a5af7538c3ff58f97ef/dfc7f7c1b9ee3376113832692a9f50e0f68367860b09d07f606c27e633d4ae69/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 10305,
+          "path": "attempts/94360b42d93841c18f9d9b6b108bab0755f70b00e30a7a5af7538c3ff58f97ef/dfc7f7c1b9ee3376113832692a9f50e0f68367860b09d07f606c27e633d4ae69/00000001.stdout.c13bac8ee63fe86cee7be2fbebdb9556c731210265fcc24f6d9c65c057852396.log",
+          "sha256": "c13bac8ee63fe86cee7be2fbebdb9556c731210265fcc24f6d9c65c057852396"
+        }
+      },
+      "test_summary": [
+        "8 passed in 0.54s"
+      ]
+    },
+    {
+      "action_key": "9831a04224c1eab507f5046170087994f1e663a2c90715fc9e6a2f41db24d265",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "934a4ab451034f32fb7e2d6e5397c1238860fccb64cf4321d9558f51522ed071",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/9831a04224c1eab507f5046170087994f1e663a2c90715fc9e6a2f41db24d265/2290414d8c5f88f0708bffca75581f3d092e43d51198cdafa73148ec191aca9d/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 27133,
+          "path": "attempts/9831a04224c1eab507f5046170087994f1e663a2c90715fc9e6a2f41db24d265/2290414d8c5f88f0708bffca75581f3d092e43d51198cdafa73148ec191aca9d/00000001.stdout.fae0eeb635f9532c183905baea6729423bd68a3b85710187173f71c86a9d7353.log",
+          "sha256": "fae0eeb635f9532c183905baea6729423bd68a3b85710187173f71c86a9d7353"
+        }
+      },
+      "test_summary": [
+        "33 passed, 2 warnings in 1.00s"
+      ]
+    },
+    {
+      "action_key": "9c96dbd96794562ca82cc4c7508c88e2f8b5ee9d06986b4a7560f8f849c987da",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "14053eead16448439cfa2977ce63f3f6809e69fd587327c2901ee977596700fa",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/9c96dbd96794562ca82cc4c7508c88e2f8b5ee9d06986b4a7560f8f849c987da/49ac6aec0e99fa488f0142e5b2b46fa9350fe4f25357916f5953864fb8c3144d/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 8818,
+          "path": "attempts/9c96dbd96794562ca82cc4c7508c88e2f8b5ee9d06986b4a7560f8f849c987da/49ac6aec0e99fa488f0142e5b2b46fa9350fe4f25357916f5953864fb8c3144d/00000001.stdout.42de098118d1f990b3fbc16090623bd2864652220e85f578ffcbbe4dc2c21b8f.log",
+          "sha256": "42de098118d1f990b3fbc16090623bd2864652220e85f578ffcbbe4dc2c21b8f"
+        }
+      },
+      "test_summary": [
+        "8 passed in 30.39s"
+      ]
+    },
+    {
+      "action_key": "9f144dc9571ec2d087b9fb858a9cf75234aa4ee4f39bc12fcc10abb8de105f82",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "0db1aa2f0c179a23d2438e5c7f0ba3a5673d6c93fb9b4f8b5888d4223d225d91",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/9f144dc9571ec2d087b9fb858a9cf75234aa4ee4f39bc12fcc10abb8de105f82/2c25ede70d207ac9601e59c488db129094a94993362cc371fc9653a2e72e8167/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 22145,
+          "path": "attempts/9f144dc9571ec2d087b9fb858a9cf75234aa4ee4f39bc12fcc10abb8de105f82/2c25ede70d207ac9601e59c488db129094a94993362cc371fc9653a2e72e8167/00000001.stdout.57026096b1c3a7db85570d25abda40577657315a8383719aa0d0b2e36b52fdeb.log",
+          "sha256": "57026096b1c3a7db85570d25abda40577657315a8383719aa0d0b2e36b52fdeb"
+        }
+      },
+      "test_summary": [
+        "25 passed, 51 warnings in 2.17s"
+      ]
+    },
+    {
+      "action_key": "a8be28cce65156cac05d50ccdecd4ede91d03f9f5cf3d42c3ba46e63a789d8d8",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "047f549a9263e6e4588a936d84dfc3d5a8ce4b631451126e94982907a41c017f",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/a8be28cce65156cac05d50ccdecd4ede91d03f9f5cf3d42c3ba46e63a789d8d8/31e7e6b53f702b60c26db883b48df31890f1e7f35a3130802309c46179bd55f2/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 26169,
+          "path": "attempts/a8be28cce65156cac05d50ccdecd4ede91d03f9f5cf3d42c3ba46e63a789d8d8/31e7e6b53f702b60c26db883b48df31890f1e7f35a3130802309c46179bd55f2/00000001.stdout.f19bac04a262166c9505d2d7fdf2b1337ff0b90ee0e86b5706efabc39cb31223.log",
+          "sha256": "f19bac04a262166c9505d2d7fdf2b1337ff0b90ee0e86b5706efabc39cb31223"
+        }
+      },
+      "test_summary": [
+        "33 passed in 2.45s"
+      ]
+    },
+    {
+      "action_key": "aa3bf69b090a10c9651d006c1beee02d330764c80938c291fccccdcf7ca01dd2",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "7a97a548abb45505f7656ddef7802e072570bf89c797403b488f2954fbc38f51",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/aa3bf69b090a10c9651d006c1beee02d330764c80938c291fccccdcf7ca01dd2/a12eff092c0417a27b88090c46f6f8b2ec919cc1d401b33d4ffaf1d7bc183cc1/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 16832,
+          "path": "attempts/aa3bf69b090a10c9651d006c1beee02d330764c80938c291fccccdcf7ca01dd2/a12eff092c0417a27b88090c46f6f8b2ec919cc1d401b33d4ffaf1d7bc183cc1/00000001.stdout.8725fd36c4cb9e6c5ca848177f8536a4448e2e69441ae5498c022d31df512c5b.log",
+          "sha256": "8725fd36c4cb9e6c5ca848177f8536a4448e2e69441ae5498c022d31df512c5b"
+        }
+      },
+      "test_summary": [
+        "20 passed in 0.98s"
+      ]
+    },
+    {
+      "action_key": "b340f58d6b943c23e2d051779c1586f5d0d4131d8e7e4f450887ad724a2d02a4",
+      "host": "sparky",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "88466419e2481818a38e2ad195331dce70df5dd9967b641ab1e737e41c638cf5",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/b340f58d6b943c23e2d051779c1586f5d0d4131d8e7e4f450887ad724a2d02a4/f8d1c6206c8dc1a75e1f6a862485c41f3af61140ff26e099846ef2dd8d730c47/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 21954,
+          "path": "attempts/b340f58d6b943c23e2d051779c1586f5d0d4131d8e7e4f450887ad724a2d02a4/f8d1c6206c8dc1a75e1f6a862485c41f3af61140ff26e099846ef2dd8d730c47/00000001.stdout.9b27ad4425bd03f9ae37d1562e58e982e7e2095aff2ba0836ff1df319773b92d.log",
+          "sha256": "9b27ad4425bd03f9ae37d1562e58e982e7e2095aff2ba0836ff1df319773b92d"
+        }
+      },
+      "test_summary": [
+        "25 passed in 1.17s"
+      ]
+    },
+    {
+      "action_key": "bafce04c57f0b0ee2245bbeaa31eb9cb4f2b5cc0a2edf8a69753f183816d6d3a",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "34ac70a16a896c609efb9ebc8c38c76897ed714b33e7cbb8521ef9ab0bfcbc16",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/bafce04c57f0b0ee2245bbeaa31eb9cb4f2b5cc0a2edf8a69753f183816d6d3a/3e41788bd6c5bde78516c5e3a3f2851976a9013852536e13d5aa8f6b1e57972e/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 16729,
+          "path": "attempts/bafce04c57f0b0ee2245bbeaa31eb9cb4f2b5cc0a2edf8a69753f183816d6d3a/3e41788bd6c5bde78516c5e3a3f2851976a9013852536e13d5aa8f6b1e57972e/00000001.stdout.a48d1024e001cf664b7b12be2589ba2fd4aa0ea68e618edd880e823e3ecc5c30.log",
+          "sha256": "a48d1024e001cf664b7b12be2589ba2fd4aa0ea68e618edd880e823e3ecc5c30"
+        }
+      },
+      "test_summary": [
+        "20 passed in 3.20s"
+      ]
+    },
+    {
+      "action_key": "bcc7239b6e480e18d2e1772166c7d0f14642403a8813ae68a56b0345d6c3f9a9",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "a046567d5848752694967f6fa7de4cb90122039330436d5fcd2c10540668fdb6",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/bcc7239b6e480e18d2e1772166c7d0f14642403a8813ae68a56b0345d6c3f9a9/c6590a4ad9890634483cb07beb8270f75790885954e62982e9fe40a47a3b6c3b/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 21859,
+          "path": "attempts/bcc7239b6e480e18d2e1772166c7d0f14642403a8813ae68a56b0345d6c3f9a9/c6590a4ad9890634483cb07beb8270f75790885954e62982e9fe40a47a3b6c3b/00000001.stdout.4d0caffaf1a3bba51e866a730a4ad0aa5b6c10a0474dfa80bd5d72cae44eb52d.log",
+          "sha256": "4d0caffaf1a3bba51e866a730a4ad0aa5b6c10a0474dfa80bd5d72cae44eb52d"
+        }
+      },
+      "test_summary": [
+        "25 passed in 3.40s"
+      ]
+    },
+    {
+      "action_key": "cca7574b1319fbebddb94b15f4f2a2e218970b326676b43f403b195bb888adb6",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "c99a27f0470ba1103406b34977f296418d8aaba3ed1a8248be09a34eb8420e08",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/cca7574b1319fbebddb94b15f4f2a2e218970b326676b43f403b195bb888adb6/832b425d652034c5df614ac7fb7423d90699f9183730cc84fc28d9959de02a88/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 26272,
+          "path": "attempts/cca7574b1319fbebddb94b15f4f2a2e218970b326676b43f403b195bb888adb6/832b425d652034c5df614ac7fb7423d90699f9183730cc84fc28d9959de02a88/00000001.stdout.49468cc4ce586b8107c31ddcbd8aca0694196d0b7aa11bd98df264a326571bd4.log",
+          "sha256": "49468cc4ce586b8107c31ddcbd8aca0694196d0b7aa11bd98df264a326571bd4"
+        }
+      },
+      "test_summary": [
+        "33 passed in 1.23s"
+      ]
+    },
+    {
+      "action_key": "cd6fd2d33c37cad7c69a4fb12609ee60b3fdbcc148ff9cbd0318837e2951985a",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "b133fa17c7ceb6a8594a8a93d7d54cde8e67c9504fbdc75d94ecc38dc7f2dc48",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/cd6fd2d33c37cad7c69a4fb12609ee60b3fdbcc148ff9cbd0318837e2951985a/69a4598d835907487531d0859be419edf11c161ae90991c8e9853f6ea1c92128/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 20740,
+          "path": "attempts/cd6fd2d33c37cad7c69a4fb12609ee60b3fdbcc148ff9cbd0318837e2951985a/69a4598d835907487531d0859be419edf11c161ae90991c8e9853f6ea1c92128/00000001.stdout.7d7045ed37a10e5cc476d25d59ae98b031dddde809372ab8f149549adf655a4b.log",
+          "sha256": "7d7045ed37a10e5cc476d25d59ae98b031dddde809372ab8f149549adf655a4b"
+        }
+      },
+      "test_summary": [
+        "30 passed in 1.87s"
+      ]
+    },
+    {
+      "action_key": "da46c4522bc162ad5513e48dbdc0462771926244f1b78552a6b1027514746c25",
+      "host": "sparklina",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "517e3ea8a0015d38351ff1a809d7f0d9ed96e90434cf3d98614365bf4164779e",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 43,
+          "path": "attempts/da46c4522bc162ad5513e48dbdc0462771926244f1b78552a6b1027514746c25/c759dd371f17b1d33798c5d7c9bcbfc6023e521bb5149c5fad1dc44cd0ba8d9b/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        },
+        "stdout": {
+          "bytes": 9082,
+          "path": "attempts/da46c4522bc162ad5513e48dbdc0462771926244f1b78552a6b1027514746c25/c759dd371f17b1d33798c5d7c9bcbfc6023e521bb5149c5fad1dc44cd0ba8d9b/00000001.stdout.7da3a2c5d4a31429c2bb8629e7c902575aa986b2070ba4bebc320c751d0c715f.log",
+          "sha256": "7da3a2c5d4a31429c2bb8629e7c902575aa986b2070ba4bebc320c751d0c715f"
+        }
+      },
+      "test_summary": [
+        "8 passed in 21.47s"
+      ]
+    },
+    {
+      "action_key": "e89e11d6a22186e72e59d0561cee7501f31de45a0fc33ad9f39b7722718db584",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "1ec54feccbe4f3d10bf91ed2778e2ddb680ba05761d97b687578ad3b0e09466f",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/e89e11d6a22186e72e59d0561cee7501f31de45a0fc33ad9f39b7722718db584/7066ea1eacecdc6e413aa04b25d7885e30dbbfb71dc4719284aeebc983972ba5/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 10212,
+          "path": "attempts/e89e11d6a22186e72e59d0561cee7501f31de45a0fc33ad9f39b7722718db584/7066ea1eacecdc6e413aa04b25d7885e30dbbfb71dc4719284aeebc983972ba5/00000001.stdout.30a239c36a6144aec9f20a35ea39c844cee64071449cd31c204e7b12dc108fe4.log",
+          "sha256": "30a239c36a6144aec9f20a35ea39c844cee64071449cd31c204e7b12dc108fe4"
+        }
+      },
+      "test_summary": [
+        "8 passed in 1.44s"
+      ]
+    },
+    {
+      "action_key": "f3b9391119a37e7de0ce9da8c0891920427d0b5445afff3ca4c8aef3cffee019",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "b1955383129cbf132e0919f290d0107ac565ee3f121fbb1895e06916cbce3b1e",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/f3b9391119a37e7de0ce9da8c0891920427d0b5445afff3ca4c8aef3cffee019/f3da3f3709e7c4bb8b5c36d6f3b79d218244548906596be2459d2931fcf4ebea/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 15600,
+          "path": "attempts/f3b9391119a37e7de0ce9da8c0891920427d0b5445afff3ca4c8aef3cffee019/f3da3f3709e7c4bb8b5c36d6f3b79d218244548906596be2459d2931fcf4ebea/00000001.stdout.e3e6eab35f89651611a67b5000eb89fc48d8b66a79d8c4ab5900aeadbc4f53b8.log",
+          "sha256": "e3e6eab35f89651611a67b5000eb89fc48d8b66a79d8c4ab5900aeadbc4f53b8"
+        }
+      },
+      "test_summary": [
+        "20 passed in 4.03s"
+      ]
+    },
+    {
+      "action_key": "fb99b16be2774da62a688258a3262b3871a4861155a27b719af6db5a1f6ef019",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "50535977a338dc86c050ec9ddbafb4674edfc836b0d498364fe63da1392a15b9",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/fb99b16be2774da62a688258a3262b3871a4861155a27b719af6db5a1f6ef019/ab868fba21f2d91537072933f577de5fe378c52ecce515b777cc18d704818350/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 5580,
+          "path": "attempts/fb99b16be2774da62a688258a3262b3871a4861155a27b719af6db5a1f6ef019/ab868fba21f2d91537072933f577de5fe378c52ecce515b777cc18d704818350/00000001.stdout.312ccba6cfbe162ca435f5c9384b358f79878e8c6dc9cb6e9a32fe94e4213c91.log",
+          "sha256": "312ccba6cfbe162ca435f5c9384b358f79878e8c6dc9cb6e9a32fe94e4213c91"
+        }
+      },
+      "test_summary": [
+        "1 passed in 0.29s"
+      ]
+    },
+    {
+      "action_key": "fc73f8763a1f291963cf0682ce0c289c8b888589f66ac3634c1887ce2af68865",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "f1e5861bab7401d610ff15e88c709cf66c64bc3c78dc17a28d759d12657deb70",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/fc73f8763a1f291963cf0682ce0c289c8b888589f66ac3634c1887ce2af68865/b073fe7d05e138a37da7e4a26a8e25da3d03b8da3d934fadb212a953130edfa5/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 26763,
+          "path": "attempts/fc73f8763a1f291963cf0682ce0c289c8b888589f66ac3634c1887ce2af68865/b073fe7d05e138a37da7e4a26a8e25da3d03b8da3d934fadb212a953130edfa5/00000001.stdout.342b59a64309d4e64ed5ecf4320c0f12d1fc6178e9564303b70a84204f3ca038.log",
+          "sha256": "342b59a64309d4e64ed5ecf4320c0f12d1fc6178e9564303b70a84204f3ca038"
+        }
+      },
+      "test_summary": [
+        "33 passed in 2.36s"
+      ]
+    },
+    {
+      "action_key": "fd3d5f6129222ba3e35c8cfbbfc8b09495fc666fe5c5f56ab2ec3e302e861c08",
+      "host": "dl380g10",
+      "status": "done",
+      "terminal_status": "executed",
+      "returncode": 0,
+      "receipt_sha256": "7fa8d97269a7351ac1202a629ce5215688a7580b16acd53c0d54d688162b6767",
+      "verified_logs": {
+        "stderr": {
+          "bytes": 46,
+          "path": "attempts/fd3d5f6129222ba3e35c8cfbbfc8b09495fc666fe5c5f56ab2ec3e302e861c08/8058f1389f36e699ea404c708c7ca5c14abc5306cd147956a01399bd1b759120/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        },
+        "stdout": {
+          "bytes": 7007,
+          "path": "attempts/fd3d5f6129222ba3e35c8cfbbfc8b09495fc666fe5c5f56ab2ec3e302e861c08/8058f1389f36e699ea404c708c7ca5c14abc5306cd147956a01399bd1b759120/00000001.stdout.a5b83280b2e4f22edb837b12db0acf4aee087431d5b7a51be4d5eacf38728dba.log",
+          "sha256": "a5b83280b2e4f22edb837b12db0acf4aee087431d5b7a51be4d5eacf38728dba"
+        }
+      },
+      "test_summary": [
+        "3 passed in 1.35s"
+      ]
+    }
+  ],
+  "preserved_non_green": {
+    "original_placement_red": "1398e2909743fd469ef35f555c606c38be5e936c8f8d280b87a6e6246ce468af",
+    "original_sibling_drain_red": "3e4da49b0732c2bbdbd63ecc78dd359d45ef1d45a3cec6f9458dbcaa43697e23",
+    "malformed_metadata_red": "cb433c41c19f49873c08b427991d7da638ece9d1a8fcfc94efdc2ff34f0df16f",
+    "post_rebase_fixture_failures": [
+      "d7e547af6fc27f65c0003a7235376e55d27dbb5f9d44e3b383ee1bb59e15a37e",
+      "27fd56738179dd73d811a31128da11d743bef2432e4041868ebb388c8beab978"
+    ],
+    "note": "All prior non-green requests and recoveries remain in the attached evidence packet. No failed request was rewritten or waived."
+  }
+}

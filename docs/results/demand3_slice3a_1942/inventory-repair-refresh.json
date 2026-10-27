@@ -1,0 +1,62 @@
+{
+  "before_source": "052bcafb0b764420f144db32b106792603427c68",
+  "current_head": "052bcafb0b764420f144db32b106792603427c68",
+  "current_dirty": [],
+  "before_metadata_git_blob": "e99009b6ebb8340a9695c60b9067b77c953e8ee1",
+  "after_metadata_git_blob": "98fbdc777bec3799c4894efc7ef17472ff0a06aa",
+  "before_count": 581,
+  "after_count": 581,
+  "reviewed": true,
+  "applied": true,
+  "changes": [
+    {
+      "change": "removed",
+      "row": {
+        "path": "src/prismabuild/queue_bell_host_reads.py",
+        "owner": "DirtyHostInputs.confirm",
+        "unresolved": "tuple(self._pending)",
+        "binding": "keys"
+      },
+      "count": 1,
+      "reason": "Slice #1942 renamed queue_bell_host_reads.DirtyHostInputs to queue_bell_input_reads.DirtyInputs; the keys binding expression and policy are unchanged.",
+      "before": {
+        "path": "src/prismabuild/queue_bell_host_reads.py",
+        "source_absent": true
+      },
+      "after": {
+        "path": "src/prismabuild/queue_bell_host_reads.py",
+        "source_absent": true
+      }
+    },
+    {
+      "change": "added",
+      "row": {
+        "path": "src/prismabuild/queue_bell_input_reads.py",
+        "owner": "DirtyInputs.confirm",
+        "unresolved": "tuple(self._pending)",
+        "binding": "keys"
+      },
+      "count": 1,
+      "reason": "Slice #1942 renamed queue_bell_host_reads.DirtyHostInputs to queue_bell_input_reads.DirtyInputs; the keys binding expression and policy are unchanged.",
+      "before": {
+        "path": "src/prismabuild/queue_bell_input_reads.py",
+        "source_git_blob": "6e76d1033f5d8038f7bcf01731eed95182ebe57e",
+        "owner": "DirtyInputs.confirm",
+        "owner_present": true,
+        "line": 57,
+        "end_line": 103,
+        "source": "def confirm(self, read, *, stop):\n        \"\"\"Retry unknown visibility without advancing the original read budget.\n\n        The timed wait is NFS visibility recovery: 50 ms doubling to one second,\n        clipped to the original deadline, cancelled by confirmation or stop.\n        Expiry keeps the ID dirty and reports degraded source availability.\n        \"\"\"\n        while True:\n            with self._lock:\n                keys = tuple(self._pending)\n            if not keys:\n                return\n            if stop.is_set():\n                raise Unavailable(\"input visibility stopped\")\n            for key in keys:\n                with self._lock:\n                    pending = self._pending[key]\n                    now = time.monotonic()\n                    if now >= pending.deadline:\n                        raise Unavailable(\"input visibility budget exhausted\")\n                    if now < pending.retry_at:\n                        continue\n                    generation, deadline = pending.generation, pending.deadline\n                    self.read_attempts += 1\n                try:\n                    confirmed = read(*key, deadline)\n                except OSError:\n                    confirmed = False\n                with self._lock:\n                    now = time.monotonic()\n                    if now >= pending.deadline:\n                        raise Unavailable(\"input visibility budget exhausted\")\n                    if confirmed is True and pending.generation == generation:\n                        self._pending.pop(key)\n                    elif confirmed is True:\n                        # A newer hint needs its own read within the same budget.\n                        pending.retry_at = now\n                    else:\n                        self.visibility_retries += 1\n                        pending.retry_at = now + pending.delay\n                        pending.delay = min(1.0, pending.delay * 2)\n            with self._lock:\n                if not self._pending:\n                    return\n                wake = min(min(item.retry_at, item.deadline) for item in self._pending.values())\n            if stop.wait(max(0.0, wake - time.monotonic())):\n                raise Unavailable(\"input visibility stopped\")"
+      },
+      "after": {
+        "path": "src/prismabuild/queue_bell_input_reads.py",
+        "source_git_blob": "6e76d1033f5d8038f7bcf01731eed95182ebe57e",
+        "owner": "DirtyInputs.confirm",
+        "owner_present": true,
+        "line": 57,
+        "end_line": 103,
+        "source": "def confirm(self, read, *, stop):\n        \"\"\"Retry unknown visibility without advancing the original read budget.\n\n        The timed wait is NFS visibility recovery: 50 ms doubling to one second,\n        clipped to the original deadline, cancelled by confirmation or stop.\n        Expiry keeps the ID dirty and reports degraded source availability.\n        \"\"\"\n        while True:\n            with self._lock:\n                keys = tuple(self._pending)\n            if not keys:\n                return\n            if stop.is_set():\n                raise Unavailable(\"input visibility stopped\")\n            for key in keys:\n                with self._lock:\n                    pending = self._pending[key]\n                    now = time.monotonic()\n                    if now >= pending.deadline:\n                        raise Unavailable(\"input visibility budget exhausted\")\n                    if now < pending.retry_at:\n                        continue\n                    generation, deadline = pending.generation, pending.deadline\n                    self.read_attempts += 1\n                try:\n                    confirmed = read(*key, deadline)\n                except OSError:\n                    confirmed = False\n                with self._lock:\n                    now = time.monotonic()\n                    if now >= pending.deadline:\n                        raise Unavailable(\"input visibility budget exhausted\")\n                    if confirmed is True and pending.generation == generation:\n                        self._pending.pop(key)\n                    elif confirmed is True:\n                        # A newer hint needs its own read within the same budget.\n                        pending.retry_at = now\n                    else:\n                        self.visibility_retries += 1\n                        pending.retry_at = now + pending.delay\n                        pending.delay = min(1.0, pending.delay * 2)\n            with self._lock:\n                if not self._pending:\n                    return\n                wake = min(min(item.retry_at, item.deadline) for item in self._pending.values())\n            if stop.wait(max(0.0, wake - time.monotonic())):\n                raise Unavailable(\"input visibility stopped\")"
+      }
+    }
+  ],
+  "scanner_git_blob": "7e3839b1cfb3d66218b8340d30dfe1ec16b167ef"
+}

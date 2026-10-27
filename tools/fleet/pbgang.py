@@ -183,7 +183,12 @@ def _pbgang_load_manifest(path: Path) -> dict:
     members = manifest.get("members") if isinstance(manifest, dict) else None
     if not isinstance(members, list) or not 2 <= len(members) <= _gang.MAX_MEMBERS:
         raise SystemExit(f"pbgang: manifest needs 2..{_gang.MAX_MEMBERS} members")
-    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s"}
+    unknown = set(manifest) - {"members", "priority", "priority_reason", "skew_s", "timeout_s", "queue_wait_timeout_s"}
+    from prismabuild import gang_wait
+    try:
+        gang_wait.timeout(manifest.get("queue_wait_timeout_s"))
+    except _gang.GangContractError as exc:
+        raise SystemExit(f"pbgang: {exc}") from exc
     if "priority_reason" in manifest and not isinstance(manifest["priority_reason"], str):
         raise SystemExit("pbgang: manifest priority_reason must be a string")
     if unknown:
@@ -313,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="checkout every member snapshots, unless the member names its own cwd")
     ap.add_argument("--queue", type=Path, default=SH / "pb-queue",
                     help="queue root where pbgang reads the published member rows and files the group record; must be the queue pbrun publishes to")
+    ap.add_argument("--queue-wait-timeout-s", type=float, default=None,
+                    help="cancel only this gang if it remains wholly unstarted this long")
     ap.add_argument("--target-evidence", type=Path, default=None, metavar="PATH",
                     help="absolute path of an evidence packet (tools/fleet/pbevidence.py "
                          "prints one on a worker of the class); each member that declares "
@@ -331,6 +338,14 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--target-evidence needs a member that declares measurement and "
                      "host_class")
     skew_s = float(manifest.get("skew_s", _gang.DEFAULT_SKEW_S))
+    from prismabuild import gang_wait
+    wait = args.queue_wait_timeout_s
+    if wait is None:
+        wait = manifest.get("queue_wait_timeout_s")
+    try:
+        wait = gang_wait.timeout(wait)
+    except _gang.GangContractError as exc:
+        ap.error(str(exc))
     group = secrets.token_hex(16)
     keys: list[str] = []
     for index, member in enumerate(manifest["members"]):
@@ -362,7 +377,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{refusal}; withdrew {len(keys)} published member(s)", file=sys.stderr)
         return 1
     try:
-        record = _gang.publish_group(queue, group, rows, skew_s=skew_s)  # type: ignore[arg-type]
+        record = _gang.publish_group(queue, group, rows, skew_s=skew_s,
+                                     queue_wait_timeout_s=wait)  # type: ignore[arg-type]
     except _gang.GangContractError as exc:
         withdraw(keys, f"pbgang: group record refused: {exc}")
         print(f"pbgang: {exc}", file=sys.stderr)
