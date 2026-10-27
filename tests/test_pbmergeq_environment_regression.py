@@ -191,3 +191,85 @@ def test_environment_equivalence_requires_the_observed_runtime_and_test_contract
     else:
         request['params']['demand']['cpu'] = 2
     assert environment_identity(producer, interpreter, runtime, {}, request) != before
+
+
+@pytest.mark.parametrize('case', ['matched', 'forged_outcome', 'wrong_source', 'wrong_python', 'unbound'])
+def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, monkeypatch, case):
+    import json
+    import os
+    import sys
+    from types import SimpleNamespace
+    from prismabuild import core, pool, submission_frontend
+    from test_core import _two_commit_checkout
+    from test_pbmergeq import config, pbtest_outcomes, shard
+    from test_verified_action_result import _standard_action
+    from pbmcp_fixture import settle_publishers
+
+    for key in ('PRISMABUILD_ACTION_NONCE', 'PRISMABUILD_ACTION_SCOPE', 'PRISMABUILD_READER_HELPER_ROOT'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'fixture-host')
+    monkeypatch.setattr(pool.cpu_admission, 'action_identity', lambda item: ('environment-fixture', False))
+    checkout, parent, commit, branch = _two_commit_checkout(tmp_path)
+    action = _standard_action(checkout, command=[sys.executable, '-c', 'raise SystemExit(7)'])
+    # pb-history-ok: Commits only the temporary checkout created by _two_commit_checkout.
+    from test_pbmergeq import git
+    git('add', '-A', cwd=checkout)
+    git('commit', '-qm', 'action closure', cwd=checkout)
+    parent = commit
+    commit = git('rev-parse', 'HEAD', cwd=checkout)
+    bundle = tmp_path / 'snapshot.bundle'
+    git('bundle', 'create', str(bundle), 'HEAD', cwd=checkout)
+    cas = core.PrismaBuildCAS(tmp_path / 'cas')
+    entry, _ = cas.ingest_input(bundle, input_id=core.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID)
+    body = {key: value for key, value in action.items() if key != 'action_key'}
+    body['inputs'] = [entry]
+    body['params'].update(interpreter=sys.executable, demand={'cpu': 1, 'mem_gb': 1},
+        checkout_snapshot={'schema': core.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
+            'commit': commit, 'parent': parent, 'refs': {}, 'subdirectory': '.', 'input': entry})
+    body['environment']['variables'][pbtest_outcomes.RECORD_BINDING_ENV] = '1'
+    action = core.seal_action(body)
+    cas.publish_action_request(action)
+    producer = core.preflight_action(action, cas_root=cas.root, checkout_root=checkout)
+    queue = pool.PoolQueue(tmp_path / 'pb-queue')
+    monkeypatch.setattr(queue, 'offers', lambda: [])
+    queue.records.ensure_layout()
+    key = action['action_key']
+    queue.publish(action_key=key, cas_root=cas.root, checkout_root=checkout,
+        worker_script=tmp_path / 'worker.py', resources={'cpu': 1, 'mem_gb': 1}, max_attempts=1)
+    assert queue.claim(tags=[], capacity={'cpu': 4, 'mem_gb': 4}) is not None
+    node = 'tests/test_a.py::broken'
+    row = shard(['tests/test_a.py'], rows=[(node, 'call', 'failed', None, None)])
+    record = pbtest_outcomes.parse(row['output'])
+    nonce = 'a' * 64
+    record['run_nonce'] = nonce
+    output = (pbtest_outcomes.preflight_record(0, None, run_nonce=nonce) + '\n1 failed in 1.0s\n'
+              + pbtest_outcomes.PREFIX + json.dumps(record) + '\n')
+    queue.finish(key, status='failed', detail={'returncode': 1, 'action_returncode': 7,
+        'stdout': output, 'stderr': '', 'producer_attestation': producer,
+        'producer_interpreter': core.identify_executable(sys.executable)})
+    settle_publishers()
+    row.update(action_key=key, record_binding=1, output=output, receipt_path=None,
+               environment={'identity': 'untrusted report assertion'})
+    cfg = dataclasses.replace(config(tmp_path), test_python=sys.executable)
+    runtime = {'python': sys.executable, 'pins': {}, 'pin_sources': {}, 'pbtest': str(cfg.pbtest),
+               'source': [parent, 'tree']}
+    if case == 'forged_outcome':
+        row['output'] = output.replace(node, 'tests/test_a.py::different')
+    elif case == 'wrong_source':
+        runtime['source'] = ['b' * 40, 'tree']
+    elif case == 'wrong_python':
+        runtime['python'] = '/different/python'
+    elif case == 'unbound':
+        row.pop('record_binding')
+    monkeypatch.setattr(submission_frontend, 'store_for', lambda path: SimpleNamespace(root=tmp_path))
+    runner = mq.Runner(cfg, mq.Store(cfg.state_dir))
+    observations, errors = runner.observe_environments([row], runtime)
+    if case == 'matched':
+        assert errors == []
+        assert observations['tests/test_a.py']['host'] == 'fixture-host'
+        assert observations['tests/test_a.py']['action_key'] == key
+        assert observations['tests/test_a.py']['receipt_sha256'] is None
+        assert observations['tests/test_a.py']['identity'] != 'untrusted report assertion'
+    else:
+        assert observations == {}
+        assert len(errors) == 1

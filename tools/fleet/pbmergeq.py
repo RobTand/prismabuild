@@ -977,15 +977,19 @@ class Runner:
             try:
                 ending, generation = action_client.bounded_outcome_observation(
                     queue, key, None, budget_s=4.0)
-                if not isinstance(ending, tuple) or generation is None:
+                if not isinstance(ending, tuple):
                     raise ValueError("no observed execution ending")
                 path, record = ending
+                if generation is not None and generation != record["published_unix"]:
+                    raise ValueError("observed ending publication differs from its selection")
+                generation = record["published_unix"]
                 verified = action_result.read_verified_ending_result(
                     queue, key, published_unix=generation, attempt=record["attempts"],
                     ending=(path, record), include_producer_attestation=True)
                 producer = verified.get("producer_attestation")
                 interpreter = verified.get("producer_interpreter")
-                if not verified["verified"] or producer is None or interpreter is None:
+                if (not verified["verified"] or producer is None or interpreter is None
+                        or verified.get("producer_attestation_error")):
                     raise ValueError(verified.get("producer_attestation_error")
                                      or "no qualified producer/interpreter evidence")
                 request = verified["producer_request"]
@@ -1010,7 +1014,8 @@ class Runner:
                         "published_unix": generation, "attempt": record["attempts"],
                         "host": producer["evidence"]["hostname"],
                         "attestation_sha256": producer["attestation_sha256"],
-                        "interpreter": interpreter}
+                        "interpreter": interpreter, "receipt_sha256": verified["receipt_sha256"],
+                        "stdout": verified["stdout"], "stderr": verified["stderr"]}
             except (OSError, core.PrismaBuildError, action_wait.OutcomeReadUnavailable,
                     ValueError, KeyError, TypeError) as exc:
                 errors.append(f"{key}: {exc}")
@@ -1387,9 +1392,15 @@ class Queue:
                 self.store.event(batch["id"], f"DRY-RUN would record flake {nodeid}")
             return
         # A node that never ran is a missing result, not a test to file.
+        file = node_file(nodeid)
         evidence = {"repo": self.cfg.repo, "node": nodeid, "base": batch["base"],
             "candidate": batch["candidate"], "tree": batch["candidate_tree"],
-            "observations": {name: batch["runs"][name] for name in ("candidate", "rerun")}}
+            "observations": {name: {
+                "environment": batch["runs"][name]["environments"][file],
+                "runtime": batch["runs"][name]["runtime"],
+                "report": batch["runs"][name]["report"], "log": batch["runs"][name]["log"],
+                "failed": nodeid in batch["runs"][name]["failed"],
+            } for name in ("candidate", "rerun")}}
         issue = (self.github.file_flake(batch["id"], nodeid, batch["candidate"], evidence)
                  if not nodeid.endswith(" (never ran)") else None)
         flakes[key] = {"batch": batch["id"], "at": now(), "issue": issue, "evidence": evidence}
