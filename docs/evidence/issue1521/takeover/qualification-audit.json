@@ -1,0 +1,2716 @@
+{
+  "head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "actions": 28,
+  "passing_executions": 480,
+  "entries": [
+    {
+      "action_key": "e36d56f9a2f539eb11f981c441f63ad3d7dea1e655b9bf91ffbadf90ba03ff7f",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "f7d7a79c6c3e286494be17a1786456a6ac76937a97b0dcd66b238a8d6a6e1b52",
+      "request_sha256": "71218d3c89857319b393e1acba74c0498ceb4a2621265fc032ad128e1b7d3920",
+      "logs": {
+        "stdout": {
+          "bytes": 11400,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e36d56f9a2f539eb11f981c441f63ad3d7dea1e655b9bf91ffbadf90ba03ff7f/5c21bea2f803f4501b952b7679fbf2fad5a013a01d04aba8fa77c2d2f8de44bf/00000001.stdout.88385f76dc68f662c595ce4d8b310ce065fb4cbf7150f4dc8b14121867ed96f7.log",
+          "sha256": "88385f76dc68f662c595ce4d8b310ce065fb4cbf7150f4dc8b14121867ed96f7"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e36d56f9a2f539eb11f981c441f63ad3d7dea1e655b9bf91ffbadf90ba03ff7f/5c21bea2f803f4501b952b7679fbf2fad5a013a01d04aba8fa77c2d2f8de44bf/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929628,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e0bb98dbe6d31ffb042cb7fc01e0fc33088eac6cf15f36ba471c38cbc4300c82"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          2
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "ada5c4698ba4d315187c5ff8c6f91ddf6164fd022514d69fdbb6252ea04afca4",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "503fedc089ea775bfd16bcb723c723adacfb10864fa1074127d3aadd18b279f8",
+      "request_sha256": "e71ced61d2f579e3ef713548c2ecb374cb000ab319630fee783ea7684af9031d",
+      "logs": {
+        "stdout": {
+          "bytes": 11487,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ada5c4698ba4d315187c5ff8c6f91ddf6164fd022514d69fdbb6252ea04afca4/9def3cae4141be8cfafa0f6d198400dcb401c57771de4e88c6a1bca39e3b56b5/00000001.stdout.9e028fe1e9ff554fdd196bc44a31f92343989110c7b9322d7ab08a31f470de3a.log",
+          "sha256": "9e028fe1e9ff554fdd196bc44a31f92343989110c7b9322d7ab08a31f470de3a"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ada5c4698ba4d315187c5ff8c6f91ddf6164fd022514d69fdbb6252ea04afca4/9def3cae4141be8cfafa0f6d198400dcb401c57771de4e88c6a1bca39e3b56b5/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e35640cffa3b391286567eb7e1a8fc15d5a06dac98ec1cd443c637648639cc31"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          13
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "96e66da2e52531ecfad453663494074b540e883bb9b1e1ab0cd6fc638c74cf43",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "aa10627319068cc5efe8e5e59059e365098a15bf24a66e0654b7801c7b88b709",
+      "request_sha256": "50c1dec00f43aae049ba57cc329f044f7d57309ead61577b2decbbd57ef9b85f",
+      "logs": {
+        "stdout": {
+          "bytes": 11568,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/96e66da2e52531ecfad453663494074b540e883bb9b1e1ab0cd6fc638c74cf43/5b9a492f3bd60b9d645e5a86d3c2064a69dedd2a2a35b35a235095c39caa54eb/00000001.stdout.ec2ad34ff8886d0b76633ef200cee420c5a3080c4542f60de8dc47371899d9b7.log",
+          "sha256": "ec2ad34ff8886d0b76633ef200cee420c5a3080c4542f60de8dc47371899d9b7"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/96e66da2e52531ecfad453663494074b540e883bb9b1e1ab0cd6fc638c74cf43/5b9a492f3bd60b9d645e5a86d3c2064a69dedd2a2a35b35a235095c39caa54eb/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "560793c2dec5dda357f0296ac777da57d6462fdddce57134cd30500395c8efe3"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          2
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "0665991755cd2f4394186abf7f665f06bebb0c30b0fa4a7fd05f7d2d2ae815e6",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "b6622e7182b1264012975ab1f8b1a6c9647c21bde10eb455729e90557a0e0ce1",
+      "request_sha256": "b98f14ca23c3f383c07e46701160ac642f1a638b16767feeadfe1e134caaafce",
+      "logs": {
+        "stdout": {
+          "bytes": 11568,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/0665991755cd2f4394186abf7f665f06bebb0c30b0fa4a7fd05f7d2d2ae815e6/b9837cc937ae454abea65f9eef4aa54a4e81902c0b31a8bbed675901bb64bf2b/00000001.stdout.d33fe12497134e3f4df3393c2ece6e79b091e31611631cbafc1d33533a7bb7c3.log",
+          "sha256": "d33fe12497134e3f4df3393c2ece6e79b091e31611631cbafc1d33533a7bb7c3"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/0665991755cd2f4394186abf7f665f06bebb0c30b0fa4a7fd05f7d2d2ae815e6/b9837cc937ae454abea65f9eef4aa54a4e81902c0b31a8bbed675901bb64bf2b/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "35f82b741ea0b330c3c642b5e27837968a81f099bf6c01f92bf87e9fc9d17b1e"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [],
+        "selected_source_sha256": {},
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "3635a1965d090c7aa3289ddaf4a3f57a5bef51e12d1689c81e80e1b3d095c68d",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "58789d84e9cb4395dcc66328d0317a6c8eb5338d29cbe81c67ecc7d6086e1f55",
+      "request_sha256": "b06c49d428574d2f23bf82fa8a1ef6a9a99ed6c4075bbe328dc5f333510d1e8f",
+      "logs": {
+        "stdout": {
+          "bytes": 11657,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3635a1965d090c7aa3289ddaf4a3f57a5bef51e12d1689c81e80e1b3d095c68d/be1c04392524f7b20822d64547b99125e0b28707382c0f715f202dc3cbd4ff39/00000001.stdout.d1bc52b078a60cbe5008ce271ab07afc412d46a0dfdee15a8842447c62237d12.log",
+          "sha256": "d1bc52b078a60cbe5008ce271ab07afc412d46a0dfdee15a8842447c62237d12"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3635a1965d090c7aa3289ddaf4a3f57a5bef51e12d1689c81e80e1b3d095c68d/be1c04392524f7b20822d64547b99125e0b28707382c0f715f202dc3cbd4ff39/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929624,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "a74190c5e14de330d067f1877b91956375eb9c9d22e9e07f1fa1871fefea889b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          4,
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [],
+        "selected_source_sha256": {},
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "dae97d92109f27c5ca9e183d5cbd12837656532328a7e7bd5eb09a7321e94003",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "ed9043aeabcbcfcc93aa182da84b6fc63df320007d966b45aaa1956f7ce6273d",
+      "request_sha256": "2e7db7a0334d25864aecdcc8d45eaaa68461e93b88ca1515b7f9cc9082592905",
+      "logs": {
+        "stdout": {
+          "bytes": 11495,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/dae97d92109f27c5ca9e183d5cbd12837656532328a7e7bd5eb09a7321e94003/687925b9ba3315588b05fb92a8d8aa9e0d6a564796ea085a1d3ef84d445b2ecc/00000001.stdout.9953f5ced657fed3cc01b5850dbeab0e48c536f6ae6c60a96a2b80b9315e5014.log",
+          "sha256": "9953f5ced657fed3cc01b5850dbeab0e48c536f6ae6c60a96a2b80b9315e5014"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/dae97d92109f27c5ca9e183d5cbd12837656532328a7e7bd5eb09a7321e94003/687925b9ba3315588b05fb92a8d8aa9e0d6a564796ea085a1d3ef84d445b2ecc/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "bb2633baeb49ce1b1ab3a7725239a86735ccedfc6cdbc6f4dd492c32bf271e19"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "9e21c79dde21edd3380ea1313918c5382031d5b9de1aa34a0329adedd491de47",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "d02a70cffdbae6cdd6a92eb3e7dd36a9dcf13bb81ecbfd529b8a6f9f24c9ef2c",
+      "request_sha256": "8f2cc2d3c090bb95e9d2a6da207c20d694a1f9801b3e6db194c0d3683107e960",
+      "logs": {
+        "stdout": {
+          "bytes": 11588,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9e21c79dde21edd3380ea1313918c5382031d5b9de1aa34a0329adedd491de47/847a42a87a49b9278ebc5ff4fb6bbdc9b2ef5d75c59cd67249660a0b2f67ca73/00000001.stdout.258ae8424f4291543fb57eea7931157dc828d1d8cb9091e8eff949ce47fa6f49.log",
+          "sha256": "258ae8424f4291543fb57eea7931157dc828d1d8cb9091e8eff949ce47fa6f49"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9e21c79dde21edd3380ea1313918c5382031d5b9de1aa34a0329adedd491de47/847a42a87a49b9278ebc5ff4fb6bbdc9b2ef5d75c59cd67249660a0b2f67ca73/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929628,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "3dea1a67a7a027c3a1464e6b223257036a0ae1b02ac05a8d7070a833c3464018"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "0296a80ed72c551ed194ff5784f2e4c9e6fa67d1dd83e2aaecabfd9e1e82737e",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "44b0ebb347d2d9345e02416d9b19362d2100571e5951015cbfec47d512e221c5",
+      "request_sha256": "0d0c9e648a4804d445f5bf8b450d123ba6610a4e43abe1e6508bbe92fc0c2d85",
+      "logs": {
+        "stdout": {
+          "bytes": 11561,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/0296a80ed72c551ed194ff5784f2e4c9e6fa67d1dd83e2aaecabfd9e1e82737e/8c06150c32e89743f3f9eb1ccbdbe97f8cb108bc4b46f68a66bbe964f32c26ef/00000001.stdout.9b432b4f99d12d4eeed3cfd5aed851fe52bbf151a57ba6f1410aaf0103af2119.log",
+          "sha256": "9b432b4f99d12d4eeed3cfd5aed851fe52bbf151a57ba6f1410aaf0103af2119"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/0296a80ed72c551ed194ff5784f2e4c9e6fa67d1dd83e2aaecabfd9e1e82737e/8c06150c32e89743f3f9eb1ccbdbe97f8cb108bc4b46f68a66bbe964f32c26ef/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e16069b5cedc2f07581160d07a2fa84ba0772f41eaca081eab2f673f66cfc24c"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "9b195a3fdd7470482ccc54c244fcbb80de53b6a06135bc2058ef0656c3ecbdb8",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "4123529a76c82ef9b4abe671d19e225efe3091dabae5eef717b53fc6e376a67c",
+      "request_sha256": "427e2686d61895eb55f5850518e2041df7ecddd8f4144cfb785950f38b37b0d9",
+      "logs": {
+        "stdout": {
+          "bytes": 11558,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9b195a3fdd7470482ccc54c244fcbb80de53b6a06135bc2058ef0656c3ecbdb8/06736d1ffa7f7ea5ba3fba8edec793de4c60a93ea8f6101bcaec440f293a7223/00000001.stdout.0c3e9051edd4f56d06b2a479a61ddc661ec6d6c68e6d0350094b22410f46996f.log",
+          "sha256": "0c3e9051edd4f56d06b2a479a61ddc661ec6d6c68e6d0350094b22410f46996f"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/9b195a3fdd7470482ccc54c244fcbb80de53b6a06135bc2058ef0656c3ecbdb8/06736d1ffa7f7ea5ba3fba8edec793de4c60a93ea8f6101bcaec440f293a7223/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "f7cf223e5dd36c2839c7f8045585b1ad4422ad80e42d3c228fe23f5d769fa91d"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [],
+        "selected_source_sha256": {},
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "4a595a85c49b0d35afa4e8668302aa1584ecb67e1bd5326138c6890a7b2c8a05",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "57db640f24662f16f30956bcd891016393cb8fe088e292c656d0ac77632b1480",
+      "request_sha256": "539470fb74a105521093f639f0cab31940cc949d4ab76060b11a0619a033f672",
+      "logs": {
+        "stdout": {
+          "bytes": 11642,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4a595a85c49b0d35afa4e8668302aa1584ecb67e1bd5326138c6890a7b2c8a05/553681ce9a6c5b685347da4e77228952e7fd3104215b7c8cea3f2df8fd4cd0e0/00000001.stdout.f35018aa3f4629a7ec4e45bec1184679df4a4f1d12a94294385edb718e9bd945.log",
+          "sha256": "f35018aa3f4629a7ec4e45bec1184679df4a4f1d12a94294385edb718e9bd945"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/4a595a85c49b0d35afa4e8668302aa1584ecb67e1bd5326138c6890a7b2c8a05/553681ce9a6c5b685347da4e77228952e7fd3104215b7c8cea3f2df8fd4cd0e0/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 11,
+      "nodeids": [
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-1-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[-inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[0-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[1.5-True]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[False-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[None-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[True-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[inf-False]",
+        "tests/test_core_numbers_1521.py::test_finite_numeric_fields[nan-False]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "8bd943a0104fbe1b155700abb15f22a6153128e3226831b240793758df269198"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_core_numbers_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [],
+        "selected_source_sha256": {},
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "b0255510a73c33823eeab751ceace98d1ec4b6ad05668940ca3b8adc98453e9d",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "fc87da9132f9b2c0c4e409763d311356025ab795bb1406031221e5c7c2336a20",
+      "request_sha256": "6e7f1530c51d46fd15511cc563f7808487041417aad40c5e696e09411afc56c0",
+      "logs": {
+        "stdout": {
+          "bytes": 19088,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b0255510a73c33823eeab751ceace98d1ec4b6ad05668940ca3b8adc98453e9d/32387b70286bfc8f4c5353ef0763647f211368e3434409f5fe7d9dfb2b436084/00000001.stdout.bbe02fef1eb32080661c2d992fd3bbd335d059968dede6efb4887c2c3b5a39c6.log",
+          "sha256": "bbe02fef1eb32080661c2d992fd3bbd335d059968dede6efb4887c2c3b5a39c6"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b0255510a73c33823eeab751ceace98d1ec4b6ad05668940ca3b8adc98453e9d/32387b70286bfc8f4c5353ef0763647f211368e3434409f5fe7d9dfb2b436084/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 20,
+      "nodeids": [
+        "tests/test_record_compatibility.py::test_a_missing_adapter_cannot_hide_an_existing_wire_kind",
+        "tests/test_record_compatibility.py::test_actual_candidate_writer_mutation_fails_the_unchanged_old_consumer",
+        "tests/test_record_compatibility.py::test_closure_tampering_refuses_even_when_the_old_reader_still_accepts",
+        "tests/test_record_compatibility.py::test_empty_legacy_teardown_stops_the_actual_start_barrier",
+        "tests/test_record_compatibility.py::test_forged_code_with_an_old_reader_filename_is_refused",
+        "tests/test_record_compatibility.py::test_introduced_publication_namespace_is_not_a_codec_pass_for_an_old_queue_reader",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-local-tier/source-renewal_ceiling_s-absent]",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-ram-tier/source-promotion_chunk_gib-None]",
+        "tests/test_record_compatibility.py::test_legacy_configuration_defaults_reach_both_policy_readers[config-ram-tier/source-promotion_chunk_gib-absent]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[None]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[absent]",
+        "tests/test_record_compatibility.py::test_legacy_outcome_without_numeric_generation_remains_visible[legacy]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[fragment/ssd-entry]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[landing/horizon-horizon]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[landing/horizon-range]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[map/ssd-entry]",
+        "tests/test_record_compatibility.py::test_nested_closed_fields_are_rejected_by_retained_consumers[material/ssd-entry]",
+        "tests/test_record_compatibility.py::test_pre_1018_historical_reader_refuses_actual_horizon_writer_but_forward_reads",
+        "tests/test_record_compatibility.py::test_pythonpath_poison_cannot_supply_a_retained_dependency",
+        "tests/test_record_compatibility.py::test_setup_reader_cannot_stand_in_for_the_old_consumer"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_record_compatibility.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_record_compatibility.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility.py": "7893d5b3a7f5b85a841dd0340fe6264f0298a77b607f6893094e0b295bdf7e86"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "21d5bab74926e23129c1a6d9d74f42c5764acdddd45bc287809c7a58f7a21a95",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "5cfe8d4f9d38259628c7bb439b2742654b4edf24d37f7aad5d2ad1eb20b12bd2",
+      "request_sha256": "badf82bb2bf92c7cfced3f005ec73a1df53a5166fd9f7f0ee91b054d0dc42410",
+      "logs": {
+        "stdout": {
+          "bytes": 10104,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/21d5bab74926e23129c1a6d9d74f42c5764acdddd45bc287809c7a58f7a21a95/3bce349aadeaa1fceaef8a866e28f09855b06c6ceff90f19e00824047bd87e72/00000001.stdout.62d03fc6077ae8050398d156c522b06c1eb2bc77d8e7265dd03ef08877ab041d.log",
+          "sha256": "62d03fc6077ae8050398d156c522b06c1eb2bc77d8e7265dd03ef08877ab041d"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/21d5bab74926e23129c1a6d9d74f42c5764acdddd45bc287809c7a58f7a21a95/3bce349aadeaa1fceaef8a866e28f09855b06c6ceff90f19e00824047bd87e72/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 8,
+      "nodeids": [
+        "tests/test_duplication_baseline.py::test_a_third_definition_of_an_exempt_name_is_still_a_growth",
+        "tests/test_duplication_baseline.py::test_digest_inventory_excludes_the_owner_and_finds_raw_sites",
+        "tests/test_duplication_baseline.py::test_must_differ_pairs_are_live_and_give_a_reason",
+        "tests/test_duplication_baseline.py::test_near_duplicate_pairs_only_shrink",
+        "tests/test_duplication_baseline.py::test_primitive_digest_sites_only_shrink",
+        "tests/test_duplication_baseline.py::test_same_name_distinct_records_are_exact_live_paths_with_reasons",
+        "tests/test_duplication_baseline.py::test_same_name_helpers_only_shrink",
+        "tests/test_duplication_baseline.py::test_scanner_finds_a_renamed_copy_and_ignores_same_file_pairs"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_duplication_baseline.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_duplication_baseline.py": "c844a44dcec35e59bb4a0f375128a07f1354ed804479c39ecfc04ea149f71013"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "e097f56229907f91e1e58cafa9e674d835e32ed4efe188d45d1771bbda7e5f89",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "12457705cfef2bc2afb2aaa81e4586ddab12d2a77e15eec941d170220ce77513",
+      "request_sha256": "4826f8282f3d01a98b3ba580d0bec71bf09e756ca0c26e9b8fb445d948fd8f2d",
+      "logs": {
+        "stdout": {
+          "bytes": 9771,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e097f56229907f91e1e58cafa9e674d835e32ed4efe188d45d1771bbda7e5f89/79b24f9b5d83230757d23ef327df620b206a6df621b9215b594fe1c7f97a66ee/00000001.stdout.7fc649eeb55f4efddd09453f6b1608c06ab0791cdabfc95ef1baf77e13544d77.log",
+          "sha256": "7fc649eeb55f4efddd09453f6b1608c06ab0791cdabfc95ef1baf77e13544d77"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e097f56229907f91e1e58cafa9e674d835e32ed4efe188d45d1771bbda7e5f89/79b24f9b5d83230757d23ef327df620b206a6df621b9215b594fe1c7f97a66ee/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 8,
+      "nodeids": [
+        "tests/test_wire_inventory.py::test_closed_field_sets_remain_pinned",
+        "tests/test_wire_inventory.py::test_control_classification_cannot_hide_a_new_durable_reader",
+        "tests/test_wire_inventory.py::test_inventory_finds_unregistered_imported_embedded_and_data_wires",
+        "tests/test_wire_inventory.py::test_inventory_follows_transitive_module_owners_without_importing_them",
+        "tests/test_wire_inventory.py::test_source_review_rebinding_compares_every_non_schema_expression",
+        "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[line]",
+        "tests/test_wire_inventory.py::test_stale_source_review_retains_discovery_and_still_refuses[source]",
+        "tests/test_wire_inventory.py::test_symbolic_fstring_policies_retain_selected_source_bytes"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_wire_inventory.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_wire_inventory.py": "58583e6a71bff1cbeae091a4383f7b207185e5fdfeb42a5d90d86b633dd0e6cc"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "a84dd84cb0452d896ebe1bda336e4a5aaecf205459ceca34752b72e64b75e193",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "241531a524c1d1c3570b971ad5182d85827ff4ab498e52bfc5e0fd216501fdf6",
+      "request_sha256": "4271937b865342b9f1b2341b12230a8b37d0d44a18900ca92b6b8826daa29dbb",
+      "logs": {
+        "stdout": {
+          "bytes": 9806,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/a84dd84cb0452d896ebe1bda336e4a5aaecf205459ceca34752b72e64b75e193/c7871a44ed517c25fca815cf3a6f04d7a0d96126947f2ef155c1bc40395419d4/00000001.stdout.bae828ba5164ac33f615e60686cb29d862e327f75147e622eacedc9582f32a0f.log",
+          "sha256": "bae828ba5164ac33f615e60686cb29d862e327f75147e622eacedc9582f32a0f"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/a84dd84cb0452d896ebe1bda336e4a5aaecf205459ceca34752b72e64b75e193/c7871a44ed517c25fca815cf3a6f04d7a0d96126947f2ef155c1bc40395419d4/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 5,
+      "nodeids": [
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_binds_the_actual_helper_without_extending_the_runtime_body",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[core-pin]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[duplicate-pin]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[helper]",
+        "tests/test_runtime_capture_source_binding.py::test_runtime_capture_refuses_a_stale_or_ambiguous_helper_binding[missing-pin]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_runtime_capture_source_binding.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          10,
+          13
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_runtime_capture_source_binding.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_runtime_capture_source_binding.py": "ddd6b9fc722af2ec4d988ae95cb9a152722efb117956dc09ea24a9fd5b70f4cb"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "b9284e6d367c2e4d9d11ed26c3ef072b49afeb8ccf39f323a045fb32f5cbe90b",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "54ec17eb0159fa7f0fc8784e3fb50888660a3298f237857096fe3c7a3c3be820",
+      "request_sha256": "6c6390f225f431aa188df5e8c3ff0a12ba7d057c65726fd6fbe8eac915140db0",
+      "logs": {
+        "stdout": {
+          "bytes": 5875,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b9284e6d367c2e4d9d11ed26c3ef072b49afeb8ccf39f323a045fb32f5cbe90b/d4efac0544d87ada1823efd4f03d26fe61b2bd2f1f89609b178f9e67cff13012/00000001.stdout.337b6818ee9b82c1e60f3677da6fc8bd91a57f79b09a2a9cddca47041935461f.log",
+          "sha256": "337b6818ee9b82c1e60f3677da6fc8bd91a57f79b09a2a9cddca47041935461f"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/b9284e6d367c2e4d9d11ed26c3ef072b49afeb8ccf39f323a045fb32f5cbe90b/d4efac0544d87ada1823efd4f03d26fe61b2bd2f1f89609b178f9e67cff13012/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 1,
+      "nodeids": [
+        "tests/test_runtime_source_pin.py::test_changed_helper_requires_a_new_attested_core_before_it_can_load"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_runtime_source_pin.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          14,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_runtime_source_pin.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_runtime_source_pin.py": "a423098ca16a0324b7b42bfccb0f8356ea86506520280267b6e479485a4dff4f"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "1ffe9e1b0e74f9b3189fbf40fb6415181e36b2aec37ef3877d2017256cd98723",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "c57808dcf0946f5ffbb7511a5918530ab82f8679e3e66481a3c64b66a2a68325",
+      "request_sha256": "23fc90759555c1540a375b5fcf3e490582cd6a39567d46e3240cc40b11bfda09",
+      "logs": {
+        "stdout": {
+          "bytes": 64053,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1ffe9e1b0e74f9b3189fbf40fb6415181e36b2aec37ef3877d2017256cd98723/0ff8c95bd248466f544827c12d0947f10e77ee31bca475ecb68ad80663b03d6c/00000001.stdout.1b4a4f1602ca8ffc137939e33f8e2f25534a83cfc46fa0c442ba4291364e6d8b.log",
+          "sha256": "1b4a4f1602ca8ffc137939e33f8e2f25534a83cfc46fa0c442ba4291364e6d8b"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/1ffe9e1b0e74f9b3189fbf40fb6415181e36b2aec37ef3877d2017256cd98723/0ff8c95bd248466f544827c12d0947f10e77ee31bca475ecb68ad80663b03d6c/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 130,
+      "nodeids": [
+        "tests/test_core.py::test_a_controller_that_recovers_within_the_backoff_attests",
+        "tests/test_core.py::test_a_failed_action_carries_its_own_exit_status",
+        "tests/test_core.py::test_a_signalled_action_carries_the_signal",
+        "tests/test_core.py::test_a_signalled_action_leaves_its_signal_in_the_sidecar",
+        "tests/test_core.py::test_a_worker_verdict_carries_no_action_status",
+        "tests/test_core.py::test_a_worker_verdict_leaves_no_action_status_sidecar",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path0-v2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path1-codebook]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path2-replacement2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path3-4444444444444444444444444444444444444444444444444444444444444444]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path4-5555555555555555555555555555555555555555555555555555555555555555]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path5-2]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path6-different]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path7-different]",
+        "tests/test_core.py::test_action_key_binds_every_semantic_input[path8-different]",
+        "tests/test_core.py::test_action_key_has_expected_plain_sha256_shape",
+        "tests/test_core.py::test_action_key_is_canonical_and_inputs_are_sorted",
+        "tests/test_core.py::test_action_v2_requires_an_artifact_family_token_and_refuses_v1",
+        "tests/test_core.py::test_an_unasked_worker_writes_no_action_status",
+        "tests/test_core.py::test_atomic_publish_fifo_swap_never_performs_blocking_readback_open",
+        "tests/test_core.py::test_blob_publication_skips_only_winning_inode_rehash",
+        "tests/test_core.py::test_cache_detects_payload_and_receipt_tampering",
+        "tests/test_core.py::test_cache_hit_skips_execution_and_fully_revalidates",
+        "tests/test_core.py::test_cache_structural_error_is_not_a_clean_miss",
+        "tests/test_core.py::test_cas_lookup_rejects_receipt_parent_swapped_after_open",
+        "tests/test_core.py::test_cas_publish_refuses_worker_core_changed_after_preflight",
+        "tests/test_core.py::test_cas_publish_result_parent_swap_never_writes_through_symlink",
+        "tests/test_core.py::test_cas_refuses_attestation_from_a_different_loaded_core",
+        "tests/test_core.py::test_cas_runs_runtime_recheck_after_action_precommit_callback",
+        "tests/test_core.py::test_cli_ingests_and_verifies_input_contract",
+        "tests/test_core.py::test_cli_seals_keys_runs_and_verifies",
+        "tests/test_core.py::test_closing_worker_lock_copy_does_not_unlock_inheriting_action",
+        "tests/test_core.py::test_code_closure_is_root_independent_and_live_verified",
+        "tests/test_core.py::test_code_closure_refuses_traversal_duplicates_and_symlinks",
+        "tests/test_core.py::test_deterministic_recompute_must_match",
+        "tests/test_core.py::test_env_only_slurm_evidence_no_longer_attests_a_host_class",
+        "tests/test_core.py::test_fake_scontrol_attests_the_class_the_job_was_constrained_to",
+        "tests/test_core.py::test_fake_scontrol_conjunction_still_requires_the_class",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[(null)]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[[gb10*1]]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[gb10|x86]",
+        "tests/test_core.py::test_fake_scontrol_job_constraint_that_does_not_require_the_class_is_refused[sparky]",
+        "tests/test_core.py::test_fake_scontrol_wrong_node_feature_is_refused",
+        "tests/test_core.py::test_fresh_result_publish_reuses_verified_winning_inode",
+        "tests/test_core.py::test_host_class_is_refused_unless_the_controller_enforced_it[slurm0-does not carry the Feature 'gb10']",
+        "tests/test_core.py::test_host_class_is_refused_unless_the_controller_enforced_it[slurm1-constraint does not require the Feature 'gb10']",
+        "tests/test_core.py::test_host_class_preflight_records_controller_attested_slurm_evidence",
+        "tests/test_core.py::test_host_class_requires_kernel_attested_slurm_membership",
+        "tests/test_core.py::test_identifiers_still_refuse_control_characters",
+        "tests/test_core.py::test_input_ingestion_and_lookup_detect_conflict_and_tampering",
+        "tests/test_core.py::test_input_ingestion_publishes_canonical_readback_verified_contract",
+        "tests/test_core.py::test_input_ingestion_race_reuses_one_verified_content_address",
+        "tests/test_core.py::test_input_ingestion_refuses_source_changed_during_stable_copy",
+        "tests/test_core.py::test_input_ingestion_refuses_symlinked_cas_shard",
+        "tests/test_core.py::test_input_ingestion_rejects_expectation_mismatch_before_publication",
+        "tests/test_core.py::test_input_ingestion_rejects_symlink_source_and_malformed_contract",
+        "tests/test_core.py::test_input_ingestion_revalidates_canonical_inode_after_winning_link",
+        "tests/test_core.py::test_local_miss_and_hit_preserve_exact_result_shapes",
+        "tests/test_core.py::test_local_result_repair_rechecks_receipt_after_lock_wait",
+        "tests/test_core.py::test_local_result_repair_requires_exact_claim_and_refuses_symlink",
+        "tests/test_core.py::test_local_worker_fails_closed_on_dirty_output_or_missing_result",
+        "tests/test_core.py::test_local_worker_rechecks_closure_after_result_staging",
+        "tests/test_core.py::test_local_worker_rechecks_closure_at_receipt_link",
+        "tests/test_core.py::test_local_worker_rechecks_core_after_result_staging",
+        "tests/test_core.py::test_local_worker_rechecks_launcher_after_result_staging",
+        "tests/test_core.py::test_local_worker_refuses_closure_changed_by_action_before_publish",
+        "tests/test_core.py::test_local_worker_refuses_launcher_changed_by_action_before_publish",
+        "tests/test_core.py::test_local_worker_refuses_symlinked_result_parent",
+        "tests/test_core.py::test_local_worker_serializes_shared_checkout_output",
+        "tests/test_core.py::test_local_worker_uses_exact_argv_and_closed_environment",
+        "tests/test_core.py::test_node_name_that_disagrees_with_the_controller_is_refused",
+        "tests/test_core.py::test_nonportable_action_refuses_unattestable_toolchain_or_unbound_argv0",
+        "tests/test_core.py::test_nonportable_preflight_binds_executable_bytes",
+        "tests/test_core.py::test_nonportable_preflight_refuses_unknown_libc_attestation",
+        "tests/test_core.py::test_nonportable_preflight_requires_and_verifies_cas_inputs",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[argv]",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[environment]",
+        "tests/test_core.py::test_nul_is_still_refused_in_payload_text[params]",
+        "tests/test_core.py::test_paths_and_nested_params_reject_ambiguous_json",
+        "tests/test_core.py::test_payload_text_may_carry_newlines_and_tabs",
+        "tests/test_core.py::test_pbrun_preflight_proves_the_sealed_parent_and_refs",
+        "tests/test_core.py::test_pbrun_snapshot_v1_keeps_its_exact_shape",
+        "tests/test_core.py::test_pbrun_snapshot_v1_refuses_ancestry_keys",
+        "tests/test_core.py::test_pbrun_snapshot_v2_accepts_an_unborn_parent",
+        "tests/test_core.py::test_pbrun_snapshot_v2_carries_parent_and_named_refs",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[--upload-pack=touch]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[../escape]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[HEAD]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[main^{}]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[master:evil]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[prismabuild-snapshot]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[refs/heads/main]",
+        "tests/test_core.py::test_pbrun_snapshot_v2_refuses_a_dangerous_ref_name[with space]",
+        "tests/test_core.py::test_persisted_controller_evidence_must_name_the_worker_node",
+        "tests/test_core.py::test_platform_scope_is_derived_from_live_facts_not_a_label",
+        "tests/test_core.py::test_portability_is_declared_by_the_submitter_not_by_the_family",
+        "tests/test_core.py::test_portable_work_in_a_job_never_asks_the_controller",
+        "tests/test_core.py::test_preflight_refuses_core_changed_after_module_import",
+        "tests/test_core.py::test_preflight_refuses_launcher_changed_after_entrypoint_capture",
+        "tests/test_core.py::test_preflight_refuses_toolchain_mismatch_before_execution",
+        "tests/test_core.py::test_regular_identity_fifo_swap_never_performs_blocking_reopen",
+        "tests/test_core.py::test_sigint_worker_reaps_action_group_before_releasing_output_lock",
+        "tests/test_core.py::test_sigkill_after_result_staging_is_reaped_and_retry_recomputes",
+        "tests/test_core.py::test_sigkill_during_action_keeps_output_locked_until_orphan_exits",
+        "tests/test_core.py::test_sigterm_worker_reaps_action_group_before_exiting",
+        "tests/test_core.py::test_slurm_cgroup_attestation_accepts_duplicate_v1_controller_rows",
+        "tests/test_core.py::test_slurm_worker_entrypoint_attests_its_early_launcher_snapshot",
+        "tests/test_core.py::test_stable_file_identity_refuses_owner_mutation_without_retry",
+        "tests/test_core.py::test_stable_file_identity_refuses_perpetual_one_link_ctime_churn",
+        "tests/test_core.py::test_stable_file_identity_refuses_substantive_mutation_without_retry[mode]",
+        "tests/test_core.py::test_stable_file_identity_refuses_substantive_mutation_without_retry[mtime]",
+        "tests/test_core.py::test_stable_file_identity_refuses_wrong_address_before_metadata_retry",
+        "tests/test_core.py::test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd[one-to-one]",
+        "tests/test_core.py::test_stable_file_identity_replays_transient_link_metadata_from_fresh_fd[two-to-one]",
+        "tests/test_core.py::test_stable_receipt_read_replays_publication_link_cleanup",
+        "tests/test_core.py::test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link",
+        "tests/test_core.py::test_stochastic_action_is_atomic_first_result_wins",
+        "tests/test_core.py::test_stochastic_receipt_loser_hashes_different_canonical_blob",
+        "tests/test_core.py::test_the_job_id_is_the_cgroup_s_and_the_environment_must_agree",
+        "tests/test_core.py::test_the_worker_leaves_the_action_status_where_it_was_asked_to",
+        "tests/test_core.py::test_the_worker_probes_exactly_the_distributions_the_action_declares",
+        "tests/test_core.py::test_timeout_terminates_child_process_group",
+        "tests/test_core.py::test_two_workers_recheck_initial_misses_under_output_lock",
+        "tests/test_core.py::test_unreachable_controller_retries_then_refuses_by_name",
+        "tests/test_core.py::test_unsealed_or_non_normalized_action_is_rejected",
+        "tests/test_core.py::test_v3_receipt_namespace_preserves_and_ignores_legacy_v2",
+        "tests/test_core.py::test_worker_core_has_no_unattested_repository_imports",
+        "tests/test_core.py::test_worker_runtime_attestation_binds_core_and_optional_launcher"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          3,
+          11
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_core.py": "e2dc461a000b77c10e7551f0f448be4d29ef43b84abecd2b9d23c4a32a6c5679"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "039eeb45c456a461920a8d971cf60456959dfbbf0a0d0f1989fb81378de20501",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "13fa31a4c1db735536fd50acbbf374ccfacad4ea90e6473baee25791bf3cb783",
+      "request_sha256": "e10610ea909d586fbc1cbf9136412d8a3824c9584cf685c22168cf8fc67ec96f",
+      "logs": {
+        "stdout": {
+          "bytes": 17004,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/039eeb45c456a461920a8d971cf60456959dfbbf0a0d0f1989fb81378de20501/f65476be18eac6e11e69219283a975389f92d25ed7c2acd30307810e8e3a5a46/00000001.stdout.6b7851fdde231b39552f23fa8202050fe743674c9825754a83fadf42867a7bdf.log",
+          "sha256": "6b7851fdde231b39552f23fa8202050fe743674c9825754a83fadf42867a7bdf"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/039eeb45c456a461920a8d971cf60456959dfbbf0a0d0f1989fb81378de20501/f65476be18eac6e11e69219283a975389f92d25ed7c2acd30307810e8e3a5a46/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 16,
+      "nodeids": [
+        "tests/test_gang_record_isolation_1521.py::test_an_ending_without_publication_identity_is_not_a_gang_member_ending",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_claim_refuses_without_acquiring_tokens[teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-duplicate_key]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-missing_publication]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_election_refresh-teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-duplicate_key]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-election_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-group_json]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-missing_publication]",
+        "tests/test_gang_record_isolation_1521.py::test_bad_gang_isolated_from_healthy_gang_census[_scan_publications-teardown_json]",
+        "tests/test_gang_record_isolation_1521.py::test_unreadable_gang_directory_keeps_census_closed[_scan_election_refresh]",
+        "tests/test_gang_record_isolation_1521.py::test_unreadable_gang_directory_keeps_census_closed[_scan_publications]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_gang_record_isolation_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          16,
+          17
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_gang_record_isolation_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_record_isolation_1521.py": "e6606a64be13b78cb7bb70e574429a4e4b82c02eb74487494bcc0076740c2111"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "8bb30a85776f2447ed4161b846bcf240a8c65844ee5eac2d2d52e8910ee77de8",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "15966cee5c0ae11a438c3585c9c965584b922ff8cd9f4dfc8097b516cb05d700",
+      "request_sha256": "910bfaf851f00b697eeda767713fa3e4dd1b92e056cb4c9aa6ed3fa7da6fa584",
+      "logs": {
+        "stdout": {
+          "bytes": 11531,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8bb30a85776f2447ed4161b846bcf240a8c65844ee5eac2d2d52e8910ee77de8/57845ee22a487f033ef2de0589220e3e3768e2387d10f73060b5e59984a4218a/00000001.stdout.4abddae0dce03e0db4e222ae08a8b508b37ad09956bfcfdbd3c1621a20df6640.log",
+          "sha256": "4abddae0dce03e0db4e222ae08a8b508b37ad09956bfcfdbd3c1621a20df6640"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/8bb30a85776f2447ed4161b846bcf240a8c65844ee5eac2d2d52e8910ee77de8/57845ee22a487f033ef2de0589220e3e3768e2387d10f73060b5e59984a4218a/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 10,
+      "nodeids": [
+        "tests/test_gang_cleanup_1521.py::test_busy_orphan_does_not_starve_later_rows_across_sweeps",
+        "tests/test_gang_cleanup_1521.py::test_old_teardown_does_not_cancel_a_successor_publication[immediate]",
+        "tests/test_gang_cleanup_1521.py::test_old_teardown_does_not_cancel_a_successor_publication[sweep]",
+        "tests/test_gang_cleanup_1521.py::test_orphan_sweep_bounds_row_reads_and_remembers_progress",
+        "tests/test_gang_cleanup_1521.py::test_pruning_requires_the_groups_exact_terminal_publications",
+        "tests/test_gang_cleanup_1521.py::test_registered_slow_members_are_not_orphans",
+        "tests/test_gang_cleanup_1521.py::test_registration_is_rechecked_under_the_member_transition_lock",
+        "tests/test_gang_cleanup_1521.py::test_repeated_teardown_does_not_retarget_a_covered_claims_successor",
+        "tests/test_gang_cleanup_1521.py::test_sweep_retries_running_member_withdrawal_until_it_is_covered",
+        "tests/test_gang_cleanup_1521.py::test_unregistered_members_expire_but_fresh_and_ordinary_rows_survive"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_gang_cleanup_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          18,
+          19
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_gang_cleanup_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_cleanup_1521.py": "a4aa1a2218bc7af9749e8060ea03193d37f26bc33ff9e838498d72e392623b97"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "2ba8f024d979f8e07eca635a963f5a4aec7af5efac871448f307432e1d920e74",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "aec4bf0a324c6e6fce8d5dcb352aaf9cd7ec67e5d47aa7b51e69838bc3ccf8c8",
+      "request_sha256": "a2fef56c0128922220c89d2d955cb936cde7c3e4bfa96a0d9506cbb3cb235e52",
+      "logs": {
+        "stdout": {
+          "bytes": 7436,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2ba8f024d979f8e07eca635a963f5a4aec7af5efac871448f307432e1d920e74/f53ddf97ddbfa36f9f10ceabd47ef95094555c838550c9295227e5eb16b32b0e/00000001.stdout.0e19fd6c480a502a8d3301d5be12b6e2e1c65375e5dd24a033c570224b620cd0.log",
+          "sha256": "0e19fd6c480a502a8d3301d5be12b6e2e1c65375e5dd24a033c570224b620cd0"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2ba8f024d979f8e07eca635a963f5a4aec7af5efac871448f307432e1d920e74/f53ddf97ddbfa36f9f10ceabd47ef95094555c838550c9295227e5eb16b32b0e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_registration_1521.py::test_identical_registration_is_idempotent_after_members_end",
+        "tests/test_gang_registration_1521.py::test_late_publisher_cannot_register_withdrawn_orphans",
+        "tests/test_gang_registration_1521.py::test_registration_cannot_cross_the_orphan_sweeps_last_check"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_registration_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_registration_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_registration_1521.py": "e794524526109be53b6b7a46a2d448e8eb4c9e3e5ffe7f84b8ea092335ac8db1"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "7f1624169205f8f1955e6f28fd8e2da592e75defc5ec95501c1ca4fcd85f4377",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "4e172d974b1c064ed29d2504a62570a69a2691c89c75f42ed0c0d9937f3f4610",
+      "request_sha256": "c389e9e0eb4e48547c1636159117b4f8eb1a0a1c08108459ea992427039e469b",
+      "logs": {
+        "stdout": {
+          "bytes": 7649,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7f1624169205f8f1955e6f28fd8e2da592e75defc5ec95501c1ca4fcd85f4377/7e299c90359cd7da499fb8ef46f2e52cef6a60b853bc1ae617e678dc3da2c6bd/00000001.stdout.ce4736f4d8601aa88351deea2eb6ba53fbf480c638e571f39d9f35de0cf586bc.log",
+          "sha256": "ce4736f4d8601aa88351deea2eb6ba53fbf480c638e571f39d9f35de0cf586bc"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/7f1624169205f8f1955e6f28fd8e2da592e75defc5ec95501c1ca4fcd85f4377/7e299c90359cd7da499fb8ef46f2e52cef6a60b853bc1ae617e678dc3da2c6bd/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_sweep_progress_1521.py::test_malformed_ending_does_not_abort_another_gangs_cleanup[None]",
+        "tests/test_gang_sweep_progress_1521.py::test_malformed_ending_does_not_abort_another_gangs_cleanup[not-a-number]",
+        "tests/test_gang_sweep_progress_1521.py::test_retained_first_group_does_not_starve_a_later_teardown"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_sweep_progress_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          9,
+          15
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_sweep_progress_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_sweep_progress_1521.py": "4b2ddcfd411b686ee812ca61ccc9e4d66e4528bf0ae7d9546f3a5c5501182ee4"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "2b1fa5afae50b9bd749239e26c0a0d95d698170cc96a6bde75a4dfea5ca444ac",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "4a10f8edb2acb99e8bea58da68d3e43203aa8773e7aef6fd569ea6c96ec4c23c",
+      "request_sha256": "e04c52ffc7bd922b3e3885ed221c188b8ea1ae14559e3a3971713adf9b744a41",
+      "logs": {
+        "stdout": {
+          "bytes": 7936,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2b1fa5afae50b9bd749239e26c0a0d95d698170cc96a6bde75a4dfea5ca444ac/3245f45e6368ae56e966ef702b450f4f01ef88cbf7650ff97ec5e6b12e05082e/00000001.stdout.b10a2abfa3a3d8969c7eaf19772f6d53cdf3c685aa54b6e68e9db48ad40c375f.log",
+          "sha256": "b10a2abfa3a3d8969c7eaf19772f6d53cdf3c685aa54b6e68e9db48ad40c375f"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2b1fa5afae50b9bd749239e26c0a0d95d698170cc96a6bde75a4dfea5ca444ac/3245f45e6368ae56e966ef702b450f4f01ef88cbf7650ff97ec5e6b12e05082e/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 4,
+      "nodeids": [
+        "tests/test_gang_switch_1521.py::test_disabled_worker_causes_the_real_submission_refusal",
+        "tests/test_gang_switch_1521.py::test_non_gang_claim_bytes_are_unchanged_by_the_gang_switch",
+        "tests/test_gang_switch_1521.py::test_worker_announcement_follows_the_gang_switch[False]",
+        "tests/test_gang_switch_1521.py::test_worker_announcement_follows_the_gang_switch[True]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_switch_1521.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_switch_1521.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_switch_1521.py": "9a8b0268917a3e7af04ce9d3640fae2bf9cb6f016928f54257e529d14ca9bc46"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "e2b99eac27d47b046a397c8f8871b479fbad52f5dcaf2ded918ba3ce51e89545",
+      "host": "sparklina",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "4f3848035a1d78acdc56f6f32dadf501f758966da259d0d85cafd53dc2115d05",
+      "request_sha256": "e73faa914b2ee07d0a1cd3b8c9d8965a8c2d88caffe2103aab5462054e8b53ad",
+      "logs": {
+        "stdout": {
+          "bytes": 7634,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e2b99eac27d47b046a397c8f8871b479fbad52f5dcaf2ded918ba3ce51e89545/60c754100c6fa5d32f7157d8978b46301eee283d8193fb8953a5c0f79c0cfcac/00000001.stdout.5fac196c82d51200e5d41f5a0ce4498fd3cd25bdbc01774b8ff889800dffce21.log",
+          "sha256": "5fac196c82d51200e5d41f5a0ce4498fd3cd25bdbc01774b8ff889800dffce21"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e2b99eac27d47b046a397c8f8871b479fbad52f5dcaf2ded918ba3ce51e89545/60c754100c6fa5d32f7157d8978b46301eee283d8193fb8953a5c0f79c0cfcac/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 3,
+      "nodeids": [
+        "tests/test_gang_reservation_1517.py::test_a_stale_ready_mark_does_not_commit_the_peer",
+        "tests/test_gang_reservation_1517.py::test_both_hosts_busy_fences_each_host_and_starts_nothing",
+        "tests/test_gang_reservation_1517.py::test_the_host_that_frees_first_does_not_start_its_member_alone"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_gang_reservation_1517.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparklina",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_gang_reservation_1517.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_reservation_1517.py": "ed3f5a37ed9b05a0adde9a1fc3c337e55574f258aa58ec28cca859b349b21d5c"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "142879e89dd97b3b0a1e445bde59d2963ba2e588d62460ed264657f9682a5697",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "e99b491658581e38e9cd323fe1a1bfd0112d866b0b7109fc3dee96fec257fe1d",
+      "request_sha256": "8382c5473da143e972bc67ecf87578daf9b531c2e6cfc6df44ac2a3b528f5fce",
+      "logs": {
+        "stdout": {
+          "bytes": 10221,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/142879e89dd97b3b0a1e445bde59d2963ba2e588d62460ed264657f9682a5697/80675549c529f7c16f15d2cd3eae898f3a416e9bdbdf837fffa25f4913243485/00000001.stdout.768e6b0d518886a9ad0703d9d1fa4f291c8ec0fb53b665f38e90876d3498bc2d.log",
+          "sha256": "768e6b0d518886a9ad0703d9d1fa4f291c8ec0fb53b665f38e90876d3498bc2d"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/142879e89dd97b3b0a1e445bde59d2963ba2e588d62460ed264657f9682a5697/80675549c529f7c16f15d2cd3eae898f3a416e9bdbdf837fffa25f4913243485/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 8,
+      "nodeids": [
+        "tests/test_gang_teardown_1517.py::test_a_claimed_member_never_launches_alone",
+        "tests/test_gang_teardown_1517.py::test_a_gang_member_gets_exactly_one_attempt",
+        "tests/test_gang_teardown_1517.py::test_a_member_failure_tears_the_gang_down_and_releases_its_fences",
+        "tests/test_gang_teardown_1517.py::test_a_member_whose_lease_is_lost_tears_the_gang_down",
+        "tests/test_gang_teardown_1517.py::test_pbrun_seals_a_gang_member_and_refuses_retries",
+        "tests/test_gang_teardown_1517.py::test_the_barrier_releases_when_every_member_is_claimed",
+        "tests/test_gang_teardown_1517.py::test_two_equal_priority_gangs_never_split_the_two_hosts",
+        "tests/test_gang_teardown_1517.py::test_withdrawing_a_waiting_member_withdraws_the_gang_and_releases_both_hosts"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_gang_teardown_1517.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          0,
+          2
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_gang_teardown_1517.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_teardown_1517.py": "a3bf5d64b5ad3a6c543040b62beea12cbd83917b96980070e20e454bcd769856"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "2978ffab12c30e5f85720d0f994e05d42207f387a4b10fa91f9c117cd3939a28",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "725d1e7bca080365865d61ea116325dd5c4b8256ff507cc41747f303206cc338",
+      "request_sha256": "ed16081083069452dd7ddb08db5fc72c9d770591eb307acd67eba692035e882e",
+      "logs": {
+        "stdout": {
+          "bytes": 32701,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2978ffab12c30e5f85720d0f994e05d42207f387a4b10fa91f9c117cd3939a28/ff3d9d5aa5cd28ac8be1a1907983a3aec563f9d03de7cfc2772748e2a1b02606/00000001.stdout.a87693c4b154550fbde79efc9d5876770b1e4b78a68f1a9f0aca232322d13d5e.log",
+          "sha256": "a87693c4b154550fbde79efc9d5876770b1e4b78a68f1a9f0aca232322d13d5e"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/2978ffab12c30e5f85720d0f994e05d42207f387a4b10fa91f9c117cd3939a28/ff3d9d5aa5cd28ac8be1a1907983a3aec563f9d03de7cfc2772748e2a1b02606/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 45,
+      "nodeids": [
+        "tests/test_gang_residency_members.py::test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait",
+        "tests/test_gang_residency_members.py::test_a_changed_ending_restarts_the_wait",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_incomplete]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_not_composed]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_stale]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[map_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[no_leads]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[not_requested]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[plan_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[prelaunch_undeclared]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[ram_epoch_stale]",
+        "tests/test_gang_residency_members.py::test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown[resident]",
+        "tests/test_gang_residency_members.py::test_a_failed_confirming_read_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_failed_first_verdict_read_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[done]",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[movers]",
+        "tests/test_gang_residency_members.py::test_a_failed_refresh_under_the_lead_lock_restarts_confirmation[ready]",
+        "tests/test_gang_residency_members.py::test_a_fresh_read_that_disagrees_blocks_the_teardown",
+        "tests/test_gang_residency_members.py::test_a_future_terminal_timestamp_restarts_confirmation",
+        "tests/test_gang_residency_members.py::test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives",
+        "tests/test_gang_residency_members.py::test_a_live_reading_whose_mark_survives_restarts_the_window",
+        "tests/test_gang_residency_members.py::test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down",
+        "tests/test_gang_residency_members.py::test_a_member_whose_leads_are_merely_pending_does_not_tear_the_gang_down",
+        "tests/test_gang_residency_members.py::test_a_planner_row_member_is_gated_like_an_explicit_one",
+        "tests/test_gang_residency_members.py::test_a_requeue_that_wins_before_the_proof_blocks_the_teardown",
+        "tests/test_gang_residency_members.py::test_a_resident_member_claims_with_its_verdict_and_map",
+        "tests/test_gang_residency_members.py::test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown[map_unreadable]",
+        "tests/test_gang_residency_members.py::test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown[prelaunch_undeclared]",
+        "tests/test_gang_residency_members.py::test_a_withdrawn_member_tears_down_the_same_way",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[False-claimed]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[False-ready]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[True-claimed]",
+        "tests/test_gang_residency_members.py::test_cached_live_misses_do_not_confirm_an_aged_terminal_mark[True-ready]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-confirming]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-initial]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[False-live]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-confirming]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-initial]",
+        "tests/test_gang_residency_members.py::test_failed_unlink_and_replacement_require_a_new_confirmation_window[True-live]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[None]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[holder]",
+        "tests/test_gang_residency_members.py::test_fresh_pin_proof_preserves_a_resident_gang[receipt]",
+        "tests/test_gang_residency_members.py::test_pending_leads_refuse_the_member_before_its_gang_code",
+        "tests/test_gang_residency_members.py::test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_loop",
+        "tests/test_gang_residency_members.py::test_two_members_sharing_one_lead_go_resident_together"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_gang_residency_members.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          11,
+          14
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_gang_residency_members.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_gang_residency_members.py": "51f0c114e17de53536d60c3dbb93226bf71fab2e89794a16b2cc955f9e99e5a7"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "e2992c9a5e988be28c95cc0e934f9100a98d3fee9adb9b9f8be9b89bcac7ec4a",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "1d26b19a5a95ad6ecc91de025083aa4d9d4ef845dfe4750fb445cdc4818d4ee0",
+      "request_sha256": "917e3d48e93194f286de534ba27aa8c29a23dc10260c21c64cd1fcbaa6f40059",
+      "logs": {
+        "stdout": {
+          "bytes": 13659,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e2992c9a5e988be28c95cc0e934f9100a98d3fee9adb9b9f8be9b89bcac7ec4a/5db235441fe99d8224bd65793ec38036686e0aae51d3cd98e40680d88c10505a/00000001.stdout.11022df20c41a31cdda7a7c7df5201da4d3d911bbaffe045a004d63523bdf9f5.log",
+          "sha256": "11022df20c41a31cdda7a7c7df5201da4d3d911bbaffe045a004d63523bdf9f5"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/e2992c9a5e988be28c95cc0e934f9100a98d3fee9adb9b9f8be9b89bcac7ec4a/5db235441fe99d8224bd65793ec38036686e0aae51d3cd98e40680d88c10505a/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 12,
+      "nodeids": [
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_claimed_copy_that_filed_its_receipt_no_longer_counts",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_copy_faster_than_the_pools_whole_delivery_is_warm",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_curve_still_rising_at_its_last_level_probes_one_more",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_level_within_its_error_of_the_best_is_the_knee",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_report_from_before_the_claim_prices_nothing",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_a_stale_plan_fails_open",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_seconds_a_copy_stood_aside_are_not_a_shortfall",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_single_receipts_measure_no_error_and_cap_nothing",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_cap_admits_that_many_movers_and_no_more",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_fold_skips_what_did_not_measure_this_pool",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_knee_is_the_first_level_the_measurement_cannot_tell_from_the_best",
+        "tests/test_the_reader_plan_measures_and_fails_open.py::test_the_waited_copy_is_admitted_without_fill_and_holds_its_stage"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_the_reader_plan_measures_and_fails_open.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          3,
+          10
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_the_reader_plan_measures_and_fails_open.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_the_reader_plan_measures_and_fails_open.py": "9ed16d027664f3c09c4ed1ea7237ab3f34e8a670c7a9c87b66645da4670017cf"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "ea7e5e539fddf4c36892c79a82b3a23be4fc395b5dae3d96b2377477b6ab6d29",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "e0b307e386d33f158ea9bf777dea84fe7c00da60841f09a246f4e2c07129b661",
+      "request_sha256": "bce7a74856b742b857cda7d01fdb9c1d9ad344c0f5274d5e90274c514418629e",
+      "logs": {
+        "stdout": {
+          "bytes": 15329,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ea7e5e539fddf4c36892c79a82b3a23be4fc395b5dae3d96b2377477b6ab6d29/f041a74ef189ae5562b28f513da304a850539e25c1dac6253f0550c5cb4625da/00000001.stdout.3b03ea1b351105f24314578732ce2eeba79ecd8966cedd5b5805407aaf6212e5.log",
+          "sha256": "3b03ea1b351105f24314578732ce2eeba79ecd8966cedd5b5805407aaf6212e5"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/ea7e5e539fddf4c36892c79a82b3a23be4fc395b5dae3d96b2377477b6ab6d29/f041a74ef189ae5562b28f513da304a850539e25c1dac6253f0550c5cb4625da/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 2,
+      "nodeids": [
+        "tests/test_the_landing_record_fits_its_reader_at_scale.py::test_eight_chunked_r12_records_fit_their_reader",
+        "tests/test_the_landing_record_fits_its_reader_at_scale.py::test_eight_r12_records_fit_their_reader_and_the_cycle_is_counted"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          5,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_the_landing_record_fits_its_reader_at_scale.py": "d4a6204ac23568f3742b51ad2a12a4c4201734da38dab9fdbb28a056a3d2f79a"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "3f06b172a79cfef7ec3ae81a9674fd7100a210184be38a527d7ce8eeb54f3aec",
+      "host": "sparky",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "dd6b960a3d7ba054fb0e7d9d4da90efef655267221b301994d8fa50d7b2e1570",
+      "request_sha256": "67dc2420dcdff6501d56015ad0be8d175742d38e51b66a8c2ac88a2605faa863",
+      "logs": {
+        "stdout": {
+          "bytes": 19616,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3f06b172a79cfef7ec3ae81a9674fd7100a210184be38a527d7ce8eeb54f3aec/7062027ed1de89f917e2848626dac69ff1081c0e5cd4212fc276692fa5ab1a15/00000001.stdout.ca4e8d3fa65d5285a22bb0cb5ad73f800865de5323539f62b3e2b02931e1e83f.log",
+          "sha256": "ca4e8d3fa65d5285a22bb0cb5ad73f800865de5323539f62b3e2b02931e1e83f"
+        },
+        "stderr": {
+          "bytes": 43,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/3f06b172a79cfef7ec3ae81a9674fd7100a210184be38a527d7ce8eeb54f3aec/7062027ed1de89f917e2848626dac69ff1081c0e5cd4212fc276692fa5ab1a15/00000001.stderr.6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f.log",
+          "sha256": "6ae22e28d8e7d3c9541ecc30e0edf8b3931838f003d6d63a9b15a9f79f0f4b0f"
+        }
+      },
+      "native_tests": 19,
+      "nodeids": [
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1000.0-144-declared]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1990.0-1-measured]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_declared_read_rate_prices_consumption_when_it_is_the_larger[1990.0-144-declared]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_gated_newcomer_is_relieved_by_ranges_past_the_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_pinned_range_past_the_horizon_is_declined_whole",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_range_landed_again_is_priced_at_its_new_landing",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_range_past_the_horizon_makes_room_for_another_consumers_lead",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_running_consumer_regated_after_its_lead_retires_still_preempts",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_running_consumers_next_range_preempts_ranges_past_another_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_window_claimed_before_the_horizon_keeps_its_ranges",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_a_window_publishes_only_to_its_refill_horizon",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_evicted_range_is_published_again_when_its_reader_nears_it",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override0]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override1]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override2]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override3]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_an_undefined_horizon_leaves_the_window_as_it_was[override4]",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_no_range_inside_a_horizon_is_evicted_when_room_cannot_be_made",
+        "tests/test_a_consumer_stages_only_to_its_refill_horizon.py::test_the_horizon_is_the_docstring_arithmetic"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          12,
+          3
+        ],
+        "description": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "files": [
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.12",
+          "bytes": 7845048,
+          "sha256": "c86f21d0da9290ece2d7d49a3f7ed52aed59cb029abdf0ea25c79634f6cbe960"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          7,
+          8
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "sparky",
+          "release": "7.0.0-1019-nvidia",
+          "version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+          "machine": "aarch64",
+          "processor": "aarch64"
+        },
+        "selected_files": [
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_a_consumer_stages_only_to_its_refill_horizon.py": "c97a361d02909fa0fde7c19b49fcc1adecaf3042cad39f478ca80030c19404d9"
+        },
+        "exitstatus": 0
+      }
+    },
+    {
+      "action_key": "98432982e079d7f25d7e49c4dcd6ba07984fb508a005cd5d9fbd5af8f44b8e0f",
+      "host": "dl380g10",
+      "status": "executed",
+      "exit_code": 0,
+      "receipt_sha256": "d9b15491115c87bd33981bda66274a269fc2a6e04b206245be826f9c4e662906",
+      "request_sha256": "e9a33438867f2f9b49963df0dea72cf786415dfc9e65f8a37d92920676fcf3e2",
+      "logs": {
+        "stdout": {
+          "bytes": 11045413,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/98432982e079d7f25d7e49c4dcd6ba07984fb508a005cd5d9fbd5af8f44b8e0f/cb2f4e53243528e25758486ba1d80bf0f70ba3fcc45674d6af82b8f59d140023/00000001.stdout.fcb048d247cb411dad1bbaea5184e184a79c2eef9ef2887c382b9d5e1cbb3b20.log",
+          "sha256": "fcb048d247cb411dad1bbaea5184e184a79c2eef9ef2887c382b9d5e1cbb3b20"
+        },
+        "stderr": {
+          "bytes": 46,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/98432982e079d7f25d7e49c4dcd6ba07984fb508a005cd5d9fbd5af8f44b8e0f/cb2f4e53243528e25758486ba1d80bf0f70ba3fcc45674d6af82b8f59d140023/00000001.stderr.e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c.log",
+          "sha256": "e53e6c1a643c3ce9d00407937e7616ea827d5ad6f1f283a8b0e8c7f634c59a7c"
+        }
+      },
+      "native_tests": 73,
+      "nodeids": [
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[checkout-snapshot]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[checkout-v1-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-action]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-attestation]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-awaited]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-claim]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-closure]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-contention]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-manifest-v1]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-manifest-v2]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-progress-policy]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-receipt]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[core-runtime]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[out-declaration]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[profile-exit]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_invalid_record_reaches_both_real_consumer_boundaries[profile-route]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-snapshot/clean]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-snapshot/dirty]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[checkout-v1-input/shape-gate-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/portable]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/smoke-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-action/template-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-awaited/cli]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-awaited/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-claim/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-claim/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/multiple]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/single]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-closure/stamp-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-contention/mover]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-contention/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/merged-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/origin-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/phased]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/stage-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/task-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v1/unphased]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/canary-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/placed-builder]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-manifest-v2/read-plan]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/cli-cycle]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/cli-linear]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/egress]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/mover]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-progress-policy/validated]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[out-declaration/sealed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/ended]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/launch-failed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-exit/launched]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-route/armed]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[profile-route/docker]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[checkout-snapshot]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[checkout-v1-input]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-action]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-attestation]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-awaited]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-claim]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-closure]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-contention]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-manifest-v1]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-manifest-v2]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-progress-policy]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-receipt]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[core-runtime]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[out-declaration]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[profile-exit]",
+        "tests/test_record_compatibility_core.py::TestRecords::test_unknown_fields_follow_real_consumer_policy[profile-route]"
+      ],
+      "cleanup_complete": true,
+      "source_snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "41b81a3c4e686df63b65b84f80aad4e8bb9783f70ab2e5c1f07497e836b4854b"
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          3,
+          6
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "b566f7b28c2f925a86eb5c4962a9fe9a4f61bfc19d96c953d37df88453a43504",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_record_compatibility_core.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_record_compatibility_core.py": "7e6ac0313499b90c56ea41033ebfca0fd40c71f86a6768c0c43ab44eb907e94d"
+        },
+        "exitstatus": 0
+      }
+    }
+  ],
+  "source_bundles": [
+    {
+      "snapshot": {
+        "bytes": 45929628,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e0bb98dbe6d31ffb042cb7fc01e0fc33088eac6cf15f36ba471c38cbc4300c82"
+      },
+      "commit": "f6b862833b9680205d9d97f71f3f93a5ac7c023b",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e35640cffa3b391286567eb7e1a8fc15d5a06dac98ec1cd443c637648639cc31"
+      },
+      "commit": "979091dc76cac997754a56343eb9935f55c1f67f",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "560793c2dec5dda357f0296ac777da57d6462fdddce57134cd30500395c8efe3"
+      },
+      "commit": "d8511f8aca39ea08307c5bb5c3494c697435ec17",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "35f82b741ea0b330c3c642b5e27837968a81f099bf6c01f92bf87e9fc9d17b1e"
+      },
+      "commit": "53f6ce2ef5281035a704ba966ec1845e09d23ee1",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929624,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "a74190c5e14de330d067f1877b91956375eb9c9d22e9e07f1fa1871fefea889b"
+      },
+      "commit": "13b6249fd82456cbf18a2659e78fefe2b548b67f",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "bb2633baeb49ce1b1ab3a7725239a86735ccedfc6cdbc6f4dd492c32bf271e19"
+      },
+      "commit": "cefd6d203756745ba8e5ff8fd3190a1e23df643e",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929628,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "3dea1a67a7a027c3a1464e6b223257036a0ae1b02ac05a8d7070a833c3464018"
+      },
+      "commit": "9843e2f6beeb5cfb139ad901175c83a24d320e68",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "e16069b5cedc2f07581160d07a2fa84ba0772f41eaca081eab2f673f66cfc24c"
+      },
+      "commit": "56dc8eb889bcbed4aa5ed9a6cc2711ed78b79c06",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "f7cf223e5dd36c2839c7f8045585b1ad4422ad80e42d3c228fe23f5d769fa91d"
+      },
+      "commit": "5a4ba9edcbb075e9779b962427158baeb127793e",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "8bd943a0104fbe1b155700abb15f22a6153128e3226831b240793758df269198"
+      },
+      "commit": "88e8560a481ef501e9f1b80b19ba675283ba4dbc",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929627,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "396e517aaf09360a73147676708b50c260bf5e631f0da8ca02d5d2b7d107547b"
+      },
+      "commit": "2cb480e9993c29845aba6e28082da949f88fa917",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    },
+    {
+      "snapshot": {
+        "bytes": 45929626,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "41b81a3c4e686df63b65b84f80aad4e8bb9783f70ab2e5c1f07497e836b4854b"
+      },
+      "commit": "76c22b354788794e7c654bdbe2f7d2da7cabdfe0",
+      "source_sha256": {
+        "src/prismabuild/numeric_fields.py": "1ab964e0b3a4b35e63b822b364a3715fd7e2242198e82a84f9fa6338ff8be29e",
+        "src/prismabuild/_gang.py": "5f68ad88fd493ead8a201f3844c10adbc99361109770f3af9026811480aa2109",
+        "src/prismabuild/core.py": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+        "src/prismabuild/residency_plan.py": "c5801ad8521afdf8eac90b5ef562db4509dd255120f07d083aa48476f20f30a4",
+        "tests/compat/field_sets.json": "1a43c59fd04a99d64cc14576654209124d92b9843472a8ca123694c3153888ed",
+        "tests/test_core_numbers_1521.py": "41ad06989ac781d8e0e3fe005c6f9ed17550e91b5479c7ecc94a59b4e064b4ad",
+        "docs/design.md": "7092828aac6cf08ff45966dea939be30b215211249ec67f36761c9b9ae748861"
+      }
+    }
+  ],
+  "limits": "CPU component evidence only. Worker attestation signatures unchecked. No deployment, GPU or campaign claim."
+}

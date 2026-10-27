@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 import select
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 
 import pytest
 
@@ -20,6 +22,7 @@ from test_pbtest_reconciles_outcomes import pbtest
 BLOCKER = '''\
 import faulthandler
 import os
+import socket
 import threading
 import pytest
 
@@ -44,6 +47,8 @@ def pytest_sessionfinish(session, exitstatus):
         if hasattr(session.config, "workerinput"):
             with open(os.environ["PBTEST_STACK_ROOT"] + str(os.getpid()), "w") as stream:
                 faulthandler.dump_traceback(file=stream)
+            with socket.create_connection(("127.0.0.1", int(os.environ["PBTEST_BLOCK_PORT"])), timeout=60):
+                pass
             threading.Event().wait()
     elif not hasattr(session.config, "workerinput"):
         block()
@@ -68,7 +73,12 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
         "def test_one():\n    assert " + ("False" if stop_early else "True") +
         "\n\ndef test_two():\n    assert True\n")
     read_fd, write_fd = os.pipe()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(workers)
+    listener.settimeout(60)
     environment = dict(os.environ, PBTEST_BLOCK_FD=str(write_fd),
+                       PBTEST_BLOCK_PORT=str(listener.getsockname()[1]),
                        PBTEST_INCOMPLETE=str(int(incomplete)),
                        PBTEST_WORKER_EXIT=str(int(worker_exit)),
                        PBTEST_STACK_ROOT=str(checkout / "worker-stack-"),
@@ -82,22 +92,45 @@ def blocked_shard(tmp_path: Path, *, workers: int, incomplete: bool,
     with tempfile.TemporaryFile(mode="w+t") as stream:
         process = subprocess.Popen(
             [*pbtest.shard_entry(sys.executable, checkout), *arguments, "test_one.py"],
-            cwd=checkout, env=environment, stdout=stream,
+            cwd=checkout, env=environment, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, start_new_session=True,
             pass_fds=(write_fd,))
         os.close(write_fd)
+        completion = threading.Event()
+        capture_errors = []
+
+        def capture_output():
+            try:
+                for line in process.stdout:
+                    stream.write(line)
+                    if line.startswith("pbtest-completion: "):
+                        completion.set()
+            except BaseException as error:
+                capture_errors.append(error)
+
+        capture = threading.Thread(target=capture_output, daemon=True)
+        capture.start()
         try:
             if worker_exit:
-                with pytest.raises(subprocess.TimeoutExpired):
-                    process.wait(timeout=10)
+                for _ in range(workers):
+                    connection, _ = listener.accept()
+                    connection.close()
+                assert completion.wait(60), "The controller did not report test completion."
+                assert process.poll() is None
             else:
-                ready, _, _ = select.select([read_fd], [], [], 30)
+                ready, _, _ = select.select([read_fd], [], [], 60)
                 assert ready, "The shard did not reach the controlled blocker."
                 assert os.read(read_fd, 64) == b"blocked\n"
         finally:
+            listener.close()
             os.close(read_fd)
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
+            process.wait(timeout=60)
+            capture.join(timeout=60)
+            assert not capture.is_alive(), "The shard output reader did not finish."
+            process.stdout.close()
+            assert not capture_errors, capture_errors
+            stream.flush()
             stream.seek(0)
             output = stream.read()
     if worker_exit:

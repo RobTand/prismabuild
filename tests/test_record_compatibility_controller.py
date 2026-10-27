@@ -88,6 +88,8 @@ def test_archival_writer_uses_the_selected_environment_after_ambient_change(gene
     case = "shape-table/unhashed"
     generation, old, manifest = historical_shape(generations, case)
     monkeypatch.setenv("COMPAT_ARCHIVAL_ENV_CONTROL", "selected")
+    selected_tmpdir = str(tmp_path / "selected-tmp")
+    monkeypatch.setenv("TMPDIR", selected_tmpdir)
     run = record_compat.subprocess.run
 
     def change_ambient_environment(command, **kwargs):
@@ -102,6 +104,7 @@ def test_archival_writer_uses_the_selected_environment_after_ambient_change(gene
                       archival_runtime=archival_runtime(),
                       runtime_observe=runtime_observer("archival-environment-snapshot-control", generation, case))
     assert observed["returncode"] == 0, observed
+    assert observed["archival_runtime"]["observed"]["environment_before_driver"]["TMPDIR"] == selected_tmpdir
     assert base64.b64decode(accepted(observed)["raw"]) == decoded(HISTORY[generation, case])
 
 

@@ -398,7 +398,9 @@ def reconcile(record: dict, counts: dict[str, int] | None,
     }
 
 
-from prismabuild.pbtest_collection import ignored_named_paths
+from prismabuild.pbtest_collection import (
+    checkout_nodeid, ignored_named_paths, node_group_spec, partition_nodes,
+)
 
 
 _COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
@@ -606,6 +608,12 @@ def _judge_row(row, index):
             or type(row.get("timed_out", False)) is not bool):
         problem("report_invalid", "invalid shard observation")
         return verdict
+    groups = {}
+    if "node_groups" in row:
+        try:
+            groups = node_group_spec(row["node_groups"], files)
+        except ValueError as exc:
+            problem("node_groups_invalid", str(exc))
     verdict["shard"] = row.get("shard", index)
     record_binding = row.get("record_binding")
     if record_binding is not None and (
@@ -650,7 +658,8 @@ def _judge_row(row, index):
             *record.get("collect_seen", []), *(r["nodeid"] for r in reports if r["when"] == "collect"))}
         if "file_selection" in record:
             selection = record["file_selection"]
-            if (not isinstance(selection, dict) or set(selection) != {"files", "ignored"}
+            fields = {"files", "ignored"} | ({"node_groups", "node_rosters"} if groups else set())
+            if (not isinstance(selection, dict) or set(selection) != fields
                     or selection["files"] != files or not isinstance(selection["ignored"], list)
                     or any(not isinstance(f, str) or f not in files for f in selection["ignored"])
                     or selection["ignored"] != sorted(set(selection["ignored"]))
@@ -658,6 +667,10 @@ def _judge_row(row, index):
                 rec["problems"].append("invalid or inconsistent file selection evidence")
             else:
                 observed.update(selection["ignored"])
+                if groups and selection["node_groups"] != groups:
+                    rec["problems"].append("node group selection differs from its declaration")
+        elif groups:
+            rec["problems"].append("node group selection evidence is missing")
         rec["missing_files"] = sorted(set(files) - observed)
         if rec["missing_files"]:
             rec["problems"].append("assigned file(s) had no collection or outcome: " + ", ".join(rec["missing_files"]))
@@ -709,6 +722,57 @@ def _judge_row(row, index):
     return verdict
 
 
+def _node_group_assignment(rows, shards, filename, indices):
+    """Require every sealed group once and one agreed current population."""
+    declarations = []
+    reference = None
+    for index in indices:
+        row = rows[index]
+        try:
+            groups = node_group_spec(row.get("node_groups"), row["files"])
+        except ValueError:
+            return "grouped file has an invalid or missing group declaration"
+        if filename not in groups:
+            return "grouped file also has an ungrouped owner"
+        group = groups[filename]
+        if group["count"] != len(indices):
+            return "node group indices are incomplete or repeated"
+        if not isinstance(row.get("output"), str):
+            return "node group outcome evidence is missing"
+        record = parse(row["output"], record_binding=row.get("record_binding"))
+        if record is None or not _valid_record(record):
+            return "node group outcome evidence is invalid"
+        rootdir = record.get("rootdir_relative", ".")
+        if not isinstance(rootdir, str):
+            return "node group rootdir evidence is invalid"
+        view = record.get("file_selection")
+        if not isinstance(view, dict) or view.get("node_groups") != groups:
+            return "node group evidence differs from its sealed declaration"
+        rosters = view.get("node_rosters")
+        if not isinstance(rosters, dict) or set(rosters) != set(groups):
+            return "node group population evidence is missing"
+        roster = rosters[filename]
+        if (not isinstance(roster, list) or any(not isinstance(node, str) or "\0" in node
+                or node.split("::", 1)[0] != filename for node in roster)
+                or roster != sorted(set(roster))):
+            return "node group population evidence is invalid"
+        signature = (group["count"], group["durations"], roster)
+        if reference is None:
+            reference = signature
+        elif signature != reference:
+            return "node groups disagree on the current population or duration model"
+        expected = partition_nodes(roster, group["count"], group["durations"])[group["index"]]
+        actual = [checkout_nodeid(node, rootdir)
+                  for node in shards[index]["collected"]
+                  if source_file(node, rootdir) == filename]
+        if sorted(actual) != sorted(expected):
+            return "node group's selected population differs from its assigned partition"
+        declarations.append(group["index"])
+    if reference is None or sorted(declarations) != list(range(reference[0])):
+        return "node group indices are incomplete or repeated"
+    return None
+
+
 def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=None):
     """Judge raw shard evidence against the caller's independent population."""
     requested = set(requested_files)
@@ -734,6 +798,14 @@ def judge_shards(rows, *, requested_files, client_returncode=0, required_nodes=N
     missing = requested - assignments.keys()
     foreign = assignments.keys() - requested
     duplicated = {name for name, ids in assignments.items() if len(ids) > 1}
+    for name, indices in assignments.items():
+        if not any(isinstance(rows[index].get("node_groups"), dict)
+                   and name in rows[index]["node_groups"] for index in indices):
+            continue
+        message = _node_group_assignment(rows, shards, name, indices)
+        if message is not None:
+            problem("node_group_assignment", message, [name])
+        duplicated.discard(name)
     if missing:
         problem("assigned_missing", "requested files have no shard assignment", missing)
     if foreign:
@@ -850,6 +922,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
             self.first_tightened_test: dict | None = None
             self.uncounted: list[list] = []
             self.file_durations: dict[str, float] = {}
+            self.node_durations: dict[str, float] = {}
             self.written = False
             self.selection_views = []
             self.last_record = None
@@ -926,6 +999,9 @@ def main(argv: list[str] | None = None, *, preflight=None,
             "file_durations": {
                 name: round(seconds, 3)
                 for name, seconds in state.file_durations.items()},
+            "node_durations": {
+                node: round(seconds, 3)
+                for node, seconds in state.node_durations.items()},
         }
         if state.first_tightened_test is not None:
             record["first_tightened_test_budget_remaining_s"] = state.first_tightened_test[
@@ -1181,6 +1257,8 @@ def main(argv: list[str] | None = None, *, preflight=None,
             name = source_file(report.nodeid, rootdir)
             state.file_durations[name] = (
                 state.file_durations.get(name, 0.0) + duration)
+            nodeid = checkout_nodeid(report.nodeid, rootdir)
+            state.node_durations[nodeid] = state.node_durations.get(nodeid, 0.0) + duration
         status = state.config.hook.pytest_report_teststatus(
             report=report, config=state.config)
         category = status[0] if status else ""

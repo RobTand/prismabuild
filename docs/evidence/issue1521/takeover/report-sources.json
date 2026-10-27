@@ -1,0 +1,74 @@
+{
+  "numeric-x86-0.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-0.json",
+    "original_sha256": "64fec416e8bd1159bdac6ddf8fe66d3f579ca60b254a4a185f2c88aaadefbcd7",
+    "original_bytes": 23806,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-x86-1.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-1.json",
+    "original_sha256": "eed35ab79aeef595afb380b9d5e5961249f9f3a27041d31c20dca8ad34f80d21",
+    "original_bytes": 23683,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-x86-2.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-2.json",
+    "original_sha256": "957fa8662c508868e71063a80bab714a51188206a4096bcf5a1db8c4b8e33717",
+    "original_bytes": 23882,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-x86-3.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-3.json",
+    "original_sha256": "d595d5ed94833bf08a5b2135c19484a0b43eac0ef542c02b9e30372354e85e4f",
+    "original_bytes": 23976,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-x86-4.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-4.json",
+    "original_sha256": "f7b389e58ef6e726efd697b3413acb15510a5cf9410a4b0e45e85fceecaedba2",
+    "original_bytes": 24064,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-aarch64-0.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-aarch64-0.json",
+    "original_sha256": "6662d421dfc2bb507cff61a3225f55bcf8aa23362a430b8035620323749a6bcc",
+    "original_bytes": 23905,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-aarch64-1.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-aarch64-1.json",
+    "original_sha256": "2b81dec61b18f619af5d581d838bd2605681e5b9fce49f9d8d25a5bef54645eb",
+    "original_bytes": 23792,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-aarch64-2.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-aarch64-2.json",
+    "original_sha256": "f8b2f2ab24afbbc91c0fd6066323c0ac876d7d21287f88204ac87304bf0180b4",
+    "original_bytes": 23973,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-aarch64-3.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-aarch64-3.json",
+    "original_sha256": "4bc5fa311420983f8e884ba2a6817bb7a77d8941f4db92ef9ffa92e20c1c6f6b",
+    "original_bytes": 23968,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "numeric-aarch64-4.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-aarch64-4.json",
+    "original_sha256": "072f8b0d2c20991d69da61f718d1b7cef3e58558f20aa9c2e8b8bc4663d3c101",
+    "original_bytes": 24053,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "adjacent.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/adjacent.json",
+    "original_sha256": "2e295deebf306df28b15b9ec24eefb6f065797772beda560bb90f2b671b1b38d",
+    "original_bytes": 11677307,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  },
+  "integrated.json": {
+    "original_path": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/integration-85fa57bb/integrated.json",
+    "original_sha256": "4636d524441ede138719cf870f0e8b85818c9e7e173fdf7955d65c7a8d633159",
+    "original_bytes": 11915915,
+    "representation": "Derived action/exit index; original report and immutable streams retained at original paths."
+  }
+}
