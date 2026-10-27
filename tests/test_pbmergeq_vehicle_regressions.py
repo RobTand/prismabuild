@@ -268,6 +268,46 @@ def test_terminal_retry_is_saved_before_close_and_recovers_branch_deletion(
     assert runner.runs == completed
 
 
+@pytest.mark.parametrize("vehicle_state", ["OPEN", "CLOSED"])
+def test_dry_run_restart_preserves_pending_vehicle_cleanup(
+        tmp_path, monkeypatch, issue_api, vehicle_state):
+    clock = [1000.0]
+    monkeypatch.setattr(mq.time, "time", lambda: clock[0])
+    queue, origin, github, runner = make_queue(tmp_path)
+    queue.once = True
+    origin.pr(1, {"one.txt": "1\n"})
+    with monkeypatch.context() as refusal:
+        if vehicle_state == "OPEN":
+            refusal.setattr(github, "close_vehicle", lambda *args: False)
+        else:
+            refusal.setattr(queue.mirror, "delete_candidate", lambda *args: False)
+        batch = queue.run_batch(entries(github, 1))
+    assert queue.store.state["batch"] is None
+    assert github.pr(batch["vehicle"]["number"])["state"] == vehicle_state
+    branch = f"refs/heads/{batch['vehicle']['branch']}"
+    candidate = git("rev-parse", branch, cwd=origin.work)
+    pending = json.loads(json.dumps(queue.store.state["vehicle_cleanup"]))
+    completed = list(runner.runs)
+    clock[0] += queue.cfg.stuck_backoff_s
+    store = mq.Store(queue.cfg.state_dir)
+    dry_github = FakeGitHub(queue.cfg, store, origin, dry=True)
+    resumed = mq.Queue(queue.cfg, store, dry_github, queue.mirror, runner, "dry-run")
+
+    resumed.resume()
+    assert resumed.tick() is None
+
+    assert git("rev-parse", branch, cwd=origin.work) == candidate
+    assert store.state["vehicle_cleanup"] == pending
+    assert github.pr(batch["vehicle"]["number"])["state"] == vehicle_state
+    assert runner.runs == completed
+    status_github = FakeGitHub(queue.cfg, store, origin)
+    status = mq.Queue(queue.cfg, store, status_github, queue.mirror, runner, "status")
+    status.cleanup_vehicles()
+    assert store.state["vehicle_cleanup"] == {}
+    assert git("for-each-ref", "--format=%(refname)", branch, cwd=origin.work) == ""
+    assert status_github.pr(batch["vehicle"]["number"])["state"] == "CLOSED"
+
+
 def test_exhausted_cleanup_does_not_block_another_batch(tmp_path, monkeypatch, issue_api):
     clock = [1000.0]
     monkeypatch.setattr(mq.time, "time", lambda: clock[0])
