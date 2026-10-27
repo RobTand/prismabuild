@@ -18924,7 +18924,9 @@ Terminal disposition, requeue, and `vehicle_cleanup` intent are saved before
 remote cleanup. Cleanup retries outside the active batch are bounded by
 `max_attempts`, separated by `stuck_backoff_s`. Exhausted obligations remain
 visible for operator repair. Status-mode vehicles are drafts and close with
-branch deletion after the verdict. A member push during the final vehicle
+branch deletion after the verdict. Dry-run never processes retained remote
+cleanup or consumes its retry budget; status or merge mode resumes it.
+A member push during the final vehicle
 merge race receives the re-review notice and a distinct `member-head-moved`
 ledger fact. After confirming unchanged members, `merged-head-moved` releases
 the queue without claiming MERGED for the changed PR. Unobserved fleet shards requeue uncharged

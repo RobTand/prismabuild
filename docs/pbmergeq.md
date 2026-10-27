@@ -115,6 +115,8 @@ batch. They retry up to `max_attempts` with `stuck_backoff_s` between attempts.
 Exhausted obligations stay visible for operator repair and do not hold later
 batches. Status vehicles are drafts and close with branch deletion after the
 verdict. A refused cleanup retains its obligation across restart.
+Dry-run leaves retained cleanup obligations and their retry budgets unchanged.
+Resume in status or merge mode to close the vehicles and delete their branches.
 A repeated `once` reconciles a retained batch before accepting another batch
 and refuses a mode change while it is active. A status refusal never permits
 a merge.

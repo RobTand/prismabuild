@@ -1306,6 +1306,8 @@ class Queue:
             self.store.save()
 
     def cleanup_vehicles(self) -> None:
+        if self.mode == "dry-run":
+            return
         pending = self.store.state.get("vehicle_cleanup", {})
         for bid, cleanup in list(pending.items()):
             if (cleanup["attempts"] >= self.cfg.max_attempts
