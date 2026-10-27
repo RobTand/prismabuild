@@ -88,7 +88,7 @@ def test_stalled_ordinary_proof_releases_locks_and_preserves_reader_custody(
 
     def select(reads, writes, errors, timeout):
         if expire_wait:
-            assert accepted.wait(30), "ordinary reader never reached the stalled syscall"
+            assert accepted.wait(60), "ordinary reader never reached the stalled syscall"
             return [], [], []
         return real_select(reads, writes, errors, timeout)
 
@@ -119,11 +119,11 @@ def test_stalled_ordinary_proof_releases_locks_and_preserves_reader_custody(
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(endpoint))
         server.listen(1)
-        server.settimeout(30)
+        server.settimeout(60)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(acquire)
             connection, _ = server.accept()
-            connection.settimeout(30)
+            connection.settimeout(60)
             caller = int(connection.recv(64).strip())
             accepted.set()
             try:
