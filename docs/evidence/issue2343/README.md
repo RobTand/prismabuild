@@ -12,6 +12,18 @@ The original bounded-loan RED is `1bd4eea53c5ab1355e7af9359c741eac3fefde5771a1aa
 
 Final deadline cleanup depends on independently approved #2344 head `9f06f45a4f227874b53a2bd621d0a5da6fc229f3`. The standalone successor-publication test fails at `9beeaae5b7634466d797c619881af0b8d08d919210288506498d1de896fa4050`. Temporary composition `ab0a19275f680b619ab3a7080392e4072f226b0b` passes 240 tests including that race. That composition preserves #2344 registration and exact-member cleanup. PRI-217 owns only the timeout and loan additions. PRI-128 owns eventual composition and landing.
 
-Architecture repeats and final composition qualification remain in progress. The temporary compositions are test artifacts, not approved-head intake. Before review, regenerate the inventory on the actual integrated source, retain a scoped acceptance record and ledger entries, and use the configured independent reviewer. The branch has not yet had its single pre-review rebase.
+Architecture qualification has finished. [Final composition readback](composition-qualification.json) covers 388 passes per architecture across 17 files, plus five fresh CLI rounds per architecture. [Original repeat readback](repeat-qualification.json) covers five fresh rounds per architecture for the other three new files. Every new file ran twice under xdist per architecture. Together these are 1,056 native test executions in 74 distinct actions, with zero failures or skips. Terminal cleanup, immutable logs, execution receipts, CAS payload bytes and actual source trees were verified. Worker attestation signatures remain unchecked.
+
+The final tested composition is `eb0eb392fc43228756727b79f91f66150d6b3c3a`, preserving approved #2344 head `9f06f45a4f227874b53a2bd621d0a5da6fc229f3`. Its authoritative inventory contains 590 policies. Static AST comparison preserves six approved registration and cleanup bodies after removing only the scoped timeout signature and deadline statements. Temporary compositions remain qualification artifacts. They are not approved-head intake.
+
+[Prepared merge acceptance](merge-acceptance.json) and scoped ledger entries separate targets, implemented source, component qualification and deployment. Source review waits for #2344 dependency integration. The standalone successor-publication test remains RED without that helper. Final main integration, the single pre-review rebase, independent Code Reviewer 02 review, approved-head intake and batch merge remain pending. This prepared record grants no merge approval.
+
+The evidence archive on PRI-217 retains `collect_qualification.py`, `verify_evidence.py`, all reports and readbacks, immutable logs, execution receipts and result payloads. The collectors read published PB terminal records and CAS bytes. To regenerate these committed indexes from that archive, run:
+
+```bash
+python3 docs/evidence/issue2343/summarize_qualification.py --evidence-root /mnt/shared/paperclip-runs/PRI-217
+```
+
+This index command reads retained verification outputs. It submits no tests and replaces no terminal or CAS check.
 
 Whole staged-read requirement states remain unchanged. This checkpoint establishes no deployed support, staged-only workload result, power-loss durability, or general starvation solution. The intentional residuals in #2343 remain open.

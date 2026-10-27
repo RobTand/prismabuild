@@ -5983,8 +5983,11 @@ fail with `movement_refused` and `residency_overran_reservation`.
 
 ### Bounded absence loans and submitter wait deadlines (#2343)
 
-Source contract, pending integrated qualification and independent review. No
-runtime deployment or operational acceptance is claimed by this change.
+Source contract, component-qualified in a temporary composition with approved
+#2344. Final dependency integration and independent source review remain
+pending. [Scoped qualification and remaining gates](evidence/issue2343/README.md)
+record the actual evidence. No runtime deployment or operational acceptance
+is claimed by this change.
 
 Terminal gang evidence remains the only fence release. The default loan path
 still requires proven preemptibility. The added exception admits one borrowing

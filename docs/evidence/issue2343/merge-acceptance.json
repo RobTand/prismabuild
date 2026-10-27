@@ -1,0 +1,111 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "a14685c6a107ed9d7744a7f1af8e5dc03bc6fcb3",
+  "scope": [
+    "SC-01",
+    "ID-02",
+    "SM-01",
+    "INV-01",
+    "INV-08"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "status": "prepared; blocked on dependency integration and independent source review",
+    "branch": "prismabuild-2343",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2343",
+    "standalone_source": "77aef6d9d690bccdf0458f21560ae85736930820",
+    "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+    "dependency": {
+      "pr": 2344,
+      "approved_head": "9f06f45a4f227874b53a2bd621d0a5da6fc229f3",
+      "state": "open; no branch/worktree changes by PRI-217"
+    },
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "scope": "PB observes dual absence and owns every loan, resource gate and queue-wait cancellation.",
+        "actions": [
+          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
+          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
+          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
+          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+        ],
+        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+      },
+      {
+        "id": "ID-02",
+        "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+        "scope": "Loan slots and deadline teardown bind exact publications; successor publications survive composed cleanup.",
+        "actions": [
+          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
+          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
+          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
+          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+        ],
+        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+      },
+      {
+        "id": "SM-01",
+        "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+        "scope": "Only an unchanged wholly unstarted gang can expire; first claim permanently disarms the opt-in deadline.",
+        "actions": [
+          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
+          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a",
+          "3435bf1e2dd59827b1d106b165575cfcb48c9b39b30ee9816a134023503fb29e",
+          "232ac0480168780b9412e66c86f69466644f37ba43c1be43c56dee42e3254bbc"
+        ],
+        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+      },
+      {
+        "id": "INV-01",
+        "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+        "scope": "One bounded loan preserves demand reservations and every other fence; ordinary exact-attempt cleanup returns tokens.",
+        "actions": [
+          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
+          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
+          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
+          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+        ],
+        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+      },
+      {
+        "id": "INV-08",
+        "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+        "scope": "A no-clobber slot admits only one borrowing publication across repeated attempts to reserve it.",
+        "actions": [
+          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
+          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b"
+        ],
+        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+      }
+    ],
+    "evidence": {
+      "composition": "docs/evidence/issue2343/composition-qualification.json",
+      "repeats": "docs/evidence/issue2343/repeat-qualification.json",
+      "final_broad": "388 passed per architecture in 17 files; no failures/skips",
+      "fresh_repeats": "5 rounds per architecture for all 4 new files, first 2 rounds xdist=2; 280 passes across the repeats",
+      "total_new_readback": "1056 native tests in 74 distinct actions, including broad runs; no failures/skips",
+      "worker_attestation_signatures": "not checked"
+    },
+    "remaining_gaps": [
+      "Standalone successor-publication regression remains RED without #2344. Merge acceptance is not granted by this prepared record.",
+      "Final integrated source and generated inventory, single pre-review rebase, configured non-author Code Reviewer 02 review, approved-head intake and actual batch merge remain owed.",
+      "All whole-requirement axes retain their existing states. INV-07 tier copy/publish/lease/release is unchanged and is not newly qualified by queue component tests.",
+      "No deployment, strict-tier campaign, power-loss durability, complete staged-read conformance or general-starvation proof.",
+      "Alive but indefinitely unclaimable gangs may retain fences; nonrestartable pre-election work is not preempted; returned partners may wait for one bounded loan; GB10 release latency has no finite measured bound."
+    ],
+    "note": "Source/component qualification of a temporary composition only. This record does not approve a source head or authorize publication."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}
