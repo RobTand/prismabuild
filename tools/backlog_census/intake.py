@@ -19,7 +19,7 @@ FIELD = re.compile(r"^\s*(?:\*\*)?\w[\w /()-]*(?:\*\*)?\s*:(?:\*\*)?(?:\s|$)")
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 SECTION = re.compile(r"^\s*(?:#{1,6}\s+|\*\*[^*]+\*\*\s*:)")
 PLACEHOLDER = re.compile(r"^(?:todo|tbd|n/?a|none|pending|not available|not yet|\.\.\.|<[^>]*>)\W*$", re.I)
-LIST_PREFIX = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?")
+LIST_PREFIX = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?")
 CREATE = """mutation($input:CreateIssueInput!) {
  createIssue(input:$input) { issue { number url parent { id } } }
 }"""
@@ -77,6 +77,7 @@ def evidence_lines(body: str) -> Iterator[str]:
         if delimiter:
             fence = delimiter[1]
             continue
+        line = LIST_PREFIX.sub("", line)
         match = EVIDENCE.fullmatch(line)
         if match:
             active = True
