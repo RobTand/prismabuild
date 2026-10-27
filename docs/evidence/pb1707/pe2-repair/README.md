@@ -1,4 +1,8 @@
-# PE2 repair checkpoint
+# PE2 repair evidence
+
+The final [source qualification](final/README.md) records 2,419 passing checks, 123 verified success receipts, complete x86 queue compatibility and portable qualification on both architectures. Its [proposed merge acceptance](final/merge-acceptance.json) awaits independent Principal standards/spec review. The original checkpoints below retain their historical source scope and failed records.
+
+# Initial PE2 repair checkpoint
 
 Vehicle12 returned #2069 for two source integration failures. Both reproduced on the approved source. The structural refactor then retained those two failures while 97 checks passed. After the fixtures sealed their intended finite deadlines, 130 focused checks passed on the current-main composition.
 
@@ -21,4 +25,4 @@ The related export-allowance case also reproduced before receiving the same fini
 
 The first qualification at `237890e44c97` stopped after five x86 rounds passed 385 checks and its 19-file integration returned 410 passes and one failure. The original frozen plan and failed record remain unchanged. ARM was never submitted.
 
-The failure exposed an error translation regression introduced by the shared-reader refactor. The unchanged sealed-timeout tamper test requires `ActionContractError`. Unchanged main passes it, while the structural-only validation split retains the `PoolContractError` failure. `tamper-disposition.json` binds those controls, identical test bytes and the original integration failure. Execution now reads through shared validation without pool publication error translation. Corrected qualification remains pending. Independent changed-head review, merge acceptance and batch landing remain due. Historical qualification keeps its source scope, and all eight crash-era actions remain excluded. No deployment or whole-requirement completion is claimed.
+The failure exposed an error translation regression introduced by the shared-reader refactor. The unchanged sealed-timeout tamper test requires `ActionContractError`. Unchanged main passes it, while the structural-only validation split retains the `PoolContractError` failure. `tamper-disposition.json` binds those controls, identical test bytes and the original integration failure. Execution now reads through shared validation without pool publication error translation. The corrected final qualification is linked above. Independent changed-head review, acceptance and batch landing remain due. Historical qualification keeps its source scope, and all eight crash-era actions remain excluded. No deployment or whole-requirement completion is claimed.
