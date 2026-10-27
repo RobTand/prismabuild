@@ -1154,17 +1154,19 @@ def _load_canary_module():
     return module
 
 
-def _load_canary_driver(*, preflight: bool = False):
+def _load_canary_driver():
+    return _load_canary_module().run_canary
+
+
+def _preflight_canary_placement(*, dry_run: bool):
     module = _load_canary_module()
-    if preflight:
-        check = getattr(module, "preflight_publication", None)
-        if not callable(check):
-            raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
-        try:
-            check(fleet_root=MIRROR.parent)
-        except Exception as exc:
-            raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
-    return module.run_canary
+    check = getattr(module, "preflight_publication", None)
+    if not callable(check):
+        raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
+    try:
+        check(fleet_root=MIRROR.parent)
+    except Exception as exc:
+        raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
 
 
 def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
@@ -2649,7 +2651,7 @@ def _run_publication(args) -> int:
         )
     if canary_enabled and not args.stage_only:
         try:
-            _load_canary_driver(preflight=True)
+            _preflight_canary_placement(dry_run=args.dry_run)
         except _CanaryPrecondition as exc:
             raise SystemExit(
                 f"{exc}; nothing was published and the live runtime still points where it did."
