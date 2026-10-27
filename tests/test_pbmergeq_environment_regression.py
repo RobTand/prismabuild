@@ -250,6 +250,8 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
         '--workers-per-shard', '2', '--pytest-args', '["--durations=1"]']),
         test_python=sys.executable)
     files = ['tests/test_a.py']
+    (checkout / 'tests').mkdir()
+    (checkout / files[0]).write_text('def test_broken():\n    assert False\n')
     selection = {'files': files, 'roots': [['tests/test_a.py', 'file']]}
     options = ['-q', '--no-header', '-p', 'no:cacheprovider', '-o', 'addopts=',
                '--durations', '1', '-n', '2']
