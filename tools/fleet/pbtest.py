@@ -1401,7 +1401,6 @@ def shard_arguments(spec: dict, pytest_args: list[str], index: int, *,
             *pytest_workers, *spec["files"]]
 
 
-
 def qualify_shard_command(command: list[str], environment: dict, *,
                           invocation: list[str], files: list[str], index: int) -> None:
     """Refuse native evidence outside this generation's selected test recipe."""
