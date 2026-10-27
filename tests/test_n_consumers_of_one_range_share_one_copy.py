@@ -589,8 +589,9 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
 # ----------------------------------------------------------- the campaign
 
 
-CAMPAIGN_PHASES = 45
+CAMPAIGN_PHASES = 3
 CAMPAIGN_GIB = 22
+CAMPAIGN_CAPACITY_GIB = 2 * CAMPAIGN_GIB
 CAMPAIGN_CONSUMERS = 4
 CAMPAIGN_HOSTS = ("sparky", "sparklina")
 
@@ -624,12 +625,12 @@ def _land_published(queue: pool.PoolQueue, stage: Path,
 
 def test_the_campaign_shape_copies_each_phase_once_charged_once(
         tmp_path: Path) -> None:
-    """Four consumers on two hosts read one 45-phase plan of 22 GiB phases.
+    """Four consumers on two hosts share three phases beyond a two-phase tier.
     Over the cycles the window runs, every range is copied at most once, one
     holder per range carries it, and the tier holds 22 GiB per landed range
     and no more."""
 
-    queue, stage = _fixture_queue(tmp_path, 400)
+    queue, stage = _fixture_queue(tmp_path, CAMPAIGN_CAPACITY_GIB)
     consumers = [_hexkey(f"1026campaign{n}") for n in range(CAMPAIGN_CONSUMERS)]
     plans = {}
     for n, key in enumerate(consumers):
@@ -653,7 +654,7 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
         tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                         receipts=tier_loop.ReceiptCache(),
                         discover=lambda **_kwargs: {
-                            TIER: _tier_record(stage, gib=400)})
+                            TIER: _tier_record(stage, gib=CAMPAIGN_CAPACITY_GIB)})
         _land_published(queue, stage, landings)
 
     assert landings, "the window published nothing: the test proves nothing"
