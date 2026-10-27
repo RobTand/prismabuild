@@ -246,7 +246,7 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
                         lambda self, directory, section, read, budget_s: read())
     checkout, parent, commit, branch = _two_commit_checkout(tmp_path)
     pbtest = mq.load_published_module(mq.Path(mq.__file__).with_name('pbtest.py'))
-    cfg = dataclasses.replace(config(tmp_path, pbtest_args=['--timeout-s', '60',
+    cfg = dataclasses.replace(config(tmp_path, pbtest_args=['--priority', '-10', '--timeout-s', '60',
         '--workers-per-shard', '2', '--pytest-args', '["--durations=1"]']),
         test_python=sys.executable)
     files = ['tests/test_a.py']
