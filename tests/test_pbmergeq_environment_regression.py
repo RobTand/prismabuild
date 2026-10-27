@@ -188,7 +188,7 @@ def test_a_new_flake_issue_contains_source_worker_and_action_evidence(tmp_path, 
         assert fact in bodies[0]
 
 
-@pytest.mark.parametrize('field', ['worker', 'platform', 'runtime', 'interpreter', 'pin', 'environment', 'demand'])
+@pytest.mark.parametrize('field', ['worker', 'platform', 'runtime', 'interpreter', 'pin', 'environment', 'demand', 'pytest_options'])
 def test_environment_equivalence_requires_the_observed_runtime_and_test_contract(field):
     import copy
     from prismabuild.pbmergeq_attribution import environment_identity
@@ -200,7 +200,8 @@ def test_environment_equivalence_requires_the_observed_runtime_and_test_contract
         'toolchain': {'declared': {}, 'verified': {}}}
     interpreter = {'path': '/py', 'sha256': 'python-a'}
     runtime = {'python': '/py', 'pins': {'sdk': 'a' * 40}, 'pin_sources': {}, 'pbtest': '/published/pbtest.py'}
-    request = {'environment': {'variables': {'OMP_NUM_THREADS': '1'}}, 'params': {'demand': {'cpu': 1}}}
+    request = {'environment': {'variables': {'OMP_NUM_THREADS': '1'}}, 'params': {'demand': {'cpu': 1}, 'command': ['/py', '-c', 'recorder',
+        '{"files": ["tests/test_a.py"]}', '-q', 'tests/test_a.py']}}
     before = environment_identity(producer, interpreter, runtime, {}, request)
     producer, interpreter, runtime, request = copy.deepcopy((producer, interpreter, runtime, request))
     if field == 'worker':
@@ -215,12 +216,16 @@ def test_environment_equivalence_requires_the_observed_runtime_and_test_contract
         runtime['pins']['sdk'] = 'b' * 40
     elif field == 'environment':
         request['environment']['variables']['OMP_NUM_THREADS'] = '2'
+    elif field == 'pytest_options':
+        request['params']['command'][4] = '-v'
     else:
         request['params']['demand']['cpu'] = 2
     assert environment_identity(producer, interpreter, runtime, {}, request) != before
 
 
-@pytest.mark.parametrize('case', ['matched', 'forged_outcome', 'wrong_source', 'wrong_python', 'unbound'])
+@pytest.mark.parametrize('case', ['matched', 'forged_outcome', 'wrong_source', 'wrong_python', 'unbound',
+    'unrelated', 'wrong_recorder', 'wrong_files', 'wrong_paths', 'wrong_options',
+    'wrong_workers', 'inherited_addopts', 'wrong_roots'])
 def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, monkeypatch, case):
     import json
     import os
@@ -240,7 +245,31 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
     monkeypatch.setattr(reservation.CensusReader, '_spawn_owned',
                         lambda self, directory, section, read, budget_s: read())
     checkout, parent, commit, branch = _two_commit_checkout(tmp_path)
-    action = _standard_action(checkout, command=[sys.executable, '-c', 'raise SystemExit(7)'])
+    pbtest = mq.load_published_module(mq.Path(mq.__file__).with_name('pbtest.py'))
+    cfg = dataclasses.replace(config(tmp_path, pbtest_args=['--timeout-s', '60',
+        '--workers-per-shard', '2', '--pytest-args', '["--durations=1"]']),
+        test_python=sys.executable)
+    files = ['tests/test_a.py']
+    selection = {'files': files, 'roots': [['tests/test_a.py', 'file']]}
+    options = ['-q', '--no-header', '-p', 'no:cacheprovider', '-o', 'addopts=',
+               '--durations', '1', '-n', '2']
+    command = [*pbtest.shard_entry(sys.executable, checkout, collection=True),
+               json.dumps(selection), *options, *files]
+    if case == 'unrelated':
+        command = [sys.executable, '-c', 'raise SystemExit(7)']
+    elif case == 'wrong_recorder':
+        command[2] += '\n# a different recorder program\n'
+    elif case == 'wrong_files':
+        command[3] = json.dumps({**selection, 'files': ['tests/test_b.py']})
+    elif case == 'wrong_roots':
+        command[3] = json.dumps({**selection, 'roots': [['tests', 'directory']]})
+    elif case == 'wrong_paths':
+        command[-1] = 'tests/test_b.py'
+    elif case == 'wrong_options':
+        command[-4:-1] = ['-k', 'another_test', '-n', '2']
+    elif case == 'wrong_workers':
+        command[-2] = '3'
+    action = _standard_action(checkout, command=command)
     # pb-history-ok: Commits only the temporary checkout created by _two_commit_checkout.
     from test_pbmergeq import git
     git('add', '-A', cwd=checkout)
@@ -256,7 +285,9 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
     body['params'].update(interpreter=sys.executable, demand={'cpu': 1, 'mem_gb': 1},
         checkout_snapshot={'schema': core.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
             'commit': commit, 'parent': parent, 'refs': {}, 'subdirectory': '.', 'input': entry})
-    body['environment']['variables'][pbtest_outcomes.RECORD_BINDING_ENV] = '1'
+    body['environment']['variables'].update({
+        pbtest_outcomes.RECORD_BINDING_ENV: '1', 'TMPDIR': pbtest.fleet_roster.LEGACY_ACTION_TMPDIR,
+        'PYTEST_ADDOPTS': '' if case != 'inherited_addopts' else '-k another_test'})
     action = core.seal_action(body)
     cas.publish_action_request(action)
     producer = core.preflight_action(action, cas_root=cas.root, checkout_root=checkout)
@@ -278,9 +309,8 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
         'stdout': output, 'stderr': '', 'producer_attestation': producer,
         'producer_interpreter': core.identify_executable(sys.executable)})
     settle_publishers()
-    row.update(action_key=key, record_binding=1, output=output, receipt_path=None,
+    row.update(shard=0, action_key=key, record_binding=1, output=output, receipt_path=None,
                environment={'identity': 'untrusted report assertion'})
-    cfg = dataclasses.replace(config(tmp_path), test_python=sys.executable)
     runtime = {'python': sys.executable, 'pins': {}, 'pin_sources': {}, 'pbtest': str(cfg.pbtest),
                'source': [parent, 'tree']}
     if case == 'forged_outcome':
@@ -293,7 +323,7 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
         row.pop('record_binding')
     monkeypatch.setattr(submission_frontend, 'store_for', lambda path: SimpleNamespace(root=tmp_path))
     runner = mq.Runner(cfg, mq.Store(cfg.state_dir))
-    observations, errors = runner.observe_environments([row], runtime)
+    observations, errors = runner.observe_environments([row], runtime, checkout=checkout, files=files)
     if case == 'matched':
         assert errors == []
         assert observations['tests/test_a.py']['host'] == 'fixture-host'
