@@ -136,7 +136,8 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
 
 
 def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
-                  skew_s: float = DEFAULT_SKEW_S) -> dict:
+                  skew_s: float = DEFAULT_SKEW_S,
+                  queue_wait_timeout_s: float | None = None) -> dict:
     """File the immutable group record once every member row is published.
 
     ``members`` are the published rows (``action_key``, ``published_unix``,
@@ -148,6 +149,8 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     if not (isinstance(skew_s, (int, float)) and not isinstance(skew_s, bool)
             and math.isfinite(skew_s) and 0 < skew_s <= 3600):
         raise GangContractError("gang skew_s must be finite in (0, 3600]")
+    from . import gang_wait
+    wait = gang_wait.timeout(queue_wait_timeout_s)
     entries = []
     for row in members:
         gang = declaration(row.get("gang"))
@@ -162,6 +165,8 @@ def publish_group(queue, group: str, members: list[Mapping[str, object]], *,
     record = {"schema": GROUP_SCHEMA, "group": group, "size": len(members),
               "skew_s": float(skew_s), "members": entries,
               "priority": max(entry["priority"] for entry in entries)}
+    if wait is not None:
+        record["queue_wait_timeout_s"] = wait
     standing = read_group(queue, group)
     if standing is not None:
         if standing != record:
@@ -210,6 +215,8 @@ def read_group(queue, group: str) -> dict | None:
             or not 0 < record["skew_s"] <= 3600
             or type(record.get("priority")) is not int):
         raise GangContractError(f"malformed gang group record {group}")
+    from . import gang_wait
+    gang_wait.timeout(record.get("queue_wait_timeout_s"))
     return record
 
 
@@ -283,6 +290,7 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     for other in record["members"]:  # type: ignore[union-attr]
         if other["index"] == entry["index"]:
             continue
+        loan_pending = False
         claimed = _gang_read(
             queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]),
             replaced=True,
@@ -292,14 +300,17 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
             other_host = claimed.get("claimed_host")
             state = "claimed"
         else:
-            ready = _gang_read(state_dir(queue, str(record["group"])) / f"ready-{other['index']}.json")
+            from . import gang_loans
+            loan_pending = gang_loans.pending(queue, str(record["group"]), other["index"])
+            ready = (None if loan_pending else _gang_read(
+                state_dir(queue, str(record["group"])) / f"ready-{other['index']}.json"))
             fresh = (ready is not None and ready.get("schema") == READY_SCHEMA
                      and ready.get("action_key") == other["action_key"]
                      and isinstance(ready.get("ready_unix"), (int, float))
                      and 0 <= now - float(ready["ready_unix"]) <= READY_FRESH_S)
             other_host = ready.get("host") if fresh else None  # type: ignore[union-attr]
             state = "ready" if fresh else "waiting"
-        if state == "waiting" and reclaimable:
+        if state == "waiting" and reclaimable and not loan_pending:
             election = elections(queue, str(record["group"]), int(record["size"])).get(other["index"])
             if election is not None and backfill_holders(queue, election):
                 other_host, state = election["host"], "backfill"

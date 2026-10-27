@@ -1,0 +1,13 @@
+[Unit]
+Description=PrismaBuild merge queue shadow verdicts
+
+[Service]
+Type=simple
+EnvironmentFile=%h/pbmergeq/prismabuild/shadow.env
+Environment=OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+ExecStart=/usr/bin/python3 ${PBMERGEQ_CLIENT} --config ${PBMERGEQ_CONFIG} daemon --mode status
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

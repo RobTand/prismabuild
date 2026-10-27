@@ -108,6 +108,25 @@
         "deployment": "not established; no runtime publication authorized in this task",
         "workload_proof": "not run; no staged-only campaign or live GPU latency claim",
         "remaining_scope": "Whole-requirement axes unchanged. #2162 remains owned by PRI-49/#2191. Independent Principal review and batch merge are pending."
+      },
+      "scoped_repair_2343": {
+        "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "PB observes dual absence and owns every loan, resource gate and queue-wait cancellation."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
       }
     },
     {
@@ -343,6 +362,25 @@
         "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
         "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
         "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
+      },
+      "scoped_repair_2343": {
+        "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "Loan slots and deadline teardown bind exact publications; successor publications survive composed cleanup."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
       }
     },
     {
@@ -917,6 +955,25 @@
             "state": "yes"
           }
         }
+      },
+      "scoped_repair_2343": {
+        "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "Only an unchanged wholly unstarted gang can expire; first claim permanently disarms the opt-in deadline."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
       }
     },
     {
@@ -1178,6 +1235,25 @@
         "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
         "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
         "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
+      },
+      "scoped_repair_2343": {
+        "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "One bounded loan preserves demand reservations and every other fence; ordinary exact-attempt cleanup returns tokens."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
       }
     },
     {
@@ -1449,6 +1525,25 @@
         "deployment": "not deployed; no publication, activation or service restart in this task",
         "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
         "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      },
+      "scoped_repair_2343": {
+        "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
+        "implemented_source": {
+          "state": "component-implemented-dependency-integrated",
+          "commit": "290042085b1e73e71d11c05f17038989acba6a29",
+          "scope": "A no-clobber slot admits only one borrowing publication across repeated attempts to reserve it."
+        },
+        "validation": {
+          "state": "integrated-component-qualified-awaiting-independent-review",
+          "tested_composition": "eb0eb392fc43228756727b79f91f66150d6b3c3a",
+          "acceptance_record": "docs/evidence/issue2343/merge-acceptance.json",
+          "evidence": "docs/evidence/issue2343/integrated-qualification.json",
+          "detail": "Final integrated main-base source passes 388 tests per architecture in 17 files, 776 verified native executions in 34 actions with no failures/skips. Historical composition retains 1056 executions in 74 actions, including five fresh rounds per architecture for all four new files and two xdist rounds each. Merged #2344 supplies exact-publication cleanup. Native populations, settled cleanup, immutable logs, execution receipts/CAS payloads and source bytes verified; worker attestation signatures unchecked.",
+          "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29"
+        },
+        "deployment": "not deployed; no runtime publication, activation or restart",
+        "workload_proof": "not established; no live gang or staged-only campaign",
+        "remaining_target": "Whole-requirement axes unchanged; independent review, approved-head intake and actual source merge remain owed."
       }
     },
     {
