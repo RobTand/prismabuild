@@ -274,3 +274,29 @@ def test_fenced_shell_comments_preserve_evidence_through_apply(cli, body):
     _, run = cli
     code, report, after = run("--priority", "P1", "--apply", body=body)
     assert (code, report.get("status"), len(after["created"])) == (0, "created", 1)
+
+
+@pytest.mark.parametrize("priority", ["P0", "P1"])
+@pytest.mark.parametrize("prefix", ["- ", "* ", "+ ", "1. ", "2) ", "- [ ] ", "* [x] "])
+def test_listed_unrelated_fields_refuse_before_github(cli, priority, prefix):
+    _, run = cli
+    code, report, after = run("--priority", priority, "--apply",
+                              body="Reproduction: TBD\n" + prefix + "Expected behavior: create a native child")
+    assert (code, report.get("reason"), after["calls"], after["created"]) == (
+        2, "high_priority_requires_reproduction_or_measurement", [], [])
+
+
+@pytest.mark.parametrize("prefix", ["- ", "* ", "+ ", "1. ", "2) ", "- [ ] ", "* [x] "])
+def test_listed_evidence_labels_allow_apply(cli, prefix):
+    _, run = cli
+    code, report, after = run("--priority", "P1", "--apply",
+                              body=prefix + "Reproduction: run false and observe exit 1")
+    assert (code, report.get("status"), len(after["created"])) == (0, "created", 1)
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_listed_fields_inside_fences_remain_literal_evidence(cli, fence):
+    _, run = cli
+    code, report, after = run("--priority", "P1", "--apply",
+                              body="Reproduction:\n" + fence + "text\n- Expected behavior: literal test input\n" + fence)
+    assert (code, report.get("status"), len(after["created"])) == (0, "created", 1)
