@@ -1,4 +1,6 @@
 """Replay #2014's claim decision with a sealed, interpreter-naming CPU shard."""
+
+from admitted_queue_fixture import simulated_admission, simulated_capacity
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -183,7 +185,7 @@ def test_gpu_evicts_an_unknown_peer_guest_across_priority_bands(tmp_path, monkey
     tiers = {"preferred": list(range(8)), "fallback": []}
     queue.ledger("spark").configure_cpu_tiers(tiers)
     claim = lambda: queue.claim(tags=[contracts.INTERPRETER_TAG, "spark"],
-        has_gpu=True, capacity=CAPACITY, cpu_tiers=tiers)
+        has_gpu=True, **simulated_admission(queue, simulated_capacity(CAPACITY)), cpu_tiers=tiers)
     guest = claim()
     assert guest["cpu_guest"] is True
     gpu_key = "b" * 64

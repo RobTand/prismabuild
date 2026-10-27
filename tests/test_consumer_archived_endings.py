@@ -1,6 +1,8 @@
 """Pinned consumer waits verify their immutable generation without log expansion."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission, simulated_capacity
+
 import json
 import multiprocessing
 import time
@@ -128,13 +130,13 @@ def test_archive_handoff_prefix_does_not_authorize_a_missing_retry(tmp_path, mon
 
     monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("shape", False))
     queue, background, foreground, holder = setup_holder(tmp_path)
-    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is None
+    assert queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1}))) is None
     queue.finish(background, status="withdrawn", claim_snapshot=holder)
-    claim = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    claim = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
     queue.finish(foreground, status="executed", claim_snapshot=claim)
-    retry = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    retry = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
     queue.finish(background, status="failed", detail={"returncode": 1}, claim_snapshot=retry)
-    final = queue.claim(has_gpu=True, capacity={"gpu": 1})
+    final = queue.claim(has_gpu=True, **simulated_admission(queue, simulated_capacity({"gpu": 1})))
     queue.finish(background, status="executed", claim_snapshot=final)
     record = json.loads(queue.records.item_path("done", background).read_bytes())
     queue.records.attempt_path(record, 2).unlink()

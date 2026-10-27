@@ -27,7 +27,7 @@ def test_sibling_claimants_deny_gpu_by_name_but_cpu_claims_continue(tmp_path, mo
     item = queue.claim(has_gpu=True)
     assert item['action_key'] == 'b'*64
     sibling = pool.PoolQueue(queue.root)
-    assert sibling.claim(has_gpu=True, capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1}) is None
+    assert sibling.claim(has_gpu=True, **simulated_admission(sibling, simulated_capacity({'cpu': 2, 'mem_gb': 4, 'gpu': 1}))) is None
     local = adaptive_cpu.local_state_base(queue.ledger().base)
     records = adaptive_cpu.read_json(local / pool.CLAIM_DENIALS)['records']
     denial = next(row for row in records.values() if row['action_key'] == 'a'*64)
@@ -40,7 +40,7 @@ def test_sibling_claimants_deny_gpu_by_name_but_cpu_claims_continue(tmp_path, mo
     assert gpu_capacity.RUNTIME_REASON in '\n'.join(pbstatus.pool_job_lines(jobs, {}))
     state['latched'] = False
     monkeypatch.setattr(gpu_runtime_gate, 'runtime_gate_state', lambda: None)
-    assert sibling.claim(has_gpu=True, capacity={'cpu': 2, 'mem_gb': 4, 'gpu': 1})['action_key'] == 'a'*64
+    assert sibling.claim(has_gpu=True, **simulated_admission(sibling, simulated_capacity({'cpu': 2, 'mem_gb': 4, 'gpu': 1})))['action_key'] == 'a'*64
 
 
 def test_each_offer_masks_gpu_immediately_and_preserves_cpu_and_configured_bounds(tmp_path, monkeypatch):
@@ -230,8 +230,8 @@ def test_broker_recipe_survives_real_client_sealing_and_gpu_claim(tmp_path, monk
             'latched': True, 'reason': gpu_capacity.RUNTIME_REASON})
         claim_args = dict(tags=['sparky', 'gb10', 'container-image-v1'], has_gpu=True,
                           observed_images=[gpu_capacity.RUNTIME_PROBE_IMAGE])
-        assert q.claim(capacity={'cpu': 1, 'mem_gb': 8, 'gpu': 1}, **claim_args) is None
-        claimed = q.claim(capacity={'cpu': 1, 'mem_gb': 32, 'gpu': 1}, **claim_args)
+        assert q.claim(**simulated_admission(q, simulated_capacity({'cpu': 1, 'mem_gb': 8, 'gpu': 1})), **claim_args) is None
+        claimed = q.claim(**simulated_admission(q, simulated_capacity({'cpu': 1, 'mem_gb': 32, 'gpu': 1})), **claim_args)
         assert claimed is not None, adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS)
         assert claimed['action_key'] == sealed['action_key']

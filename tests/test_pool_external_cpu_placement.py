@@ -1,4 +1,6 @@
 """Portable CPU placement uses whole-host load beyond its token ledger."""
+
+from admitted_queue_fixture import simulated_admission, simulated_capacity
 import json
 import socket
 
@@ -38,7 +40,7 @@ def _placement(tmp_path, monkeypatch, *, tags=()):
     def claim(host, *, cpus, gpu=False):
         monkeypatch.setattr(pool.socket, 'gethostname', lambda: host)
         return queue.claim(tags=[host, 'class'], has_gpu=gpu,
-                           capacity={'cpu': cpus, 'mem_gb': 8, **({'gpu': 1} if gpu else {})},
+                           **simulated_admission(queue, simulated_capacity({'cpu': cpus, 'mem_gb': 8, **({'gpu': 1} if gpu else {})})),
                            cpu_tiers={'preferred': list(range(cpus)), 'fallback': []})
 
     return queue, announce, claim, local, key

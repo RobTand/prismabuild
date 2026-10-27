@@ -6,6 +6,8 @@ of the filed plan must restart confirmation, not permanently cancel a gang.
 """
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission, simulated_capacity
+
 from pathlib import Path
 
 import json
@@ -44,7 +46,7 @@ def _elected_plan_wait(gang_fleet, monkeypatch, tmp_path, name, *, lead_state="e
             _publish_lead(queue, clock, lead, stage)
         if lead_state == "failed":
             monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-            claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["sparklina"])
+            claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 8, "mem_gb": 16})), tags=["sparklina"])
             assert claimed is not None and claimed["action_key"] == lead
             queue.finish(lead, status="failed", detail={"returncode": 1})
     else:

@@ -1,5 +1,7 @@
 """Explicit receipt recovery preserves the failed transport's causal evidence."""
 from __future__ import annotations
+
+from admitted_queue_fixture import simulated_admission, simulated_capacity
 from submission_support import patch_store
 
 import json
@@ -45,7 +47,7 @@ def make_failed_attempt(tmp_path, monkeypatch, *, publish_receipt=True,
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout, worker_script='/worker.py',
                   resources=demand, max_attempts=1)
-    item = queue.claim(capacity=demand)
+    item = queue.claim(**simulated_admission(queue, simulated_capacity(demand)))
     assert item is not None
 
     def request(scope, operation, **extra):

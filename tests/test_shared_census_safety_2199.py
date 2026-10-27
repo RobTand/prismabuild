@@ -1,6 +1,8 @@
 """Shared reuse cannot erase pass authority or retain H on optional source I/O."""
 from __future__ import annotations
 
+from admitted_queue_fixture import simulated_admission, simulated_capacity
+
 import json
 import os
 import signal
@@ -67,7 +69,7 @@ def test_one_claim_pass_remembers_an_election_first_seen_in_shared_reuse(
 
     monkeypatch.setattr(reservation, "pass_admission_census", observe_owned)
     monkeypatch.setattr(reservation, "candidate_admission_census", lose_sidecar_between_candidates)
-    result = queue.claim(capacity={"cpu": 20, "mem_gb": 120}, ready=rows)
+    result = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 20, "mem_gb": 120})), ready=rows)
 
     assert result is None, "a later candidate undercut an election learned through shared reuse"
     assert seen == [(key, chosen) for key in candidates]
@@ -121,7 +123,7 @@ def test_busy_discovery_keeps_its_election_across_later_candidates(
         assert acquired
         with ThreadPoolExecutor(max_workers=1) as executor:
             result = executor.submit(
-                queue.claim, capacity={"cpu": 20, "mem_gb": 120}, ready=rows).result(timeout=10)
+                queue.claim, **simulated_admission(queue, simulated_capacity({"cpu": 20, "mem_gb": 120})), ready=rows).result(timeout=10)
 
     assert result is None, "a later candidate undercut the busy-discovery election"
     assert seen == [chosen, chosen]

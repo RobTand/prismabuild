@@ -1,4 +1,6 @@
 """GB10's GPU budget is a subset of, not an addition to, host memory."""
+
+from admitted_queue_fixture import simulated_admission, simulated_capacity
 from pathlib import Path
 import sys
 import time
@@ -72,7 +74,7 @@ def test_gb10_gpu_capacity_2087(tmp_path, monkeypatch):
             "cpu_pressure_some": 0.0, "foreign_processes": [], "jobs": [],
         }
         claimed = queue.claim(
-            capacity=capacity,
+            **simulated_admission(queue, simulated_capacity(capacity)),
             cpu_tiers={"preferred": list(range(8)), "fallback": []},
             adaptive_cpu=True, has_gpu=True,
             cpu_sampler=lambda: _cpu_sample(clock),
