@@ -79,6 +79,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 import bisect
 import contextlib
+import contextvars
 from dataclasses import dataclass
 from functools import cached_property
 import hashlib
@@ -91,6 +92,7 @@ import time
 
 from . import core as pb
 from . import immutable_files
+from . import numeric_fields
 from . import manifest_layout
 from . import pool as _pool
 from . import residency_map
@@ -719,6 +721,31 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     return checked
 
 
+# Claim confirmation must remember uncertainty even when a best-effort reader
+# converts an error to None and a later read in the same scan succeeds. Keep
+# this private, scoped and thread-local; do not change public verdict/SDK shapes.
+_PLAN_READ_UNCERTAINTY: contextvars.ContextVar[list[bool] | None] = (
+    contextvars.ContextVar("residency_plan_read_uncertainty", default=None))
+
+
+@contextlib.contextmanager
+def _observe_read_uncertainty():
+    observations: list[bool] = []
+    token = _PLAN_READ_UNCERTAINTY.set(observations)
+    try:
+        yield observations
+    finally:
+        _PLAN_READ_UNCERTAINTY.reset(token)
+
+
+def _note_read_uncertainty(*, absent: bool = False) -> None:
+    observations = _PLAN_READ_UNCERTAINTY.get()
+    if observations is not None:
+        # Absence interrupts plan proof, but is ordinary for a lead-only
+        # consumer with no filed plan. Actual read failure blocks either.
+        observations.append(not absent)
+
+
 def read(queue, consumer_action_key: str, *,
          on_unreadable: Callable[[Exception], None] | None = None,
          ) -> dict[str, object] | None:
@@ -749,8 +776,10 @@ def read(queue, consumer_action_key: str, *,
             Path(queue.records.residency_plan_path(consumer_action_key)),
         )
     except FileNotFoundError:
+        _note_read_uncertainty(absent=True)
         return None                       # the ordinary answer: none was filed
     except OSError as error:
+        _note_read_uncertainty()
         # A plan that is there and unreadable -- a torn write, or this mount's
         # quarter-hourly ESTALE (#575).  Not the same as absent.
         refused(error)
@@ -769,19 +798,19 @@ def read(queue, consumer_action_key: str, *,
 def _stat_incarnation(path: Path) -> tuple[tuple[int, int, int] | None, OSError | None]:
     """One filing's incarnation, keeping absence apart from unavailable.
 
-    ``incarnation`` answers ``None`` for both because a caller that only asks
-    "is a plan there" may treat them alike.  A caller deciding against a
-    filing may not: a stat that failed is unknown state, not evidence the
-    file is gone, and a fresh seal over unknown state is a guess (#708
-    review).  Returns ``(incarnation, None)``, ``(None, None)`` for an absent
-    file, or ``(None, error)`` for a stat that failed.
+    A stat that failed is unknown state, not evidence the file is gone.
+    A fresh seal over unknown state is a guess (#708 review). Returns
+    ``(incarnation, None)``, ``(None, None)`` for an absent file, or
+    ``(None, error)`` for a stat that failed.
     """
 
     try:
         info = path.stat()
     except FileNotFoundError:
+        _note_read_uncertainty(absent=True)
         return None, None
     except OSError as error:
+        _note_read_uncertainty()
         return None, error
     return (int(info.st_ino), int(info.st_mtime_ns), int(info.st_size)), None
 
@@ -793,12 +822,14 @@ def incarnation(path: Path) -> tuple[int, int, int] | None:
     one body are two files with different inodes, which is exactly what tells
     a deliberate same-body resubmission from the filing a marker was written
     for (#708 review); a content digest cannot.  ``None`` means the file is
-    not there (or not statable), never "unchanged"; a caller that must tell
-    those apart reads through :func:`read_filed`, which retains the
-    diagnostic.
+    not there, never "unchanged". Other stat errors propagate so admission
+    and retirement cannot treat unavailable evidence as absence.
     """
 
-    return _stat_incarnation(path)[0]
+    filing, error = _stat_incarnation(path)
+    if error is not None:
+        raise error
+    return filing
 
 
 def read_filed(queue, consumer_action_key: str, *,
@@ -974,6 +1005,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if state == "absent":
         return None
     if state == "unreadable" or marker is None:
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
@@ -983,6 +1015,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if (marker.get("schema") != RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1
             or marker.get("consumer_action_key") != key
             or marker.get("plan_sha256") != digest):
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
@@ -993,6 +1026,7 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
     if stamped is None:
         # A stamp this reader cannot parse says nothing about which filing
         # the marker covers, and unknown retirement is not "not retired".
+        _note_read_uncertainty()
         return {
             "schema": RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1,
             "consumer_action_key": key, "plan_sha256": digest,
@@ -1000,7 +1034,10 @@ def superseded(queue, plan: Mapping[str, object]) -> dict[str, object] | None:
             "error": ("the marker's plan_incarnation is not three whole "
                       f"integers: {marker.get('plan_incarnation')!r}"),
         }
-    current = incarnation(queue.records.residency_plan_path(key))
+    try:
+        current = incarnation(queue.records.residency_plan_path(key))
+    except OSError:
+        current = None
     if current is None:
         # The marker names a filing this reader cannot stat.  Only a
         # successfully read current identity may prove the marker covers a
@@ -1054,7 +1091,10 @@ def mark_superseded(queue, consumer_action_key: str, *,
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
     with queue.action_transition_lock(key):
-        current = incarnation(queue.records.residency_plan_path(key))
+        try:
+            current = incarnation(queue.records.residency_plan_path(key))
+        except OSError:
+            return None
         if current is None:
             return None
         if filing is not None and tuple(filing) != current:
@@ -1270,7 +1310,10 @@ def window_owned(queue, consumer_action_key: str, *,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    current = incarnation(queue.records.residency_plan_path(key))
+    try:
+        current = incarnation(queue.records.residency_plan_path(key))
+    except OSError as error:
+        return False, f"its plan filing could not be stat-ed: {error}"
     if current is None:
         return False, "its plan filing is gone"
     if filing is not None and tuple(filing) != current:
@@ -1517,7 +1560,10 @@ def seal_window(queue, plan: Mapping[str, object], *,
             # handoff proof or the withdrawn listing would otherwise leave a
             # filed plan with no row and no ending, which the dead-consumer
             # pass reads as a live seal's interest in every mover it names.
-            filed = incarnation(path)
+            try:
+                filed = incarnation(path)
+            except OSError:
+                filed = None
             if before is None and filed is not None:
                 target = (path.parent / SUPERSEDED
                           / f"{path.stem}.{time.time():.6f}.seal-refused.json")
@@ -2661,7 +2707,7 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     if (readahead_bytes is None or isinstance(readahead_bytes, bool)
             or readahead_bytes < 0):
         return None
-    if not (_finite_number(landing_bytes_per_s)
+    if not (numeric_fields.is_finite_number(landing_bytes_per_s)
             and float(landing_bytes_per_s) > 0):             # type: ignore[arg-type]
         return None
     ahead = remaining(plan, accepted_phase)
@@ -2672,17 +2718,18 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     rate: float | None = None
     basis = ""
     if consumption_bytes_per_s is not None:
-        if (_finite_number(consumption_bytes_per_s)
+        if (numeric_fields.is_finite_number(consumption_bytes_per_s)
                 and float(consumption_bytes_per_s) > 0):     # type: ignore[arg-type]
             rate = float(consumption_bytes_per_s)            # type: ignore[arg-type]
             basis = "given"
     else:
-        if (_finite_number(claimed_unix) and _finite_number(reported_unix)
+        if (numeric_fields.is_finite_number(claimed_unix)
+                and numeric_fields.is_finite_number(reported_unix)
                 and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
             rate = (read_through - first_start) / (
                 float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
             basis = "measured"
-        if (_finite_number(declared_bytes_per_s)
+        if (numeric_fields.is_finite_number(declared_bytes_per_s)
                 and float(declared_bytes_per_s) > 0               # type: ignore[arg-type]
                 and (rate is None or float(declared_bytes_per_s) > rate)):  # type: ignore[arg-type]
             rate = float(declared_bytes_per_s)                    # type: ignore[arg-type]
@@ -2817,7 +2864,7 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
     for position, mover in enumerate(tier_queue):
         own = int(mover["range_bytes"])                       # type: ignore[call-overload]
         key = str(mover["mover_action_key"])
-        if mover.get("state") == "claimed" and _finite_number(mover.get("claimed_unix")):
+        if mover.get("state") == "claimed" and numeric_fields.is_finite_number(mover.get("claimed_unix")):
             claimed = float(mover["claimed_unix"])            # type: ignore[arg-type]
             reported = _reported_landing(mover, own=own, claimed=claimed)
             if reported is None:
@@ -2848,7 +2895,7 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     landed = mover.get("landed_bytes")
     at = mover.get("reported_unix")
     if (isinstance(landed, bool) or not isinstance(landed, int) or landed < 0
-            or not _finite_number(at)):
+            or not numeric_fields.is_finite_number(at)):
         return None
     at = float(at)                                            # type: ignore[arg-type]
     # The mover's own report (#1090): bytes read, landed or not, since the
@@ -2856,7 +2903,7 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     copied = mover.get("copied_bytes")
     started = mover.get("started_unix")
     own_report = (not isinstance(copied, bool) and isinstance(copied, int)
-                  and copied >= 0 and _finite_number(started))
+                  and copied >= 0 and numeric_fields.is_finite_number(started))
     progress = max(landed, int(copied)) if own_report else landed  # type: ignore[call-overload]
     origin = (max(claimed, float(started)) if own_report      # type: ignore[arg-type]
               else claimed)
@@ -2872,11 +2919,6 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     return {"expected_landing_unix": at + landing_seconds(own - min(progress, own), live),
             "landed_bytes": landed, "reported_unix": at,
             "live_bytes_per_s": live, **extra}
-
-
-def _finite_number(value: object) -> bool:
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(float(value)))
 
 
 def read_footprint(plan: Mapping[str, object], accepted_phase: str | None, *,

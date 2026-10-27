@@ -1,0 +1,23 @@
+[
+  {
+    "change": "added",
+    "count": 1,
+    "row": {
+      "path": "tools/fleet/stage_ownership.py",
+      "owner": "collect_stage_ownership",
+      "binding": "keys",
+      "fields": [
+        "fragment_declared_bytes",
+        "observed_allocated_bytes",
+        "observed_apparent_bytes",
+        "owned_bytes",
+        "source_mark_bytes",
+        "source_mark_fragment_overlap_bytes",
+        "source_only_bytes",
+        "unattributed_bytes",
+        "unknown_bytes"
+      ]
+    },
+    "reason": "W2 stage ownership reporting initializes and reconciles this closed set of nine observed-byte and declaration counters. Accept this one report-accounting policy, including its exact fields and helper owner; no persisted record writer or other policy changes."
+  }
+]

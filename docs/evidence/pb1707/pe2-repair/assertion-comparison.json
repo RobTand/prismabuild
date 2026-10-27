@@ -1,0 +1,11 @@
+{
+  "tests/test_a_producers_export_rates_are_learned_per_family.py": {
+    "identical_assertions": 19
+  },
+  "tests/test_gpu_runtime_integration.py": {
+    "identical_assertions": 3
+  },
+  "tests/test_a_producers_exports_run_on_its_allowance.py": {
+    "identical_assertions": 12
+  }
+}

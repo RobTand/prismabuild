@@ -9,6 +9,8 @@ ages the item: the box does other work while the tier is busy.
 """
 
 from __future__ import annotations
+
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows
 
 from prismabuild import funding
@@ -21,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, holder_census, pool  # noqa: E402
+from prismabuild import holder_census, pool  # noqa: E402
 from prismabuild import tier_holdings
 
 KEY_A = "a" * 64
@@ -69,18 +71,6 @@ def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: objec
         resources=resources,
         **kw,
     )
-
-
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    """This box's newest claim verdict for ``key``, from its host-local denial log."""
-
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def test_publish_refuses_a_malformed_tier_demand_key(queue: pool.PoolQueue) -> None:
@@ -199,7 +189,7 @@ def test_tier_shortage_denies_without_holding_the_host_or_aging(
     assert tier_holdings.for_action(queue, KEY_A) == {}
     assert queue.passes(KEY_A) == 0, "a cluster-scoped shortage must not withhold this box"
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
-    denial = _denial(queue, KEY_A)
+    denial = latest_claim_denial(queue, KEY_A)
     assert denial is not None and denial["reason"] == reason
     assert denial["evidence"]["tier_shortage"]["tier_id"] == TIER
 
@@ -217,7 +207,7 @@ def test_busy_tier_denies_the_second_mover_and_frees_it_after_the_first(
     assert queue.claim(owner="two", capacity={"cpu": 2}) is None
     assert queue.ledger().held() == {"cpu": 1}
     assert queue.passes(KEY_B) == 0
-    denial = _denial(queue, KEY_B)
+    denial = latest_claim_denial(queue, KEY_B)
     assert denial is not None and denial["reason"] == "tier_reservation_unavailable"
     assert denial["evidence"]["tier_shortage"]["available"] == {}
     queue.finish(KEY_A, status="executed", claim_snapshot=first)

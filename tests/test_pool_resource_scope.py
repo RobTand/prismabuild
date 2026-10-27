@@ -18,6 +18,9 @@ def scoped(tmp_path, monkeypatch, request):
     demand = {'mem_gb': 2, 'cpu': 1}
     if getattr(request, 'param', None) == 'gpu':
         demand['gpu'] = 1
+    params = {'demand': demand} if getattr(request, 'param', True) else {}
+    if isinstance(getattr(request, 'param', None), dict):
+        params['execution_timeout_s'] = request.param['execution_timeout_s']
     action = pb.seal_action({
         'schema': pb.ACTION_SCHEMA_V2,
         'task': {'definition_id': 'tests/scope', 'definition_version': 'v1',
@@ -26,7 +29,7 @@ def scoped(tmp_path, monkeypatch, request):
                  'argv': [sys.executable, 'task.py'], 'working_directory': '.',
                  'result_path': 'result'},
         'inputs': [], 'code_closure': pb.build_code_closure(checkout, ['task.py']),
-        'params': {'demand': demand} if getattr(request, 'param', True) else {},
+        'params': params,
         'environment': {'variables': {}, 'toolchain': {}},
         'execution_scope': {'portability': 'portable', 'platform_key': None, 'host_class': None},
     })

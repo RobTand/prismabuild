@@ -25,7 +25,7 @@ def test_real_shard_keeps_the_package_digest_owner_on_disk(tmp_path, route):
     )
     if route == "checkout_plugins":
         checkout = ROOT
-        selected = "tests/test_core.py"
+        selected = "tests/test_core.py::test_action_key_is_canonical_and_inputs_are_sorted"
     else:
         checkout = tmp_path / "consumer"
         checkout.mkdir()

@@ -308,19 +308,6 @@ def _held(queue, tier_id: str, key: str) -> bool:
     return bool(queue.tier(tier_id).holdings(key))
 
 
-def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
-    """The declared unit and the window ask the sweep for room, both tiers."""
-    queue, stage, ram, _, _, _, _, _ = _jammed(tmp_path)
-    skipped: list[dict] = []
-    pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage, ram),
-                                         skipped=skipped)
-    assert pressure.get(STAGE, 0) > 0, (pressure, skipped)
-    assert pressure.get(RAM, 0) > 0, (pressure, skipped)
-    silent = [row for row in skipped
-              if row.get("consumer") in (DECLARED, WINDOW)]
-    assert silent == [], (pressure, skipped)
-
-
 def test_cycles_reclaim_the_stranded_holders(tmp_path: Path, monkeypatch) -> None:
     """A few real cycles give back the orphans and the withdrawn prefix."""
     def physical_reader(*_args, **_kwargs):
@@ -329,6 +316,14 @@ def test_cycles_reclaim_the_stranded_holders(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(tier_loop, "_supply_reader_for", physical_reader)
     (queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder,
      d_prefix) = _jammed(tmp_path)
+    skipped: list[dict] = []
+    pressure = tier_loop.window_pressure(queue, tiers=_tiers(stage, ram),
+                                         skipped=skipped)
+    assert pressure.get(STAGE, 0) > 0, (pressure, skipped)
+    assert pressure.get(RAM, 0) > 0, (pressure, skipped)
+    silent = [row for row in skipped
+              if row.get("consumer") in (DECLARED, WINDOW)]
+    assert silent == [], (pressure, skipped)
     for _ in range(4):
         _cycle(queue, stage, ram)
     assert [mover for mover in stage_orphans

@@ -380,12 +380,16 @@ def monitored(authority, tmp_path, monkeypatch):
         path=b.path(record['scope_id']);path.mkdir(parents=True)
         (path/'memory.events').write_text('oom_kill 0\n')
         (path/'memory.events.local').write_text('oom 0\n')
+        (path/'cgroup.events').write_text('populated 0\nfrozen 0\n')
         info=path.stat()
         a.records[record['scope_id']]['cgroup_identity']=[info.st_dev,info.st_ino]
         a.records[record['scope_id']]['memory_oom_kill_baseline']=0
         rows.append((request,record,path))
     gpu=GpuSamples();monitor=module().ResourceMonitor(a,gpu)
-    return a,b,rows,gpu,monitor
+    try:
+        yield a,b,rows,gpu,monitor
+    finally:
+        monitor.close()
 
 
 def decision(record, path, *, scope=None, identity=None):
@@ -394,6 +398,368 @@ def decision(record, path, *, scope=None, identity=None):
           'cgroup_identity':identity or (info.st_dev,info.st_ino),
           'evidence':{'lower_bound_bytes':128*1024**2}}
     return SimpleNamespace(**data,as_dict=lambda:data)
+
+
+class ControlledCgroupEvents:
+    def __init__(self):
+        self.watched={};self.enrollments=[];self.removed=[]
+        self.dirty=set();self.lost=set();self.fail=set()
+        self.on_watch=None;self.on_wait=None;self.closed=False
+        self.read_error=None
+        self.waiting=threading.Event();self.drain_limits=[]
+
+    def watch(self,scope,path,identity):
+        self.enrollments.append((scope,tuple(identity)))
+        if scope in self.fail:raise OSError('injected cgroup watch loss')
+        self.watched[scope]=(path,tuple(identity))
+        if self.on_watch:self.on_watch(scope,path)
+
+    def unwatch(self,scope):
+        self.removed.append(scope);self.watched.pop(scope,None)
+
+    def drain(self,max_events=256):
+        self.drain_limits.append(max_events)
+        if self.read_error is not None:raise self.read_error
+        dirty,lost=self.dirty,self.lost
+        self.dirty=set();self.lost=set()
+        return dirty,lost
+
+    def wait(self,wake_fd,timeout_s):
+        self.waiting.set()
+        if self.on_wait:self.on_wait(timeout_s)
+        else:
+            import select
+            select.select([wake_fd],[],[],timeout_s)
+
+    def close(self):self.closed=True
+
+
+class MonitorClock:
+    def __init__(self):self.now=100.0
+    def __call__(self):return self.now
+    def advance(self,seconds):self.now+=seconds
+
+
+@pytest.fixture
+def event_monitored(monitored):
+    a,b,rows,gpu,old=monitored
+    old.close()
+    events=ControlledCgroupEvents();clock=MonitorClock()
+    monitor=type(old)(a,gpu,event_source_factory=lambda:events,clock=clock)
+    try:
+        yield a,b,rows,gpu,monitor,events,clock
+    finally:
+        monitor.close()
+
+
+def test_cgroup_event_invalidations_read_only_dirty_scope_and_do_not_sample_gpu(event_monitored):
+    a,b,rows,gpu,monitor,events,clock=event_monitored
+    monitor.poll_once();sampled=monitor.last_success_monotonic
+    for _,_,path in rows:(path/'memory.events.local').write_text('oom 1\n')
+    scope=rows[0][1]['scope_id'];events.dirty.add(scope);clock.advance(2)
+    status=monitor.poll_events_once()
+    assert status['stopped']==[scope]
+    assert b.stopped==[scope]
+    assert len(gpu.calls)==1
+    assert monitor.last_success_monotonic==sampled
+    assert 'stopped_unix' not in a.records[rows[1][1]['scope_id']]
+
+
+def test_cgroup_watch_is_enrolled_before_initial_oom_snapshot(event_monitored):
+    a,b,rows,gpu,monitor,events,_=event_monitored
+    scope=rows[0][1]['scope_id']
+    def during_watch(name,path):
+        if name==scope:(path/'memory.events.local').write_text('oom 1\n')
+    events.on_watch=during_watch
+    assert monitor.poll_once()['stopped']==[scope]
+    assert b.stopped==[scope]
+    assert a.records[scope]['termination_evidence']['oom_local']==1
+
+
+def test_new_scope_create_wakes_watch_reconciliation(event_monitored,monkeypatch):
+    a,b,rows,gpu,monitor,events,_=event_monitored
+    monitor.poll_once();original=b.create
+    def create_group(scope,budget):
+        result=original(scope,budget);path=b.path(scope);path.mkdir()
+        (path/'memory.events').write_text('oom_kill 0\n')
+        (path/'memory.events.local').write_text('oom 1\n')
+        (path/'cgroup.events').write_text('populated 1\nfrozen 0\n')
+        info=path.stat()
+        return {**result,'cgroup_identity':[info.st_dev,info.st_ino],
+                'memory_oom_local_baseline':0,'memory_oom_kill_baseline':0}
+    monkeypatch.setattr(b,'create',create_group)
+    _,record=create(a,'d'*32);scope=record['scope_id']
+    assert monitor.poll_events_once()['stopped']==[scope]
+    assert scope in events.watched
+    assert b.stopped==[scope]
+    assert len(gpu.calls)==1
+
+
+def test_recovered_scopes_are_watched_before_first_numeric_sample(event_monitored):
+    a,b,rows,gpu,old,_,clock=event_monitored
+    old.close();m=module()
+    for _,record,path in rows:
+        m._atomic(a.state_dir/(record['scope_id']+'.json'),a.records[record['scope_id']])
+    restored=m.Authority(a.state_dir,os.getuid(),b,max_memory_bytes=1024**3)
+    scope=rows[0][1]['scope_id'];(rows[0][2]/'memory.events.local').write_text('oom 1\n')
+    events=ControlledCgroupEvents()
+    monitor=m.ResourceMonitor(restored,gpu,event_source_factory=lambda:events,clock=clock)
+    try:
+        assert monitor.poll_events_once()['stopped']==[scope]
+        assert set(events.watched)=={row[1]['scope_id'] for row in rows}
+        assert b.stopped==[scope]
+        assert not gpu.calls
+        assert monitor.last_success_monotonic is None
+    finally:
+        monitor.close()
+
+
+def test_replaced_cgroup_cannot_reuse_old_watch_identity(event_monitored):
+    a,b,rows,gpu,monitor,events,_=event_monitored
+    monitor.poll_once();_,record,path=rows[0];scope=record['scope_id']
+    path.rename(path.with_name(path.name+'.old'));path.mkdir()
+    (path/'memory.events').write_text('oom_kill 1\n')
+    (path/'memory.events.local').write_text('oom 1\n')
+    (path/'cgroup.events').write_text('populated 1\nfrozen 0\n')
+    events.dirty.add(scope)
+    status=monitor.poll_events_once()
+    assert status['errors']
+    assert not b.stopped
+    assert 'stopped_unix' not in a.records[scope]
+
+
+def test_cgroup_event_stop_retry_does_not_require_another_notification(event_monitored,monkeypatch):
+    a,b,rows,gpu,monitor,events,clock=event_monitored
+    monitor.poll_once();scope=rows[0][1]['scope_id']
+    (rows[0][2]/'memory.events.local').write_text('oom 1\n')
+    original=b.stop
+    def fail_once(name):raise OSError('injected stop failure')
+    monkeypatch.setattr(b,'stop',fail_once);events.dirty.add(scope)
+    assert monitor.poll_events_once()['errors']
+    assert a.records[scope]['monitor_stop_pending'] is True
+    monkeypatch.setattr(b,'stop',original)
+    clock.advance(10)
+    assert monitor.poll_events_once()['stopped']==[scope]
+    assert a.records[scope]['monitor_stop_pending'] is False
+    assert b.stopped==[scope]
+    assert len(gpu.calls)==1
+
+
+@pytest.mark.parametrize('field',['token','memory_max_bytes','gpu_memory_max_bytes'])
+def test_cgroup_watch_identity_includes_attempt_and_budgets(event_monitored,field):
+    a,b,rows,gpu,monitor,events,_=event_monitored
+    monitor.poll_once();scope=rows[0][1]['scope_id']
+    if field=='token':a.records[scope][field]='f'*64
+    else:a.records[scope][field]*=2
+    monitor.poll_events_once()
+    assert [name for name,_ in events.enrollments].count(scope)==2
+    assert scope in events.removed
+    assert not b.stopped
+
+
+def test_retired_unreleased_scope_keeps_population_interest(event_monitored):
+    a,b,rows,gpu,monitor,events,_=event_monitored
+    request,record,path=rows[0];scope=record['scope_id']
+    monitor.poll_once()
+    a.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+    monitor.poll_events_once()
+    assert scope in events.watched
+    (path/'memory.events.local').write_text('oom 1\n')
+    events.dirty.add(scope)
+    monitor.poll_events_once()
+    assert b.stopped==[scope]
+    a.handle(os.getuid(),os.getpid(),auth(request,record,'release'))
+    monitor.poll_events_once()
+    assert scope not in events.watched
+
+
+def test_cgroup_watch_loss_is_visible_and_does_not_spin_on_numeric_ticks(event_monitored):
+    _,_,rows,gpu,monitor,events,clock=event_monitored
+    monitor.poll_once();scope=rows[0][1]['scope_id']
+    events.lost.add(scope);events.fail.add(scope)
+    lost=monitor.poll_events_once()
+    assert lost['errors']
+    assert not lost['event_coverage']['complete']
+    assert lost['event_coverage']['scopes'][scope].get('populated') is None
+    attempts=len(events.enrollments)
+    for _ in range(3):assert monitor.poll_once()['errors']
+    assert len(events.enrollments)==attempts
+    assert len(gpu.calls)==4
+    events.fail.clear();clock.advance(10)
+    recovered=monitor.poll_once()
+    assert not recovered['errors']
+    assert recovered['event_coverage']['complete']
+    assert len(events.enrollments)>attempts
+
+
+def test_monitor_close_wakes_blocked_event_wait(event_monitored):
+    _,_,_,_,monitor,events,_=event_monitored
+    import select
+    read,write=os.pipe();finished=threading.Event()
+    events.on_wait=lambda timeout:select.select([monitor.wake_read,read],[],[])
+    def close():
+        monitor.close();finished.set()
+    closer=threading.Thread(target=close,daemon=True)
+    monitor.start()
+    try:
+        assert events.waiting.wait(60), 'monitor never reached its event wait'
+        closer.start()
+        closed=finished.wait(60)
+    finally:
+        os.write(write,b'x')
+        if closer.ident is not None:closer.join(timeout=60)
+        monitor.close();os.close(read);os.close(write)
+    assert closed, 'close did not wake the event wait'
+    assert not monitor.thread.is_alive()
+    assert events.closed
+
+
+def test_continuous_events_do_not_postpone_numeric_deadline(event_monitored):
+    _,_,rows,gpu,monitor,events,clock=event_monitored
+    scope=rows[0][1]['scope_id'];timeouts=[]
+    def ready(timeout):
+        timeouts.append(timeout);clock.advance(0.25);events.dirty.add(scope)
+        if len(timeouts)>32:pytest.fail('continuous events starved numeric sampling')
+    def sampled():
+        if len(gpu.calls)==3:monitor.stopping.set()
+    events.on_wait=ready;gpu.during_collect=sampled
+    monitor._loop()
+    assert len(gpu.calls)==3
+    assert timeouts and all(0<=value<=monitor.interval_s for value in timeouts)
+    assert all(0<limit<=256 for limit in events.drain_limits)
+
+
+@pytest.mark.parametrize('filename',['memory.events','memory.events.local','cgroup.events'])
+def test_linux_cgroup_event_source_invalidates_on_each_watched_file(monitored,filename):
+    _,_,rows,_,_=monitored
+    _,record,path=rows[0];source=module().CgroupEventSource();scope=record['scope_id']
+    info=path.stat()
+    try:
+        source.watch(scope,path,(info.st_dev,info.st_ino))
+        (path/filename).write_text('oom 1\noom_kill 1\npopulated 0\nfrozen 0\n')
+        dirty,lost=source.drain()
+        assert scope in dirty
+        assert not lost
+    finally:
+        source.close()
+
+
+def test_linux_cgroup_event_source_reports_deleted_input_as_lost_coverage(monitored):
+    _,_,rows,_,_=monitored
+    _,record,path=rows[0];source=module().CgroupEventSource();scope=record['scope_id']
+    info=path.stat()
+    try:
+        source.watch(scope,path,(info.st_dev,info.st_ino))
+        (path/'memory.events.local').unlink()
+        _,lost=source.drain()
+        assert scope in lost
+    finally:
+        source.close()
+
+
+def test_linux_cgroup_event_source_overflow_invalidates_all_retained_scopes(monitored,monkeypatch):
+    _,_,rows,_,_=monitored
+    import struct
+    m=module();source=m.CgroupEventSource()
+    packets=iter([struct.pack('iIII',-1,0x4000,0,0)])
+    def read_overflow(fd,size):
+        try:return next(packets)
+        except StopIteration:raise BlockingIOError()
+    try:
+        for _,record,path in rows:
+            info=path.stat();source.watch(record['scope_id'],path,(info.st_dev,info.st_ino))
+        with monkeypatch.context() as patch:
+            patch.setattr(m.os,'read',read_overflow)
+            with pytest.raises(OSError,match='overflow'):
+                source.drain()
+    finally:
+        source.close()
+
+
+def test_linux_cgroup_event_source_caps_work_before_discarding_uncertain_queue(monitored,monkeypatch):
+    import struct
+    m=module();source=m.CgroupEventSource()
+    packet=struct.pack('iIII',-2,0x2,0,0)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(m.os,'read',lambda fd,size:packet*2)
+            with pytest.raises(OSError,match='budget'):
+                source.drain(max_events=1)
+    finally:
+        source.close()
+
+
+def test_event_only_capacity_invalidation_keeps_numeric_timestamp(event_monitored,monkeypatch):
+    a,_,rows,gpu,monitor,events,clock=event_monitored
+    original=gpu.collect
+    monkeypatch.setattr(gpu,'collect',lambda scopes,**options:original(scopes,timeout_s=options['timeout_s']))
+    class Capacity:
+        def devices(self,**options):return [],[]
+        def collect(self,*args,**options):
+            return {'complete':True,'errors':[],'sampled_unix':clock()}
+    monitor.capacity=Capacity();monitor.poll_once()
+    path=a.state_dir.parent/'gpu-capacity.json';before=json.loads(path.read_text())
+    assert before['complete']
+    clock.advance(2);scope=rows[0][1]['scope_id']
+    (rows[0][2]/'cgroup.events').write_text('populated 1\nfrozen 0\n')
+    events.dirty.add(scope);monitor.poll_events_once()
+    changed=json.loads(path.read_text())
+    assert changed['complete'] is False
+    assert changed['sampled_unix']==before['sampled_unix']
+    assert len(gpu.calls)==1
+    monitor.poll_once();fresh=json.loads(path.read_text())
+    assert fresh['complete']
+    assert fresh['sampled_unix']==clock()
+
+
+def test_cgroup_source_failure_recreates_descriptor_after_recovery_deadline(event_monitored):
+    import errno
+    a,b,rows,gpu,old,_,clock=event_monitored
+    old.close();first=ControlledCgroupEvents();second=ControlledCgroupEvents()
+    sources=iter([first,second]);monitor=type(old)(a,gpu,event_source_factory=lambda:next(sources),clock=clock)
+    try:
+        monitor.poll_once();first.read_error=OSError(errno.ENOBUFS,'injected overflow')
+        status=monitor.poll_events_once()
+        assert first.closed
+        assert not status['event_coverage']['complete']
+        assert all('populated' not in row for row in status['event_coverage']['scopes'].values())
+        monitor.poll_events_once()
+        assert not second.watched
+        clock.advance(monitor.recovery_interval_s)
+        recovered=monitor.poll_events_once()
+        assert recovered['event_coverage']['complete']
+        assert set(second.watched)=={row[1]['scope_id'] for row in rows}
+        assert len(gpu.calls)==1
+    finally:
+        monitor.close()
+
+
+def test_scope_change_wake_after_inventory_snapshot_is_not_consumed(event_monitored,monkeypatch):
+    import select
+    a,_,rows,_,monitor,_,_=event_monitored
+    monitor.poll_once();original=monitor._inventory
+    request,record,_=rows[0]
+    def snapshot_then_retire():
+        result=original()
+        monkeypatch.setattr(monitor,'_inventory',original)
+        a.handle(os.getuid(),os.getpid(),auth(request,record,'stop'))
+        return result
+    monkeypatch.setattr(monitor,'_inventory',snapshot_then_retire)
+    monitor.poll_events_once()
+    assert select.select([monitor.wake_read],[],[],0)[0]==[monitor.wake_read], (
+        'scope-change wake arriving after inventory must remain ready for reconciliation')
+    assert monitor.poll_events_once()['active_scopes']==1
+
+
+def test_failed_enrollment_prefix_cannot_starve_a_healthy_scope(event_monitored):
+    _,_,rows,_,monitor,events,clock=event_monitored
+    monitor.event_work_limit=1
+    events.fail.add(rows[0][1]['scope_id'])
+    healthy=rows[1][1]['scope_id']
+    for _ in range(3):
+        monitor.poll_events_once()
+        clock.advance(monitor.recovery_interval_s)
+    assert healthy in events.watched, 'failed enrollment prefix starved a healthy later scope'
 
 
 def test_gpu_monitor_stops_only_attributed_attempt_and_preserves_first_cause(monitored):
@@ -770,3 +1136,78 @@ def test_invalid_cpu_weight_refuses_before_kernel_creation(authority, weight):
         a.handle(os.getuid(), os.getpid(), {'op': 'create', 'action_key': 'a' * 64,
             'nonce': 'b' * 32, 'memory_max_bytes': 1024, 'cpu_weight': weight})
     assert not backend.groups
+
+
+
+def test_local_oom_retries_transient_fresh_identity_check_failure(event_monitored, monkeypatch):
+    import errno
+    a, b, rows, gpu, monitor, events, clock = event_monitored
+    monitor.poll_once()
+    _, record, path = rows[0]
+    scope = record['scope_id']
+    (path / 'memory.events.local').write_text('oom 1\n')
+    events.dirty.add(scope)
+    original_read = monitor._read_scope_events
+    path_type = type(path)
+    original_stat = path_type.stat
+    armed = False
+    failures = 0
+
+    def observe_then_arm(name, observed_record):
+        nonlocal armed
+        snapshot = original_read(name, observed_record)
+        if name == scope:
+            armed = True
+        return snapshot
+
+    def fail_fresh_identity_stat(candidate, *args, **kwargs):
+        nonlocal armed, failures
+        if candidate == path and armed:
+            armed = False
+            failures += 1
+            raise OSError(errno.EIO, 'injected fresh stop identity failure')
+        return original_stat(candidate, *args, **kwargs)
+
+    # The event snapshot and its before/after inode checks succeed first.
+    # Only the later fresh check in _stop fails, before pending intent is set.
+    with monkeypatch.context() as patch:
+        patch.setattr(monitor, '_read_scope_events', observe_then_arm)
+        patch.setattr(path_type, 'stat', fail_fresh_identity_stat)
+        failed = monitor.poll_events_once()
+    assert failures == 1
+    assert failed['errors']
+    assert b.stopped == []
+    assert not a.records[scope].get('monitor_stop_pending')
+
+    # No further file modification or event. The transient failure is gone.
+    clock.advance(max(monitor.recovery_interval_s, monitor.stop_retry_interval_s))
+    retried = monitor.poll_once()
+    assert retried['stopped'] == [scope], (
+        'observed local OOM must retry after a transient fresh identity check failure',
+        retried,
+    )
+    assert b.stopped == [scope]
+
+
+def test_pending_weighted_creation_wakes_monitor_after_durable_recovery(authority, monkeypatch):
+    a, backend = authority
+    request = {'op': 'create', 'action_key': 'a' * 64, 'nonce': 'b' * 32,
+               'memory_max_bytes': 1024, 'cpu_weight': 10}
+    snapshots = []
+    a.scope_observer = lambda: snapshots.append([
+        json.loads(path.read_text()) for path in a.state_dir.glob('*.json')])
+    with monkeypatch.context() as patch:
+        def unavailable(*args, **kwargs):
+            raise OSError('injected cgroup creation interruption')
+        patch.setattr(backend, 'create', unavailable)
+        with pytest.raises(OSError, match='creation interruption'):
+            a.handle(os.getuid(), os.getpid(), request)
+    assert snapshots[-1][0]['pending'] is True
+    assert snapshots[-1][0]['cpu_weight'] == 10
+    assert not backend.groups
+    snapshots.clear()
+    record = a.handle(os.getuid(), os.getpid(), request)
+    assert snapshots and not snapshots[-1][0].get('pending')
+    assert snapshots[-1][0]['cpu_weight'] == 10
+    assert backend.groups[record['scope_id']]['cpu_weight'] == 10
+    assert record['token'] == snapshots[-1][0]['token']

@@ -1,0 +1,86 @@
+{
+  "source_parent": "3b732a3495549a1944b0fad0330a129763ad7ea6",
+  "report": "/mnt/shared/paperclip-runs/PRI-43/pe2-repair/sibling-repro.json",
+  "entries": [
+    {
+      "action_key": "d8ad5845200e315cf7c506b2dbd4652b98e68f3dd9c9f49dda22f6340021d5e0",
+      "status": "failed",
+      "exit_code": 1,
+      "host": "dl380g10",
+      "snapshot_commit": "5f815a7e6aacbca7575021f7a0a7c3ea2d38f1cd",
+      "snapshot": {
+        "bytes": 47146608,
+        "id": "pbrun.checkout-snapshot",
+        "sha256": "057e0d48c237671444fbdcbfff832119bfe91e5b9b1b0ec5aeee6d7508bd18d7"
+      },
+      "request_sha256": "7701e5da322b1d2a01cfc948d7524b16a9409e43a01789421185ae174bb5d258",
+      "logs": {
+        "stdout": {
+          "bytes": 11046,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d8ad5845200e315cf7c506b2dbd4652b98e68f3dd9c9f49dda22f6340021d5e0/181d28fdaed8384c01d9f1830f52d159b6409c97b9eebc08f701f0bbaeb3a114/00000001.stdout.a4e87ddb4cb2d3be46980ef5e32f27933b77574a6f69cbdd6484c32496759e7b.log",
+          "sha256": "a4e87ddb4cb2d3be46980ef5e32f27933b77574a6f69cbdd6484c32496759e7b"
+        },
+        "stderr": {
+          "bytes": 931,
+          "path": "/mnt/shared/prismabuild-fleet/pb-queue/attempts/d8ad5845200e315cf7c506b2dbd4652b98e68f3dd9c9f49dda22f6340021d5e0/181d28fdaed8384c01d9f1830f52d159b6409c97b9eebc08f701f0bbaeb3a114/00000001.stderr.89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c.log",
+          "sha256": "89004d1fbfd6c4e45ff1821380c5b438815947585ce215bcd0bdaa42cdda4f6c"
+        }
+      },
+      "runtime": {
+        "complete": true,
+        "version": [
+          3,
+          14,
+          4
+        ],
+        "description": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+        "files": [
+          "tests/test_a_producers_exports_run_on_its_allowance.py"
+        ],
+        "executable": {
+          "path": "/home/rob/venvs/pb-cpu/bin/python",
+          "resolved_path": "/usr/bin/python3.14",
+          "bytes": 7477160,
+          "sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41"
+        },
+        "executable_path_matches_running": true,
+        "affinity": [
+          2,
+          4
+        ],
+        "native_threads": {
+          "OMP_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1"
+        },
+        "conftest_sha256": "aa433cca6b30298072191d855aaec7cf46a276226e94fa9f65612827fdc7ad62",
+        "kernel": {
+          "system": "Linux",
+          "node": "dl380g10",
+          "release": "7.0.0-38-generic",
+          "version": "#38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026",
+          "machine": "x86_64",
+          "processor": ""
+        },
+        "selected_files": [
+          "tests/test_a_producers_exports_run_on_its_allowance.py"
+        ],
+        "selected_source_sha256": {
+          "tests/test_a_producers_exports_run_on_its_allowance.py": "bf3049ee171f264367b29562784452b9ab605eea29a4294ca9ff3e82859ee841"
+        },
+        "exitstatus": 1
+      },
+      "native_complete": true,
+      "cleanup_complete": true,
+      "receipt_sha256": null,
+      "failed_nodeids": [
+        "tests/test_a_producers_exports_run_on_its_allowance.py::test_a_withholding_foreign_action_does_not_hold_the_export_out"
+      ],
+      "outcome_counts": {
+        "call:passed": 9,
+        "call:failed": 1
+      }
+    }
+  ],
+  "worker_signing_keys": "not checked; no cryptographic attestation claim"
+}

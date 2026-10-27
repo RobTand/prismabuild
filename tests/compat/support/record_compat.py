@@ -371,11 +371,14 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     environment = None
     if archival_runtime is not None:
         environment = dict(os.environ)
+        tmpdir = environment.get("TMPDIR")
+        if not tmpdir or not Path(tmpdir).is_absolute():
+            raise ValueError("archival replay requires an absolute TMPDIR in the sealed environment")
         environment_bytes = json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("ascii")
+        environment_before_driver = {name: environment.get(name) for name in (
+            "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TMPDIR", "TZ")}
         expected = {**asdict(archival_runtime),
-                    "environment_before_driver": {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
-                                                  "OPENBLAS_NUM_THREADS": "1", "TMPDIR": "/home/rob/pbt17",
-                                                  "TZ": environment.get("TZ")},
+                    "environment_before_driver": environment_before_driver,
                     "environment_digest": {"algorithm": "sha256", "domain": _ENVIRONMENT_DOMAIN,
                                            "encoding": "json-sort-keys-compact-ascii",
                                            "sha256": sha(_ENVIRONMENT_DOMAIN.encode("ascii") + b"\0" + environment_bytes)},
