@@ -421,12 +421,14 @@ def _dedicated_attempt(runtime, monkeypatch):
                  "floor_bytes": 32 * GIB, "measured_gib": 1}]
 
     authority = SimpleNamespace(require=observed)
-    initialize, claim = pool.PoolQueue.__init__, pool.PoolQueue.claim
+    initialize, claim, publish = pool.PoolQueue.__init__, pool.PoolQueue.claim, pool.PoolQueue.publish
     monkeypatch.setattr(pb, "seal_action", dedicated)
     monkeypatch.setattr(pool.PoolQueue, "__init__", lambda self, *a, **kw: initialize(
         self, *a, **{**kw, "scratch_capacity_inputs": authority}))
     monkeypatch.setattr(pool.PoolQueue, "claim", lambda self, **kw: claim(
         self, **{**kw, "tags": [contracts.SCRATCH_CAPACITY_TAG, contracts.SCRATCH_LIFETIME_TAG]}))
+    monkeypatch.setattr(pool.PoolQueue, "publish", lambda self, **kw: publish(
+        self, **{**kw, "tags": [*kw.get("tags", ()), contracts.SCRATCH_CAPACITY_TAG]}))
     selected = json.dumps({"schema": scratch_lifetime.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
                            "entries": [{"root_env": "TEMP_ROOT", "name": "vm", "lifetime": "ephemeral"}]})
     queue, item, env = create(selected)
