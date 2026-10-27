@@ -5983,9 +5983,9 @@ fail with `movement_refused` and `residency_overran_reservation`.
 
 ### Bounded absence loans and submitter wait deadlines (#2343)
 
-Source contract, component-qualified in a temporary composition with approved
-#2344. Final dependency integration and independent source review remain
-pending. [Scoped qualification and remaining gates](evidence/issue2343/README.md)
+Source contract, component-qualified on the integrated main base with merged
+#2344. Independent source review and actual merge remain pending.
+[Scoped qualification and remaining gates](evidence/issue2343/README.md)
 record the actual evidence. No runtime deployment or operational acceptance
 is claimed by this change.
 

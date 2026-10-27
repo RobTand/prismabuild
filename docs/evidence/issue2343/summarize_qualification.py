@@ -53,6 +53,12 @@ def main():
         value = summarize(args.evidence_root, filename, source, actions, tests)
         (output / target).write_text(json.dumps(value, indent=2) + '\n')
         print(json.dumps({'output': target, 'actions': actions, 'native_tests': tests}))
+    value = summarize(args.evidence_root, 'integrated-qualification-verification.json',
+                      '290042085b1e73e71d11c05f17038989acba6a29', 34, 776)
+    value['scope'] = 'integrated source/component evidence; independent review and merge pending'
+    (output / 'integrated-qualification.json').write_text(json.dumps(value, indent=2) + '\n')
+    print(json.dumps({'output': 'integrated-qualification.json', 'actions': 34,
+                      'native_tests': 776}))
 
 
 if __name__ == '__main__':

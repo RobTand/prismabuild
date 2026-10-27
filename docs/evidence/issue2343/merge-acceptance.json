@@ -2,7 +2,7 @@
   "schema": "pb.staged_read_acceptance.v1",
   "step": "merge",
   "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
-  "ledger_commit": "a14685c6a107ed9d7744a7f1af8e5dc03bc6fcb3",
+  "ledger_commit": "290042085b1e73e71d11c05f17038989acba6a29",
   "scope": [
     "SC-01",
     "ID-02",
@@ -14,7 +14,7 @@
     "status": "not-this-step"
   },
   "merge": {
-    "status": "prepared; blocked on dependency integration and independent source review",
+    "status": "integrated component qualification complete; independent source review and merge pending",
     "branch": "prismabuild-2343",
     "issue": "https://github.com/RobTand/prismabuild/issues/2343",
     "standalone_source": "77aef6d9d690bccdf0458f21560ae85736930820",
@@ -22,7 +22,9 @@
     "dependency": {
       "pr": 2344,
       "approved_head": "9f06f45a4f227874b53a2bd621d0a5da6fc229f3",
-      "state": "open; no branch/worktree changes by PRI-217"
+      "state": "merged; approved head is an ancestor of integrated base; owner branch/worktree untouched",
+      "landing": "24393cd0fbf1e646825a8f61d9e0973a310f7a33",
+      "merged_at": "2026-10-27T09:15:47Z"
     },
     "validated_repairs": [
       {
@@ -30,58 +32,94 @@
         "target": "PB decides admission, placement, claim, retry, withdrawal, cleanup.",
         "scope": "PB observes dual absence and owns every loan, resource gate and queue-wait cancellation.",
         "actions": [
-          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
-          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
-          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
-          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1",
+          "6d890176460727b3035e1bf54de7b89f1386cb7d02d2afedd456938c4d841815",
+          "0a4dce3a5212bd5367f8a29c7b64a70f60a3e5024cc1b6e9d0ff2f69a9e5d6b7",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b",
+          "ef2b08c4f3c804553d45b97d9523f551f074ce5e7d64e2b3eeab3c9873f949fb",
+          "61763a5b1af6bf84cc9e56a95b6f200768535fc4f88c9ff0ad24511e3acba3ba",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e"
         ],
-        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+        "outcome": "executed exit 0 on integrated source; native outcomes and teardown complete; cleanup settled; immutable logs, execution receipts, CAS payload bytes and actual source trees verified in integrated-qualification.json",
+        "execution_receipts": {
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1": "31b088266b8c6a1ca14ad777136ef45c02f6eb37449e8d2270e78fe4fe36812a",
+          "6d890176460727b3035e1bf54de7b89f1386cb7d02d2afedd456938c4d841815": "7f113376be6930d6fd56215272746bb9126b4dc219233b23eb0b1922e60d8b8a",
+          "0a4dce3a5212bd5367f8a29c7b64a70f60a3e5024cc1b6e9d0ff2f69a9e5d6b7": "5011a442b83899746bb69354ae6290c4a25b9f9716c9c38a5610a481790b3cd8",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b": "38c4b5c4d51286bb61164a084b525abb07370fc2e110de61b999972b48bc8eea",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b": "ad6c48f13bf7a18f057071623a980869edf999de0bedbaf13f1fb70e52171f7c",
+          "ef2b08c4f3c804553d45b97d9523f551f074ce5e7d64e2b3eeab3c9873f949fb": "4d7583cfb25c73bebf7a944ece605e4a5a1731455502782f7967212885574d74",
+          "61763a5b1af6bf84cc9e56a95b6f200768535fc4f88c9ff0ad24511e3acba3ba": "d5e88524efb89aed0fc9c2bcbcfa4ed15601f0d92f6a5c2eae4c4ee29b66e56a",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e": "00f2a5fc6cb8055a4b30b890bd38380a894e78c27085975ed9ba03d200be6f51"
+        }
       },
       {
         "id": "ID-02",
         "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
         "scope": "Loan slots and deadline teardown bind exact publications; successor publications survive composed cleanup.",
         "actions": [
-          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
-          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
-          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
-          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e"
         ],
-        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+        "outcome": "executed exit 0 on integrated source; native outcomes and teardown complete; cleanup settled; immutable logs, execution receipts, CAS payload bytes and actual source trees verified in integrated-qualification.json",
+        "execution_receipts": {
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1": "31b088266b8c6a1ca14ad777136ef45c02f6eb37449e8d2270e78fe4fe36812a",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b": "38c4b5c4d51286bb61164a084b525abb07370fc2e110de61b999972b48bc8eea",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b": "ad6c48f13bf7a18f057071623a980869edf999de0bedbaf13f1fb70e52171f7c",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e": "00f2a5fc6cb8055a4b30b890bd38380a894e78c27085975ed9ba03d200be6f51"
+        }
       },
       {
         "id": "SM-01",
         "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
         "scope": "Only an unchanged wholly unstarted gang can expire; first claim permanently disarms the opt-in deadline.",
         "actions": [
-          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
-          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a",
-          "3435bf1e2dd59827b1d106b165575cfcb48c9b39b30ee9816a134023503fb29e",
-          "232ac0480168780b9412e66c86f69466644f37ba43c1be43c56dee42e3254bbc"
+          "0a4dce3a5212bd5367f8a29c7b64a70f60a3e5024cc1b6e9d0ff2f69a9e5d6b7",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b",
+          "61763a5b1af6bf84cc9e56a95b6f200768535fc4f88c9ff0ad24511e3acba3ba",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e"
         ],
-        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+        "outcome": "executed exit 0 on integrated source; native outcomes and teardown complete; cleanup settled; immutable logs, execution receipts, CAS payload bytes and actual source trees verified in integrated-qualification.json",
+        "execution_receipts": {
+          "0a4dce3a5212bd5367f8a29c7b64a70f60a3e5024cc1b6e9d0ff2f69a9e5d6b7": "5011a442b83899746bb69354ae6290c4a25b9f9716c9c38a5610a481790b3cd8",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b": "38c4b5c4d51286bb61164a084b525abb07370fc2e110de61b999972b48bc8eea",
+          "61763a5b1af6bf84cc9e56a95b6f200768535fc4f88c9ff0ad24511e3acba3ba": "d5e88524efb89aed0fc9c2bcbcfa4ed15601f0d92f6a5c2eae4c4ee29b66e56a",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e": "00f2a5fc6cb8055a4b30b890bd38380a894e78c27085975ed9ba03d200be6f51"
+        }
       },
       {
         "id": "INV-01",
         "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
         "scope": "One bounded loan preserves demand reservations and every other fence; ordinary exact-attempt cleanup returns tokens.",
         "actions": [
-          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
-          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b",
-          "8b71da9c7b69fce6d48caf59ab7a75714a66f3bf2ddd8d2da4d903426ea4cbbc",
-          "aba70bfbcd898b8256d1211c38ed76302d2ea16a4b134e9761fc0416c243582a"
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e"
         ],
-        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+        "outcome": "executed exit 0 on integrated source; native outcomes and teardown complete; cleanup settled; immutable logs, execution receipts, CAS payload bytes and actual source trees verified in integrated-qualification.json",
+        "execution_receipts": {
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1": "31b088266b8c6a1ca14ad777136ef45c02f6eb37449e8d2270e78fe4fe36812a",
+          "9042ba6228b623cbc5bce983dfca8672c88465f97483b01918669f63ced1671b": "38c4b5c4d51286bb61164a084b525abb07370fc2e110de61b999972b48bc8eea",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b": "ad6c48f13bf7a18f057071623a980869edf999de0bedbaf13f1fb70e52171f7c",
+          "e0fd13ded14e0af80fdf431eea8645d855c58d11e631de340fa7270eaab71e1e": "00f2a5fc6cb8055a4b30b890bd38380a894e78c27085975ed9ba03d200be6f51"
+        }
       },
       {
         "id": "INV-08",
         "target": "Retries never double-count; adoption verifies identity/trust without recompute.",
         "scope": "A no-clobber slot admits only one borrowing publication across repeated attempts to reserve it.",
         "actions": [
-          "a0179f82e4cb02fbb84da36592ce3f506a1a1c2a70da6c4d3e519fa6480d52fc",
-          "bedf5a7778248b70fbf2b34aa3a1e75082dc35c7a578a21383845de1bd3d300b"
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b"
         ],
-        "outcome": "executed exit 0; native completions and cleanup settled; immutable logs and execution receipt/CAS bytes/source read back; see composition-qualification.json"
+        "outcome": "executed exit 0 on integrated source; native outcomes and teardown complete; cleanup settled; immutable logs, execution receipts, CAS payload bytes and actual source trees verified in integrated-qualification.json",
+        "execution_receipts": {
+          "3b110033c8af7337331cf9ed95bcd0ffd174045fa2108862164f372aeba537c1": "31b088266b8c6a1ca14ad777136ef45c02f6eb37449e8d2270e78fe4fe36812a",
+          "68e2bb6738c0004ec9de0b1bf4a5272923d6c095458100295c944680b9a7e08b": "ad6c48f13bf7a18f057071623a980869edf999de0bedbaf13f1fb70e52171f7c"
+        }
       }
     ],
     "evidence": {
@@ -89,17 +127,25 @@
       "repeats": "docs/evidence/issue2343/repeat-qualification.json",
       "final_broad": "388 passed per architecture in 17 files; no failures/skips",
       "fresh_repeats": "5 rounds per architecture for all 4 new files, first 2 rounds xdist=2; 280 passes across the repeats",
-      "total_new_readback": "1056 native tests in 74 distinct actions, including broad runs; no failures/skips",
-      "worker_attestation_signatures": "not checked"
+      "total_new_readback": "Historical composition: 1056 native executions in 74 actions. Final integrated source: 776 in 34 additional actions. Counts retain distinct source identities.",
+      "worker_attestation_signatures": "not checked",
+      "integrated": "docs/evidence/issue2343/integrated-qualification.json",
+      "integrated_broad": "388 passed per architecture in 17 files; 776 native executions in 34 actions; no failures/skips",
+      "inventory": "592 authoritative policies; all six additions/removals reviewed in tests/compat/field-set-review-gang-2343.json"
     },
     "remaining_gaps": [
-      "Standalone successor-publication regression remains RED without #2344. Merge acceptance is not granted by this prepared record.",
-      "Final integrated source and generated inventory, single pre-review rebase, configured non-author Code Reviewer 02 review, approved-head intake and actual batch merge remain owed.",
-      "All whole-requirement axes retain their existing states. INV-07 tier copy/publish/lease/release is unchanged and is not newly qualified by queue component tests.",
+      "Independent non-author Code Reviewer 02 source review, approved-head PRI-128 intake and actual batch merge remain owed. This prepared record grants no approval.",
+      "SC-01, ID-02, SM-01, INV-01 and INV-08 are component-qualified only in the scopes above. Every prior whole-requirement field retains its state. INV-07 tier copy/publish/lease/release is unchanged and unqualified by these queue tests.",
       "No deployment, strict-tier campaign, power-loss durability, complete staged-read conformance or general-starvation proof.",
       "Alive but indefinitely unclaimable gangs may retain fences; nonrestartable pre-election work is not preempted; returned partners may wait for one bounded loan; GB10 release latency has no finite measured bound."
     ],
-    "note": "Source/component qualification of a temporary composition only. This record does not approve a source head or authorize publication."
+    "note": "Integrated source/component qualification with merged #2344, preserving its six approved registration/cleanup bodies. Historical standalone successor-publication RED remains a failure at its original source; the integrated regression passes. No source approval, deployment or workload acceptance is conferred.",
+    "integrated_source": "290042085b1e73e71d11c05f17038989acba6a29",
+    "integrated_base": "24393cd0fbf1e646825a8f61d9e0973a310f7a33",
+    "integrated_source_trees": {
+      "src": "77f45ad09884278ed433bca3200d38a457cf91ee",
+      "tools": "678a8e4f217b131dc62f4fd06e59d1d1cfc93d78"
+    }
   },
   "deploy": {
     "status": "not-this-step"
