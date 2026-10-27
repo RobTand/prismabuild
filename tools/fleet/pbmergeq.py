@@ -925,7 +925,8 @@ class Runner:
             wall = time.monotonic() - started
             files = next(f for n, _, f in jobs if n == name)
             result = self.read_result(report, files, log=log, returncode=process.returncode,
-                                      invocation=invocation, runtime=runtime)
+                                      invocation=invocation, runtime=runtime,
+                                      checkout=next(c for n, c, _ in jobs if n == name))
             result.runtime, result.log = runtime, str(log)
             result.report, result.wall_s = str(report), wall
             results[name] = result
@@ -936,7 +937,7 @@ class Runner:
 
     def read_result(self, report: Path, files: list[str], *, log: Path,
                     returncode: int, invocation: dict | None = None,
-                    runtime: dict | None = None) -> RunResult:
+                    runtime: dict | None = None, checkout: Path | None = None) -> RunResult:
         try:
             rows = json.loads(report.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -944,7 +945,8 @@ class Runner:
         result = reduce_report(rows, self.outcomes, requested_files=files,
                                client_returncode=returncode)
         if isinstance(rows, list) and runtime is not None:
-            result.environments, result.environment_errors = self.observe_environments(rows, runtime)
+            result.environments, result.environment_errors = self.observe_environments(
+                rows, runtime, checkout=checkout, files=files)
         if self.full_suite and isinstance(rows, list):
             for row in rows:
                 record = (self.outcomes.parse(row["output"], **(
@@ -963,7 +965,9 @@ class Runner:
                 result.runtime_refusal = snapshot["runtime_refusal"]["message"]
         return result
 
-    def observe_environments(self, rows: list, runtime: dict) -> tuple[dict, list[str]]:
+    def observe_environments(self, rows: list, runtime: dict, *,
+                             checkout: Path | None = None, files: list[str] | None = None
+                             ) -> tuple[dict, list[str]]:
         from prismabuild import action_client, action_result, action_wait, pool
         from prismabuild.submission_frontend import store_for
 

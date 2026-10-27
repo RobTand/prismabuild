@@ -1393,6 +1393,15 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
+
+def shard_arguments(spec: dict, pytest_args: list[str], index: int, *,
+                    explicit_options: list[str], pytest_workers: list[str]) -> list[str]:
+    """The recorder's selection and pytest argv for one immutable shard."""
+    return [json.dumps(spec), "-q", "--no-header", "-p", "no:cacheprovider",
+            *explicit_options, *shard_pytest_args(pytest_args, index),
+            *pytest_workers, *spec["files"]]
+
+
 def validate_shard_env(entries: list[str]) -> None:
     """Check caller additions before preparing or publishing any shard (#1891)."""
     owned = {"TMPDIR", *SHARD_THREAD_ENV, test_bound_contract.TIMEOUT_ENV,
@@ -1549,7 +1558,7 @@ def _pbtest_tags(args) -> list[str]:
                         not pool.is_box_local_path(RUNTIME_ROOT) else [])
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
                     help="Git tree to snapshot and test on the pool")
@@ -1701,6 +1710,11 @@ def main() -> int:
                     help="test files or directories to shard, relative to "
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
+    return ap
+
+
+def main() -> int:
+    ap = argument_parser()
     args = ap.parse_args()
     if args.plan_only:
         if not args.json:
@@ -2152,12 +2166,9 @@ def main() -> int:
         spec: dict = {"files": bucket, "roots": requested_roots}
         if plan["selection"] is not None:
             spec["capabilities"] = plan["selection"]
-        arguments = [
-            json.dumps(spec),
-            "-q", "--no-header",
-            "-p", "no:cacheprovider", *explicit_options,
-            *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
-        ]
+        arguments = shard_arguments(spec, pytest_args, index,
+                                    explicit_options=explicit_options,
+                                    pytest_workers=pytest_workers)
         request = shard_request(request, environment=environment,
                                 python_entry=python_entry, arguments=arguments)
         owner = owners.setdefault(id(plan), request)
