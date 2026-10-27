@@ -21,6 +21,8 @@ touches a live queue or a real stage mountpoint (#628).
 """
 from __future__ import annotations
 
+from claim_denial_reader import latest_claim_denial
+
 import json
 from pathlib import Path
 import sys
@@ -31,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import adaptive_cpu, pool, residency_plan  # noqa: E402
+from prismabuild import pool, residency_plan  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 from test_a_blocked_copy_goes_first_on_its_tier import (  # noqa: E402
     FILL_KIND, KNEE, SEALED_FILL_MB_S, WORKER, _clear_channel, _declare_wait,
@@ -65,16 +67,6 @@ def _claim_row(queue: pool.PoolQueue, key: str, *, host: str = "dl380g10") -> No
         **json.loads(ready.read_text()), "claimed_unix": time.time(),
         "claimed_by": f"{host}:1:fixture", "claimed_host": host}))
     ready.unlink()
-
-
-def _denial(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def _end_earlier_generation(queue: pool.PoolQueue, row: dict[str, object]) -> float:
@@ -145,7 +137,7 @@ def test_a_ready_consumers_lead_is_listed_and_claimed_before_other_copies(
     assert claimed and claimed[0] == lead, claimed
     assert str(later["action_key"]) not in claimed, (
         f"a copy nobody waits on was claimed beside the lead: {claimed}")
-    denial = _denial(queue, WAITING)
+    denial = latest_claim_denial(queue, WAITING)
     assert denial is not None
     assert denial["reason"] == "residency_lead_not_resident", denial
 
@@ -297,7 +289,7 @@ def test_a_lead_claimed_again_is_not_terminal_and_the_denial_names_the_claim(
 
     assert queue.claim(owner="worker", capacity={"cpu": 4}, tags=["sparky"]) is None
 
-    denial = _denial(queue, WAITING)
+    denial = latest_claim_denial(queue, WAITING)
     assert denial is not None
     assert denial["reason"] == "residency_lead_not_resident", denial["reason"]
     [entry] = denial["evidence"]["residency"]["pending"]
@@ -343,7 +335,7 @@ def test_an_ending_of_the_live_records_own_generation_stays_terminal(
 
     assert queue.claim(owner="worker", capacity={"cpu": 4}, tags=["sparky"]) is None
 
-    denial = _denial(queue, WAITING)
+    denial = latest_claim_denial(queue, WAITING)
     assert denial is not None
     assert denial["reason"] == "residency_lead_terminal", denial["reason"]
     assert denial["evidence"]["residency"]["pending"] == [
@@ -365,7 +357,7 @@ def test_a_requeue_bound_to_another_manifest_stays_terminal(tmp_path: Path) -> N
 
     assert queue.claim(owner="worker", capacity={"cpu": 4}, tags=["sparky"]) is None
 
-    denial = _denial(queue, WAITING)
+    denial = latest_claim_denial(queue, WAITING)
     assert denial is not None
     assert denial["reason"] == "residency_lead_terminal", denial["reason"]
     [entry] = denial["evidence"]["residency"]["pending"]

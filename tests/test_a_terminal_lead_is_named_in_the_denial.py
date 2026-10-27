@@ -13,6 +13,8 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -22,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import pool  # noqa: E402
 
 MOVER = "1" * 64
 SECOND_MOVER = "3" * 64
@@ -68,21 +70,11 @@ def _fail(q: pool.PoolQueue, key: str) -> None:
     q.finish(key, status="failed", claim_snapshot=claim)
 
 
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
-
-
 def test_a_failed_lead_is_terminal_not_pending(queue: pool.PoolQueue) -> None:
     _fail(queue, MOVER)
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": MOVER, "status": "failed"}]
@@ -99,7 +91,7 @@ def test_a_failed_lead_beside_a_queued_one_stays_pending(
     _fail(queue, MOVER)
     _publish_consumer(queue, [MOVER, SECOND_MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_not_resident"
     assert denial["evidence"]["residency"]["pending"] == [

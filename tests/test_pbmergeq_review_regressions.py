@@ -59,7 +59,7 @@ def test_concurrent_base_refusal_outranks_inconclusive_rerun_without_attempt_cha
             return results
 
     queue.runner = MixedResults()
-    batch = queue.run_batch([{**entries(1)[0], "attempts": 2}])
+    batch = queue.run_batch([{**entries(github, 1)[0], "attempts": 2}])
     assert batch["verdict"] == "runtime-blocked", batch
     assert queue.store.state["queue"][0]["attempts"] == 2
     assert batch["runs"]["rerun"]["actions"] == ["unobserved-rerun"]
@@ -157,7 +157,7 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
         return Completed(rows[0]["returncode"])
 
     monkeypatch.setattr(mq.subprocess, "Popen", launch)
-    batch = queue.run_batch(entries(1, 2, 3))
+    batch = queue.run_batch(entries(github, 1, 2, 3))
     assert batch["verdict"] == "red" and statuses(github) == [(guilty, "failure")]
     assert {name for name, _, _ in launched} == {
         "candidate", "candidate.retry1", "rerun", "base", "prefix1", "prefix2"}
