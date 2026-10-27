@@ -5239,7 +5239,11 @@ capabilities, the configured image, and CPU1/GPU1/mem16GiB. Only the candidate
 runtime-generation tag is omitted, because workers cannot offer it before
 activation. This is declared feasibility, not a reservation or a free-capacity
 check. Missing offers, an unsupported driver hook, and unplaceable legs refuse
-without publishing. Dry runs apply the same check. Stage-only publication and
+without publishing. Dry runs apply the same check while suppressing bytecode
+writes for both the driver import and the hook's lazy imports. The publisher
+restores its incoming bytecode setting on success or refusal. Ordinary
+publication and postactivation imports retain the interpreter's bytecode policy.
+Stage-only publication and
 `--no-canary` do not check placement. A shared checkout does not remove the
 publication GPU host pin. Postactivation generation waiting and placement before
 grant still protect changes after preflight. Component test evidence does not

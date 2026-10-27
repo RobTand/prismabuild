@@ -1159,14 +1159,21 @@ def _load_canary_driver():
 
 
 def _preflight_canary_placement(*, dry_run: bool):
-    module = _load_canary_module()
-    check = getattr(module, "preflight_publication", None)
-    if not callable(check):
-        raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
+    previous = sys.dont_write_bytecode
     try:
-        check(fleet_root=MIRROR.parent)
-    except Exception as exc:
-        raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
+        if dry_run:
+            sys.dont_write_bytecode = True
+        module = _load_canary_module()
+        check = getattr(module, "preflight_publication", None)
+        if not callable(check):
+            raise _CanaryPrecondition("canary driver has no preflight_publication(fleet_root=...)")
+        try:
+            check(fleet_root=MIRROR.parent)
+        except Exception as exc:
+            raise _CanaryPrecondition(f"canary placement preflight refused: {exc}") from exc
+    finally:
+        if dry_run:
+            sys.dont_write_bytecode = previous
 
 
 def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
