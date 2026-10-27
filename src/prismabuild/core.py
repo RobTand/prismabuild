@@ -3253,6 +3253,14 @@ def _verify_attested_worker_runtime_unchanged(
     _verify_worker_runtime_unchanged(validated["runtime"])
 
 
+def _verify_finished_execution_identity(
+    attestation: Mapping[str, object], action: Mapping[str, object], root: Path
+) -> None:
+    verify_code_closure(action["code_closure"], root)
+    _verify_attested_executable_unchanged(attestation, action)
+    _verify_attested_worker_runtime_unchanged(attestation, action)
+
+
 class PrismaBuildCAS:
     """Immutable file-result CAS with verified first-result-wins receipts."""
 
@@ -6369,9 +6377,7 @@ def run_local_action(
         # writer) can change a closure member while argv is running.  Check
         # once before an expensive result copy, then again at the CAS receipt
         # commit point so copying a large artifact cannot reopen that gap.
-        verify_code_closure(normalized["code_closure"], root)
-        _verify_attested_executable_unchanged(attestation, normalized)
-        _verify_attested_worker_runtime_unchanged(attestation, normalized)
+        _verify_finished_execution_identity(attestation, normalized, root)
         _validate_result_containment(output, cwd)
 
         def verify_publication_provenance() -> None:
