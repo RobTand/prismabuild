@@ -371,7 +371,9 @@ def test_native_evidence_refusal_retains_failures_without_charging_members(tmp_p
     else:
         path = mq.Path(observed['tests/test_a.py']['stdout']['path'])
         assert path.is_relative_to(native_root)
+        path.chmod(0o644)
         path.write_text('tampered native stdout\n')
+        path.chmod(0o444)
     with pytest.raises(action_result.ActionResultError):
         action_result.read_verified_ending_result(
             native.queue, native.key,
@@ -384,6 +386,7 @@ def test_native_evidence_refusal_retains_failures_without_charging_members(tmp_p
     class NativeEvidenceRunner(FakeRunner):
         def run_many(self, batch, outdir, jobs):
             results = super().run_many(batch, outdir, jobs)
+            outdir.mkdir(parents=True, exist_ok=True)
             for name, _, _ in jobs:
                 report = outdir / (name + '.native.json')
                 report.write_text(json.dumps(native.rows))
