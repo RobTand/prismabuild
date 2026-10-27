@@ -46,8 +46,10 @@ CASES += [
     ('hidden-dry-run-write', 'intake.py', '    return {"status": "dry_run",', '    github.create(payload)\n    return {"status": "dry_run",', 'test_dry_run_checks_every_repo_and_never_creates'),
     ('double-create', 'intake.py', '        return github.create(payload)', '        github.create(payload)\n        return github.create(payload)', 'test_apply_creates_a_native_child_with_canonical_priority_and_existing_labels'),
     ('read-before-validation', 'intake.py', '        parent = IssueRef.parse(args.parent, args.repo)', '        GitHub().open_issues()\n        parent = IssueRef.parse(args.parent, args.repo)', ''),
-    ('create-before-listing', 'intake.py', '    issues = github.open_issues()', '    if apply:\n        github.create(github.prepare(ticket))\n    issues = github.open_issues()', ''),
+    ('create-before-listing', 'intake.py', '    issues = github.open_issues()', '    github.create(github.prepare(ticket))\n    issues = github.open_issues()', ''),
     ('create-before-parent-and-label-validation', 'intake.py', '        if parent["state"] != "open" or "pull_request" in parent:', '        self.create({"repositoryId": repo["node_id"], "parentIssueId": parent["node_id"], "title": ticket.title, "body": ticket.body, "labelIds": []})\n        if parent["state"] != "open" or "pull_request" in parent:', ''),
+    ('invent-absent-label', 'intake.py', '"labelIds": [labels[name] for name in sorted(requested)]', '"labelIds": ["fabricated-label"]', 'test_absent_priority_label_does_not_invent_a_label'),
+    ('wrong-parent-binding', 'intake.py', '"parentIssueId": parent["node_id"]', '"parentIssueId": "wrong-parent"', 'test_cross_repo_parent_is_resolved_in_its_repository'),
     ('list-scope-normalization-disabled', 'intake.py', '        line = LIST_PREFIX.sub("", line)', '        line = line', 'test_listed_unrelated_fields_refuse_before_github'),
     ('reject-new-valid-evidence', 'intake.py', 'and not has_evidence(ticket.body):', 'and True:', ''),
 ]
