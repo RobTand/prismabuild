@@ -21,6 +21,7 @@ from __future__ import annotations
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -31,7 +32,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import pool  # noqa: E402
 from prismabuild import tier_holdings
 
 POISON = "a" * 64
@@ -48,18 +49,6 @@ from fleet_world import FleetWorld
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
-
-
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    """This box's newest claim verdict for ``key``, from its host-local denial log."""
-
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def _rewrite_resources(q: pool.PoolQueue, key: str, resources: object) -> None:
@@ -141,7 +130,7 @@ def test_a_foreign_tier_id_is_a_denial_and_the_poll_claims_the_next_item(
     # One poll, and it did both things: filed the poison as a denial and
     # carried straight on to the good record.
     assert claimed is not None and claimed["action_key"] == GOOD
-    denial = _denial(queue, POISON)
+    denial = latest_claim_denial(queue, POISON)
     assert denial is not None and denial["reason"] == "malformed_tier_demand"
     assert bad_tier in str(denial["evidence"]["error"])
     assert f"stage_gib@{bad_tier}" in denial["evidence"]["demand"]
@@ -187,7 +176,7 @@ def test_a_foreign_resources_block_is_a_denial_and_the_poll_carries_on(
 
     claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == GOOD
-    denial = _denial(queue, POISON)
+    denial = latest_claim_denial(queue, POISON)
     assert denial is not None and denial["reason"] == "malformed_demand"
     assert denial["evidence"]["error"]
     assert queue.records.item_path(pool.record_store.READY, POISON).exists()
@@ -218,7 +207,7 @@ def test_a_corrupt_done_record_for_a_lead_is_a_denial_not_an_escape(
 
     claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == GOOD
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert "not valid JSON" in str(denial["evidence"]["error"])
@@ -262,7 +251,7 @@ def test_an_estale_done_record_for_a_lead_is_a_denial_not_an_escape(
 
     claimed = queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4})))
     assert claimed is not None and claimed["action_key"] == GOOD
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert "Stale file handle" in str(denial["evidence"]["error"])

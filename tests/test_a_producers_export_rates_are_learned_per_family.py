@@ -58,7 +58,8 @@ def _template(tmp_path: Path, template_id: str, family: str | None) -> dict:
 
 
 def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
-             demand: dict[str, int], **variables: str) -> str:
+             demand: dict[str, int], *, timeout_s: float | None = None,
+             **variables: str) -> str:
     """Seal a spool producer of ``template`` and publish it; return its key."""
 
     cas_root = tmp_path / "cas"
@@ -67,6 +68,8 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
     request.pop("action_key")
     request["environment"]["variables"].update({
         ps.ROOT_ENV: str(tmp_path / "local"), ps.MAX_ENV: "256", **variables})
+    if timeout_s is not None:
+        request["params"]["execution_timeout_s"] = timeout_s
     action = core.seal_action(request)
     cas.publish_action_request(action)
     owner = str(action["action_key"])
@@ -217,7 +220,8 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     assert adaptive_cpu.learn_export(ledger, earlier_template, earlier, 1010., 20.,
                                      family=FAMILY)
 
-    owner = _publish(tmp_path, queue, template, al.PRODUCER_DEMAND)
+    owner = _publish(tmp_path, queue, template, al.PRODUCER_DEMAND,
+                     timeout_s=pool.WITHHOLD_CEILING_S)
     claimed = _claim_producer(queue, monkeypatch, owner)
     allowance = _allowance(queue, owner)
     assert allowance["slots"] == 2 and allowance["basis"]["basis"] == "measured", allowance
@@ -273,6 +277,16 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     assert queue.passes(unfunded) == 0
     assert queue.records.item_path(pool.record_store.READY, bystander).exists()
     assert queue.passes(bystander) == 0
+
+
+def test_a_producer_without_a_deadline_has_no_finite_drain_opportunity(
+        tmp_path, monkeypatch) -> None:
+    queue = fx._queue(tmp_path)
+    template = _template(tmp_path, "unbounded-producer", FAMILY)
+    owner = _publish(tmp_path, queue, template, SMALL)
+    _claim_producer(queue, monkeypatch, owner)
+
+    assert queue.holder_bound(owner)["bound"] == "unbounded"
 
 
 def test_the_family_is_sealed_and_a_malformed_one_is_refused(tmp_path) -> None:

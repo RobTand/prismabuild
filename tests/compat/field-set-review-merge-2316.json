@@ -1,0 +1,23 @@
+[
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/backlog_census/fetch_open_issues.py",
+      "owner": "<module>",
+      "unresolved": "'\\nnumber title body state createdAt updatedAt closedAt url\\nrepository { nameWithOwner }\\nlabels(first:100) { nodes { name } pageInfo { hasNextPage endCursor } }\\nparent { number repository { nameWithOwner } }\\n'",
+      "binding": "ISSUE_FIELDS"
+    },
+    "count": 1,
+    "reason": "Approved b13faea census GraphQL selection string. The source-only inventory records ISSUE_FIELDS without running GitHub collection; no reader allowlist or runtime contract changes."
+  },
+  {
+    "change": "added",
+    "row": {
+      "path": "tools/backlog_census/hindsight.py",
+      "owner": "collect",
+      "unresolved": "{key for key in index if not key.startswith('_')}"
+    },
+    "count": 1,
+    "reason": "Approved b13faea census selects non-private recall-index keys for collection. The symbolic observation preserves the existing source expression; no census logic changes."
+  }
+]

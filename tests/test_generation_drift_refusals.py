@@ -43,7 +43,6 @@ import importlib.util
 import json
 from pathlib import Path
 import stat as statmod
-import subprocess
 import sys
 from types import SimpleNamespace
 from unittest import mock
@@ -57,8 +56,8 @@ FLEET_TOOLS = Path(__file__).resolve().parents[1] / "tools" / "fleet"
 sys.path.insert(0, str(FLEET_TOOLS))
 
 import supervise  # noqa: E402
+from supervisor_fakes import HOST, candidates, signals, write_process  # noqa: E402, F401
 
-HOST = "dl380g10"
 #: Far outside any pid this box could hand out, so a mistake cannot land on a
 #: real process even if a patch were to slip.
 STALE_ARGV_ROLE = 1000000031
@@ -286,55 +285,6 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return mirror, store, proc
 
 
-def _process(proc: Path, pid: int, argv: list[str], *,
-             mark: str | None = HOST, children: list[int] | None = None) -> int:
-    """Write the ``/proc`` bytes one candidate process would have."""
-
-    directory = proc / str(pid)
-    directory.mkdir()
-    (directory / "cmdline").write_bytes(
-        b"".join(part.encode() + b"\0" for part in argv))
-    entries = ["HOME=/home/rob", "PATH=/usr/bin:/bin"]
-    if mark is not None:
-        entries.append(f"{supervise.OWNERSHIP_ENV}={mark}")
-    (directory / "environ").write_bytes(
-        b"".join(entry.encode() + b"\0" for entry in entries))
-    (directory / "stat").write_text(f"{pid} (python) S 1 {pid} {pid}\n")
-    task = directory / "task" / str(pid)
-    task.mkdir(parents=True)
-    (task / "children").write_text(
-        " ".join(str(child) for child in (children or [])))
-    return pid
-
-
-@pytest.fixture()
-def candidates(monkeypatch: pytest.MonkeyPatch):
-    """Stand in for ``pgrep``, per script name, the way the real one answers."""
-
-    offered: dict[str, list[int]] = {}
-
-    def fake_run(argv, *_args, **_kwargs):
-        assert argv[0] == "pgrep", argv
-        return subprocess.CompletedProcess(
-            argv, 0, "\n".join(str(pid) for pid in offered.get(argv[-1], [])), "")
-
-    monkeypatch.setattr(supervise.subprocess, "run", fake_run)
-    return offered
-
-
-@pytest.fixture()
-def signals(monkeypatch: pytest.MonkeyPatch):
-    """Every signal the supervisor would have sent, sent to nothing."""
-
-    box = SimpleNamespace(sent=[], busy=set())
-    monkeypatch.setattr(supervise.os, "kill",
-                        lambda pid, sig: box.sent.append((pid, int(sig))))
-    monkeypatch.setattr(supervise, "_is_idle",
-                        lambda pid, *_a: pid not in box.busy)
-    monkeypatch.setattr(supervise, "_claim_holders", lambda: frozenset())
-    return box
-
-
 def _spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Capture ``Popen`` argv, the way the role respawn test reads it back."""
 
@@ -358,7 +308,7 @@ def test_a_role_with_a_stale_argv_is_restarted_from_the_declaration(
     """
 
     mirror, _store, proc = fleet
-    role = _process(proc, STALE_ARGV_ROLE, [
+    role = write_process(proc, STALE_ARGV_ROLE, [
         "/usr/bin/python3", str(mirror / "repo" / "tools" / "prewarm_loop.py"),
         "--readers", "1"])
     candidates["prewarm_loop.py"] = [role]
@@ -405,7 +355,7 @@ def test_a_role_from_a_non_active_generation_is_restarted(
     """
 
     _mirror, store, proc = fleet
-    role = _process(proc, STALE_GEN_ROLE, [
+    role = write_process(proc, STALE_GEN_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "prewarm_loop.py"),
         "--readers", "4", "--max-readers", "8"])
     candidates["prewarm_loop.py"] = [role]
@@ -434,7 +384,7 @@ def test_a_current_role_is_left_running(
     """A role on the active generation with the declared argv is healthy."""
 
     mirror, _store, proc = fleet
-    role = _process(proc, CURRENT_ROLE, [
+    role = write_process(proc, CURRENT_ROLE, [
         "/usr/bin/python3", str(mirror / "repo" / "tools" / "prewarm_loop.py"),
         "--readers", "4", "--max-readers", "8"])
     candidates["prewarm_loop.py"] = [role]
@@ -457,7 +407,7 @@ def test_a_busy_stale_role_finishes_its_cycle_first(
     """
 
     _mirror, store, proc = fleet
-    role = _process(proc, BUSY_ROLE, [
+    role = write_process(proc, BUSY_ROLE, [
         "/usr/bin/python3", str(store / "gen-old" / "tools" / "prewarm_loop.py"),
         "--readers", "1"], children=[BUSY_ROLE + 1])
     candidates["prewarm_loop.py"] = [role]

@@ -305,6 +305,61 @@ Both new verbs return 0 on success and 1 on refusal, with
 with their input ID and digest. Invalid usage exits 2. Attached publication
 returns the action's ending or the ordinary wait failure code.
 
+### Produce a D38 receipt for canary leg 2 (#1639)
+
+Use a published generation containing `prismabuild.d38_producer`. A source merge alone does
+not install this interface. This procedure leaves enforcement activation to Rob.
+PrismaQuant and Tessera descriptors remain on hold.
+
+Set `PBCANARY_GPU_IMAGE` to the reviewed digest-pinned ARM64 canary image already present
+on an eligible GB10 worker. Set `D38_DIR` to an evidence directory outside your PrismaBuild
+checkout. The namespace and plan files must stay outside the checkout to preserve its identity.
+Generate the namespace from the reviewed command:
+
+```bash
+export PB=/mnt/shared/prismabuild-fleet/repo
+export D38_DIR=/mnt/shared/paperclip-runs/YOUR_TASK/d38
+mkdir -p "$D38_DIR"
+PYTHONPATH="$PB/src" /usr/bin/python3 - <<'PY'
+import json, os
+from pathlib import Path
+from prismabuild.d38_producer import namespace_for
+command = ["/usr/bin/python3", "-I", "tools/fleet/pbcanary_legs/leg2.py",
+           "--image", os.environ["PBCANARY_GPU_IMAGE"], "--device", "cuda",
+           "--checks-path", ".d38/leg2-checks.json"]
+Path(os.environ["D38_DIR"], "namespace.json").write_text(json.dumps(namespace_for(command)))
+PY
+```
+
+From the PrismaBuild checkout, seal the target without publishing work:
+
+```bash
+python3 "$PB/tools/pbrun.py" --d38-plan "$D38_DIR/plan.json" \
+	--d38-namespace "$D38_DIR/namespace.json" --tag gb10 \
+	--container-image "$PBCANARY_GPU_IMAGE" --cpus 1 --demand gpu=1,mem_gb=8 \
+	--timeout-s 120 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+	/usr/bin/python3 -I tools/fleet/pbcanary_legs/leg2.py \
+	--image "$PBCANARY_GPU_IMAGE" --device cuda --checks-path .d38/leg2-checks.json
+python3 "$PB/tools/pbrun.py" --d38-preflight-for "$D38_DIR/plan.json" --priority -10 --detach
+```
+
+The preflight derives zero GPU demand, disabled GPU visibility and GB10 placement from the
+plan. Do not provide replacement execution flags. Retain its full action key and use
+`pbwait.py --endings` to verify successful completion, logs and the CAS receipt.
+Then repeat the target command and all its sealing options, replacing `--d38-plan PATH`
+with `--d38-receipt KEY`. A changed source, command, environment, image or namespace needs
+a new plan and receipt. Supply `--input ID=PATH=SHA256` identically in both target commands
+for checkout-relative inputs of at most 64 KiB each.
+
+For a source candidate, `tools/maintenance/prove_d38_canary.py --seal --image REF --out DIRECTORY`
+retains a candidate CPU request in the normal CAS and prints its key. It executes no payload
+and publishes no runnable work. Submit that key using the published
+`pbrun.py --publish-sealed KEY --detach`. The sealed request reserves one CPU, 8 GiB RAM,
+zero GPUs and 120 seconds, with native threads bounded to 1 and the pinned image requirement.
+After verifying the terminal ending and logs, run the helper with `--verify KEY --out DIRECTORY`.
+It reads the verified CAS result through the candidate gate and retains the plan, action,
+CAS receipt, D38 result and report. It publishes no GPU target.
+
 ### Identify a slow submission (#1936)
 
 Successful seal and detached submission JSON includes `phases`, for example
@@ -1189,6 +1244,29 @@ are served; overload returns 503 and clients use unavailable-callback backoff.
 Client connect, headers and body share the original patience. Repeated immediate
 empty/reset replies also use the capped backoff.
 
+The source library `host_wait.HostWaitHub` (#1945) exposes `arm()`,
+`wait_since()`, typed `WakeInput` dependencies, and `RetryDeadline` values.
+Capture before authoritative reads. Pass the resulting generation and the
+current dependencies to `wait_since`. Notify local changes through `notify`
+and stop through `stop`. Close the hub to release its request and reader.
+One caller owns each observation/wait sequence. Consumer integration and
+supervisor multiplexing remain separate work.
+
+The library retains these timers:
+
+| Timer | Source and bound | Cancellation |
+|---|---|---|
+| Bell renewal | Healthy transport request, at most 300 seconds | Local change, stop, or earlier deadline. Empty renewal stays inside the library. |
+| Bell recovery | Unavailable callback or repeated immediate reset/empty reply, 0.25 seconds to five seconds | Stop, relevant input change, or recovered complete stream. |
+| NFS visibility | A hinted record is not yet visible, 50 milliseconds to one second within its original read budget | Stop, visible authoritative record, or exhausted original budget. |
+| Caller deadline | Named policy/evidence expiry or renewal at its absolute monotonic time | Caller removes the dependency after authoritative observation. Reconnects do not move it. |
+
+Read the returned wake reason, coverage, and diagnostic when fallback occurs.
+After reset, reconstruct authoritative state within the caller's existing
+budget, then acknowledge reconciliation with the captured generation through
+`reconciled`. A successful reconnect does not establish completeness. This
+source addition neither enables a live consumer nor publishes a runtime.
+
 Bell v2 is additive (#1939). Existing live pbwait/pbrun/pbtest clients continue
 using v1. Source inclusion does not activate v2 consumers. Before enabling one,
 query `/v2/now` with its exact `X-PrismaBuild-Queue` header and verify every
@@ -1260,7 +1338,7 @@ An inode rebound to a different name gets a new watch descriptor, so stale
 self-events cannot discard its replacement watch during reconstruction.
 
 Hints grant no free capacity. Keep the existing confirmed offer/ledger reads.
-`DirtyHostInputs` is available to later consumers to retain unknown host IDs,
+`DirtyInputs` is available to later consumers to retain unknown host IDs,
 retry NFS visibility from 50 ms to one second within the original read budget,
 and expose `read_attempts` and `visibility_retries`. Confirmation or stop cancels
 the retry; exhaustion keeps the ID dirty and reports `Unavailable`. Duplicate
@@ -1278,6 +1356,36 @@ flat `<key>.json` sidecars. In-place writes, replacement, removal and populated
 move-in are observed. Unsafe byte-read shapes withdraw coverage. These are
 source capabilities until the Principal Engineer publishes a reviewed runtime.
 Verify all required topics on the actual endpoint before enabling a consumer.
+
+Slice 3a (#1942) adds source support for `tiers`, `tier-reservations`,
+`tier-funding` and `tier-commitments`. All four use the exact tier ID, including
+its dots and colon. Claim order is inside the commitment record. Funding hints
+preserve the tier portion after the mover action key, including output retirement
+under `tier-funding/retired/`. Tier ledger watches include private/hidden holders,
+partial acquisition and rollback, token release, and `minted/dead` retirement.
+They stop at immediate holder/dead contents. No arbitrary queue traversal is added.
+
+The bell remains names-only. Invalid or unsupported tier identifiers, unsafe
+record shapes, unreadable directory scopes, watch exhaustion and lost watches
+cannot establish complete coverage. Lazy and populated moved-in trees withdraw
+coverage until watch-before-scan reconstruction has finished. Watch counts,
+coverage changes and resets expose these boundaries without healthy-renewal logs.
+After a loss, repair the scope/watch limit and reconstruct before relying on it.
+`queue_bell_input_reads.DirtyInputs` retains unknown tier IDs through the same
+50 ms to one-second visibility retry and original absolute read budget used for
+host inputs. Duplicate hints cannot extend that budget. Confirmation or stop
+cancels recovery; expiry keeps the ID dirty and reports unavailable evidence.
+
+Later consumers must retain the recorded tier announcement expiry of 120 s,
+private-acquisition grace of 300 s or 30 s for a known-dead local claimant, and
+the actual claim-order short-relief window, currently 120 s by default. Use the
+authoritative predicate's equality boundary. Funding has no TTL. Its generation
+binding and state/terminal/token proofs remain authoritative. Progress and lease
+inputs to claim order require their later adapters too. Bell outage recovery
+stays 0.25 s doubling to five seconds and cancels on recovered complete coverage
+or stop. These adapters add no periodic scan, timer default, consumer installation
+or live runtime publication. Verify the required topics on the published endpoint
+before enabling any dependent consumer.
 
 `LocalMirrorPublisher` is available for explicit host-hub ownership in slice 7.
 It is not installed by existing worker loops. Its local observer singleton
@@ -1581,6 +1689,13 @@ worker's normal finish recovery subsequently returns capacity. It preserves
 the command failure and immutable history, appends verified recovery evidence,
 and resolves the separate cleanup obligation shown by `pb_action`.
 
+After publishing a runtime with #1838, the same command repairs a historical
+`lease_lost_max_attempts` ending with stale `container_cleanup_pending`.
+It clears the marker only after fresh scope and container verification.
+Registered scratch retains its pending marker for the scratch lifecycle.
+The original lease-loss verdict, timestamps and immutable history stay intact.
+This is explicit recovery on the claiming host, with no background terminal scan.
+
 A withdrawal keeps its cancellation decision while the worker completes
 cleanup. A distinct READY successor can wait behind the original claim.
 Reconciliation leaves both intact; ordinary finish then returns the original
@@ -1727,7 +1842,9 @@ prints the job name, the comment and that `squeue`, files nothing, and exits
 Changing that budget changes the action key. SLURM receives the corresponding
 `--time`; the pool applies the shorter of that budget and its worker's
 `--timeout-s` safety ceiling (7200 seconds by default). Without an explicit
-budget, SLURM receives no `--time` and the pool retains its worker ceiling.
+budget, SLURM receives no `--time` and the pool supervises progress stalls.
+An explicit `--stall-s` requires a worker offering `activity-stall-v1`.
+The client refuses an unsupported fleet instead of letting it ignore the allowance.
 Pool execution timing starts immediately before launching the worker, after
 checkout materialization, withdrawal checks, scope preparation and status-file
 cleanup, using a monotonic clock. Delays in that preparation do not spend the
@@ -1757,8 +1874,10 @@ requires the `progress-v1` watchdog tag and the `progress-helper-v1` action
 environment tag, so an old loop mid-upgrade cannot claim an action using the
 helper. Upgraded loops continue to offer `progress-v1`, so they can claim
 already-sealed watchdog actions. `pbstatus`'s node table shows what each box
-announces, and its job table's `PROGRESS` column shows a running action's quiet
-time against the allowance in force.
+announces, and its job table's `PROGRESS` column shows the phase, committed
+count and optional unit, quiet time against the allowance, and accepted report
+count. JSON jobs retain the same observation. Activity observations show
+output/CPU activity without labelling it committed work.
 The action reports through `prismabuild.progress.commit(units, phase)`, or
 without importing anything by running the module the worker names in
 `PRISMABUILD_ACTION_PROGRESS_HELPER` -- `runpy.run_path(...)["commit"]` from
@@ -1804,7 +1923,8 @@ the dependent GLM calibration capture (issue #385); it does not reserve more
 memory or bypass admission. Specify the action's own deadline, and check the
 live worker offer before submitting long work. After runtime publication,
 supervisors replace only idle workers, so an already running attempt keeps
-its original ceiling. Omitting an action deadline inherits the worker ceiling.
+its original ceiling. Omitting an action deadline leaves total time unbounded;
+the worker ceiling clamps its quiet allowance instead.
 
 When a `--timeout-s` you asked for does expire, the worker takes the action's
 whole process group down before it reports the timeout: SIGTERM, a grace
@@ -2319,6 +2439,32 @@ can never lose its reservation to a plain CPU shard sealed to it (#1123).
 Passing `--timeout-s` explicitly is still honoured whatever it says, capped
 only by the real announced ceiling, exactly as before.
 `pbtest` prints the deadline it sealed and the ceilings it read.
+
+`pbtest` packs by recorded durations automatically after a completed green run
+for the same Git repository, including its linked worktrees and different test
+path lists (#2286). The resolved Git common directory identifies the repository;
+non-Git directories use their resolved root. It retains the latest report under
+`$XDG_STATE_HOME/prismabuild/pbtest-history-v2`, defaulting to
+`~/.local/state`; this works without `--json`. A failed or incomplete run leaves
+that history intact. Cache read/write failures warn and do not change the test
+verdict. `--history REPORT` overrides automatic lookup and remains repeatable.
+A first run without usable history rotates files round-robin.
+Each report row's `history_source` records `automatic` or `explicit` mode,
+plus the paths and SHA-256 digests of the exact reports read for both file and
+node predictions. An empty report list means no history report was available.
+
+A file predicted above its capability cohort's per-shard target splits into
+node groups across shards. The group count, index and duration model are sealed
+before submission. Current pytest collection determines the current nodes,
+including new parameter cases, and preserves directory ignore hooks and
+population options. Groups balance recorded node durations when present and
+otherwise rotate sorted node IDs. The report's optional `node_groups` records
+the assignment; each shard prints predicted against pytest seconds. Coverage
+verification requires a complete, consistent group cover and every selected
+node exactly once. An individual test remains the minimum executable unit.
+When any file splits, that cohort uses longest-first packing throughout,
+replacing half-deadline singleton isolation. Whole-file cohorts retain isolation,
+and execution deadlines apply to every shard in both cases.
 
 `pbtest` reads every shard's output while the shard runs and prints each
 `pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
@@ -4914,6 +5060,25 @@ broker attachment, an unaccounted container or incomplete telemetry refuses
 lending. A new worker needs broker installation and qualification before it can
 join this execution path; runtime publication alone does not install the broker.
 
+The #2064 source monitor watches `memory.events`, `memory.events.local` and
+`cgroup.events`. Unchanged event inputs are read at enrollment and after
+invalidation, rather than on every numeric sample. Its private `monitor.status`
+adds `event_coverage.complete`, `source_error` and per-scope coverage diagnostics.
+A lost scope has no retained counters or population evidence. Watch registration
+retries after one second. Notification overflow or excessive drain work discards
+the descriptor and its queued events before reenrollment. Coverage uncertainty
+makes broker monitor health and public GPU capacity incomplete.
+
+Numeric memory, pressure and vendor telemetry still require the default
+one-second sampler. Event-only status updates retain the last numeric sample's
+timestamp and cannot restore public completeness. A pending exact-attempt stop
+retries independently of new notifications. Shutdown wakes the notification
+wait; ongoing bounded collection finishes before the monitor joins. Population
+notifications never replace the backend's fresh checks before release or reaping.
+The controlled source tests and read-count baseline do not qualify privileged
+live cgroups or establish a deployed read rate. Rollout remains a separate
+reviewed installation and qualification step.
+
 A retired tombstone's kernel group can disappear while its record lives -- an
 out-of-band slice removal, or a reboot. A maintenance status pass then closes
 only the record's administrative lifetime, and only on the full proof:
@@ -6776,3 +6941,43 @@ mismatch. This is strict log equality, not an input-equivalence verifier or a
 policy-coverage certificate; the experiment must establish identical inputs and
 exercise the decisions of interest. Unrelated live windows do not establish
 decision parity.
+
+
+### Default activity supervision (#1707)
+
+Pool payloads without an explicit execution budget run while making progress.
+For work without semantic phases, the activity watch renews on output or a
+rising containment CPU total. Its default quiet allowance is 7200 seconds,
+the former worker execution ceiling, so quiet work is not stopped earlier by
+default. A Docker image load or pull may advance in the daemon outside the
+attempt's containment while the client CPU and output stay flat. GPU activity,
+I/O byte counters and progress-file changes do not renew the allowance; only
+new stdout/stderr bytes and rising containment CPU count. For quiet work, use
+`--stall-s`, a semantic phase allowance, or periodic output.
+Set `pbrun --stall-s SECONDS` for a shorter or longer allowance;
+the worker ceiling clamps it and receipts report that clamp. Semantic phases
+keep their committed-counter rules and cannot combine with `--stall-s`.
+Explicit budgets, D30 containment and withdrawal keep their existing behavior.
+`pbstatus` shows age, phase, accepted counters and quiet time; activity rows
+also show output bytes and CPU seconds. A source merge does not deploy this
+new default to fleet workers.
+
+### Unresolved CPU-peer interpreters (#2014)
+
+A live CPU-only peer with an otherwise matching UNKNOWN named interpreter
+keeps portable CPU work READY on a GPU host. The refusal is
+`deferred_for_unresolved_cpu_host`; it has no timeout. Peer fullness or a prior
+pass cannot answer whether the interpreter exists. PRESENT restores ordinary
+fit/pass behavior. A completed ABSENT observation or a draining, stale or
+removed peer ends that peer's wait. Explicit host and architecture requirements
+keep their existing rules. Actual execution still requires positive capability
+evidence. Only a proven restartable guest on a positively idle GPU host may
+run while the CPU peer remains unresolved.
+
+The worker retains a bounded requested-name inventory and fair cursor across
+sibling, empty and drain polls. Names expire after one hour without a READY
+request. Each publication uses fresh completed observations from a bounded
+refresh outside the publisher. Slow paths report UNKNOWN and an
+`interpreter_probes` diagnostic; repeated timeouts never establish absence.
+Drain refreshes also revoke an earlier PRESENT answer when an executable is
+removed. Persisted inventory metadata cannot grant execution capability.

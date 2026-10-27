@@ -1,0 +1,44 @@
+{
+  "lane": "numeric-x86",
+  "source_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "committed_reports": [
+    {
+      "id": "numeric-x86-0",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-0.json",
+      "finished_at": "2026-10-27T01:55:09.429643+00:00",
+      "report_sha256": "64fec416e8bd1159bdac6ddf8fe66d3f579ca60b254a4a185f2c88aaadefbcd7"
+    },
+    {
+      "id": "numeric-x86-1",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-1.json",
+      "finished_at": "2026-10-27T01:55:34.543627+00:00",
+      "report_sha256": "eed35ab79aeef595afb380b9d5e5961249f9f3a27041d31c20dca8ad34f80d21"
+    },
+    {
+      "id": "numeric-x86-2",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-2.json",
+      "finished_at": "2026-10-27T01:56:01.786981+00:00",
+      "report_sha256": "957fa8662c508868e71063a80bab714a51188206a4096bcf5a1db8c4b8e33717"
+    },
+    {
+      "id": "numeric-x86-3",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-3.json",
+      "finished_at": "2026-10-27T01:56:30.479184+00:00",
+      "report_sha256": "d595d5ed94833bf08a5b2135c19484a0b43eac0ef542c02b9e30372354e85e4f"
+    },
+    {
+      "id": "numeric-x86-4",
+      "client_exit": 0,
+      "report": "/mnt/shared/paperclip-runs/PRI-47/takeover-7bec7b13-b4cd-4bbe-a3ac-3324478e8e77/numeric-x86-4.json",
+      "finished_at": "2026-10-27T01:56:58.808163+00:00",
+      "report_sha256": "f7b389e58ef6e726efd697b3413acb15510a5cf9410a4b0e45e85fceecaedba2"
+    }
+  ],
+  "status": "reports_complete_pending_evidence_audit",
+  "started_at": "2026-10-27T01:54:45.252303+00:00",
+  "finished_at": "2026-10-27T01:56:58.809992+00:00"
+}

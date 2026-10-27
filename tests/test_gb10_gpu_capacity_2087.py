@@ -6,6 +6,7 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import conftest
 from prismabuild import adaptive_gpu, core, decomposition as dc, pool
 from prismabuild.resource_scope import ResourceScope
 
@@ -13,7 +14,6 @@ from test_adaptive_gpu import _cpu_sample
 from test_core import _body
 from test_decomposition_refuses_before_it_publishes_anything import (
     _common,
-    _frozen,
     _request,
 )
 
@@ -109,14 +109,14 @@ def test_gb10_gpu_capacity_2087(tmp_path, monkeypatch):
         assert scope.gpu_memory_max_bytes == budget_bytes
 
     # Keep this refusal last: the successful accounting checks above are part
-    # of the same acceptance check. _frozen calls dc.freeze_common, so it must
-    # also be inside raises if validation moves to the sealing boundary.
+    # of the same acceptance check. frozen_common calls dc.freeze_common, so
+    # it must also be inside raises if validation moves to the sealing boundary.
     invalid_demand = {"cpu": 1, "mem_gb": 104, "gpu": 1}
     request = _request(common=_common(
         demand=invalid_demand, gpu_memory_gb=105, host_class="gb10",
     ))
     with pytest.raises(dc.ActionContractError):
-        frozen = _frozen(
+        frozen = conftest.frozen_common(
             request, demand=invalid_demand,
             placement={"required_tags": ["gb10"]},
         )

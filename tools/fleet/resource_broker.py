@@ -7,6 +7,7 @@ Only the configured local UID may create bounded scopes, launch user processes t
 from __future__ import annotations
 import argparse
 import array
+import ctypes
 import errno
 import fcntl
 import http.client
@@ -754,6 +755,7 @@ class Authority:
     def __init__(self,state_dir,uid,backend,*,max_memory_bytes,maintenance_state=None,runtime=None):
         self.state_dir=Path(state_dir);self.uid=int(uid);self.backend=backend;self.runtime=runtime
         self.max_memory_bytes=int(max_memory_bytes);self.lock=threading.RLock();self.records={};self.launch_watches={}
+        self.scope_observer=None
         # The worker reads this volatile v1 mirror.  The canonical authority is
         # separate so clearing /run at boot cannot turn a named hold into an
         # admission grant.
@@ -781,6 +783,10 @@ class Authority:
                 raise ValueError('invalid stored resource owner')
             self.records[path.stem]=record
         self._restore_maintenance()
+
+    def _store_record(self,scope,record):
+        _atomic(self.state_dir/(scope+'.json'),record)
+        if self.scope_observer is not None:self.scope_observer()
 
     def _private_maintenance_parent(self):
         parent=self.maintenance_state_path.parent
@@ -977,7 +983,7 @@ class Authority:
                     record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
                             'memory_max_bytes':0,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
-                    _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
+                    self._store_record(scope,record);self.records[scope]=record
                 if (record.get('uid')!=uid or record.get('action_key')!=key
                         or record.get('nonce')!=nonce or not record.get('released_unix')):
                     raise ValueError('cleanup scope is not released')
@@ -999,7 +1005,7 @@ class Authority:
                     record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
                             'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,'token':secrets.token_hex(32),
                             'released_unix':time.time(),'creation_cancelled_unix':time.time()}
-                    _atomic(self.state_dir/(scope+'.json'),record);self.records[scope]=record
+                    self._store_record(scope,record);self.records[scope]=record
                     return {'ok':True,'scope_id':scope,'missing':True}
                 if record.get('creation_cancelled_unix') and record['memory_max_bytes']==0:
                     if self.backend.exists(scope):raise ValueError('cancelled scope still exists')
@@ -1009,7 +1015,7 @@ class Authority:
                     raise ValueError('attempt budget cannot change')
                 if 'gpu_memory_max_bytes' not in record:
                     record['gpu_memory_max_bytes']=gpu_budget
-                    _atomic(self.state_dir/(scope+'.json'),record)
+                    self._store_record(scope,record)
                 return {'ok':True,**record,'cgroup_path':str(self.backend.path(scope))}
             if op=='create':
                 if 'recovery_protocol' in request and (type(request['recovery_protocol']) is not int
@@ -1026,26 +1032,26 @@ class Authority:
                         raise ValueError('attempt budget cannot change')
                     if 'gpu_memory_max_bytes' not in existing:
                         existing['gpu_memory_max_bytes']=gpu_budget
-                        _atomic(self.state_dir/(scope+'.json'),existing)
+                        self._store_record(scope,existing)
                     if existing.get('released_unix'):raise ValueError('attempt is released')
                     if existing.get('stopped_unix'):raise ValueError('attempt is stopped')
                     if existing.get('pending'):
                         existing.update(self.backend.create(scope,budget));existing.pop('pending',None)
-                        _atomic(self.state_dir/(scope+'.json'),existing)
+                        self._store_record(scope,existing)
                     return {'ok':True,**existing}
                 record={'uid':uid,'action_key':key,'nonce':nonce,'scope_id':scope,
                         'memory_max_bytes':budget,'gpu_memory_max_bytes':gpu_budget,
                         'token':secrets.token_hex(32),'created_unix':time.time()}
                 # Persist authority before OS creation so a broker restart can
                 # retain exact recovery ownership even after partial setup.
-                path=self.state_dir/(scope+'.json');record['pending']=True
-                _atomic(path,record);self.records[scope]=record
+                record['pending']=True
+                self._store_record(scope,record);self.records[scope]=record
                 try:record.update(self.backend.create(scope,budget))
                 except Exception:
                     # No payload was attached. Retain pending evidence; do not
                     # silently treat a partially configured scope as runnable.
                     raise
-                record.pop('pending',None);_atomic(path,record)
+                record.pop('pending',None);self._store_record(scope,record)
                 return {'ok':True,**record}
             if op not in {'stop','release','status','settle','export_stopped'}:raise ValueError('unknown operation')
             record=self.records.get(scope)
@@ -1110,7 +1116,7 @@ class Authority:
                 if op=='release':
                     if self.backend.exists(scope):self.backend.release(scope)
                     record['released_unix']=time.time()
-                _atomic(self.state_dir/(scope+'.json'),record)
+                self._store_record(scope,record)
                 return {'ok':True,'scope_id':scope,'released':bool(record.get('released_unix')),
                         **self._stop_details(record)}
             if op=='settle':
@@ -1140,13 +1146,13 @@ class Authority:
                 if not record.get('stopped_unix'):raise ValueError('scope not stopped')
                 record['container_settlement']=evidence
                 record['settled_unix']=time.time()
-                _atomic(self.state_dir/(scope+'.json'),record)
+                self._store_record(scope,record)
                 return {'ok':True,'scope_id':scope,'settled':True,**self._stop_details(record)}
             if op=='stop':
                 reason=str(request.get('reason','requested'))[:1000]
                 if record.get('stopped_unix'):record['last_cleanup_reason']=reason
                 else:record['stopped_unix']=time.time();record['stop_reason']=reason
-                _atomic(self.state_dir/(scope+'.json'),record)
+                self._store_record(scope,record)
                 self.backend.stop(scope)
             elif op=='release':
                 if record.get('container_tickets'):
@@ -1161,11 +1167,11 @@ class Authority:
                     # Keep the empty frozen parent: a late container cannot
                     # reactivate an unfrozen replacement after admission ends.
                     record['retired_unix']=time.time()
-                    _atomic(self.state_dir/(scope+'.json'),record)
+                    self._store_record(scope,record)
                     return {'ok':True,'scope_id':scope,'retired':True}
                 self.backend.release(scope)
                 record['released_unix']=time.time()
-                _atomic(self.state_dir/(scope+'.json'),record)
+                self._store_record(scope,record)
             return {'ok':True,'scope_id':scope,**self._stop_details(record)}
 
     @staticmethod
@@ -1354,7 +1360,7 @@ class Authority:
         # rewrite its own state file on every upgrade cycle, forever.
         if not all(record.get(key)==value for key,value in observation.items()):
             record.update(observation);record['reclaimed_unix']=time.time()
-            try:_atomic(self.state_dir/(scope+'.json'),record)
+            try:self._store_record(scope,record)
             except OSError:pass  # retain the observation in memory for this pass
         # memory.current includes kernel allocations; reclaim may return
         # EAGAIN after all anon/file pages are gone. Kernel-only residuals do
@@ -1397,7 +1403,7 @@ class Authority:
         self.backend.release(scope)
         record['released_unix']=time.time()
         record['maintenance_cleanup']='settled container transaction'
-        _atomic(self.state_dir/(scope+'.json'),record)
+        self._store_record(scope,record)
         return True
 
     def _release_vanished_retired_scope(self,scope,record):
@@ -1415,7 +1421,7 @@ class Authority:
         released=dict(record)
         released['released_unix']=time.time()
         released['maintenance_cleanup']=VANISHED_CLEANUP_REASON
-        _atomic(self.state_dir/(scope+'.json'),released)
+        self._store_record(scope,released)
         self.records[scope]=released
         return released
 
@@ -1452,7 +1458,7 @@ class Authority:
                         if not self.backend.empty(scope):raise ValueError('pending scope became populated')
                         self.backend.release(scope)
                     record['released_unix']=time.time();record['maintenance_cleanup']='unlaunched empty setup'
-                    _atomic(self.state_dir/(scope+'.json'),record)
+                    self._store_record(scope,record)
                     inventory.pop(scope,None)
                     continue
                 except (OSError,ValueError) as exc:errors.append(str(exc)[:1500])
@@ -1560,7 +1566,7 @@ class Authority:
             # Persist launch intent before spawning; ambiguous restart refuses
             # a duplicate, retaining the exact scope for stop/recovery.
             record['launched_unix']=time.time()
-            _atomic(self.state_dir/(record['scope_id']+'.json'),record)
+            self._store_record(record['scope_id'],record)
             return self.backend.run(record['scope_id'],uid,command,stdio)
 
     def container(self,uid,pid,request):
@@ -1585,7 +1591,7 @@ class Authority:
                     raise PermissionError('container creator is not in its scope')
                 ticket=secrets.token_hex(32)
                 record.setdefault('container_tickets',[]).append(ticket)
-                _atomic(self.state_dir/(scope+'.json'),record)
+                self._store_record(scope,record)
                 return {'ok':True,'ticket':ticket,**({'launch_outcome_protocol':2} if runtime is not None else {})}
             ticket=request.get('ticket')
             if not isinstance(ticket,str) or HEX64.fullmatch(ticket) is None or ticket not in record.get('container_tickets',[]):
@@ -1629,36 +1635,157 @@ class Authority:
                             'subtype':outcome.subtype,'daemon_error':outcome.daemon_error,
                             'host_check':outcome.host_check,'action_key':record['action_key'],'attempt':record['nonce'],
                             'unix_time':time.time(),'boot_id':runtime.boot_id}
-                        _atomic(self.state_dir/(scope+'.json'),record)
+                        self._store_record(scope,record)
                     return {'ok':True,'launch_outcome':outcome.as_record()}
                 finally:
                     if watch is not None:watch.close()
             watch=self.launch_watches.pop(ticket,None)
             if watch is not None:watch.close()
             record['container_tickets'].remove(ticket)
-            _atomic(self.state_dir/(scope+'.json'),record)
+            self._store_record(scope,record)
             return {'ok':True}
+
+class CgroupEventSource:
+    """Own the kernel watches; readiness only invalidates a scope snapshot."""
+    files=frozenset({'memory.events','memory.events.local','cgroup.events'})
+    header=struct.Struct('iIII')
+    modify=0x2;attrib=0x4;create=0x100;delete=0x200
+    moved_from=0x40;moved_to=0x80;delete_self=0x400;move_self=0x800
+    unmount=0x2000;overflow=0x4000;ignored=0x8000;dont_follow=0x2000000
+    loss=delete_self|move_self|unmount|ignored
+
+    def __init__(self):
+        self.libc=ctypes.CDLL(None,use_errno=True)
+        self.libc.inotify_init1.argtypes=[ctypes.c_int]
+        self.libc.inotify_init1.restype=ctypes.c_int
+        self.libc.inotify_add_watch.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_uint32]
+        self.libc.inotify_add_watch.restype=ctypes.c_int
+        self.libc.inotify_rm_watch.argtypes=[ctypes.c_int,ctypes.c_int]
+        self.libc.inotify_rm_watch.restype=ctypes.c_int
+        self.fd=self.libc.inotify_init1(os.O_CLOEXEC|os.O_NONBLOCK)
+        if self.fd<0:raise OSError(ctypes.get_errno(),'cgroup inotify_init1')
+        self.scopes={};self.watches={};self.pending=b''
+
+    def _add(self,scope,path,directory=False):
+        mask=self.modify|self.attrib|self.loss|self.dont_follow
+        if directory:mask|=self.create|self.delete|self.moved_from|self.moved_to
+        wd=self.libc.inotify_add_watch(self.fd,os.fsencode(path),mask)
+        if wd<0:raise OSError(ctypes.get_errno(),str(path))
+        self.watches[wd]=(scope,directory)
+        self.scopes[scope].add(wd)
+
+    def watch(self,scope,path,identity):
+        self.unwatch(scope)
+        self.scopes[scope]=set()
+        try:
+            info=path.stat()
+            if (info.st_dev,info.st_ino)!=tuple(identity):
+                raise OSError(errno.ESTALE,'cgroup identity changed: '+scope)
+            self._add(scope,path,directory=True)
+            for name in sorted(self.files):self._add(scope,path/name)
+            info=path.stat()
+            if (info.st_dev,info.st_ino)!=tuple(identity):
+                raise OSError(errno.ESTALE,'cgroup identity changed during enrollment: '+scope)
+        except BaseException:
+            self.unwatch(scope)
+            raise
+
+    def unwatch(self,scope):
+        for wd in self.scopes.pop(scope,set()):
+            self.watches.pop(wd,None)
+            self.libc.inotify_rm_watch(self.fd,wd)
+
+    def drain(self,max_events=256):
+        if not self.pending:
+            try:self.pending=os.read(self.fd,65536)
+            except BlockingIOError:return set(),set()
+            if not self.pending:raise OSError(errno.EIO,'cgroup notification stream ended')
+        dirty=set();lost=set();offset=0
+        for _ in range(max_events):
+            if offset+self.header.size>len(self.pending):break
+            wd,mask,_,length=self.header.unpack_from(self.pending,offset)
+            offset+=self.header.size
+            if offset+length>len(self.pending):
+                raise OSError(errno.EIO,'truncated cgroup notification')
+            name=os.fsdecode(self.pending[offset:offset+length].split(b'\0',1)[0])
+            offset+=length
+            if mask&self.overflow:
+                raise OSError(errno.ENOBUFS,'cgroup notification queue overflow')
+            row=self.watches.get(wd)
+            if row is None:continue
+            scope,directory=row
+            replaced=directory and name in self.files and mask&(self.create|self.delete|self.moved_from|self.moved_to)
+            if mask&self.loss or replaced:
+                lost.add(scope)
+            elif not directory or not name or name in self.files:
+                dirty.add(scope)
+        self.pending=self.pending[offset:]
+        if self.pending:
+            # Closing the source also discards the IN_IGNORED events that
+            # removing a large watch inventory would otherwise enqueue.
+            raise OSError(errno.ENOBUFS,'cgroup notification event budget exceeded')
+        return dirty-lost,lost
+
+    def wait(self,wake_fd,timeout_s):
+        if not self.pending:select.select([self.fd,wake_fd],[],[],timeout_s)
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd);self.fd=None
+        self.scopes.clear();self.watches.clear();self.pending=b''
+
+
+class ScopeObservation:
+    def __init__(self,record,identity_fields):
+        self.identity=tuple(tuple(record[key]) if key=='cgroup_identity' else record.get(key)
+                            for key in identity_fields)
+        self.snapshot=None;self.coverage='new';self.error=None;self.retry_at=0.0
+
+    def matches(self,record,identity_fields):
+        return self.identity==tuple(tuple(record[key]) if key=='cgroup_identity' else record.get(key)
+                                    for key in identity_fields)
+
 
 class ResourceMonitor:
     """Sample outside admission locks; stop only the same recorded kernel group."""
     identity_fields=('action_key','nonce','token','memory_max_bytes','gpu_memory_max_bytes','cgroup_identity')
 
-    def __init__(self,authority,gpu_module,*,capacity_module=None,interval_s=1.0,timeout_s=1.0):
+    event_work_limit=256
+    recovery_interval_s=1.0
+
+    def __init__(self,authority,gpu_module,*,capacity_module=None,interval_s=1.0,timeout_s=1.0,
+                 event_source_factory=None,clock=None):
         self.capacity=capacity_module
         self.authority=authority;self.gpu=gpu_module;self.guard=gpu_module.Guard()
         self.interval_s=interval_s;self.timeout_s=timeout_s
+        self.stop_retry_interval_s=interval_s
         self.stopping=threading.Event();self.thread=None;self.last_success_monotonic=None
+        self.clock=clock if clock is not None else time.monotonic
+        self.event_source_factory=event_source_factory or CgroupEventSource
+        self.events=None;self.observations={};self.dirty={};self.source_retry_at=0.0
+        self.source_error=None;self.last_status=None;self.last_public=None;self.closed=False
+        self.event_coverage_complete=False;self.numeric_identities={};self.numeric_events={};self.stop_retry_at={}
+        self.wake_read,self.wake_write=os.pipe2(os.O_CLOEXEC|os.O_NONBLOCK)
+        self.authority_wake=self._wake
+        with authority.lock:authority.scope_observer=self.authority_wake
 
-    def _records(self):
+    def _wake(self):
+        try:os.write(self.wake_write,b'x')
+        except (BlockingIOError,OSError):pass
+
+    def _consume_wake(self):
+        # Writes coalesce; one bounded read consumes the pipe's entire capacity.
+        try:os.read(self.wake_read,1048576)
+        except BlockingIOError:pass
+
+    def _inventory(self):
         with self.authority.lock:
-            return {scope:{key:value for key,value in record.items() if key in {
-                    *self.identity_fields,'gpu_memory_max_bytes','memory_oom_kill_baseline','memory_oom_local_baseline','monitor_stop_pending',
-                    'termination_evidence','stop_reason'}}
-                for scope,record in self.authority.records.items()
-                if not record.get('pending') and not record.get('released_unix')
-                and (not record.get('stopped_unix') or record.get('monitor_stop_pending'))
-                and isinstance(record.get('cgroup_identity'),list)
-                and len(record['cgroup_identity'])==2}
+            interests={scope:dict(record) for scope,record in self.authority.records.items()
+                       if not record.get('pending') and not record.get('released_unix')
+                       and _recorded_identity(record.get('cgroup_identity'))}
+        active={scope:record for scope,record in interests.items()
+                if not record.get('stopped_unix') or record.get('monitor_stop_pending')}
+        return active,interests
 
     def _stop(self,scope,expected,identity,reason,evidence):
         with self.authority.lock:
@@ -1674,44 +1801,136 @@ class ResourceMonitor:
             current.setdefault('stop_reason',reason)
             current.setdefault('termination_evidence',evidence)
             current['monitor_stop_pending']=True
-            path=self.authority.state_dir/(scope+'.json')
-            _atomic(path,current)
-            self.authority.backend.stop(scope)
+            self.authority._store_record(scope,current)
+            try:self.authority.backend.stop(scope)
+            except (OSError,ValueError,KeyError):
+                self.stop_retry_at[scope]=self.clock()+self.stop_retry_interval_s
+                raise
             current['monitor_stop_pending']=False
-            _atomic(path,current)
+            self.authority._store_record(scope,current)
+            self.stop_retry_at.pop(scope,None)
             return True
 
-    def poll_once(self):
-        records=self._records();stopped=[];errors=[]
-        # Only a local OOM identifies exhaustion of this aggregate limit.
-        # Hierarchical victim counts also include safely contained child OOMs.
-        # Stop at local exhaustion even before a victim appears: allocation
-        # failure itself proves the attempt exhausted its budget. Docker victims
-        # can be charged to descendants, so local oom_kill is not the trigger.
+    def _lose_coverage(self,scope,error):
+        entry=self.observations[scope]
+        if self.events is not None:self.events.unwatch(scope)
+        entry.coverage='lost';entry.snapshot=None;entry.error=str(error)[:1500]
+        entry.retry_at=self.clock()+self.recovery_interval_s
+        self.dirty.pop(scope,None)
+
+    def _source_failed(self,error):
+        if self.events is not None:self.events.close()
+        self.events=None;self.source_error=str(error)[:1500]
+        self.source_retry_at=self.clock()+self.recovery_interval_s
+        for scope in self.observations:self._lose_coverage(scope,error)
+
+    def _reconcile(self,interests):
+        for scope in list(self.observations):
+            if scope not in interests or not self.observations[scope].matches(interests[scope],self.identity_fields):
+                if self.events is not None:self.events.unwatch(scope)
+                del self.observations[scope]
+                self.dirty.pop(scope,None)
+                self.stop_retry_at.pop(scope,None)
+        for scope,record in interests.items():
+            if scope not in self.observations:
+                self.observations[scope]=ScopeObservation(record,self.identity_fields)
+        now=self.clock()
+        if self.events is None and (interests or self.source_error is not None) and now>=self.source_retry_at:
+            try:
+                self.events=self.event_source_factory()
+                self.source_error=None
+            except (OSError,ValueError) as exc:self._source_failed(exc)
+        if self.events is None:return
+        enrolled=0
+        for scope,entry in sorted(self.observations.items(),key=lambda row:row[1].retry_at):
+            if entry.coverage=='watching' or now<entry.retry_at:continue
+            if enrolled>=self.event_work_limit:break
+            enrolled+=1
+            try:
+                self.events.watch(scope,self.authority.backend.path(scope),interests[scope]['cgroup_identity'])
+                entry.coverage='watching';entry.error=None
+                self.dirty[scope]=None
+            except (OSError,ValueError) as exc:self._lose_coverage(scope,exc)
+
+    def _read_scope_events(self,scope,record):
+        path=self.authority.backend.path(scope);before=path.stat()
+        identity=(before.st_dev,before.st_ino)
+        if identity!=tuple(record['cgroup_identity']):
+            raise OSError(errno.ESTALE,'cgroup identity changed: '+scope)
+        events=dict(line.split() for line in (path/'memory.events').read_text().splitlines())
+        local=dict(line.split() for line in (path/'memory.events.local').read_text().splitlines())
+        population=dict(line.split() for line in (path/'cgroup.events').read_text().splitlines())
+        after=path.stat()
+        if (after.st_dev,after.st_ino)!=identity:
+            raise OSError(errno.ESTALE,'cgroup identity changed during observation: '+scope)
+        snapshot={'oom_kill':int(events.get('oom_kill',0)),'oom_local':int(local['oom']),
+                  'populated':int(population['populated']),'frozen':int(population['frozen'])}
+        if (snapshot['oom_kill']<0 or snapshot['oom_local']<0
+                or snapshot['populated'] not in (0,1) or snapshot['frozen'] not in (0,1)):
+            raise ValueError('invalid cgroup event counters: '+scope)
+        return snapshot
+
+    def _observe_scopes(self,records,interests,*,force_retry=False):
+        stopped=[];errors=[]
+        for scope in list(self.stop_retry_at):
+            if scope not in records or not records[scope].get('monitor_stop_pending'):
+                self.stop_retry_at.pop(scope,None)
+        self._reconcile(interests)
+        if self.events is not None:
+            try:
+                dirty,lost=self.events.drain(max_events=self.event_work_limit)
+                for scope in lost:
+                    if scope in self.observations:self._lose_coverage(scope,'cgroup notification coverage lost')
+                for scope in dirty:
+                    if scope in self.observations and self.observations[scope].coverage=='watching':
+                        self.observations[scope].snapshot=None
+                        self.dirty[scope]=None
+            except (OSError,ValueError) as exc:self._source_failed(exc)
+        refreshed=[]
+        for scope in list(self.dirty)[:self.event_work_limit]:
+            self.dirty.pop(scope,None)
+            entry=self.observations[scope]
+            try:
+                entry.snapshot=self._read_scope_events(scope,interests[scope])
+                refreshed.append(scope)
+            except (OSError,ValueError,KeyError) as exc:self._lose_coverage(scope,exc)
         for scope,record in records.items():
             try:
-                path=self.authority.backend.path(scope);info=path.stat()
-                identity=(info.st_dev,info.st_ino)
-                if identity!=tuple(record['cgroup_identity']):continue
+                identity=tuple(record['cgroup_identity'])
                 if record.get('monitor_stop_pending'):
-                    if self._stop(scope,record,identity,record['stop_reason'],record['termination_evidence']):
-                        stopped.append(scope)
+                    if not force_retry and self.clock()<self.stop_retry_at.get(scope,0.0):continue
+                    if self._stop(scope,record,identity,record['stop_reason'],record['termination_evidence']):stopped.append(scope)
+                    else:self.stop_retry_at.pop(scope,None)
                     continue
-                events=dict(line.split() for line in (path/'memory.events').read_text().splitlines())
-                local_events=dict(line.split() for line in (path/'memory.events.local').read_text().splitlines())
-                after=path.stat()
-                if (after.st_dev,after.st_ino)!=identity:continue
-                count=int(events.get('oom_kill',0))
-                baseline=int(record.get('memory_oom_kill_baseline',0))
-                local_count=int(local_events['oom'])
+                if scope not in refreshed:continue
+                snapshot=self.observations[scope].snapshot
                 local_baseline=int(record.get('memory_oom_local_baseline',0))
-                if local_count>local_baseline:
+                # Victims propagate from descendants; only local exhaustion
+                # proves this aggregate limit was reached, even with no victim.
+                if snapshot['oom_local']>local_baseline:
                     evidence={'source':'cgroup.memory.events.local','scope_id':scope,
-                              'cgroup_identity':list(identity),'oom_kill':count,
-                              'oom_local':local_count,'oom_local_baseline':local_baseline,
-                              'oom_kill_baseline':baseline,'sampled_unix':time.time()}
+                              'cgroup_identity':list(identity),'oom_kill':snapshot['oom_kill'],
+                              'oom_local':snapshot['oom_local'],'oom_local_baseline':local_baseline,
+                              'oom_kill_baseline':int(record.get('memory_oom_kill_baseline',0)),
+                              'sampled_unix':time.time()}
                     if self._stop(scope,record,identity,'memory_limit_oom',evidence):stopped.append(scope)
-            except (OSError,ValueError,KeyError) as exc:errors.append({'scope_id':scope,'error':str(exc)[:1500]})
+            except (OSError,ValueError,KeyError) as exc:
+                self.stop_retry_at[scope]=self.clock()+self.stop_retry_interval_s
+                self._lose_coverage(scope,exc)
+        for scope,entry in self.observations.items():
+            if entry.error:errors.append({'scope_id':scope,'error':entry.error})
+        self.event_coverage_complete=self._event_status()['complete']
+        return stopped,errors
+
+    def _event_status(self):
+        return {'complete':all(entry.coverage=='watching' and entry.snapshot is not None
+                               for entry in self.observations.values()) and self.source_error is None,
+                'source_error':self.source_error,
+                'scopes':{scope:{'coverage':entry.coverage,'error':entry.error,
+                                 **(entry.snapshot or {})}
+                          for scope,entry in self.observations.items()}}
+
+    def _sample_numeric(self,records,stopped,errors):
         scopes=[self.gpu.Scope(scope,self.authority.backend.path(scope),record['memory_max_bytes'],
                     **({'gpu_budget_bytes':record.get('gpu_memory_max_bytes',record['memory_max_bytes'])}
                        if self.capacity is not None or record.get('gpu_memory_max_bytes') is not None else {}))
@@ -1735,41 +1954,106 @@ class ResourceMonitor:
                                   decision.reason,decision.as_dict()):stopped.append(decision.scope_id)
                 except (OSError,ValueError,KeyError) as exc:
                     errors.append({'scope_id':decision.scope_id,'error':str(exc)[:1500]})
+        return snapshot,device_readings
+
+    def _publish_sample(self,records,stopped,errors,snapshot,device_readings):
         status={'sampled_unix':time.time(),'active_scopes':len(records),'stopped':stopped,
-                'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None}
+                'errors':errors,'gpu':snapshot.as_dict() if snapshot is not None else None,
+                'event_coverage':self._event_status()}
         if self.capacity is not None and snapshot is not None:
             # This sanitized root-owned sibling is readable by pool workers;
             # private monitor/authority records retain their mode 0600.
             active={scope:record for scope,record in records.items() if scope not in stopped}
             public=self.capacity.collect(snapshot.as_dict(),active,timeout_s=self.timeout_s,
                                          device_readings=device_readings)
-            if stopped or errors:
+            if stopped or errors or not self.event_coverage_complete:
                 public['complete']=False
                 public['errors'].append('scope inventory changed or monitor errors during sample')
             _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
+            self.last_public=public
         _atomic(self.authority.state_dir/'monitor.status',status)
-        self.last_success_monotonic=time.monotonic()
+        self.last_status=status
+        self.numeric_identities={scope:ScopeObservation(record,self.identity_fields).identity
+                                 for scope,record in records.items() if scope not in stopped}
+        self.numeric_events={scope:entry.snapshot for scope,entry in self.observations.items()}
+        return status
+
+    def poll_once(self):
+        self._consume_wake()
+        records,interests=self._inventory()
+        stopped,errors=self._observe_scopes(records,interests,force_retry=True)
+        snapshot,device_readings=self._sample_numeric(records,stopped,errors)
+        status=self._publish_sample(records,stopped,errors,snapshot,device_readings)
+        self.last_success_monotonic=self.clock()
+        return status
+
+    def poll_events_once(self):
+        self._consume_wake()
+        records,interests=self._inventory()
+        stopped,errors=self._observe_scopes(records,interests)
+        status={**(self.last_status or {'sampled_unix':None,'gpu':None}),
+                'active_scopes':len(records),'stopped':stopped,'errors':errors,
+                'event_coverage':self._event_status()}
+        identities={scope:ScopeObservation(record,self.identity_fields).identity
+                    for scope,record in records.items() if scope not in stopped}
+        events={scope:entry.snapshot for scope,entry in self.observations.items()}
+        if (self.last_public is not None and (stopped or errors or not self.event_coverage_complete
+                or identities!=self.numeric_identities or events!=self.numeric_events)):
+            public={**self.last_public,'complete':False,'errors':list(self.last_public['errors'])}
+            reason='scope events changed since numeric sample'
+            if reason not in public['errors']:public['errors'].append(reason)
+            if public!=self.last_public:
+                _atomic(self.authority.state_dir.parent/'gpu-capacity.json',public,mode=0o644)
+                self.last_public=public
+        if status!=self.last_status:
+            _atomic(self.authority.state_dir/'monitor.status',status)
+            self.last_status=status
         return status
 
     def healthy(self):
         return (self.thread is not None and self.thread.is_alive()
                 and self.last_success_monotonic is not None
-                and time.monotonic()-self.last_success_monotonic<15)
+                and self.clock()-self.last_success_monotonic<15
+                and self.event_coverage_complete)
 
     def _loop(self):
+        next_numeric=self.clock()
         while not self.stopping.is_set():
-            try:self.poll_once()
+            numeric=self.clock()>=next_numeric
+            try:
+                if numeric:self.poll_once()
+                else:self.poll_events_once()
             except Exception as exc:
                 print('resource monitor sample failed: '+str(exc)[:1500],flush=True)
-            self.stopping.wait(self.interval_s)
+            # Event readiness never moves this counter-sampling deadline.
+            if numeric:next_numeric=self.clock()+self.interval_s
+            if self.stopping.is_set():break
+            deadlines=[next_numeric]
+            if self.events is None and (self.observations or self.source_error is not None):
+                deadlines.append(self.source_retry_at)
+            deadlines.extend(entry.retry_at for entry in self.observations.values() if entry.coverage=='lost')
+            deadlines.extend(self.stop_retry_at.values())
+            delay=max(0.0,min(deadlines)-self.clock())
+            if self.dirty:delay=0.0
+            try:
+                if self.events is None:select.select([self.wake_read],[],[],delay)
+                else:self.events.wait(self.wake_read,delay)
+            except (OSError,ValueError) as exc:self._source_failed(exc)
 
     def start(self):
         self.thread=threading.Thread(target=self._loop,name='resource-monitor',daemon=True)
         self.thread.start()
 
     def close(self):
+        if self.closed:return
         self.stopping.set()
-        if self.thread is not None:self.thread.join(timeout=self.timeout_s+self.interval_s+1)
+        self._wake()
+        if self.thread is not None:self.thread.join()
+        with self.authority.lock:
+            if self.authority.scope_observer is self.authority_wake:self.authority.scope_observer=None
+        if self.events is not None:self.events.close()
+        os.close(self.wake_read);os.close(self.wake_write)
+        self.closed=True
 
 
 class Handler(socketserver.BaseRequestHandler):

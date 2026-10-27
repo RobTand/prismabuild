@@ -25,6 +25,7 @@ from __future__ import annotations
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 
 import json
 from pathlib import Path
@@ -35,7 +36,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
-from prismabuild import adaptive_cpu, pool, residency_map  # noqa: E402
+from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
@@ -141,16 +142,6 @@ def _write_plan_from_a_newer_writer(queue: pool.PoolQueue,
     path.write_text(json.dumps(body))
 
 
-def _denial(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
-
-
 TIERS = {TIER: {"tier_id": TIER, "tier": "stage", "mountpoint": "/stage/prewarm"}}
 
 
@@ -184,7 +175,7 @@ def test_the_window_records_a_denial_an_operator_reads(queue) -> None:
 
     tier_loop.residency_window(queue, tiers=TIERS)
 
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None, "the starvation was visible nowhere an operator looks"
     assert denial["reason"] == "residency_plan_unreadable"
     assert "demand_source_v2" in str(denial["evidence"])
@@ -200,7 +191,7 @@ def test_a_consumer_with_no_plan_at_all_is_not_an_event(queue) -> None:
     _publish_consumer(queue, plan)              # no plan frozen for it
 
     assert tier_loop.residency_window(queue, tiers=TIERS) == []
-    assert _denial(queue, CONSUMER) is None
+    assert latest_claim_denial(queue, CONSUMER) is None
 
 
 def test_a_readable_plan_is_still_windowed_and_composed(queue) -> None:
@@ -215,7 +206,7 @@ def test_a_readable_plan_is_still_windowed_and_composed(queue) -> None:
     assert [event["phase"] for event in events
             if event["event"] == "mover-published"] == ["phase-0", "phase-1"]
     assert not [event for event in events if event["event"] == "plan-unreadable"]
-    assert _denial(queue, CONSUMER) is None
+    assert latest_claim_denial(queue, CONSUMER) is None
 
 
 def test_a_plan_carrying_demand_source_reads_on_this_generation(queue) -> None:
@@ -245,7 +236,7 @@ def test_the_claim_says_the_plan_is_unreadable_not_that_the_map_is_late(
     _make_the_lead_resident(queue, plan)
 
     assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_plan_unreadable", \
         "the consumer was told to wait for a map that will never be composed"
@@ -262,7 +253,7 @@ def test_a_missing_map_with_a_readable_plan_is_still_map_not_composed(
     _make_the_lead_resident(queue, plan)
 
     assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
 
     # ...and once the loop composes it, the item claims.

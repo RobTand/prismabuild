@@ -1238,7 +1238,7 @@ class RecordStore:
 
 
     def archived_generation_records(
-        self, action_key: str, *, generation: float,
+        self, action_key: str, *, generation: float, max_bytes: int | None = None,
     ) -> dict[int, tuple[Path, JsonRecord]]:
         key = str(action_key)
         if (
@@ -1258,6 +1258,7 @@ class RecordStore:
             # that cannot see the directory must not answer "no ending".
             return {}
         present: dict[int, tuple[Path, dict[str, object]]] = {}
+        remaining = max_bytes
         for path in entries:
             name = path.name
             stem = name[:-5] if name.endswith(".json") else ""
@@ -1267,7 +1268,15 @@ class RecordStore:
                 # attempt is exactly ``<digits>.json`` and nothing else here
                 # is one.
                 continue
-            value = read_document(path)
+            if remaining is None:
+                value = read_document(path)
+            else:
+                raw = immutable_files.read_immutable_file(
+                    path, where="archived attempt", max_bytes=remaining)
+                remaining -= len(raw)
+                value = digest_primitives.decode_strict_json(raw, where="archived attempt")
+                if not isinstance(value, dict):
+                    raise PoolContractError(f"archived attempt is not an object: {path}")
             if value is None:
                 raise PoolContractError(f"archived attempt is unreadable: {path}")
             attempt = self.archived_attempt_identity(
@@ -1435,6 +1444,18 @@ class RecordStore:
         directory.mkdir(parents=True, exist_ok=True)
         with open(directory / f"{socket.gethostname()}-stall-watch.jsonl", "a") as stream:
             stream.write(line + "\n")
+
+    def append_supervision_event(self, claim: Mapping[str, object],
+                                 record: Mapping[str, object], *, limit: int) -> None:
+        """Retain a bounded log with one writer per exact claim."""
+        identity = digest_primitives.canonical_sha256({
+            field: claim.get(field) for field in CLAIM_IDENTITY_FIELDS})
+        path = self.consumer_event_path(str(claim["action_key"]),
+                                        f"{socket.gethostname()}-supervision-{identity}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        append_event_record(path, record)
+        if event_line_count(path) > 2 * limit:
+            replace_event_tail(path, limit)
 
     def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
         """Replace a canonical store address or a path held by a domain transition."""

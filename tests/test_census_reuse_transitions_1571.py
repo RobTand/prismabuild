@@ -186,8 +186,12 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
 def test_a_completed_gang_fences_nothing_on_reuse(gang_fleet, monkeypatch, shared):
     """Elections without a live READY/CLAIMED member are not fences."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
+
+    def unexpected_fence_wait(seconds):
+        raise AssertionError("completed-gang census fence must be uncontended")
+
     monkeypatch.setattr(reservation, "time", SimpleNamespace(
-        monotonic=lambda: clock.now, time=time.time, sleep=time.sleep))
+        monotonic=lambda: clock.now, time=time.time, sleep=unexpected_fence_wait))
     monkeypatch.setattr(reservation, "SHARED_CENSUS_MAX_AGE_S", 60 if shared else -1)
     incumbents = {}
     for host in ("sparklina", "sparky"):

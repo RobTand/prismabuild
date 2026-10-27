@@ -32,6 +32,12 @@ SOURCES = sorted(
 )
 LIVE_MOUNT = "/mnt/shared"
 
+
+def test_automatic_duration_history_is_repointed_to_test_scratch(tmp_path: Path) -> None:
+    from prismabuild.pbtest_history import _report_path
+
+    assert _report_path(tmp_path / "checkout").is_relative_to(tmp_path)
+
 #: Constants that name the mount and must NOT be repointed, with the reason.
 #: The distinction is destination against classifier. A destination is a root
 #: the code reads or writes, and repointing it moves the I/O somewhere safe.

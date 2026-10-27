@@ -1,0 +1,47 @@
+{
+  "schema": "pb.issue1521.takeover_validation.v1",
+  "observed_at": "2026-10-27T02:33:16.559986+00:00",
+  "repair_head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+  "integrated_head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+  "preserved_remote_head": "a7b0b8def49fa992e7676304753eced414b29b78",
+  "qualifications": [
+    {
+      "head": "affe5b27eedd8e2ac55e9b07e52ad7b64e0e1db8",
+      "actions": 28,
+      "passing_executions": 480,
+      "source_bundles": 12
+    },
+    {
+      "head": "85fa57bb7194afe9562193a7368d2e3a403a9293",
+      "actions": 19,
+      "passing_executions": 553,
+      "source_bundles": 2
+    }
+  ],
+  "total_distinct_actions": 47,
+  "total_passing_native_executions": 1033,
+  "skips": 0,
+  "integrated_original_six_ids": [
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/in-process]",
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-attestation/script]",
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/in-process]",
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-receipt/script]",
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/in-process]",
+    "tests/test_record_compatibility_core.py::TestRecords::test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs[core-runtime/script]"
+  ],
+  "checks": [
+    "successful terminal and exit 0",
+    "complete native collection and all outcomes passed",
+    "complete stdout/stderr hashes",
+    "canonical CAS receipts and result blob hashes",
+    "sealed source bundles and request parent identities",
+    "empty, settled scope cleanup",
+    "retained report hashes and controller exit codes"
+  ],
+  "core_sha256": "d398c3541cdc26e808191dd98d1674bd9c9c3a33c320967ca4b9a3323ad5e461",
+  "worker_attestation_signatures": "unchecked",
+  "independent_review": "pending Engineer23",
+  "batch_merge": "pending PRI-128",
+  "deployment": "not performed",
+  "historical_evidence": "Earlier repaired-source and RED records retain their own identities. The 518 count is not used for these takeover rows."
+}

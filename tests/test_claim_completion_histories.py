@@ -3,6 +3,7 @@
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 from fleet_world import FleetWorld
 import json
 
@@ -133,7 +134,7 @@ def test_late_scratch_boundary_refuses_before_any_probe_or_borrow(fleet, monkeyp
 
 def test_changed_generation_refreshes_pass_views_without_an_irrelevant_census(tmp_path, monkeypatch):
     from prismabuild import _measurement_reservation as measurement
-    from test_pool_tier_reservations import STAGE, TIER, _denial, _publish
+    from test_pool_tier_reservations import STAGE, TIER, _publish
 
     queue = pool.PoolQueue(tmp_path / "views-queue")
     queue.records.ensure_layout()
@@ -179,8 +180,8 @@ def test_changed_generation_refreshes_pass_views_without_an_irrelevant_census(tm
     assert len(replaced) == 1
     assert queue.records.item_path(pool.READY, first).read_bytes() == replaced[0]
     assert queue.records.item_path(pool.READY, second).read_bytes() == second_bytes
-    assert _denial(queue, first)["reason"] == "claimed_record_changed"
-    assert _denial(queue, second)["reason"] == "deferred_for_declared_wait"
+    assert latest_claim_denial(queue, first)["reason"] == "claimed_record_changed"
+    assert latest_claim_denial(queue, second)["reason"] == "deferred_for_declared_wait"
     assert len(listed) == 3
     assert plans[0] is None and plans[1]["declared_wait"] == [{"mover_action_key": "f" * 64}]
     assert scans == [], "no elected measurement or gang needs a publication census"

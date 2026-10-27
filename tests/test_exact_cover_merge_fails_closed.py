@@ -23,38 +23,6 @@ import conftest  # noqa: E402
 from prismabuild import decomposition as dc  # noqa: E402
 
 
-#: A stand-in for what pbrun's Stage A resolves: the parent is keyed on the
-#: tree's snapshot digest and on the rest of what was sealed against it, never
-#: on the path the submitter typed.
-SNAPSHOT = conftest.DECOMPOSITION_SNAPSHOT
-MANIFEST = conftest.DECOMPOSITION_MANIFEST
-
-
-def _frozen(request: dict, *, snapshot: str = SNAPSHOT, cwd: str = ".",
-            variables: dict | None = None, **sealed: object) -> dict:
-    """What pbrun's Stage A would have sealed for this request.
-
-    The declaration reaches the sealed half the way a real template carries it
-    -- the manifest ingested, the GPU budget attached to a GPU demand, the
-    environment merged into the resolved variables -- because that agreement is
-    exactly what ``freeze_common`` refuses to take on trust.  Keywords override
-    it, so a test can say "the same request, sealed differently".
-    """
-
-    common = request["common"]
-    if common["gpu_memory_gb"] is not None:
-        sealed.setdefault("gpu_memory_gb", common["gpu_memory_gb"])
-    return dc.freeze_common(
-        common,
-        action_common=conftest.action_common(
-            snapshot=snapshot,
-            cwd=cwd,
-            manifest=None if common["data_manifest"] is None else MANIFEST,
-            variables={**common["env"], **(variables or {})},
-            **sealed,
-        ),
-    )
-
 EVIDENCE = "cas:sha256:" + "0" * 64
 
 
@@ -118,7 +86,7 @@ def _manifests(request: dict, plan: dict) -> list[dict]:
 @pytest.fixture
 def planned() -> tuple[dict, dict, list[dict]]:
     request = _request()
-    plan = dc.build_plan(request, _frozen(request))
+    plan = dc.build_plan(request, conftest.frozen_common(request))
     assert len(plan["partitions"]) >= 3, "fixture needs several children"
     return request, plan, _manifests(request, plan)
 
@@ -198,7 +166,7 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
 
     request, plan, manifests = planned
     request_88 = _request(count=88)
-    other = dc.build_plan(request_88, _frozen(request_88))
+    other = dc.build_plan(request_88, conftest.frozen_common(request_88))
     manifests[0] = {**manifests[0], "plan_key": other["plan_key"]}
     with pytest.raises(dc.ActionContractError, match="reports plan"):
         dc.verify_exact_cover(request, plan, manifests)
@@ -207,7 +175,7 @@ def test_a_manifest_from_another_plan_is_refused(planned) -> None:
 def test_a_manifest_from_another_parent_is_refused(planned) -> None:
     request, plan, manifests = planned
     request_88 = _request(count=88)
-    other = dc.build_plan(request_88, _frozen(request_88))
+    other = dc.build_plan(request_88, conftest.frozen_common(request_88))
     manifests[0] = {**manifests[0], "parent_key": other["parent_key"]}
     with pytest.raises(dc.ActionContractError, match="reports parent"):
         dc.verify_exact_cover(request, plan, manifests)

@@ -385,15 +385,7 @@ def test_null_digest_overlap_converges(tmp_path: Path) -> None:
 
 
 def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
-    """A publisher slower than the old 3 s wait still converges.
-
-    The first publication's bytes land but its fragment is delayed past
-    the old bounded-recheck interval; the second mover must wait out the
-    grace and adopt -- never convert the timeout into permission to
-    replace the live incarnation.
-    """
-
-    import time
+    """A late vouch names the same incarnation an overlapping mover adopted."""
 
     queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
@@ -405,8 +397,7 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
     before = os.stat(staged)
     key = residency_map.residency_map_key(source, 0)
 
-    # Hold back the proof: the bytes stay, the vouch goes away, and a
-    # background thread re-files it after 4 s -- past the old interval.
+    # Hold back A's vouch until B has adopted the bytes by content.
     residency = queue.root / pool.record_store.RESIDENCY
     saved_entries = dict(
         residency_map.compose(
@@ -414,12 +405,13 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
     assert len(saved_entries) == 1
     staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
 
-    def _refile() -> None:
-        time.sleep(4.0)
-        file_id = reader_lease.stat_identity(str(staged))
-        assert file_id is not None
-        staged_path.publish_vouch(
-            residency, {
+    receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
+                         CONSUMER_B, MOVER_B)
+    assert receipt["complete"] is True, receipt
+    file_id = reader_lease.stat_identity(str(staged))
+    assert file_id is not None
+    staged_path.publish_vouch(
+        residency, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER_A,
             "mover_action_key": MOVER_A,
@@ -428,23 +420,10 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
             "manifest_sha256": manifest_sha,
             "entries": saved_entries,
         },
-            generation=reader_lease.mint_generation(),
-            material_entries={key: {
-                "stage_path": str(staged), "bytes": SIZE,
-                "sha256": digest, "file_id": file_id}})
-
-    thread = threading.Thread(target=_refile, daemon=True)
-    started = time.monotonic()
-    thread.start()
-    try:
-        receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
-                             CONSUMER_B, MOVER_B)
-    finally:
-        thread.join(timeout=60)
-    elapsed = time.monotonic() - started
-    assert receipt["complete"] is True, receipt
-    # The wait outlasted the old interval; the incarnation survived it.
-    assert elapsed >= 3.0, elapsed
+        generation=reader_lease.mint_generation(),
+        material_entries={key: {
+            "stage_path": str(staged), "bytes": SIZE,
+            "sha256": digest, "file_id": file_id}})
     after = os.stat(staged)
     assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
         before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
@@ -454,15 +433,22 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
 
 def test_inflight_copy_defers_without_replacing(tmp_path: Path,
                                                 monkeypatch) -> None:
-    """An in-flight publisher past a short grace still never loses bytes.
+    """A copy still in flight at grace expiry defers without replacing bytes."""
 
-    A sibling copy temporary with no proof yet means a publisher may be
-    alive; even after the (test-shortened) grace expires, the gate
-    defers to the stall policy's retry instead of replacing the
-    unattributed live incarnation.
-    """
+    import time
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 1.0, raising=False)
+    now = 0.0
+    polls = []
+
+    def expire_grace(seconds: float) -> None:
+        nonlocal now
+        polls.append(seconds)
+        now += staged_path._PUBLISH_GRACE_S + 1
+
+    monkeypatch.setattr(staged_path, "time", SimpleNamespace(
+        monotonic=lambda: now, sleep=expire_grace,
+        time=time.time, perf_counter=time.perf_counter))
     queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
 
@@ -478,6 +464,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
 
     receipt = _run_stage(queue, tmp_path, manifest, manifest_sha,
                          CONSUMER_B, MOVER_B)
+    assert polls, "the publisher must reach the wait before grace expiry"
     assert receipt["complete"] is False, receipt
     assert receipt["entries_staged"] == 0, receipt
     assert any("deferring" in str(err) for err in receipt["errors"]), receipt

@@ -163,7 +163,7 @@ def test_candidate_base_rerun_and_bisect_each_select_their_own_checkout(tmp_path
             return super().run_many(batch, outdir, jobs)
 
     queue.runner = SelectedRunner()
-    batch = queue.run_batch(entries(1, 2, 3))
+    batch = queue.run_batch(entries(github, 1, 2, 3))
     assert batch["verdict"] == "red" and batch["shared"] == ["tests/test_a.py::old"]
     assert statuses(github) == [(guilty, "failure")]
     assert queue.runner.runtime_commands == {
@@ -229,7 +229,7 @@ def test_block_persists_across_restart_skips_only_affected_prs_and_resume_rechec
     monkeypatch.setattr(queue.runner, "discover", good_runner.discover)
     launches = []
     refused_process(monkeypatch, launches)
-    batch = queue.run_batch([{**entries(1)[0], "attempts": 2}])
+    batch = queue.run_batch([{**entries(github, 1)[0], "attempts": 2}])
     assert batch["verdict"] == "runtime-blocked" and not github.calls
     assert queue.store.state["queue"][0]["attempts"] == 2
     assert "resume-runtime b00001" in queue.store.status_text()
@@ -238,7 +238,7 @@ def test_block_persists_across_restart_skips_only_affected_prs_and_resume_rechec
     queue.resume()
     assert queue.tick() is None and len(launches) == 1
     queue.runner = good_runner
-    queue.store.add(2, None, front=False)
+    queue.store.add(2, github.pr(2)["headRefOid"], front=False)
     assert queue.tick()["verdict"] == "green"  # unrelated queue entries keep moving
     saved = queue.store.state["runtime_blocked"]["b00001"]
     assert saved["runs"]["candidate"]["runtime_refusal"] == PIN_REFUSAL
@@ -270,7 +270,7 @@ def test_later_phase_runtime_refusal_never_becomes_shared_flake_or_pr_blame(tmp_
             return results
 
     queue.runner = BlockedRunner()
-    batch = queue.run_batch(entries(1, 2))
+    batch = queue.run_batch(entries(github, 1, 2))
     assert batch["verdict"] == "runtime-blocked" and not github.calls
     assert batch["runs"][phase]["actions"] == ["failed-action"]
     assert all(entry["attempts"] == 0 for entry in queue.store.state["queue"])

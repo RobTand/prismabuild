@@ -34,6 +34,23 @@ PROGRESS_TAGS = (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG,
                  contracts.EGRESS_PROGRESS_TAG, contracts.QUEUED_CHILD_TAG)
 
 
+@pytest.mark.parametrize("allowance", [None, 60.0])
+def test_explicit_stall_allowance_requires_a_supporting_worker(tmp_path, allowance):
+    params = {} if allowance is None else {pb.STALL_ALLOWANCE_PARAM: allowance}
+    queue, action, cas, checkout = _sealed_request(tmp_path, params)
+    path = ActionRows(queue).publish(
+        action['action_key'], cas_root=cas.root, checkout_root=checkout,
+        worker_script='/worker.py', resources=DEMAND, tags=())
+    row = json.loads(path.read_text())
+    tag = "activity-stall-v1"
+    assert (tag in row["tags"]) is (allowance is not None)
+    offered = contracts.offered_contract_tags(contracts.WorkerFacts())
+    assert tag in offered
+    assert queue._placement_matches(row, tags=offered, has_gpu=False)
+    old_offer = [value for value in offered if value != tag]
+    assert queue._placement_matches(row, tags=old_offer, has_gpu=False) is (allowance is None)
+
+
 @pytest.mark.parametrize("gang", [False, True])
 @pytest.mark.parametrize("generation", ["", "g1"])
 def test_registry_enablement_and_generation_companions_are_pure_facts(tmp_path, gang, generation):

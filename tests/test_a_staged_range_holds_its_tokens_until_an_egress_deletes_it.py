@@ -19,6 +19,7 @@ from __future__ import annotations
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows
 
 import errno
@@ -30,7 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_holdings
 from prismabuild import staged_path
@@ -100,14 +101,6 @@ def _receipt(q: pool.PoolQueue, *, staged: int = 2 * storage_tiers.GIB,
 
 def _held(q: pool.PoolQueue) -> dict[str, int]:
     return q.tier(TIER).holdings(MOVER)
-
-
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [e for e in records.values()
-                if isinstance(e, dict) and e.get("action_key") == key]
-    return max(matching, key=lambda e: float(e.get("denied_unix", 0.0))) if matching else None
 
 
 # ---------------------------------------------------------------- the pin
@@ -256,7 +249,7 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
     )
 
     assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
     # Refused without ageing the item or taking a token: the loop composes on
     # its next cycle and the item is admitted then, unchanged.
@@ -314,7 +307,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
 
     # The claim returns, rather than raising out of the scan...
     assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_unreadable"
     verdict = denial["evidence"]["residency"]
     assert "Stale file handle" in verdict["error"]
@@ -379,7 +372,7 @@ def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
     claimed = queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"])
 
     assert claimed is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     # Terminal: the mover ran and holds nothing, so no later poll repairs it.
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"][0]["status"] == "unpinned"
@@ -411,7 +404,7 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
     assert queue.claim(**simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 8})), tags=["dl380g10"]) is None
     # Terminal too: the bytes are gone and only a republished mover brings
     # them back.
-    assert _denial(queue, CONSUMER)["reason"] == "residency_lead_terminal"
+    assert latest_claim_denial(queue, CONSUMER)["reason"] == "residency_lead_terminal"
 
 
 def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:

@@ -30,6 +30,7 @@ from __future__ import annotations
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 from fleet_world import FleetWorld
 
 import json
@@ -37,7 +38,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 
 CONSUMER = "c" * 64
 STAGE_LEAD = "1" * 64
@@ -111,16 +112,6 @@ def _publish_consumer(queue: pool.PoolQueue) -> None:
             "leads": [STAGE_LEAD],
         },
     )
-
-
-def _denial(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def _stage_fragment() -> dict[str, object]:
@@ -202,7 +193,7 @@ def test_a_stale_epoch_map_is_refused_at_claim_before_tokens(
     assert queue.claim(owner="w-consumer", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).exists()
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_ram_epoch_stale"
     assert denial["evidence"]["residency"]["state"] == "ram_epoch_stale"
     assert denial["evidence"]["residency"]["ram_epoch"] == OLD_EPOCH
@@ -223,7 +214,7 @@ def test_a_map_naming_a_ram_tier_nobody_announced_is_refused(
 
     assert queue.claim(owner="w-consumer", **simulated_admission(queue, simulated_capacity({"cpu": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_ram_epoch_stale"
     assert queue.ledger().held() == {}
     assert queue.passes(CONSUMER) == 0

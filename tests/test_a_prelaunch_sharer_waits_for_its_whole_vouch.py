@@ -17,6 +17,7 @@ from __future__ import annotations
 from admitted_queue_fixture import simulated_admission
 
 from admitted_queue_fixture import simulated_capacity
+from claim_denial_reader import latest_claim_denial
 
 import json
 from pathlib import Path
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import (  # noqa: E402
-    adaptive_cpu, candidate_policy, pool, reader_lease, residency_map, residency_plan)
+    candidate_policy, pool, reader_lease, residency_map, residency_plan)
 from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
@@ -185,15 +186,6 @@ def test_control_a_declared_consumer_of_its_own_range_is_admitted(
     assert _verdict(queue, owner)["state"] == "resident"
 
 
-def _denial(queue: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)),
-               default=None)
-
-
 def test_the_claim_pass_waits_and_names_the_denial(
         tmp_path: Path, monkeypatch) -> None:
     """A wait, not a refusal: the item stays ready, no token is taken, no pass ages."""
@@ -205,7 +197,7 @@ def test_the_claim_pass_waits_and_names_the_denial(
     held = queue.ledger().held()
     assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
-    denial = _denial(queue, SECOND)
+    denial = latest_claim_denial(queue, SECOND)
     assert denial is not None and denial["reason"] == "residency_map_incomplete", denial
     evidence = denial["evidence"]["residency"]                     # type: ignore[index]
     assert evidence["unvouched"] == {mover: 1}
@@ -230,7 +222,7 @@ def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
     held, passes = queue.ledger().held(), queue.passes(key)
     assert queue.claim(owner="worker", **simulated_admission(queue, simulated_capacity({"cpu": 4, "mem_gb": 4}))) is None
     assert queue.records.item_path(pool.record_store.READY, key).exists()
-    denial = _denial(queue, key)
+    denial = latest_claim_denial(queue, key)
     assert denial is not None and denial["reason"] == "residency_map_unreadable", denial
     assert str(source) in denial["evidence"]["residency"]["error"]   # type: ignore[index]
     assert queue.ledger().held() == held and queue.passes(key) == passes
