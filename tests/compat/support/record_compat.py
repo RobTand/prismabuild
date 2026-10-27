@@ -344,6 +344,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     environment = None
     if archival_runtime is not None:
         environment = dict(os.environ)
+        tmpdir = environment.get("TMPDIR")
+        if not tmpdir or not Path(tmpdir).is_absolute():
+            raise ValueError("archival replay requires an absolute TMPDIR in the sealed environment")
         environment_bytes = json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("ascii")
         environment_before_driver = {name: environment.get(name) for name in (
             "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TMPDIR", "TZ")}
