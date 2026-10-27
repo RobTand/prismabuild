@@ -1,9 +1,9 @@
-"""Numeric fields share the core predicate without accepting invalid JSON scalars."""
+"""Numeric fields share a predicate without accepting invalid JSON scalars."""
 import math
 
 import pytest
 
-from prismabuild import core
+from prismabuild import numeric_fields
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -12,4 +12,4 @@ from prismabuild import core
     (math.inf, False), (-math.inf, False), (10 ** 400, False),
 ])
 def test_finite_numeric_fields(value, expected):
-    assert core.is_finite_number(value) is expected
+    assert numeric_fields.is_finite_number(value) is expected
