@@ -66,3 +66,23 @@ def test_supervision_logs_are_bounded_and_separate_claim_writers(tmp_path):
     successor = {**claim, "claimed_by": "second"}
     queue.records.append_supervision_event(successor, {"number": 99}, limit=2)
     assert sorted(row["number"] for row in queue.consumer_events(claim["action_key"])) == [3, 4, 99]
+
+
+@pytest.mark.parametrize("missing", ["claimed_unix", "published_unix", "attempts"])
+def test_legacy_heartbeat_keeps_observations_without_inventing_an_exact_event(tmp_path, missing):
+    import json
+    from prismabuild import pool
+
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    key = "a" * 64
+    claim = {"action_key": key, "claimed_by": "legacy", "claimed_host": "compat-host",
+             "claimed_unix": 10.0, "published_unix": 1.0, "attempts": 0}
+    del claim[missing]
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), claim)
+    observation = {"phase": "activity", "quiet_s": 0.0}
+    queue.write_lease(key, owner="legacy", progress_observation=observation)
+    lease = json.loads(queue.records.lease_path(key).read_bytes())
+    assert lease["progress_observation"] == observation
+    assert missing not in lease
+    assert queue.consumer_events(key) == []

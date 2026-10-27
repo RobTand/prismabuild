@@ -12227,17 +12227,20 @@ class PoolQueue:
                 raise AmbiguousClaimHolder("foreign heartbeat lease custody observed before publication")
             self.records.replace_record_at(self.records.lease_path(action_key), lease)
             if progress_observation is not None:
-                try:
-                    self.records.append_supervision_event(claim, {
-                        "event": "payload-supervision", "action_key": action_key,
-                        **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
-                        "unix": sampled_unix,
-                        "age_s": max(0.0, sampled_unix - claim["claimed_unix"]),
-                        "progress_observation": dict(progress_observation),
-                    }, limit=MAX_CONSUMER_EVENT_LINES)
-                except OSError as exc:
-                    print(f"PrismaBuild: supervision event unwritten: {exc!r}",
-                          file=sys.stderr, flush=True)
+                self._record_payload_supervision(claim, progress_observation, sampled_unix)
+
+    def _record_payload_supervision(self, claim, observation, sampled_unix):
+        try:
+            self.records.append_supervision_event(claim, {
+                "event": "payload-supervision", "action_key": claim["action_key"],
+                **{field: claim.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS},
+                "unix": sampled_unix,
+                "age_s": max(0.0, sampled_unix - claim["claimed_unix"]),
+                "progress_observation": dict(observation),
+            }, limit=MAX_CONSUMER_EVENT_LINES)
+        except OSError as exc:
+            print(f"PrismaBuild: supervision event unwritten: {exc!r}",
+                  file=sys.stderr, flush=True)
 
     def _heartbeat_stamp_path(self, lease: Mapping[str, object]) -> Path:
         identity = {field: lease.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
