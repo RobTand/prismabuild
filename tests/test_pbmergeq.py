@@ -181,6 +181,7 @@ class FakeGitHub(mq.GitHub):
         self.comments = []
 
     def contains(self, sha):
+        # pb-history-ok: Checks ancestry of commits created in the temporary fake-origin repository.
         return subprocess.run(["git", "merge-base", "--is-ancestor", sha, "main"],
                               cwd=self.origin.work, capture_output=True).returncode == 0
 
@@ -211,6 +212,7 @@ class FakeGitHub(mq.GitHub):
         self.calls.append(["vehicle", "create", branch])
         self.origin.vehicle_creations.append(branch)
         number = 10000 + len(self.origin.vehicle_creations)
+        # pb-history-ok: Resolves the candidate branch pushed into the temporary fake-origin repository.
         head = git("rev-parse", branch, cwd=self.origin.work)
         vehicle = {"number": number, "state": "OPEN", "headRefOid": head, "headRefName": branch,
             "url": f"https://github.com/{self.cfg.repo}/pull/{number}",
@@ -246,11 +248,13 @@ class FakeGitHub(mq.GitHub):
             matched = command[command.index("--match-head-commit") + 1]
             if matched != pr["headRefOid"]:
                 return False
+            # pb-history-ok: Checks the temporary fake-origin main is an ancestor of its generated candidate.
             ancestor = subprocess.run(["git", "merge-base", "--is-ancestor",
                                        "main", matched], cwd=self.origin.work,
                                       capture_output=True)
             if ancestor.returncode != 0:
                 return False
+            # pb-history-ok: Merges generated candidate commits only in the temporary fake-origin repository.
             git("merge", "--no-ff", "-q", "-m", f"Merge PR #{number}", matched,
                 cwd=self.origin.work)
             self.merged.append(number)
@@ -432,6 +436,7 @@ def test_merge_mode_merges_the_tested_vehicle_and_confirms_each_member(tmp_path)
     merges = [c for c in github.calls if c[:3] == ["gh", "pr", "merge"]]
     assert [(c[3], c[-1]) for c in merges] == [(str(vehicle["number"]), batch["candidate"])]
     assert statuses(github) == [(batch["candidate"], "success")]
+    # pb-history-ok: Reads the merged main tree created by the temporary fake-origin fixture.
     main_tree = git("rev-parse", "main^{tree}", cwd=origin.work)
     assert main_tree == batch["candidate_tree"]
     assert [github.pr(n)["state"] for n in (1, 2, vehicle["number"])] == ["MERGED"] * 3

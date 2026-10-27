@@ -136,6 +136,7 @@ def test_every_green_wait_releases_the_queue_after_a_persisted_allowance(
     assert store.state["batch"] is None
     assert runner.runs == completed
     if cause == "member-unobserved":
+        # pb-history-ok: Reads the main commit advanced in the temporary fake-origin fixture.
         main_head = git("rev-parse", "main", cwd=origin.work)
         assert main_head != pending["base"]
         assert store.state["queue"] == [], "already-integrated members must not be retried as failures"
@@ -181,6 +182,7 @@ class ShadowGitHub(FakeGitHub):
             assert vehicle["isDraft"], "a shadow vehicle became mergeable before closure"
             vehicle["state"] = "CLOSED"
             if "--delete-branch" in command:
+                # pb-history-ok: Deletes the shadow candidate branch in the temporary fake-origin fixture.
                 git("branch", "-D", vehicle["headRefName"], cwd=self.origin.work)
         return accepted
 
@@ -198,6 +200,7 @@ def test_status_vehicle_is_draft_then_closed_with_its_branch_deleted(tmp_path, i
     vehicle = github.pr(batch["vehicle"]["number"])
     assert vehicle["isDraft"] is True
     assert vehicle["state"] == "CLOSED"
+    # pb-history-ok: Lists candidate branches created by the temporary fake-origin fixture.
     branches = git("for-each-ref", "--format=%(refname)", "refs/heads/release-mq/", cwd=origin.work)
     assert branches == ""
     assert queue.store.state["batch"] is None
@@ -265,6 +268,7 @@ def test_terminal_retry_is_saved_before_close_and_recovers_branch_deletion(
 
     assert store.state["vehicle_cleanup"] == {}
     assert [p["attempts"] for p in store.state["queue"]] == [1]
+    # pb-history-ok: Lists candidate branches created by the temporary fake-origin fixture.
     branches = git("for-each-ref", "--format=%(refname)", "refs/heads/release-mq/", cwd=origin.work)
     assert branches == ""
     assert runner.runs == completed
@@ -287,6 +291,7 @@ def test_dry_run_restart_preserves_pending_vehicle_cleanup(
     assert queue.store.state["batch"] is None
     assert github.pr(batch["vehicle"]["number"])["state"] == vehicle_state
     branch = f"refs/heads/{batch['vehicle']['branch']}"
+    # pb-history-ok: Reads the retained candidate ref created by the temporary fake-origin fixture.
     candidate = git("rev-parse", branch, cwd=origin.work)
     pending = json.loads(json.dumps(queue.store.state["vehicle_cleanup"]))
     completed = list(runner.runs)
@@ -298,6 +303,7 @@ def test_dry_run_restart_preserves_pending_vehicle_cleanup(
     resumed.resume()
     assert resumed.tick() is None
 
+    # pb-history-ok: Reads the retained candidate ref created by the temporary fake-origin fixture.
     retained_candidate = git("rev-parse", branch, cwd=origin.work)
     assert retained_candidate == candidate
     assert store.state["vehicle_cleanup"] == pending
@@ -307,6 +313,7 @@ def test_dry_run_restart_preserves_pending_vehicle_cleanup(
     status = mq.Queue(queue.cfg, store, status_github, queue.mirror, runner, "status")
     status.cleanup_vehicles()
     assert store.state["vehicle_cleanup"] == {}
+    # pb-history-ok: Lists the candidate ref created by the temporary fake-origin fixture.
     branches = git("for-each-ref", "--format=%(refname)", branch, cwd=origin.work)
     assert branches == ""
     assert status_github.pr(batch["vehicle"]["number"])["state"] == "CLOSED"
