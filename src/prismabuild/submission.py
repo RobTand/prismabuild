@@ -4327,7 +4327,7 @@ def freeze_template(
     selected_profile = None
     if execution_profile is not None:
         try:
-            selected_profile = execution_profiles.parse(execution_profile)
+            selected_profile = execution_profiles.parse_selection(execution_profile)
         except execution_profiles.ProfileError as exc:
             raise SubmissionRefused(f"pbrun: {exc}") from None
         if (transport != "pool" or not set(selected_profile.required_tags()).issubset(

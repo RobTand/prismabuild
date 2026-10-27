@@ -62,11 +62,13 @@ def test_prepare_binds_policy_and_execution_fences_to_the_action_key(tmp_path, m
     ("--execution-policy-sha256", "a" * 64),
     ("--execution-profile", "hostile-v1", "--execution-policy-sha256", "bad"),
 ])
-def test_partial_cli_selection_refuses_instead_of_using_trusted_defaults(tmp_path, monkeypatch, options):
+def test_partial_cli_selection_refuses_instead_of_using_trusted_defaults(tmp_path, monkeypatch, capsys, options):
     from test_local_scratch_host_kind import _build
 
-    with pytest.raises(submission.SubmissionRefused, match="hostile-v1"):
+    with pytest.raises(SystemExit) as raised:
         _build(tmp_path, monkeypatch, *options)
+    assert raised.value.code == 2
+    assert "hostile-v1 requires" in capsys.readouterr().err
 
 
 def test_trusted_prepare_has_no_profile_parameter_or_fence(tmp_path, monkeypatch):
@@ -109,7 +111,7 @@ def test_a_tag_cannot_turn_a_trusted_request_into_a_hostile_profile(tmp_path, ta
 
 @pytest.mark.parametrize("change", ["fence", "demand"])
 def test_a_forged_row_cannot_change_its_profile_contract(change):
-    selected = execution_profiles.parse(PROFILE)
+    selected = execution_profiles.parse_selection(PROFILE)
     action = {"params": {"execution_profile": PROFILE, "demand": {"cpu": 1, "mem_gb": 4}}}
     tags, demand = list(selected.required_tags()), {"cpu": 1, "mem_gb": 4}
     if change == "fence":

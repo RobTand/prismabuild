@@ -2373,7 +2373,7 @@ def _normalize_action_body(value: object) -> dict[str, object]:
     )
     if "execution_profile" in normalized_params:
         from . import execution_profiles
-        execution_profiles.parse(normalized_params[execution_profiles.PARAM])
+        execution_profiles.parse_selection(normalized_params[execution_profiles.PARAM])
     if PROGRESS_PARAM in normalized_params:
         # Refused here rather than at the worker: a policy the worker cannot
         # read would be sealed into an action key that then answers every later
@@ -6141,6 +6141,8 @@ def run_local_action(
     """Execute one action locally and publish its declared file result."""
 
     normalized = validate_action(action)
+    from . import execution_profiles
+    execution_profiles.require_backend(normalized)
     root = Path(checkout_root)
     if not root.is_absolute():
         raise ActionContractError("checkout_root must be absolute")

@@ -36,7 +36,7 @@ class Selection:
         return CAPABILITY, "hostile-policy:" + self.policy_sha256
 
 
-def parse(value: object) -> Selection:
+def parse_selection(value: object) -> Selection:
     if (not isinstance(value, Mapping) or set(value) != {"schema", "name", "policy_sha256"}
             or value["schema"] != SCHEMA or value["name"] != HOSTILE_NAME
             or not isinstance(value["policy_sha256"], str)
@@ -48,7 +48,7 @@ def parse(value: object) -> Selection:
 def requested(name: str | None, policy_sha256: str | None, *, transport: str) -> Selection | None:
     if name is None and policy_sha256 is None:
         return None
-    selected = parse({"schema": SCHEMA, "name": name, "policy_sha256": policy_sha256})
+    selected = parse_selection({"schema": SCHEMA, "name": name, "policy_sha256": policy_sha256})
     if transport != "pool":
         raise ProfileError("hostile-v1 requires the pool's trusted execution and cleanup owner")
     return selected
@@ -58,7 +58,7 @@ def from_action(action: Mapping[str, object]) -> Selection | None:
     params = action.get("params")
     if not isinstance(params, Mapping) or PARAM not in params:
         return None
-    return parse(params[PARAM])
+    return parse_selection(params[PARAM])
 
 
 def require_backend(action: Mapping[str, object]) -> None:
