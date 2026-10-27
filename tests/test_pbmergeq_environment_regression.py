@@ -232,7 +232,7 @@ def test_environment_equivalence_requires_the_observed_runtime_and_test_contract
     assert environment_identity(producer, interpreter, runtime, {}, request) != before
 
 
-def native_environment(tmp_path, monkeypatch, case='matched'):
+def native_environment(tmp_path, monkeypatch, case='matched', *, node_groups=None):
     import json
     import os
     import sys
@@ -259,10 +259,12 @@ def native_environment(tmp_path, monkeypatch, case='matched'):
     (checkout / 'tests').mkdir()
     (checkout / files[0]).write_text('def test_broken():\n    assert False\n')
     selection = {'files': files, 'roots': [['tests/test_a.py', 'file']]}
+    if node_groups is not None:
+        selection['node_groups'] = node_groups
     options = ['-q', '--no-header', '-p', 'no:cacheprovider', '-o', 'addopts=',
                '--durations', '1', '-n', '2']
     command = [*pbtest.shard_entry(sys.executable, checkout, collection=True),
-               json.dumps(selection), *options, *files]
+               pbtest.pbtest_collection.encode_selection(selection), *options, *files]
     if case == 'unrelated':
         command = [sys.executable, '-c', 'raise SystemExit(7)']
     elif case == 'wrong_recorder':
@@ -309,6 +311,10 @@ def native_environment(tmp_path, monkeypatch, case='matched'):
     node = 'tests/test_a.py::broken'
     row = shard(['tests/test_a.py'], rows=[(node, 'call', 'failed', None, None)])
     record = pbtest_outcomes.parse(row['output'])
+    if node_groups is not None:
+        row['node_groups'] = node_groups
+        record['file_selection'] = {'files': files, 'ignored': [],
+            'node_groups': node_groups, 'node_rosters': {files[0]: [node]}}
     nonce = 'a' * 64
     record['run_nonce'] = nonce
     output = (pbtest_outcomes.preflight_record(0, None, run_nonce=nonce) + '\n1 failed in 1.0s\n'
