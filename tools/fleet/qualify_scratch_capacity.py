@@ -79,7 +79,7 @@ def main(argv=None):
         parser.error("capacity and free-space floor must be positive")
     report = inspect_host(root=args.root, dataset=args.dataset,
                           max_gib=args.max_gib, min_free_gib=args.min_free_gib)
-    print(json.dumps(report, sort_keys=True))
+    print(json.dumps(report))
     return 2 if report["errors"] else 0
 
 

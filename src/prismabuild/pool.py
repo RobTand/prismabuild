@@ -17942,8 +17942,10 @@ class PoolQueue:
         # The optional row is only a projection, including on legacy
         # non-adaptive callers. No erased/forged carrier bypasses the
         # actual sealed request, and opted-in work requires a ledger.
+        intent_refusal = "local_scratch_io_intent_invalid"
         try:
             request = _sealed_action_request(item["cas_root"], key)
+            intent_refusal = "scratch_capacity_intent_invalid"
             dedicated_scratch = self._sealed_scratch_capacity(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if dedicated_scratch and (ledger is None or not demand):
@@ -17952,6 +17954,7 @@ class PoolQueue:
                 if self.scratch_capacity_inputs is None:
                     raise PoolContractError("dedicated scratch requires configured root authority")
                 self.scratch_capacity_inputs.require(request["environment"]["variables"])
+            intent_refusal = "local_scratch_io_intent_invalid"
             scratch_intent = self._sealed_scratch_io(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if (item.get(local_scratch.IO_ENV) != scratch_intent
@@ -17965,7 +17968,7 @@ class PoolQueue:
                 if ledger is None or not demand:
                     raise PoolContractError("scratch I/O requires full host-ledger admission")
         except (ValueError, OSError, KeyError, TypeError) as exc:
-            self.record_denial(item, "local_scratch_io_intent_invalid", {"error": str(exc)})
+            self.record_denial(item, intent_refusal, {"error": str(exc)})
             return scan
         if controller is not None and not demand:
             # Adaptive admission needs a durable reservation to make an
@@ -20818,8 +20821,14 @@ class PoolQueue:
             raise PoolContractError("max_attempts must be a positive integer")
 
         details = dict(detail or {})
-        if "scratch_capacity_observation" in record:
-            details["scratch_capacity_observation"] = record["scratch_capacity_observation"]
+        if "scratch_capacity_observation" in record or "scratch_capacity_observation" in details:
+            from .scratch_capacity import validate_observation
+            observed = validate_observation(details.get(
+                "scratch_capacity_observation", record.get("scratch_capacity_observation")))
+            if ("scratch_capacity_observation" in record
+                    and record["scratch_capacity_observation"] != observed):
+                raise PoolContractError("scratch capacity observation disagrees")
+            details["scratch_capacity_observation"] = observed
         if scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
             details[scratch_lifetime.SCRATCH_LIFETIME_FIELD] = scratch_lifetime.validate_record(
                 record[scratch_lifetime.SCRATCH_LIFETIME_FIELD])
@@ -22661,6 +22670,9 @@ class PoolQueue:
                 progress=policy, stall=stall, clock=clock,
             )
         outcome.update(budget.as_record())
+        if "scratch_capacity_observation" in item:
+            from .scratch_capacity import validate_observation
+            outcome["scratch_capacity_observation"] = validate_observation(item["scratch_capacity_observation"])
         # ``execution_timeout_ceiling_s`` is what bounded the *deadline*, and
         # under the progress contract nothing did.  This says what the box's
         # ceiling actually is regardless of what it governs, so a reader is

@@ -19162,19 +19162,26 @@ the scratch lifetime record.
 The worker's optional `--scratch-capacity-config` names bounded operator JSON:
 `schema="prismabuild.scratch_capacity_roots.v1"`, with `roots` entries containing
 exact `root`, positive integer `max_gib`, positive integer `min_free_gib`, and
-`identity`. Identity contains `device`, `filesystem`, `filesystem_type`,
+`identity`, plus a `backing` witness. Identity contains `device`, `filesystem`, `filesystem_type`,
 `root_inode`, and immutable `birthtime_ns`. Configuration supplies ceilings and
 identity witnesses, never an invented live offer. It is separate from the
 existing I/O profile configuration, which supplies no capacity.
 
-The observer walks directory descriptors without following symlinks, verifies
-the identity and local filesystem, and requires a mounted filesystem distinct
-from its parent and ordinary spool. Aliasing configured roots refuse. Available
+The observer walks directory descriptors without following symlinks and requires
+a real ZFS mount at the exact root. The `backing` witness contains `dataset`,
+`guid`, `quota_bytes`, and `reservation_bytes`. Both allocation bounds must
+cover the configured ceiling plus its free-space floor. Every offer, claim and
+launch rechecks the dataset GUID, quota, reservation, mountpoint and mounted
+state. Descriptor identity brackets the property read. btrfs subvolumes and
+unreserved pooled space provide no independent budget. Aliasing dataset GUIDs
+or mount sources refuse. The ordinary spool must have a different backing
+source and mount device. Available
 bytes above the explicit floor, rounded down and capped by `max_gib`, determine
 capacity; inode headroom keeps the existing five-percent rule. Holder censuses
-bracket observation. While a root has a holder, its last measured total stays
-frozen, capped by the configured ceiling. Unwritten portions of a reservation
-grant no extra credit. Unknown census, changed identity or unreadable backing
+bracket observation. While a root has any holder, its live offer covers only
+already-held charges, so new root work waits for cleanup and a fresh measurement.
+The advisory declaration retains the configured, allocated ceiling. Unwritten
+portions of a reservation grant no extra credit. Unknown census, changed identity or unreadable backing
 offers zero. Retiring free tokens never releases a live holder. The existing
 filesystem-floor gate recognizes each dedicated kind as GiB and, in enforce
 mode, refuses an unbound byte ledger.
@@ -19187,6 +19194,8 @@ Dataset metadata consumes part of that margin. Ordinary dl380g10 spool remains
 8 GiB on `/tmp/pbscratch`. Host provisioning, runtime activation, native stop
 and cleanup qualification, and the large VM action remain separate gates.
 See [the host proposal](o6_host_change_proposal_2026-10-27.md).
+The allocation distinction follows [OpenZFS quotas and reservations](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Datasets/Quotas%20and%20Reservations.html)
+and [the btrfs subvolume model](https://btrfs.readthedocs.io/en/latest/Subvolumes.html).
 
 ### Nondestructive ephemeral scratch namespace (Refs #1360)
 

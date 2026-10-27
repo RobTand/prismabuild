@@ -5415,10 +5415,15 @@ bytes, or increase CPU demand to force placement.
 The operator configures `worker_loop --scratch-capacity-config FILE` only
 after provisioning and readback. The JSON has schema
 `prismabuild.scratch_capacity_roots.v1` and a `roots` list. Each entry supplies
-`root`, `max_gib`, `min_free_gib`, and the observed `identity` with `device`,
+`root`, `max_gib`, `min_free_gib`, the observed `identity` with `device`,
 `filesystem`, `filesystem_type`, `root_inode`, and `birthtime_ns`. For O6 the
 proposed maximum is 320 and the minimum free space is 32 GiB on a 384-GiB
-dataset. Record actual identity values; placeholders enable nothing.
+dataset. Each entry also needs `backing` with the actual `dataset`, `guid`,
+`quota_bytes`, and `reservation_bytes`. Both allocation byte counts must match
+fresh ZFS properties and cover the ceiling plus floor. Only a real, reserved
+ZFS mount qualifies for this interface. Record actual values; placeholders
+enable nothing. While any root charge is held, new root admissions wait for
+cleanup and a fresh capacity measurement.
 
 Use the registered ephemeral leaf through PB's scratch helper. The root and
 TMPDIR do not redirect automatically. PB retains capacity until exact stop

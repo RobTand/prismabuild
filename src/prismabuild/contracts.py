@@ -54,6 +54,7 @@ class WorkerFacts:
 
     gang_admission: bool = False
     loaded_generation: str = ""
+    scratch_capacity_configured: bool = False
 
 
 def _always(_worker: WorkerFacts) -> bool:
@@ -92,7 +93,8 @@ CONTRACTS = (
              remedy="Update the published runtime, then provide the exact declared dependency bytes on an eligible worker."),
     Contract(SCRATCH_IO_TAG, lambda p: p.scratch_io),
     Contract(SCRATCH_LIFETIME_TAG, lambda p: p.scratch_lifetime),
-    Contract(SCRATCH_CAPACITY_TAG, lambda p: p.scratch_capacity),
+    Contract(SCRATCH_CAPACITY_TAG, lambda p: p.scratch_capacity,
+             offered=lambda w: w.scratch_capacity_configured),
     Contract(GANG_TAG, lambda p: p.gang,
              offered=lambda w: w.gang_admission,
              remedy="Enable gang admission on an eligible worker."),

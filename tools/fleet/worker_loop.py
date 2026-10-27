@@ -1010,6 +1010,16 @@ def scratch_observed_detail(observer, profile_inputs):
     return detail
 
 
+def configured_scratch_capacity(config_path, *, runtime_root, host):
+    if config_path is None:
+        return None
+    box = fleet_roster.Roster.at(runtime_root).canonical_box(host)
+    ordinary_root = box.entry.get("local_disk") if box is not None else None
+    if local_scratch._canonical_root(ordinary_root) is None:
+        raise local_scratch.LocalScratchError("dedicated scratch requires the roster's ordinary local_disk backing")
+    return scratch_capacity.RootInputs(config_path, ordinary_root=ordinary_root)
+
+
 def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     ap = build_parser()
     args = ap.parse_args(argv)
@@ -1054,14 +1064,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     # a per-host concurrency knob.
     known_physical_gpus = 1 if gpu_capable else 0
 
-    root_inputs = None
-    if args.scratch_capacity_config is not None:
-        box = fleet_roster.Roster.at(RUNTIME_ROOT).canonical_box(socket.gethostname())
-        ordinary_root = box.entry.get("local_disk") if box is not None else None
-        if local_scratch._canonical_root(ordinary_root) is None:
-            ap.error("dedicated scratch requires the roster's ordinary local_disk backing")
-        root_inputs = scratch_capacity.RootInputs(
-            args.scratch_capacity_config, ordinary_root=ordinary_root)
+    root_inputs = configured_scratch_capacity(
+        args.scratch_capacity_config, runtime_root=RUNTIME_ROOT, host=socket.gethostname())
     queue = pool.PoolQueue(SH / "pb-queue", **(
         {"scratch_capacity_inputs": root_inputs} if root_inputs is not None else {}))
     profile_inputs = (local_scratch.ProfileInputs(
@@ -1128,6 +1132,7 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             tags.append("cpu")
         tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
             gang_admission=args.gang_admission,
+            scratch_capacity_configured=root_inputs is not None,
             loaded_generation=(loaded.generation if isinstance(
                 loaded, generation_receipt.RuntimeIdentity) else ""))))
         return tags
