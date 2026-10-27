@@ -15,6 +15,8 @@ from duplicates import PREFIX, likely_duplicate, normalize_title
 
 PRIORITIES = ("P0", "P1", "P2+", "P2", "P3")
 EVIDENCE = re.compile(r"^\s*(?:#{1,6}\s+)?(?:\*\*)?(reproduction|measurement)(?:\*\*)?\s*(?::(?:\*\*)?\s*(.*))?\s*$", re.I)
+FIELD = re.compile(r"^\s*(?:\*\*)?\w[\w /()-]*(?:\*\*)?\s*:(?:\*\*)?(?:\s|$)")
+FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 SECTION = re.compile(r"^\s*(?:#{1,6}\s+|\*\*[^*]+\*\*\s*:)")
 PLACEHOLDER = re.compile(r"^(?:todo|tbd|n/?a|none|pending|not available|not yet|\.\.\.|<[^>]*>)\W*$", re.I)
 CREATE = """mutation($input:CreateIssueInput!) {
@@ -61,16 +63,26 @@ class Ticket:
 def evidence_lines(body: str) -> Iterator[str]:
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
     active = False
+    fence = ""
     for line in body.splitlines():
+        delimiter = FENCE.fullmatch(line)
+        if fence:
+            if (delimiter and delimiter[1][0] == fence[0]
+                    and len(delimiter[1]) >= len(fence) and not delimiter[2].strip()):
+                fence = ""
+            elif active:
+                yield line
+            continue
+        if delimiter:
+            fence = delimiter[1]
+            continue
         match = EVIDENCE.fullmatch(line)
         if match:
             active = True
             line = match[2] or ""
-        elif SECTION.match(line):
+        elif SECTION.match(line) or FIELD.match(line):
             active = False
         if active:
-            if line.lstrip().startswith(("```", "~~~")):
-                continue
             yield line
 
 

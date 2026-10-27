@@ -10,6 +10,9 @@ three repos are supported.
    `Reproduction: ...` and `Measurement: ...` fields also work. Empty sections,
    HTML template comments, and placeholder values do not count. The gate checks
    supplied content; the author and reviewer establish whether it is true.
+   A new heading or unrelated `Name: value` field ends the evidence. Inside a
+   backtick or tilde fence, headings and field labels are literal code. A fence
+   outside an evidence section cannot introduce a reproduction field.
 2. Run the read-only dry run:
 
    ```bash
