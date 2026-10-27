@@ -19735,6 +19735,63 @@ query, capture command and binary digest; report fields and Core byte recipes
 remain unchanged. This dependency choice is not holder eligibility, a live
 profile receipt, runtime deployment, cache authorization or a speedup claim.
 
+### Merge-queue vehicle and approval contract (#2295)
+
+A queued member must carry the full lowercase Git SHA approved by its reviewer.
+The enqueue boundary refuses missing or malformed pins; selection rejects legacy
+unpinned entries and comments when a head moved after approval. One-shot shadow
+status runs can capture current heads, but one-shot merge runs refuse.
+
+The existing batch state owns a green decision, immutable candidate reference,
+vehicle branch `release-mq/<batch>-<uuid>`, and member SHA manifest before remote
+publication. The vehicle ID is generated once per green decision; recovery uses
+the saved branch. Fresh queue states do not share vehicle identities, including
+when they construct identical candidates. Git owns branch publication; the GitHub adapter finds a vehicle
+across all PR states before creating one. The fsynced ledger records the vehicle,
+its statuses and confirmed member merges. Recovery after a green decision
+continues that exact batch without testing or creating another vehicle. Earlier
+interruption retries preserve pins and attempts.
+
+Only the candidate receives required-context success. Member heads receive an
+informational context. Merge mode waits for GitHub Actions `issue-link` success
+on that candidate and merges only the vehicle with a matching head constraint.
+Strict branch protection is the final base compare-and-swap. A moved base closes
+the vehicle and requeues members uncharged. Member states must each reach MERGED
+before batch completion. Waiting for checks, GitHub acknowledgement or member
+state propagation preserves the batch until its persisted green-publication
+deadline.
+`green_wait_s` defaults to 3,600 seconds from the green decision and is not
+renewed by restart, a crash during publication or a changed waiting cause. Selection verifies existing issue references and rejects
+pull request numbers before testing or publication. A failed `issue-link` check
+is terminal and requeues members charged. Other expired green waits release the
+queue without retrying already-integrated members.
+
+The GitHub adapter reads PR metadata with fields supported by `gh` 2.46.
+Closing-issue references use paginated GraphQL through `gh api`, because that
+CLI version does not expose them through `gh pr view --json`. The returned
+issue numbers and URLs still pass through same-repository issue validation.
+
+Terminal disposition, requeue, and `vehicle_cleanup` intent are saved before
+remote cleanup. Cleanup retries outside the active batch are bounded by
+`max_attempts`, separated by `stuck_backoff_s`. Exhausted obligations remain
+visible for operator repair. Status-mode vehicles are drafts and close with
+branch deletion after the verdict. Dry-run never processes retained remote
+cleanup or consumes its retry budget; status or merge mode resumes it.
+A member push during the final vehicle
+merge race receives the re-review notice and a distinct `member-head-moved`
+ledger fact. After confirming unchanged members, `merged-head-moved` releases
+the queue without claiming MERGED for the changed PR. Unobserved fleet shards requeue uncharged
+with the existing backoff; no missing observation becomes a code verdict.
+
+The PrismaBuild config uses `pb-tests`, author RobTand, celestia-local state,
+20 shards, all clients published, a 3,600-second execution deadline and priority
+0 without an architecture tag. The supplied status-only user unit restarts on
+exit; the config has no merge-enabled file. This source contract is distinct
+from a deployed shadow day or permission to enable merges. PB still owns test
+placement and execution. No staged-read requirement implementation, deployment
+or workload-proof axis changes; SC-01/SC-02, ID-08/ID-09 and SAFE-03 retain their
+ledger status. See [the queue guide](pbmergeq.md) for the shadow evidence gate.
+
 ### Merge-queue reviewed interpreter family (#1427)
 
 The one-shot `pbmergeq gate` consumer command (#1896) composes the existing

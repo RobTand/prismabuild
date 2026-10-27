@@ -4426,7 +4426,7 @@
   {
     "path": "tools/fleet/pbmergeq.py",
     "owner": "GitHub.pr",
-    "unresolved": "'number,state,isDraft,author,headRefOid,headRefName,isCrossRepository,headRepositoryOwner,baseRefName,title'",
+    "unresolved": "'number,state,isDraft,author,headRefOid,headRefName,isCrossRepository,headRepositoryOwner,baseRefName,title,body'",
     "binding": "fields"
   },
   {

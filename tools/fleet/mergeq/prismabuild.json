@@ -1,0 +1,19 @@
+{
+  "repo": "RobTand/prismabuild",
+  "context": "pb-tests",
+  "author": "RobTand",
+  "base_branch": "main",
+  "state_dir": "/home/rob/pbmergeq/prismabuild",
+  "where": "celestia:/home/rob/pbmergeq/prismabuild/batches/{batch}",
+  "pbtest": "/mnt/shared/prismabuild-fleet/repo/tools/pbtest.py",
+  "client_python": "/usr/bin/python3",
+  "test_python": "/home/rob/venvs/pb-cpu/bin/python",
+  "pbtest_args": [
+    "--shards", "20", "--max-clients", "0", "--timeout-s", "3600",
+    "--priority", "0", "--workers-per-shard", "4",
+    "--threads-per-shard", "1", "--cpus-per-shard", "4", "--mem-gb", "8"
+  ],
+  "test_paths": ["tests"],
+  "batch_cap": 8,
+  "tmpdir": "/home/rob/tmp"
+}
