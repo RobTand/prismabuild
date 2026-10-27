@@ -729,6 +729,13 @@ def _descriptor_mount(fd):
     fsid = getattr(os.fstatvfs(fd), "f_fsid", None)
     if type(fsid) is not int:
         raise LocalScratchError("scratch descriptor filesystem ID unknown")
+    backing = descriptor_backing(fd)
+    return {"device": str(info.st_dev), "filesystem": str(fsid),
+            "filesystem_type": backing["filesystem_type"], "root_inode": str(info.st_ino)}
+
+
+def descriptor_backing(fd):
+    """Exact mount and backing source of an open descriptor."""
     ids = [line.split(":", 1)[1].strip() for line in
            Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
            if line.startswith("mnt_id:")]
@@ -740,10 +747,25 @@ def _descriptor_mount(fd):
     if len(matches) != 1 or len(matches[0]) != 2:
         raise LocalScratchError("scratch descriptor mount identity unknown")
     fields = matches[0][1].split()
-    if len(fields) < 3:
+    mount = matches[0][0].split()
+    if (len(fields) < 3 or len(mount) < 6
+            or re.fullmatch(r"[0-9]+:[0-9]+", mount[2]) is None):
         raise LocalScratchError("scratch descriptor mount type malformed")
-    return {"device": str(info.st_dev), "filesystem": str(fsid),
-            "filesystem_type": fields[0], "root_inode": str(info.st_ino)}
+    def decoded(value):
+        return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+    return {"mount_id": int(ids[0]), "major_minor": mount[2],
+            "mount_root": decoded(mount[3]), "mountpoint": decoded(mount[4]),
+            "filesystem_type": fields[0], "source": decoded(fields[1])}
+
+
+def root_backing(root):
+    if _canonical_root(root) is None:
+        raise LocalScratchError("scratch root must be canonical absolute")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        return descriptor_backing(fd)
+    finally:
+        os.close(fd)
 
 
 def descriptor_identity(fd):
