@@ -248,3 +248,29 @@ def test_requested_dry_run_examples(cli):
         assert code == 2
         assert report["reason"] == reason
         assert after["created"] == []
+
+
+@pytest.mark.parametrize("priority", ["P0", "P1"])
+@pytest.mark.parametrize("body", [
+    "Reproduction: TBD\nExpected behavior: create a native child",
+    "Measurement: N/A\nImpact: urgent backlog cleanup",
+    "## Reproduction\nTODO\nExpected behavior: create a native child",
+    "```markdown\nReproduction: run false and observe exit 1\n```",
+])
+def test_unrelated_fields_and_fenced_labels_refuse_before_github(cli, priority, body):
+    _, run = cli
+    code, report, after = run("--priority", priority, "--apply", body=body)
+    assert (code, report.get("reason"), after["calls"], after["created"]) == (
+        2, "high_priority_requires_reproduction_or_measurement", [], [])
+
+
+@pytest.mark.parametrize("body", [
+    "## Reproduction\n```bash\n# Reproduce on a fresh checkout\nfalse\n```",
+    "## Measurement\n~~~sh\n# Measure the failure\nfalse\n~~~",
+    "Reproduction:\n````bash\n```\n# A shorter fence is code\nfalse\n````",
+    "## Reproduction\n```bash\n~~~\n# The other delimiter is code\nfalse\n```",
+])
+def test_fenced_shell_comments_preserve_evidence_through_apply(cli, body):
+    _, run = cli
+    code, report, after = run("--priority", "P1", "--apply", body=body)
+    assert (code, report.get("status"), len(after["created"])) == (0, "created", 1)
