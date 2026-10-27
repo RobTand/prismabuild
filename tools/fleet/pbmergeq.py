@@ -62,6 +62,7 @@ from prismabuild.pbmergeq_runtime import (
     validate_policy,
 )
 from prismabuild import core
+from prismabuild.pbmergeq_attribution import failure_sets
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -1267,11 +1268,8 @@ class Queue:
             self.store.remember_baseline(identity, missing, base.failed)
             known = self.store.baseline(identity)
         base_failed = {n for nodes in known.values() for n in nodes}
-        shared = sorted(full.failed & base_failed)
-        candidate_new = full.failed - base_failed
-        new = sorted(candidate_new & rerun.failed)
-        flakes = sorted(candidate_new - rerun.failed)
-        self.store.event(batch["id"], f"failure-set diff vs main: {len(candidate_new)} new, "
+        new, shared, flakes = failure_sets(full.failed, base_failed, rerun.failed)
+        self.store.event(batch["id"], f"failure-set diff vs main: {len(new) + len(flakes)} new, "
                          f"{len(shared)} shared; re-run keeps {len(new)}, "
                          f"{len(flakes)} flake(s)")
         return new, shared, flakes
