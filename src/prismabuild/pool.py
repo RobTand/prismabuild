@@ -7012,7 +7012,7 @@ class PoolQueue:
                 sealed_request["environment"]["variables"] if sealed_request is not None else {})
             if lifetime:
                 variables = sealed_request["environment"]["variables"]
-                if demand.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]:
+                if not local_scratch.reservation_matches(variables, demand):
                     raise PoolContractError("scratch lifetime intent lacks its sealed reservation")
                 normalized_tags = normalize_placement_tags([
                     *normalized_tags, *contracts.declared_contract_tags(
@@ -16024,7 +16024,7 @@ class PoolQueue:
         required = set(params["placement"]["required_tags"])
         if (contracts.SCRATCH_IO_TAG not in required or not required.issubset(set(tags))
                 or params["demand"] != resources
-                or resources.get(local_scratch.KIND, 0) < local_scratch.scratch_terms(variables)[local_scratch.KIND]):
+                or not local_scratch.reservation_matches(variables, resources)):
             raise PoolContractError("scratch I/O sealed demand/placement disagrees with row")
         return intent
 

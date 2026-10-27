@@ -149,6 +149,17 @@ def scratch_terms(variables: Mapping[str, str]) -> dict[str, int]:
     return {KIND: total} if total else {}
 
 
+def reservation_matches(variables: Mapping[str, str], demand: object,
+                        resources: object = None) -> bool:
+    """Check scratch funding against its authoritative sealed declarations."""
+    terms = scratch_terms(variables)
+    return bool(terms) and isinstance(demand, Mapping) and all(
+        type(demand.get(kind)) is int and demand[kind] >= need
+        and (resources is None or isinstance(resources, Mapping)
+             and resources.get(kind) == demand[kind])
+        for kind, need in terms.items())
+
+
 # -- nondestructive ephemeral namespace declarations (Refs #1360) -----------
 
 #: Naming schema only: this is not a cleanup/lifetime capability.
@@ -330,11 +341,9 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
         params = action["params"]
         assert isinstance(params, Mapping)
         demand = params.get("demand")
-        charged = demand.get(KIND) if isinstance(demand, Mapping) else None
         resources = observed["resources"]
         assert isinstance(resources, Mapping)
-        if (type(charged) is not int or cast(int, charged) < scratch_terms(variables)[KIND]
-                or resources[KIND] != charged):
+        if not reservation_matches(variables, demand, resources):
             raise LocalScratchError("sealed scratch demand and claim reservation disagree")
         declaration = _scratch_declaration({
             "schema": EPHEMERAL_SCRATCH_SCHEMA_V1, "lifetime": "ephemeral",
@@ -807,7 +816,7 @@ def check_profile_request(command, variables, demand, *, cwd, determinism, deriv
             or cast(int, pairs[0]["max_bytes"]) < envelope["bytes"]):
         raise LocalScratchError("scratch recorder requires CPU-only stochastic root-checkout, "
                                 "one sufficient pair and no I/O-placement declaration")
-    if demand.get(KIND, 0) < scratch_terms(variables)[KIND]:
+    if not reservation_matches(variables, demand):
         raise LocalScratchError("scratch recorder demand does not hold its declared occupancy")
     return envelope
 

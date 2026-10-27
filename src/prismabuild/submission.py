@@ -1327,10 +1327,13 @@ def local_disk_terms(variables: dict[str, str], *, transport: str) -> dict[str, 
     reservation the claim takes.  With neither declared this is ``{}``.
     """
 
-    total = sum(terms.get(_SPOOL_WINDOW_KIND, 0) for terms in (
+    result: dict[str, int] = {}
+    for terms in (
         spool_window_terms(variables, transport=transport),
-        scratch_window_terms(variables, transport=transport)))
-    return {_SPOOL_WINDOW_KIND: total} if total else {}
+        scratch_window_terms(variables, transport=transport)):
+        for kind, need in terms.items():
+            result[kind] = result.get(kind, 0) + need
+    return result
 
 
 def validate_fleet_demand(demand: Mapping[str, object]) -> None:
