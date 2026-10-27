@@ -1405,7 +1405,7 @@ def qualify_shard_command(command: list[str], environment: dict, *,
                           invocation: list[str], files: list[str], index: int) -> None:
     """Refuse native evidence outside this generation's selected test recipe."""
     try:
-        args = argument_parser().parse_args(invocation)
+        args = pbtest_argument_parser().parse_args(invocation)
     except SystemExit as exc:
         raise ValueError("selected pbtest invocation is unsupported") from exc
     checkout = Path(args.checkout).resolve()
@@ -1606,7 +1606,7 @@ def _pbtest_tags(args) -> list[str]:
                         not pool.is_box_local_path(RUNTIME_ROOT) else [])
 
 
-def argument_parser() -> argparse.ArgumentParser:
+def pbtest_argument_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkout", required=True,
                     help="Git tree to snapshot and test on the pool")
@@ -1762,7 +1762,7 @@ def argument_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    ap = argument_parser()
+    ap = pbtest_argument_parser()
     args = ap.parse_args()
     if args.plan_only:
         if not args.json:

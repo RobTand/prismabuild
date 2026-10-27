@@ -117,7 +117,7 @@ def test_generation_replacement_mid_run_cannot_relabel_baselines_or_any_batch_ph
     queue.cfg = cfg
     runner = mq.Runner(cfg, queue.store)
     queue.runner = runner
-    monkeypatch.setattr(runner, "observe_environments", lambda rows, runtime: (
+    monkeypatch.setattr(runner, "observe_environments", lambda rows, runtime, **context: (
         {name: {"identity": "fixture-worker"} for row in rows for name in row["files"]}, []))
     outcomes = FakeRunner()
     original = mq.subprocess.Popen
