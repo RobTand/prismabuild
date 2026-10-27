@@ -351,3 +351,51 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
     else:
         assert observations == {}
         assert len(errors) == 1
+
+
+@pytest.mark.parametrize('damage', ['missing_request', 'tampered_stdout'])
+def test_native_evidence_refusal_retains_failures_without_charging_members(tmp_path, monkeypatch, damage):
+    import json
+
+    from prismabuild import action_result
+
+    native_root = tmp_path / 'native'
+    native_root.mkdir()
+    native = native_environment(native_root, monkeypatch)
+    observed, errors = native.runner.observe_environments(
+        native.rows, native.runtime, checkout=native.checkout, files=native.files)
+    assert not errors and observed['tests/test_a.py']['action_key'] == native.key
+    if damage == 'missing_request':
+        path = native.cas.root / 'requests' / native.key[:2] / (native.key + '.json')
+        path.unlink()
+    else:
+        path = mq.Path(observed['tests/test_a.py']['stdout']['path'])
+        assert path.is_relative_to(native_root)
+        path.write_text('tampered native stdout\n')
+    with pytest.raises(action_result.ActionResultError):
+        action_result.read_verified_ending_result(
+            native.queue, native.key, include_producer_attestation=True)
+
+    queue, origin, github, _ = make_queue(tmp_path / 'batch')
+    origin.pr(1, {'fail-new': 'tests/test_a.py::broken\n'})
+
+    class NativeEvidenceRunner(FakeRunner):
+        def run_many(self, batch, outdir, jobs):
+            results = super().run_many(batch, outdir, jobs)
+            for name, _, _ in jobs:
+                report = outdir / (name + '.native.json')
+                report.write_text(json.dumps(native.rows))
+                results[name] = native.runner.read_result(
+                    report, native.files, log=outdir / (name + '.log'), returncode=1,
+                    runtime=native.runtime, checkout=native.checkout)
+            return results
+
+    queue.runner = NativeEvidenceRunner()
+    batch = queue.run_batch([{**entries(1)[0], 'attempts': 2}])
+    assert batch['verdict'] == 'attribution-inconclusive', batch
+    assert batch['runs']['candidate']['failed'] == ['tests/test_a.py::broken']
+    assert batch['runs']['candidate']['environment_errors']
+    assert 'culprit' not in batch
+    assert statuses(github) == [] and github.calls == []
+    assert queue.store.state['flakes'] == {}
+    assert queue.store.state['queue'][0]['attempts'] == 2
