@@ -14,11 +14,15 @@ from pbmcp_fixture import settle_publishers
 
 @pytest.fixture(autouse=True)
 def no_outer_identity(monkeypatch):
+    from prismabuild import _measurement_reservation as reservation
+
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "fixture-host")
     monkeypatch.setattr(pool.cpu_admission, "action_identity", lambda item: ("environment-fixture", False))
+    monkeypatch.setattr(reservation.CensusReader, "_spawn_owned",
+                        lambda self, directory, section, read, budget_s: read())
 
 
 def test_ordinary_failure_retains_checked_producer_and_original_status(tmp_path, monkeypatch):

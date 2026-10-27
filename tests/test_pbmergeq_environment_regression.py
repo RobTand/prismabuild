@@ -200,6 +200,7 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
     import sys
     from types import SimpleNamespace
     from prismabuild import core, pool, submission_frontend
+    from prismabuild import _measurement_reservation as reservation
     from test_core import _two_commit_checkout
     from test_pbmergeq import config, pbtest_outcomes, shard
     from test_verified_action_result import _standard_action
@@ -209,6 +210,8 @@ def test_native_ending_is_the_authority_for_each_report_environment(tmp_path, mo
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(pool.socket, 'gethostname', lambda: 'fixture-host')
     monkeypatch.setattr(pool.cpu_admission, 'action_identity', lambda item: ('environment-fixture', False))
+    monkeypatch.setattr(reservation.CensusReader, '_spawn_owned',
+                        lambda self, directory, section, read, budget_s: read())
     checkout, parent, commit, branch = _two_commit_checkout(tmp_path)
     action = _standard_action(checkout, command=[sys.executable, '-c', 'raise SystemExit(7)'])
     # pb-history-ok: Commits only the temporary checkout created by _two_commit_checkout.

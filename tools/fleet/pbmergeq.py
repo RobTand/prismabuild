@@ -974,6 +974,9 @@ class Runner:
             if not isinstance(row, dict) or not row.get("action_key"):
                 continue
             key = row["action_key"]
+            if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+                errors.append("report has no full native action key")
+                continue
             try:
                 ending, generation = action_client.bounded_outcome_observation(
                     queue, key, None, budget_s=4.0)
@@ -1105,7 +1108,8 @@ class Queue:
             "inconclusive": result.inconclusive, "receipts": result.receipts,
             "actions": result.actions, "runtime": result.runtime,
             "runtime_refusal": result.runtime_refusal, "log": result.log,
-            "problems": result.problems}
+            "problems": result.problems, "environments": result.environments,
+            "environment_errors": result.environment_errors, "absent": result.absent}
         self.store.save()
 
     def check_results(self, batch: dict, results: dict[str, RunResult]) -> None:
