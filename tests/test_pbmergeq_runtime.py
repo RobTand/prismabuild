@@ -186,7 +186,7 @@ def test_baselines_ignore_legacy_and_incompatible_source_runtime_or_invocation(t
     store.remember_baseline(tree, ["t.py"], ["t.py::legacy"])
     assert store.baseline(identity) == {}
     store.remember_baseline(identity, ["t.py"], ["t.py::old"])
-    assert store.baseline(identity) == {"t.py": ["t.py::old"]}
+    assert store.baseline(identity) == {"t.py": {"failed": ["t.py::old"], "environment": None}}
     other = json.loads(json.dumps(runtime))
     if changed == "tree":
         tree = "another-tree"

@@ -23,10 +23,13 @@ sharding and placement.
 4. Judge by failure set. The verdict is the set difference of failing node
    IDs, candidate minus base. The base is run only on the files the candidate
    failed in, which is all the difference needs, and results are cached per
-   source tree, selected interpreter/full pins, and complete queue test config
-   (including the published pbtest generation). In parallel, the failing files
-   are re-run on the candidate: a
-   node that passes there is a flake, recorded and filed once per node ID.
+   source tree, selected interpreter/full pins, complete queue test config and
+   observed environment per file. In parallel, failing files are re-run on the
+   candidate. Failure attribution requires matching actual worker, platform,
+   runtime, target interpreter bytes, declared toolchain, sealed environment and
+   demand. A node that passes an equivalent rerun is a qualified flake; its
+   source/worker/action evidence is recorded and an existing exact-node owner is
+   reused before creating an issue.
 5. Green: post `success` on each included head. In `merge` mode, check that
    the base branch still points at the tested base, then merge in order with
    `gh pr merge --merge --match-head-commit <sha>`; if the base moved, the
@@ -34,6 +37,15 @@ sharding and placement.
 6. Red: bisect over batch prefixes, re-running only the newly failing files.
    The first failing prefix names the culprit, which gets `failure` with the
    node IDs and a comment. The other pull requests are re-queued at the front.
+
+Missing or different observed environments return `attribution-inconclusive`.
+The failed outcomes remain in the batch record. The queue posts no status,
+names no culprit, files no flake and requeues without charging member attempts.
+The same rule applies to every bisection prefix. Old node-only cache entries
+and historical failed actions without validated producer/interpreter evidence
+cannot authorize attribution. A failed action still has no success receipt.
+This source change needs separate reviewed runtime adoption; a merge alone
+does not make historical records qualified.
 
 An explicit dependency-pin or interpreter-placement refusal is instead
 `runtime-blocked`: no identical inconclusive retries, PR attempt charge, flake,

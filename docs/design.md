@@ -19649,17 +19649,53 @@ reason, config, source/runtime evidence and all observed actions/logs across
 restart. Unknown interpreter presence retains PB's waiting semantics rather
 than being asserted absent. Generic client failures remain non-green.
 
-The existing baseline store is keyed by source tree, selected interpreter,
-full pins/pin-source digests, complete config and published pbtest generation;
-version3 also binds the actually launched pbtest path. Legacy tree-only and
-version2 post-run-resolved generation results are ignored. History reports require matching
-identity. This is one compatibility definition and the existing evidence store,
-not a runtime registry, installer, cache or dispatcher. See
+The baseline v4 store retains failures and a qualified observed environment per
+file. Its outer key binds source tree, selected interpreter/full pins and pin
+source bytes, complete queue config, and the frozen published pbtest path.
+Legacy node-only baselines and v3 keys cannot authorize attribution. Reuse
+requires the candidate file's actual environment identity to match the stored
+observation; a different worker requires a fresh base observation. Duration
+hints remain placement advice and do not establish failure attribution.
+
+Failure attribution (#2395) compares the original candidate, immediate rerun,
+base, and every tested bisection prefix only in equivalent observed
+environments. The identity binds exact worker/platform evidence, launcher/core
+runtime, shell executable, target interpreter bytes, declared toolchain,
+selected dependency pins, effective sealed environment, demand and queue test
+config. Per-action container-owner tokens and source/attempt identities are
+retained as provenance rather than environmental equivalence. It intentionally
+does not equate two machines merely because both are x86 or GB10. Pinned package
+provenance remains the existing worker guard's responsibility; these records
+are not signing attestation or certification of undeclared external inputs.
+
+Ordinary nonzero actions retain their existing preflight producer attestation
+only after closure, executable and worker-runtime rechecks. The target
+`params.interpreter` witness is checked before and after execution and retained
+on ordinary success/failure through the existing status sidecar. A failed
+recheck keeps the original action return code and records an unavailable
+qualification; it publishes no success receipt. The verified ending reader's
+opt-in producer view binds immutable attempt, claimed worker, CAS request,
+attestation, target interpreter and held native stdout. Queue reports must
+match the bound native outcome record and selected source/interpreter before
+that evidence qualifies a file. Missing historical evidence, truncated outcome
+bytes, unsupported transports or mismatched environments leave failures intact
+and return `attribution-inconclusive`, with no status, culprit, flake filing or
+member attempt charge. Absent newly added test files retain the existing
+structural absence rule.
+
+Qualified flakes retain repository, source, workers, actions, reports, logs and
+receipt references. Filing searches existing exact-node owners and a stable
+repository/node marker before creating an issue. Failed or incomplete owner
+searches do not authorize new issues. Queue-local deduplication keys include
+the repository. No mismatch is reclassified as a flake, and storage/producer
+refusals are preserved.
+
+This is source support awaiting independent review and runtime adoption. It
+promotes no staged-read implementation/deployment/workload axis. ID-08's
+runtime-generation attribution, ID-09's distinct terminal/publication/validity
+facts and SAFE-03's no-false-completion target remain required. No runtime is
+published, no shadow is activated, and no staged-read policy is waived. See
 [the merge-queue guide](pbmergeq.md) for configuration and operator recovery.
-This source change modifies no staged-read requirement's implementation,
-deployment or workload-proof axis: SC-01/SC-02 placement/movement remain
-PB-owned; ID-08/ID-09 and SAFE-03 distinctions remain binding. No staged-read,
-live queue/runtime activation, numerical, wire or default ship-gate claim is made.
 
 
 The merge queue fetches the exact full immutable head selected by its GitHub

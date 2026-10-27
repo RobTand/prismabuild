@@ -192,7 +192,7 @@ class FakeGitHub(mq.GitHub):
             self.merged.append(int(command[3]))
         return True
 
-    def file_flake(self, batch, nodeid, candidate):
+    def file_flake(self, batch, nodeid, candidate, evidence):
         self.calls.append(["flake", nodeid])
         return "#999"
 
@@ -232,7 +232,9 @@ class FakeRunner:
                     self.seen.add((node, path.name))
                     failed.add(node)
             results[name] = mq.RunResult(failed=failed, inconclusive=[], files=list(files),
-                                         receipts=[f"/receipts/{name}"], report="", wall_s=1.0)
+                                         receipts=[f"/receipts/{name}"], report="", wall_s=1.0,
+                                         environments={f: {"identity": "fixture-worker", "host": "fixture"}
+                                                       for f in files})
         return results
 
 
@@ -315,7 +317,7 @@ def test_a_flake_is_recorded_and_does_not_block(tmp_path):
     assert batch["verdict"] == "green" and batch["flakes"] == ["tests/test_a.py::wobbly"]
     assert ["flake", "tests/test_a.py::wobbly"] in github.calls
     assert statuses(github) == [(one, "success")]
-    assert queue.store.state["flakes"]["tests/test_a.py::wobbly"]["issue"] == "#999"
+    assert queue.store.state["flakes"]["RobTand/proj::tests/test_a.py::wobbly"]["issue"] == "#999"
 
 
 def test_a_conflicting_pr_drops_out_untested_and_the_rest_continue(tmp_path):

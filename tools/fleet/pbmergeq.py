@@ -62,7 +62,7 @@ from prismabuild.pbmergeq_runtime import (
     validate_policy,
 )
 from prismabuild import core
-from prismabuild.pbmergeq_attribution import failure_sets
+from prismabuild.pbmergeq_attribution import environment_identity, failure_sets, unmatched_files
 
 #: GitHub refuses a commit status description longer than this.
 DESCRIPTION_LIMIT = 140
@@ -163,6 +163,9 @@ class RunResult:
     log: str = ""
     problems: list[dict] = dataclasses.field(default_factory=list)
     suite_refusal: str = ""
+    environments: dict = dataclasses.field(default_factory=dict)
+    environment_errors: list[str] = dataclasses.field(default_factory=list)
+    absent: list[str] = dataclasses.field(default_factory=list)
 
 
 def load_published_module(path: Path):
@@ -347,17 +350,21 @@ class Store:
     def baseline_path(self, identity: str) -> Path:
         return self.baselines / f"{identity}.json"
 
-    def baseline(self, tree: str) -> dict[str, list[str]]:
+    def baseline(self, tree: str) -> dict:
         path = self.baseline_path(tree)
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        record = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        return record.get("files", {}) if record.get("schema") == "pbmergeq.baseline.v4" else {}
 
-    def remember_baseline(self, tree: str, files: Iterable[str], failed: Iterable[str]) -> None:
+    def remember_baseline(self, tree: str, files: Iterable[str], failed: Iterable[str],
+                          environments: dict | None = None) -> None:
         known = self.baseline(tree)
         by_file: dict[str, list[str]] = {name: [] for name in files}
         for nodeid in failed:
             by_file.setdefault(node_file(nodeid), []).append(nodeid)
-        known.update({name: sorted(nodes) for name, nodes in by_file.items()})
-        write_atomic(self.baseline_path(tree), json.dumps(known, indent=1))
+        known.update({name: {"failed": sorted(nodes), "environment": (environments or {}).get(name)}
+                      for name, nodes in by_file.items()})
+        write_atomic(self.baseline_path(tree), json.dumps(
+            {"schema": "pbmergeq.baseline.v4", "files": known}, indent=1))
 
     def known_failure(self, identity: str) -> dict | None:
         path = self.baselines / f"known-failure-{identity}.json"
@@ -498,20 +505,33 @@ class GitHub:
             self.store.record({"kind": "merge", "pr": number, "sha": sha, "batch": batch})
         return ok
 
-    def file_flake(self, batch: str, nodeid: str, candidate: str) -> str | None:
+    def file_flake(self, batch: str, nodeid: str, candidate: str,
+                   evidence: dict) -> str | None:
         title = f"[P2] Flaky test: {nodeid}"
+        marker = "<!-- pbmergeq-flake:" + core.canonical_sha256(
+            {"repo": self.cfg.repo, "node": nodeid}) + " -->"
         found = call_tool(["gh", "issue", "list", "-R", self.cfg.repo, "--state", "all",
-                     "--search", f'"{node_file(nodeid)}" in:title', "--json",
-                     "number,title", "--limit", "50"], check=False)
-        if found.returncode == 0:
-            for issue in json.loads(found.stdout or "[]"):
-                if issue["title"] == title:
-                    return f"#{issue['number']}"
+                     "--search", f'"{node_file(nodeid)}" in:title,body', "--json",
+                     "number,title,body,url", "--limit", "100"], check=False)
+        if found.returncode:
+            self.store.event(batch, f"flake owner search refused for {nodeid}; no issue created")
+            return None
+        issues = json.loads(found.stdout or "[]")
+        for issue in issues:
+            if (issue["title"] == title or marker in issue.get("body", "")
+                    or f"`{nodeid}`" in issue.get("body", "")):
+                return issue.get("url") or f"https://github.com/{self.cfg.repo}/issues/{issue['number']}"
+        if len(issues) == 100:
+            self.store.event(batch, f"flake owner search incomplete for {nodeid}; no issue created")
+            return None
         body = (f"`{nodeid}` failed in merge-queue batch {batch} on candidate "
                 f"{candidate} and passed when its file was re-run at once on the "
-                "same candidate.\n\nP2: a flaky test can block or mislead a "
+                "same candidate in a qualified equivalent worker environment.\n\nP2: a flaky test can block or mislead a "
                 "pre-merge verdict. The merge queue does not block on it; it "
-                "records it and files this issue once per node ID.\n")
+                "records it and reuses an existing exact-node owner.\n\n"
+                f"Repository: `{self.cfg.repo}`\n\n{marker}\n\n"
+                "Observed source, worker, action, report, log and receipt evidence:\n\n"
+                f"```json\n{json.dumps(evidence, indent=2)}\n```\n")
         command = ["gh", "issue", "create", "-R", self.cfg.repo, "--title", title,
                    "--body-file", "-"]
         for label in self.cfg.flake_labels:
@@ -639,7 +659,7 @@ def candidate_failure_identity(cfg: Config, tree: str, base_tree: str,
                                runtime: dict, files: list[str]) -> str:
     """Hold only an identical red tree under its complete qualification domain."""
     return core.canonical_sha256({
-        "schema": "pbmergeq.failed_candidate_identity.v1",
+        "schema": "pbmergeq.failed_candidate_identity.v2",
         "baseline": baseline_key(cfg, tree, runtime),
         "base_tree": base_tree, "files": files,
     })
@@ -837,6 +857,9 @@ class Runner:
                     merged.runtime_refusal = again[key].runtime_refusal
                     merged.suite_refusal = again[key].suite_refusal or merged.suite_refusal
                     merged.log = again[key].log
+                    merged.environments = {name: value for name, value in merged.environments.items()
+                                           if name not in redo} | again[key].environments
+                    merged.environment_errors += again[key].environment_errors
         return results
 
     def _wait(self, batch: str, outdir: Path,
@@ -901,7 +924,8 @@ class Runner:
             handle.close()
             wall = time.monotonic() - started
             files = next(f for n, _, f in jobs if n == name)
-            result = self.read_result(report, files, log=log, returncode=process.returncode, invocation=invocation)
+            result = self.read_result(report, files, log=log, returncode=process.returncode,
+                                      invocation=invocation, runtime=runtime)
             result.runtime, result.log = runtime, str(log)
             result.report, result.wall_s = str(report), wall
             results[name] = result
@@ -911,13 +935,16 @@ class Runner:
         return results
 
     def read_result(self, report: Path, files: list[str], *, log: Path,
-                    returncode: int, invocation: dict | None = None) -> RunResult:
+                    returncode: int, invocation: dict | None = None,
+                    runtime: dict | None = None) -> RunResult:
         try:
             rows = json.loads(report.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             rows = None
         result = reduce_report(rows, self.outcomes, requested_files=files,
                                client_returncode=returncode)
+        if isinstance(rows, list) and runtime is not None:
+            result.environments, result.environment_errors = self.observe_environments(rows, runtime)
         if self.full_suite and isinstance(rows, list):
             for row in rows:
                 record = (self.outcomes.parse(row["output"], **(
@@ -936,6 +963,61 @@ class Runner:
                 result.runtime_refusal = snapshot["runtime_refusal"]["message"]
         return result
 
+    def observe_environments(self, rows: list, runtime: dict) -> tuple[dict, list[str]]:
+        from prismabuild import action_client, action_result, action_wait, pool
+        from prismabuild.submission_frontend import store_for
+
+        queue = pool.PoolQueue(store_for(self.cfg.pbtest).root / "pb-queue")
+        environments, errors = {}, []
+        config = json.loads(json.dumps(dataclasses.asdict(self.cfg), default=str))
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("action_key"):
+                continue
+            key = row["action_key"]
+            try:
+                ending, generation = action_client.bounded_outcome_observation(
+                    queue, key, None, budget_s=4.0)
+                if not isinstance(ending, tuple) or generation is None:
+                    raise ValueError("no observed execution ending")
+                path, record = ending
+                verified = action_result.read_verified_ending_result(
+                    queue, key, published_unix=generation, attempt=record["attempts"],
+                    ending=(path, record), include_producer_attestation=True)
+                producer = verified.get("producer_attestation")
+                interpreter = verified.get("producer_interpreter")
+                if not verified["verified"] or producer is None or interpreter is None:
+                    raise ValueError(verified.get("producer_attestation_error")
+                                     or "no qualified producer/interpreter evidence")
+                request = verified["producer_request"]
+                params = request["params"]
+                if (row.get("record_binding") != self.outcomes.RECORD_BINDING_VERSION
+                        or self.outcomes.record_binding_for_action(request) != row["record_binding"]):
+                    raise ValueError("outcome record has no native producer binding")
+                if (params.get("interpreter") != runtime["python"]
+                        or params.get("checkout_snapshot", {}).get("parent") != runtime["source"][0]):
+                    raise ValueError("native action differs from selected source/interpreter")
+                native = self.outcomes.parse(verified["producer_stdout"] or "",
+                                             record_binding=row.get("record_binding"))
+                reported = self.outcomes.parse(row.get("output") or "",
+                                               record_binding=row.get("record_binding"))
+                if native is None or native != reported:
+                    raise ValueError("report outcomes differ from verified native stdout")
+                identity = environment_identity(producer, interpreter, runtime, config, request)
+                for name in row["files"]:
+                    if name in environments:
+                        raise ValueError("file has multiple environment observations")
+                    environments[name] = {"identity": identity, "action_key": key,
+                        "published_unix": generation, "attempt": record["attempts"],
+                        "host": producer["evidence"]["hostname"],
+                        "attestation_sha256": producer["attestation_sha256"],
+                        "interpreter": interpreter}
+            except (OSError, core.PrismaBuildError, action_wait.OutcomeReadUnavailable,
+                    ValueError, KeyError, TypeError) as exc:
+                errors.append(f"{key}: {exc}")
+                for name in row.get("files", []):
+                    environments.pop(name, None)
+        return environments, errors
+
 
 # --------------------------------------------------------------------------
 # The queue
@@ -947,6 +1029,10 @@ class RuntimeBlocked(Exception):
 
 class Inconclusive(Exception):
     """A run left files nobody observed after its retries."""
+
+
+class AttributionInconclusive(Exception):
+    """Observed failures have no equivalent environment comparison."""
 
 
 class Queue:
@@ -1002,7 +1088,8 @@ class Queue:
                     got.runtime_refusal = f"pbmergeq: runtime selection refused: {exc}"
                     got.runtime = {"python": self.cfg.test_python, **checkout_source(checkout),
                                    "pbtest": str(self.cfg.pbtest), "policy": self.cfg.runtime_pins}
-            results[name] = dataclasses.replace(got, files=[*got.files, *absent[name]])
+            results[name] = dataclasses.replace(got, files=[*got.files, *absent[name]],
+                                                 absent=absent[name])
             self.record_run(batch, name, results[name])
         return results
 
@@ -1111,6 +1198,10 @@ class Queue:
             state["runtime_blocked"][batch["id"]]["config"] = json.loads(
                 json.dumps(state["runtime_blocked"][batch["id"]]["config"], default=str))
             self.requeue(affected, front=True, charge=False)
+        except AttributionInconclusive as exc:
+            verdict = {"verdict": "attribution-inconclusive", "summary": str(exc)}
+            self.requeue(entries, front=True, charge=False)
+            state["not_before"] = time.time() + self.cfg.stuck_backoff_s
         except Inconclusive as exc:
             # Nobody observed some files: no verdict, nothing posted, retry later.
             verdict = {"verdict": "inconclusive", "summary": str(exc)}
@@ -1223,7 +1314,7 @@ class Queue:
         batch.update({"new": new, "shared": shared, "flakes": flakes})
         self.store.remember_baseline(baseline_key(self.cfg, batch["candidate_tree"],
                                                  full.runtime), full.files,
-                                     set(full.failed) - set(flakes))
+                                     set(full.failed) - set(flakes), full.environments)
         for nodeid in flakes:
             self.flake(batch, nodeid)
         if new:
@@ -1235,6 +1326,7 @@ class Queue:
                 "candidate_tree": batch["candidate_tree"], "base": batch["base"],
                 "base_tree": batch["base_tree"], "new": new,
                 "culprit": batch["culprit"], "report": full.report,
+                "environments": full.environments,
             })
             return verdict
         return self.green(batch, shared)
@@ -1254,7 +1346,9 @@ class Queue:
             raise RuntimeBlocked(f"base: {reason}") from exc
         identity = baseline_key(self.cfg, batch["base_tree"], base_runtime)
         known = self.store.baseline(identity)
-        missing = [f for f in failing_files if f not in known]
+        missing = [f for f in failing_files if not known.get(f, {}).get("environment")
+                   or unmatched_files([f], full.environments,
+                       {f: known[f]["environment"]})]
         jobs = [("rerun", checkout, failing_files)]
         if missing:
             jobs.append(("base", base_checkout, missing))
@@ -1265,9 +1359,20 @@ class Queue:
         rerun = self.checked(batch, "rerun", results)
         if missing:
             base = self.checked(batch, "base", results)
-            self.store.remember_baseline(identity, missing, base.failed)
+            self.store.remember_baseline(identity, missing, base.failed, base.environments)
             known = self.store.baseline(identity)
-        base_failed = {n for nodes in known.values() for n in nodes}
+        baseline_environments = {name: row["environment"] or {} for name, row in known.items()}
+        absent = results["base"].absent if missing else []
+        unqualified = set(unmatched_files(failing_files, full.environments,
+                                         rerun.environments))
+        unqualified.update(unmatched_files(failing_files, full.environments,
+                                           baseline_environments, absent=absent))
+        batch["attribution"] = {"status": "inconclusive" if unqualified else "qualified",
+            "files": sorted(unqualified), "environments": full.environments}
+        if unqualified:
+            raise AttributionInconclusive("failure attribution has missing or different worker "
+                "environments: " + ", ".join(sorted(unqualified)))
+        base_failed = {n for row in known.values() for n in row["failed"]}
         new, shared, flakes = failure_sets(full.failed, base_failed, rerun.failed)
         self.store.event(batch["id"], f"failure-set diff vs main: {len(new) + len(flakes)} new, "
                          f"{len(shared)} shared; re-run keeps {len(new)}, "
@@ -1276,14 +1381,18 @@ class Queue:
 
     def flake(self, batch: dict, nodeid: str) -> None:
         flakes = self.store.state["flakes"]
-        if nodeid in flakes or self.mode == "dry-run":
+        key = f"{self.cfg.repo}::{nodeid}"
+        if key in flakes or self.mode == "dry-run":
             if self.mode == "dry-run":
                 self.store.event(batch["id"], f"DRY-RUN would record flake {nodeid}")
             return
         # A node that never ran is a missing result, not a test to file.
-        issue = (self.github.file_flake(batch["id"], nodeid, batch["candidate"])
+        evidence = {"repo": self.cfg.repo, "node": nodeid, "base": batch["base"],
+            "candidate": batch["candidate"], "tree": batch["candidate_tree"],
+            "observations": {name: batch["runs"][name] for name in ("candidate", "rerun")}}
+        issue = (self.github.file_flake(batch["id"], nodeid, batch["candidate"], evidence)
                  if not nodeid.endswith(" (never ran)") else None)
-        flakes[nodeid] = {"batch": batch["id"], "at": now(), "issue": issue}
+        flakes[key] = {"batch": batch["id"], "at": now(), "issue": issue, "evidence": evidence}
         self.store.save()
         self.store.event(batch["id"], f"flake {nodeid} recorded, issue {issue}")
 
@@ -1337,6 +1446,13 @@ class Queue:
             result = self.checked(batch, name, self.run(
                 batch, outdir, [(name, checkout, files)]))
             self.mirror.drop(checkout)
+            unqualified = unmatched_files(files, batch["attribution"]["environments"],
+                                           result.environments, absent=result.absent)
+            if unqualified:
+                batch["attribution"].update(status="inconclusive", files=unqualified,
+                                             prefix=k)
+                raise AttributionInconclusive(f"prefix {k} has no equivalent worker environment: "
+                                               + ", ".join(unqualified))
             hit = bool(result.failed & set(new))
             self.store.event(batch["id"], f"prefix {k} ({', '.join(f'#{p['pr']}' for p in included[:k])}): "
                                           f"{'fails' if hit else 'passes'}")
