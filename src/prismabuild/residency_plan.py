@@ -92,6 +92,7 @@ import time
 
 from . import core as pb
 from . import immutable_files
+from . import numeric_fields
 from . import manifest_layout
 from . import pool as _pool
 from . import residency_map
@@ -2706,7 +2707,7 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     if (readahead_bytes is None or isinstance(readahead_bytes, bool)
             or readahead_bytes < 0):
         return None
-    if not (_finite_number(landing_bytes_per_s)
+    if not (numeric_fields.is_finite_number(landing_bytes_per_s)
             and float(landing_bytes_per_s) > 0):             # type: ignore[arg-type]
         return None
     ahead = remaining(plan, accepted_phase)
@@ -2717,17 +2718,18 @@ def refill_horizon(plan: Mapping[str, object], accepted_phase: str | None, *,
     rate: float | None = None
     basis = ""
     if consumption_bytes_per_s is not None:
-        if (_finite_number(consumption_bytes_per_s)
+        if (numeric_fields.is_finite_number(consumption_bytes_per_s)
                 and float(consumption_bytes_per_s) > 0):     # type: ignore[arg-type]
             rate = float(consumption_bytes_per_s)            # type: ignore[arg-type]
             basis = "given"
     else:
-        if (_finite_number(claimed_unix) and _finite_number(reported_unix)
+        if (numeric_fields.is_finite_number(claimed_unix)
+                and numeric_fields.is_finite_number(reported_unix)
                 and float(reported_unix) > float(claimed_unix)):   # type: ignore[arg-type]
             rate = (read_through - first_start) / (
                 float(reported_unix) - float(claimed_unix))        # type: ignore[arg-type]
             basis = "measured"
-        if (_finite_number(declared_bytes_per_s)
+        if (numeric_fields.is_finite_number(declared_bytes_per_s)
                 and float(declared_bytes_per_s) > 0               # type: ignore[arg-type]
                 and (rate is None or float(declared_bytes_per_s) > rate)):  # type: ignore[arg-type]
             rate = float(declared_bytes_per_s)                    # type: ignore[arg-type]
@@ -2862,7 +2864,7 @@ def expected_landings(tier_queue: Sequence[Mapping[str, object]], *,
     for position, mover in enumerate(tier_queue):
         own = int(mover["range_bytes"])                       # type: ignore[call-overload]
         key = str(mover["mover_action_key"])
-        if mover.get("state") == "claimed" and _finite_number(mover.get("claimed_unix")):
+        if mover.get("state") == "claimed" and numeric_fields.is_finite_number(mover.get("claimed_unix")):
             claimed = float(mover["claimed_unix"])            # type: ignore[arg-type]
             reported = _reported_landing(mover, own=own, claimed=claimed)
             if reported is None:
@@ -2893,7 +2895,7 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     landed = mover.get("landed_bytes")
     at = mover.get("reported_unix")
     if (isinstance(landed, bool) or not isinstance(landed, int) or landed < 0
-            or not _finite_number(at)):
+            or not numeric_fields.is_finite_number(at)):
         return None
     at = float(at)                                            # type: ignore[arg-type]
     # The mover's own report (#1090): bytes read, landed or not, since the
@@ -2901,7 +2903,7 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     copied = mover.get("copied_bytes")
     started = mover.get("started_unix")
     own_report = (not isinstance(copied, bool) and isinstance(copied, int)
-                  and copied >= 0 and _finite_number(started))
+                  and copied >= 0 and numeric_fields.is_finite_number(started))
     progress = max(landed, int(copied)) if own_report else landed  # type: ignore[call-overload]
     origin = (max(claimed, float(started)) if own_report      # type: ignore[arg-type]
               else claimed)
@@ -2917,11 +2919,6 @@ def _reported_landing(mover: Mapping[str, object], *, own: int,
     return {"expected_landing_unix": at + landing_seconds(own - min(progress, own), live),
             "landed_bytes": landed, "reported_unix": at,
             "live_bytes_per_s": live, **extra}
-
-
-def _finite_number(value: object) -> bool:
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(float(value)))
 
 
 def read_footprint(plan: Mapping[str, object], accepted_phase: str | None, *,

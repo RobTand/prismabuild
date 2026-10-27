@@ -2828,12 +2828,6 @@
   },
   {
     "path": "src/prismabuild/pool.py",
-    "owner": "PoolQueue.sweep_gangs",
-    "unresolved": "[str(member['action_key']) for member in record['members']]",
-    "binding": "keys"
-  },
-  {
-    "path": "src/prismabuild/pool.py",
     "owner": "PoolQueue.validate_produced_output_batch",
     "fields": [
       "batch_id",
