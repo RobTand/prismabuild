@@ -7577,6 +7577,42 @@ ambiguous container operation or incomplete/stale telemetry grants no lending
 credit. This is the activation contract, not evidence that broker deployment or
 cross-host qualification is complete; live status is recorded separately.
 
+The broker monitor separates cgroup event observation from numeric collection
+(#2064). One monitor thread owns inotify watches for `memory.events`,
+`memory.events.local` and `cgroup.events`, including unreleased retired scopes
+with population interests. Watch enrollment precedes the first snapshot.
+Retained observations bind action key, nonce, token, both memory budgets and
+cgroup device/inode. Durable authority changes wake reconciliation through a
+nonblocking pipe. The callback never reads counters or installs watches under
+the authority lock. Notifications invalidate observations. Stops still use the
+fresh authority and inode checks, and cleanup still obtains fresh population
+evidence from the backend.
+
+Unchanged event files are not reread on numeric ticks. Lost watches, replaced
+files and invalid observations clear retained counters and population evidence.
+Registration recovery has a named one-second backoff. Queue overflow or a drain
+exceeding 256 events closes the notification descriptor before recovery, so its
+own watch-removal events cannot sustain a recovery loop. Each pass also bounds
+enrollment and event-snapshot refreshes at 256 scopes. Enrollment considers new
+and oldest-due scopes before recently failed entries. Private `monitor.status`
+reports `event_coverage`; incomplete coverage fails monitor health and public
+capacity completeness. An event-only pass can invalidate the last capacity
+sample but cannot refresh its numeric timestamp or restore completeness.
+
+Numeric telemetry retains its independent one-second default sampling interval,
+vendor collection bounds, GPU confirmation rules and successful-sample health
+limit of 15 seconds. Continuous notifications cannot postpone the numeric
+deadline. A failed stop invalidates observation coverage and keeps its error
+visible through the one-second recovery backoff. Fresh enrollment and counters
+recover an observed local OOM even when the failure preceded persisted stop
+intent. Persisted stop failures also retry on a numeric tick or their named
+retry deadline without another notification. Shutdown wakes the descriptor wait and
+joins the existing sampler. Collection already in progress finishes before
+queued events or shutdown are handled. These are source contracts, not evidence
+of deployment, live cgroup qualification or a production syscall-rate reduction.
+Linux documents these event inputs in its
+[cgroup v2 reference](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
+
 The pool persists the creation key, nonce, memory budget and broker endpoint in
 both claim and lease before requesting a scope. A lost reply is reconciled by
 `recover_create` using that exact identity, without creating a kernel group.
@@ -11047,8 +11083,9 @@ Explicit reconciliation still requires the existing exact-attempt cleanup,
 receipt and termination checks described above. SIGINT retains main's existing
 exception and monitor cleanup path. Startup and request framing retain their
 10-second bounds; process termination retains its 15-second waits.
-`ResourceMonitor` retains its independent 1-second sampler. No background loop
-is added by the listener change.
+`ResourceMonitor` retains its independent 1-second numeric sampler. Its cgroup
+event handling is described in the resource-scope contract above. No background
+loop is added by the listener change.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
