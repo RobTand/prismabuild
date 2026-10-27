@@ -2577,10 +2577,20 @@
   },
   {
     "path": "src/prismabuild/pbtest_collection.py",
+    "owner": "node_group_spec",
+    "fields": [
+      "count",
+      "durations",
+      "index"
+    ]
+  },
+  {
+    "path": "src/prismabuild/pbtest_collection.py",
     "owner": "selection_plugin",
     "fields": [
       "capabilities",
       "files",
+      "node_groups",
       "roots"
     ]
   },
@@ -4585,10 +4595,13 @@
   {
     "path": "tools/fleet/pbtest_outcomes.py",
     "owner": "_judge_row",
-    "fields": [
-      "files",
-      "ignored"
-    ]
+    "unresolved": "{'files', 'ignored'} | ({'node_groups', 'node_rosters'} if groups else set())",
+    "binding": "fields"
+  },
+  {
+    "path": "tools/fleet/pbtest_outcomes.py",
+    "owner": "_judge_row",
+    "unresolved": "fields"
   },
   {
     "path": "tools/fleet/pbtest_outcomes.py",

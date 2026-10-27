@@ -2750,6 +2750,48 @@ there is no wrapper parser or guessed interpreter. The environment moves into
 the sealed action and newly generated keys change; retained sealed requests
 are untouched. This source contract requires runtime publication for live use.
 
+`pbtest` automatically retains the latest observed green report per Git
+repository, identified by its resolved common directory (#2286). Linked
+worktrees and changed requested path lists share estimates. Non-Git source
+directories use their resolved root as identity. The submitter stores one
+atomic report per repository under `$XDG_STATE_HOME/prismabuild/pbtest-history-v2`
+(or `~/.local/state`). Failed, interrupted or incomplete runs preserve the prior
+report. `--history` remains a repeatable explicit override. Without usable
+history, files rotate round-robin. File predictions take the maximum per-report
+sample; disjoint fragments of one file are summed within their report first.
+Optional `node_durations` records summed setup/call/teardown seconds by
+checkout-relative node ID.
+Each report row carries `history_source` with mode `automatic` or `explicit`
+and a `reports` list containing each source path and its raw-byte `sha256`.
+File and node predictions consume the same captured bytes. An empty source
+list records that no report was available; unusable samples still warn.
+
+Planning represents each shard's files, optional node groups and prediction
+before publishing any shard. Within each capability cohort, a file predicted
+above total predicted seconds divided by its shard budget splits into at most
+that many node groups. Groups pack longest-first and distinct groups of a file
+occupy distinct shards. The sealed selection carries each file's group index,
+group count and node-duration model. Current pytest collection still owns ignore
+hooks, parametrization and `-k`/`-m`; the carried collection owner partitions its
+current selected node IDs after those hooks, with deterministic LPT when measured
+nodes exist and sorted round-robin otherwise. Unmeasured nodes use the measured
+node median. Each group records the same complete pre-partition node roster.
+New tests therefore remain in the population. An individual test is indivisible.
+Whole-file cohorts retain half-deadline singleton isolation. A cohort with node
+groups uses longest-first packing for all its units; singleton reservations could
+leave fewer available shards than a split file's sealed group count. Every shard
+retains its execution deadline.
+
+Repeated file assignment is valid only for a complete group-index cover with
+identical sealed group models and current rosters, and each group's collected
+nodes must equal its projection of that roster. Missing groups, different
+collections, a mismatched declared selection, duplicate nodes and ordinary
+repeated files remain non-green. Empty groups establish exclusion through the
+normal deselection evidence. Grouped selections compress their JSON before crossing the exec argument
+boundary, so a long node-duration map does not exceed the single-argument limit.
+Ordinary selections retain their existing JSON bytes. These selection bytes enter ordinary action
+identity; source support requires a later reviewed runtime release for live use.
+
 `pbtest --env KEY=VALUE` forwards repeatable literal pairs through the same
 `SubmissionRequest.env` and template preparation used by `pbrun --env`
 (#1891). Every shard sealed from a plan retains those values in

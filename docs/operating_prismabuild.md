@@ -2440,6 +2440,32 @@ Passing `--timeout-s` explicitly is still honoured whatever it says, capped
 only by the real announced ceiling, exactly as before.
 `pbtest` prints the deadline it sealed and the ceilings it read.
 
+`pbtest` packs by recorded durations automatically after a completed green run
+for the same Git repository, including its linked worktrees and different test
+path lists (#2286). The resolved Git common directory identifies the repository;
+non-Git directories use their resolved root. It retains the latest report under
+`$XDG_STATE_HOME/prismabuild/pbtest-history-v2`, defaulting to
+`~/.local/state`; this works without `--json`. A failed or incomplete run leaves
+that history intact. Cache read/write failures warn and do not change the test
+verdict. `--history REPORT` overrides automatic lookup and remains repeatable.
+A first run without usable history rotates files round-robin.
+Each report row's `history_source` records `automatic` or `explicit` mode,
+plus the paths and SHA-256 digests of the exact reports read for both file and
+node predictions. An empty report list means no history report was available.
+
+A file predicted above its capability cohort's per-shard target splits into
+node groups across shards. The group count, index and duration model are sealed
+before submission. Current pytest collection determines the current nodes,
+including new parameter cases, and preserves directory ignore hooks and
+population options. Groups balance recorded node durations when present and
+otherwise rotate sorted node IDs. The report's optional `node_groups` records
+the assignment; each shard prints predicted against pytest seconds. Coverage
+verification requires a complete, consistent group cover and every selected
+node exactly once. An individual test remains the minimum executable unit.
+When any file splits, that cohort uses longest-first packing throughout,
+replacing half-deadline singleton isolation. Whole-file cohorts retain isolation,
+and execution deadlines apply to every shard in both cases.
+
 `pbtest` reads every shard's output while the shard runs and prints each
 `pbrun:` and `pbstatus:` line at once, prefixed with the shard number: the
 `queued` line with the shard's action key, and the notices of a wait that is

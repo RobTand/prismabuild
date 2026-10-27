@@ -488,6 +488,7 @@ LIVE_DEFAULTS = (
 
 #: Environment variables the lane and the pool read on use.
 LIVE_ENV = (
+    ("XDG_STATE_HOME", "state"),
     ("PRISMABUILD_BUNDLE_CACHE_ROOT", "sealed-bundles"),
     ("PRISMABUILD_SLURM_LANE_ROOT", "slurm"),
     ("PRISMABUILD_SLURM_JOB_STATE_ROOT", "slurm/jobs"),
