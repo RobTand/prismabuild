@@ -1,0 +1,101 @@
+{
+  "source": "7fb8c362e9e50ab05ecd9e9b08c54f22368e10fa",
+  "commands": [
+    {
+      "name": "integration-guards",
+      "argv": [
+        "python3",
+        "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+        "--checkout",
+        "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+        "--python",
+        "/home/rob/venvs/pb-cpu/bin/python",
+        "--threads-per-shard",
+        "1",
+        "--cpus-per-shard",
+        "1",
+        "--mem-gb",
+        "4",
+        "--priority",
+        "-10",
+        "--timeout-s",
+        "600",
+        "--wait-s",
+        "7200",
+        "--pytest-args",
+        "[\"--durations=20\"]",
+        "--json",
+        "/mnt/shared/paperclip-runs/PRI-243/integration-guards.json",
+        "tests/test_canary_placement_preflight.py",
+        "tests/test_barrier_activation_boundary.py",
+        "tests/test_compat_capture_intake.py",
+        "tests/test_wire_inventory.py",
+        "tests/test_fleet_tool_flags_have_help.py",
+        "tests/test_duplication_baseline.py",
+        "tests/test_design_doc_line_references.py"
+      ]
+    },
+    {
+      "name": "compatibility",
+      "argv": [
+        "python3",
+        "/mnt/shared/prismabuild-fleet/repo/tools/fleet/pbtest.py",
+        "--checkout",
+        "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+        "--python",
+        "/home/rob/venvs/pb-cpu/bin/python",
+        "--threads-per-shard",
+        "1",
+        "--cpus-per-shard",
+        "1",
+        "--mem-gb",
+        "4",
+        "--priority",
+        "-10",
+        "--timeout-s",
+        "600",
+        "--wait-s",
+        "7200",
+        "--pytest-args",
+        "[\"-k\", \"upgrade-intent or upgrade-attestation\", \"--durations=20\"]",
+        "--json",
+        "/mnt/shared/paperclip-runs/PRI-243/compatibility.json",
+        "tests/test_record_compatibility_controller_upgrade.py"
+      ]
+    }
+  ],
+  "source_and_test_changes_after_capture": [
+    "tests/compat/capture-rollout.json",
+    "tests/compat/goldens-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/capture-rollout.json",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/goldens-rollout.jsonl",
+    "tests/compat/history-controls/superseded-upgrade-intent-b54cb2fa908103ff/provenance.json"
+  ],
+  "per_action": {
+    "cpu": 1,
+    "mem_gb": 4,
+    "gpu": 0,
+    "native_threads": 1,
+    "priority": -10,
+    "execution_timeout_s": 600
+  },
+  "max_clients": 8,
+  "aggregate_maximum": {
+    "cpu": 8,
+    "mem_gb": 32,
+    "gpu": 0
+  },
+  "controller_sequential": true,
+  "observation_bound_s": 14400,
+  "phase": {
+    "owner": "PRI-243",
+    "first_launch": "2026-10-27T12:17:42.451401+00:00",
+    "first_check_offset_s": 1800,
+    "max_checks": 8,
+    "hard_observation_s": 21600,
+    "wake_owner": "7474312e-878a-48fb-9278-997151629640",
+    "deadline": "2026-10-27T18:17:42.451401+00:00",
+    "checks": 0
+  },
+  "unit": "pb-pri243-qualify-7fb8c362e9"
+}

@@ -1,0 +1,14 @@
+[
+  "python3",
+  "tools/maintenance/refresh_compat_runtime.py",
+  "--root",
+  "/home/rob/paperclip-worktrees/prismabuild/v21-integrate-2363",
+  "--profile",
+  "upgrade-intent",
+  "--capture",
+  "/mnt/shared/paperclip-runs/PRI-243/capture-integrated-7585278f635",
+  "--primary-audit",
+  "/mnt/shared/paperclip-runs/PRI-243/capture-audit.json",
+  "--report",
+  "/mnt/shared/paperclip-runs/PRI-243/adoption.json"
+]
