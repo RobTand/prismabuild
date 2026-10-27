@@ -1280,6 +1280,17 @@ _SCRATCH_PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
 
 
 _SCRATCH_IO_ENV = "PRISMABUILD_LOCAL_SCRATCH_IO"
+_SCRATCH_CAPACITY_ENV = "PRISMABUILD_LOCAL_SCRATCH_CAPACITY"
+
+
+def scratch_capacity_intent(variables):
+    if _SCRATCH_CAPACITY_ENV not in variables:
+        return False
+    from prismabuild import local_scratch
+    try:
+        return bool(local_scratch.capacity_roots(variables))
+    except local_scratch.LocalScratchError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
 
 
 def scratch_io_intent(variables, *, transport):
@@ -1302,6 +1313,7 @@ def scratch_window_terms(variables: Mapping[str, str], *, transport: str) -> dic
     """
 
     scratch_io_intent(variables, transport=transport)
+    scratch_capacity_intent(variables)
     if not variables.get(_SCRATCH_PAIRS_ENV):
         return {}     # the undeclared path imports and reads nothing new
     from prismabuild import local_scratch
@@ -4326,6 +4338,9 @@ def freeze_template(
     wrapper_dir = store.wrapper_dir if wrapper_dir is None else wrapper_dir
     variables = dict(variables)
     scratch_io = scratch_io_intent(variables, transport=transport)
+    if (scratch_capacity_intent(variables)
+            and contracts.SCRATCH_CAPACITY_TAG not in placement.get("required_tags", [])):
+        raise SubmissionRefused("pbrun: dedicated scratch requires scratch-capacity-v1")
     recorder = None
     if scratch_io is not None:
         from prismabuild import local_scratch
@@ -4467,7 +4482,7 @@ def freeze_template(
     # refused rather than carried unexplained.
     spool_terms = local_disk_terms(variables, transport=transport)
     sealed_spool = {kind: int(need) for kind, need in demand.items()
-                    if kind == _SPOOL_WINDOW_KIND}
+                    if kind == _SPOOL_WINDOW_KIND or kind.startswith("scratch_gb:")}
     if sealed_spool != spool_terms:
         raise SubmissionRefused(
             f"pbrun: sealed {_SPOOL_WINDOW_KIND} demand {sealed_spool or 'none'} "
@@ -5233,6 +5248,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
                 and progress_policy is not None,
             gang=gang is not None, container_images=bool(images),
             scratch_io=scratch_io_intent(variables, transport=args.transport) is not None,
+            scratch_capacity=scratch_capacity_intent(variables),
             requires_files=bool(requirements)))])
     require_reachable_runtime(
         tags, hostname=socket.gethostname(), runtime_root=store.runtime_root)

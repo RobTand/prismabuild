@@ -19138,6 +19138,56 @@ both. ROOT/MAX reservation is **not filesystem quota enforcement**; arbitrary
 library/compiler-cache writes are not bounded by PB. Producers remain responsible
 for their own write bounds and local-filesystem checks.
 
+### Dedicated-root scratch capacity (#2383, source contract)
+
+`PRISMABUILD_LOCAL_SCRATCH_CAPACITY` optionally selects declared ROOT/MAX pairs
+whose capacity comes from a dedicated mounted filesystem. The exact JSON is
+`{"schema":"prismabuild.scratch_capacity_selection.v1","root_envs":["VM_ROOT"]}`.
+Unknown fields, duplicate or undeclared names, invalid JSON, inputs above
+16 KiB, and SLURM transport refuse. Unselected pairs keep charging `spool_gb`.
+A selected pair charges ceil(MAX / 2^30) to `scratch_gb:<sha256(root UTF-8)>`.
+This is an ordinary host-ledger kind, not a tier or another scheduler.
+An output spool still charges `spool_gb`; the capacities never substitute.
+
+Preparation seals the `scratch-capacity-v1` fence. Freeze rederives every
+scratch kind and checks the fence. Publication and claim independently verify
+the sealed request, demand and tags. A dedicated claim also needs configured
+root authority, full ledger admission, and fresh matching root evidence.
+Launch checks the root and its remaining room again before any payload starts.
+Naming and lifetime helpers accept the dedicated reservation without requiring
+an unrelated ordinary-spool charge. Their exact attempt and disposal rules
+stay unchanged. Terminal detail retains the root observation separately from
+the scratch lifetime record.
+
+The worker's optional `--scratch-capacity-config` names bounded operator JSON:
+`schema="prismabuild.scratch_capacity_roots.v1"`, with `roots` entries containing
+exact `root`, positive integer `max_gib`, positive integer `min_free_gib`, and
+`identity`. Identity contains `device`, `filesystem`, `filesystem_type`,
+`root_inode`, and immutable `birthtime_ns`. Configuration supplies ceilings and
+identity witnesses, never an invented live offer. It is separate from the
+existing I/O profile configuration, which supplies no capacity.
+
+The observer walks directory descriptors without following symlinks, verifies
+the identity and local filesystem, and requires a mounted filesystem distinct
+from its parent and ordinary spool. Aliasing configured roots refuse. Available
+bytes above the explicit floor, rounded down and capped by `max_gib`, determine
+capacity; inode headroom keeps the existing five-percent rule. Holder censuses
+bracket observation. While a root has a holder, its last measured total stays
+frozen, capped by the configured ceiling. Unwritten portions of a reservation
+grant no extra credit. Unknown census, changed identity or unreadable backing
+offers zero. Retiring free tokens never releases a live holder. The existing
+filesystem-floor gate recognizes each dedicated kind as GiB and, in enforce
+mode, refuses an unbound byte ledger.
+
+This is capacity reservation for trusted producers, not arbitrary-write quota
+enforcement or hostile isolation. A protected dedicated dataset must exclude
+unaccounted writers. The 320-GiB O6 ceiling has a proposed 384-GiB ZFS quota and
+reservation, a 32-GiB minimum free-space floor, and about 64 GiB nominal margin.
+Dataset metadata consumes part of that margin. Ordinary dl380g10 spool remains
+8 GiB on `/tmp/pbscratch`. Host provisioning, runtime activation, native stop
+and cleanup qualification, and the large VM action remain separate gates.
+See [the host proposal](o6_host_change_proposal_2026-10-27.md).
+
 ### Nondestructive ephemeral scratch namespace (Refs #1360)
 
 This is a public SDK v2 **naming/declaration slice**, not the scratch lifetime
@@ -19557,7 +19607,8 @@ exact versioned object, never silently upgrading a legacy naming array:
 ]}
 ```
 
-Every pair is sealed and charged through the existing `spool_gb` host ledger.
+Every pair is sealed and charged through the existing host ledger. It uses
+`spool_gb` unless the dedicated-root capacity selection above names that pair.
 The builder and parser allow 64 entries.
 The builder limits compact canonical selection bytes to 16 KiB.
 The pool limits raw UTF-8 input bytes to 16 KiB, including whitespace.

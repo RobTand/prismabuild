@@ -55,6 +55,9 @@ PAIRS_ENV = "PRISMABUILD_LOCAL_SCRATCH_PAIRS"
 #: #747 gave it for the spool window; scratch and spool share it.
 KIND = "spool_gb"
 GIB = 1 << 30
+CAPACITY_ENV = "PRISMABUILD_LOCAL_SCRATCH_CAPACITY"
+CAPACITY_SCHEMA = "prismabuild.scratch_capacity_selection.v1"
+CAPACITY_PREFIX = "scratch_gb:"
 #: The spool window's own pair.  It is charged through
 #: ``PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`` (#747), and listing it here too
 #: would charge the same bytes twice.
@@ -145,8 +148,56 @@ def scratch_terms(variables: Mapping[str, str]) -> dict[str, int]:
     reservation covers its own bound; the terms are their sum.
     """
 
-    total = sum(-(-cast(int, pair["max_bytes"]) // GIB) for pair in scratch_pairs(variables))
-    return {KIND: total} if total else {}
+    pairs = scratch_pairs(variables)
+    dedicated = capacity_roots(variables, pairs=pairs)
+    terms: dict[str, int] = {}
+    for pair in pairs:
+        kind = capacity_kind(str(pair["root"])) if pair["root_env"] in dedicated else KIND
+        terms[kind] = terms.get(kind, 0) + -(-cast(int, pair["max_bytes"]) // GIB)
+    return terms
+
+
+def capacity_kind(root: str) -> str:
+    """One host-ledger kind for the exact canonical dedicated root."""
+    from .digest_primitives import raw_sha256
+
+    if _canonical_root(root) is None or root.startswith("//"):
+        raise LocalScratchError("dedicated scratch root must be canonical absolute")
+    return CAPACITY_PREFIX + raw_sha256(root.encode("utf-8"))
+
+
+def is_capacity_kind(kind: str) -> bool:
+    return bool(re.fullmatch(r"scratch_gb:[0-9a-f]{64}", kind))
+
+
+def capacity_roots(variables: Mapping[str, str], *, pairs=None) -> frozenset[str]:
+    """Sealed pair selection only; no capacity, filesystem or host inference."""
+    if CAPACITY_ENV not in variables:
+        return frozenset()
+    from .digest_primitives import decode_strict_json
+
+    raw = variables[CAPACITY_ENV]
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 16384:
+        raise LocalScratchError("scratch capacity selection must be JSON within 16 KiB")
+    try:
+        selected = decode_strict_json(raw.encode("utf-8"), where=CAPACITY_ENV)
+    except (ValueError, RecursionError) as exc:
+        raise LocalScratchError("scratch capacity selection must be strict JSON") from exc
+    if (not isinstance(selected, dict) or set(selected) != {"schema", "root_envs"}
+            or selected["schema"] != CAPACITY_SCHEMA):
+        raise LocalScratchError("scratch capacity selection schema or fields differ")
+    roots = selected["root_envs"]
+    if (not isinstance(roots, list) or not 1 <= len(roots) <= 64
+            or any(not isinstance(name, str) or not _NAME.fullmatch(name) for name in roots)
+            or len(set(roots)) != len(roots)):
+        raise LocalScratchError("scratch capacity selection needs distinct root_env names")
+    declared = scratch_pairs(variables) if pairs is None else pairs
+    by_name = {pair["root_env"]: pair for pair in declared}
+    if any(name not in by_name for name in roots):
+        raise LocalScratchError("scratch capacity selection names an undeclared pair")
+    for name in roots:
+        capacity_kind(str(by_name[name]["root"]))
+    return frozenset(roots)
 
 
 def reservation_matches(variables: Mapping[str, str], demand: object,
@@ -286,8 +337,9 @@ def _scratch_claim_envelope(claim: object) -> dict[str, object]:
     attempt = _scratch_attempt({field: control.get(field)
                                 for field in ("nonce", "scope_id")}, key)
     resources = claim.get("resources")
-    if (not isinstance(resources, Mapping) or type(resources.get(KIND)) is not int
-            or resources[KIND] <= 0):
+    if (not isinstance(resources, Mapping) or not any(
+            isinstance(kind, str) and (kind == KIND or is_capacity_kind(kind))
+            and type(need) is int and need > 0 for kind, need in resources.items())):
         raise LocalScratchError("claim must carry a positive integer scratch reservation")
     fields = ("action_key", "cas_root", "claimed_by", "claimed_host",
               "claimed_unix", "published_unix", "attempts", "resources")

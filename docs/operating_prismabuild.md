@@ -5386,6 +5386,46 @@ not name the kind, `pbrun` queues it, and every claim records
 `never_fits_capacity`. The refusals are listed in `docs/design.md` under
 "Bounded local scratch draws from the same budget".
 
+### Reserve scratch on a dedicated mounted filesystem (#2383)
+
+This source interface requires an activated worker offering
+`scratch-capacity-v1` with an approved, measured root. A source merge or an
+I/O profile does not supply that offer. Do not submit the large O6 VM action
+until backing and native admission are qualified.
+
+Keep the ROOT/MAX declaration and add the explicit capacity selection:
+
+```sh
+	pbrun.py --cpus 9 --demand mem_gb=36 --priority -10 \
+	  --env O6_VM_ROOT=/storage_pool/tl2-qualification-vm \
+	  --env O6_VM_MAX_BYTES=343597383680 \
+	  --env PRISMABUILD_LOCAL_SCRATCH_PAIRS=O6_VM_ROOT:O6_VM_MAX_BYTES \
+	  --env PRISMABUILD_LOCAL_SCRATCH_CAPACITY='{"schema":"prismabuild.scratch_capacity_selection.v1","root_envs":["O6_VM_ROOT"]}' \
+	  --env PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS='{"schema":"prismabuild.scratch_lifetime_selection.v1","entries":[{"root_env":"O6_VM_ROOT","name":"vm","lifetime":"ephemeral"}]}' \
+	  --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	  -- /absolute/qualified/python driver.py
+```
+
+This example describes the interface; it supplies neither the O6 driver nor
+launch authorization. The 320 GiB charge uses the dedicated root's host-ledger
+kind. Ordinary spool demand stays separate and dl380g10's offer remains 8 GiB.
+Do not type a `scratch_gb:*` demand, add a `spool_gb` charge for these same
+bytes, or increase CPU demand to force placement.
+
+The operator configures `worker_loop --scratch-capacity-config FILE` only
+after provisioning and readback. The JSON has schema
+`prismabuild.scratch_capacity_roots.v1` and a `roots` list. Each entry supplies
+`root`, `max_gib`, `min_free_gib`, and the observed `identity` with `device`,
+`filesystem`, `filesystem_type`, `root_inode`, and `birthtime_ns`. For O6 the
+proposed maximum is 320 and the minimum free space is 32 GiB on a 384-GiB
+dataset. Record actual identity values; placeholders enable nothing.
+
+Use the registered ephemeral leaf through PB's scratch helper. The root and
+TMPDIR do not redirect automatically. PB retains capacity until exact stop
+proof and deletion settle, including after failure. No application sweeper
+is needed. Read [the concrete host proposal](o6_host_change_proposal_2026-10-27.md)
+before requesting or making host changes.
+
 ### Select scratch lifetime explicitly
 
 On a runtime offering `scratch-lifetime-v1`, a contained action can opt into

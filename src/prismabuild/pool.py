@@ -5870,13 +5870,14 @@ class _ClaimScanReads:
 class PoolQueue:
     """A directory on a shared filesystem that two or more boxes pull from."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(self, root: str | Path | None = None, *, scratch_capacity_inputs=None) -> None:
         # Read the module attribute at call time, not at definition time, so
         # a caller (or the test guard) that re-points ``DEFAULT_POOL_ROOT``
         # after import gets the root it named rather than the live store.
         defaulted = root is None
         self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
         self.records = record_store.RecordStore(self.root)
+        self.scratch_capacity_inputs = scratch_capacity_inputs
         self.funding = funding.FundingLedger(self)
         self._placement_history = _peer_placement.PlacementHistory()
         self._claim_denial_bases: dict[str, Path] = {}
@@ -7006,6 +7007,8 @@ class PoolQueue:
                 raise PoolContractError("publication canary capability requires sealed intent")
             scratch_io = self._sealed_scratch_io(
                 sealed_request, tags=normalized_tags, resources=demand)
+            scratch_capacity = self._sealed_scratch_capacity(
+                sealed_request, tags=normalized_tags, resources=demand)
             if scratch_io is None and contracts.SCRATCH_IO_TAG in normalized_tags:
                 raise PoolContractError("scratch I/O capability requires sealed traffic intent")
             lifetime = scratch_lifetime.publication(
@@ -7043,7 +7046,8 @@ class PoolQueue:
                 local_dependencies=bool(dependencies),
                 requires_files=declared_requirements is not None,
                 container_images=bool(image_refs), canary=canary_ref is not None,
-                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime)))
+                scratch_io=scratch_io is not None, scratch_lifetime=bool(lifetime),
+                scratch_capacity=scratch_capacity))
             for contract in contracts.CONTRACTS:
                 if contract.tag in normalized_tags and contract.tag not in declared_contracts:
                     unknown = ("; sealed request unavailable, declaration unknown"
@@ -16013,6 +16017,23 @@ class PoolQueue:
         return None
 
     @staticmethod
+    def _sealed_scratch_capacity(request, *, tags, resources):
+        variables = request["environment"]["variables"] if request is not None else {}
+        selected = local_scratch.capacity_roots(variables)
+        if not selected:
+            if (contracts.SCRATCH_CAPACITY_TAG in tags or any(
+                    str(kind).startswith(local_scratch.CAPACITY_PREFIX) for kind in resources)):
+                raise PoolContractError("dedicated scratch capacity requires sealed intent")
+            return False
+        params = request["params"]
+        required = set(params["placement"]["required_tags"])
+        if (contracts.SCRATCH_CAPACITY_TAG not in required
+                or not required.issubset(set(tags)) or params["demand"] != resources
+                or not local_scratch.reservation_matches(variables, resources)):
+            raise PoolContractError("dedicated scratch sealed demand/placement disagrees with row")
+        return True
+
+    @staticmethod
     def _sealed_scratch_io(request, *, tags, resources):
         if request is None:
             return None
@@ -17923,6 +17944,14 @@ class PoolQueue:
         # actual sealed request, and opted-in work requires a ledger.
         try:
             request = _sealed_action_request(item["cas_root"], key)
+            dedicated_scratch = self._sealed_scratch_capacity(
+                request, tags=item.get("tags") or [], resources=sealed_demand)
+            if dedicated_scratch and (ledger is None or not demand):
+                raise PoolContractError("dedicated scratch requires host-ledger admission")
+            if dedicated_scratch:
+                if self.scratch_capacity_inputs is None:
+                    raise PoolContractError("dedicated scratch requires configured root authority")
+                self.scratch_capacity_inputs.require(request["environment"]["variables"])
             scratch_intent = self._sealed_scratch_io(
                 request, tags=item.get("tags") or [], resources=sealed_demand)
             if (item.get(local_scratch.IO_ENV) != scratch_intent
@@ -20789,6 +20818,8 @@ class PoolQueue:
             raise PoolContractError("max_attempts must be a positive integer")
 
         details = dict(detail or {})
+        if "scratch_capacity_observation" in record:
+            details["scratch_capacity_observation"] = record["scratch_capacity_observation"]
         if scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
             details[scratch_lifetime.SCRATCH_LIFETIME_FIELD] = scratch_lifetime.validate_record(
                 record[scratch_lifetime.SCRATCH_LIFETIME_FIELD])
@@ -22876,6 +22907,14 @@ class PoolQueue:
         from . import local_scratch
 
         variables = local_scratch._sealed_scratch_variables(item, allow_missing=True)
+        if local_scratch.capacity_roots(variables):
+            if self.scratch_capacity_inputs is None:
+                raise local_scratch.LocalScratchError("dedicated scratch launch lacks configured root authority")
+            from .scratch_capacity import OBSERVATION_SCHEMA
+            item["scratch_capacity_observation"] = {
+                "schema": OBSERVATION_SCHEMA,
+                "roots": self.scratch_capacity_inputs.require(variables),
+            }
         lifetimes = scratch_lifetime.selections(variables)
         selected = ([] if isinstance(local_scratch._scratch_selection_input(variables), dict)
                     else local_scratch._scratch_selections(variables))

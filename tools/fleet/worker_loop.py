@@ -115,7 +115,8 @@ from prismabuild import capability_eligibility, contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
                          core as pb, cpu_topology,
-                         filesystem_floor, generation_receipt, local_scratch,
+                         filesystem_floor, fleet_roster, generation_receipt, local_scratch,
+                         scratch_capacity,
                          park_proof, pool, publication_canary, role_session, storage_tiers)
 from prismabuild.interpreter_inventory import prepare_interpreters
 from pbstatus import Deadline, bounded  # noqa: E402
@@ -746,6 +747,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--local-scratch-profile-config", default=None,
                     help="explicit v1 configured executed CAS scratch-profile references; "
                          "absent reads no profile input; never benchmarks during polling")
+    ap.add_argument("--scratch-capacity-config", default=None,
+                    help="operator-pinned dedicated mount identities and measured capacity ceilings; "
+                         "independent of ordinary spool and I/O service profiles")
     ap.add_argument("--spool-gb", type=int, default=0,
                     help="local disk this box offers produced-output spool "
                          "windows and declared bounded local scratch, in GiB; "
@@ -881,6 +885,11 @@ def observed_claim_capacity(queue, *, args, base_declared, observer,
             known_physical_gpus = detected
     declared = {"gpu": known_physical_gpus,
                 **live_host_capacity(base_declared, queue.ledger())}
+    root_live = {}
+    inputs = getattr(queue, "scratch_capacity_inputs", None)
+    if inputs is not None:
+        root_declared, root_live = inputs.observe(queue.ledger())
+        declared.update(root_declared)
     overrides = {
         "gpu_sample": gpu_sample,
         "gpu_state": gpu_admission.host_local_power_state(
@@ -891,6 +900,7 @@ def observed_claim_capacity(queue, *, args, base_declared, observer,
     held = queue.ledger().held
     capacity = (dict(declared) if observer is None else
                 observer.offer(declared, held, **overrides))
+    capacity.update(root_live)
     return declared, capacity, known_physical_gpus
 
 
@@ -1044,7 +1054,16 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     # a per-host concurrency knob.
     known_physical_gpus = 1 if gpu_capable else 0
 
-    queue = pool.PoolQueue(SH / "pb-queue")
+    root_inputs = None
+    if args.scratch_capacity_config is not None:
+        box = fleet_roster.Roster.at(RUNTIME_ROOT).canonical_box(socket.gethostname())
+        ordinary_root = box.entry.get("local_disk") if box is not None else None
+        if local_scratch._canonical_root(ordinary_root) is None:
+            ap.error("dedicated scratch requires the roster's ordinary local_disk backing")
+        root_inputs = scratch_capacity.RootInputs(
+            args.scratch_capacity_config, ordinary_root=ordinary_root)
+    queue = pool.PoolQueue(SH / "pb-queue", **(
+        {"scratch_capacity_inputs": root_inputs} if root_inputs is not None else {}))
     profile_inputs = (local_scratch.ProfileInputs(
         args.local_scratch_profile_config, source_root=RUNTIME_ROOT,
         checkout_root=pool.LOCAL_CHECKOUT_ROOT, producer_python=args.python)
@@ -1488,6 +1507,8 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         # inputs and independent current device identity refresh outside the
         # admission lock. The publisher receives this poll's captured detail.
         observed_detail = scratch_observed_detail(observer, profile_inputs)
+        if root_inputs is not None:
+            observed_detail["scratch_capacity"] = root_inputs.detail
         observed_detail.update(interpreter_observation.detail())
         capabilities = capability_eligibility.OfferCapabilities(
             images=capability_eligibility.ImageAnswers.from_observed(

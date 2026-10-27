@@ -41,6 +41,14 @@ FLOOR_DIVISOR = 20
 #: ``ram_gib`` and ``arc_gib`` are memory and the ``*_mb_s`` kinds are rates.
 BYTE_KINDS: dict[str, int] = {"spool_gb": GIB, "stage_gib": GIB, "local_gib": GIB,
                               "filesystem_gib": GIB}
+
+
+def byte_unit(kind: str) -> int | None:
+    from .local_scratch import is_capacity_kind
+
+    return GIB if is_capacity_kind(kind) else BYTE_KINDS.get(kind)
+
+
 FILESYSTEM_KIND = "filesystem_gib"
 FLOOR_DIR = "filesystem-floor"
 #: Where ``register --filesystem-gib`` mints a filesystem's growth ledger;
@@ -556,8 +564,10 @@ def _coverage(binding: Mapping, *, now: float | None = None) -> dict:
     if not start <= (time.time() if now is None else now) < end:
         raise FloorError("coverage outside its effective interval", reason="population_unknown")
     units = coverage.get("bytes_per_token")
-    expected = {member_id(m["ledger_root"], m["ledger"], m["kind"]): BYTE_KINDS[m["kind"]]
+    expected = {member_id(m["ledger_root"], m["ledger"], m["kind"]): byte_unit(m["kind"])
                 for m in binding["members"]}
+    if any(unit is None for unit in expected.values()):
+        raise FloorError("coverage names an unknown byte kind", reason="bounds_unknown")
     if not isinstance(units, dict) or units.keys() != expected.keys() or any(
             type(units[mid]) is not int or units[mid] < unit for mid, unit in expected.items()):
         raise FloorError("whole-reservation bounds incomplete", reason="bounds_unknown")
@@ -695,7 +705,7 @@ def register(queue_root, root, *, members: Iterable[tuple[str, str, str]] = (),
         raise FloorError(f"{root}: {found['fstype']} has no stable identity to bind")
     members = [tuple(m) for m in members]
     for ledger_root, _ledger, kind in members:
-        if kind not in BYTE_KINDS:
+        if byte_unit(kind) is None:
             raise FloorError(f"{kind} is not a byte kind")
         if ledger_root not in ("reservations", "tier-reservations", FILESYSTEM_RESERVATIONS):
             raise FloorError(f"{ledger_root} is not a ledger root")
@@ -982,8 +992,8 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
     floor_mode = mode(queue_root, max_age_s=GATE_CACHE_S)
     if floor_mode == "off":
         return None
-    wanted = {k: int(v) * BYTE_KINDS[k] for k, v in demand.items()
-              if k in BYTE_KINDS and int(v) > 0}
+    wanted = {k: int(v) * unit for k, v in demand.items()
+              if (unit := byte_unit(k)) is not None and int(v) > 0}
     if not wanted:
         return None
     groups: dict[str, dict] = {}
@@ -1002,7 +1012,7 @@ def ledger_gate(ledger, demand: Mapping[str, int]) -> LedgerGate | None:
         group = groups.setdefault(binding["key"], {"binding": binding, "bytes": 0,
                                                    "members": {}})
         group["bytes"] += amount
-        group["members"][mid] = amount // BYTE_KINDS[kind]
+        group["members"][mid] = amount // byte_unit(kind)
     return LedgerGate(queue_root, floor_mode, wanted, groups, unbound)
 
 
@@ -1335,7 +1345,8 @@ def floor_status(queue_root) -> dict:
                 minted = os.listdir(Path(queue_root) / root / name / "minted")
             except OSError:
                 continue
-            for kind in BYTE_KINDS:
+            kinds = {m.rsplit("-", 1)[0] for m in minted}
+            for kind in sorted(k for k in kinds if byte_unit(k) is not None):
                 if any(m.startswith(kind + "-") for m in minted) and \
                         member_id(root, name, kind) not in bound:
                     unbound.append(member_id(root, name, kind))

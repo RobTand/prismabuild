@@ -23,6 +23,7 @@ LOCAL_DEPENDENCY_TAG = "local-dependency-v1"
 DEPENDENCY_DIGEST_TAG = "dependency-digest-v1"
 SCRATCH_IO_TAG = "local-scratch-io-v1"
 SCRATCH_LIFETIME_TAG = "scratch-lifetime-v1"
+SCRATCH_CAPACITY_TAG = "scratch-capacity-v1"
 GANG_TAG = "gang-v1"
 PUBLICATION_CANARY_TAG = "publication-canary-slot-v1"
 
@@ -42,6 +43,7 @@ class Publication:
     requires_files: bool = False
     scratch_io: bool = False
     scratch_lifetime: bool = False
+    scratch_capacity: bool = False
     gang: bool = False
     canary: bool = False
 
@@ -90,6 +92,7 @@ CONTRACTS = (
              remedy="Update the published runtime, then provide the exact declared dependency bytes on an eligible worker."),
     Contract(SCRATCH_IO_TAG, lambda p: p.scratch_io),
     Contract(SCRATCH_LIFETIME_TAG, lambda p: p.scratch_lifetime),
+    Contract(SCRATCH_CAPACITY_TAG, lambda p: p.scratch_capacity),
     Contract(GANG_TAG, lambda p: p.gang,
              offered=lambda w: w.gang_admission,
              remedy="Enable gang admission on an eligible worker."),
