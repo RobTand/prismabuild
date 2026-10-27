@@ -479,8 +479,8 @@ def test_cgroup_watch_is_enrolled_before_initial_oom_snapshot(event_monitored):
 def test_new_scope_create_wakes_watch_reconciliation(event_monitored,monkeypatch):
     a,b,rows,gpu,monitor,events,_=event_monitored
     monitor.poll_once();original=b.create
-    def create_group(scope,budget):
-        result=original(scope,budget);path=b.path(scope);path.mkdir()
+    def create_group(scope,budget,cpu_weight=100):
+        result=original(scope,budget,cpu_weight=cpu_weight);path=b.path(scope);path.mkdir()
         (path/'memory.events').write_text('oom_kill 0\n')
         (path/'memory.events.local').write_text('oom 1\n')
         (path/'cgroup.events').write_text('populated 1\nfrozen 0\n')
