@@ -7422,8 +7422,16 @@ Plain, forged, copied, subclassed and serialized values grant no authority.
 The immutable `<number>.cleanup-recovery.json` supplement preserves the original
 owner record, its canonical digest and verified scope/container evidence. The
 mutable owner gains `resource_scope_cleanup`, `container_cleanup` and a resolved
-obligation. Original command status, immutable attempts, logs, generation and
-publication endings remain intact. A crash between supplement and summary is
+obligation. Verified recovery also clears `container_cleanup_pending` when the
+record has no registered scratch. Separate scratch cleanup remains owned by
+the scratch lifecycle and is not proved by the scope/container permit.
+Historical `lease_lost_max_attempts` endings use this same identity-bound
+recovery, including its fresh broker challenge and container checks (#1838).
+Ordinary lease recovery clears an earlier cleanup refusal before publishing an
+ending only after the public cleanup operation returns complete. An empty
+container list alone grants no completion. No periodic scan of historical
+terminal records is added. Original command status, immutable attempts, logs,
+generation and publication endings remain intact. A crash between supplement and summary is
 replayable only after another fresh verification. Replay binds the saved claim
 identity and scope intent while allowing cleanup counters and recovered control
 to advance after a partial summary write. `pb_action` exposes pending
@@ -10537,7 +10545,7 @@ owns each topic's ID grammar and legacy projection. `OutcomeNamespaces` owns
 its bounded traversal and names-only mapping. Later mutation families must add
 a separate bounded adapter and an explicit topic declaration before advertising
 coverage. The adapters below add `workers`, `reservations`, `adaptive`, `claim-denials`,
-`passes` and `denial-transitions`. Tier, residency and prewarm remain uncovered.
+`passes` and `denial-transitions`. Residency and prewarm remain uncovered. Slice 3a adds the tier topics below.
 Topic names are at most 64 characters; IDs are at most 128. A request admits at
 most 32 topic entries and 128 ID entries, including duplicates. Paths and
 noncanonical IDs are rejected with HTTP 400. Unknown syntactically valid topics
@@ -10640,7 +10648,7 @@ readers and their conservative evidence handling. Offers retain the recorded
 120-second expiry; expiry needs the consumer's existing deadline because time
 alone emits no inotify event.
 
-`queue_bell_host_reads.DirtyHostInputs` retains a host invalidation independently
+`queue_bell_input_reads.DirtyInputs` retains a host invalidation independently
 of the transport cursor until a bounded confirmed reader returns `True`.
 Unconfirmed absence, unchanged evidence and read errors keep the ID dirty.
 Its NFS-visibility retry starts at 50 ms, doubles to one second, and stays
@@ -10669,10 +10677,56 @@ coverage withdrawal and overflow reconstruction rules apply. The bell still
 reads no record bodies, and v1 receives no new topic events.
 
 `queue_bell_input_shapes` owns coverage checks separately from topic naming.
-`DirtyHostInputs` also retains `adaptive` and `claim-denials` invalidations
+`DirtyInputs` also retains `adaptive` and `claim-denials` invalidations
 through confirmed NFS reads within their original budget. Per-action sidecars
 continue to use the existing bounded action readers. No hint establishes an
 absence, refusal or capacity verdict.
+
+Slice 3a (#1942) adds a bounded `TierInputs` adapter. Its names come from
+`RecordStore`, and every event uses the exact tier identifier, including dots
+and colons, rather than an action key.
+
+| Topic | Authoritative namespace | Traversal bound |
+|---|---|---|
+| `tiers` | `tiers/<tier>.json` | Flat records |
+| `tier-reservations` | `tier-reservations/<tier>/{free,held,minted}` | Immediate tokens, holder contents and `minted/dead` contents |
+| `tier-funding` | `tier-funding/<mover>.<tier>.funding.json` and `.output-funding.json`, plus retired output funding under `retired/` | Flat records and one retirement directory |
+| `tier-commitments` | `tier-commitments/<tier>.json` | Flat records, including the embedded `claim_order` |
+
+There is no separate claim-order namespace. Funding parsing removes the exact
+suffix and action prefix while retaining the complete tier ID. Tier IDs outside
+the bounded bell grammar withdraw coverage; a store-valid name is never silently
+omitted from an otherwise complete topic. The store's broader grammar is unchanged.
+Tier ledger reconstruction includes private acquisitions, arbitrary and hidden
+holder names, hidden token names and the real `minted/dead` retirement directory.
+Host ledger traversal keeps its existing distinct shape.
+
+`NamespaceInputs` dispatches reconstruction and hidden-name rules to the
+adapters. `InputShapes` dispatches shape checks separately from topic mapping.
+The shared watcher still installs watches before scans, buffers kernel events,
+removes moved-away watches, and withdraws coverage before lazy/moved-in subtree
+installation or overflow reconstruction. Unsafe or unreadable scopes remain
+incomplete. No tier record bodies are read by the bell, and no scans are added
+to transition, admission or tier-mint critical sections. These source adapters
+install no worker, prewarm or tier-loop consumer.
+
+`DirtyInputs` retains both host and tier invalidations until the existing
+confirmed reader establishes visibility. Its original absolute budget, dirty
+generation and 50 ms to one-second recovery remain unchanged. `InputChanges`
+can carry validated tier horizons through `InputObservation.deadlines`.
+Consumer integration must arm the actual predicate's horizon: tier announcement
+expiry is strictly after `announced_unix + OFFER_TIMEOUT_S`, currently 120 s;
+private acquisition expiry is strictly after its recorded acquisition clock
+plus `LEASE_TIMEOUT_S`, currently 300 s, or the existing 30 s known-dead local
+claimant grace; short claim-order relief matures at its recorded
+`relief_since_unix + window_s`, whose existing default is 120 s. Hints and
+reconnection must not restart these clocks. Funding has no independent TTL:
+its publication binding and authoritative state/token/terminal proofs govern it.
+Claim-order dependencies on ahead-consumer progress and leases still require the
+later progress/lease adapters. Tier coverage alone cannot justify sleeping on
+those inputs. Confirmation, stop, predicate change or retirement cancels the
+corresponding visibility recovery or policy deadline; no periodic tier scan or
+new policy timeout is added here.
 
 `adaptive_mirrors.LocalMirrorPublisher` supplies an explicitly owned local
 publication session. It watches the configured source directory and its parent
@@ -17433,6 +17487,12 @@ Routine `reconcile` still leaves `source_mark_only` copies. The separate
 operator command, `tools/fleet/stage_reclaim.py`, does not change that contract.
 Automatic pressure reclaim remains outside this scope. Live apply still needs
 CEO approval and sufficient quarantine capacity.
+
+The separate `--report` mode (#1973) produces bounded, read-only ownership
+evidence without the reclaim proof/action path. See
+[Stage ownership report](stage_ownership_report.md) for invocation, exclusive
+observed-byte reconciliation versus overlapping declarations, budgets and
+incompleteness. No report result authorizes deletion.
 
 The default dry run lists every candidate with an original path, extent,
 SHA-256 and proof receipt, or a refusal reason. It changes no stage bytes,
