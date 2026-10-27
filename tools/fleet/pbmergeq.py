@@ -1034,7 +1034,8 @@ class Runner:
                         "attestation_sha256": producer["attestation_sha256"],
                         "interpreter": interpreter, "receipt_sha256": verified["receipt_sha256"],
                         "stdout": verified["stdout"], "stderr": verified["stderr"]}
-            except (OSError, core.PrismaBuildError, action_wait.OutcomeReadUnavailable,
+            except (OSError, core.PrismaBuildError, action_result.ActionResultError,
+                    action_wait.OutcomeReadUnavailable,
                     ValueError, KeyError, TypeError) as exc:
                 errors.append(f"{key}: {exc}")
                 for name in row.get("files", []):

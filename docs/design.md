@@ -19688,6 +19688,9 @@ bytes, unsupported transports or mismatched environments leave failures intact
 and return `attribution-inconclusive`, with no status, culprit, flake filing or
 member attempt charge. Absent newly added test files retain the existing
 structural absence rule.
+Native verifier `ActionResultError` refusals are captured at this observation
+boundary, retaining the diagnostic as environment evidence rather than charging
+the member through the queue's generic error handler.
 
 Qualified flakes retain repository, source, workers, actions, reports, logs and
 receipt references. Filing searches existing exact-node owners and a stable
