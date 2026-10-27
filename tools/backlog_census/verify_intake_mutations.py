@@ -65,10 +65,13 @@ def instrument_assertions(text):
                 key = f'{function.name}:{node.lineno}'
                 sites[key] = ast.get_source_segment(text, node)
                 failure = ast.parse(f'print("INTAKE_ASSERTION_FAILED:" + {key!r}, flush=True)\n_negative_control_failures.append({key!r})').body
-                return ast.copy_location(ast.Try(body=[node], handlers=[ast.ExceptHandler(type=ast.Name(id='AssertionError', ctx=ast.Load()), name=None, body=failure)], orelse=[], finalbody=[]), node)
+                unavailable = ast.parse(f'print("INTAKE_ASSERTION_UNAVAILABLE:" + {key!r}, flush=True)\n_negative_control_unavailable.append({key!r})').body
+                handlers = [ast.ExceptHandler(type=ast.Name(id='AssertionError', ctx=ast.Load()), name=None, body=failure),
+                            ast.ExceptHandler(type=ast.Name(id='Exception', ctx=ast.Load()), name=None, body=unavailable)]
+                return ast.copy_location(ast.Try(body=[node], handlers=handlers, orelse=[], finalbody=[]), node)
         function = Assertions().visit(function)
-        function.body.insert(0, ast.parse('_negative_control_failures = []').body[0])
-        function.body.append(ast.parse('assert not _negative_control_failures, _negative_control_failures').body[0])
+        function.body.insert(0, ast.parse('_negative_control_failures, _negative_control_unavailable = [], []').body[0])
+        function.body.append(ast.parse('assert not _negative_control_failures and not _negative_control_unavailable, (_negative_control_failures, _negative_control_unavailable)').body[0])
     return ast.unparse(ast.fix_missing_locations(module)) + '\n', sites
 
 
@@ -95,7 +98,8 @@ for name, filename, before, after, test in [('unmutated-control', None, None, No
         killed = result.returncode == 1 and bool(failed_sites) and only_assertions and 'ERROR ' not in result.stdout
         passed = result.returncode == 0 and not failed_sites if filename is None else killed
         row = {'mutant': name, 'test': test or '*', 'exit_code': result.returncode,
-               'killed_by_assertion': killed, 'failed_assertions': failed_sites}
+               'killed_by_assertion': killed, 'failed_assertions': failed_sites,
+               'unavailable_assertions': sorted(set(re.findall(r'INTAKE_ASSERTION_UNAVAILABLE:(test_\w+:\d+)', result.stdout)))}
         results.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
         print(result.stdout, result.stderr, flush=True)
