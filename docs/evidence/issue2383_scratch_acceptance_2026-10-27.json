@@ -1,0 +1,114 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "merge",
+  "contract_commit": "1f9c0cefaf017a77a369ca0070e433265a595579",
+  "ledger_commit": "1b3ea7858db9968b209cdfc38e280c7d80afded6",
+  "scope": [
+    "SC-01",
+    "ID-01",
+    "ID-02",
+    "ID-08",
+    "ID-09",
+    "SM-01",
+    "INV-01",
+    "INV-07",
+    "SAFE-03"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "branch": "prismabuild-2383",
+    "issue": "https://github.com/RobTand/prismabuild/issues/2383",
+    "validated_repairs": [
+      {
+        "id": "SC-01",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "ID-01",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "ID-02",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "ID-08",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "ID-09",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "SM-01",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "INV-01",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "INV-07",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      },
+      {
+        "id": "SAFE-03",
+        "actions": [
+          "49272bc0e6ee3ab7e664cfb41d9382495b623a92984737bdc2ecde9532d7b43e",
+          "3177aa8da9fdbe01b77a4bfe8a2e82eef69c0c0ed200ec056629fa50a258fb79"
+        ],
+        "outcome": "38e1ac81d:83 targeted component cases pass on x86 and ARM, five executions per architecture including2xdist;10targeted mutants rejected;17exact terminals/cleanup and15success receipts verified in issue2383_scratch_r4_evidence_2026-10-27.json"
+      }
+    ],
+    "remaining_gaps": [
+      "Opus r3 review and full PB gate on integrated current-main source are pending; source is not merge-approved",
+      "Early initial test submissions lacked separate prelaunch acceptance artifacts; no waiver or retroactive procedural compliance claimed; later batches recorded prelaunch scope",
+      "Dedicated dataset absent and provisioning authorization pending; runtime publication/activation not performed or authorized by this record",
+      "No native320-GiB admission, overcommit, stopped-attempt deletion, ambiguous-cleanup capacity retention or O6 boot proof",
+      "No whole staged-read requirement or hostile guarantee qualification; component fixtures use controlled broker/process observations",
+      "Full CPU integration on27fe found wire-policy pin, new probe help/publication registration gaps; repaired sourcefbb94f135 requires final controls. Root proof inventory also fails unchanged main6cbaa7524 at/usr/lib/x86_64-linux-gnu. Final shard remains active at record creation."
+    ],
+    "note": "Scoped source-merge candidate record.38e1ac81d adds atomic holder exclusivity and strict census before floor charging;fbb94f135 updates help, publication disposition and closed-field pins. Original27fe evidence is retained outside the source tree at/home/rob/tmp/pb-tl2-owner-20261027/retained-issue2383-initial-evidence.json as superseded component proof. No deploy, campaign completion, power-loss durability or hostile qualification."
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "status": "not-this-step"
+  },
+  "exceptions": []
+}

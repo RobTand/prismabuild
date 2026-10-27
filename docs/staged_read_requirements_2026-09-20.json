@@ -108,6 +108,23 @@
         "deployment": "not established; no runtime publication authorized in this task",
         "workload_proof": "not run; no staged-only campaign or live GPU latency claim",
         "remaining_scope": "Whole-requirement axes unchanged. #2162 remains owned by PRI-49/#2191. Independent Principal review and batch merge are pending."
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -197,6 +214,23 @@
       "workload_proof": {
         "detail": "unknown",
         "state": "unknown"
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -343,6 +377,23 @@
         "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
         "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
         "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -563,6 +614,23 @@
             "state": "partial"
           }
         }
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -615,6 +683,23 @@
         "deployment": "not deployed; no publication, activation or service restart in this task",
         "workload_proof": "not established; external computation-adapter settlement and reconciliation of the two historical live actions remain owed",
         "remaining_target": "Whole-requirement implementation,validation,deployment and workload axes are unchanged."
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -917,6 +1002,23 @@
             "state": "yes"
           }
         }
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -1178,6 +1280,23 @@
         "deployment": "not deployed; no publication, activation, service restart or historical live-record mutation",
         "workload_proof": "not established; simulated reboot and real broker protocol with an injected backend only",
         "remaining_target": "Whole-requirement axes remain unchanged. Live reboot, staged-only campaign and workload qualification are not claimed."
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -1386,6 +1505,23 @@
         "deployment": "Not published or activated by this task.",
         "workload_proof": "Not established. Full #1483 operational acceptance remains open.",
         "remaining_target": "Whole-requirement axes unchanged. Activation needs authenticated mappings, actual destinations/offers, complete populations and bounds, and obsolete-writer fencing. Rob retains NFS mapping and live diagnostic authority."
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
@@ -2306,6 +2442,23 @@
       "workload_proof": {
         "detail": "unknown",
         "state": "unknown"
+      },
+      "scoped_repair_2383": {
+        "target": "Root-backed dedicated scratch admission independent of ordinary spool, preserving sealed lifetime and PB cleanup authority",
+        "implemented_source": {
+          "commit": "38e1ac81d3c8cc7510322a9f39f9154efa4760ab",
+          "state": "component-implemented",
+          "scope": "Sealed root selection, equal quota/reservation ZFS backing, atomic exclusive root charge and closed holder census before floor charging; ordinary spool unchanged"
+        },
+        "validation": {
+          "state": "scoped-component-qualified",
+          "acceptance_record": "docs/evidence/issue2383_scratch_acceptance_2026-10-27.json",
+          "evidence": "docs/evidence/issue2383_scratch_r4_evidence_2026-10-27.json",
+          "detail": "83 targeted cases per architecture x5 incl2xdist;10targeted mutants rejected. Exact logs, source bundle, receipts/payloads and cleanup verified. Current-main integration, Opus r3 and native admission/deletion remain pending."
+        },
+        "deployment": "not deployed; published runtime remains4f93835c8656; host root absent/authorization pending",
+        "workload_proof": "not run; no O6, native root or hostile qualification",
+        "remaining_scope": "All pre-existing requirement axes unchanged; no global lifecycle, staged-read or durability satisfaction claimed"
       }
     },
     {
