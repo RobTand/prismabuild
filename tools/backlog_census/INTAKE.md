@@ -90,3 +90,13 @@ thread per library. The suite uses a deterministic fake `gh`; it makes no networ
 requests or real GitHub writes. `test_requested_dry_run_examples` runs the actual
 command and prints both required refusals. Parent creation, all-repo pagination,
 read failures, priority labels, and evidence placeholders have command tests.
+
+
+`test_unrelated_fields_and_fenced_labels_refuse_before_github` and
+`test_fenced_shell_comments_preserve_evidence_through_apply` are the field and
+fence CLI regressions. Their 12 cases fail on the pre-fix parser. To check the
+original intake assertions against named mutants, submit
+`python tools/backlog_census/verify_intake_mutations.py` through PrismaBuild with
+the same resource limits. The script mutates private temporary source copies,
+runs the corresponding test functions, and fails unless every mutant causes an
+assertion failure. It never changes the submitted checkout.
