@@ -101,4 +101,8 @@ original intake assertions against named mutants, submit
 `python tools/backlog_census/verify_intake_mutations.py` through PrismaBuild with
 the same resource limits. The script mutates private temporary source copies,
 runs the corresponding test functions, and fails unless every mutant causes an
-assertion failure. It never changes the submitted checkout.
+assertion failure. In each private test copy, it collects failures from every
+original assertion before failing the test. An unmutated control must pass, and
+every assertion site must fail under a named production mutant. Output retains
+the assertion text, source line, mutant names, and full pytest report. Collection
+errors and other exceptions do not count. It never changes the submitted checkout.

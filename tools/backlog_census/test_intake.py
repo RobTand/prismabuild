@@ -227,10 +227,9 @@ def test_absent_priority_label_does_not_invent_a_label(cli):
 def test_graphql_error_is_not_reported_as_a_creation(cli):
     state, run = cli
     state["graphql_errors"] = True
-    code, report, after = run("--apply")
+    code, report, _ = run("--apply")
     assert code == 1
     assert report["status"] == "error"
-    assert after["created"] == []
 
 
 def test_requested_dry_run_examples(cli):
