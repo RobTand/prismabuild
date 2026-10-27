@@ -815,6 +815,17 @@ def test_historical_inputs_come_from_the_committed_tree():
     assert not history_tree_reads(Path(__file__).resolve().parents[1])
 
 
+def test_population_audit_history_owner_does_not_exempt_siblings(tmp_path):
+    directory = tmp_path / 'tests' / 'compat' / 'support'
+    directory.mkdir(parents=True)
+    source = 'subprocess.check_output(["git", "show", "reviewed-base:source"])\n'
+    (directory / 'check_controller_population.py').write_text(source)
+    (directory / 'unregistered_population.py').write_text(source)
+    assert set(history_tree_reads(tmp_path)) == {
+        'tests/compat/support/unregistered_population.py',
+    }
+
+
 @pytest.mark.parametrize("verb", sorted(HISTORY_VERBS))
 @pytest.mark.parametrize("operand", ["'deadbeef:source'", '"main:source"',
     'f"{PIN}:{path}"', 'PIN + ":" + path', 'f"{revision}:{path}"'])
