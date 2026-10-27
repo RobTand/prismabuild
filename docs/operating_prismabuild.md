@@ -305,6 +305,61 @@ Both new verbs return 0 on success and 1 on refusal, with
 with their input ID and digest. Invalid usage exits 2. Attached publication
 returns the action's ending or the ordinary wait failure code.
 
+### Produce a D38 receipt for canary leg 2 (#1639)
+
+Use a published generation containing `prismabuild.d38_producer`. A source merge alone does
+not install this interface. This procedure leaves enforcement activation to Rob.
+PrismaQuant and Tessera descriptors remain on hold.
+
+Set `PBCANARY_GPU_IMAGE` to the reviewed digest-pinned ARM64 canary image already present
+on an eligible GB10 worker. Set `D38_DIR` to an evidence directory outside your PrismaBuild
+checkout. The namespace and plan files must stay outside the checkout to preserve its identity.
+Generate the namespace from the reviewed command:
+
+```bash
+export PB=/mnt/shared/prismabuild-fleet/repo
+export D38_DIR=/mnt/shared/paperclip-runs/YOUR_TASK/d38
+mkdir -p "$D38_DIR"
+PYTHONPATH="$PB/src" /usr/bin/python3 - <<'PY'
+import json, os
+from pathlib import Path
+from prismabuild.d38_producer import namespace_for
+command = ["/usr/bin/python3", "-I", "tools/fleet/pbcanary_legs/leg2.py",
+           "--image", os.environ["PBCANARY_GPU_IMAGE"], "--device", "cuda",
+           "--checks-path", ".d38/leg2-checks.json"]
+Path(os.environ["D38_DIR"], "namespace.json").write_text(json.dumps(namespace_for(command)))
+PY
+```
+
+From the PrismaBuild checkout, seal the target without publishing work:
+
+```bash
+python3 "$PB/tools/pbrun.py" --d38-plan "$D38_DIR/plan.json" \
+	--d38-namespace "$D38_DIR/namespace.json" --tag gb10 \
+	--container-image "$PBCANARY_GPU_IMAGE" --cpus 1 --demand gpu=1,mem_gb=8 \
+	--timeout-s 120 --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
+	/usr/bin/python3 -I tools/fleet/pbcanary_legs/leg2.py \
+	--image "$PBCANARY_GPU_IMAGE" --device cuda --checks-path .d38/leg2-checks.json
+python3 "$PB/tools/pbrun.py" --d38-preflight-for "$D38_DIR/plan.json" --priority -10 --detach
+```
+
+The preflight derives zero GPU demand, disabled GPU visibility and GB10 placement from the
+plan. Do not provide replacement execution flags. Retain its full action key and use
+`pbwait.py --endings` to verify successful completion, logs and the CAS receipt.
+Then repeat the target command and all its sealing options, replacing `--d38-plan PATH`
+with `--d38-receipt KEY`. A changed source, command, environment, image or namespace needs
+a new plan and receipt. Supply `--input ID=PATH=SHA256` identically in both target commands
+for checkout-relative inputs of at most 64 KiB each.
+
+For a source candidate, `tools/maintenance/prove_d38_canary.py --seal --image REF --out DIRECTORY`
+retains a candidate CPU request in the normal CAS and prints its key. It executes no payload
+and publishes no runnable work. Submit that key using the published
+`pbrun.py --publish-sealed KEY --detach`. The sealed request reserves one CPU, 8 GiB RAM,
+zero GPUs and 120 seconds, with native threads bounded to 1 and the pinned image requirement.
+After verifying the terminal ending and logs, run the helper with `--verify KEY --out DIRECTORY`.
+It reads the verified CAS result through the candidate gate and retains the plan, action,
+CAS receipt, D38 result and report. It publishes no GPU target.
+
 ### Identify a slow submission (#1936)
 
 Successful seal and detached submission JSON includes `phases`, for example

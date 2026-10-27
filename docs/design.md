@@ -19765,12 +19765,16 @@ CPU changes.  The entry point is a `script` (`[interpreter, script, *args]`) or 
 reviewed invocation descriptor (`d38_gate.INVOCATIONS`, keyed `kind:interpreter:target`) lists
 the CPU changes that entry point allows, each `{flag, from, to}`; the CPU arguments must equal
 the target's arguments with exactly the plan's listed changes applied, so a changed program,
-module, input or check argument is a difference no descriptor lists.  No descriptor ships, so no
-receipt authorizes a job until a harness owner adds a reviewed one, and the scoped exception is
-the only authorization path. What the worker executes is `task.argv`, not the descriptive `params.command`:
-the preflight's `task.argv` must be the standard captured-log recipe of its declared command
-(`action_result.bind_standard_capture_command`), so an unrelated task cannot present a passing
-receipt.  A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
+module, input or check argument is a difference no descriptor lists. Canary leg 2 is the first
+reviewed descriptor, `script:/usr/bin/python3:tools/fleet/pbcanary_legs/leg2.py`. It requires
+`-I` before the script and the exact argument form documented below. Other entry points still
+need a reviewed descriptor or a scoped CEO exception. What the worker executes is `task.argv`,
+not the descriptive `params.command`. The source producer reconstructs its complete expected
+CPU action, including the separate result-file capture recipe, and compares it to the request.
+Its CAS driver and digest-owner inputs must match the installed reviewed source bytes,
+including each hash, byte count and actual CAS content. Legacy consumer fixtures
+retain the standard captured-log check in `action_result.bind_standard_capture_command`.
+A receipt with no plan, an unrelated entry point, a plan for another job, an unlisted
 change or an unrelated task is refused.  Device hiding is read from what the preflight action sealed:
 `CUDA_VISIBLE_DEVICES` empty, and `NVIDIA_VISIBLE_DEVICES=none` for a gb10 proof.  The worker's
 host accelerator inventory is not task visibility: a CPU-only gb10 container still has the
@@ -19804,13 +19808,55 @@ is refused at registration, and release rechecks the sealed key for an old pendi
 record before publishing (the two evidence flags ride in its publication options,
 as optional keys so older records still read).
 
-The producer (`--d38-plan`, `--d38-preflight-for`), a supported grant issuer, `pbgang` member
-flags and retiring old installed clients remain separate work. The invocation
-registry, preflight producers, action keys and evidence schemas are unchanged by
-#1649. This describes source behavior and isolated test coverage; it does not
-claim that a runtime generation carrying the change is deployed or that
-enforcement has been activated. Delivery is source only, with coordinator
-verification and runtime activation recorded separately.
+**Producer (#1639).** `--d38-plan PATH` seals the target and writes a strict JSON plan of at most
+64 KiB. It publishes no action request, queue row, staging child or scheduler job. Snapshot and
+input blob ingestion still occurs. Keep the plan and namespace files outside the sealed checkout,
+so creating them does not change the target snapshot when submitting it later.
+
+The plan carries the full sealed target, its namespace descriptor, both commands, the single
+typed CPU change, and the reviewed source/check descriptor. The first supported command is:
+
+```text
+/usr/bin/python3 -I tools/fleet/pbcanary_legs/leg2.py --image REPOSITORY@sha256:DIGEST --device cuda --checks-path .d38/leg2-checks.json [--input ID=PATH=SHA256 ...]
+```
+
+`--d38-preflight-for PLAN` derives its action entirely from that plan. Only `--detach`,
+`--wait-s`, and `--priority` may accompany it. The CPU action retains the target snapshot,
+code closure, image, namespace and other execution settings. GPU demand changes from 1 to 0;
+the sole argument change is `--device cuda` to `--device cpu`. Placement requires GB10 because
+the approved production image is ARM64. Both GPU visibility variables are sealed disabled.
+Only the fully reconstructed CPU producer recipe with zero sealed and publication GPU demand
+is exempt from needing its own D38 receipt. A producer label alone grants no exemption.
+
+The standalone CAS-bound driver runs under `/usr/bin/python3 -I` and loads the sealed
+`d38-digests` input from the shared `digest_primitives.py` owner. The reviewed descriptor
+also pins the checkout copy. The driver verifies that copy before leg 2 runs; both CPU and
+GPU modes mount it read-only at `/pb-canary/digest_primitives.py` beside the entry script.
+No digest recipe depends on an ambient installed package. It verifies the source and
+Docker shim hashes, an ARM64 execution host and disabled GPU visibility. The target cannot
+carry shell startup hooks, exported Bash functions, `LD_*` variables or the Docker testing
+override. The source launcher invokes the verified shim under isolated Python too.
+The shim executes the same digest-pinned image with an empty entrypoint in both modes.
+The CPU payload imports torch, parses its arguments, verifies source/payload/image identity,
+reads each declared input once, and checks a 16-element tensor and scalar result 1240.
+CPU mode requires no visible CUDA device and uses CPU tensors. Each required check must say
+`passed` in `.d38/leg2-checks.json`; skipped, failed, missing or malformed evidence produces no
+D38 receipt. The action's separate CAS result is `.d38/receipt.json`, schema
+`fleet.d38.preflight.v1`. Logs remain in `.d38-preflight.log`.
+
+This first descriptor supports generation tasks at the checkout root and checkout-relative
+input files of at most 64 KiB each. It accepts only the checkout snapshot CAS input.
+Measurements, data manifests, gangs, progress policies and other invocation forms are not
+supported by this producer. PrismaQuant and Tessera descriptors remain on hold. A supported
+grant issuer, `pbgang` member flags and retiring old installed clients remain separate work.
+These are source contracts; deployment and enforcement activation require separate evidence
+and authority. The shipped enforcement setting remains false, and activation remains Rob's decision.
+
+The source-candidate proof helper lives at `tools/maintenance/prove_d38_canary.py`,
+with the other checkout-only qualification tools. It seals and verifies candidate
+proofs without entering the runtime publisher catalogue. The rollout intent binds
+the executing publisher's exact source digest, so adding a qualification helper
+does not require changing that writer.
 
 
 ## Source ownership after the 2026-10-14 simplification

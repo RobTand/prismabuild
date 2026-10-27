@@ -4463,6 +4463,18 @@
     "owner": "parse_args",
     "fields": [
       "--client-events-fd",
+      "--d38-preflight-for",
+      "--detach",
+      "--priority",
+      "--wait-s"
+    ],
+    "binding": "allowed"
+  },
+  {
+    "path": "tools/fleet/pbrun.py",
+    "owner": "parse_args",
+    "fields": [
+      "--client-events-fd",
       "--detach",
       "--publish-sealed",
       "--wait-s"
