@@ -6006,6 +6006,12 @@ Per member host, inside the ordinary claim pass:
    barrier reports `gang_torn_down` for it; nonempty records still require the
    teardown schema, group, reason, author and finite timestamp.
 
+   Gang records and residency timing inputs share the finite scalar predicate
+   in `numeric_fields.py`. It excludes booleans, nonnumeric values, nonfinite
+   floats and integers that overflow float conversion. This record-boundary
+   validation stays outside the source-attested `core.py`; moving the helper
+   does not change runtime, attestation or receipt identity.
+
    Malformed group, election and teardown records refuse only their own gang.
    Both full and refreshed reservation censuses discard that gang's whole
    election projection while continuing to honor healthy gangs. Global directory
