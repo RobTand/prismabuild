@@ -20,6 +20,8 @@ Nothing here touches the live queue, a real pool or a real device.
 """
 
 from __future__ import annotations
+
+from claim_denial_reader import latest_claim_denial
 from fleet_world import ActionRows
 
 from pathlib import Path
@@ -30,7 +32,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import manifest_layout
-from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -46,16 +48,6 @@ from fleet_world import FleetWorld
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
-
-
-def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
-    path = adaptive_cpu.local_state_base(q.ledger().base) / pool.CLAIM_DENIALS
-    records = adaptive_cpu.read_json(path).get("records", {})
-    matching = [entry for entry in records.values()
-                if isinstance(entry, dict) and entry.get("action_key") == key]
-    if not matching:
-        return None
-    return max(matching, key=lambda entry: float(entry.get("denied_unix", 0.0)))
 
 
 def _manifest_v1(phase_bytes: list[int]) -> dict[str, object]:
@@ -285,7 +277,7 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
 ) -> None:
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_lead_not_resident"
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": MOVER, "status": "absent"}]
@@ -311,7 +303,7 @@ def test_a_consumer_waits_until_its_lead_mover_has_moved_the_bytes(
     # stage and the consumer cannot address them, which is a full-cost pool
     # read wearing a clean receipt.
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_not_composed"
 
     composed = _compose_map(queue)
@@ -341,7 +333,7 @@ def test_a_cache_hit_lead_moved_no_bytes_and_does_not_satisfy_the_gate(
 
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     # Terminal, not pending: a cached mover will never move the byte, so the
     # denial says so instead of reading like a mover that has yet to run.
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
@@ -373,7 +365,7 @@ def test_every_lead_must_be_resident_not_merely_the_first(
             queue.finish(key, status="failed", claim_snapshot=claim)
     _publish_consumer(queue, [MOVER, SECOND_MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["reason"] == "residency_lead_terminal"
     # ...and the denial says the lead ended, not that it has yet to start:
@@ -430,7 +422,7 @@ def test_a_dropped_lead_is_named_as_dropped_and_not_as_absent(
 
     _publish_consumer(queue, [MOVER])
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     # Terminal: the drop is filed, so no later poll repairs this consumer.
     assert denial is not None and denial["reason"] == "residency_lead_terminal"
     assert denial["evidence"]["residency"]["pending"] == [
@@ -460,7 +452,7 @@ def test_a_lead_that_moved_another_manifest_is_not_this_consumers_residency(
 
     _publish_consumer(queue, [MOVER])  # names manifest "a" * 64
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None
     assert denial["evidence"]["residency"]["pending"] == [{
         "lead": MOVER, "status": "manifest_mismatch",
@@ -538,7 +530,7 @@ def test_a_map_composed_before_the_lead_landed_does_not_admit(
     # is a valid document that cannot address this consumer's first bytes.
     stale = _compose_map(queue, mover=SECOND_MOVER)
     assert queue.claim(owner="worker", capacity={"cpu": 4}) is None
-    denial = _denial(queue, CONSUMER)
+    denial = latest_claim_denial(queue, CONSUMER)
     assert denial is not None and denial["reason"] == "residency_map_stale"
     assert denial["evidence"]["residency"]["missing_leads"] == [MOVER]
     assert denial["evidence"]["residency"]["map_path"] == str(stale)
